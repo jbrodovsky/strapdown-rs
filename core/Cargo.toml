@@ -1,0 +1,18 @@
+[package]
+name = "strapdown-core"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "strapdown"
+path = "src/main.rs"
+
+[lib]
+name = "strapdown_core"
+path = "src/strapdown.rs"
+
+[dependencies]
+angle = "*"
+assert_approx_eq = "*"
+nalgebra = "*"
+nav-types = "*"

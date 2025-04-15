@@ -1,0 +1,10 @@
+[package]
+name = "strapdown-c"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+strapdown-core = { path = "../core" }
+
+[lib]
+crate-type = ["cdylib"]
