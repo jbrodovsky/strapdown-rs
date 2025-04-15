@@ -15,8 +15,9 @@ name = "strapdown_core"
 path = "src/strapdown.rs"
 
 [dependencies]
-angle = "*"
-assert_approx_eq = "*"
-nalgebra = "*"
-nav-types = "*"
+angle = "0.5.0"
+assert_approx_eq = "1.1.0"
+nalgebra = "0.33.2"
+nav-types = "0.5.2"
+
 
