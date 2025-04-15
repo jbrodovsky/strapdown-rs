@@ -2,9 +2,10 @@
 name = "strapdown-c"
 version = "0.1.0"
 edition = "2024"
+publish = false
 
 [dependencies]
-strapdown-core = { path = "../core" }
+strapdown-rs = { path = "../core" }
 
 [lib]
 crate-type = ["cdylib"]
