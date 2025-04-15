@@ -1,7 +1,10 @@
 [package]
-name = "strapdown-core"
+name = "strapdown-rs"
+authors = ["James Brodovsky"]
 version = "0.1.0"
 edition = "2024"
+description = "A library for creating and simulating strapdown inertial navigation systems"
+license = "MIT"
 
 [[bin]]
 name = "strapdown"
@@ -16,3 +19,4 @@ angle = "*"
 assert_approx_eq = "*"
 nalgebra = "*"
 nav-types = "*"
+

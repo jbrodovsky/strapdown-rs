@@ -2,13 +2,14 @@
 name = "strapdown_py"
 version = "0.1.0"
 edition = "2024"
+publish = false
 
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
 pyo3 = { version = "0.20", features = ["extension-module"] }
-strapdown-core = { path = "../core" }
+strapdown-rs = { path = "../core" }
 
 [package.metadata.maturin]
 name = "strapdown_py"
