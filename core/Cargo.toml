@@ -5,6 +5,10 @@ version = "0.1.0"
 edition = "2024"
 description = "A library for creating and simulating strapdown inertial navigation systems"
 license = "MIT"
+readme = "README.md"
+
+[package.metadata.docs.rs]
+rustdoc-args = [ "--html-in-header", "katex-header.html" ]
 
 [[bin]]
 name = "strapdown"
@@ -19,5 +23,4 @@ angle = "0.5.0"
 assert_approx_eq = "1.1.0"
 nalgebra = "0.33.2"
 nav-types = "0.5.2"
-
 
