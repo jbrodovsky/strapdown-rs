@@ -59,7 +59,6 @@ pub struct UKF {
     covariance: DMatrix<f64>,
     process_noise: DMatrix<f64>,
     measurement_noise: DMatrix<f64>,
-    alpha: f64,
     lambda: f64,
     state_size: usize,
     weights_mean: DVector<f64>,
@@ -111,7 +110,6 @@ impl UKF {
             covariance,
             process_noise,
             measurement_noise,
-            alpha,
             lambda,
             state_size, 
             weights_mean,
@@ -236,3 +234,43 @@ impl UKF {
 }
 
 // TODO: #84 Add particle filter
+
+/// Tests
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::StrapdownState;
+    use nalgebra::{SMatrix, DVector};
+    use std::f64::consts::PI;
+
+    #[test]
+    fn test_ukf_construction() {
+        let position = vec![0.0, 0.0, 0.0];
+        let velocity = vec![0.0, 0.0, 0.0];
+        let attitude = vec![1.0, 0.0, 0.0];
+        let imu_biases = vec![0.0, 0.0, 0.0];
+        let measurement_bias = vec![1.0, 1.0, 1.0];
+        let covariance_diagonal = vec![1e-3; 9 + imu_biases.len() + measurement_bias.len()];
+        let process_noise_diagonal = vec![1e-3; 9 + imu_biases.len() + measurement_bias.len()];
+        let measurement_noise_diagonal = vec![1e-3; 3];
+        let alpha = 1e-3;
+        let beta = 2.0;
+        let kappa = 1e-3;
+
+        let ukf = UKF::new(
+            position.clone(),
+            velocity.clone(),
+            attitude.clone(),
+            imu_biases.clone(),
+            measurement_bias.clone(),
+            covariance_diagonal,
+            process_noise_diagonal,
+            measurement_noise_diagonal,
+            alpha,
+            beta,
+            kappa,
+        );
+        assert_eq!(ukf.mean_state.len(), position.len() + velocity.len() + attitude.len() + imu_biases.len() + measurement_bias.len());
+    }
+}
