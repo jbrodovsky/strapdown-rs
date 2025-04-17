@@ -9,18 +9,18 @@
 //! output firmware. As such the IMU data is assumed to be _relative_ accelerations and rotations. Additional
 //! signals that can be derived using IMU data, such as gravity or magnetic vector and anomalies, should come
 //! from a separate IMU channel. In other words, to calculate the gravity vector the IMU output should be 
-//! parsed to seperately output the overall acceleration and rotation of the sensor whereas the navigation 
+//! parsed to separately output the overall acceleration and rotation of the sensor whereas the navigation 
 //! filter will use the gravity and orientation corrected acceleration and rotation to estimate the position
 //! 
 //! Primarily built off of three crate dependencies:
 //! - nav-types: Provides basic coordinate types and conversions.
 //! - nalgebra: Provides the linear algebra tools for the filters.
 //! - haversine-rs: Provides the haversine formula for calculating distances between two points on the Earth's surface, which is the primary error metric.
-//! All other functionality is built on top of these crates. The primary reference text is _Prinicples of GNSS, 
+//! All other functionality is built on top of these crates. The primary reference text is _Principles of GNSS, 
 //! Inertial, and Multisensor Integrated Navigation Systems, 2nd Edition_ by Paul D. Groves. Where applicable, 
 //! calculations will be referenced by the appropriate equation number tied to the book. In general, variables 
 //! will be named according to the quantity they represent and not the symbol used in the book. For example, 
-//! the Earth's equitorial radius is named `EQUITORIAL_RADIUS` instead of `a`. This style is sometimes relaxed 
+//! the Earth's equatorial radius is named `EQUATORIAL_RADIUS` instead of `a`. This style is sometimes relaxed 
 //! within the body of a given function, but the general rule is to use descriptive names for variables and not 
 //! mathematical symbols.
 //////-------
@@ -30,7 +30,7 @@
 //! Navigation Frame. The equations are based on the book "Principles of GNSS, Inertial, and Multisensor Integrated
 //! Navigation Systems, Second Edition" by Paul D. Groves. This file corresponds to Chapter 5.4 and 5.5 of the book.
 //! Effort has been made to reproduce most of the equations following the notation from the book. However, variable
-//! and constants should generally been named for the quatity they represent rather than the symbol used in the book.
+//! and constants should generally been named for the quantity they represent rather than the symbol used in the book.
 //!
 //! # Coordinate and state definitions
 //! The typical nine-state NED/ENU navigation state vector is used in this implementation. The state vector is defined as:
@@ -81,7 +81,7 @@ impl IMUData {
 /// Attitude is stored in matrix form (rotation or direction cosine matrix) and position and velocity are stored as
 /// vectors. The order or the states depends on the coordinate system used. The struct does not care, but the
 /// coordinate system used will determine which functions you should use. Default is NED but nonetheless must be
-/// assigned. For compuational simplicity, latitude and logitude are stored as radians.
+/// assigned. For computational simplicity, latitude and longitude are stored as radians.
 #[derive(Clone, Copy)]
 pub struct StrapdownState {
     pub position: Vector3<f64>, // latitude (rad), longitude (rad), altitude (m)
@@ -200,7 +200,7 @@ impl StrapdownState {
         // Latitude update
         let lat_1: f64 = &self.position[0].to_radians()
             + 0.5 * (v_0[0] / (r_n + alt_0) + v_1[0] / (r_n + &self.position[2])) * dt;
-        // Longitude udpate
+        // Longitude update
         let (_, r_e_1, _) = earth::principal_radii(&lat_1, &self.position[2]);
         let lon_1: f64 = &self.position[1].to_radians()
             + 0.5
@@ -216,7 +216,7 @@ impl StrapdownState {
         self.velocity = v_1;
     }
 
-    /// ENU form of the forward kinematics equations. Corresponds to section 5.4 Local-Navigation Frame Equations. Mathematrically identical to NED,
+    /// ENU form of the forward kinematics equations. Corresponds to section 5.4 Local-Navigation Frame Equations. Mathematically identical to NED,
     /// but the coordinate order in the data structures is different. Attitude is still specified by a roll-pitch-yaw Euler angle sequence.
     // pub fn forward_enu(&mut self, imu_data: &IMUData, dt: f64) {
     //
@@ -448,6 +448,7 @@ mod tests {
         assert_approx_eq!(&attitude[(2, 1)], 0.0, 1e-4);
         assert_approx_eq!(&attitude[(2, 2)], 1.0, 1e-4);
     }
+    #[test]
     fn test_wrap_to_180() {
         assert_eq!(super::wrap_to_180(190.0), -170.0);
         assert_eq!(super::wrap_to_180(-190.0), 170.0);
@@ -457,38 +458,10 @@ mod tests {
     }
     #[test]
     fn test_wrap_to_360() {
-        assert_eq!(super::wrap_to_360(370.0), 10.0);fn test_wrap_to_180() {
-            assert_eq!(super::wrap_to_180(190.0), -170.0);
-            assert_eq!(super::wrap_to_180(-190.0), 170.0);
-            assert_eq!(super::wrap_to_180(0.0), 0.0);
-            assert_eq!(super::wrap_to_180(180.0), 180.0);
-            assert_eq!(super::wrap_to_180(-180.0), -180.0);
-        }
-        #[test]
-        fn test_wrap_to_360() {
-            assert_eq!(super::wrap_to_360(370.0), 10.0);
-            assert_eq!(super::wrap_to_360(-10.0), 350.0);
-            assert_eq!(super::wrap_to_360(0.0), 0.0);
-        }
-        #[test]
-        fn test_wrap_to_pi() {
-            assert_eq!(super::wrap_to_pi(3.0 * std::f64::consts::PI), std::f64::consts::PI);
-            assert_eq!(super::wrap_to_pi(-3.0 * std::f64::consts::PI), -std::f64::consts::PI);
-            assert_eq!(super::wrap_to_pi(0.0), 0.0);
-            assert_eq!(super::wrap_to_pi(std::f64::consts::PI), std::f64::consts::PI);
-            assert_eq!(super::wrap_to_pi(-std::f64::consts::PI), -std::f64::consts::PI);
-        }
-        #[test]
-        fn test_wrap_to_2pi() {
-            assert_eq!(super::wrap_to_2pi(7.0 * std::f64::consts::PI), std::f64::consts::PI);
-            assert_eq!(super::wrap_to_2pi(-5.0 * std::f64::consts::PI), std::f64::consts::PI);
-            assert_eq!(super::wrap_to_2pi(0.0), 0.0);
-            assert_eq!(super::wrap_to_2pi(std::f64::consts::PI), std::f64::consts::PI);
-            assert_eq!(super::wrap_to_2pi(-std::f64::consts::PI), std::f64::consts::PI);
-        }
+        assert_eq!(super::wrap_to_360(370.0), 10.0);
         assert_eq!(super::wrap_to_360(-10.0), 350.0);
         assert_eq!(super::wrap_to_360(0.0), 0.0);
-    }
+    }    
     #[test]
     fn test_wrap_to_pi() {
         assert_eq!(super::wrap_to_pi(3.0 * std::f64::consts::PI), std::f64::consts::PI);

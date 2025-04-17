@@ -3,9 +3,9 @@
 //! This module contains constants and functions related to the Earth's shape and gravity.
 //! The Earth is modeled as an ellipsoid (WGS84) with a semi-major axis and a semi-minor
 //! axis. The Earth's gravity is modeled as a function of the latitude and altitude using
-//! the Somingliana method. The Earth's rotation rate is also included in this module.
+//! the Somigliana method. The Earth's rotation rate is also included in this module.
 //! This module relies on the `nav-types` crate for the coordinate types and conversions,
-//! but provides additonal functionality for calculating rotations for the strapdown
+//! but provides additional functionality for calculating rotations for the strapdown
 //! navigation filters. This permits the transformation of additional quantities (velocity,
 //! acceleration, etc.) between the Earth-centered Earth-fixed (ECEF) frame and the
 //! local-level frame.
@@ -50,19 +50,19 @@ pub const RATE: f64 = 7.2921159e-5; // rad/s (omega_ie)
 pub const RATE_VECTOR: Vector3<f64> = Vector3::new(0.0, 0.0, RATE);
 pub const EQUATORIAL_RADIUS: f64 = 6378137.0; // meters
 pub const POLAR_RADIUS: f64 = 6356752.31425; // meters
-pub const ECCENTRICITY: f64 = 0.0818191908425; // unitless
+pub const ECCENTRICITY: f64 = 0.0818191908425; // unit-less
 pub const ECCENTRICITY_SQUARED: f64 = ECCENTRICITY * ECCENTRICITY;
-pub const GE: f64 = 9.7803253359; // m/s^2, equitorial radius
+pub const GE: f64 = 9.7803253359; // m/s^2, equatorial radius
 pub const GP: f64 = 9.8321849378; // m/s^2, polar radius
 pub const F: f64 = 1.0 / 298.257223563; // Flattening factor
-pub const K: f64 = (POLAR_RADIUS * GP - EQUATORIAL_RADIUS * GE) / (EQUATORIAL_RADIUS * GE); // Somingliana's constant
+pub const K: f64 = (POLAR_RADIUS * GP - EQUATORIAL_RADIUS * GE) / (EQUATORIAL_RADIUS * GE); // Somigliana's constant
 
 /// Convert a three-element vector to a skew-symmetric matrix
 /// Groves' notation uses a lot of skew-symmetric matrices to represent cross products
-/// and to perform more concise matrix operations (particularly invovling rotations).
+/// and to perform more concise matrix operations (particularly involving rotations).
 /// This function converts a three-element vector to a skew-symmetric matrix.
 ///
-/// # Skew-symetric matrix conversion
+/// # Skew-symmetric matrix conversion
 ///
 /// Give a nalgebra vector `v` = [v1, v2, v3], the skew-symmetric matrix `skew` is defined as:
 ///
@@ -75,7 +75,7 @@ pub const K: f64 = (POLAR_RADIUS * GP - EQUATORIAL_RADIUS * GE) / (EQUATORIAL_RA
 /// # Example
 /// ```rust
 /// use nalgebra::{Vector3, Matrix3};
-/// use navtoolbox::earth;
+/// use strapdown::earth;
 /// let v: Vector3<f64> = Vector3::new(1.0, 2.0, 3.0);
 /// let skew: Matrix3<f64> = earth::vector_to_skew_symmetric(&v);
 /// ```
@@ -93,7 +93,7 @@ pub fn vector_to_skew_symmetric(v: &Vector3<f64>) -> Matrix3<f64> {
 /// This function converts a skew-symmetric matrix to a three-element vector. This is the
 /// inverse operation of the `vector_to_skew_symmetric` function.
 ///
-/// # Skew-symetric matrix conversion
+/// # Skew-symmetric matrix conversion
 ///
 /// Give a nalgebra Matrix3 `skew` where
 /// ```text
@@ -105,7 +105,7 @@ pub fn vector_to_skew_symmetric(v: &Vector3<f64>) -> Matrix3<f64> {
 ///
 /// # Example
 /// ```rust
-/// use navtoolbox::earth;
+/// use strapdown::earth;
 /// use nalgebra::{Vector3, Matrix3};
 /// let skew: Matrix3<f64> = Matrix3::new(0.0, -3.0, 2.0, 3.0, 0.0, -1.0, -2.0, 1.0, 0.0);
 /// let v: Vector3<f64> = earth::skew_symmetric_to_vector(&skew);
@@ -117,7 +117,7 @@ pub fn skew_symmetric_to_vector(skew: &Matrix3<f64>) -> Vector3<f64> {
     v[2] = skew[(1, 0)];
     return v;
 }
-/// Coordinate converstion from the Earth-centered Inertial (ECI) frame to the Earth-centered
+/// Coordinate conversion from the Earth-centered Inertial (ECI) frame to the Earth-centered
 /// Earth-fixed (ECEF) frame. The ECI frame is a right-handed Cartesian coordinate system with
 /// the origin at the Earth's center. The ECEF frame is a right-handed Cartesian coordinate
 /// system with the origin at the Earth's center. The ECI frame is fixed with respect to the
@@ -132,7 +132,7 @@ pub fn skew_symmetric_to_vector(skew: &Matrix3<f64>) -> Vector3<f64> {
 /// # Example
 /// ```rust
 /// use nalgebra::Matrix3;
-/// use navtoolbox::earth;
+/// use strapdown::earth;
 /// let time: f64 = 30.0;
 /// let rot: Matrix3<f64> = earth::eci_to_ecef(time);
 /// ```
@@ -145,7 +145,7 @@ pub fn eci_to_ecef(time: f64) -> Matrix3<f64> {
     rot[(2, 2)] = 1.0;
     return rot;
 }
-/// Coordinate converstion from the Earth-centered Earth-fixed (ECEF) frame to the Earth-centered
+/// Coordinate conversion from the Earth-centered Earth-fixed (ECEF) frame to the Earth-centered
 /// Inertial (ECI) frame. The ECI frame is a right-handed Cartesian coordinate system with
 /// the origin at the Earth's center. The ECEF frame is a right-handed Cartesian coordinate
 /// system with the origin at the Earth's center. The ECI frame is fixed with respect to the
@@ -160,18 +160,18 @@ pub fn eci_to_ecef(time: f64) -> Matrix3<f64> {
 /// # Example
 /// ```rust
 /// use nalgebra::Matrix3;
-/// use navtoolbox::earth;
+/// use strapdown::earth;
 /// let time: f64 = 30.0;
 /// let rot: Matrix3<f64> = earth::ecef_to_eci(time);
 /// ```
 pub fn ecef_to_eci(time: f64) -> Matrix3<f64> {
     return eci_to_ecef(time).transpose();
 }
-/// Coordinate converstion from the Earth-centered Earth-fixed (ECEF) frame to the local-level frame.
+/// Coordinate conversion from the Earth-centered Earth-fixed (ECEF) frame to the local-level frame.
 /// The ECEF frame is a right-handed Cartesian coordinate system with the origin at the Earth's center.
 /// The local-level frame is a right-handed Cartesian coordinate system with the origin at the sensor's
 /// position. The local-level frame is defined by the tangent to the ellipsoidal surface at the sensor's
-/// position. The local level frame is deifned by the WGS84 latitude and longitude.
+/// position. The local level frame is defined by the WGS84 latitude and longitude.
 /// 
 /// # Parameters
 /// - `latitude` - The WGS84 latitude in degrees
@@ -183,7 +183,7 @@ pub fn ecef_to_eci(time: f64) -> Matrix3<f64> {
 /// # Example
 /// ```rust
 /// use nalgebra::Matrix3;
-/// use navtoolbox::earth;
+/// use strapdown::earth;
 /// let latitude: f64 = 45.0;
 /// let longitude: f64 = 90.0;
 /// let rot: Matrix3<f64> = earth::ecef_to_lla(&latitude, &longitude);
@@ -204,11 +204,11 @@ pub fn ecef_to_lla(latitude: &f64, longitude: &f64) -> Matrix3<f64> {
     return rot;
 }
 
-/// Coordinate converstion from the local-level frame to the Earth-centered Earth-fixed (ECEF) frame.
+/// Coordinate conversion from the local-level frame to the Earth-centered Earth-fixed (ECEF) frame.
 /// The ECEF frame is a right-handed Cartesian coordinate system with the origin at the Earth's center.
 /// The local-level frame is a right-handed Cartesian coordinate system with the origin at the sensor's
 /// position. The local-level frame is defined by the tangent to the ellipsoidal surface at the sensor's
-/// position. The local level frame is deifned by the WGS84 latitude and longitude.
+/// position. The local level frame is defined by the WGS84 latitude and longitude.
 /// 
 /// # Parameters
 /// - `latitude` - The WGS84 latitude in degrees
@@ -220,7 +220,7 @@ pub fn ecef_to_lla(latitude: &f64, longitude: &f64) -> Matrix3<f64> {
 /// # Example
 /// ```rust
 /// use nalgebra::Matrix3;
-/// use navtoolbox::earth;
+/// use strapdown::earth;
 /// let latitude: f64 = 45.0;
 /// let longitude: f64 = 90.0;
 /// let rot: Matrix3<f64> = earth::lla_to_ecef(&latitude, &longitude);
@@ -244,7 +244,7 @@ pub fn lla_to_ecef(latitude: &f64, longitude: &f64) -> Matrix3<f64> {
 /// 
 /// # Example
 /// ```rust
-/// use navtoolbox::earth;
+/// use strapdown::earth;
 /// let latitude: f64 = 45.0;
 /// let altitude: f64 = 1000.0;
 /// let (r_n, r_e, r_p) = earth::principal_radii(&latitude, &altitude);
@@ -274,7 +274,7 @@ pub fn principal_radii(latitude: &f64, altitude: &f64) -> (f64, f64, f64) {
 /// 
 /// # Example
 /// ```rust
-/// use navtoolbox::earth;
+/// use strapdown::earth;
 /// let latitude: f64 = 45.0;
 /// let altitude: f64 = 1000.0;
 /// let grav = earth::gravity(&latitude, &altitude);
@@ -305,7 +305,7 @@ pub fn gravity(latitude: &f64, altitude: &f64) -> f64 {
 /// 
 /// # Example
 /// ```rust
-/// use navtoolbox::earth;
+/// use strapdown::earth;
 /// let latitude: f64 = 45.0;
 /// let longitude: f64 = 90.0;
 /// let altitude: f64 = 1000.0;
@@ -335,7 +335,7 @@ pub fn gravitation(latitude: &f64, longitude: &f64, altitude: &f64) -> Vector3<f
 /// 
 /// # Example
 /// ```rust
-/// use navtoolbox::earth;
+/// use strapdown::earth;
 /// let latitude: f64 = 45.0;
 /// let omega_ie = earth::earth_rate_lla(&latitude);
 /// ```
@@ -361,7 +361,7 @@ pub fn earth_rate_lla(latitude: &f64) -> Vector3<f64> {
 /// # Example
 /// ```rust
 /// use nalgebra::Vector3;
-/// use navtoolbox::earth;
+/// use strapdown::earth;
 /// let latitude: f64 = 45.0;
 /// let altitude: f64 = 1000.0;
 /// let velocities: Vector3<f64> = Vector3::new(10.0, 0.0, 0.0);
@@ -380,7 +380,7 @@ pub fn transport_rate(latitude: &f64, altitude: &f64, velocities: &Vector3<f64>)
 
 // TODO: #82 Implement magnetic field calculations
 
-/// Calculate the magentic field intesity in the local-level frame
+/// Calculate the magnetic field intensity in the local-level frame
 /// 
 pub fn calculate_magnetic_field() -> f64 {
     return 0.0;

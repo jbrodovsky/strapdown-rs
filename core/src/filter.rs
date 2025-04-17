@@ -6,7 +6,7 @@
 //! the state in the local level frame. The filters also use a generic position measurement
 //! model to update the state based on position measurements in the local level frame.
 
-use nalgebra::{SMatrix, SVector, DMatrix, DVector, Vector3, Matrix3, ArrayStorage};
+use nalgebra::{SMatrix, DMatrix, DVector};
 use crate::{IMUData, StrapdownState};
 
 pub struct SigmaPoint {
@@ -152,7 +152,7 @@ impl UKF {
     // --- Working notes ---------------------------------------------------------
     // Issue here is that this is a generic strapdown INS filter, so while we can 
     // maker reasonable assumptions about the generic propagation function of the
-    // UKF, (i.e. the strapdown equations), we don't neccessarily know what the
+    // UKF, (i.e. the strapdown equations), we don't necessarily know what the
     // measurement model is on this generic level.
     /// --------------------------------------------------------------------------
 
@@ -194,7 +194,7 @@ impl UKF {
             None => panic!("Innovation matrix is singular"),
         };
         let k = cross_covariance * s_inv;
-        // check that the kalman gain and measurmente diff are compatible to multiply
+        // check that the kalman gain and measurement diff are compatible to multiply
         if k.ncols() != measurement.len() {
             panic!("Kalman gain and measurement differential are not compatible");
         }
@@ -208,7 +208,7 @@ impl UKF {
         return self.mean_state.clone();      
     }
     // Working notes:
-    //  Because of my choice to seperately define the strapdown propagation, I'll need to rework the 
+    //  Because of my choice to separately define the strapdown propagation, I'll need to rework the 
     //  the UKF propagation step to resemble something more like a limited particle filter rather than
     //  the more traditional purely linear algebra vector-matrix operations of a traditional KF/EKF/UKF.
 
