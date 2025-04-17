@@ -1,4 +1,5 @@
 //! Inertial Navigation Filters
+//! 
 //! This module contains implementations of various inertial navigation filters, including
 //! Kalman filters and particle filters. These filters are used to estimate the state of a
 //! strapdown inertial navigation system based on IMU measurements and other sensor data.
@@ -9,35 +10,129 @@
 use nalgebra::{SMatrix, DMatrix, DVector};
 use crate::{IMUData, StrapdownState};
 
+/// Helper struct for UKF implementation
+/// 
+/// This struct is used to represent a sigma point in the UKF. It contains the strapdown state
+/// and other states. The strapdown state is used to propagate the state using the strapdown
+/// navigation equations
 pub struct SigmaPoint {
     nav_state: StrapdownState,
     other_states: Vec<f64>   // I'm keeping this as generic as possible. 
 }
 
 impl SigmaPoint {
+    /// Create new sigma point from a strapdown state vector plus whatever other states the UKF
+    /// estimates.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `nav_state` - The strapdown state to use for the sigma point.
+    /// * `other_states` - The other states to use for the sigma point.
+    /// # Returns
+    /// * A new SigmaPoint struct.
+    /// # Example
+    /// ```rust
+    /// use strapdown::filter::SigmaPoint;
+    /// use strapdown::StrapdownState;
+    /// use nalgebra::SVector;
+    /// 
+    /// let nav_state = StrapdownState::new_from_vector(SVector::<f64, 9>::zeros());
+    /// let other_states = vec![0.0, 0.0, 0.0];
+    /// let sigma_point = SigmaPoint::new(nav_state, other_states);
+    /// ```
+    /// 
     fn new(nav_state: StrapdownState, other_states: Vec<f64>) -> SigmaPoint {
         SigmaPoint {
             nav_state,
             other_states
         }
     }
+    /// Get the strapdown state of the sigma point as an nalgebra vector.
+    /// 
+    /// # Returns
+    /// * A vector containing the strapdown state and other states.
+    /// 
+    /// # Example
+    /// ```rust
+    /// use strapdown::filter::SigmaPoint;
+    /// use strapdown::StrapdownState;
+    /// use nalgebra::SVector;
+    /// 
+    /// let nav_state = StrapdownState::new_from_vector(SVector::<f64, 9>::zeros());
+    /// let other_states = vec![0.0, 0.0, 0.0];
+    /// let sigma_point = SigmaPoint::new(nav_state, other_states);
+    /// 
+    /// let state = sigma_point.get_state();
+    /// assert_eq!(state.len(), 12);
+    /// ```
     fn get_state(&self) -> DVector<f64> {
         let mut state = self.nav_state.to_vector(false).as_slice().to_vec();
         state.extend(self.other_states.as_slice());
         DVector::from_vec(state)
     }
-    fn get_state_size(&self) -> usize {
-        9 + self.other_states.len()
-    }
+    /// Forward mechanization (propagation) of the strapdown state.
+    /// 
+    /// # Arguments
+    /// * `imu_data` - The IMU measurements to propagate the state with.
+    /// * `dt` - The time step for the propagation.
+    /// # Returns
+    /// * none
+    /// # Example
+    /// ```rust
+    /// use strapdown::filter::SigmaPoint;
+    /// use strapdown::StrapdownState;
+    /// use strapdown::IMUData;
+    /// use nalgebra::SVector;
+    /// 
+    /// let nav_state = StrapdownState::new_from_vector(SVector::<f64, 9>::zeros());
+    /// let other_states = vec![0.0, 0.0, 0.0];
+    /// let sigma_point = SigmaPoint::new(nav_state, other_states);
+    /// 
+    /// let imu_data = IMUData::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    /// let dt = 0.1;
+    /// 
+    /// sigma_point.forward(&imu_data, dt);
+    /// ```
     fn forward(&mut self, imu_data: &IMUData, dt: f64) {
         // Propagate the strapdown state using the strapdown equations
         self.nav_state.forward(imu_data, dt);
     }
+    /// Convert the sigma point to an nalgebra vector.
+    /// 
+    /// # Returns
+    /// * A vector containing the strapdown state and other states.
+    /// # Example
+    /// ```rust
+    /// use strapdown::filter::SigmaPoint;
+    /// use strapdown::StrapdownState;
+    /// use nalgebra::SVector;
+    /// 
+    /// let nav_state = StrapdownState::new_from_vector(SVector::<f64, 9>::zeros());
+    /// let other_states = vec![0.0, 0.0, 0.0];
+    /// let sigma_point = SigmaPoint::new(nav_state, other_states);
+    /// 
+    /// let state = sigma_point.to_vector();
+    /// assert_eq!(state.len(), 12);
+    /// ```
     fn to_vector(&self) -> DVector<f64> {
         let mut state = self.nav_state.to_vector(false).as_slice().to_vec();
         state.extend(self.other_states.as_slice());
         return DVector::from_vec(state);
     }
+    /// Convert an nalgebra vector to a sigma point.
+    /// 
+    /// # Arguments
+    /// * `state` - The vector to convert to a sigma point.
+    /// # Returns
+    /// * A new SigmaPoint struct.
+    /// # Example
+    /// ```rust
+    /// use strapdown::filter::SigmaPoint;
+    /// use nalgebra::DVector;
+    /// 
+    /// let state = DVector::from_vec(vec![0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0,1.1]);
+    /// let sigma_point = SigmaPoint::from_vector(state);
+    /// ```
     fn from_vector(state: DVector<f64>) -> SigmaPoint {
         let nav_state = StrapdownState::new_from_vector(
             SMatrix::from_iterator(state.view_range(0..9, 0).iter().cloned()),
@@ -48,12 +143,16 @@ impl SigmaPoint {
     }
 }
 /// Strapdown Unscented Kalman Filter Inertial Navigation Filter
+/// 
 /// This filter uses the Unscented Kalman Filter (UKF) algorithm to estimate the state of a 
 /// strapdown inertial navigation system. It uses the strapdown equations to propagate the state
 /// in the local level frame based on IMU measurements in the body frame. The filter also uses
 /// a generic position measurement model to update the state based on position measurements in 
 /// the local level frame.
 /// 
+/// Because of the generic nature of both the UKF and this toolbox, the filter requires the user to
+/// implement the measurement model. The measurement model must calculate the measurement sigma points
+/// ($\mathcal{Z} = h(\mathcal{X})$) and the innovation matrix ($S$) for the filter.
 pub struct UKF {
     mean_state: DVector<f64>,
     covariance: DMatrix<f64>,
@@ -117,6 +216,7 @@ impl UKF {
         }
     }
     /// Propagates the state using the strapdown equations and IMU measurements.
+    /// 
     /// The IMU measurements are used to update the strapdown state in the local level frame.
     /// The IMU measurements are assumed to be in the body frame.
     /// # Arguments
@@ -155,8 +255,9 @@ impl UKF {
     /// --------------------------------------------------------------------------
 
     /// Perform the Kalman measurement update
+    /// 
     /// This method updates the state and covariance based on the measurement and innovation.
-    /// The innovation matrix must be calculated based on the measurement model.
+    /// The innovation matrix must be calculated based on the measurement model. 
     pub fn update(&mut self, measurement: DVector<f64>, measurement_sigma_points: Vec<DVector<f64>>, innovation: DMatrix<f64>) {
         // Assert that the measurement is the correct size as the measurement noise diagonal
         assert!(
@@ -211,7 +312,13 @@ impl UKF {
     //  the more traditional purely linear algebra vector-matrix operations of a traditional KF/EKF/UKF.
 
     /// Calculate the sigma points for the UKF.
+    /// 
     /// The sigma points are calculated based on the current state and covariance.
+    /// # Arguments
+    /// * `mean` - The mean state to use for the sigma points.
+    /// * `covariance` - The covariance to use for the sigma points.
+    /// # Returns
+    /// * A vector of sigma points.
     pub fn get_sigma_points(&self, mean: &DVector<f64>, covariance: &DMatrix<f64>) -> Vec<SigmaPoint> {
         
         //let mut sigma_points = DMatrix::<f64>::zeros(self.state_size, 2 * self.state_size + 1);
