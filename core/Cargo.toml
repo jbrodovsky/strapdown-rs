@@ -11,7 +11,7 @@ name = "strapdown"
 path = "src/main.rs"
 
 [lib]
-name = "strapdown_core"
+name = "strapdown"
 path = "src/strapdown.rs"
 
 [dependencies]
