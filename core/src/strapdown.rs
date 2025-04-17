@@ -5,17 +5,20 @@
 //! a strapdown navigation system, where the orientation of the sensor is known and the sensor data can be used 
 //! to estimate the position and velocity of the sensor. While utilities exist for IMU data, this crate does 
 //! not currently support IMU output directly and should not be thought of as a full inertial navigation system
-//! (INS). This crate is designed to be used to test the filters that would be used in an INS, but the raw IMU 
-//! output firmware. As such the IMU data is assumed to be _relative_ accelerations and rotations. Additional
-//! signals that can be derived using IMU data, such as gravity or magnetic vector and anomalies, should come
-//! from a separate IMU channel. In other words, to calculate the gravity vector the IMU output should be 
-//! parsed to separately output the overall acceleration and rotation of the sensor whereas the navigation 
-//! filter will use the gravity and orientation corrected acceleration and rotation to estimate the position
+//! (INS). This crate is designed to be used to test the filters that would be used in an INS. It does not
+//! provide utilities for reading raw output from the IMU or act as an IMU firmware or driver.
+//! 
+//! As such the IMU data is assumed to be _relative_ accelerations and rotations with the orientation and gravity
+//! vector pre-filtered. Additional signals that can be derived using IMU data, such as gravity or magnetic vector
+//! and anomalies, should come be provided to this toolbox as a seperate sensor channel. In other words, to 
+//! calculate the gravity vector the IMU output should be parsed to separately output the overall acceleration 
+//! and rotation of the sensor whereas the navigation filter will use the gravity and orientation corrected 
+//! acceleration and rotation to estimate the position
 //! 
 //! Primarily built off of three crate dependencies:
-//! - nav-types: Provides basic coordinate types and conversions.
-//! - nalgebra: Provides the linear algebra tools for the filters.
-//! - haversine-rs: Provides the haversine formula for calculating distances between two points on the Earth's surface, which is the primary error metric.
+//! - [`nav-types`](https://crates.io/crates/nav-types): Provides basic coordinate types and conversions.
+//! - [`nalgebra`](https://crates.io/crates/nalgebra): Provides the linear algebra tools for the filters.
+//! 
 //! All other functionality is built on top of these crates. The primary reference text is _Principles of GNSS, 
 //! Inertial, and Multisensor Integrated Navigation Systems, 2nd Edition_ by Paul D. Groves. Where applicable, 
 //! calculations will be referenced by the appropriate equation number tied to the book. In general, variables 
@@ -23,30 +26,95 @@
 //! the Earth's equatorial radius is named `EQUATORIAL_RADIUS` instead of `a`. This style is sometimes relaxed 
 //! within the body of a given function, but the general rule is to use descriptive names for variables and not 
 //! mathematical symbols.
-//////-------
-//! Strapdown mechanization data and equations
+//! 
+//! # Strapdown mechanization data and equations
 //!
 //! This crate contains the implementation details for the strapdown navigation equations implemented in the Local
-//! Navigation Frame. The equations are based on the book "Principles of GNSS, Inertial, and Multisensor Integrated
-//! Navigation Systems, Second Edition" by Paul D. Groves. This file corresponds to Chapter 5.4 and 5.5 of the book.
+//! Navigation Frame. The equations are based on the book _Principles of GNSS, Inertial, and Multisensor Integrated
+//! Navigation Systems, Second Edition_ by Paul D. Groves. This file corresponds to Chapter 5.4 and 5.5 of the book.
 //! Effort has been made to reproduce most of the equations following the notation from the book. However, variable
 //! and constants should generally been named for the quantity they represent rather than the symbol used in the book.
 //!
-//! # Coordinate and state definitions
+//! ## Coordinate and state definitions
 //! The typical nine-state NED/ENU navigation state vector is used in this implementation. The state vector is defined as:
 //!
-//! ```text
-//! x = [pn, pe, pd, v_n, v_e, v_d, phi, theta, psi]
-//! ```
+//! $$
+//! x = [p_n, p_e, p_d, v_n, v_e, v_d, \phi, \theta, \psi]
+//! $$
 //!
 //! Where:
-//! - `pn`, `pe`, and `pd` are the WGS84 geodetic positions (degrees latitude, degrees longitude, meters relative to the ellipsoid).
-//! - `v_n`, `v_e`, and `v_d` are the local level frame (NED/ENU) velocities (m/s) along the north axis, east axis, and vertical axis.
-//! - `phi`, `theta`, and `psi` are the Euler angles (radians) representing the orientation of the body frame relative to the local level frame.
+//! - $p_n$, $p_e$, and $p_d$ are the WGS84 geodetic positions (degrees latitude, degrees longitude, meters relative to the ellipsoid).
+//! - $v_n$, $v_e$, and $v_d$ are the local level frame (NED/ENU) velocities (m/s) along the north axis, east axis, and vertical axis.
+//! - $\phi$, $\theta$, and $\psi$ are the Euler angles (radians) representing the orientation of the body frame relative to the local level frame (XYZ Euler rotation).
 //!
 //! The coordinate convention and order is in NED. ENU implementations are to be added in the future.
 //! 
+//! ## Strapdown equations in the Local-Level Frame
+//! This crates implements the strapdown mechanization equations in the Local-Level Frame. These equations form the basis
+//! of the forward propagation step (motion/system/state-transition model) of all the filters implemented in this crate.
+//! The rational for this was to design and test it once, then re-used on the various filters which really only need to 
+//! act on the given probability distribution and are largely ambivilent to the actual function and use generic representations
+//! in thier mathematics. 
 //! 
+//! The equations are based on the book _Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems, Second Edition_ 
+//! by Paul D. Groves. Below is a summary of the equations implemented in Chapter 5.4 implemented by this module.
+//! 
+//! ### Skew-Symmetric notation
+//! 
+//! Groves uses a direction cosine matrix representation of orientation (attitude, rotation). As such, to make the matrix math
+//! work out, rotational quantities need to also be represented using matricies. As such, Groves' convention is to use a lower-case
+//! letter for vector quantities (arrays of shape (N,) Python-style, or (N,1) nalgebra/Matlab style) and capital letters for the
+//! skew-symmetric matrix representation of the same vector.
+//! 
+//! $$
+//! x = \begin{bmatrix} a \\\\ b \\\\ c \end{bmatrix} \rightarrow X = \begin{bmatrix} 0 & -c & b \\\\ c & 0 & -a \\\\ -b & a & 0 \end{bmatrix}
+//! $$
+//! 
+//! ### Attitude update
+//! 
+//! Given a direction-cosine matrix $C_b^n$ representing the orientation (attitude, rotation) of the platform's body frame ($b$) 
+//! with respect to the local level frame ($n$), the transport rate $\Omega_{en}^n$ representing the rotation of the local level frame
+//! with respect to the Earth-fixed frame ($e$), the Earth's rotation rate $\Omega_{ie}^e$, and the angular rate $\Omega_{ib}^b$ 
+//! representing the rotation of the body frame with respect to the inertial frame ($i$), the attitude update equation is given by:
+//! 
+//! $$
+//! C_b^n(+) \approx C_b^n(-) \left( I + \Omega_{ib}^b t \right) - \left( \Omega_{ie}^e - \Omega_{en}^n \right) C_b^n(-) t
+//! $$
+//! 
+//! where $t$ is the time differential and $C(-)$ is the prior attitude. These attitude matricies are then used to transform the
+//! specific forces from the IMU:
+//! 
+//! $$
+//! f_{ib}^n \approx \frac{1}{2} \left( C_b^n(+) + C_b^n(-) \right) f_{ib}^b
+//! $$
+//! 
+//! ### Velocity Update
+//! 
+//! The velocity update equation is given by:
+//! 
+//! $$
+//! v(+) \approx v(-) + \left( f_{ib}^n + g_{b}^n - \left( \Omega_{en}^n - \Omega_{ie}^e \right) v(-) \right) t
+//! $$
+//!
+//! ### Position update
+//! 
+//! Finally, we update the base position states in three steps. First  we update the altitude:
+//! 
+//! $$
+//! p_d(+) = p_d(-) + \frac{1}{2} \left( v_d(-) + v_d(+) \right) t
+//! $$
+//! 
+//! Next we update the latitude:
+//! 
+//! $$
+//! p_n(+) = p_n(-) + \frac{1}{2} \left( \frac{v_n(-)}{R_n + p_d(-)} + \frac{v_n(+)}{R_n + p_d(+) } \right) t
+//! $$
+//! 
+//! Finally, we update the longitude:
+//! 
+//! $$
+//! p_e = p_e(-) + \frac{1}{2} \left( \frac{v_e(-)}{R_e + p_d(-) \cos(p_n(-))} + \frac{v_e(+)}{R_e + p_d(+) \cos(p_n(+))} \right) t
+//! $$
 //! 
 
 pub mod earth;
@@ -58,8 +126,9 @@ use nalgebra::{Matrix3, Rotation3, SVector, Vector3};
 
 //use crate::earth;
 
-/// Basic structure for holding IMU data in the form of acceleration and angular rate vectors. The vectors are
-/// in the body frame of the vehicle and represent relative movement. This structure and library is not intended
+/// Basic structure for holding IMU data in the form of acceleration and angular rate vectors. 
+/// 
+/// The vectors are the body frame of the vehicle and represent relative movement. This structure and library is not intended
 /// to be a hardware driver for an IMU, thus the data is assumed to be pre-processed and ready for use in the
 /// mechanization equations (the IMU processing has already filtered out gravitational acceleration).
 #[derive(Clone, Copy, Debug)]
@@ -78,6 +147,7 @@ impl IMUData {
 }
 
 /// Basic structure for holding the strapdown mechanization state in the form of position, velocity, and attitude.
+/// 
 /// Attitude is stored in matrix form (rotation or direction cosine matrix) and position and velocity are stored as
 /// vectors. The order or the states depends on the coordinate system used. The struct does not care, but the
 /// coordinate system used will determine which functions you should use. Default is NED but nonetheless must be
@@ -181,6 +251,9 @@ impl StrapdownState {
     }
 
     /// NED form of the forward kinematics equations. Corresponds to section 5.4 Local-Navigation Frame Equations.
+    /// 
+    /// This function implements the forward kinematics equations for the strapdown navigation system. It takes
+    /// the IMU data and the time step as inputs and updates the position, velocity, and attitude of the system.
     pub fn forward(&mut self, imu_data: &IMUData, dt: f64) {
         // Extract the attitude matrix from the current state
         let c_0: Rotation3<f64> = self.attitude.clone();
@@ -223,8 +296,10 @@ impl StrapdownState {
     // }
 
     /// Convert the StrapdownState to a one dimensional vector
-    /// The vector is in the form of:
-    /// [pn, pe, pd, v_n, v_e, v_d, phi, theta, psi]
+    /// 
+    /// The vector is in the form of: $\left[p_n, p_e, p_d, v_n, v_e, v_d, \phi, \theta, \psi \right]$
+    /// Primary use case is in modeling the probability distribution mean
+    /// in the inertial navigation filters.
     pub fn to_vector(&self, in_degrees: bool) -> SVector<f64, 9> {
         let mut state: SVector<f64, 9> = SVector::zeros();
         state[2] = self.position[2];
@@ -250,6 +325,7 @@ impl StrapdownState {
 // Miscellaneous functions for wrapping angles
 
 /// Wrap an angle to the range -180 to 180 degrees
+/// 
 /// This function is generic and can be used with any type that implements the necessary traits.
 pub fn wrap_to_180<T>(angle: T) -> T
 where
@@ -266,6 +342,7 @@ where
 }
 
 /// Wrap an angle to the range 0 to 360 degrees
+/// 
 /// This function is generic and can be used with any type that implements the necessary traits.
 pub fn wrap_to_360<T>(angle: T) -> T
 where
@@ -281,6 +358,7 @@ where
     return wrapped;
 }
 /// Wrap an angle to the range 0 to 2*pi radians
+/// 
 /// This function is generic and can be used with any type that implements the necessary traits.
 pub fn wrap_to_pi<T>(angle: T) -> T
 where
@@ -296,6 +374,7 @@ where
     return wrapped;
 }
 /// Wrap an angle to the range 0 to 2*pi radians
+/// 
 /// This function is generic and can be used with any type that implements the necessary traits.
 pub fn wrap_to_2pi<T>(angle: T) -> T
 where
