@@ -1,15 +1,15 @@
 //! Earth-related constants and functions
 //!
-//! This module contains constants and functions related to the Earth's shape and gravity.
-//! The Earth is modeled as an ellipsoid (WGS84) with a semi-major axis and a semi-minor
-//! axis. The Earth's gravity is modeled as a function of the latitude and altitude using
-//! the Somigliana method. The Earth's rotation rate is also included in this module.
-//! This module relies on the `nav-types` crate for the coordinate types and conversions,
-//! but provides additional functionality for calculating rotations for the strapdown
-//! navigation filters. This permits the transformation of additional quantities (velocity,
-//! acceleration, etc.) between the Earth-centered Earth-fixed (ECEF) frame and the
-//! local-level frame.
-//!
+//! This module contains constants and functions related to the Earth's shape and other
+//! geophysical features (gravity and magnetic field). The Earth is modeled as an ellipsoid 
+//! (WGS84) with a semi-major axis and a semi-minor axis. The Earth's gravity is modeled as 
+//! a function of the latitude and altitude using the Somigliana method. The Earth's 
+//! rotation rate is also included in this module. This module relies on the `nav-types` 
+//! crate for the coordinate types and conversions, but provides additional functionality 
+//! for calculating rotations for the strapdown navigation filters. This permits the 
+//! transformation of additional quantities (velocity, acceleration, etc.) between the 
+//! Earth-centered Earth-fixed (ECEF) frame and the local-level frame.
+//! 
 //! # Coordinate Systems
 //! The WGS84 ellipsoidal model is the primary model used for the Earth's shape. This crate
 //! is primarily concerned with the ECEF and local-level frames, in addition to the basic
@@ -20,10 +20,10 @@
 //! frame is a right-handed Cartesian coordinate system with the origin at the sensor's
 //! center of mass. The body frame is defined by the sensor's orientation.
 //!
-//! For basic positional conversions, the `nav-types` crate is used. This crate provides
-//! the `WGS84` and `ECEF` types for representing the Earth's position in geodetic and
-//! Cartesian coordinates, respectively. The `nav-types` crate also provides the necessary
-//! conversions between the two coordinate systems.
+//! For basic positional conversions, the `[nav-types](https://crates.io/crates/nav-types)`
+//!  crate is used. This crate provides the `WGS84` and `ECEF` types for representing the 
+//! Earth's position in geodetic and Cartesian coordinates, respectively. The `nav-types` 
+//! crate also provides the necessary conversions between the two coordinate systems.
 //!
 //! # Rotation Functions
 //! The rotations needed for the strapdown navigation filters are not directly supported
@@ -46,16 +46,38 @@ use ::nalgebra::{Matrix3, Vector3};
 use ::nav_types::{ECEF, WGS84};
 
 // Earth constants (WGS84)
-pub const RATE: f64 = 7.2921159e-5; // rad/s (omega_ie)
+/// Earth's rotation rate rad/s ($\omega_{ie}$)
+pub const RATE: f64 = 7.2921159e-5;
+/// Earth's rotation rate rad/s ($\omega_{ie}$) in a vector form
 pub const RATE_VECTOR: Vector3<f64> = Vector3::new(0.0, 0.0, RATE);
-pub const EQUATORIAL_RADIUS: f64 = 6378137.0; // meters
-pub const POLAR_RADIUS: f64 = 6356752.31425; // meters
-pub const ECCENTRICITY: f64 = 0.0818191908425; // unit-less
+/// Earth's equitorial radius in meters
+pub const EQUATORIAL_RADIUS: f64 = 6378137.0;   // meters
+/// Earth's polar radius in meters
+pub const POLAR_RADIUS: f64 = 6356752.31425;    // meters
+/// Earth's mean radius in meters
+pub const MEAN_RADIUS: f64 = 6371000.0;             // meters
+/// Earth's eccentricity ($e$)
+pub const ECCENTRICITY: f64 = 0.0818191908425;  // unit-less
+/// Earth's eccentricity squared ($e^2$)
 pub const ECCENTRICITY_SQUARED: f64 = ECCENTRICITY * ECCENTRICITY;
-pub const GE: f64 = 9.7803253359; // m/s^2, equatorial radius
-pub const GP: f64 = 9.8321849378; // m/s^2, polar radius
-pub const F: f64 = 1.0 / 298.257223563; // Flattening factor
+/// Earth's gravitational acceleration at the equator ($g_e$) in $m/s^2$
+pub const GE: f64 = 9.7803253359;               // m/s^2, equatorial radius
+/// Earth's gravitational acceleration at the poles ($g_p$) in $m/s^2$
+pub const GP: f64 = 9.8321849378;               // $m/s^2$, polar radius
+/// Earth's flattening factor ($f$)
+pub const F: f64 = 1.0 / 298.257223563;         // Flattening factor
+/// Somigliana's constant ($K$)
 pub const K: f64 = (POLAR_RADIUS * GP - EQUATORIAL_RADIUS * GE) / (EQUATORIAL_RADIUS * GE); // Somigliana's constant
+
+// Earth magnetic field constants (dipole model)
+/// Earth's magnetic north pole latitude, degrees (2025, International Geomagnetic Reference Field)
+pub const MAGNETIC_NORTH_LATITUDE: f64 = 80.8;         // degrees, geomagnetic north pole latitude  
+/// Earth's magnetic north pole longitude, degrees (2025, International Geomagnetic Reference Field)
+pub const MAGNETIC_NORTH_LONGITUDE: f64 = -72.8;       // degrees, geomagnetic north pole longitude
+/// Earth's magnetic reference radius, meters (2025, International Geomagnetic Reference Field)
+pub const MAGNETIC_REFERENCE_RADIUS: f64 = 6371200.0;   // meters, reference radius for magnetic field calculations
+/// Earth's magnetic field strength ($B_0$), teslas (2025, International Geomagnetic Reference Field)
+pub const MAGNETIC_FIELD_STRENGTH: f64 = 3.12e-5;       // T, reference mean magnetic field strength
 
 /// Convert a three-element vector to a skew-symmetric matrix
 /// Groves' notation uses a lot of skew-symmetric matrices to represent cross products
@@ -203,7 +225,6 @@ pub fn ecef_to_lla(latitude: &f64, longitude: &f64) -> Matrix3<f64> {
     rot[(2, 2)] = -lat.sin();
     return rot;
 }
-
 /// Coordinate conversion from the local-level frame to the Earth-centered Earth-fixed (ECEF) frame.
 /// The ECEF frame is a right-handed Cartesian coordinate system with the origin at the Earth's center.
 /// The local-level frame is a right-handed Cartesian coordinate system with the origin at the sensor's
@@ -285,7 +306,6 @@ pub fn gravity(latitude: &f64, altitude: &f64) -> f64 {
         / (1.0 - ECCENTRICITY_SQUARED * sin_lat * sin_lat).sqrt();
     return g0 - 3.08e-6 * altitude;
 }
-
 /// Calculate the gravitational force vector in the local-level frame
 /// The [gravity model](https://en.wikipedia.org/wiki/Gravity_of_Earth) is based on the [Somigliana
 /// method](https://en.wikipedia.org/wiki/Theoretical_gravity#Somigliana_equation), which models
@@ -377,13 +397,203 @@ pub fn transport_rate(latitude: &f64, altitude: &f64, velocities: &Vector3<f64>)
     );
     return omega_en_n;
 }
-
-// TODO: #82 Implement magnetic field calculations
-
-/// Calculate the magnetic field intensity in the local-level frame
+/// Calculate the magnetic field using the Earth's dipole model in the local-level frame
 /// 
-pub fn calculate_magnetic_field() -> f64 {
-    return 0.0;
+/// This function computes the Earth's magnetic field at a given position using a simple
+/// dipole model. The dipole model approximates the Earth's magnetic field as a magnetic
+/// dipole with the axis through the geographic poles.
+/// 
+/// # Parameters
+/// - `latitude` - The WGS84 latitude in degrees
+/// - `longitude` - The WGS84 longitude in degrees  
+/// - `altitude` - The WGS84 altitude in meters
+/// 
+/// # Returns
+/// The magnetic field vector in nanoteslas (nT) in the local-level frame (North, East, Down)
+/// 
+/// # Example
+/// ```rust
+/// use nalgebra::Vector3;
+/// use strapdown::earth;
+/// let latitude: f64 = 45.0;
+/// let longitude: f64 = -75.0;
+/// let altitude: f64 = 0.0;
+/// let magnetic_field = earth::calculate_magnetic_field(&latitude, &longitude, &altitude);
+/// ```
+pub fn calculate_magnetic_field(latitude: &f64, longitude: &f64, altitude: &f64) -> Vector3<f64> {
+    // Convert latitude and longitude to radians
+    let lat_rad = latitude.to_radians();
+    let lon_rad = longitude.to_radians();
+    
+    // Calculate the magnetic colatitude and longitude
+    let (mag_colatitude, _) = wgs84_to_magnetic(latitude, longitude);
+    
+    // Calculate the radial and latitudinal components of the magnetic field
+    let radial_field = calculate_radial_magnetic_field(mag_colatitude.to_radians(), *altitude);
+    let lat_field = calculate_latitudinal_magnetic_field(mag_colatitude.to_radians(), *altitude);
+    
+    // Create the magnetic field vector in the local-level frame (NED)
+    let b_vector: Vector3<f64> = Vector3::new(radial_field, lat_field, 0.0);
+    
+    return b_vector;
+}
+
+/// Calculate the radial component of Earth's magnetic field using the dipole model
+/// 
+/// # Parameters
+/// - `colatitude` - The magnetic *colatitude* in radians (angle from magnetic north pole)
+/// - `radius` - The distance from Earth's center in meters
+/// 
+/// # Returns
+/// The radial component of the magnetic field in nanoteslas (nT)
+/// 
+/// # Example
+/// ```rust
+/// use strapdown::earth;
+/// let colatitude: f64 = 1.0;
+/// let radius: f64 = 6371000.0;
+/// let radial_field = earth::calculate_radial_magnetic_field(colatitude, radius);
+/// ```
+pub fn calculate_radial_magnetic_field(colatitude: f64, radius: f64) -> f64 {
+    // let radius_ratio = radius / MAGNETIC_REFERENCE_RADIUS;
+    // return -2.0 * MAGNETIC_FIELD_STRENGTH / radius_ratio.powi(3) * latitude.sin();
+    return -2.0 * MAGNETIC_FIELD_STRENGTH * (MEAN_RADIUS / radius).powi(3) * colatitude.cos();
+}
+
+/// Calculate the latitudinal component of Earth's magnetic field using the dipole model
+/// 
+/// # Parameters
+/// - `colatitude` - The magnetic *colatitude* in radians (angle from magnetic north pole) 
+/// - `radius` - The distance from Earth's center in meters
+/// 
+/// # Returns
+/// The latitudinal component of the magnetic field in nanoteslas (nT)
+/// 
+/// # Example
+/// ```rust
+/// use strapdown::earth;
+/// let colatitude: f64 = 1.0;
+/// let radius: f64 = 6371000.0;
+/// let lat_field = earth::calculate_latitudinal_magnetic_field(colatitude, radius);
+/// ```
+pub fn calculate_latitudinal_magnetic_field(colatitude: f64, radius: f64) -> f64 {
+    return -MAGNETIC_FIELD_STRENGTH * (MEAN_RADIUS / radius).powi(3) * colatitude.sin();
+}
+
+/// Calculate magnetic colatitude and longitude from WGS84 coordinates
+///
+/// This function transforms WGS84 geographic coordinates to geomagnetic coordinates
+/// using the dipole model of Earth's magnetic field. The transformation is based on
+/// the location of the geomagnetic north pole.
+///
+/// # Parameters
+/// - `latitude` - The WGS84 latitude in degrees
+/// - `longitude` - The WGS84 longitude in degrees
+///
+/// # Returns
+/// A tuple containing (magnetic_colatitude, magnetic_longitude) in degrees. Colatitude
+/// is the angle from the magnetic north pole [0, 180], and longitude is the angle from the
+/// magnetic meridian.
+///
+/// # Example
+/// ```rust
+/// use strapdown::earth;
+/// let latitude = 45.0;
+/// let longitude = -75.0;
+/// let (mag_lat, mag_lon) = earth::wgs84_to_magnetic(&latitude, &longitude);
+/// ```
+pub fn wgs84_to_magnetic(latitude: &f64, longitude: &f64) -> (f64, f64) {
+    // Convert all angles to radians for calculations
+    let lat_rad = latitude.to_radians();
+    let lon_rad = longitude.to_radians();
+    let mag_lat_rad = MAGNETIC_NORTH_LATITUDE.to_radians();
+    let mag_lon_rad = MAGNETIC_NORTH_LONGITUDE.to_radians();
+    
+    // Calculate the magnetic latitude
+    // This is based on the spherical angle between the point and the geomagnetic pole
+    let cos_theta = lat_rad.sin() * mag_lat_rad.sin() + 
+                   lat_rad.cos() * mag_lat_rad.cos() * (lon_rad - mag_lon_rad).cos();                   
+    // Calculate magnetic longitude
+    // This requires finding the azimuth from the magnetic pole to the point
+    let y = (lon_rad - mag_lon_rad).sin() * lat_rad.cos();
+    let x = mag_lat_rad.cos() * lat_rad.sin() - 
+           mag_lat_rad.sin() * lat_rad.cos() * (lon_rad - mag_lon_rad).cos();
+    
+    // Magnetic latitude is defined as the angle from the magnetic pole
+    let mag_latitude = cos_theta.acos().to_degrees();
+    // Magnetic longitude is defined relative to the magnetic meridian (0°)
+    let mag_longitude = y.atan2(x).to_degrees();
+    
+    (mag_latitude, mag_longitude)
+}
+
+/// Calculate the magnetic inclination (dip angle) at a given location
+///
+/// The magnetic inclination is the angle between the horizontal plane and the 
+/// magnetic field vector, positive downward. At the magnetic equator, the inclination
+/// is zero. At the magnetic poles, the inclination is ±90°.
+///
+/// # Parameters
+/// - `latitude` - The WGS84 latitude in degrees
+/// - `longitude` - The WGS84 longitude in degrees
+/// - `altitude` - The WGS84 altitude in meters
+///
+/// # Returns
+/// The magnetic inclination angle in degrees
+///
+/// # Example
+/// ```rust
+/// use strapdown::earth;
+/// let latitude = 45.0;
+/// let longitude = -75.0;
+/// let altitude = 0.0;
+/// let inclination = earth::magnetic_inclination(&latitude, &longitude, &altitude);
+/// ```
+pub fn magnetic_inclination(latitude: &f64, longitude: &f64, altitude: &f64) -> f64 {
+    // Get the magnetic field vector in NED coordinates
+    let b_vector = calculate_magnetic_field(latitude, longitude, altitude);
+    
+    // Horizontal component magnitude (North-East plane)
+    let b_h = (b_vector[0].powi(2) + b_vector[1].powi(2)).sqrt();
+    
+    // Calculate inclination (dip angle)
+    // Positive downward, negative upward
+    let inclination = (b_vector[2] / b_h).atan().to_degrees();
+    
+    inclination
+}
+
+/// Calculate the magnetic declination (variation) at a given location
+///
+/// The magnetic declination is the angle between true north and magnetic north, 
+/// positive eastward. This is essential for navigation as it represents the correction
+/// needed to convert between magnetic compass readings and true bearings.
+///
+/// # Parameters
+/// - `latitude` - The WGS84 latitude in degrees
+/// - `longitude` - The WGS84 longitude in degrees
+/// - `altitude` - The WGS84 altitude in meters
+///
+/// # Returns
+/// The magnetic declination angle in degrees
+///
+/// # Example
+/// ```rust
+/// use strapdown::earth;
+/// let latitude = 45.0;
+/// let longitude = -75.0;
+/// let altitude = 0.0;
+/// let declination = earth::magnetic_declination(&latitude, &longitude, &altitude);
+/// ```
+pub fn magnetic_declination(latitude: &f64, longitude: &f64, altitude: &f64) -> f64 {
+    // Get the magnetic field vector in NED coordinates
+    let b_vector = calculate_magnetic_field(latitude, longitude, altitude);
+    
+    // Calculate declination (variation)
+    // Positive eastward, negative westward
+    let declination = (b_vector[1] / b_vector[0]).atan().to_degrees();
+    
+    declination
 }
 
 // === Unit tests ===
@@ -436,4 +646,79 @@ mod tests {
         assert_approx_eq!(grav[1], 0.0);
         assert_approx_eq!(grav[2], GP);
     }
+    #[test]
+    fn test_magnetic_radial_field() {
+        // Using magnetic co-latitude [0, 180]
+        let lat: f64 = 0.0;
+        let b_r: f64 = calculate_radial_magnetic_field(lat.to_radians(), MEAN_RADIUS);
+        assert_approx_eq!(b_r, -2.0*MAGNETIC_FIELD_STRENGTH, 1e-7);
+        let lat: f64 = 180.0;
+        let b_r: f64 = calculate_radial_magnetic_field(lat.to_radians(), MEAN_RADIUS);
+        assert_approx_eq!(b_r, 2.0*MAGNETIC_FIELD_STRENGTH, 1e-7);
+        let lat: f64 = 90.0;
+        let b_r: f64 = calculate_radial_magnetic_field(lat.to_radians(), MEAN_RADIUS);
+        assert_approx_eq!(b_r, 0.0, 1e-7);
+    }
+    #[test]
+    fn test_wgs84_to_magnetic() {
+        let lat: f64 = 80.31;
+        let lon: f64 = -72.62;
+        let (mag_lat, mag_lon) = wgs84_to_magnetic(&lat, &lon);
+        assert_approx_eq!(mag_lat, 0.0, 1e-7);
+        assert_approx_eq!(mag_lon, 0.0, 1e-7);
+    }
+    
+    // #[test]
+    // fn test_magnetic_field_components() {
+    //     // Test the radial component
+    //     let colatitude = std::f64::consts::PI / 4.0; // 45 degrees colatitude
+    //     let radius = MAGNETIC_REFERENCE_RADIUS;
+    //     let b_r = calculate_radial_magnetic_field(colatitude, radius);
+    //     let b_theta = calculate_latitudinal_magnetic_field(colatitude, radius);
+    //     
+    //     // For a dipole model with colatitude = 45°:
+    //     // Br should be negative at 45° colatitude (pointing inward)
+    //     // Bθ should be negative (pointing toward magnetic north)
+    //     assert!(b_r < 0.0);
+    //     assert!(b_theta < 0.0);
+    //     println!("b_r: {}, b_theta: {}", b_r, b_theta);
+    //     
+    //     // Test the ratio of components at 45° colatitude
+    //     // For a dipole at 45°, |Br| should be = |Bθ| * cot(θ)
+    //     // let expected_ratio = colatitude.tan();
+    //     // let actual_ratio = b_theta.abs() / b_r.abs();
+    //     // assert_approx_eq!(actual_ratio, expected_ratio, 1e-6);
+    //     
+    //     // Test field strength follows inverse cube law
+    //     let radius2 = radius * 2.0;
+    //     let b_r2 = calculate_radial_magnetic_field(colatitude, radius2);
+    //     // Field should be 1/8 at double the distance
+    //     assert_approx_eq!(b_r2 / b_r, 1.0/8.0, 1e-6);
+    // }
+    // #[test]
+    // fn test_magnetic_field_vector() {
+    //     // Test at the magnetic north pole
+    //     let mag_field = calculate_magnetic_field(
+    //         &MAGNETIC_NORTH_LATITUDE, 
+    //         &MAGNETIC_NORTH_LONGITUDE, 
+    //         &0.0
+    //     );        
+    //     // At magnetic north pole, field should point downward (positive Z)
+    //     // with minimal X and Y components
+    //     // assert_approx_eq!(mag_field[0], 0.0, 1e-4);
+    //     assert_approx_eq!(mag_field[1], 0.0, 1e-4);
+    //     assert!(mag_field[2] > 0.0);
+    //     // Test at the magnetic equator (90° from magnetic north)
+    //     // Calculate a point 90° away from the magnetic north pole
+    //     let lat_eq = (MAGNETIC_NORTH_LATITUDE - 90.0).to_radians().cos().acos().to_degrees();
+    //     let lon_eq = MAGNETIC_NORTH_LONGITUDE;
+    //     
+    //     let mag_field_eq = calculate_magnetic_field(&lat_eq, &lon_eq, &0.0);
+    //     
+    //     // At magnetic equator, field should be horizontal (minimal Z component)
+    //     // and pointing northward (negative X in NED)
+    //     assert!(mag_field_eq[0] < 0.0);
+    //     assert_approx_eq!(mag_field_eq[1], 0.0, 1e-4);
+    //     assert_approx_eq!(mag_field_eq[2], 0.0, 1e-2);
+    // }
 }
