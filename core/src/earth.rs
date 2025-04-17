@@ -20,8 +20,8 @@
 //! frame is a right-handed Cartesian coordinate system with the origin at the sensor's
 //! center of mass. The body frame is defined by the sensor's orientation.
 //!
-//! For basic positional conversions, the `[nav-types](https://crates.io/crates/nav-types)`
-//!  crate is used. This crate provides the `WGS84` and `ECEF` types for representing the 
+//! For basic positional conversions, the [`nav-types`](https://crates.io/crates/nav-types)
+//! crate is used. This crate provides the `WGS84` and `ECEF` types for representing the 
 //! Earth's position in geodetic and Cartesian coordinates, respectively. The `nav-types` 
 //! crate also provides the necessary conversions between the two coordinate systems.
 //!
@@ -68,7 +68,6 @@ pub const GP: f64 = 9.8321849378;               // $m/s^2$, polar radius
 pub const F: f64 = 1.0 / 298.257223563;         // Flattening factor
 /// Somigliana's constant ($K$)
 pub const K: f64 = (POLAR_RADIUS * GP - EQUATORIAL_RADIUS * GE) / (EQUATORIAL_RADIUS * GE); // Somigliana's constant
-
 // Earth magnetic field constants (dipole model)
 /// Earth's magnetic north pole latitude, degrees (2025, International Geomagnetic Reference Field)
 pub const MAGNETIC_NORTH_LATITUDE: f64 = 80.8;         // degrees, geomagnetic north pole latitude  
@@ -80,19 +79,14 @@ pub const MAGNETIC_REFERENCE_RADIUS: f64 = 6371200.0;   // meters, reference rad
 pub const MAGNETIC_FIELD_STRENGTH: f64 = 3.12e-5;       // T, reference mean magnetic field strength
 
 /// Convert a three-element vector to a skew-symmetric matrix
+/// 
 /// Groves' notation uses a lot of skew-symmetric matrices to represent cross products
 /// and to perform more concise matrix operations (particularly involving rotations).
 /// This function converts a three-element vector to a skew-symmetric matrix.
 ///
-/// # Skew-symmetric matrix conversion
-///
-/// Give a nalgebra vector `v` = [v1, v2, v3], the skew-symmetric matrix `skew` is defined as:
-///
-/// ```text
-/// skew = |  0  -v3   v2 |
-///        | v3   0   -v1 |
-///        |-v2   v1   0  |
-/// ```
+/// $$
+/// x = \begin{bmatrix} a \\\\ b \\\\ c \end{bmatrix} \rightarrow X = \begin{bmatrix} 0 & -c & b \\\\ c & 0 & -a \\\\ -b & a & 0 \end{bmatrix}
+/// $$
 ///
 /// # Example
 /// ```rust
@@ -112,18 +106,13 @@ pub fn vector_to_skew_symmetric(v: &Vector3<f64>) -> Matrix3<f64> {
     return skew;
 }
 /// Convert a skew-symmetric matrix to a three-element vector
+/// 
 /// This function converts a skew-symmetric matrix to a three-element vector. This is the
 /// inverse operation of the `vector_to_skew_symmetric` function.
 ///
-/// # Skew-symmetric matrix conversion
-///
-/// Give a nalgebra Matrix3 `skew` where
-/// ```text
-/// skew = |  0  -v3   v2 |
-///        | v3   0   -v1 |
-///        |-v2   v1   0  |
-/// ```
-/// the vector `v` is defined as v = [v1, v2, v3]
+/// $$
+/// X = \begin{bmatrix} 0 & -c & b \\\\ c & 0 & -a \\\\ -b & a & 0 \end{bmatrix} \rightarrow x = \begin{bmatrix} a \\\\ b \\\\ c \end{bmatrix}
+/// $$
 ///
 /// # Example
 /// ```rust
@@ -140,7 +129,9 @@ pub fn skew_symmetric_to_vector(skew: &Matrix3<f64>) -> Vector3<f64> {
     return v;
 }
 /// Coordinate conversion from the Earth-centered Inertial (ECI) frame to the Earth-centered
-/// Earth-fixed (ECEF) frame. The ECI frame is a right-handed Cartesian coordinate system with
+/// Earth-fixed (ECEF) frame. 
+/// 
+/// The ECI frame is a right-handed Cartesian coordinate system with
 /// the origin at the Earth's center. The ECEF frame is a right-handed Cartesian coordinate
 /// system with the origin at the Earth's center. The ECI frame is fixed with respect to the
 /// stars, whereas the ECEF frame rotates with the Earth.
@@ -168,7 +159,9 @@ pub fn eci_to_ecef(time: f64) -> Matrix3<f64> {
     return rot;
 }
 /// Coordinate conversion from the Earth-centered Earth-fixed (ECEF) frame to the Earth-centered
-/// Inertial (ECI) frame. The ECI frame is a right-handed Cartesian coordinate system with
+/// Inertial (ECI) frame. 
+/// 
+/// The ECI frame is a right-handed Cartesian coordinate system with
 /// the origin at the Earth's center. The ECEF frame is a right-handed Cartesian coordinate
 /// system with the origin at the Earth's center. The ECI frame is fixed with respect to the
 /// stars, whereas the ECEF frame rotates with the Earth.
@@ -190,6 +183,7 @@ pub fn ecef_to_eci(time: f64) -> Matrix3<f64> {
     return eci_to_ecef(time).transpose();
 }
 /// Coordinate conversion from the Earth-centered Earth-fixed (ECEF) frame to the local-level frame.
+/// 
 /// The ECEF frame is a right-handed Cartesian coordinate system with the origin at the Earth's center.
 /// The local-level frame is a right-handed Cartesian coordinate system with the origin at the sensor's
 /// position. The local-level frame is defined by the tangent to the ellipsoidal surface at the sensor's
@@ -226,6 +220,7 @@ pub fn ecef_to_lla(latitude: &f64, longitude: &f64) -> Matrix3<f64> {
     return rot;
 }
 /// Coordinate conversion from the local-level frame to the Earth-centered Earth-fixed (ECEF) frame.
+/// 
 /// The ECEF frame is a right-handed Cartesian coordinate system with the origin at the Earth's center.
 /// The local-level frame is a right-handed Cartesian coordinate system with the origin at the sensor's
 /// position. The local-level frame is defined by the tangent to the ellipsoidal surface at the sensor's
@@ -250,6 +245,7 @@ pub fn lla_to_ecef(latitude: &f64, longitude: &f64) -> Matrix3<f64> {
     return ecef_to_lla(latitude, longitude).transpose();
 }
 /// Calculate principal radii of curvature 
+/// 
 /// The [principal radii of curvature](https://en.wikipedia.org/wiki/Earth_radius) are used to 
 /// calculate and convert Cartesian body frame quantities to the local-level frame WGS84 coordinates.
 /// 
@@ -281,6 +277,7 @@ pub fn principal_radii(latitude: &f64, altitude: &f64) -> (f64, f64, f64) {
     return (r_n, r_e, r_p);
 }
 /// Calculate the WGS84 gravity scalar
+/// 
 /// The [gravity model](https://en.wikipedia.org/wiki/Gravity_of_Earth) is based on the [Somigliana
 /// method](https://en.wikipedia.org/wiki/Theoretical_gravity#Somigliana_equation), which models 
 /// the Earth's gravity as a function of the latitude and altitude. The gravity model is used to
@@ -307,6 +304,7 @@ pub fn gravity(latitude: &f64, altitude: &f64) -> f64 {
     return g0 - 3.08e-6 * altitude;
 }
 /// Calculate the gravitational force vector in the local-level frame
+/// 
 /// The [gravity model](https://en.wikipedia.org/wiki/Gravity_of_Earth) is based on the [Somigliana
 /// method](https://en.wikipedia.org/wiki/Theoretical_gravity#Somigliana_equation), which models
 /// the Earth's gravity as a function of the latitude and altitude. The gravity model is used to
@@ -344,6 +342,7 @@ pub fn gravitation(latitude: &f64, longitude: &f64, altitude: &f64) -> Vector3<f
     return gravity + rot * omega_ie * omega_ie * ecef_vec;
 }
 /// Calculate the Earth rotation rate vector in the local-level frame
+/// 
 /// The Earth's rotation rate modeled as a vector in the local-level frame. This vector
 /// is used to calculate the Coriolis and centrifugal effects in the local-level frame.
 /// 
@@ -366,6 +365,7 @@ pub fn earth_rate_lla(latitude: &f64) -> Vector3<f64> {
     return omega_ie;
 }
 /// Calculate the transport rate vector in the local-level frame
+/// 
 /// The transport rate is used to calculate the rate of change of the local-level frame
 /// with respect to the ECEF frame since the origin point of the local-level frame is
 /// always tangential to the WGS84 ellipsoid and thus constantly moving in the ECEF frame.

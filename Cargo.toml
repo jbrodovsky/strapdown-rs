@@ -6,3 +6,7 @@ members = [
 ]
 resolver = "2"
 
+#[package]
+#name = "strapdown-meta"
+
+#[package.metadata.docs.rs]
