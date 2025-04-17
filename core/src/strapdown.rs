@@ -128,7 +128,7 @@ use nalgebra::{Matrix3, Rotation3, SVector, Vector3};
 
 /// Basic structure for holding IMU data in the form of acceleration and angular rate vectors. 
 /// 
-/// The vectors arethe body frame of the vehicle and represent relative movement. This structure and library is not intended
+/// The vectors are the body frame of the vehicle and represent relative movement. This structure and library is not intended
 /// to be a hardware driver for an IMU, thus the data is assumed to be pre-processed and ready for use in the
 /// mechanization equations (the IMU processing has already filtered out gravitational acceleration).
 #[derive(Clone, Copy, Debug)]
