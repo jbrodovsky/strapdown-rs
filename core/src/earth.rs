@@ -661,8 +661,8 @@ mod tests {
     }
     #[test]
     fn test_wgs84_to_magnetic() {
-        let lat: f64 = 80.31;
-        let lon: f64 = -72.62;
+        let lat: f64 = 80.8;
+        let lon: f64 = -72.8;
         let (mag_lat, mag_lon) = wgs84_to_magnetic(&lat, &lon);
         assert_approx_eq!(mag_lat, 0.0, 1e-7);
         assert_approx_eq!(mag_lon, 0.0, 1e-7);
