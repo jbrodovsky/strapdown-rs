@@ -41,7 +41,7 @@ impl SigmaPoint {
     /// let sigma_point = SigmaPoint::new(nav_state, other_states);
     /// ```
     /// 
-    fn new(nav_state: StrapdownState, other_states: Vec<f64>) -> SigmaPoint {
+    pub fn new(nav_state: StrapdownState, other_states: Vec<f64>) -> SigmaPoint {
         SigmaPoint {
             nav_state,
             other_states
@@ -65,7 +65,7 @@ impl SigmaPoint {
     /// let state = sigma_point.get_state();
     /// assert_eq!(state.len(), 12);
     /// ```
-    fn get_state(&self) -> DVector<f64> {
+    pub fn get_state(&self) -> DVector<f64> {
         let mut state = self.nav_state.to_vector(false).as_slice().to_vec();
         state.extend(self.other_states.as_slice());
         DVector::from_vec(state)
@@ -86,14 +86,14 @@ impl SigmaPoint {
     /// 
     /// let nav_state = StrapdownState::new_from_vector(SVector::<f64, 9>::zeros());
     /// let other_states = vec![0.0, 0.0, 0.0];
-    /// let sigma_point = SigmaPoint::new(nav_state, other_states);
+    /// let mut sigma_point = SigmaPoint::new(nav_state, other_states);
     /// 
-    /// let imu_data = IMUData::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    /// let imu_data = IMUData::new_from_vec(vec![0.0, 0.0, 0.0], vec![0.0, 0.0, 0.0]);
     /// let dt = 0.1;
     /// 
     /// sigma_point.forward(&imu_data, dt);
     /// ```
-    fn forward(&mut self, imu_data: &IMUData, dt: f64) {
+    pub fn forward(&mut self, imu_data: &IMUData, dt: f64) {
         // Propagate the strapdown state using the strapdown equations
         self.nav_state.forward(imu_data, dt);
     }
@@ -114,7 +114,7 @@ impl SigmaPoint {
     /// let state = sigma_point.to_vector();
     /// assert_eq!(state.len(), 12);
     /// ```
-    fn to_vector(&self) -> DVector<f64> {
+    pub fn to_vector(&self) -> DVector<f64> {
         let mut state = self.nav_state.to_vector(false).as_slice().to_vec();
         state.extend(self.other_states.as_slice());
         return DVector::from_vec(state);
@@ -133,7 +133,7 @@ impl SigmaPoint {
     /// let state = DVector::from_vec(vec![0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0,1.1]);
     /// let sigma_point = SigmaPoint::from_vector(state);
     /// ```
-    fn from_vector(state: DVector<f64>) -> SigmaPoint {
+    pub fn from_vector(state: DVector<f64>) -> SigmaPoint {
         let nav_state = StrapdownState::new_from_vector(
             SMatrix::from_iterator(state.view_range(0..9, 0).iter().cloned()),
         );
@@ -252,7 +252,7 @@ impl UKF {
     // maker reasonable assumptions about the generic propagation function of the
     // UKF, (i.e. the strapdown equations), we don't necessarily know what the
     // measurement model is on this generic level.
-    /// --------------------------------------------------------------------------
+    // ---------------------------------------------------------------------------
 
     /// Perform the Kalman measurement update
     /// 
@@ -342,6 +342,213 @@ impl UKF {
 
 // TODO: #84 Add particle filter
 
+/// Strapdown Extended Kalman Filter Inertial Navigation Filter
+/// 
+/// This filter uses the Extended Kalman Filter (EKF) algorithm to estimate the state of a 
+/// strapdown inertial navigation system. It uses the strapdown equations to propagate the state
+/// in the local level frame based on IMU measurements in the body frame. The filter also uses
+/// a generic position measurement model to update the state based on position measurements in 
+/// the local level frame.
+/// 
+/// Because of the generic nature of this toolbox, the filter requires the user to
+/// implement the measurement model and the measurement Jacobian matrix. These functions must be
+/// provided as inputs to the update method.
+pub struct EKF {
+    nav_state: StrapdownState,
+    state: DVector<f64>,
+    covariance: DMatrix<f64>,
+    process_noise: DMatrix<f64>,
+    measurement_noise: DMatrix<f64>,
+    state_size: usize,
+}
+
+impl EKF {
+    /// Creates a new EKF with the given initial state, biases, covariance, process noise,
+    /// and measurement noise.
+    /// 
+    /// Create a new instance of the EKF with the given initial state, biases, covariance,
+    /// process noise, and measurement noise. Additional states that may be used for the filter
+    /// are included in the "other states" vector.
+    /// # Arguments
+    /// * `position` - The initial position of the EKF (degrees latitude, degrees longitude, meters).
+    /// * `velocity` - The initial velocity of the EKF (meters per second).
+    /// * `attitude` - The initial attitude of the EKF (Eulers angles, roll, pitch, yaw).
+    /// * `imu_biases` - The initial IMU biases of the EKF (accelerometer and gyroscope biases).
+    /// * `measurement_bias` - The initial measurement biases of the EKF (position measurement biases).
+    /// * `other_states` - The initial other states of the EKF (e.g. magnetometer biases, other sensor biases, etc).
+    /// * `covariance_diagonal` - The initial covariance diagonal of the EKF (the diagonal elements of the covariance matrix).
+    /// * `process_noise_diagonal` - The process noise diagonal of the EKF (the diagonal elements of the process noise matrix).
+    /// * `measurement_noise_diagonal` - The measurement noise diagonal of the EKF (the diagonal elements of the measurement noise matrix).
+    /// # Returns
+    /// * A new EKF struct.
+    /// # Example
+    /// ```rust
+    /// use strapdown::filter::EKF;
+    /// use strapdown::StrapdownState;
+    /// use nalgebra::SVector;
+    /// 
+    /// let position = vec![0.0, 0.0, 0.0];
+    /// let velocity = vec![0.0, 0.0, 0.0];
+    /// let attitude = vec![1.0, 0.0, 0.0];
+    /// let imu_biases = vec![0.0, 0.0, 0.0];
+    /// let measurement_bias = vec![1.0, 1.0, 1.0];
+    /// let covariance_diagonal = vec![1e-3; 9 + imu_biases.len() + measurement_bias.len()];
+    /// let process_noise_diagonal = vec![1e-3; 9 + imu_biases.len() + measurement_bias.len()];
+    /// let measurement_noise_diagonal = vec![1e-3; 3];
+    /// let ekf = EKF::new(
+    ///    position.clone(),
+    ///    velocity.clone(),
+    ///    attitude.clone(),
+    ///    imu_biases.clone(),
+    ///    measurement_bias.clone(),
+    ///    covariance_diagonal,
+    ///    process_noise_diagonal,
+    ///    measurement_noise_diagonal,
+    /// );
+    /// assert_eq!(ekf.state.len(), position.len() + velocity.len() + attitude.len() + imu_biases.len() + measurement_bias.len());
+    /// ```
+    pub fn new(
+        position: Vec<f64>,
+        velocity: Vec<f64>,
+        attitude: Vec<f64>,
+        imu_biases: Vec<f64>,
+        measurement_bias: Vec<f64>,
+        other_states: Vec<f64>,
+        covariance_diagonal: Vec<f64>,
+        process_noise_diagonal: Vec<f64>,
+        measurement_noise_diagonal: Vec<f64>,
+    ) -> EKF {
+        let mut mean: Vec<f64> = position.clone();
+        mean.extend(velocity.clone());
+        mean.extend(attitude.clone());
+        mean.extend(imu_biases.clone());
+        mean.extend(measurement_bias.clone());
+        mean.extend(other_states.clone());
+        
+        assert!(
+            mean.len() == covariance_diagonal.len(),
+            "Mean state and covariance diagonal must be of the same size"
+        );
+        
+        let state_size = mean.len();
+        let state = DVector::from_vec(mean);
+        
+        // Create the navigation state from position, velocity, and attitude
+        let mut nav_state_vec = Vec::new();
+        nav_state_vec.extend(position);
+        nav_state_vec.extend(velocity);
+        nav_state_vec.extend(attitude);
+        
+        let nav_state = StrapdownState::new_from_vector(
+            SMatrix::from_iterator(nav_state_vec.iter().cloned())
+        );
+        
+        let covariance = DMatrix::from_diagonal(&DVector::from_vec(covariance_diagonal));
+        let process_noise = DMatrix::from_diagonal(&DVector::from_vec(process_noise_diagonal));
+        let measurement_noise = DMatrix::from_diagonal(&DVector::from_vec(measurement_noise_diagonal));
+        
+        EKF {
+            nav_state,
+            state,
+            covariance,
+            process_noise,
+            measurement_noise,
+            state_size,
+        }
+    }    
+    /// Update the internal state vector from the nav_state and other_states
+    fn update_state_vector(&mut self) {
+        let mut mean = self.nav_state.to_vector(false).as_slice().to_vec();
+        let other_states = self.state.view((0,9), self.state.shape());
+        mean.extend(other_states);
+        self.state = DVector::from_vec(mean);
+    }    
+    /// Update the nav_state and other_states from the state vector
+    fn update_from_state_vector(&mut self) {
+        // First 9 elements go to nav_state (position, velocity, attitude)
+        let nav_state_vec = SMatrix::from_iterator(
+            self.state.rows(0, 9).iter().cloned()
+        );
+        self.nav_state = StrapdownState::new_from_vector(nav_state_vec);
+        
+        // Remaining elements go to other_states
+        // self.other_states = self.state.rows(9, self.state_size - 9).as_slice().to_vec();
+    }    
+    /// Propagates the state using the strapdown equations and IMU measurements.
+    /// 
+    /// The IMU measurements are used to update the strapdown state in the local level frame.
+    /// The IMU measurements are assumed to be in the body frame.
+    /// 
+    /// # Arguments
+    /// * `imu_data` - The IMU measurements to propagate the state with.
+    /// * `dt` - The time step for the propagation.
+    /// * `state_transition_jacobian` - The Jacobian of the state transition function.
+    /// # Returns
+    /// * none
+    pub fn propagate(&mut self, imu_data: &IMUData, dt: f64, state_transition_jacobian: &DMatrix<f64>) {
+        // Propagate the strapdown state using the strapdown equations
+        self.nav_state.forward(imu_data, dt);        
+        // Update the state vector
+        self.update_state_vector();        
+        // Propagate the covariance
+        // P_k = F_k * P_{k-1} * F_k^T + Q_k
+        self.covariance = state_transition_jacobian * &self.covariance * state_transition_jacobian.transpose() + &self.process_noise;
+    }    
+    /// Perform the Kalman measurement update
+    /// 
+    /// This method updates the state and covariance based on the measurement, expected measurement,
+    /// and measurement Jacobian.
+    /// 
+    /// # Arguments
+    /// * `measurement` - The actual measurement vector.
+    /// * `expected_measurement` - The expected measurement based on the current state.
+    /// * `measurement_jacobian` - The Jacobian of the measurement model with respect to the state.
+    /// # Returns
+    /// * none
+    pub fn update(&mut self, measurement: &DVector<f64>, expected_measurement: &DVector<f64>, measurement_jacobian: &DMatrix<f64>) {
+        // Assert that the measurement is the correct size as the measurement noise diagonal
+        assert!(
+            measurement.len() == self.measurement_noise.nrows(),
+            "Measurement and measurement noise must be of the same size"
+        );        
+        // Calculate innovation vector
+        let innovation = measurement - expected_measurement;
+        // Calculate innovation covariance
+        // S = H * P * H^T + R
+        let innovation_covariance = measurement_jacobian * &self.covariance * measurement_jacobian.transpose() + &self.measurement_noise;        
+        // Calculate Kalman gain
+        // K = P * H^T * S^-1
+        let innovation_inverse = match innovation_covariance.clone().try_inverse() {
+            Some(inv) => inv,
+            None => panic!("Innovation covariance matrix is singular"),
+        };
+        let kalman_gain = &self.covariance * measurement_jacobian.transpose() * innovation_inverse;
+        // Update state
+        // x_k = x_k + K * (z - h(x_k))
+        self.state += &kalman_gain * innovation;        
+        // Update covariance
+        // P_k = (I - K * H) * P_k
+        let identity = DMatrix::identity(self.state_size, self.state_size);
+        self.covariance = (&identity - &kalman_gain * measurement_jacobian) * &self.covariance;
+        // Update nav_state and other_states from the state vector
+        self.update_from_state_vector();
+    }
+    
+    /// Get the EKF state.
+    /// The state is the current navigation state vector with the additional imu and measurement biases appended along with any remaining states.
+    pub fn get_state(&self) -> DVector<f64> {
+        return self.state.clone();
+    }
+    /// Get the navigation state component of the EKF state.
+    pub fn get_nav_state(&self) -> StrapdownState {
+        return self.nav_state.clone();
+    }    
+    /// Get the covariance matrix.
+    pub fn get_covariance(&self) -> DMatrix<f64> {
+        return self.covariance.clone();
+    }
+}
+
 /// Tests
 
 #[cfg(test)]
@@ -379,5 +586,31 @@ mod tests {
             kappa,
         );
         assert_eq!(ukf.mean_state.len(), position.len() + velocity.len() + attitude.len() + imu_biases.len() + measurement_bias.len());
+    }
+
+    #[test]
+    fn test_ekf_construction() {
+        let position = vec![0.0, 0.0, 0.0];
+        let velocity = vec![0.0, 0.0, 0.0];
+        let attitude = vec![1.0, 0.0, 0.0];
+        let imu_biases = vec![0.0, 0.0, 0.0];
+        let measurement_bias = vec![1.0, 1.0, 1.0];
+        let other_states = vec![0.0, 0.0, 0.0];
+        let covariance_diagonal = vec![1e-3; 9 + imu_biases.len() + measurement_bias.len()];
+        let process_noise_diagonal = vec![1e-3; 9 + imu_biases.len() + measurement_bias.len()];
+        let measurement_noise_diagonal = vec![1e-3; 3];
+
+        let ekf = EKF::new(
+            position.clone(),
+            velocity.clone(),
+            attitude.clone(),
+            imu_biases.clone(),
+            measurement_bias.clone(),
+            other_states.clone(),
+            covariance_diagonal,
+            process_noise_diagonal,
+            measurement_noise_diagonal,
+        );
+        assert_eq!(ekf.state.len(), position.len() + velocity.len() + attitude.len() + imu_biases.len() + measurement_bias.len());
     }
 }
