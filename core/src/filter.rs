@@ -459,7 +459,7 @@ impl EKF {
     /// Update the internal state vector from the nav_state and other_states
     fn update_state_vector(&mut self) {
         let mut mean = self.nav_state.to_vector(false).as_slice().to_vec();
-        let other_states = self.state.view((0,9), self.state.shape());
+        let other_states = self.state.rows(9, self.state.len() - 9).as_slice().to_vec();
         mean.extend(other_states);
         self.state = DVector::from_vec(mean);
     }    
