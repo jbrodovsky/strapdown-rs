@@ -144,6 +144,15 @@ impl IMUData {
             gyro: Vector3::zeros(),
         }
     }
+    pub fn new_from_vector(accel: Vector3<f64>, gyro: Vector3<f64>) -> IMUData {
+        IMUData { accel, gyro }
+    }
+    pub fn new_from_vec(accel: Vec<f64>, gyro: Vec<f64>) -> IMUData {
+        IMUData {
+            accel: Vector3::new(accel[0], accel[1], accel[2]),
+            gyro: Vector3::new(gyro[0], gyro[1], gyro[2]),
+        }
+    }
 }
 
 /// Basic structure for holding the strapdown mechanization state in the form of position, velocity, and attitude.
@@ -190,7 +199,8 @@ impl StrapdownState {
         }
     }
     /// Create a new StrapdownState from a position, velocity, and attitude vector, where the attitude vector
-    /// is in the form of Euler angles in degrees
+    /// is in the form of Euler angles in degrees. The position is in the form of latitude (degrees), longitude (degrees),
+    /// and altitude (meters). The velocity is in the form of NED frame (m/s).
     pub fn new_from(
         position: Vector3<f64>,
         velocity: Vector3<f64>,
@@ -210,8 +220,8 @@ impl StrapdownState {
     /// Convert a one dimensional vector to a StrapdownState
     ///
     /// The vector is in the form of:
-    /// (pn, pe, pd, v_n, v_e, v_d, roll, pitch, yaw) where the angles for attitude, latitude (pn),
-    /// and longitude (pe) are in radians.
+    /// $\left(p_n, p_e, p_d, v_n, v_e, v_d, \phi, \theta, \psi\right)$ where the angles for attitude (roll, pitch, yaw), latitude ($p_n$),
+    /// and longitude ($p_e$) are in radians.
     pub fn new_from_vector(state: SVector<f64, 9>) -> StrapdownState {
         StrapdownState {
             attitude: Rotation3::from_euler_angles(state[6], state[7], state[8]),
@@ -288,13 +298,6 @@ impl StrapdownState {
         // Update velocity
         self.velocity = v_1;
     }
-
-    /// ENU form of the forward kinematics equations. Corresponds to section 5.4 Local-Navigation Frame Equations. Mathematically identical to NED,
-    /// but the coordinate order in the data structures is different. Attitude is still specified by a roll-pitch-yaw Euler angle sequence.
-    // pub fn forward_enu(&mut self, imu_data: &IMUData, dt: f64) {
-    //
-    // }
-
     /// Convert the StrapdownState to a one dimensional vector
     /// 
     /// The vector is in the form of: $\left[p_n, p_e, p_d, v_n, v_e, v_d, \phi, \theta, \psi \right]$
@@ -321,7 +324,6 @@ impl StrapdownState {
         return state;
     }
 }
-
 // Miscellaneous functions for wrapping angles
 
 /// Wrap an angle to the range -180 to 180 degrees
@@ -357,7 +359,7 @@ where
     }
     return wrapped;
 }
-/// Wrap an angle to the range 0 to 2*pi radians
+/// Wrap an angle to the range 0 to $\pm\pi$ radians
 /// 
 /// This function is generic and can be used with any type that implements the necessary traits.
 pub fn wrap_to_pi<T>(angle: T) -> T
@@ -373,7 +375,7 @@ where
     }
     return wrapped;
 }
-/// Wrap an angle to the range 0 to 2*pi radians
+/// Wrap an angle to the range 0 to $2 \pi$ radians
 /// 
 /// This function is generic and can be used with any type that implements the necessary traits.
 pub fn wrap_to_2pi<T>(angle: T) -> T
@@ -526,6 +528,22 @@ mod tests {
         assert_approx_eq!(&attitude[(2, 0)], 0.0, 1e-4);
         assert_approx_eq!(&attitude[(2, 1)], 0.0, 1e-4);
         assert_approx_eq!(&attitude[(2, 2)], 1.0, 1e-4);
+    }
+    #[test]
+    fn test_hover() {
+        let mut state: StrapdownState = StrapdownState::new_from(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 0.0),
+        );
+        let imu_data = IMUData {
+            accel: Vector3::new(0.0, 0.0, -earth::gravity(&0.0, &0.0)), // Currently configured as relative body-frame acceleration
+            gyro: Vector3::new(0.0, 0.0, 0.0),
+        };
+        state.forward(&imu_data, 1.0);
+        assert_approx_eq!(state.velocity[0], 0.0, 0.1);
+        assert_approx_eq!(state.velocity[1], 0.0, 0.1);
+        assert_approx_eq!(state.velocity[2], 0.0, 0.1);
     }
     #[test]
     fn test_wrap_to_180() {
