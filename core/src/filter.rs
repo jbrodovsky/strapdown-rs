@@ -7,6 +7,7 @@
 //! the state in the local level frame. The filters also use a generic position measurement
 //! model to update the state based on position measurements in the local level frame.
 
+use rand;
 use nalgebra::{SMatrix, DMatrix, DVector};
 use crate::{IMUData, StrapdownState};
 
@@ -340,7 +341,123 @@ impl UKF {
     }
 }
 
-// TODO: #84 Add particle filter
+/// Particle for the particle filter
+#[derive(Clone)]
+pub struct Particle {
+    pub nav_state: StrapdownState,
+    pub accel_bias: Vec<f64>,
+    pub gyro_bias: Vec<f64>,
+    pub other_states: Vec<f64>,
+    pub weight: f64,
+}
+
+impl Particle {
+    pub fn new(nav_state: StrapdownState, accel_bias: Vec<f64>, gyro_bias: Vec<f64>, other_states: Vec<f64>, weight: f64) -> Self {
+        Particle {
+            nav_state,
+            accel_bias,
+            gyro_bias,
+            other_states,
+            weight,
+        }
+    }
+    /// Propagate the particle using the strapdown equations
+    pub fn propagate(&mut self, imu_data: &IMUData, dt: f64) {
+        self.nav_state.forward(imu_data, dt);
+        // Optionally, you could add bias random walk here if desired
+    }
+}
+
+/// Particle filter for strapdown inertial navigation
+pub struct ParticleFilter {
+    pub particles: Vec<Particle>,
+}
+
+impl ParticleFilter {
+    /// Create a new particle filter with the given particles
+    pub fn new(particles: Vec<Particle>) -> Self {
+        ParticleFilter { particles }
+    }
+
+    /// Propagate all particles forward using the strapdown equations
+    pub fn propagate(&mut self, imu_data: &IMUData, dt: f64) {
+        for particle in &mut self.particles {
+            particle.propagate(imu_data, dt);
+        }
+    }
+
+    /// Set the weights of the particles (e.g., after a measurement update)
+    pub fn set_weights(&mut self, weights: &[f64]) {
+        assert_eq!(weights.len(), self.particles.len());
+        for (particle, &w) in self.particles.iter_mut().zip(weights.iter()) {
+            particle.weight = w;
+        }
+    }
+
+    /// Normalize the weights of the particles
+    pub fn normalize_weights(&mut self) {
+        let sum: f64 = self.particles.iter().map(|p| p.weight).sum();
+        if sum > 0.0 {
+            for particle in &mut self.particles {
+                particle.weight /= sum;
+            }
+        }
+    }
+
+    /// Residual resampling (systematic resampling)
+    pub fn residual_resample(&mut self) {
+        let n = self.particles.len();
+        let mut new_particles = Vec::with_capacity(n);
+        let weights: Vec<f64> = self.particles.iter().map(|p| p.weight).collect();
+        let mut num_copies = vec![0usize; n];
+        let mut residual: Vec<f64> = vec![0.0; n];
+        let mut total_residual = 0.0;
+        // Integer part
+        for (i, &w) in weights.iter().enumerate() {
+            let copies = (w * n as f64).floor() as usize;
+            num_copies[i] = copies;
+            residual[i] = w * n as f64 - copies as f64;
+            total_residual += residual[i];
+        }
+        // Copy integer part
+        for (i, &copies) in num_copies.iter().enumerate() {
+            for _ in 0..copies {
+                new_particles.push(self.particles[i].clone());
+            }
+        }
+        // Residual part
+        let mut residual_particles = n - new_particles.len();
+        if residual_particles > 0 {
+            // Normalize residuals
+            let sum_residual: f64 = residual.iter().sum();
+            let mut cumsum = 0.0;
+            let mut positions = Vec::with_capacity(residual_particles);
+            let step = sum_residual / residual_particles as f64;
+            let mut u = rand::random::<f64>() * step;
+            for _ in 0..residual_particles {
+                positions.push(u);
+                u += step;
+            }
+            let mut i = 0;
+            let mut j = 0;
+            let mut cumsum = residual[0];
+            while j < residual_particles {
+                while positions[j] > cumsum {
+                    i += 1;
+                    cumsum += residual[i];
+                }
+                new_particles.push(self.particles[i].clone());
+                j += 1;
+            }
+        }
+        // Reset weights
+        let uniform_weight = 1.0 / n as f64;
+        for particle in &mut new_particles {
+            particle.weight = uniform_weight;
+        }
+        self.particles = new_particles;
+    }
+}
 
 /// Tests
 
