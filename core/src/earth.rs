@@ -703,13 +703,13 @@ mod tests {
         let rot1: Matrix3<f64> = lla_to_ecef(&latitude, &longitude);
         let rot2: Matrix3<f64> = ecef_to_lla(&latitude, &longitude).transpose();
         assert_approx_eq!(rot1[(0, 0)], rot2[(0, 0)], 1e-7);
-        assert_approx_eq!(rot1[(0, 1)], rot2[(1, 0)], 1e-7);
-        assert_approx_eq!(rot1[(0, 2)], rot2[(2, 0)], 1e-7);
-        assert_approx_eq!(rot1[(1, 0)], rot2[(0, 1)], 1e-7);
+        assert_approx_eq!(rot1[(0, 1)], rot2[(0, 1)], 1e-7);
+        assert_approx_eq!(rot1[(0, 2)], rot2[(0, 2)], 1e-7);
+        assert_approx_eq!(rot1[(1, 0)], rot2[(1, 0)], 1e-7);
         assert_approx_eq!(rot1[(1, 1)], rot2[(1, 1)], 1e-7);
-        assert_approx_eq!(rot1[(1, 2)], rot2[(2, 1)], 1e-7);
-        assert_approx_eq!(rot1[(2, 0)], rot2[(0, 2)], 1e-7);
-        assert_approx_eq!(rot1[(2, 1)], rot2[(1, 2)], 1e-7);
+        assert_approx_eq!(rot1[(1, 2)], rot2[(1, 2)], 1e-7);
+        assert_approx_eq!(rot1[(2, 0)], rot2[(2, 0)], 1e-7);
+        assert_approx_eq!(rot1[(2, 1)], rot2[(2, 1)], 1e-7);
         assert_approx_eq!(rot1[(2, 2)], rot2[(2, 2)], 1e-7);
     }
     
