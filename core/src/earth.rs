@@ -667,6 +667,51 @@ mod tests {
         assert_approx_eq!(mag_lat, 0.0, 1e-7);
         assert_approx_eq!(mag_lon, 0.0, 1e-7);
     }
+    #[test]
+    fn test_eci_to_ecef() {
+        let time: f64 = 30.0;
+        let rot: Matrix3<f64> = eci_to_ecef(time);
+        assert_approx_eq!(rot[(0, 0)], (RATE * time).cos(), 1e-7);
+        assert_approx_eq!(rot[(0, 1)], (RATE * time).sin(), 1e-7);
+        assert_approx_eq!(rot[(1, 0)], -(RATE * time).sin(), 1e-7);
+        assert_approx_eq!(rot[(1, 1)], (RATE * time).cos(), 1e-7);
+        let rot_t = ecef_to_eci(time);
+        assert_approx_eq!(rot_t[(0, 0)], (RATE * time).cos(), 1e-7);
+        assert_approx_eq!(rot_t[(0, 1)], -(RATE * time).sin(), 1e-7);
+        assert_approx_eq!(rot_t[(1, 0)], (RATE * time).sin(), 1e-7);
+        assert_approx_eq!(rot_t[(1, 1)], (RATE * time).cos(), 1e-7);
+        assert_approx_eq!(rot_t[(2, 2)], 1.0, 1e-7);
+    }
+    #[test]
+    fn test_ecef_to_lla() {
+        let latitude: f64 = 45.0;
+        let longitude: f64 = 90.0;
+        let rot: Matrix3<f64> = ecef_to_lla(&latitude, &longitude);
+        assert_approx_eq!(rot[(0, 0)], -longitude.to_radians().sin() * latitude.to_radians().cos(), 1e-7);
+        assert_approx_eq!(rot[(0, 1)], -longitude.to_radians().sin() * latitude.to_radians().sin(), 1e-7);
+        assert_approx_eq!(rot[(0, 2)], latitude.to_radians().cos(), 1e-7);
+        assert_approx_eq!(rot[(1, 0)], -longitude.to_radians().sin(), 1e-7);
+        assert_approx_eq!(rot[(1, 1)], longitude.to_radians().cos(), 1e-7);
+        assert_approx_eq!(rot[(2, 0)], -latitude.to_radians().cos() * longitude.to_radians().cos(), 1e-7);
+        assert_approx_eq!(rot[(2, 1)], -latitude.to_radians().cos() * longitude.to_radians().sin(), 1e-7);
+        assert_approx_eq!(rot[(2, 2)], -latitude.to_radians().sin(), 1e-7);
+    }
+    #[test]
+    fn test_lla_to_ecef() {
+        let latitude: f64 = 45.0;
+        let longitude: f64 = 90.0;
+        let rot1: Matrix3<f64> = lla_to_ecef(&latitude, &longitude);
+        let rot2: Matrix3<f64> = ecef_to_lla(&latitude, &longitude).transpose();
+        assert_approx_eq!(rot1[(0, 0)], rot2[(0, 0)], 1e-7);
+        assert_approx_eq!(rot1[(0, 1)], rot2[(1, 0)], 1e-7);
+        assert_approx_eq!(rot1[(0, 2)], rot2[(2, 0)], 1e-7);
+        assert_approx_eq!(rot1[(1, 0)], rot2[(0, 1)], 1e-7);
+        assert_approx_eq!(rot1[(1, 1)], rot2[(1, 1)], 1e-7);
+        assert_approx_eq!(rot1[(1, 2)], rot2[(2, 1)], 1e-7);
+        assert_approx_eq!(rot1[(2, 0)], rot2[(0, 2)], 1e-7);
+        assert_approx_eq!(rot1[(2, 1)], rot2[(1, 2)], 1e-7);
+        assert_approx_eq!(rot1[(2, 2)], rot2[(2, 2)], 1e-7);
+    }
     
     // #[test]
     // fn test_magnetic_field_components() {
