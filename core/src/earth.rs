@@ -421,10 +421,6 @@ pub fn transport_rate(latitude: &f64, altitude: &f64, velocities: &Vector3<f64>)
 /// let magnetic_field = earth::calculate_magnetic_field(&latitude, &longitude, &altitude);
 /// ```
 pub fn calculate_magnetic_field(latitude: &f64, longitude: &f64, altitude: &f64) -> Vector3<f64> {
-    // Convert latitude and longitude to radians
-    let lat_rad = latitude.to_radians();
-    let lon_rad = longitude.to_radians();
-    
     // Calculate the magnetic colatitude and longitude
     let (mag_colatitude, _) = wgs84_to_magnetic(latitude, longitude);
     

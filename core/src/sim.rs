@@ -1,56 +1,97 @@
-//! Simulation module for running navigation filters as an INS
+//! Simulation utilities and CSV data loading for strapdown inertial navigation.
 //!
-//! This module provides basic functionality for running a navigation filter (e.g., UKF) as an INS
-//! with a generic normally distributed measurement function. The measurement function computes the
-//! difference between a simulated measurement (e.g., GPS) and the current filter state.
+//! This module provides:
+//! - A struct (`TestDataRecord`) for deserializing rows from a test data CSV file.
+//! - A function (`read_test_data_csv`) to load and parse CSV data into Rust structs.
+//! - Unit tests for CSV reading and error handling.
 
-use crate::filter::UKF;
-use crate::{IMUData, StrapdownState};
-use nalgebra::{DVector, DMatrix};
-use rand_distr::{Normal, Distribution};
+use serde::Deserialize;
 
-/// Simulate a single INS step with the UKF filter
+/// Struct representing a single row of test data from the CSV file.
+///
+/// Fields correspond to columns in the CSV, with appropriate renaming for Rust style.
+#[derive(Debug, Deserialize)]
+pub struct TestDataRecord {
+    pub time: String,
+    #[serde(rename = "bearingAccuracy")]
+    pub bearing_accuracy: f64,
+    #[serde(rename = "speedAccuracy")]
+    pub speed_accuracy: f64,
+    #[serde(rename = "verticalAccuracy")]
+    pub vertical_accuracy: f64,
+    #[serde(rename = "horizontalAccuracy")]
+    pub horizontal_accuracy: f64,
+    pub speed: f64,
+    pub bearing: f64,
+    pub altitude: f64,
+    pub longitude: f64,
+    pub latitude: f64,
+    pub qz: f64,
+    pub qy: f64,
+    pub qx: f64,
+    pub qw: f64,
+    pub roll: f64,
+    pub pitch: f64,
+    pub yaw: f64,
+    pub acc_z: f64,
+    pub acc_y: f64,
+    pub acc_x: f64,
+    pub gyro_z: f64,
+    pub gyro_y: f64,
+    pub gyro_x: f64,
+    pub mag_z: f64,
+    pub mag_y: f64,
+    pub mag_x: f64,
+    #[serde(rename = "relativeAltitude")]
+    pub relative_altitude: f64,
+    pub pressure: f64,
+    pub grav_z: f64,
+    pub grav_y: f64,
+    pub grav_x: f64,
+}
+
+/// Reads a CSV file and returns a vector of `TestDataRecord` structs.
 ///
 /// # Arguments
-/// * `ukf` - The UKF filter instance (mutable)
-/// * `imu_data` - The IMU data for propagation
-/// * `dt` - Time step
-/// * `measurement` - The simulated measurement vector (e.g., GPS position)
-/// * `measurement_noise_std` - Standard deviation for measurement noise (applied to each measurement dimension)
-/// * `measurement_model` - Function that computes the expected measurement from the filter state
-/// * `measurement_jacobian` - Function that computes the measurement Jacobian at the current state
-pub fn ukf_ins_step<F, G>(
-    ukf: &mut UKF,
-    imu_data: &IMUData,
-    dt: f64,
-    measurement: &DVector<f64>,
-    measurement_noise_std: f64,
-    measurement_model: F,
-    measurement_jacobian: G,
-) where
-    F: Fn(&DVector<f64>) -> DVector<f64>,
-    G: Fn(&DVector<f64>) -> DMatrix<f64>,
-{
-    // Propagate the filter
-    ukf.propagate(imu_data, dt);
+/// * `path` - Path to the CSV file to read.
+///
+/// # Returns
+/// * `Ok(Vec<TestDataRecord>)` if successful.
+/// * `Err` if the file cannot be read or parsed.
+///
+pub fn read_test_data_csv<P: AsRef<std::path::Path>>(path: P) -> Result<Vec<TestDataRecord>, Box<dyn std::error::Error>> {
+    let mut rdr = csv::Reader::from_path(path)?;
+    let mut records = Vec::new();
+    for result in rdr.deserialize() {
+        let record: TestDataRecord = result?;
+        records.push(record);
+    }
+    Ok(records)
+}
 
-    // Simulate measurement noise
-    let mut noisy_measurement = measurement.clone();
-    let normal = Normal::new(0.0, measurement_noise_std).unwrap();
-    for i in 0..noisy_measurement.len() {
-        noisy_measurement[i] += normal.sample(&mut rand::thread_rng());
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    /// Test that reading a valid CSV file returns records and parses fields correctly.
+    #[test]
+    fn test_read_test_data_csv_success() {
+        let path = Path::new("./data/test_data.csv");
+        let records = read_test_data_csv(path).expect("Failed to read test_data.csv");
+        assert!(!records.is_empty(), "CSV should not be empty");
+        // Check a few fields of the first record
+        let first = &records[0];
+        assert!(first.time.len() > 0);
+        assert!(first.latitude.abs() > 0.0);
+        assert!(first.longitude.abs() > 0.0);
     }
 
-    // Compute expected measurement and innovation
-    let mean_state = ukf.get_mean();
-    let expected_measurement = measurement_model(&mean_state);
-    let innovation = &noisy_measurement - &expected_measurement;
-
-    // Compute measurement sigma points (for UKF update)
-    // For simplicity, use the mean state as the only sigma point (not a true UKF update, but placeholder)
-    let measurement_sigma_points = vec![expected_measurement.clone(); 2 * mean_state.len() + 1];
-    let innovation_matrix = DMatrix::identity(noisy_measurement.len(), noisy_measurement.len()) * measurement_noise_std.powi(2);
-
-    // Update the filter
-    ukf.update(noisy_measurement, measurement_sigma_points, innovation_matrix);
+    /// Test that reading a missing file returns an error.
+    #[test]
+    fn test_read_test_data_csv_invalid_path() {
+        let path = Path::new("nonexistent.csv");
+        let result = read_test_data_csv(path);
+        assert!(result.is_err(), "Should error on missing file");
+    }
 }

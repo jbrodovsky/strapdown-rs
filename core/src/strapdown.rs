@@ -119,6 +119,7 @@
 
 pub mod earth;
 pub mod filter;
+pub mod sim;
 
 use std::fmt::Debug;
 use angle::Deg; // might be overkill to need this entire create just for this
@@ -254,9 +255,9 @@ impl StrapdownState {
         let rotation_rate: Matrix3<f64> =
             earth::vector_to_skew_symmetric(&earth::earth_rate_lla(&self.position[0]));
         let r = earth::ecef_to_lla(&self.position[0], &self.position[1]);
-        let grav: Vector3<f64> = earth::gravitation(&self.position[0], &self.position[1], &self.position[2]);
+        // let grav: Vector3<f64> = earth::gravitation(&self.position[0], &self.position[1], &self.position[2]);
         let v_1: Vector3<f64> = &self.velocity
-            + (f_1 + grav - r * (transport_rate + 2.0 * rotation_rate) * &self.velocity) * dt;
+            + (f_1 - r * (transport_rate + 2.0 * rotation_rate) * &self.velocity) * dt;
         return v_1;
     }
 
@@ -506,17 +507,17 @@ mod tests {
             Vector3::new(0.0, 0.0, 0.0),
         );
         let imu_data = IMUData {
-            accel: Vector3::new(0.0, 0.0, 0.0), // Currently configured as relative body-frame acceleration
+            accel: Vector3::new(0.0, 0.0, -earth::gravity(&0.0, &0.0)), // Currently configured as relative body-frame acceleration
             gyro: Vector3::new(0.0, 0.0, 0.0),
         };
         state.forward(&imu_data, 1.0);
         assert_approx_eq!(state.velocity[0], 0.00, 1e-6);
         assert_approx_eq!(state.velocity[1], 0.0004, 1e-3);
-        assert_approx_eq!(state.velocity[2], 9.8142, 1e-3);
+        assert_approx_eq!(state.velocity[2], -earth::gravity(&0.0, &0.0), 1e-3);
 
         assert_approx_eq!(state.position[0], 0.0);
         assert_approx_eq!(state.position[1], 0.0);
-        assert_approx_eq!(state.position[2], 4.9071, 1e-3);
+        assert_approx_eq!(state.position[2], -earth::gravity(&0.0, &0.0) / 2.0, 1e-3);
 
         let attitude = state.attitude.matrix();
         assert_approx_eq!(&attitude[(0, 0)], 1.0, 1e-4);
@@ -537,7 +538,7 @@ mod tests {
             Vector3::new(0.0, 0.0, 0.0),
         );
         let imu_data = IMUData {
-            accel: Vector3::new(0.0, 0.0, -earth::gravity(&0.0, &0.0)), // Currently configured as relative body-frame acceleration
+            accel: Vector3::new(0.0, 0.0, 0.0), // Currently configured as relative body-frame acceleration
             gyro: Vector3::new(0.0, 0.0, 0.0),
         };
         state.forward(&imu_data, 1.0);
