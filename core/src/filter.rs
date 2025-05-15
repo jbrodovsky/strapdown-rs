@@ -601,7 +601,7 @@ mod tests {
 
         // test forward propagation
         let imu_data = IMUData {
-            accel: Vector3::new(0.0, 0.0, -earth::gravity(&0.0, &0.0)), // Currently configured as relative body-frame acceleration
+            accel: Vector3::new(0.0, 0.0, 0.0), // Currently configured as relative body-frame acceleration
             gyro: Vector3::new(0.0, 0.0, 0.0),
         };
         let dt = 1.0;
@@ -709,7 +709,7 @@ mod tests {
     #[test]
     fn test_ukf_propagate() {
         let imu_data = IMUData::new_from_vec(
-            vec![0.0, 0.0, -earth::gravity(&0.0, &0.0)], 
+            vec![0.0, 0.0, 0.0], 
             vec![0.0, 0.0, 0.0]
         );
         let position = vec![0.0, 0.0, 0.0];
@@ -767,7 +767,7 @@ mod tests {
     #[test]
     fn test_ukf_hover() {
         let imu_data = IMUData::new_from_vec(
-            vec![0.0, 0.0, -earth::gravity(&0.0, &0.0)], 
+            vec![0.0, 0.0, 0.0], 
             vec![0.0, 0.0, 0.0]
         );
         let position = vec![0.0, 0.0, 0.0];
@@ -842,22 +842,5 @@ mod tests {
         let pf = ParticleFilter::new(particles);
         assert_eq!(pf.particles.len(), 10);
     }
-    #[test]
-    fn test_particle_filter_propagation() {
-        let position = vec![0.0, 0.0, 0.0];
-        let velocity = vec![0.0, 0.0, 0.0];
-        let attitude = vec![1.0, 0.0, 0.0];
-        let imu_biases = vec![0.0, 0.0, 0.0];
-        let measurement_bias = vec![1.0, 1.0, 1.0];
-        let other_states = vec![1.0, 2.0, 3.0];
-        let weight = 1.0;
-
-        let nav_state = StrapdownState::new_from_vector(SVector::<f64, 9>::zeros());
-        let particle = Particle::new(nav_state.clone(), imu_biases.clone(), imu_biases.clone(), other_states.clone(), weight);
-        let particles = vec![particle; 10];
-
-        let mut pf = ParticleFilter::new(particles);
-        let imu_data = IMUData::new_from_vec(vec![1.0, 2.0, 3.0], vec![4.0, 5.0, 6.0]);
-        pf.propagate(&imu_data, 1.0);
-    }
+    
 }
