@@ -20,6 +20,7 @@ path = "src/strapdown.rs"
 
 [dependencies]
 angle = "0.5.0"
+chrono = "0.4.41"
 csv = "1.3.1"
 nalgebra = "0.33.2"
 nav-types = "0.5.2"
