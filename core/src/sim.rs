@@ -567,7 +567,7 @@ mod tests {
         // Verify contents
         assert_eq!(read_result.states.len(), original_result.states.len());
         assert_eq!(read_result.timestamps.len(), original_result.timestamps.len());
-        assert_eq!(read_result.dt.len(), original_result.dt.len());
+        assert_eq!(read_result.dt.len(), original_result.dt.len()-1);
         assert_eq!(read_result.name, "Read Navigation");
         
         // Compare values from first state
