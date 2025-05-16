@@ -1,8 +1,8 @@
 [workspace]
 members = [
     "core",
-    "libstrapdown",
-    "strapdown-py",
+    "strapdown_c",
+    "strapdown_py",
 ]
 resolver = "2"
 

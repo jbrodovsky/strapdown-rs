@@ -1,6 +1,6 @@
 # Strapdown - A simple strapdown INS implementation
 
-Strapdown-rs is a straightforward strapdown inertial navigation system (INS) implementation in Rust. It is designed to be simple and easy to understand, making it a great starting point for those interested in learning about strapdown INS algorithms. It is currently under active development.
+Strapdown-rs is a straightforward strapdown inertial navigation system (INS) implementation in Rust. It is designed to be simple and easy to understand, making it a great starting point for those interested in learning about or implementing strapdown INS algorithms. It is currently under active development.
 
 # Summary
 
@@ -8,11 +8,11 @@ Strapdown-rs is a straightforward strapdown inertial navigation system (INS) imp
 
 The toolbox is designed for research, teaching, and development purposes and aims to serve the broader robotics, aerospace, and autonomous systems communities. It includes a Rust-native core and optional Python and C bindings. The intent is to provide a high-performance, memory-safe, and cross-platform implementation of strapdown INS algorithms that can be easily integrated into existing systems.
 
-`strapdown-rs` prioritizes correctness, numerical stability, and performance. It is built with extensibility in mind, allowing researchers and engineers to implement additional filtering, sensor fusion, or aiding algorithms on top of the base INS framework.
+`strapdown-rs` prioritizes correctness, numerical stability, and performance. It is built with extensibility in mind, allowing researchers and engineers to implement additional filtering, sensor fusion, or aiding algorithms on top of the base INS framework. This library is not intended to be a full-featured INS solution, notably it treats IMU output as pre-filtered measurements of relative motion. Additionally, for basic reference, the library includes a basic GPS-based loosely couple INS measurement model, as well as a generic zero-mean normal distribution measurement model. 
 
 # Statement of Need
 
-Strapdown INS implementations are commonly written in MATLAB, Python, or C++. This project provides a high-performance, memory-safe, and cross-platform implementation in Rust — a modern systems language well-suited for embedded and real-time applications. Why Rust and why another INS library? Several reasons that are pertinent critiques of each language:
+Strapdown INS implementations are commonly written in MATLAB, Python, or C++, and are typically *proprietary* or are heavily integrated into an existing architecture or framework. This project provides a high-performance, memory-safe, and cross-platform implementation in Rust — a modern systems language well-suited for embedded and real-time applications. Why Rust and why another INS library? Several reasons that are pertinent critiques of each language:
 
 - **MATLAB**: While MATLAB is great for prototyping, it is not suitable for production systems due to performance and deployment issues. It is also not a systems programming language. It is also antithetical to open science being a proprietary language with a closed-source ecosystem.
 - **Python**: Python is a great language for rapid prototyping and development, but it is not suitable for performance-critical applications. It also has issues with memory management and real-time constraints. While Python is widely used and has many high-performance libraries (namely NumPy) for numerical computing, some applications simply cannot be vectorized appropriately to take advantage of the underlying C libraries. When running simulations, there is sometimes no avoiding a loop.

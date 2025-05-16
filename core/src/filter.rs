@@ -549,7 +549,7 @@ impl ParticleFilter {
         if residual_particles > 0 {
             // Normalize residuals
             let sum_residual: f64 = residual.iter().sum();
-            let cumsum = 0.0;
+            //let cumsum = 0.0;
             let mut positions = Vec::with_capacity(residual_particles);
             let step = sum_residual / residual_particles as f64;
             let mut u = rand::random::<f64>() * step;
@@ -813,10 +813,10 @@ mod tests {
     #[test]
     fn test_particle_construction() {
         let position = [0.0, 0.0, 0.0];
-        let velocity = [0.0, 0.0, 0.0];
-        let attitude = [0.0, 0.0, 0.0];
+        //let velocity = [0.0, 0.0, 0.0];
+        //let attitude = [0.0, 0.0, 0.0];
         let imu_biases = vec![0.0, 0.0, 0.0];
-        let measurement_bias = [1.0, 1.0, 1.0];
+        //let measurement_bias = [1.0, 1.0, 1.0];
         let other_states = vec![1.0, 2.0, 3.0];
         let weight = 1.0;
 
@@ -827,11 +827,11 @@ mod tests {
     
     #[test]
     fn test_particle_filter_construction() {
-        let position = [0.0, 0.0, 0.0];
-        let velocity = [0.0, 0.0, 0.0];
-        let attitude = [1.0, 0.0, 0.0];
+        //let position = [0.0, 0.0, 0.0];
+        //let velocity = [0.0, 0.0, 0.0];
+        //let attitude = [1.0, 0.0, 0.0];
         let imu_biases = vec![0.0, 0.0, 0.0];
-        let measurement_bias = [1.0, 1.0, 1.0];
+        //let measurement_bias = [1.0, 1.0, 1.0];
         let other_states = vec![1.0, 2.0, 3.0];
         let weight = 1.0;
 
