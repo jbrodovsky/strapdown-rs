@@ -370,7 +370,7 @@ pub fn dead_reckoning(records: &Vec<TestDataRecord>) -> NavigationResult {
     );
     
     // Store the initial state
-    result.states.push(state.clone());
+    result.states.push(state);
     result.timestamps.push(first_record.time.clone());
     
     // For the time difference calculation, use a fixed value if timestamps can't be parsed
@@ -406,7 +406,7 @@ pub fn dead_reckoning(records: &Vec<TestDataRecord>) -> NavigationResult {
         state.forward(&imu_data, dt);
         
         // Store the updated state
-        result.states.push(state.clone());
+        result.states.push(state);
         result.timestamps.push(record.time.clone());
         
         // Update previous time string for next iteration
@@ -429,7 +429,7 @@ mod tests {
         assert!(!records.is_empty(), "CSV should not be empty");
         // Check a few fields of the first record
         let first = &records[0];
-        assert!(first.time.len() > 0);
+        assert!(!first.time.is_empty());
         assert!(first.latitude.abs() > 0.0);
         assert!(first.longitude.abs() > 0.0);
     }
