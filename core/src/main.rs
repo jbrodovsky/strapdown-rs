@@ -1,7 +1,7 @@
-use nalgebra::{Vector3, DVector};
+use nalgebra::DVector;
 
 use strapdown::earth;
-use strapdown::{StrapdownState, IMUData};
+use strapdown::IMUData;
 use strapdown::filter::{UKF, self};
 
 fn main() {

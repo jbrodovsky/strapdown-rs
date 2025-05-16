@@ -137,6 +137,12 @@ pub struct IMUData {
     pub accel: Vector3<f64>, // Acceleration in m/s^2, body frame x, y, z axis
     pub gyro: Vector3<f64>,  // Angular rate in rad/s, body frame x, y, z axis
 }
+impl Default for IMUData {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl IMUData {
     // Create a new IMUData with all zeros
     pub fn new() -> IMUData {
@@ -189,6 +195,12 @@ impl Debug for StrapdownState {
     }
 }
 
+impl Default for StrapdownState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StrapdownState {
     /// Create a new StrapdownState with all zeros
     pub fn new() -> StrapdownState {
@@ -213,8 +225,8 @@ impl StrapdownState {
                 attitude[1].to_radians(),
                 attitude[2].to_radians(),
             ),
-            velocity: velocity,
-            position: position,
+            velocity,
+            position,
             //ned: true,
         }
     }
@@ -240,10 +252,10 @@ impl StrapdownState {
         ));
         let rotation_rate: Matrix3<f64> =
             earth::vector_to_skew_symmetric(&earth::earth_rate_lla(&self.position[0]));
-        let omega_ib: Matrix3<f64> = earth::vector_to_skew_symmetric(&gyros);
+        let omega_ib: Matrix3<f64> = earth::vector_to_skew_symmetric(gyros);
         let c_1: Matrix3<f64> = &self.attitude * (Matrix3::identity() + omega_ib * dt)
             - (rotation_rate + transport_rate) * &self.attitude * dt;
-        return c_1;
+        c_1
     }
     /// Velocity update in NED
     fn velocity_update(&self, f_1: &Vector3<f64>, dt: f64) -> Vector3<f64> {
@@ -258,7 +270,7 @@ impl StrapdownState {
         // let grav: Vector3<f64> = earth::gravitation(&self.position[0], &self.position[1], &self.position[2]);
         let v_1: Vector3<f64> = &self.velocity
             + (f_1 - r * (transport_rate + 2.0 * rotation_rate) * &self.velocity) * dt;
-        return v_1;
+        v_1
     }
 
     /// NED form of the forward kinematics equations. Corresponds to section 5.4 Local-Navigation Frame Equations.
@@ -267,18 +279,18 @@ impl StrapdownState {
     /// the IMU data and the time step as inputs and updates the position, velocity, and attitude of the system.
     pub fn forward(&mut self, imu_data: &IMUData, dt: f64) {
         // Extract the attitude matrix from the current state
-        let c_0: Rotation3<f64> = self.attitude.clone();
+        let c_0: Rotation3<f64> = self.attitude;
         // Attitude update; Equation 5.46
         let c_1: Matrix3<f64> = self.attitude_update(&imu_data.gyro, dt);
         // Specific force transformation; Equation 5.47
         let f_1: Vector3<f64> = 0.5 * (c_0.matrix() + c_1) * imu_data.accel;
         // Velocity update; Equation 5.54
-        let v_0: Vector3<f64> = self.velocity.clone();
+        let v_0: Vector3<f64> = self.velocity;
         let v_1: Vector3<f64> = self.velocity_update(&f_1, dt);
         // Position update; Equation 5.56
         let (r_n, r_e_0, _) = earth::principal_radii(&self.position[0], &self.position[2]);
-        let lat_0: f64 = self.position[0].clone().to_radians();
-        let alt_0: f64 = self.position[2].clone();
+        let lat_0: f64 = self.position[0].to_radians();
+        let alt_0: f64 = self.position[2];
         // Altitude update
         self.position[2] += 0.5 * (v_0[2] + v_1[2]) * dt;
         // Latitude update
@@ -322,7 +334,7 @@ impl StrapdownState {
             state[7] = *pitch;
             state[8] = *yaw;
         }
-        return state;
+        state
     }
 }
 // Miscellaneous functions for wrapping angles
@@ -341,7 +353,7 @@ where
     while wrapped < T::from(-180.0) {
         wrapped += T::from(360.0);
     }
-    return wrapped;
+    wrapped
 }
 
 /// Wrap an angle to the range 0 to 360 degrees
@@ -358,7 +370,7 @@ where
     while wrapped < T::from(0.0) {
         wrapped += T::from(360.0);
     }
-    return wrapped;
+    wrapped
 }
 /// Wrap an angle to the range 0 to $\pm\pi$ radians
 /// 
@@ -374,7 +386,7 @@ where
     while wrapped < T::from(-std::f64::consts::PI) {
         wrapped += T::from(2.0 * std::f64::consts::PI);
     }
-    return wrapped;
+    wrapped
 }
 /// Wrap an angle to the range 0 to $2 \pi$ radians
 /// 
@@ -391,7 +403,13 @@ where
     while wrapped < T::from(0.0) {
         wrapped += T::from(2.0 * std::f64::consts::PI);
     }
-    return wrapped;
+    wrapped
+}
+
+
+// tester function for building
+pub fn add(a: f64, b: f64) -> f64 {
+    a + b
 }
 
 // Note: nalgebra does not yet have a well developed testing framework for directly comparing
@@ -576,10 +594,4 @@ mod tests {
         assert_eq!(super::wrap_to_2pi(std::f64::consts::PI), std::f64::consts::PI);
         assert_eq!(super::wrap_to_2pi(-std::f64::consts::PI), std::f64::consts::PI);
     }
-}
-
-
-// tester function for building
-pub fn add(a: f64, b: f64) -> f64 {
-    a + b
 }

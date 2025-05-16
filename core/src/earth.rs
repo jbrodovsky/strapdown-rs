@@ -103,7 +103,7 @@ pub fn vector_to_skew_symmetric(v: &Vector3<f64>) -> Matrix3<f64> {
     skew[(1, 2)] = -v[0];
     skew[(2, 0)] = -v[1];
     skew[(2, 1)] = v[0];
-    return skew;
+    skew
 }
 /// Convert a skew-symmetric matrix to a three-element vector
 /// 
@@ -126,7 +126,7 @@ pub fn skew_symmetric_to_vector(skew: &Matrix3<f64>) -> Vector3<f64> {
     v[0] = skew[(2, 1)];
     v[1] = skew[(0, 2)];
     v[2] = skew[(1, 0)];
-    return v;
+    v
 }
 /// Coordinate conversion from the Earth-centered Inertial (ECI) frame to the Earth-centered
 /// Earth-fixed (ECEF) frame. 
@@ -156,7 +156,7 @@ pub fn eci_to_ecef(time: f64) -> Matrix3<f64> {
     rot[(1, 0)] = -(RATE * time).sin();
     rot[(1, 1)] = (RATE * time).cos();
     rot[(2, 2)] = 1.0;
-    return rot;
+    rot
 }
 /// Coordinate conversion from the Earth-centered Earth-fixed (ECEF) frame to the Earth-centered
 /// Inertial (ECI) frame. 
@@ -180,7 +180,7 @@ pub fn eci_to_ecef(time: f64) -> Matrix3<f64> {
 /// let rot: Matrix3<f64> = earth::ecef_to_eci(time);
 /// ```
 pub fn ecef_to_eci(time: f64) -> Matrix3<f64> {
-    return eci_to_ecef(time).transpose();
+    eci_to_ecef(time).transpose()
 }
 /// Coordinate conversion from the Earth-centered Earth-fixed (ECEF) frame to the local-level frame.
 /// 
@@ -217,7 +217,7 @@ pub fn ecef_to_lla(latitude: &f64, longitude: &f64) -> Matrix3<f64> {
     rot[(2, 0)] = -lat.cos() * lon.cos();
     rot[(2, 1)] = -lat.cos() * lon.sin();
     rot[(2, 2)] = -lat.sin();
-    return rot;
+    rot
 }
 /// Coordinate conversion from the local-level frame to the Earth-centered Earth-fixed (ECEF) frame.
 /// 
@@ -242,7 +242,7 @@ pub fn ecef_to_lla(latitude: &f64, longitude: &f64) -> Matrix3<f64> {
 /// let rot: Matrix3<f64> = earth::lla_to_ecef(&latitude, &longitude);
 /// ```
 pub fn lla_to_ecef(latitude: &f64, longitude: &f64) -> Matrix3<f64> {
-    return ecef_to_lla(latitude, longitude).transpose();
+    ecef_to_lla(latitude, longitude).transpose()
 }
 /// Calculate principal radii of curvature 
 /// 
@@ -274,7 +274,7 @@ pub fn principal_radii(latitude: &f64, altitude: &f64) -> (f64, f64, f64) {
         / (1.0 - ECCENTRICITY_SQUARED * sin_lat_sq).powf(3.0 / 2.0);
     let r_e: f64 = EQUATORIAL_RADIUS / (1.0 - ECCENTRICITY_SQUARED * sin_lat_sq).sqrt();
     let r_p: f64 = r_e * latitude_rad.cos() + altitude;
-    return (r_n, r_e, r_p);
+    (r_n, r_e, r_p)
 }
 /// Calculate the WGS84 gravity scalar
 /// 
@@ -301,7 +301,7 @@ pub fn gravity(latitude: &f64, altitude: &f64) -> f64 {
     let sin_lat: f64 = (latitude).to_radians().sin();
     let g0: f64 = (GE * (1.0 + K * sin_lat * sin_lat))
         / (1.0 - ECCENTRICITY_SQUARED * sin_lat * sin_lat).sqrt();
-    return g0 - 3.08e-6 * altitude;
+    g0 - 3.08e-6 * altitude
 }
 /// Calculate the gravitational force vector in the local-level frame
 /// 
@@ -339,7 +339,7 @@ pub fn gravitation(latitude: &f64, longitude: &f64, altitude: &f64) -> Vector3<f
     let rot: Matrix3<f64> = ecef_to_lla(latitude, longitude);
     let gravity: Vector3<f64> = Vector3::new(0.0, 0.0, gravity(latitude, altitude));
     // Calculate the effective gravity vector combining gravity and centrifugal terms    
-    return gravity + rot * omega_ie * omega_ie * ecef_vec;
+    gravity + rot * omega_ie * omega_ie * ecef_vec
 }
 /// Calculate the Earth rotation rate vector in the local-level frame
 /// 
@@ -362,7 +362,7 @@ pub fn earth_rate_lla(latitude: &f64) -> Vector3<f64> {
     let sin_lat: f64 = (latitude).to_radians().sin();
     let cos_lat: f64 = (latitude).to_radians().cos();
     let omega_ie: Vector3<f64> = Vector3::new(RATE * cos_lat, 0.0, -RATE * sin_lat);
-    return omega_ie;
+    omega_ie
 }
 /// Calculate the transport rate vector in the local-level frame
 /// 
@@ -395,7 +395,7 @@ pub fn transport_rate(latitude: &f64, altitude: &f64, velocities: &Vector3<f64>)
         velocities[0] / (r_e + *altitude),
         velocities[0] * lat_rad.tan() / (r_n + *altitude),
     );
-    return omega_en_n;
+    omega_en_n
 }
 /// Calculate the magnetic field using the Earth's dipole model in the local-level frame
 /// 
@@ -431,7 +431,7 @@ pub fn calculate_magnetic_field(latitude: &f64, longitude: &f64, altitude: &f64)
     // Create the magnetic field vector in the local-level frame (NED)
     let b_vector: Vector3<f64> = Vector3::new(radial_field, lat_field, 0.0);
     
-    return b_vector;
+    b_vector
 }
 
 /// Calculate the radial component of Earth's magnetic field using the dipole model
@@ -453,7 +453,7 @@ pub fn calculate_magnetic_field(latitude: &f64, longitude: &f64, altitude: &f64)
 pub fn calculate_radial_magnetic_field(colatitude: f64, radius: f64) -> f64 {
     // let radius_ratio = radius / MAGNETIC_REFERENCE_RADIUS;
     // return -2.0 * MAGNETIC_FIELD_STRENGTH / radius_ratio.powi(3) * latitude.sin();
-    return -2.0 * MAGNETIC_FIELD_STRENGTH * (MEAN_RADIUS / radius).powi(3) * colatitude.cos();
+    -2.0 * MAGNETIC_FIELD_STRENGTH * (MEAN_RADIUS / radius).powi(3) * colatitude.cos()
 }
 
 /// Calculate the latitudinal component of Earth's magnetic field using the dipole model
@@ -473,7 +473,7 @@ pub fn calculate_radial_magnetic_field(colatitude: f64, radius: f64) -> f64 {
 /// let lat_field = earth::calculate_latitudinal_magnetic_field(colatitude, radius);
 /// ```
 pub fn calculate_latitudinal_magnetic_field(colatitude: f64, radius: f64) -> f64 {
-    return -MAGNETIC_FIELD_STRENGTH * (MEAN_RADIUS / radius).powi(3) * colatitude.sin();
+    -MAGNETIC_FIELD_STRENGTH * (MEAN_RADIUS / radius).powi(3) * colatitude.sin()
 }
 
 /// Calculate magnetic colatitude and longitude from WGS84 coordinates
@@ -554,9 +554,9 @@ pub fn magnetic_inclination(latitude: &f64, longitude: &f64, altitude: &f64) -> 
     
     // Calculate inclination (dip angle)
     // Positive downward, negative upward
-    let inclination = (b_vector[2] / b_h).atan().to_degrees();
     
-    inclination
+    
+    (b_vector[2] / b_h).atan().to_degrees()
 }
 
 /// Calculate the magnetic declination (variation) at a given location
@@ -587,9 +587,9 @@ pub fn magnetic_declination(latitude: &f64, longitude: &f64, altitude: &f64) -> 
     
     // Calculate declination (variation)
     // Positive eastward, negative westward
-    let declination = (b_vector[1] / b_vector[0]).atan().to_degrees();
     
-    declination
+    
+    (b_vector[1] / b_vector[0]).atan().to_degrees()
 }
 
 // === Unit tests ===

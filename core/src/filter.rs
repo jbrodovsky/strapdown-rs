@@ -80,7 +80,7 @@ impl SigmaPoint {
     pub fn get_state(&self) -> DVector<f64> {
         let mut state = self.nav_state.to_vector(false).as_slice().to_vec();
         state.extend(self.other_states.iter());
-        return DVector::from_vec(state);
+        DVector::from_vec(state)
     }
     /// Forward mechanization (propagation) of the strapdown state.
     /// 
@@ -129,7 +129,7 @@ impl SigmaPoint {
     pub fn to_vector(&self) -> DVector<f64> {
         let mut state = self.nav_state.to_vector(false).as_slice().to_vec();
         state.extend(self.other_states.as_slice());
-        return DVector::from_vec(state);
+        DVector::from_vec(state)
     }
     /// Convert an nalgebra vector to a sigma point.
     /// 
@@ -150,8 +150,8 @@ impl SigmaPoint {
             SMatrix::from_iterator(state.view_range(0..9, 0).iter().cloned()),
         );
         let other_states = state.view_range(9..state.len(), 0);
-        let sigma_point = SigmaPoint::new(nav_state, other_states.as_slice().to_vec());
-        return sigma_point;
+        
+        SigmaPoint::new(nav_state, other_states.as_slice().to_vec())
     }
 }
 /// Strapdown Unscented Kalman Filter Inertial Navigation Filter
@@ -229,7 +229,7 @@ impl UKF {
             mean.len() == covariance_diagonal.len(),
             "Mean state and covariance diagonal must be of the same size"
         );
-        let state_size = mean.len() as usize;
+        let state_size = mean.len();
         let mean_state = DVector::from_vec(mean);
         let process_noise = DMatrix::from_diagonal(&DVector::from_vec(process_noise_diagonal));
         let measurement_noise = DMatrix::from_diagonal(&DVector::from_vec(measurement_noise_diagonal));
@@ -346,11 +346,11 @@ impl UKF {
     }
     /// Get the UKF mean state.
     pub fn get_mean(&self) -> DVector<f64> {
-        return self.mean_state.clone();      
+        self.mean_state.clone()
     }
     /// Get the UKF covariance.
     pub fn get_covariance(&self) -> DMatrix<f64> {
-        return self.covariance.clone();
+        self.covariance.clone()
     }
     /// Calculate the sigma points for the UKF propagation based on the current state and covariance.
     pub fn get_sigma_points(&self) -> Vec<SigmaPoint> {
@@ -371,7 +371,7 @@ impl UKF {
         }
         sigma_points.append(&mut left);
         sigma_points.append(&mut right);
-        return sigma_points;
+        sigma_points
     }
 }
 /// UKF GPS or Position-based measurement model
@@ -395,7 +395,7 @@ pub fn ukf_position_measurement_model(sigma_points: &Vec<SigmaPoint>) -> Vec<DVe
         //let measurement = DVector::from_vec(position.as_slice().to_vec());
         measurement_sigma_points.push(state.view_range(0..3, 0).as_slice().to_vec().into());
     }
-    return measurement_sigma_points;
+    measurement_sigma_points
 }
 /// UKF velocity-based measurement model
 /// 
@@ -419,7 +419,7 @@ pub fn ukf_velocity_measurement_model(sigma_points: &Vec<SigmaPoint>) -> Vec<DVe
         //let measurement = DVector::from_vec(position.as_slice().to_vec());
         measurement_sigma_points.push(state.view_range(3..6, 0).as_slice().to_vec().into());
     }
-    return measurement_sigma_points;
+    measurement_sigma_points
 }
 /// UKF GPS or Position-based measurement model
 /// 
@@ -445,7 +445,7 @@ pub fn ukf_position_velocity_measurement_model(sigma_points: &Vec<SigmaPoint>) -
         //let measurement = DVector::from_vec(position.as_slice().to_vec());
         measurement_sigma_points.push(state.view_range(0..6, 0).as_slice().to_vec().into());
     }
-    return measurement_sigma_points;
+    measurement_sigma_points
 }
 /// Particle for the particle filter
 #[derive(Clone)]
@@ -545,11 +545,11 @@ impl ParticleFilter {
             }
         }
         // Residual part
-        let mut residual_particles = n - new_particles.len();
+        let residual_particles = n - new_particles.len();
         if residual_particles > 0 {
             // Normalize residuals
             let sum_residual: f64 = residual.iter().sum();
-            let mut cumsum = 0.0;
+            let cumsum = 0.0;
             let mut positions = Vec::with_capacity(residual_particles);
             let step = sum_residual / residual_particles as f64;
             let mut u = rand::random::<f64>() * step;
@@ -583,14 +583,14 @@ mod tests {
     use super::*;
     use nalgebra::{SVector, Vector3};
     use assert_approx_eq::assert_approx_eq;
-    use crate::earth;
+    
 
     // Test sigma point functionality
     #[test]
     fn test_sigma_point() {        
         let nav_state = StrapdownState::new_from_vector(SVector::<f64, 9>::zeros());
         let other_states = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
-        let mut sigma_point = SigmaPoint::new(nav_state.clone(), other_states.clone());
+        let mut sigma_point = SigmaPoint::new(nav_state, other_states.clone());
         assert_eq!(sigma_point.get_state().len(), 15);
         
         let state = sigma_point.get_state();
@@ -607,8 +607,8 @@ mod tests {
         let dt = 1.0;
         sigma_point.forward(&imu_data, dt);
 
-        let position = vec![0.0, 0.0, 0.0];
-        let velocity = vec![0.0, 0.0, 0.0];
+        let position = [0.0, 0.0, 0.0];
+        let velocity = [0.0, 0.0, 0.0];
 
         assert_approx_eq!(sigma_point.nav_state.position[0], position[0], 1e-3);
         assert_approx_eq!(sigma_point.nav_state.position[1], position[1], 1e-3);
@@ -812,31 +812,31 @@ mod tests {
     
     #[test]
     fn test_particle_construction() {
-        let position = vec![0.0, 0.0, 0.0];
-        let velocity = vec![0.0, 0.0, 0.0];
-        let attitude = vec![0.0, 0.0, 0.0];
+        let position = [0.0, 0.0, 0.0];
+        let velocity = [0.0, 0.0, 0.0];
+        let attitude = [0.0, 0.0, 0.0];
         let imu_biases = vec![0.0, 0.0, 0.0];
-        let measurement_bias = vec![1.0, 1.0, 1.0];
+        let measurement_bias = [1.0, 1.0, 1.0];
         let other_states = vec![1.0, 2.0, 3.0];
         let weight = 1.0;
 
         let nav_state = StrapdownState::new_from_vector(SVector::<f64, 9>::zeros());
-        let particle = Particle::new(nav_state.clone(), imu_biases.clone(), imu_biases.clone(), other_states.clone(), weight);
+        let particle = Particle::new(nav_state, imu_biases.clone(), imu_biases.clone(), other_states.clone(), weight);
         assert_eq!(particle.nav_state.position.len(), position.len());
     }
     
     #[test]
     fn test_particle_filter_construction() {
-        let position = vec![0.0, 0.0, 0.0];
-        let velocity = vec![0.0, 0.0, 0.0];
-        let attitude = vec![1.0, 0.0, 0.0];
+        let position = [0.0, 0.0, 0.0];
+        let velocity = [0.0, 0.0, 0.0];
+        let attitude = [1.0, 0.0, 0.0];
         let imu_biases = vec![0.0, 0.0, 0.0];
-        let measurement_bias = vec![1.0, 1.0, 1.0];
+        let measurement_bias = [1.0, 1.0, 1.0];
         let other_states = vec![1.0, 2.0, 3.0];
         let weight = 1.0;
 
         let nav_state = StrapdownState::new_from_vector(SVector::<f64, 9>::zeros());
-        let particle = Particle::new(nav_state.clone(), imu_biases.clone(), imu_biases.clone(), other_states.clone(), weight);
+        let particle = Particle::new(nav_state, imu_biases.clone(), imu_biases.clone(), other_states.clone(), weight);
         let particles = vec![particle; 10];
 
         let pf = ParticleFilter::new(particles);
