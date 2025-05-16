@@ -1,8 +1,10 @@
+use strapdown::add as add_strapdown;
+
 use pyo3::prelude::*;
 
 #[pyfunction]
-fn add(a: f64, b: f64) -> f64 {
-    strapdown::add(a, b)
+fn add(a: f64, b: f64) -> PyResult<f64> {
+    Ok(add_strapdown(a, b))
 }
 
 #[pymodule]

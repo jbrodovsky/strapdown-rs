@@ -1,8 +1,0 @@
-[build-system]
-requires = ["maturin>=1.0"]
-build-backend = "maturin"
-
-[project]
-name = "strapdown-py"
-version = "0.1.0"
-description = "Python bindings for strapdown-rs"
