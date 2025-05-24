@@ -1,0 +1,2 @@
+timestamp,latitude,longitude,altitude,velocity_n,velocity_e,velocity_d,roll,pitch,yaw,position_error_lat,position_error_lon,position_error_alt,velocity_error_n,velocity_error_e,velocity_error_d,attitude_error_roll,attitude_error_pitch,attitude_error_yaw,covariance
+2023-01-01 00:00:00+00:00,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,

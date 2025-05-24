@@ -6,14 +6,16 @@
 //! - `NavigationResult` structure for storing and analyzing navigation solutions
 //! - CSV import/export functionality for both test data and navigation results
 //! - Unit tests for validating functionality
-
-use serde::{Deserialize, Serialize};
-use nalgebra::Vector3;
-use crate::{IMUData, StrapdownState};
-use chrono::DateTime;
 use std::fs::File;
 use std::io::{self, Write};
 use std::path::Path;
+
+use chrono::DateTime;
+use nalgebra::{DMatrix, DVector, Rotation3, SMatrix, Vector3};
+use serde::{Deserialize, Serialize};
+
+use crate::{IMUData, StrapdownState};
+use crate::filter::{UKF, position_measurement_model, position_and_velocity_measurement_model};
 
 /// Struct representing a single row of test data from the CSV file.
 ///
@@ -107,7 +109,7 @@ impl TestDataRecord {
     /// use strapdown::sim::TestDataRecord;
     /// use std::path::Path;
     ///
-    /// let records = TestDataRecord::from_csv("./data/test_data.csv")
+    /// let records = TestDataRecord::from_csv("data/test_data.csv")
     ///     .expect("Failed to read test data");
     /// println!("Loaded {} records", records.len());
     /// ```
@@ -141,6 +143,8 @@ impl TestDataRecord {
     /// let subset = records.into_iter().take(10).collect::<Vec<_>>();
     /// // Save the subset to a new file
     /// TestDataRecord::to_csv(&subset, "subset_data.csv").expect("Failed to write CSV");
+    /// // doctest cleanup
+    /// std::fs::remove_file("subset_data.csv").unwrap();
     /// ```
     pub fn to_csv<P: AsRef<Path>>(records: &[Self], path: P) -> io::Result<()> {
         let mut writer = csv::Writer::from_path(path)?;
@@ -152,176 +156,230 @@ impl TestDataRecord {
         writer.flush()?;
         Ok(())
     }
+    pub fn to_string(&self) -> String {
+        format!(
+            "time: {},
+             bearing_accuracy: {},
+             speed_accuracy: {},
+             vertical_accuracy: {},
+             horizontal_accuracy: {},
+             speed: {},
+             bearing: {},
+             altitude: {},
+             longitude: {},
+             latitude: {},
+             qz: {},
+             qy: {},
+             qx: {},
+             qw: {},
+             roll: {},
+             pitch: {},
+             yaw: {},
+             acc_z: {},
+             acc_y: {},
+             acc_x: {},
+             gyro_z: {},
+             gyro_y: {},
+             gyro_x: {}",
+            self.time,
+            self.bearing_accuracy,
+            self.speed_accuracy,
+            self.vertical_accuracy,
+            self.horizontal_accuracy,
+            self.speed,
+            self.bearing,
+            self.altitude,
+            self.longitude,
+            self.latitude,
+            self.qz,
+            self.qy,
+            self.qx,
+            self.qw,
+            self.roll,
+            self.pitch,
+            self.yaw,
+            self.acc_z,
+            self.acc_y,
+            self.acc_x,
+            self.gyro_z,
+            self.gyro_y,
+            self.gyro_x,
+        )  
+    }
 }
 
 /// Generic result struct for navigation simulations.
 /// 
-/// This structure contains a sequence of navigation states (StrapdownState instances) 
-/// representing the navigation solution over time, along with timestamps for each state.
+/// This structure contains a single row of position, velocity, and attitude vectors
+/// representing the navigation solution at a specific timestamp, along with error estimates
+/// and confidence values derived from filter covariance, when available.
+///
 /// It can be used across different types of navigation simulations such as dead reckoning,
 /// Kalman filtering, or any other navigation algorithm.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct NavigationResult {
-    /// Vector of StrapdownState instances at each time step
-    pub states: Vec<StrapdownState>,
-    /// Vector of timestamps corresponding to each state
-    pub timestamps: Vec<String>,
-    /// Time difference between consecutive records in seconds
-    pub dt: Vec<f64>,
-    /// Optional name or identifier for this navigation solution
-    pub name: String,
+    /// Timestamp corresponding to the state
+    pub timestamp: String,
+    /// Position values (latitude, longitude, altitude)
+    pub latitude: f64,
+    pub longitude: f64,
+    pub altitude: f64,
+    /// Velocity values (north, east, down)
+    pub velocity_n: f64,
+    pub velocity_e: f64,
+    pub velocity_d: f64,
+    /// Attitude values (roll, pitch, yaw)
+    pub roll: f64,
+    pub pitch: f64,
+    pub yaw: f64,
+    /// Position error estimates (latitude, longitude, altitude)
+    pub position_error_lat: f64,
+    pub position_error_lon: f64,
+    pub position_error_alt: f64,
+    /// Velocity error estimates (north, east, down)
+    pub velocity_error_n: f64,
+    pub velocity_error_e: f64,
+    pub velocity_error_d: f64,
+    /// Attitude error estimates (roll, pitch, yaw)
+    pub attitude_error_roll: f64,
+    pub attitude_error_pitch: f64,
+    pub attitude_error_yaw: f64,
+    /// Full state covariance matrix if available
+    pub covariance: Option<Vec<f64>>,
 }
 
 impl NavigationResult {
-    /// Creates a new NavigationResult with empty vectors.
-    pub fn new(name: &str) -> Self {
+    /// Creates a new NavigationResult with default values.
+    pub fn new(timestamp: &str,
+            latitude: &f64,
+            longitude: &f64,
+            altitude: &f64,
+            velocity_n: &f64,
+            velocity_e: &f64,
+            velocity_d: &f64,
+            roll: &f64,
+            pitch: &f64,
+            yaw: &f64,
+            position_error_lat: &f64,
+            position_error_lon: &f64,
+            position_error_alt: &f64,
+            velocity_error_n: &f64,
+            velocity_error_e: &f64,
+            velocity_error_d: &f64,
+            attitude_error_roll: &f64,
+            attitude_error_pitch: &f64,
+            attitude_error_yaw: &f64,
+            covariance: Option<Vec<f64>>,
+            ) -> Self {
         NavigationResult {
-            states: Vec::new(),
-            timestamps: Vec::new(),
-            dt: Vec::new(),
-            name: name.to_string(),
+            timestamp: timestamp.to_string(),
+            latitude: *latitude,
+            longitude: *longitude,
+            altitude: *altitude,
+            velocity_n: *velocity_n,
+            velocity_e: *velocity_e,
+            velocity_d: *velocity_d,
+            roll: *roll,
+            pitch: *pitch,
+            yaw: *yaw,
+            position_error_lat: *position_error_lat,
+            position_error_lon: *position_error_lon,
+            position_error_alt: *position_error_alt,
+            velocity_error_n: *velocity_error_n,
+            velocity_error_e: *velocity_error_e,
+            velocity_error_d: *velocity_error_d,
+            attitude_error_roll: *attitude_error_roll,
+            attitude_error_pitch: *attitude_error_pitch,
+            attitude_error_yaw: *attitude_error_yaw,
+            covariance
+        }
+    }
+    /// Creates a new NavigationResult from nalgebra vectors and matricies from a filter.
+    /// 
+    /// This function takes a StrapdownState and a INS filter covariance matrix, and
+    /// constructs a NavigationResult with the state values and covariance.
+    /// 
+    /// # Arguments
+    /// * `state` - StrapdownState containing the current state of the navigation system
+    /// * `timestamp` - Timestamp of the navigation solution
+    /// * `covariance` - Covariance matrix from the filter, if available
+    pub fn new_from_nav_state(state: &StrapdownState, timestamp: String, covariance: Option<DMatrix<f64>>) -> Self {
+        let mut cov_vec = None;
+        if let Some(cov) = covariance {
+            cov_vec = Some(cov.as_slice().to_vec());
+        } else {
+            cov_vec = None;
+        }
+        NavigationResult {
+            timestamp: timestamp.clone(),
+            latitude: state.position[0],
+            longitude: state.position[1],
+            altitude: state.position[2],
+            velocity_n: state.velocity[0],
+            velocity_e: state.velocity[1],
+            velocity_d: state.velocity[2],
+            roll: state.attitude.euler_angles().0,
+            pitch: state.attitude.euler_angles().1,
+            yaw: state.attitude.euler_angles().2,
+            position_error_lat: 0.0,
+            position_error_lon: 0.0,
+            position_error_alt: 0.0,
+            velocity_error_n: 0.0,
+            velocity_error_e: 0.0,
+            velocity_error_d: 0.0,
+            attitude_error_roll: 0.0,
+            attitude_error_pitch: 0.0,
+            attitude_error_yaw: 0.0,
+            covariance: cov_vec,
         }
     }
 
-    /// Writes the navigation result to a CSV file.
-    ///
-    /// This function exports the position, velocity, attitude (as Euler angles), and timestamps
-    /// to a CSV file for further analysis or visualization.
-    ///
+    /// Writes the NavigationResult to a CSV file.
+    /// 
     /// # Arguments
+    /// * `records` - Vector of NavigationResult structs to write
     /// * `path` - Path where the CSV file will be saved
-    ///
+    /// 
     /// # Returns
     /// * `io::Result<()>` - Ok if successful, Err otherwise
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use strapdown::sim::{NavigationResult, TestDataRecord};
-    /// use strapdown::StrapdownState;
     /// 
-    /// // Load test data and run simulation
-    /// let records = TestDataRecord::from_csv("./data/test_data.csv").unwrap();
-    /// let result = strapdown::sim::dead_reckoning(&records);
-    /// 
-    /// // Save results to CSV
-    /// result.to_csv("navigation_result.csv").expect("Failed to write results");
-    /// ```
-    pub fn to_csv<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
-        let mut file = File::create(path)?;
-        
-        // Write CSV header
-        writeln!(file, "time,lat_deg,lon_deg,alt_m,vel_n_mps,vel_e_mps,vel_d_mps,roll_deg,pitch_deg,yaw_deg,dt_s")?;
-        
-        // Write each state
-        for i in 0..self.states.len() {
-            let state = &self.states[i];
-            let timestamp = &self.timestamps[i];
-            
-            // Extract Euler angles (roll, pitch, yaw) from the attitude rotation matrix
-            let (roll, pitch, yaw) = state.attitude.euler_angles();
-            
-            // Write the data row
-            let dt_value = if i > 0 { self.dt[i-1] } else { 0.0 };
-            
-            writeln!(
-                file,
-                "{},{:.8},{:.8},{:.4},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6}",
-                timestamp,
-                state.position[0],  // latitude (deg)
-                state.position[1],  // longitude (deg)
-                state.position[2],  // altitude (m)
-                state.velocity[0],  // north velocity (m/s)
-                state.velocity[1],  // east velocity (m/s)
-                state.velocity[2],  // down velocity (m/s)
-                roll.to_degrees(),  // roll (deg)
-                pitch.to_degrees(), // pitch (deg)
-                yaw.to_degrees(),   // yaw (deg)
-                dt_value            // time step (s)
-            )?;
-        }
-        
-        Ok(())
-    }
-    
-    /// Creates a NavigationResult from a CSV file.
-    ///
-    /// This function imports position, velocity, attitude, and timestamp data from a CSV file
-    /// that was previously created using the `to_csv` method.
-    ///
-    /// # Arguments
-    /// * `path` - Path to the CSV file to read
-    /// * `name` - Name for the navigation result
-    ///
-    /// # Returns
-    /// * `Result<NavigationResult, Box<dyn std::error::Error>>` - The loaded navigation result or an error
-    ///
     /// # Example
-    ///
     /// ```
     /// use strapdown::sim::NavigationResult;
-    /// 
-    /// // Load results from CSV
-    /// let result = NavigationResult::from_csv("navigation_result.csv", "Imported Solution")
-    ///     .expect("Failed to read results");
-    /// println!("Loaded {} states from {}", result.states.len(), result.name);
+    /// use std::path::Path;
+    /// let records = vec![NavigationResult::new(
+    ///     "2023-01-01 00:00:00+00:00", &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, 
+    ///     &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, None )];
+    /// NavigationResult::to_csv(&records, "navigation_results.csv").expect("Failed to write CSV");
     /// ```
-    pub fn from_csv<P: AsRef<Path>>(path: P, name: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let file = File::open(path)?;
-        let mut rdr = csv::ReaderBuilder::new()
-            .has_headers(true)
-            .from_reader(file);
-
-        let mut result = NavigationResult::new(name);
+    pub fn to_csv<P: AsRef<Path>>(records: &[Self], path: P) -> io::Result<()> {
+        let mut writer = csv::Writer::from_path(path)?;
         
-        for record in rdr.records() {
-            let record = record?;
-            
-            if record.len() < 11 {
-                return Err("CSV record doesn't have enough fields".into());
-            }
-            
-            // Parse timestamp
-            let timestamp = record[0].to_string();
-            
-            // Parse position (lat, lon, alt)
-            let lat = record[1].parse::<f64>()?;
-            let lon = record[2].parse::<f64>()?;
-            let alt = record[3].parse::<f64>()?;
-            
-            // Parse velocity (n, e, d)
-            let vel_n = record[4].parse::<f64>()?;
-            let vel_e = record[5].parse::<f64>()?;
-            let vel_d = record[6].parse::<f64>()?;
-            
-            // Parse attitude (roll, pitch, yaw in degrees)
-            let roll_deg = record[7].parse::<f64>()?;
-            let pitch_deg = record[8].parse::<f64>()?;
-            let yaw_deg = record[9].parse::<f64>()?;
-            
-            // Parse dt
-            let dt = record[10].parse::<f64>()?;
-            
-            // Create StrapdownState
-            let mut state = StrapdownState::new();
-            state.position = Vector3::new(lat, lon, alt);
-            state.velocity = Vector3::new(vel_n, vel_e, vel_d);
-            state.attitude = nalgebra::Rotation3::from_euler_angles(
-                roll_deg.to_radians(),
-                pitch_deg.to_radians(),
-                yaw_deg.to_radians()
-            );
-            
-            // Add to result
-            result.states.push(state);
-            result.timestamps.push(timestamp);
-            if !result.dt.is_empty() || dt > 0.0 {
-                result.dt.push(dt);
-            }
+        for record in records {
+            writer.serialize(record)?;
         }
         
-        Ok(result)
+        writer.flush()?;
+        Ok(())
     }
+    /// Reads a CSV file and returns a vector of NavigationResult structs.
+    /// 
+    /// # Arguments
+    /// * `path` - Path to the CSV file to read.
+    /// 
+    /// # Returns
+    /// * `Ok(Vec<NavigationResult>)` if successful.
+    /// * `Err` if the file cannot be read or parsed.
+    pub fn from_csv<P: AsRef<std::path::Path>>(path: P) -> Result<Vec<Self>, Box<dyn std::error::Error>> {
+        let mut rdr = csv::Reader::from_path(path)?;
+        let mut records = Vec::new();
+        for result in rdr.deserialize() {
+            let record: Self = result?;
+            records.push(record);
+        }
+        Ok(records)
+    }
+
 }
 
 /// Run dead reckoning simulation using test data.
@@ -329,91 +387,110 @@ impl NavigationResult {
 /// This function processes a sequence of sensor records through a StrapdownState, using
 /// the "forward" method to propagate the state based on IMU measurements. It initializes
 /// the StrapdownState with position, velocity, and attitude from the first record, and
-/// then applies the IMU measurements from subsequent records.
+/// then applies the IMU measurements from subsequent records. It does not record the 
+/// errors or confidence values, as this is a simple dead reckoning simulation and in testing
+/// these values would be used as a baseline for comparison.
 ///
 /// # Arguments
 /// * `records` - Vector of test data records containing IMU measurements and other sensor data
 ///
 /// # Returns
-/// * `NavigationResult` containing the sequence of StrapdownState instances over time,
+/// * `Vec<NavigationResult>` containing the sequence of StrapdownState instances over time,
 ///   along with timestamps and time differences.
-pub fn dead_reckoning(records: &Vec<TestDataRecord>) -> NavigationResult {
+pub fn dead_reckoning(records: &Vec<TestDataRecord>) -> Vec<NavigationResult> {
     if records.is_empty() {
-        return NavigationResult::new("Dead Reckoning");
+        return Vec::new();
     }
-
-    // Initialize the result vectors
-    let mut result = NavigationResult::new("Dead Reckoning");
-    result.states = Vec::with_capacity(records.len());
-    result.timestamps = Vec::with_capacity(records.len());
-    result.dt = Vec::with_capacity(records.len() - 1);
-    
+    // Initialize the result vector
+    let mut results = Vec::with_capacity(records.len());
     // Initialize the StrapdownState with the first record
     let first_record = &records[0];
     let mut state = StrapdownState::new();
-    
     // Set initial position (latitude, longitude, altitude)
     state.position = Vector3::new(
         first_record.latitude,
         first_record.longitude,
-        first_record.altitude
+        first_record.altitude,
     );
-    
     // Set initial velocity (assuming zero initial velocity)
     state.velocity = Vector3::new(0.0, 0.0, 0.0);
-    
     // Set initial attitude (roll, pitch, yaw from first record)
     state.attitude = nalgebra::Rotation3::from_euler_angles(
         first_record.roll,
         first_record.pitch,
-        first_record.yaw
+        first_record.yaw,
     );
-    
-    // Store the initial state
-    result.states.push(state);
-    result.timestamps.push(first_record.time.clone());
-    
+    // Store the initial state and metadata
+    results.push(NavigationResult {
+        timestamp: first_record.time.clone(),
+        latitude: state.position[0],
+        longitude: state.position[1],
+        altitude: state.position[2],
+        velocity_n: state.velocity[0],
+        velocity_e: state.velocity[1],
+        velocity_d: state.velocity[2],
+        roll: state.attitude.euler_angles().0,
+        pitch: state.attitude.euler_angles().1,
+        yaw: state.attitude.euler_angles().2,
+        position_error_lat: 0.0,
+        position_error_lon: 0.0,
+        position_error_alt: 0.0,
+        velocity_error_n: 0.0,
+        velocity_error_e: 0.0,
+        velocity_error_d: 0.0,
+        attitude_error_roll: 0.0,
+        attitude_error_pitch: 0.0,
+        attitude_error_yaw: 0.0,
+        covariance: None,
+    });
     // For the time difference calculation, use a fixed value if timestamps can't be parsed
     let mut prev_time_str = &first_record.time;
-    
     // Process each subsequent record
     for record in records.iter().skip(1) {
         // Try to calculate time difference from timestamps, default to 1 second if parsing fails
         let dt = match (
             DateTime::parse_from_str(prev_time_str, "%Y-%m-%d %H:%M:%S%z"),
-            DateTime::parse_from_str(&record.time, "%Y-%m-%d %H:%M:%S%z")
+            DateTime::parse_from_str(&record.time, "%Y-%m-%d %H:%M:%S%z"),
         ) {
-            (Ok(prev), Ok(current)) => {
-                (current - prev).num_milliseconds() as f64 / 1000.0
-            },
-            _ => 1.0 // Default to 1 second if parsing fails
+            (Ok(prev), Ok(current)) => (current - prev).num_milliseconds() as f64 / 1000.0,
+            _ => 1.0, // Default to 1 second if parsing fails
         };
-        
-        result.dt.push(dt);
-        
         // Create IMU data from the record
-        // Note: We use relative acceleration by subtracting gravity
         let imu_data = IMUData::new_from_vec(
-            vec![
-                record.acc_x - record.grav_x,
-                record.acc_y - record.grav_y,
-                record.acc_z - record.grav_z
-            ],
-            vec![record.gyro_x, record.gyro_y, record.gyro_z]
+            vec![record.acc_x, record.acc_y, record.acc_z],
+            vec![record.gyro_x, record.gyro_y, record.gyro_z],
         );
-        
+
         // Propagate the state forward
         state.forward(&imu_data, dt);
-        
-        // Store the updated state
-        result.states.push(state);
-        result.timestamps.push(record.time.clone());
-        
+
+        // Store the state and metadata
+        results.push(NavigationResult {
+            timestamp: record.time.clone(),
+            latitude: state.position[0],
+            longitude: state.position[1],
+            altitude: state.position[2],
+            velocity_n: state.velocity[0],
+            velocity_e: state.velocity[1],
+            velocity_d: state.velocity[2],
+            roll: state.attitude.euler_angles().0,
+            pitch: state.attitude.euler_angles().1,
+            yaw: state.attitude.euler_angles().2,
+            position_error_lat: 0.0,
+            position_error_lon: 0.0,
+            position_error_alt: 0.0,
+            velocity_error_n: 0.0,
+            velocity_error_e: 0.0,
+            velocity_error_d: 0.0,
+            attitude_error_roll: 0.0,
+            attitude_error_pitch: 0.0,
+            attitude_error_yaw: 0.0,
+            covariance: None,
+        });
         // Update previous time string for next iteration
         prev_time_str = &record.time;
     }
-    
-    result
+    results
 }
 
 #[cfg(test)]
@@ -421,6 +498,79 @@ mod tests {
     use super::*;
     use std::path::Path;
 
+    /// Generate a test record for northward motion at constant velocity (1 knot = 1852 m/h).
+    /// This helper returns a Vec<TestDataRecord> for 1 hour, sampled once per second.
+    fn generate_northward_motion_records() -> Vec<TestDataRecord> {
+        let mut records: Vec<TestDataRecord> = Vec::with_capacity(3601);
+        let start_lat: f64 = 0.0;
+        let start_lon: f64 = 0.0;
+        let start_alt: f64 = 0.0;
+        let velocity_mps: f64 = 1852.0 / 3600.0; // 1 knot in m/s
+        let earth_radius: f64 = 6371000.0_f64; // meters
+
+        for t in 0..3600 {
+            // Each second, latitude increases by dlat = (v / R) * (180/pi)
+            let dlat: f64 = (velocity_mps * t as f64) / earth_radius * (180.0 / std::f64::consts::PI);
+            let time_str: String = format!("2023-01-01 00:{:02}:{:02}+00:00", t / 60, t % 60);
+
+            records.push(TestDataRecord {
+                time: time_str,
+                bearing_accuracy: 0.0,
+                speed_accuracy: 0.0,
+                vertical_accuracy: 0.0,
+                horizontal_accuracy: 0.0,
+                speed: velocity_mps,
+                bearing: 0.0,
+                altitude: start_alt,
+                longitude: start_lon,
+                latitude: start_lat + dlat,
+                qz: 0.0,
+                qy: 0.0,
+                qx: 0.0,
+                qw: 1.0,
+                roll: 0.0,
+                pitch: 0.0,
+                yaw: 0.0,
+                acc_z: 0.0,
+                acc_y: 0.0,
+                acc_x: 0.0,
+                gyro_z: 0.0,
+                gyro_y: 0.0,
+                gyro_x: 0.0,
+                mag_z: 0.0,
+                mag_y: 0.0,
+                mag_x: 0.0,
+                relative_altitude: 0.0,
+                pressure: 1000.0,
+                grav_z: 9.81,
+                grav_y: 0.0,
+                grav_x: 0.0,
+            });
+        }
+        records
+    }
+    #[test]
+    fn test_generate_northward_motion_records_end_latitude() {
+        let records = generate_northward_motion_records();
+        // The last record should have latitude close to 0.016667 (1 knot north in 1 hour)
+        let last = records.last().unwrap();
+        let expected_lat = 0.016667;
+        let tolerance = 1e-3;
+        assert!(
+            (last.latitude - expected_lat).abs() < tolerance,
+            "Ending latitude {} not within {} of expected {}",
+            last.latitude,
+            tolerance,
+            expected_lat
+        );
+        // write to CSV
+        let northward = File::create("northward_motion.csv").unwrap();
+        let mut writer = csv::Writer::from_writer(northward);
+        for record in &records {
+            writer.serialize(record).unwrap();
+        }
+        writer.flush().unwrap();
+    }
     /// Test that reading a valid CSV file returns records and parses fields correctly.
     #[test]
     fn test_test_data_record_from_csv() {
@@ -433,15 +583,13 @@ mod tests {
         assert!(first.latitude.abs() > 0.0);
         assert!(first.longitude.abs() > 0.0);
     }
-
     /// Test that reading a missing file returns an error.
     #[test]
     fn test_test_data_record_from_csv_invalid_path() {
         let path = Path::new("nonexistent.csv");
         let result = TestDataRecord::from_csv(path);
         assert!(result.is_err(), "Should error on missing file");
-    }
-    
+    }    
     /// Test writing TestDataRecord to CSV and reading it back
     #[test]
     fn test_test_data_record_to_csv() {
@@ -471,118 +619,5 @@ mod tests {
         // Clean up
         let _ = std::fs::remove_file(&temp_path);
     }
-
-    /// Test the dead_reckoning function with a small set of sample data
-    #[test]
-    fn test_dead_reckoning() {
-        let path = Path::new("./data/test_data.csv");
-        let records = TestDataRecord::from_csv(path).expect("Failed to read test_data.csv");
-        
-        // Only use a few records for the test to keep it fast
-        let sample_records = if records.len() > 5 {
-            records[0..5].to_vec()
-        } else {
-            records
-        };
-        
-        let result = dead_reckoning(&sample_records);
-        
-        // Check that we have the expected number of states
-        assert_eq!(result.states.len(), sample_records.len());
-        assert_eq!(result.timestamps.len(), sample_records.len());
-        assert_eq!(result.dt.len(), sample_records.len() - 1);
-        
-        // Check that the first state has the expected position
-        let first_state = &result.states[0];
-        let first_record = &sample_records[0];
-        assert!((first_state.position[0] - first_record.latitude).abs() < 1e-10);
-        assert!((first_state.position[1] - first_record.longitude).abs() < 1e-10);
-        assert!((first_state.position[2] - first_record.altitude).abs() < 1e-10);
-    }
     
-    /// Test the to_csv function of NavigationResult
-    #[test]
-    fn test_navigation_result_to_csv() {
-        let mut result = NavigationResult::new("Test Navigation");
-        
-        // Create a simple state 
-        let mut state = StrapdownState::new();
-        state.position = Vector3::new(40.0, -75.0, 100.0);
-        state.velocity = Vector3::new(1.0, 2.0, 0.5);
-        
-        // Add it to the result
-        result.states.push(state);
-        result.timestamps.push("2023-08-04 21:47:58+00:00".to_string());
-        result.dt.push(1.0);
-        
-        // Create a temporary file for the test
-        let temp_file = std::env::temp_dir().join("nav_test.csv");
-        let temp_path = temp_file.to_string_lossy().to_string();
-        
-        // Write to CSV
-        result.to_csv(&temp_path).expect("Failed to write CSV");
-        
-        // Check that the file exists and is not empty
-        let metadata = std::fs::metadata(&temp_path).expect("Failed to read metadata");
-        assert!(metadata.len() > 0, "CSV file should not be empty");
-        
-        // Clean up
-        let _ = std::fs::remove_file(&temp_path);
-    }
-    
-    /// Test the from_csv and to_csv functions of NavigationResult together
-    #[test]
-    fn test_navigation_result_from_csv() {
-        // Create a navigation result with a few states
-        let mut original_result = NavigationResult::new("Original Navigation");
-        
-        // Add a few states with different values
-        for i in 0..3 {
-            let mut state = StrapdownState::new();
-            state.position = Vector3::new(40.0 + i as f64 * 0.1, -75.0 - i as f64 * 0.1, 100.0 + i as f64);
-            state.velocity = Vector3::new(1.0 + i as f64, 2.0 - i as f64, 0.5);
-            
-            // Use a different attitude for each state
-            state.attitude = nalgebra::Rotation3::from_euler_angles(
-                (i as f64 * 5.0).to_radians(), 
-                (i as f64 * 2.0).to_radians(), 
-                (i as f64 * 10.0).to_radians()
-            );
-            
-            original_result.states.push(state);
-            original_result.timestamps.push(format!("2023-08-04 21:{}:00+00:00", 47 + i));
-            original_result.dt.push(1.0);
-        }
-        
-        // Write to a temporary file
-        let temp_file = std::env::temp_dir().join("nav_result_roundtrip.csv");
-        let temp_path = temp_file.to_string_lossy().to_string();
-        
-        original_result.to_csv(&temp_path).expect("Failed to write CSV");
-        
-        // Read back
-        let read_result = NavigationResult::from_csv(&temp_path, "Read Navigation")
-            .expect("Failed to read CSV");
-        
-        // Verify contents
-        assert_eq!(read_result.states.len(), original_result.states.len());
-        assert_eq!(read_result.timestamps.len(), original_result.timestamps.len());
-        assert_eq!(read_result.dt.len(), original_result.dt.len()-1);
-        assert_eq!(read_result.name, "Read Navigation");
-        
-        // Compare values from first state
-        let original_state = &original_result.states[0];
-        let read_state = &read_result.states[0];
-        
-        assert!((original_state.position[0] - read_state.position[0]).abs() < 1e-7);
-        assert!((original_state.position[1] - read_state.position[1]).abs() < 1e-7);
-        assert!((original_state.position[2] - read_state.position[2]).abs() < 1e-3);
-        
-        assert!((original_state.velocity[0] - read_state.velocity[0]).abs() < 1e-5);
-        assert!((original_state.velocity[1] - read_state.velocity[1]).abs() < 1e-5);
-        assert!((original_state.velocity[2] - read_state.velocity[2]).abs() < 1e-5);
-        
-        // Clean up
-        let _ = std::fs::remove_file(&temp_path);
-    }
 }

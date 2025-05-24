@@ -336,6 +336,30 @@ impl StrapdownState {
         }
         state
     }
+    /// Convert the StrapdownState to a one dimensional vec
+    /// 
+    /// Convert the StrapdownState to a native Rust vector. This vector is in the 
+    /// form of: $\left[p_n, p_e, p_d, v_n, v_e, v_d, \phi, \theta, \psi \right]$
+    pub fn to_vec(&self, in_degrees: bool) -> Vec<f64> {
+        let mut state: Vec<f64> = vec![0.0; 9];
+        state[2] = self.position[2];
+        state[3] = self.velocity[0];
+        state[4] = self.velocity[1];
+        state[5] = self.velocity[2];
+        let (roll, pitch, yaw) = &self.attitude.euler_angles();
+        if in_degrees {
+            state[0] = self.position[0].to_degrees();
+            state[1] = self.position[1].to_degrees();
+            state[6] = Deg(roll.to_degrees()).0;
+            state[7] = Deg(pitch.to_degrees()).0;
+            state[8] = Deg(yaw.to_degrees()).0;
+        } else {
+            state[6] = *roll;
+            state[7] = *pitch;
+            state[8] = *yaw;
+        }
+        state
+    }   
 }
 // Miscellaneous functions for wrapping angles
 
@@ -407,7 +431,7 @@ where
 }
 
 
-// tester function for building
+/// tester function for building bindings
 pub fn add(a: f64, b: f64) -> f64 {
     a + b
 }
