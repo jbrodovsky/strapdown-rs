@@ -121,7 +121,7 @@ pub mod earth;
 pub mod filter;
 pub mod sim;
 
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 use angle::Deg; // might be overkill to need this entire create just for this
 use nalgebra::{Matrix3, Rotation3, SVector, Vector3};
 
@@ -142,7 +142,16 @@ impl Default for IMUData {
         Self::new()
     }
 }
-
+impl Display for IMUData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "IMUData {{ accel: [{:.4}, {:.4}, {:.4}], gyro: [{:.4}, {:.4}, {:.4}] }}",
+            self.accel[0], self.accel[1], self.accel[2],
+            self.gyro[0], self.gyro[1], self.gyro[2]
+        )
+    }
+}
 impl IMUData {
     // Create a new IMUData with all zeros
     pub fn new() -> IMUData {

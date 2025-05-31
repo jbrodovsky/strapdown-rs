@@ -280,7 +280,11 @@ impl UKF {
         mean.extend(measurement_bias);
         assert!(
             mean.len() == covariance_diagonal.len(),
-            "Mean state and covariance diagonal must be of the same size"
+            "{}", &format!(
+                "Mean vector and covariance diagonal must be of the same size (mean: {}, covariance_diagonal: {})",
+                mean.len(),
+                covariance_diagonal.len()
+            )
         );
         let state_size = mean.len();
         let mean_state = DVector::from_vec(mean);
@@ -360,6 +364,7 @@ impl UKF {
         assert!(
             measurement.len() == self.measurement_noise.nrows(),
             "Measurement and measurement noise must be of the same size"
+
         );
         // Calculate expected measurement
         let mut z_hat = DVector::<f64>::zeros(measurement.len());
@@ -409,10 +414,21 @@ impl UKF {
     /// Calculate the sigma points for the UKF propagation based on the current state and covariance.
     pub fn get_sigma_points(&self) -> Vec<SigmaPoint> {
         //dbg!("UKF::get_sigma_points -> state_size: {}", self.state_size);
-        let mut sqrt_cov = (self.state_size as f64 + self.lambda) * self.covariance.clone(); 
+        let scaled_covariance = (self.state_size as f64 + self.lambda) * self.covariance.clone(); 
+        
         //println!("UKF sqrt_cov shape: {:?}", sqrt_cov.shape());
 //        println!("{:}", &sqrt_cov);
-        sqrt_cov = sqrt_cov.cholesky().unwrap().l();
+        // sqrt_cov = sqrt_cov.cholesky().unwrap().l();
+        let sqrt_cov = match matrix_square_root(&scaled_covariance) {
+            Some(sqrt_m) => sqrt_m,
+            None => {
+                // This path would be taken if matrix_square_root returns None,
+                // e.g. if the matrix isn't square or another unrecoverable error occurs.
+                // Depending on desired behavior, you might panic, or propagate an error.
+                // For now, panicking as sigma points are essential.
+                panic!("Failed to compute a robust matrix square root for sigma point generation. Scaled covariance might not be square or has other issues.");
+            }
+        };
         let mut sigma_points = Vec::<SigmaPoint>::with_capacity(2*self.state_size + 1);
         // Add the mean state as the first sigma point, note that the UKF uses two sets of weights
         sigma_points.push(SigmaPoint::from_vector(self.mean_state.clone(), Some(0.0)));
@@ -650,6 +666,63 @@ pub fn position_and_velocity_measurement_model(sigma_points: &Vec<SigmaPoint>, w
     measurement_sigma_points
 }
 
+
+/// Calculates a square root of a symmetric matrix.
+///
+/// Attempts Cholesky decomposition first (yielding L such that matrix = L * L^T).
+/// If Cholesky fails (e.g., matrix is not positive definite), it attempts to compute
+/// the square root using eigenvalue decomposition (S = V * sqrt(D) * V^T).
+/// For eigenvalue decomposition, eigenvalues are clamped to be non-negative.
+///
+/// # Arguments
+/// * `matrix` - The DMatrix<f64> to find the square root of. It's assumed to be symmetric and square.
+///
+/// # Returns
+/// * `Some(DMatrix<f64>)` containing a matrix square root.
+///   The result from Cholesky is lower triangular. The result from eigenvalue decomposition is symmetric.
+///   In both cases, if the result is `M`, then `matrix` approx `M * M.transpose()`.
+/// * `None` if the matrix is not square or another fundamental issue prevents computation (though
+///   this implementation tries to be robust for positive semi-definite cases).
+fn matrix_square_root(matrix: &DMatrix<f64>) -> Option<DMatrix<f64>> {
+    if !matrix.is_square() {
+        eprintln!("Error: Matrix must be square to compute square root.");
+        return None;
+    }
+
+    // Attempt Cholesky decomposition (yields L where matrix = L * L^T)
+    // Cholesky requires the matrix to be symmetric positive definite.
+    if let Some(chol) = matrix.clone().cholesky() {
+        return Some(chol.l());
+    }
+
+    // Cholesky failed, try eigenvalue decomposition.
+    // This is suitable for symmetric positive semi-definite matrices.
+    println!("Cholesky decomposition failed for matrix square root. Attempting eigenvalue decomposition.");
+    
+    // symmetric_eigen expects a symmetric matrix.
+    // If matrix might not be perfectly symmetric due to floating point issues,
+    // one could use (matrix + matrix.transpose()) / 2.0
+    // However, covariance matrices should inherently be symmetric.
+    let eigen_decomposition = matrix.clone().symmetric_eigen();
+    let eigenvalues = eigen_decomposition.eigenvalues;
+    let eigenvectors = eigen_decomposition.eigenvectors;
+
+    // Check for significantly negative eigenvalues, indicating non-positive semi-definiteness
+    if eigenvalues.iter().any(|&val| val < -1e-9) { // Using a small tolerance for floating point errors
+        println!("Warning: Negative eigenvalues encountered during eigenvalue decomposition. Clamping to zero for square root calculation. The input matrix was not positive semi-definite.");
+    }
+
+    // Create diagonal matrix of sqrt(eigenvalues), clamping eigenvalues to be non-negative
+    let sqrt_eigenvalues_diag = DMatrix::from_diagonal(
+        &eigenvalues.map(|val| val.max(0.0).sqrt())
+    );
+
+    // Reconstruct the square root: S = V * sqrt(D) * V^T
+    // This S will be symmetric, and S * S = matrix (or S * S^T = matrix)
+    let sqrt_m = eigenvectors.clone() * sqrt_eigenvalues_diag * eigenvectors.transpose();
+    
+    Some(sqrt_m)
+}
 
 /// Tests
 #[cfg(test)]

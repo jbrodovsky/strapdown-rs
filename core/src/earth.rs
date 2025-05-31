@@ -77,6 +77,10 @@ pub const MAGNETIC_NORTH_LONGITUDE: f64 = -72.8;       // degrees, geomagnetic n
 pub const MAGNETIC_REFERENCE_RADIUS: f64 = 6371200.0;   // meters, reference radius for magnetic field calculations
 /// Earth's magnetic field strength ($B_0$), teslas (2025, International Geomagnetic Reference Field)
 pub const MAGNETIC_FIELD_STRENGTH: f64 = 3.12e-5;       // T, reference mean magnetic field strength
+/// Rough conversion factor from meters to degrees for latitude/longitude via nautical miles (1 degree ~ 60 nautical miles; 1 nautical mile ~ 1852 meters)
+pub const METERS_TO_DEGREES: f64 = 60.0 / 1852.0;
+/// Rough conversion factor from degrees to meters for latitude/longitude via nautical miles (1 degree ~ 60 nautical miles; 1 nautical mile ~ 1852 meters)
+pub const DEGREES_TO_METERS: f64 = 1852.0 / 60.0;
 
 /// Convert a three-element vector to a skew-symmetric matrix
 /// 
