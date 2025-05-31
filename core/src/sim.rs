@@ -6,17 +6,16 @@
 //! - `NavigationResult` structure for storing and analyzing navigation solutions
 //! - CSV import/export functionality for both test data and navigation results
 //! - Unit tests for validating functionality
-use std::fs::File;
-use std::io::{self, Write};
+use std::io::{self};
 use std::path::Path;
 
 use chrono::DateTime;
-use nalgebra::{DMatrix, DVector, Rotation3, SMatrix, Vector3};
-use serde::{Deserialize, Serialize};
+use nalgebra::{DMatrix, DVector, Vector3};
+use serde::{Deserialize, Serialize, Serializer, Deserializer};
 
 use crate::{IMUData, StrapdownState};
-use crate::filter::{UKF, position_measurement_model, position_and_velocity_measurement_model};
-
+use crate::filter::{UKF, position_measurement_model};
+use crate::earth::{METERS_TO_DEGREES};
 /// Struct representing a single row of test data from the CSV file.
 ///
 /// Fields correspond to columns in the CSV, with appropriate renaming for Rust style.
@@ -156,6 +155,8 @@ impl TestDataRecord {
         writer.flush()?;
         Ok(())
     }
+
+    /// Formats the TestDataRecord as a string for easy display.
     pub fn to_string(&self) -> String {
         format!(
             "time: {},
@@ -244,7 +245,8 @@ pub struct NavigationResult {
     pub attitude_error_roll: f64,
     pub attitude_error_pitch: f64,
     pub attitude_error_yaw: f64,
-    /// Full state covariance matrix if available
+    /// Full state covariance matrix if available - serialized as a string in CSV
+    #[serde(serialize_with = "serialize_covariance", deserialize_with = "deserialize_covariance")]
     pub covariance: Option<Vec<f64>>,
 }
 
@@ -294,7 +296,7 @@ impl NavigationResult {
             covariance
         }
     }
-    /// Creates a new NavigationResult from nalgebra vectors and matricies from a filter.
+    /// Creates a new NavigationResult from a StrapdownState, and covariance.
     /// 
     /// This function takes a StrapdownState and a INS filter covariance matrix, and
     /// constructs a NavigationResult with the state values and covariance.
@@ -304,7 +306,7 @@ impl NavigationResult {
     /// * `timestamp` - Timestamp of the navigation solution
     /// * `covariance` - Covariance matrix from the filter, if available
     pub fn new_from_nav_state(state: &StrapdownState, timestamp: String, covariance: Option<DMatrix<f64>>) -> Self {
-        let mut cov_vec = None;
+        let cov_vec: Option<Vec<f64>>;
         if let Some(cov) = covariance {
             cov_vec = Some(cov.as_slice().to_vec());
         } else {
@@ -334,6 +336,52 @@ impl NavigationResult {
         }
     }
 
+    /// Creates a new NavigationResult from an nalgebra vector and covariance.
+    ///
+    /// This function creates a NavigationResult directly from a DVector representing the 9-state NED navigation solution,
+    /// and an optional covariance matrix.
+    /// 
+    /// # Arguments
+    /// * `state` - DVector containing the navigation state (latitude, longitude, altitude, velocity_n, velocity_e, velocity_d, roll, pitch, yaw)
+    /// * `timestamp` - Timestamp of the navigation solution
+    /// * `covariance` - Optional DMatrix representing the covariance of the state
+    /// 
+    /// # Returns
+    /// * `NavigationResult` - A new NavigationResult instance with the state values and covariance.
+    pub fn new_from_vector(
+        state: &DVector<f64>,
+        timestamp: String,
+        covariance: Option<&DMatrix<f64>>,
+    ) -> Self {
+        let cov_vec: Option<Vec<f64>>;
+        if let Some(cov) = covariance {
+            cov_vec = Some(cov.as_slice().to_vec());
+        } else {
+            cov_vec = None;
+        }
+        NavigationResult {
+            timestamp: timestamp.clone(),
+            latitude: state[0],
+            longitude: state[1],
+            altitude: state[2],
+            velocity_n: state[3],
+            velocity_e: state[4],
+            velocity_d: state[5],
+            roll: state[6],
+            pitch: state[7],
+            yaw: state[8],
+            position_error_lat: 0.0,
+            position_error_lon: 0.0,
+            position_error_alt: 0.0,
+            velocity_error_n: 0.0,
+            velocity_error_e: 0.0,
+            velocity_error_d: 0.0,
+            attitude_error_roll: 0.0,
+            attitude_error_pitch: 0.0,
+            attitude_error_yaw: 0.0,
+            covariance: cov_vec,
+        }
+    }
     /// Writes the NavigationResult to a CSV file.
     /// 
     /// # Arguments
@@ -351,6 +399,8 @@ impl NavigationResult {
     ///     "2023-01-01 00:00:00+00:00", &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, 
     ///     &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, None )];
     /// NavigationResult::to_csv(&records, "navigation_results.csv").expect("Failed to write CSV");
+    /// // doctest cleanup
+    /// std::fs::remove_file("navigation_results.csv").unwrap();
     /// ```
     pub fn to_csv<P: AsRef<Path>>(records: &[Self], path: P) -> io::Result<()> {
         let mut writer = csv::Writer::from_path(path)?;
@@ -382,7 +432,49 @@ impl NavigationResult {
 
 }
 
-/// Run dead reckoning simulation using test data.
+/// Custom serializer for the covariance field to serialize it as a single string in CSV
+fn serialize_covariance<S>(cov: &Option<Vec<f64>>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match cov {
+        Some(vec) => {
+            // Join the vector elements with commas and serialize as a single string
+            let cov_str = vec
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<String>>()
+                .join(",");
+            serializer.serialize_str(&cov_str)
+        }
+        None => serializer.serialize_none(),
+    }
+}
+
+/// Custom deserializer for the covariance field to deserialize from a string in CSV
+fn deserialize_covariance<'de, D>(deserializer: D) -> Result<Option<Vec<f64>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s: Option<String> = Option::deserialize(deserializer)?;
+    match s {
+        Some(s) if !s.is_empty() => {
+            // Parse the comma-separated string back to a Vec<f64>
+            let values: Result<Vec<f64>, _> = s
+                .split(',')
+                .map(|v| v.parse::<f64>())
+                .collect();
+            
+            match values {
+                Ok(vec) => Ok(Some(vec)),
+                Err(_) => Ok(None), // Handle parsing errors gracefully
+            }
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Run dead reckoning or "open-loop" simulation using test data.
 ///
 /// This function processes a sequence of sensor records through a StrapdownState, using
 /// the "forward" method to propagate the state based on IMU measurements. It initializes
@@ -493,10 +585,140 @@ pub fn dead_reckoning(records: &Vec<TestDataRecord>) -> Vec<NavigationResult> {
     results
 }
 
+/// Closed-loop GPS-aided inertial navigation simulation.
+/// 
+/// This function simulates a closed-loop full-state navigation system where GPS measurements are used 
+/// to correct the inertial navigation solution. It implements an Unscented Kalman Filter (UKF) to propagate 
+/// the state and update it with GPS measurements when available.
+/// 
+/// # Arguments
+/// * `records` - Vector of test data records containing IMU measurements and GPS data.
+/// # Returns
+/// * `Vec<NavigationResult>` - A vector of navigation results containing the state estimates and covariances at each timestamp. 
+pub fn closed_loop(records: &Vec<TestDataRecord>) -> Vec<NavigationResult> {
+    let mut results: Vec<NavigationResult> = Vec::with_capacity(records.len());
+    // Initialize the UKF with the first record
+    let mut ukf = initialize_ukf(records[0].clone(), None, None);
+    // Set the initial result to the UKF initial state
+    results.push(NavigationResult::new_from_vector(
+        &ukf.get_mean(),
+        records[0].time.clone(),
+        Some(&ukf.get_covariance()),
+    ));
+    // Clip to the first 1000 records for performance
+    let records = if records.len() > 1000 {
+        &records[0..100]
+    } else {
+        records
+    };
+    // Iterate through the records, updating the UKF with each IMU measurement
+    for record in records.iter().skip(1) {
+        // Calculate time difference from the previous record
+        let dt = match (
+            DateTime::parse_from_str(&results.last().unwrap().timestamp, "%Y-%m-%d %H:%M:%S%z"),
+            DateTime::parse_from_str(&record.time, "%Y-%m-%d %H:%M:%S%z"),
+        ) {
+            (Ok(prev), Ok(current)) => (current - prev).num_milliseconds() as f64 / 1000.0,
+            _ => 1.0, // Default to 1 second if parsing fails
+        };
+        // Create IMU data from the record
+        let imu_data = IMUData::new_from_vec(
+            vec![record.acc_x, record.acc_y, record.acc_z],
+            vec![record.gyro_x, record.gyro_y, record.gyro_z],
+        );
+        // Update the UKF with the IMU data
+        ukf.propagate(&imu_data, dt);
+        // If GPS data is available, update the UKF with the GPS measurement
+        if !record.latitude.is_nan() && !record.longitude.is_nan() && !record.altitude.is_nan() {
+            let measurement = DVector::from_vec(
+                vec![
+                    record.longitude,
+                    record.latitude,
+                    record.altitude
+                ]
+            );
+            // Create the measurement sigma points using the position measurement model
+            let measurement_sigma_points = position_measurement_model(&ukf.get_sigma_points(), true);
+            // Update the UKF with the GPS measurement
+            ukf.update(&measurement, &measurement_sigma_points);
+        } 
+        // Store the current state and covariance in results
+        results.push(NavigationResult::new_from_vector(
+            &ukf.get_mean(),
+            record.time.clone(),
+            Some(&ukf.get_covariance()),
+        ));
+    }
+    results
+}
+
+/// Helper function to initialize a UKF for closed-loop mode.
+/// 
+/// This function sets up the Unscented Kalman Filter (UKF) with initial pose, attitude covariance, and IMU biases based on 
+/// the provided `TestDataRecord`. It initializes the UKF with position, velocity, attitude, and covariance matrices.
+/// Optional parameters for attitude covariance and IMU biases can be provided to customize the filter's initial state.
+/// 
+/// # Arguments
+/// 
+/// * `initial_pose` - A `TestDataRecord` containing the initial pose information.
+/// * `attitude_covariance` - Optional vector of f64 representing the initial attitude covariance (default is a small value).
+/// * `imu_biases` - Optional vector of f64 representing the initial IMU biases (default is a small value).
+/// 
+/// # Returns
+/// 
+/// * `UKF` - An instance of the Unscented Kalman Filter initialized with the provided parameters. 
+pub fn initialize_ukf(initial_pose: TestDataRecord, attitude_covariance: Option<Vec<f64>>, imu_biases: Option<Vec<f64>>) -> UKF {
+    // Initialize the UKF with the initial pose
+    let position = vec![initial_pose.longitude, initial_pose.latitude, initial_pose.altitude];
+    let velocity = vec![
+        initial_pose.speed * initial_pose.bearing.cos(),
+        initial_pose.speed * initial_pose.bearing.sin(),
+        0.0, // Assuming no vertical velocity for simplicity
+    ];
+    let attitude = vec![initial_pose.roll, initial_pose.pitch, initial_pose.yaw];
+    let position_accuracy = initial_pose.horizontal_accuracy.sqrt();
+    let mut covariance_diagonal = vec![
+        position_accuracy * METERS_TO_DEGREES,
+        position_accuracy * METERS_TO_DEGREES, 
+        initial_pose.vertical_accuracy,
+        initial_pose.speed_accuracy,
+        initial_pose.speed_accuracy,
+        initial_pose.speed_accuracy
+    ];
+    // extend the covariance diagonal if attitude covariance is provided
+    match attitude_covariance {
+        Some(att_cov) => covariance_diagonal.extend(att_cov),
+        None => covariance_diagonal.extend(vec![1e-3; 3]), // Default values if not provided
+    }
+    // extend the covariance diagonal if imu biases are provided
+    match imu_biases {
+        Some(imu_biases) => covariance_diagonal.extend(imu_biases),
+        None => covariance_diagonal.extend(vec![1e-3; 6]), // Default values if not provided
+    }
+    println!("Covariance diagonal: {:?}", covariance_diagonal);
+    let process_noise_diagonal = DVector::from_vec(vec![0.0; 15]);
+    let measurement_noise_diagonal = DVector::from_vec(vec![1e-12; 3]);
+    UKF::new(
+        position,
+        velocity,
+        attitude,
+        vec![1e-3; 3],
+        vec![0.0; 3],
+        covariance_diagonal,
+        DMatrix::from_diagonal(&process_noise_diagonal),
+        DMatrix::from_diagonal(&measurement_noise_diagonal),
+        1e-3,
+        2.0,
+        0.0,
+    )
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::Path;
+    use std::fs::File;
 
     /// Generate a test record for northward motion at constant velocity (1 knot = 1852 m/h).
     /// This helper returns a Vec<TestDataRecord> for 1 hour, sampled once per second.
@@ -570,6 +792,8 @@ mod tests {
             writer.serialize(record).unwrap();
         }
         writer.flush().unwrap();
+        // Clean up the test file
+        let _ = std::fs::remove_file("northward_motion.csv");
     }
     /// Test that reading a valid CSV file returns records and parses fields correctly.
     #[test]
