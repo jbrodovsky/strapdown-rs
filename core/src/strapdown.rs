@@ -125,8 +125,6 @@ use std::fmt::{Debug, Display};
 use angle::Deg; // might be overkill to need this entire create just for this
 use nalgebra::{Matrix3, Rotation3, SVector, Vector3};
 
-//use crate::earth;
-
 /// Basic structure for holding IMU data in the form of acceleration and angular rate vectors. 
 /// 
 /// The vectors are the body frame of the vehicle and represent relative movement. This structure and library is not intended
@@ -153,16 +151,57 @@ impl Display for IMUData {
     }
 }
 impl IMUData {
-    // Create a new IMUData with all zeros
+    /// Create a new IMUData instance with all zeros
     pub fn new() -> IMUData {
         IMUData {
             accel: Vector3::zeros(),
             gyro: Vector3::zeros(),
         }
     }
+    /// Create a new IMUData instance from acceleration and gyro vectors
+    /// 
+    /// The vectors are in the body frame of the vehicle and represent relative movement.
+    /// The acceleration vector is in m/s^2 and the gyro vector is in rad/s.
+    /// 
+    /// # Arguments
+    /// * `accel` - A Vector3 representing the acceleration in m/s^2 in the body frame x, y, z axis.
+    /// * `gyro` - A Vector3 representing the angular rate in rad/s in the body frame x, y, z axis.
+    /// 
+    /// # Returns
+    /// * An IMUData instance containing the acceleration and gyro vectors.
+    /// 
+    /// # Example
+    /// ```rust
+    /// use strapdown::IMUData;
+    /// use nalgebra::Vector3;
+    /// let imu_data = IMUData::new_from_vector(
+    ///    Vector3::new(0.0, 0.0, -9.81), // free fall acceleration in m/s^2
+    ///    Vector3::new(0.0, 0.0, 0.0) // No rotation
+    /// );
+    /// ```
     pub fn new_from_vector(accel: Vector3<f64>, gyro: Vector3<f64>) -> IMUData {
         IMUData { accel, gyro }
     }
+    /// Create a new IMUData instance from acceleration and gyro vectors in Vec<f64> format
+    /// 
+    /// The vectors are in the body frame of the vehicle and represent relative movement.
+    /// The acceleration vector is in m/s^2 and the gyro vector is in rad/s.
+    /// 
+    /// # Arguments
+    /// * `accel` - A Vector3 representing the acceleration in m/s^2 in the body frame x, y, z axis.
+    /// * `gyro` - A Vector3 representing the angular rate in rad/s in the body frame x, y, z axis.
+    /// 
+    /// # Returns
+    /// * An IMUData instance containing the acceleration and gyro vectors.
+    /// 
+    /// # Example
+    /// ```rust
+    /// use strapdown::IMUData;
+    /// let imu_data = IMUData::new_from_vec(
+    ///    vec![0.0, 0.0, -9.81], // free fall acceleration in m/s^2
+    ///    vec![0.0, 0.0, 0.0] // No rotation
+    /// );
+    /// ```
     pub fn new_from_vec(accel: Vec<f64>, gyro: Vec<f64>) -> IMUData {
         IMUData {
             accel: Vector3::new(accel[0], accel[1], accel[2]),
@@ -170,7 +209,6 @@ impl IMUData {
         }
     }
 }
-
 /// Basic structure for holding the strapdown mechanization state in the form of position, velocity, and attitude.
 /// 
 /// Attitude is stored in matrix form (rotation or direction cosine matrix) and position and velocity are stored as
@@ -184,7 +222,6 @@ pub struct StrapdownState {
     pub attitude: Rotation3<f64>, // attitude in the form of a rotation matrix (direction cosine matrix; roll-pitch-yaw Euler angles)
 //    ned: bool,                    // NED or ENU; true for NED, false for ENU
 }
-
 impl Debug for StrapdownState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let (roll, pitch, yaw) = self.attitude.euler_angles();
@@ -203,13 +240,11 @@ impl Debug for StrapdownState {
         )
     }
 }
-
 impl Default for StrapdownState {
     fn default() -> Self {
         Self::new()
     }
 }
-
 impl StrapdownState {
     /// Create a new StrapdownState with all zeros
     pub fn new() -> StrapdownState {
@@ -220,9 +255,28 @@ impl StrapdownState {
             //ned: true,
         }
     }
-    /// Create a new StrapdownState from a position, velocity, and attitude vector, where the attitude vector
-    /// is in the form of Euler angles in degrees. The position is in the form of latitude (degrees), longitude (degrees),
-    /// and altitude (meters). The velocity is in the form of NED frame (m/s).
+    /// Create a new StrapdownState from a position, velocity, and attitude vectors.
+    /// 
+    /// This function initializes a new StrapdownState instance with the given position, velocity, and attitude vectors.
+    /// The position is in the form of latitude (degrees), longitude (degrees), and altitude (meters). The corresponding
+    /// velocities are in the NED/ENU frame (meters per second) and the attitude is given as roll, pitch, and yaw angles 
+    /// in degrees. 
+    /// 
+    /// # Arguments
+    /// * `position` - A Vector3 representing the position in the form of latitude (degrees), longitude (degrees), and altitude (meters).
+    /// * `velocity` - A Vector3 representing the velocity in the NED/ENU frame (meters per second).
+    /// * `attitude` - A Vector3 representing the attitude in the form of roll, pitch, and yaw angles (degrees).
+    ///  /// # Returns
+    /// * A StrapdownState instance containing the position, velocity, and attitude.
+    /// # Example
+    /// ```rust
+    /// use strapdown::StrapdownState;
+    /// use nalgebra::Vector3;
+    /// let position = Vector3::new(37.7749, -122.4194, 0.0); // San Francisco coordinates
+    /// let velocity = Vector3::new(0.0, 0.0, 0.0); // No initial velocity
+    /// let attitude = Vector3::new(0.0, 0.0, 0.0); // No initial attitude
+    /// let state = StrapdownState::new_from(position, velocity, attitude);
+    /// ```
     pub fn new_from(
         position: Vector3<f64>,
         velocity: Vector3<f64>,
@@ -239,11 +293,26 @@ impl StrapdownState {
             //ned: true,
         }
     }
-    /// Convert a one dimensional vector to a StrapdownState
+    /// Create a StrapdownState from a vector of states
     ///
-    /// The vector is in the form of:
-    /// $\left(p_n, p_e, p_d, v_n, v_e, v_d, \phi, \theta, \psi\right)$ where the angles for attitude (roll, pitch, yaw), latitude ($p_n$),
-    /// and longitude ($p_e$) are in radians.
+    /// Creates a StrapdownState object from a cannoincal strapdown state vector. The vector is in the 
+    /// form of: $\left(p_n, p_e, p_d, v_n, v_e, v_d, \phi, \theta, \psi\right)$ where the angles for 
+    /// attitude (roll, pitch, yaw), latitude ($p_n$), and longitude ($p_e$) are in radians.
+    /// 
+    /// # Arguments
+    /// * `state` - A SVector of shape (9,) representing the strapdown state vector.
+    ///
+    /// # Returns
+    /// * A StrapdownState instance containing the position, velocity, and attitude.
+    /// 
+    /// # Example
+    /// ```rust
+    /// use strapdown::StrapdownState;
+    /// use nalgebra::SVector;
+    /// 
+    /// let state_vector: SVector<f64, 9> = SVector::from_vec(vec![37.7749, -122.4194, 0.0, 10.0, 0.0, 0.0, 0.0, 45.0, 0.0]); // Example state vector
+    /// let strapdown_state = StrapdownState::new_from_vector(state_vector);
+    /// ```
     pub fn new_from_vector(state: SVector<f64, 9>) -> StrapdownState {
         StrapdownState {
             attitude: Rotation3::from_euler_angles(state[6], state[7], state[8]),
@@ -253,6 +322,28 @@ impl StrapdownState {
         }
     }
     /// NED Attitude update equation
+    /// 
+    /// This function implements the attitude update equation for the strapdown navigation system. It takes the gyroscope
+    /// data and the time step as inputs and returns the updated attitude matrix. The attitude update equation is based 
+    /// on the book _Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems, Second Edition_ by Paul D. Groves.
+    /// 
+    /// # Arguments
+    /// * `gyros` - A Vector3 representing the gyroscope data in rad/s in the body frame x, y, z axis.
+    /// * `dt` - A f64 representing the time step in seconds.
+    /// 
+    /// # Returns
+    /// * A Matrix3 representing the updated attitude matrix in the NED frame.
+    /// 
+    /// # Example
+    /// ```
+    /// use strapdown::StrapdownState;
+    /// use nalgebra::{Vector3, Matrix3};
+    /// 
+    /// let state = StrapdownState::new();
+    /// let gyros = Vector3::new(0.1, 0.0, 0.0); // Example gyroscope data in rad/s
+    /// let dt = 0.1; // Example time step in seconds
+    /// let updated_attitude: Matrix3<f64> = state.attitude_update(&gyros, dt);
+    /// ```
     fn attitude_update(&self, gyros: &Vector3<f64>, dt: f64) -> Matrix3<f64> {
         let transport_rate: Matrix3<f64> = earth::vector_to_skew_symmetric(&earth::transport_rate(
             &self.position[0],
@@ -267,6 +358,27 @@ impl StrapdownState {
         c_1
     }
     /// Velocity update in NED
+    /// 
+    /// This function implements the velocity update equation for the strapdown navigation system. It takes the specific force
+    /// vector and the time step as inputs and returns the updated velocity vector. The velocity update equation is based
+    /// on the book _Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems, Second Edition_ by Paul D. Groves.
+    /// 
+    /// # Arguments
+    /// * `f` - A Vector3 representing the specific force vector in m/s^2 in the NED frame.
+    /// * `dt` - A f64 representing the time step in seconds.
+    /// 
+    /// # Returns
+    /// * A Vector3 representing the updated velocity vector in the NED frame.
+    /// 
+    /// # Example
+    /// ```
+    /// use strapdown::StrapdownState;
+    /// use nalgebra::{Vector3, Matrix3};
+    /// let state = StrapdownState::new();
+    /// let f_1 = Vector3::new(0.0, 0.0, -9.81); // Example specific force vector in m/s^2; This is gravitational freefall
+    /// let dt = 0.1; // Example time step in seconds
+    /// let updated_velocity: Vector3<f64> = state.velocity_update(&f_1, dt);
+    /// ```
     fn velocity_update(&self, f_1: &Vector3<f64>, dt: f64) -> Vector3<f64> {
         let transport_rate: Matrix3<f64> = earth::vector_to_skew_symmetric(&earth::transport_rate(
             &self.position[0],
@@ -282,10 +394,31 @@ impl StrapdownState {
         v_1
     }
 
-    /// NED form of the forward kinematics equations. Corresponds to section 5.4 Local-Navigation Frame Equations.
+    /// NED form of the forward kinematics equations. Corresponds to section 5.4 Local-Navigation Frame Equations
+    /// from the book _Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems, Second Edition_ 
+    /// by Paul D. Groves; Second Edition.
     /// 
     /// This function implements the forward kinematics equations for the strapdown navigation system. It takes
     /// the IMU data and the time step as inputs and updates the position, velocity, and attitude of the system.
+    /// The IMU data is assumed to be pre-processed and ready for use in the mechanization equations (i.e. the
+    /// gravity vector has already been filtered out and the data represents relative motion).
+    /// 
+    /// # Arguments
+    /// * `imu_data` - A reference to an IMUData instance containing the acceleration and gyro data in the body frame.
+    /// * `dt` - A f64 representing the time step in seconds.
+    /// 
+    /// # Example
+    /// ```rust
+    /// use strapdown::{StrapdownState, IMUData};
+    /// use nalgebra::Vector3;
+    /// let mut state = StrapdownState::new();
+    /// let imu_data = IMUData::new_from_vector(
+    ///    Vector3::new(0.0, 0.0, -9.81), // free fall acceleration in m/s^2
+    ///    Vector3::new(0.0, 0.0, 0.0) // No rotation
+    /// );
+    /// let dt = 0.1; // Example time step in seconds
+    /// state.forward(&imu_data, dt);
+    /// ```
     pub fn forward(&mut self, imu_data: &IMUData, dt: f64) {
         // Extract the attitude matrix from the current state
         let c_0: Rotation3<f64> = self.attitude;
@@ -320,11 +453,18 @@ impl StrapdownState {
         // Update velocity
         self.velocity = v_1;
     }
-    /// Convert the StrapdownState to a one dimensional vector
+    /// Convert the StrapdownState to a one dimensional vector, nalgebra style
     /// 
-    /// The vector is in the form of: $\left[p_n, p_e, p_d, v_n, v_e, v_d, \phi, \theta, \psi \right]$
-    /// Primary use case is in modeling the probability distribution mean
-    /// in the inertial navigation filters.
+    /// StrapdownState internally stores the attitude as a direction cosine matrix (DCM) and the position 
+    /// and velocity as vectors. Outside of this object, it is useful to have the navigation state in a 
+    /// traditional cannonical vector form for use in various filters and algorithms. This function converts
+    /// the internal state to a one dimensional vector in the form of: $\left[p_n, p_e, p_d, v_n, v_e, v_d, \phi, \theta, \psi \right]$
+    /// 
+    /// # Arguments
+    /// * `in_degrees` - A boolean indicating whether to return the angles in degrees (true) or radians (false).
+    /// 
+    /// # Returns
+    /// * An SVector of shape (9,) representing the strapdown state vector.
     pub fn to_vector(&self, in_degrees: bool) -> SVector<f64, 9> {
         let mut state: SVector<f64, 9> = SVector::zeros();
         state[2] = self.position[2];
@@ -345,10 +485,18 @@ impl StrapdownState {
         }
         state
     }
-    /// Convert the StrapdownState to a one dimensional vec
+    /// Convert the StrapdownState to a one dimensional vector, native vec (list) style
     /// 
-    /// Convert the StrapdownState to a native Rust vector. This vector is in the 
-    /// form of: $\left[p_n, p_e, p_d, v_n, v_e, v_d, \phi, \theta, \psi \right]$
+    /// StrapdownState internally stores the attitude as a direction cosine matrix (DCM) and the position 
+    /// and velocity as vectors. Outside of this object, it is useful to have the navigation state in a 
+    /// traditional cannonical vector form for use in various filters and algorithms. This function converts
+    /// the internal state to a one dimensional vector in the form of: $\left[p_n, p_e, p_d, v_n, v_e, v_d, \phi, \theta, \psi \right]$
+    /// 
+    /// # Arguments
+    /// * `in_degrees` - A boolean indicating whether to return the angles in degrees (true) or radians (false).
+    /// 
+    /// # Returns
+    /// * An SVector of shape (9,) representing the strapdown state vector.
     pub fn to_vec(&self, in_degrees: bool) -> Vec<f64> {
         let mut state: Vec<f64> = vec![0.0; 9];
         state[2] = self.position[2];
@@ -375,6 +523,18 @@ impl StrapdownState {
 /// Wrap an angle to the range -180 to 180 degrees
 /// 
 /// This function is generic and can be used with any type that implements the necessary traits.
+/// 
+/// # Arguments
+/// * `angle` - The angle to be wrapped, which can be of any type that implements the necessary traits.
+/// # Returns
+/// * The wrapped angle, which will be in the range -180 to 180 degrees.
+/// # Example
+/// ```rust
+/// use strapdown::wrap_to_180;
+/// let angle = 190.0;
+/// let wrapped_angle = wrap_to_180(angle);
+/// assert_eq!(wrapped_angle, -170.0); // 190 degrees wrapped to -170 degrees
+/// ```
 pub fn wrap_to_180<T>(angle: T) -> T
 where
     T: PartialOrd + Copy + std::ops::SubAssign + std::ops::AddAssign + From<f64>,
@@ -392,6 +552,18 @@ where
 /// Wrap an angle to the range 0 to 360 degrees
 /// 
 /// This function is generic and can be used with any type that implements the necessary traits.
+/// 
+/// # Arguments
+/// * `angle` - The angle to be wrapped, which can be of any type that implements the necessary traits.
+/// # Returns
+/// * The wrapped angle, which will be in the range 0 to 360 degrees.
+/// # Example
+/// ```rust
+/// use strapdown::wrap_to_360;
+/// let angle = 370.0;
+/// let wrapped_angle = wrap_to_360(angle);
+/// assert_eq!(wrapped_angle, 10.0); // 370 degrees wrapped to 10 degrees
+/// ```
 pub fn wrap_to_360<T>(angle: T) -> T
 where
     T: PartialOrd + Copy + std::ops::SubAssign + std::ops::AddAssign + From<f64>,
@@ -408,6 +580,19 @@ where
 /// Wrap an angle to the range 0 to $\pm\pi$ radians
 /// 
 /// This function is generic and can be used with any type that implements the necessary traits.
+/// 
+/// # Arguments
+/// * `angle` - The angle to be wrapped, which can be of any type that implements the necessary traits.
+/// # Returns
+/// * The wrapped angle, which will be in the range -π to π radians.
+/// # Example
+/// ```rust
+/// use strapdown::wrap_to_pi;
+/// use std::f64::consts::PI;
+/// let angle = 3.0 * PI / 4.0; // radians
+/// let wrapped_angle = wrap_to_pi(angle);
+/// assert_eq!(wrapped_angle, -PI / 4.0); // 3π/4 radians wrapped to -π/4 radians
+/// ```
 pub fn wrap_to_pi<T>(angle: T) -> T
 where
     T: PartialOrd + Copy + std::ops::SubAssign + std::ops::AddAssign + From<f64>,
@@ -424,6 +609,19 @@ where
 /// Wrap an angle to the range 0 to $2 \pi$ radians
 /// 
 /// This function is generic and can be used with any type that implements the necessary traits.
+/// 
+/// # Arguments
+/// * `angle` - The angle to be wrapped, which can be of any type that implements the necessary traits.
+/// # Returns
+/// * The wrapped angle, which will be in the range -π to π radians.
+/// # Example
+/// ```rust
+/// use strapdown::wrap_to_2pi;
+/// use std::f64::consts::PI;
+/// let angle = 5.0 * PI; // radians
+/// let wrapped_angle = wrap_to_2pi(angle);
+/// assert_eq!(wrapped_angle, PI); // 5π radians wrapped to π radians
+/// ```
 pub fn wrap_to_2pi<T>(angle: T) -> T
 where
     T: PartialOrd + Copy + std::ops::SubAssign + std::ops::AddAssign + From<f64>,
