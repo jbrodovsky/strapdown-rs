@@ -6,6 +6,7 @@
 //! - `NavigationResult` structure for storing and analyzing navigation solutions
 //! - CSV import/export functionality for both test data and navigation results
 //! - Unit tests for validating functionality
+use std::fmt::Display;
 use std::io::{self};
 use std::path::Path;
 
@@ -164,6 +165,7 @@ impl Display for TestDataRecord {
             self.time, self.latitude, self.longitude, self.altitude, self.speed, self.bearing
         )
     }
+}
 /// Generic result struct for navigation simulations.
 /// 
 /// This structure contains a single row of position, velocity, and attitude vectors
