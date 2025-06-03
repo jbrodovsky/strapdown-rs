@@ -563,11 +563,11 @@ pub fn closed_loop(records: &Vec<TestDataRecord>) -> Vec<NavigationResult> {
         Some(&ukf.get_covariance()),
     ));
     // Clip to the first 1000 records for performance
-    let records = if records.len() > 1000 {
-        &records[0..3]
-    } else {
-        records
-    };
+    //let records = if records.len() > 1000 {
+    //    &records[0..2]
+    //} else {
+    //    records
+    //};
     // Iterate through the records, updating the UKF with each IMU measurement
     for record in records.iter().skip(1) {
         // Calculate time difference from the previous record
@@ -587,6 +587,7 @@ pub fn closed_loop(records: &Vec<TestDataRecord>) -> Vec<NavigationResult> {
         ukf.propagate(&imu_data, dt);
         println!("======================================================");
         // If GPS data is available, update the UKF with the GPS measurement
+        let sigma_points = ukf.get_sigma_points(); // <-- BUG FIXED? Ok, there is a bug in get_sigma_points()
         if !record.latitude.is_nan() && !record.longitude.is_nan() && !record.altitude.is_nan() {
             let measurement = DVector::from_vec(
                 vec![
@@ -598,7 +599,7 @@ pub fn closed_loop(records: &Vec<TestDataRecord>) -> Vec<NavigationResult> {
             // Create the measurement sigma points using the position measurement model
             let measurement_sigma_points = position_measurement_model(&ukf.get_sigma_points(), true);
             println!("Measurement: {:?}", measurement);
-            println!("Measurement Sigma Points: {:?}", measurement_sigma_points);
+            //println!("Measurement Sigma Points: {:?}", measurement_sigma_points);
             // Update the UKF with the GPS measurement
             ukf.update(&measurement, &measurement_sigma_points);
         } 
@@ -655,12 +656,13 @@ pub fn initialize_ukf(initial_pose: TestDataRecord, attitude_covariance: Option<
         Some(imu_biases) => covariance_diagonal.extend(imu_biases),
         None => covariance_diagonal.extend(vec![1e-3; 6]), // Default values if not provided
     }
-    println!("Covariance diagonal: {:?}", covariance_diagonal);
     let mut process_noise_diagonal = vec![0.0; 9];
     process_noise_diagonal.extend(vec![1e-3; 6]); // Process noise for imu biases
     let process_noise_diagonal = DVector::from_vec(process_noise_diagonal);
     //DVector::from_vec(vec![0.0; 15]);
     let measurement_noise_diagonal = DVector::from_vec(vec![1e-12; 3]);
+
+    println!("UKF initialized with position: {:?}, velocity: {:?}, attitude: {:?}", position, velocity, attitude);
     UKF::new(
         position,
         velocity,
