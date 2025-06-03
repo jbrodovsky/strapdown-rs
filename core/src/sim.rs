@@ -446,7 +446,7 @@ where
 /// # Returns
 /// * `Vec<NavigationResult>` containing the sequence of StrapdownState instances over time,
 ///   along with timestamps and time differences.
-pub fn dead_reckoning(records: &Vec<TestDataRecord>) -> Vec<NavigationResult> {
+pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
     if records.is_empty() {
         return Vec::new();
     }
