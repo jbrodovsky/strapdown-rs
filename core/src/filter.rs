@@ -359,7 +359,7 @@ impl UKF {
     /// # Arguments
     /// * `measurement` - The measurement vector to update the state with.
     /// * `measurement_sigma_points` - The measurement sigma points to use for the update.
-    pub fn update(&mut self, measurement: &DVector<f64>, measurement_sigma_points: &Vec<DVector<f64>>) {
+    pub fn update(&mut self, measurement: &DVector<f64>, measurement_sigma_points: &[DVector<f64>]) {
         // Assert that the measurement is the correct size as the measurement noise diagonal
         assert!(
             measurement.len() == self.measurement_noise.nrows(),
@@ -373,8 +373,9 @@ impl UKF {
         }
         // Calculate innovation matrix S
         let mut s = DMatrix::<f64>::zeros(measurement.len(), measurement.len());
-        for i in 0..measurement_sigma_points.len() {
-            let diff = &measurement_sigma_points[i] - &z_hat;
+        //for i in 0..measurement_sigma_points.len() {
+        for (i, sigma_point) in measurement_sigma_points.iter().enumerate() {
+            let diff = sigma_point - &z_hat;
             s += self.weights_cov[i] * &diff * &diff.transpose();
         }
         s += &self.measurement_noise;

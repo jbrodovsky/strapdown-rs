@@ -267,7 +267,7 @@ impl StrapdownState {
     /// * `position` - A Vector3 representing the position in the form of latitude (degrees), longitude (degrees), and altitude (meters).
     /// * `velocity` - A Vector3 representing the velocity in the NED/ENU frame (meters per second).
     /// * `attitude` - A Vector3 representing the attitude in the form of roll, pitch, and yaw angles (degrees).
-    ///  /// # Returns
+    /// # Returns
     /// * A StrapdownState instance containing the position, velocity, and attitude.
     /// # Example
     /// ```rust
@@ -354,8 +354,8 @@ impl StrapdownState {
         let rotation_rate: Matrix3<f64> =
             earth::vector_to_skew_symmetric(&earth::earth_rate_lla(&self.position[0]));
         let omega_ib: Matrix3<f64> = earth::vector_to_skew_symmetric(gyros);
-        let c_1: Matrix3<f64> = &self.attitude * (Matrix3::identity() + omega_ib * dt)
-            - (rotation_rate + transport_rate) * &self.attitude * dt;
+        let c_1: Matrix3<f64> = self.attitude * (Matrix3::identity() + omega_ib * dt)
+            - (rotation_rate + transport_rate) * self.attitude * dt;
         c_1
     }
     /// Velocity update in NED
@@ -390,8 +390,8 @@ impl StrapdownState {
             earth::vector_to_skew_symmetric(&earth::earth_rate_lla(&self.position[0]));
         let r = earth::ecef_to_lla(&self.position[0], &self.position[1]);
         // let grav: Vector3<f64> = earth::gravitation(&self.position[0], &self.position[1], &self.position[2]);
-        let v_1: Vector3<f64> = &self.velocity
-            + (f_1 - r * (transport_rate + 2.0 * rotation_rate) * &self.velocity) * dt;
+        let v_1: Vector3<f64> = self.velocity
+            + (f_1 - r * (transport_rate + 2.0 * rotation_rate) * self.velocity) * dt;
         v_1
     }
 
@@ -437,14 +437,14 @@ impl StrapdownState {
         // Altitude update
         self.position[2] += 0.5 * (v_0[2] + v_1[2]) * dt;
         // Latitude update
-        let lat_1: f64 = &self.position[0].to_radians()
-            + 0.5 * (v_0[0] / (r_n + alt_0) + v_1[0] / (r_n + &self.position[2])) * dt;
+        let lat_1: f64 = self.position[0].to_radians()
+            + 0.5 * (v_0[0] / (r_n + alt_0) + v_1[0] / (r_n + self.position[2])) * dt;
         // Longitude update
         let (_, r_e_1, _) = earth::principal_radii(&lat_1, &self.position[2]);
         let lon_1: f64 = self.position[1].to_radians()
             + 0.5
                 * (v_0[1] / ((r_e_0 + alt_0) * lat_0.cos())
-                    + v_1[1] / ((r_e_1 + &self.position[2]) * &lat_1.cos()))
+                    + v_1[1] / ((r_e_1 + self.position[2]) * lat_1.cos()))
                 * dt;
         // Update position to degrees
         self.position[0] = lat_1.to_degrees();
