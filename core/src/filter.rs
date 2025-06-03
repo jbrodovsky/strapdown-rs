@@ -334,15 +334,15 @@ impl UKF {
         }
         let mut mu_bar = DVector::<f64>::zeros(self.state_size);
         // Update the mean state through a naive loop
-        for i in 0..(2 * self.state_size + 1) {
-            mu_bar += self.weights_mean[i] * &sigma_points[i].get_state();
+        for (i, sigma_point) in sigma_points.iter().enumerate() {
+            mu_bar += self.weights_mean[i] * sigma_point.get_state();
         }
         let mut cov_bar = DMatrix::<f64>::zeros(self.state_size, self.state_size);
         // Update the covariance through a naive loop
-        for i in 0..(2*self.state_size + 1) {
-            let sigma_point = &sigma_points[i];
+        for (i, sigma_point) in sigma_points.iter().enumerate() {
+            //let sigma_point = &sigma_points[i];
             let weight_cov = self.weights_cov[i];
-            let diff = &sigma_point.get_state() - &mu_bar;
+            let diff = sigma_point.get_state() - &mu_bar;
             cov_bar += weight_cov * &diff * &diff.transpose();
         }
         self.mean_state = mu_bar;
@@ -359,9 +359,6 @@ impl UKF {
     /// # Arguments
     /// * `measurement` - The measurement vector to update the state with.
     /// * `measurement_sigma_points` - The measurement sigma points to use for the update.
-    /// 
-    /// # Returns
-    /// * none
     pub fn update(&mut self, measurement: &DVector<f64>, measurement_sigma_points: &Vec<DVector<f64>>) {
         // Assert that the measurement is the correct size as the measurement noise diagonal
         assert!(
@@ -371,10 +368,8 @@ impl UKF {
         );
         // Calculate expected measurement
         let mut z_hat = DVector::<f64>::zeros(measurement.len());
-        for i in 0..measurement_sigma_points.len() {
-            let sigma_point = &measurement_sigma_points[i];
-            let weight_mean = self.weights_mean[i];
-            z_hat += weight_mean * sigma_point;
+        for (i, sigma_point) in measurement_sigma_points.iter().enumerate() {
+            z_hat += self.weights_mean[i] * sigma_point;
         }
         // Calculate innovation matrix S
         let mut s = DMatrix::<f64>::zeros(measurement.len(), measurement.len());
@@ -386,8 +381,9 @@ impl UKF {
         // Calculate the cross-covariance
         let sigma_points = self.get_sigma_points();
         let mut cross_covariance = DMatrix::<f64>::zeros(self.state_size, measurement.len());
-        for i in 0..measurement_sigma_points.len() {
-            let measurement_diff = &measurement_sigma_points[i] - &z_hat;
+        //for i in 0..measurement_sigma_points.len() {
+        for (i, sigma_point) in measurement_sigma_points.iter().enumerate() {
+            let measurement_diff = sigma_point - &z_hat;
             //let sigma_point = &sigma_points[i].to_vector();
             let state_diff = &sigma_points[i].to_vector() - &self.mean_state;
             cross_covariance += self.weights_cov[i] * state_diff * measurement_diff.transpose();

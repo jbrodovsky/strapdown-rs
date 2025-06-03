@@ -155,60 +155,15 @@ impl TestDataRecord {
         writer.flush()?;
         Ok(())
     }
-
-    /// Formats the TestDataRecord as a string for easy display.
-    pub fn to_string(&self) -> String {
-        format!(
-            "time: {},
-             bearing_accuracy: {},
-             speed_accuracy: {},
-             vertical_accuracy: {},
-             horizontal_accuracy: {},
-             speed: {},
-             bearing: {},
-             altitude: {},
-             longitude: {},
-             latitude: {},
-             qz: {},
-             qy: {},
-             qx: {},
-             qw: {},
-             roll: {},
-             pitch: {},
-             yaw: {},
-             acc_z: {},
-             acc_y: {},
-             acc_x: {},
-             gyro_z: {},
-             gyro_y: {},
-             gyro_x: {}",
-            self.time,
-            self.bearing_accuracy,
-            self.speed_accuracy,
-            self.vertical_accuracy,
-            self.horizontal_accuracy,
-            self.speed,
-            self.bearing,
-            self.altitude,
-            self.longitude,
-            self.latitude,
-            self.qz,
-            self.qy,
-            self.qx,
-            self.qw,
-            self.roll,
-            self.pitch,
-            self.yaw,
-            self.acc_z,
-            self.acc_y,
-            self.acc_x,
-            self.gyro_z,
-            self.gyro_y,
-            self.gyro_x,
-        )  
-    }
 }
-
+impl Display for TestDataRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "TestDataRecord(time: {}, latitude: {}, longitude: {}, altitude: {}, speed: {}, bearing: {})",
+            self.time, self.latitude, self.longitude, self.altitude, self.speed, self.bearing
+        )
+    }
 /// Generic result struct for navigation simulations.
 /// 
 /// This structure contains a single row of position, velocity, and attitude vectors
