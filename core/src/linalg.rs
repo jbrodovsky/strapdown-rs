@@ -51,7 +51,7 @@ pub fn matrix_square_root(matrix: &DMatrix<f64>) -> DMatrix<f64> {
     // If Cholesky failed, we try eigenvalue decomposition.
     match eigenvalue_pass(matrix) {
         Some(eigen_sqrt) => {
-            return eigen_sqrt;
+            eigen_sqrt
         },
         None => {
             panic!("Cholesky and Eigenvalue decomposition failed. No valid square root found.");
