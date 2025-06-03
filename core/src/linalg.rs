@@ -16,7 +16,7 @@
 /// These calculations are intended to be used through the `matrix_square_root` function, which will
 /// attempt to compute the square root using Cholesky decomposition first, then eigenvalue decomposition,
 /// and finally Schur decomposition if the previous methods fail.
-use nalgebra::{DMatrix, DVector, RealField, Complex};
+use nalgebra::{DMatrix, RealField};
 use nalgebra::linalg::{Cholesky, SymmetricEigen};
 
 /// Calculates a square root of a symmetric matrix.
@@ -177,7 +177,7 @@ pub fn schur_pass(matrix: &DMatrix<f64>) -> Option<DMatrix<f64>> {
 mod tests {
     use super::*;
     use std::sync::LazyLock;
-    use nalgebra::{DMatrix, DVector};
+    use nalgebra::DMatrix;
 
     static BASIC_SQRT: LazyLock<DMatrix<f64>> = LazyLock::new(|| {
         DMatrix::from_row_slice(3,3, &[
@@ -186,35 +186,35 @@ mod tests {
             0.0, 0.0, 16.0]
         )
     });
-    const POSITIVE_DEFINITE: LazyLock<DMatrix<f64>> = LazyLock::new(|| {
+    static POSITIVE_DEFINITE: LazyLock<DMatrix<f64>> = LazyLock::new(|| {
         DMatrix::from_row_slice(3,3, &[
             4.0, 2.0, 0.0,
             2.0, 9.0, 3.0,
             0.0, 3.0, 16.0]
         )
     });
-    const POSITIVE_SEMI_DEFINIE: LazyLock<DMatrix<f64>> = LazyLock::new(|| {
+    static POSITIVE_SEMI_DEFINIE: LazyLock<DMatrix<f64>> = LazyLock::new(|| {
         DMatrix::from_row_slice(3,3, &[
             1.0, 0.0, 1.0,
             0.0, 1.0, 0.0,
             1.0, 0.0, 1.0]
         )
     });
-    const NEGATIVE_DEFINITE: LazyLock<DMatrix<f64>> = LazyLock::new(|| {
+    static NEGATIVE_DEFINITE: LazyLock<DMatrix<f64>> = LazyLock::new(|| {
         DMatrix::from_row_slice(3,3, &[
             -4.0, 0.0, 0.0,
             0.0, -9.0, 0.0,
             0.0, 0.0, -16.0]
         )
     });
-    const NEGATIVE_SEMI_DEFINIE: LazyLock<DMatrix<f64>> = LazyLock::new(|| {
+    static NEGATIVE_SEMI_DEFINIE: LazyLock<DMatrix<f64>> = LazyLock::new(|| {
         DMatrix::from_row_slice(3,3, &[
             -1.0, 0.0, -1.0,
             0.0, -1.0, 0.0,
             -1.0, 0.0, -1.0]
         )
     });
-    const NON_SQUARE: LazyLock<DMatrix<f64>> = LazyLock::new(|| {
+    static NON_SQUARE: LazyLock<DMatrix<f64>> = LazyLock::new(|| {
         DMatrix::from_row_slice(2,3, &[
             1.0, 2.0, 3.0,
             4.0, 5.0, 6.0]

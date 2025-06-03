@@ -441,7 +441,7 @@ impl StrapdownState {
             + 0.5 * (v_0[0] / (r_n + alt_0) + v_1[0] / (r_n + &self.position[2])) * dt;
         // Longitude update
         let (_, r_e_1, _) = earth::principal_radii(&lat_1, &self.position[2]);
-        let lon_1: f64 = &self.position[1].to_radians()
+        let lon_1: f64 = self.position[1].to_radians()
             + 0.5
                 * (v_0[1] / ((r_e_0 + alt_0) * lat_0.cos())
                     + v_1[1] / ((r_e_1 + &self.position[2]) * &lat_1.cos()))
