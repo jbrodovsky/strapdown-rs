@@ -419,16 +419,7 @@ impl UKF {
         //println!("UKF sqrt_cov shape: {:?}", sqrt_cov.shape());
 //        println!("{:}", &sqrt_cov);
         // sqrt_cov = sqrt_cov.cholesky().unwrap().l();
-        let sqrt_cov = match matrix_square_root(&scaled_covariance) {
-            Some(sqrt_m) => sqrt_m,
-            None => {
-                // This path would be taken if matrix_square_root returns None,
-                // e.g. if the matrix isn't square or another unrecoverable error occurs.
-                // Depending on desired behavior, you might panic, or propagate an error.
-                // For now, panicking as sigma points are essential.
-                panic!("Failed to compute a robust matrix square root for sigma point generation. Scaled covariance might not be square or has other issues.");
-            }
-        };
+        let sqrt_cov = matrix_square_root(&scaled_covariance);
         let mut sigma_points = Vec::<SigmaPoint>::with_capacity(2*self.state_size + 1);
         // Add the mean state as the first sigma point, note that the UKF uses two sets of weights
         sigma_points.push(SigmaPoint::from_vector(self.mean_state.clone(), Some(0.0)));
