@@ -552,7 +552,7 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
 /// * `records` - Vector of test data records containing IMU measurements and GPS data.
 /// # Returns
 /// * `Vec<NavigationResult>` - A vector of navigation results containing the state estimates and covariances at each timestamp. 
-pub fn closed_loop(records: &Vec<TestDataRecord>) -> Vec<NavigationResult> {
+pub fn closed_loop(records: &[TestDataRecord]) -> Vec<NavigationResult> {
     let mut results: Vec<NavigationResult> = Vec::with_capacity(records.len());
     // Initialize the UKF with the first record
     let mut ukf = initialize_ukf(records[0].clone(), None, None);
@@ -587,7 +587,7 @@ pub fn closed_loop(records: &Vec<TestDataRecord>) -> Vec<NavigationResult> {
         ukf.propagate(&imu_data, dt);
         println!("======================================================");
         // If GPS data is available, update the UKF with the GPS measurement
-        let sigma_points = ukf.get_sigma_points(); // <-- BUG FIXED? Ok, there is a bug in get_sigma_points()
+        // let sigma_points = ukf.get_sigma_points(); // <-- BUG FIXED? Ok, there is a bug in get_sigma_points()
         if !record.latitude.is_nan() && !record.longitude.is_nan() && !record.altitude.is_nan() {
             let measurement = DVector::from_vec(
                 vec![
@@ -897,8 +897,8 @@ mod tests {
         let rec = TestDataRecord {
             time: "t".to_string(), bearing_accuracy: 0.0, speed_accuracy: 0.0, vertical_accuracy: 1.0, horizontal_accuracy: 4.0, speed: 1.0, bearing: 0.0, altitude: 10.0, longitude: 20.0, latitude: 30.0, qz: 0.0, qy: 0.0, qx: 0.0, qw: 1.0, roll: 0.0, pitch: 0.0, yaw: 0.0, acc_z: 0.0, acc_y: 0.0, acc_x: 0.0, gyro_z: 0.0, gyro_y: 0.0, gyro_x: 0.0, mag_z: 0.0, mag_y: 0.0, mag_x: 0.0, relative_altitude: 0.0, pressure: 0.0, grav_z: 0.0, grav_y: 0.0, grav_x: 0.0 };
         let ukf = initialize_ukf(rec.clone(), None, None);
-        assert!(ukf.get_mean().len() > 0);
+        assert!(!ukf.get_mean().is_empty());
         let ukf2 = initialize_ukf(rec, Some(vec![0.1, 0.2, 0.3]), Some(vec![0.4, 0.5, 0.6, 0.7, 0.8, 0.9]));
-        assert!(ukf2.get_mean().len() > 0);
+        assert!(!ukf2.get_mean().is_empty());
     }
 }
