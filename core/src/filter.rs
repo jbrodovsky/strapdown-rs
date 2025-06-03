@@ -19,6 +19,7 @@ use rand;
 use rand_distr::{Distribution, Normal};
 use nalgebra::{SMatrix, DMatrix, DVector};
 use crate::{IMUData, StrapdownState};
+use crate::linalg::matrix_square_root;
 
 /// Helper struct for UKF and Particle Filter implementations
 /// 
@@ -326,6 +327,8 @@ impl UKF {
         // Propagate the strapdown state using the strapdown equations
         let mut sigma_points = self.get_sigma_points();
         for sigma_point in &mut sigma_points {
+            // Print out the current lat/lon/alt of the sigma point
+            println!("UKF::propagate -> sigma point [lat, lon, alt]: {:?}", sigma_point.nav_state.position);
             // Propagate the strapdown state using the strapdown equations
             sigma_point.forward(imu_data, dt, None);
         }
@@ -667,69 +670,12 @@ pub fn position_and_velocity_measurement_model(sigma_points: &Vec<SigmaPoint>, w
 }
 
 
-/// Calculates a square root of a symmetric matrix.
-///
-/// Attempts Cholesky decomposition first (yielding L such that matrix = L * L^T).
-/// If Cholesky fails (e.g., matrix is not positive definite), it attempts to compute
-/// the square root using eigenvalue decomposition (S = V * sqrt(D) * V^T).
-/// For eigenvalue decomposition, eigenvalues are clamped to be non-negative.
-///
-/// # Arguments
-/// * `matrix` - The DMatrix<f64> to find the square root of. It's assumed to be symmetric and square.
-///
-/// # Returns
-/// * `Some(DMatrix<f64>)` containing a matrix square root.
-///   The result from Cholesky is lower triangular. The result from eigenvalue decomposition is symmetric.
-///   In both cases, if the result is `M`, then `matrix` approx `M * M.transpose()`.
-/// * `None` if the matrix is not square or another fundamental issue prevents computation (though
-///   this implementation tries to be robust for positive semi-definite cases).
-fn matrix_square_root(matrix: &DMatrix<f64>) -> Option<DMatrix<f64>> {
-    if !matrix.is_square() {
-        eprintln!("Error: Matrix must be square to compute square root.");
-        return None;
-    }
-
-    // Attempt Cholesky decomposition (yields L where matrix = L * L^T)
-    // Cholesky requires the matrix to be symmetric positive definite.
-    if let Some(chol) = matrix.clone().cholesky() {
-        return Some(chol.l());
-    }
-
-    // Cholesky failed, try eigenvalue decomposition.
-    // This is suitable for symmetric positive semi-definite matrices.
-    println!("Cholesky decomposition failed for matrix square root. Attempting eigenvalue decomposition.");
-    
-    // symmetric_eigen expects a symmetric matrix.
-    // If matrix might not be perfectly symmetric due to floating point issues,
-    // one could use (matrix + matrix.transpose()) / 2.0
-    // However, covariance matrices should inherently be symmetric.
-    let eigen_decomposition = matrix.clone().symmetric_eigen();
-    let eigenvalues = eigen_decomposition.eigenvalues;
-    let eigenvectors = eigen_decomposition.eigenvectors;
-
-    // Check for significantly negative eigenvalues, indicating non-positive semi-definiteness
-    if eigenvalues.iter().any(|&val| val < -1e-9) { // Using a small tolerance for floating point errors
-        println!("Warning: Negative eigenvalues encountered during eigenvalue decomposition. Clamping to zero for square root calculation. The input matrix was not positive semi-definite.");
-    }
-
-    // Create diagonal matrix of sqrt(eigenvalues), clamping eigenvalues to be non-negative
-    let sqrt_eigenvalues_diag = DMatrix::from_diagonal(
-        &eigenvalues.map(|val| val.max(0.0).sqrt())
-    );
-
-    // Reconstruct the square root: S = V * sqrt(D) * V^T
-    // This S will be symmetric, and S * S = matrix (or S * S^T = matrix)
-    let sqrt_m = eigenvectors.clone() * sqrt_eigenvalues_diag * eigenvectors.transpose();
-    
-    Some(sqrt_m)
-}
-
 /// Tests
 #[cfg(test)]
 mod tests {
     use super::*;
     use nalgebra::{SVector, Vector3};
-    use assert_approx_eq::assert_approx_eq;
+    use assert_approx_eq::assert_approx_eq;    
     // Test sigma point functionality
     #[test]
     fn test_sigma_point() {        
@@ -743,7 +689,6 @@ mod tests {
         assert_eq!(state.len(), state_vector.len());
         let sigma2 = SigmaPoint::from_vector(state_vector, None);
         assert_eq!(sigma_point.get_state(), sigma2.get_state());
-
         // test forward propagation
         let imu_data = IMUData {
             accel: Vector3::new(0.0, 0.0, 0.0), // Currently configured as relative body-frame acceleration
