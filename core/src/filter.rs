@@ -17,7 +17,7 @@
 use std::fmt::Debug;
 use rand;
 use rand_distr::{Distribution, Normal};
-use nalgebra::{DMatrix, DVector, SMatrix, SVector};
+use nalgebra::{DMatrix, DVector, SMatrix, SVector, Vector3};
 use crate::{IMUData, StrapdownState};
 use crate::linalg::matrix_square_root;
 
@@ -93,11 +93,11 @@ impl SigmaPoint {
     /// let other_states = vec![0.0, 0.0, 0.0];
     /// let sigma_point = SigmaPoint::new(nav_state, other_states, None);
     /// 
-    /// let state = sigma_point.get_state();
+    /// let state = sigma_point.get_state(false);
     /// assert_eq!(state.len(), 12);
     /// ```
-    pub fn get_state(&self) -> DVector<f64> {
-        let mut state = self.nav_state.to_vector(false).as_slice().to_vec();
+    pub fn get_state(&self, in_degrees: bool) -> DVector<f64> {
+        let mut state = self.nav_state.to_vector(in_degrees).as_slice().to_vec();
         state.extend(self.other_states.iter());
         DVector::from_vec(state)
     }
@@ -163,7 +163,7 @@ impl SigmaPoint {
         let jitter_vec = DVector::from_vec(jitter);
         
         // Get current state and add jitter
-        let state = self.get_state();
+        let state = self.get_state(false);
         let perturbed_state = state + jitter_vec;
         
         // Update the state with perturbed values
@@ -208,8 +208,10 @@ impl SigmaPoint {
     /// 
     /// # Arguments
     /// * `state` - The vector to convert to a sigma point.
+    /// 
     /// # Returns
     /// * A new SigmaPoint struct.
+    /// 
     /// # Example
     /// ```rust
     /// use strapdown::filter::SigmaPoint;
@@ -219,12 +221,14 @@ impl SigmaPoint {
     /// let sigma_point = SigmaPoint::from_vector(state, Some(1.0));
     /// ```
     pub fn from_vector(state: DVector<f64>, weight: Option<f64>) -> SigmaPoint {
-        let nav_state = StrapdownState::new_from_vector(
-            SMatrix::from_iterator(state.view_range(0..9, 0).iter().cloned()),
-        );
-        let other_states = state.view_range(9..state.len(), 0);
-        
-        SigmaPoint::new(nav_state, other_states.as_slice().to_vec(), weight)
+        assert!(state.len() >= 9, "Expected a cannonical state vector of at least 9 states.");
+        let position: Vector3<f64> = Vector3::new(state[0].to_radians(), state[1].to_radians(), state[2]);
+        let velocity: Vector3<f64> = Vector3::new(state[3], state[4], state[5]);
+        let attitude: Vector3<f64> = Vector3::new(state[6], state[7], state[8]);        
+        let other_states = state.rows(9, state.len() - 9).iter().cloned().collect::<Vec<f64>>();
+        let n: usize = 9 + other_states.len();
+        let nav_state: StrapdownState = StrapdownState::new_from(position, velocity, attitude);
+        SigmaPoint::new(nav_state, other_states, weight)
     }
 }
 /// Strapdown Unscented Kalman Filter Inertial Navigation Filter
@@ -343,28 +347,24 @@ impl UKF {
     /// # Returns
     /// * none
     pub fn propagate(&mut self, imu_data: &IMUData, dt: f64) {
+        let position = self.mean_state.view_range(0..3, 0);
         // Propagate the strapdown state using the strapdown equations
         let mut sigma_points = self.get_sigma_points();
-        println!("IMU data: {:?}", imu_data);
         for sigma_point in &mut sigma_points {
-
-            // Print out the current lat/lon/alt of the sigma point
-            print!("UKF::propagate [lat, lon, alt]: {:?}", sigma_point.nav_state.position);
-            // Propagate the strapdown state using the strapdown equations
             sigma_point.forward(imu_data, dt, None);
-            println!(" -> propagated to [lat, lon, alt]: {:?}", sigma_point.nav_state.position);
         }
         let mut mu_bar = DVector::<f64>::zeros(self.state_size);
         // Update the mean state through a naive loop
         for (i, sigma_point) in sigma_points.iter().enumerate() {
-            mu_bar += self.weights_mean[i] * sigma_point.get_state();
-        }
+            let state = sigma_point.get_state(false);
+            mu_bar += self.weights_mean[i] * sigma_point.get_state(false);
+        }        
         let mut cov_bar = DMatrix::<f64>::zeros(self.state_size, self.state_size);
         // Update the covariance through a naive loop
         for (i, sigma_point) in sigma_points.iter().enumerate() {
             //let sigma_point = &sigma_points[i];
             let weight_cov = self.weights_cov[i];
-            let diff = sigma_point.get_state() - &mu_bar;
+            let diff = sigma_point.get_state(false) - &mu_bar;
             cov_bar += weight_cov * &diff * &diff.transpose();
         }
         self.mean_state = mu_bar;
@@ -437,23 +437,21 @@ impl UKF {
     pub fn get_sigma_points(&self) -> Vec<SigmaPoint> {
         //dbg!("UKF::get_sigma_points -> state_size: {}", self.state_size);
         let scaled_covariance = (self.state_size as f64 + self.lambda) * self.covariance.clone(); 
-        
-        //println!("UKF sqrt_cov shape: {:?}", sqrt_cov.shape());
-//        println!("{:}", &sqrt_cov);
-        // sqrt_cov = sqrt_cov.cholesky().unwrap().l();
         let sqrt_cov = matrix_square_root(&scaled_covariance);
         let mut sigma_points = Vec::<SigmaPoint>::with_capacity(2*self.state_size + 1);
         // Add the mean state as the first sigma point, note that the UKF uses two sets of weights
-        sigma_points.push(SigmaPoint::from_vector(self.mean_state.clone(), Some(0.0)));
+        let mean = self.mean_state.clone();
+        sigma_points.push(SigmaPoint::from_vector(mean.clone(), Some(0.0)));
+        
         let mut left: Vec<SigmaPoint> = Vec::with_capacity(self.state_size);
         let mut right: Vec<SigmaPoint> = Vec::with_capacity(self.state_size);
         for i in 0..self.state_size {
-            let sqrt_cov_i = sqrt_cov.column(i);
-            left.push( SigmaPoint::from_vector(self.mean_state.clone() + sqrt_cov_i, Some(0.0)));
-            right.push(SigmaPoint::from_vector(self.mean_state.clone() - sqrt_cov_i, Some(0.0)));
+            let sqrt_cov_i = sqrt_cov.column(i);            
+            left.push(SigmaPoint::from_vector(&mean + sqrt_cov_i, Some(0.0)));
+            right.push(SigmaPoint::from_vector(&mean - sqrt_cov_i, Some(0.0)));
         }
-        sigma_points.append(&mut left);
-        sigma_points.append(&mut right);
+        sigma_points.extend(left);
+        sigma_points.extend(right);
         sigma_points
     }
 }
@@ -587,7 +585,7 @@ impl ParticleFilter {
         self.particles = new_particles;
     }
 }
-// === Measurement Models ==========
+// ==== Measurement Models ==========
 // Below is a set of generic measurement models for the UKF and particle filter.
 // These models provide a vec of "expected measurements" based on the sigma points
 // location. When used in a filter, you should simulatanously iterate through the
@@ -610,8 +608,10 @@ impl ParticleFilter {
 pub fn position_measurement_model(sigma_points: &Vec<SigmaPoint>, with_altitude: bool) -> Vec<DVector<f64>> {
     let mut measurement_sigma_points = Vec::<DVector<f64>>::with_capacity(sigma_points.len());
     for sigma_point in sigma_points {
-        let state = sigma_point.get_state();
+        let state = sigma_point.get_state(false);
+        
         if with_altitude {
+            state.view_range(0..3, 0);
             measurement_sigma_points.push(state.view_range(0..3, 0).as_slice().to_vec().into());
         } else {
             // If we don't want the altitude, just use the first three elements
@@ -636,7 +636,7 @@ pub fn position_measurement_model(sigma_points: &Vec<SigmaPoint>, with_altitude:
 pub fn velocity_measurement_model(sigma_points: &Vec<SigmaPoint>, with_altitude: bool) -> Vec<DVector<f64>> {
     let mut measurement_sigma_points = Vec::<DVector<f64>>::with_capacity(sigma_points.len());
     for sigma_point in sigma_points {
-        let state = sigma_point.get_state();
+        let state = sigma_point.get_state(false);
         if with_altitude {
             measurement_sigma_points.push(state.view_range(3..6, 0).as_slice().to_vec().into());
         } else {
@@ -664,7 +664,7 @@ pub fn velocity_measurement_model(sigma_points: &Vec<SigmaPoint>, with_altitude:
 pub fn position_and_velocity_measurement_model(sigma_points: &Vec<SigmaPoint>, with_altitude: bool) -> Vec<DVector<f64>> {
     let mut measurement_sigma_points = Vec::<DVector<f64>>::with_capacity(sigma_points.len());
     for sigma_point in sigma_points {
-        let state = sigma_point.get_state();
+        let state = sigma_point.get_state(false);
         if with_altitude {
             measurement_sigma_points.push(state.view_range(0..6, 0).as_slice().to_vec().into());
         } else {
@@ -692,14 +692,14 @@ mod tests {
         let nav_state = StrapdownState::new_from_vector(SVector::<f64, 9>::zeros());
         let other_states = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
         let mut sigma_point = SigmaPoint::new(nav_state, other_states.clone(), Some(1.0));
-        assert_eq!(sigma_point.get_state().len(), 15);
+        assert_eq!(sigma_point.get_state(false).len(), 15);
         assert_eq!(sigma_point.get_weight(), 1.0);
         
-        let state = sigma_point.get_state();
+        let state = sigma_point.get_state(false);
         let state_vector = sigma_point.to_vector();
         assert_eq!(state.len(), state_vector.len());
         let sigma2 = SigmaPoint::from_vector(state_vector, None);
-        assert_eq!(sigma_point.get_state(), sigma2.get_state());
+        assert_eq!(sigma_point.get_state(false), sigma2.get_state(false));
         // test forward propagation
         let imu_data = IMUData {
             accel: Vector3::new(0.0, 0.0, 0.0), // Currently configured as relative body-frame acceleration

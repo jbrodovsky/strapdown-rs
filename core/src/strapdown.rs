@@ -316,9 +316,9 @@ impl StrapdownState {
     /// ```
     pub fn new_from_vector(state: SVector<f64, 9>) -> StrapdownState {
         StrapdownState {
-            attitude: Rotation3::from_euler_angles(state[6], state[7], state[8]),
-            velocity: Vector3::new(state[3], state[4], state[5]),
             position: Vector3::new(state[0], state[1], state[2]),
+            velocity: Vector3::new(state[3], state[4], state[5]),
+            attitude: Rotation3::from_euler_angles(state[6], state[7], state[8]),
             //ned: is_ned,
         }
     }
@@ -447,6 +447,8 @@ impl StrapdownState {
     /// * An SVector of shape (9,) representing the strapdown state vector.
     pub fn to_vector(&self, in_degrees: bool) -> SVector<f64, 9> {
         let mut state: SVector<f64, 9> = SVector::zeros();
+        state[0] = self.position[0];
+        state[1] = self.position[1];
         state[2] = self.position[2];
         state[3] = self.velocity[0];
         state[4] = self.velocity[1];

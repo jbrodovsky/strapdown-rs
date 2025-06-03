@@ -112,6 +112,7 @@ fn eigenvalue_pass(matrix: &DMatrix<f64>) -> Option<DMatrix<f64>> {
     // While we clamp them, a warning is useful for diagnosis.
     if eigenvalues.iter().any(|&val| val < -1e-9) {
         eprintln!("Warning: Negative eigenvalues encountered during eigenvalue decomposition. The input matrix was not positive semi-definite.");
+        eprintln!("{:?}", matrix);
         return None;
     }
 
