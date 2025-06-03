@@ -17,7 +17,7 @@
 use std::fmt::Debug;
 use rand;
 use rand_distr::{Distribution, Normal};
-use nalgebra::{SMatrix, DMatrix, DVector};
+use nalgebra::{DMatrix, DVector, SMatrix, SVector};
 use crate::{IMUData, StrapdownState};
 use crate::linalg::matrix_square_root;
 
@@ -37,6 +37,8 @@ use crate::linalg::matrix_square_root;
 /// Note that the UKF uses two different weighting schemes, one for the mean and one for the covariance.
 #[derive(Clone, Debug)]
 pub struct SigmaPoint {
+    /// State dimension
+    n: usize,
     /// The basic local level frame strapdown state
     nav_state: StrapdownState,
     /// The other states to be estimated by the UKF
@@ -68,7 +70,9 @@ impl SigmaPoint {
     /// ```
     /// 
     pub fn new(nav_state: StrapdownState, other_states: Vec<f64>, weight: Option<f64>) -> SigmaPoint {
+        let n: usize = nav_state.to_vector(false).len() + other_states.len();
         SigmaPoint {
+            n,
             nav_state,
             other_states,
             weight: weight.unwrap_or(1.0),
@@ -145,23 +149,38 @@ impl SigmaPoint {
     pub fn forward(&mut self, imu_data: &IMUData, dt: f64, noise: Option<Vec<f64>>) {
         // Propagate the strapdown state using the strapdown equations
         self.nav_state.forward(imu_data, dt);
-        // Optionally, you could add bias random walk here if desired
-        let mut mean = self.nav_state.to_vector(true);
-        // unpack noise if some, otherwise uses zeros
-        let n = mean.len() + self.other_states.len();
         let noise_vect  = match noise {
             None => return,           // UKF mode, does not use noise in propagation
             Some(v) => v,   // Particle filter mode, uses noise in propagation
         };
         let mut rng = rand::rng();
-        let mut jitter = Vec::with_capacity(n);
+        let mut jitter = Vec::with_capacity(self.n);
         for stddev in noise_vect.iter() {
             let normal = Normal::new(0.0, *stddev).unwrap();
             jitter.push(normal.sample(&mut rng));
         }
-        mean += DVector::from_vec(jitter);
-        self.nav_state = StrapdownState::new_from_vector(mean);
-        self.other_states = mean.as_slice()[9..12].to_vec();
+        // Convert jitter to DVector for addition
+        let jitter_vec = DVector::from_vec(jitter);
+        
+        // Get current state and add jitter
+        let state = self.get_state();
+        let perturbed_state = state + jitter_vec;
+        
+        // Update the state with perturbed values
+        // First 9 elements go to nav_state
+        let nav_part = perturbed_state.rows(0, 9);
+        self.nav_state = StrapdownState::new_from_vector(
+            SVector::from_iterator(nav_part.iter().cloned())
+        );
+        
+        // Remaining elements go to other_states
+        let other_len = perturbed_state.len() - 9;
+        if other_len > 0 {
+            self.other_states = perturbed_state.rows(9, other_len)
+                .iter()
+                .cloned()
+                .collect();
+        }        
     }
     /// Convert the sigma point to an nalgebra vector.
     /// 
@@ -326,11 +345,14 @@ impl UKF {
     pub fn propagate(&mut self, imu_data: &IMUData, dt: f64) {
         // Propagate the strapdown state using the strapdown equations
         let mut sigma_points = self.get_sigma_points();
+        println!("IMU data: {:?}", imu_data);
         for sigma_point in &mut sigma_points {
+
             // Print out the current lat/lon/alt of the sigma point
-            println!("UKF::propagate -> sigma point [lat, lon, alt]: {:?}", sigma_point.nav_state.position);
+            print!("UKF::propagate [lat, lon, alt]: {:?}", sigma_point.nav_state.position);
             // Propagate the strapdown state using the strapdown equations
             sigma_point.forward(imu_data, dt, None);
+            println!(" -> propagated to [lat, lon, alt]: {:?}", sigma_point.nav_state.position);
         }
         let mut mu_bar = DVector::<f64>::zeros(self.state_size);
         // Update the mean state through a naive loop
@@ -669,8 +691,9 @@ mod tests {
     fn test_sigma_point() {        
         let nav_state = StrapdownState::new_from_vector(SVector::<f64, 9>::zeros());
         let other_states = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
-        let mut sigma_point = SigmaPoint::new(nav_state, other_states.clone(), None);
+        let mut sigma_point = SigmaPoint::new(nav_state, other_states.clone(), Some(1.0));
         assert_eq!(sigma_point.get_state().len(), 15);
+        assert_eq!(sigma_point.get_weight(), 1.0);
         
         let state = sigma_point.get_state();
         let state_vector = sigma_point.to_vector();
@@ -695,7 +718,31 @@ mod tests {
         assert_approx_eq!(sigma_point.nav_state.velocity[1], velocity[1], 0.1);
         assert_approx_eq!(sigma_point.nav_state.velocity[2], velocity[2], 0.1);
 
-        let debug_str = format!("{:?}", sigma_point);
+        // Test forward propagation with noise
+        let noise = vec![
+            0.01, 0.01, 0.01, // Position noise
+            0.01, 0.01, 0.01, // Velocity noise
+            0.01, 0.01, 0.01, // Attitude noise
+            0.01, 0.01, 0.01, // IMU biases noise
+            0.01, 0.01, 0.01, // Measurement bias noise
+        ];
+        sigma_point.forward(&imu_data, dt, Some(noise));
+        // Check that the state has changed
+        assert!(sigma_point.nav_state.position[0] != position[0]);
+        assert!(sigma_point.nav_state.position[1] != position[1]);
+        assert!(sigma_point.nav_state.position[2] != position[2]);
+        assert!(sigma_point.nav_state.velocity[0] != velocity[0]);
+        assert!(sigma_point.nav_state.velocity[1] != velocity[1]);
+        assert!(sigma_point.nav_state.velocity[2] != velocity[2]);
+        // Check that the state is still in the same ballpark
+        assert_approx_eq!(sigma_point.nav_state.position[0], position[0], 0.1);
+        assert_approx_eq!(sigma_point.nav_state.position[1], position[1], 0.1);
+        assert_approx_eq!(sigma_point.nav_state.position[2], position[2], 0.1);
+        assert_approx_eq!(sigma_point.nav_state.velocity[0], velocity[0], 0.1);
+        assert_approx_eq!(sigma_point.nav_state.velocity[1], velocity[1], 0.1);
+        assert_approx_eq!(sigma_point.nav_state.velocity[2], velocity[2], 0.1);
+
+        let debug_str = format!("{:?}", sigma_point, );
         assert!(debug_str.contains("nav_state"));
     }
     #[test]

@@ -174,7 +174,7 @@ impl Display for TestDataRecord {
 ///
 /// It can be used across different types of navigation simulations such as dead reckoning,
 /// Kalman filtering, or any other navigation algorithm.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct NavigationResult {
     /// Timestamp corresponding to the state
     pub timestamp: String,
@@ -585,6 +585,7 @@ pub fn closed_loop(records: &Vec<TestDataRecord>) -> Vec<NavigationResult> {
         );
         // Update the UKF with the IMU data
         ukf.propagate(&imu_data, dt);
+        println!("======================================================");
         // If GPS data is available, update the UKF with the GPS measurement
         if !record.latitude.is_nan() && !record.longitude.is_nan() && !record.altitude.is_nan() {
             let measurement = DVector::from_vec(
@@ -596,6 +597,8 @@ pub fn closed_loop(records: &Vec<TestDataRecord>) -> Vec<NavigationResult> {
             );
             // Create the measurement sigma points using the position measurement model
             let measurement_sigma_points = position_measurement_model(&ukf.get_sigma_points(), true);
+            println!("Measurement: {:?}", measurement);
+            println!("Measurement Sigma Points: {:?}", measurement_sigma_points);
             // Update the UKF with the GPS measurement
             ukf.update(&measurement, &measurement_sigma_points);
         } 
@@ -803,5 +806,97 @@ mod tests {
         // Clean up
         let _ = std::fs::remove_file(&temp_path);
     }
-    
+    #[test]
+    fn test_navigation_result_new() {
+        let nav = NavigationResult::new(
+            "2023-01-01 00:00:00+00:00",
+            &1.0, &2.0, &3.0, &4.0, &5.0, &6.0, &7.0, &8.0, &9.0,
+            &10.0, &11.0, &12.0, &13.0, &14.0, &15.0, &16.0, &17.0, &18.0,
+            Some(vec![1.0, 2.0, 3.0])
+        );
+        assert_eq!(nav.timestamp, "2023-01-01 00:00:00+00:00");
+        assert_eq!(nav.latitude, 1.0);
+        assert_eq!(nav.covariance.as_ref().unwrap().len(), 3);
+    }
+    #[test]
+    fn test_navigation_result_new_from_nav_state() {
+        let mut state = StrapdownState::new();
+        state.position = nalgebra::Vector3::new(1.0, 2.0, 3.0);
+        state.velocity = nalgebra::Vector3::new(4.0, 5.0, 6.0);
+        state.attitude = nalgebra::Rotation3::from_euler_angles(7.0, 8.0, 9.0);
+        let cov = DMatrix::from_element(9, 9, 0.5);
+        let nav = NavigationResult::new_from_nav_state(&state, "t".to_string(), Some(cov.clone()));
+        assert_eq!(nav.latitude, 1.0);
+        assert_eq!(nav.covariance.as_ref().unwrap().len(), 81);
+        let nav2 = NavigationResult::new_from_nav_state(&state, "t".to_string(), None);
+        assert!(nav2.covariance.is_none());
+    }
+    #[test]
+    fn test_navigation_result_new_from_vector() {
+        let v = DVector::from_vec((1..=9).map(|x| x as f64).collect());
+        let cov = DMatrix::from_element(9, 9, 0.1);
+        let nav = NavigationResult::new_from_vector(&v, "t".to_string(), Some(&cov));
+        assert_eq!(nav.latitude, 1.0);
+        assert_eq!(nav.yaw, 9.0);
+        assert_eq!(nav.covariance.as_ref().unwrap().len(), 81);
+        let nav2 = NavigationResult::new_from_vector(&v, "t".to_string(), None);
+        assert!(nav2.covariance.is_none());
+    }
+    #[test]
+    fn test_navigation_result_to_csv_and_from_csv() {
+        let nav = NavigationResult::new(
+            "2023-01-01 00:00:00+00:00",
+            &1.0, &2.0, &3.0, &4.0, &5.0, &6.0, &7.0, &8.0, &9.0,
+            &10.0, &11.0, &12.0, &13.0, &14.0, &15.0, &16.0, &17.0, &18.0,
+            Some(vec![1.0, 2.0, 3.0])
+        );
+        let temp_file = std::env::temp_dir().join("test_nav_result.csv");
+        NavigationResult::to_csv(&[nav.clone()], &temp_file).unwrap();
+        let read = NavigationResult::from_csv(&temp_file).unwrap();
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].latitude, 1.0);
+        let _ = std::fs::remove_file(&temp_file);
+    }
+    // #[test]
+    // fn test_serialize_deserialize_covariance() {
+    //     use serde_json;
+    //     let cov = Some(vec![1.1, 2.2, 3.3]);
+    //     let s = serde_json::to_string(&cov).unwrap();
+    //     let d: Option<Vec<f64>> = serde_json::from_str(&s).unwrap();
+    //     assert_eq!(d.as_ref().unwrap().len(), 3);
+    //     let cov_none: Option<Vec<f64>> = None;
+    //     let s2 = serde_json::to_string(&cov_none).unwrap();
+    //     let d2: Option<Vec<f64>> = serde_json::from_str(&s2).unwrap();
+    //     assert!(d2.is_none());
+    // }
+    #[test]
+    fn test_dead_reckoning_empty_and_single() {
+        let empty: Vec<TestDataRecord> = vec![];
+        let res = dead_reckoning(&empty);
+        assert!(res.is_empty());
+        let rec = TestDataRecord::from_csv("./data/test_data.csv").ok().and_then(|v| v.into_iter().next()).unwrap_or_else(|| TestDataRecord {
+            time: "t".to_string(), bearing_accuracy: 0.0, speed_accuracy: 0.0, vertical_accuracy: 0.0, horizontal_accuracy: 0.0, speed: 0.0, bearing: 0.0, altitude: 0.0, longitude: 0.0, latitude: 0.0, qz: 0.0, qy: 0.0, qx: 0.0, qw: 1.0, roll: 0.0, pitch: 0.0, yaw: 0.0, acc_z: 0.0, acc_y: 0.0, acc_x: 0.0, gyro_z: 0.0, gyro_y: 0.0, gyro_x: 0.0, mag_z: 0.0, mag_y: 0.0, mag_x: 0.0, relative_altitude: 0.0, pressure: 0.0, grav_z: 0.0, grav_y: 0.0, grav_x: 0.0 });
+        let res = dead_reckoning(&[rec.clone()]);
+        assert_eq!(res.len(), 1);
+        let mut rec2 = rec.clone();
+        rec2.time = "t2".to_string();
+        let res = dead_reckoning(&[rec.clone(), rec2]);
+        assert_eq!(res.len(), 2);
+    }
+    #[test]
+    fn test_closed_loop_minimal() {
+        let rec = TestDataRecord::from_csv("./data/test_data.csv").ok().and_then(|v| v.into_iter().next()).unwrap_or_else(|| TestDataRecord {
+            time: "t".to_string(), bearing_accuracy: 0.0, speed_accuracy: 0.0, vertical_accuracy: 0.0, horizontal_accuracy: 0.0, speed: 0.0, bearing: 0.0, altitude: 0.0, longitude: 0.0, latitude: 0.0, qz: 0.0, qy: 0.0, qx: 0.0, qw: 1.0, roll: 0.0, pitch: 0.0, yaw: 0.0, acc_z: 0.0, acc_y: 0.0, acc_x: 0.0, gyro_z: 0.0, gyro_y: 0.0, gyro_x: 0.0, mag_z: 0.0, mag_y: 0.0, mag_x: 0.0, relative_altitude: 0.0, pressure: 0.0, grav_z: 0.0, grav_y: 0.0, grav_x: 0.0 });
+        let res = closed_loop(&vec![rec.clone()]);
+        assert!(!res.is_empty());
+    }
+    #[test]
+    fn test_initialize_ukf_default_and_custom() {
+        let rec = TestDataRecord {
+            time: "t".to_string(), bearing_accuracy: 0.0, speed_accuracy: 0.0, vertical_accuracy: 1.0, horizontal_accuracy: 4.0, speed: 1.0, bearing: 0.0, altitude: 10.0, longitude: 20.0, latitude: 30.0, qz: 0.0, qy: 0.0, qx: 0.0, qw: 1.0, roll: 0.0, pitch: 0.0, yaw: 0.0, acc_z: 0.0, acc_y: 0.0, acc_x: 0.0, gyro_z: 0.0, gyro_y: 0.0, gyro_x: 0.0, mag_z: 0.0, mag_y: 0.0, mag_x: 0.0, relative_altitude: 0.0, pressure: 0.0, grav_z: 0.0, grav_y: 0.0, grav_x: 0.0 };
+        let ukf = initialize_ukf(rec.clone(), None, None);
+        assert!(ukf.get_mean().len() > 0);
+        let ukf2 = initialize_ukf(rec, Some(vec![0.1, 0.2, 0.3]), Some(vec![0.4, 0.5, 0.6, 0.7, 0.8, 0.9]));
+        assert!(ukf2.get_mean().len() > 0);
+    }
 }
