@@ -607,7 +607,7 @@ pub fn closed_loop(records: &Vec<TestDataRecord>) -> Vec<NavigationResult> {
     ));
     // Clip to the first 1000 records for performance
     let records = if records.len() > 1000 {
-        &records[0..100]
+        &records[0..3]
     } else {
         records
     };
@@ -696,7 +696,10 @@ pub fn initialize_ukf(initial_pose: TestDataRecord, attitude_covariance: Option<
         None => covariance_diagonal.extend(vec![1e-3; 6]), // Default values if not provided
     }
     println!("Covariance diagonal: {:?}", covariance_diagonal);
-    let process_noise_diagonal = DVector::from_vec(vec![0.0; 15]);
+    let mut process_noise_diagonal = vec![0.0; 9];
+    process_noise_diagonal.extend(vec![1e-3; 6]); // Process noise for imu biases
+    let process_noise_diagonal = DVector::from_vec(process_noise_diagonal);
+    //DVector::from_vec(vec![0.0; 15]);
     let measurement_noise_diagonal = DVector::from_vec(vec![1e-12; 3]);
     UKF::new(
         position,

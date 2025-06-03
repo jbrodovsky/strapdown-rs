@@ -119,6 +119,7 @@
 
 pub mod earth;
 pub mod filter;
+pub mod linalg;
 pub mod sim;
 
 use std::fmt::{Debug, Display};
