@@ -334,17 +334,6 @@ impl StrapdownState {
     /// 
     /// # Returns
     /// * A Matrix3 representing the updated attitude matrix in the NED frame.
-    /// 
-    /// # Example
-    /// ```
-    /// use strapdown::StrapdownState;
-    /// use nalgebra::{Vector3, Matrix3};
-    /// 
-    /// let state = StrapdownState::new();
-    /// let gyros = Vector3::new(0.1, 0.0, 0.0); // Example gyroscope data in rad/s
-    /// let dt = 0.1; // Example time step in seconds
-    /// let updated_attitude: Matrix3<f64> = state.attitude_update(&gyros, dt);
-    /// ```
     fn attitude_update(&self, gyros: &Vector3<f64>, dt: f64) -> Matrix3<f64> {
         let transport_rate: Matrix3<f64> = earth::vector_to_skew_symmetric(&earth::transport_rate(
             &self.position[0],
@@ -370,16 +359,6 @@ impl StrapdownState {
     /// 
     /// # Returns
     /// * A Vector3 representing the updated velocity vector in the NED frame.
-    /// 
-    /// # Example
-    /// ```
-    /// use strapdown::StrapdownState;
-    /// use nalgebra::{Vector3, Matrix3};
-    /// let state = StrapdownState::new();
-    /// let f_1 = Vector3::new(0.0, 0.0, -9.81); // Example specific force vector in m/s^2; This is gravitational freefall
-    /// let dt = 0.1; // Example time step in seconds
-    /// let updated_velocity: Vector3<f64> = state.velocity_update(&f_1, dt);
-    /// ```
     fn velocity_update(&self, f_1: &Vector3<f64>, dt: f64) -> Vector3<f64> {
         let transport_rate: Matrix3<f64> = earth::vector_to_skew_symmetric(&earth::transport_rate(
             &self.position[0],
@@ -590,9 +569,9 @@ where
 /// ```rust
 /// use strapdown::wrap_to_pi;
 /// use std::f64::consts::PI;
-/// let angle = 3.0 * PI / 4.0; // radians
+/// let angle = 3.0 * PI / 2.0; // radians
 /// let wrapped_angle = wrap_to_pi(angle);
-/// assert_eq!(wrapped_angle, -PI / 4.0); // 3π/4 radians wrapped to -π/4 radians
+/// assert_eq!(wrapped_angle, -PI / 2.0); // 3π/4 radians wrapped to -π/4 radians
 /// ```
 pub fn wrap_to_pi<T>(angle: T) -> T
 where

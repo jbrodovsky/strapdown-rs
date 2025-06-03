@@ -8,15 +8,14 @@
 /// the computation of the square root of a covariance matrix. Covariance matrices are symmetric and positive 
 /// semi-definite, making them suitable for this approach.
 /// 
-/// Three methods are implemented:
+/// Two methods are implemented:
 /// 1. **Cholesky Decomposition**: Computes the square root of a symmetric positive definite matrix.
 /// 2. **Eigenvalue Decomposition**: Computes the square root of a symmetric positive semi-definite matrix.
-/// 3. **Schur Decomposition**: Computes the principal square root of a general square matrix, which can be complex. Complex values are ignored in this implementation, and if such a matrix is encountered, it will return `None`.
 /// 
 /// These calculations are intended to be used through the `matrix_square_root` function, which will
-/// attempt to compute the square root using Cholesky decomposition first, then eigenvalue decomposition,
-/// and finally Schur decomposition if the previous methods fail.
-use nalgebra::{DMatrix, RealField};
+/// attempt to compute the square root using Cholesky decomposition first, then eigenvalue decomposition. If both
+/// methods fail, then the method will panic.
+use nalgebra::DMatrix;
 use nalgebra::linalg::{Cholesky, SymmetricEigen};
 
 /// Calculates a square root of a symmetric matrix.
@@ -35,43 +34,29 @@ use nalgebra::linalg::{Cholesky, SymmetricEigen};
 ///   In both cases, if the result is `M`, then `matrix` approx `M * M.transpose()`.
 /// * `None` if the matrix is not square or another fundamental issue prevents computation (though
 ///   this implementation tries to be robust for positive semi-definite cases).
-pub fn matrix_square_root(matrix: &DMatrix<f64>) -> Option<DMatrix<f64>> {
+pub fn matrix_square_root(matrix: &DMatrix<f64>) -> DMatrix<f64> {
     if !matrix.is_square() {
-        eprintln!("Error: Matrix must be square to compute square root.");
-        return None;
+        panic!("Error: Matrix must be square to compute square root.");
     }
     // Attempt Cholesky decomposition (yields L where matrix = L * L^T)
     // Cholesky requires the matrix to be symmetric positive definite.
     match cholesky_pass(matrix) {
         Some(chol_l) => {
-            println!("Successfully computed square root using Cholesky decomposition.");
-            return Some(chol_l);
+            return chol_l;
         },
-        None => {
-            println!("Cholesky decomposition failed. Attempting eigenvalue decomposition.");
+        None => { 
+            //println!("Cholesky decomposition failed. Attempting eigenvalue decomposition.");
         }
     }
     // If Cholesky failed, we try eigenvalue decomposition.
     match eigenvalue_pass(matrix) {
         Some(eigen_sqrt) => {
-            println!("Successfully computed square root using eigenvalue decomposition.");
-            return Some(eigen_sqrt);
+            return eigen_sqrt;
         },
         None => {
-            println!("Eigenvalue decomposition failed. No valid square root found.");
+            panic!("Cholesky and Eigenvalue decomposition failed. No valid square root found.");
         }
     }
-    match schur_pass(matrix) {
-        Some(schur_sqrt) => {
-            println!("Successfully computed square root using Schur decomposition.");
-            return Some(schur_sqrt);
-        },
-        None => {
-            println!("Schur decomposition failed. No valid square root found.");
-        }
-    }
-    // If all methods fail, we return None.
-    None
 }
 /// Attempts to compute the matrix square root using Cholesky decomposition.
 ///
@@ -141,37 +126,6 @@ fn eigenvalue_pass(matrix: &DMatrix<f64>) -> Option<DMatrix<f64>> {
 
     Some(sqrt_m)
 }
-/// Computes the principal matrix square root of a general square matrix using the Schur method.
-///
-/// This is the most general approach and can handle non-symmetric matrices.
-/// It returns a complex matrix, as the square root of a general matrix can be complex.
-/// This implementation broadly follows the Schur method described in the previous response.
-///
-/// # Arguments
-/// * `matrix` - The DMatrix<f64> to find the square root of.
-///
-/// # Returns
-/// * `Some(DMatrix<Complex<f64>>)` containing the principal matrix square root.
-/// * `None` if the matrix is not square or if issues arise (e.g., encountering certain singular cases
-///   where `s_ii + s_jj` is close to zero, or non-convergence of Schur decomposition).
-pub fn schur_pass(matrix: &DMatrix<f64>) -> Option<DMatrix<f64>> {
-    let schur_decomp = matrix.clone().schur();
-    let (q, t) = schur_decomp.unpack();
-    let sqrt_t = match cholesky_pass(&t) {
-        Some(sqrt) => sqrt,
-        None => {
-            return match eigenvalue_pass(&t) {
-                Some(sqrt) => Some(sqrt),
-                None => {
-                    eprintln!("Error: Failed to compute square root of Schur form.");
-                    None
-                }
-            };
-        }
-    };
-    // Reconstruct the square root of the original matrix
-    Some(&q * sqrt_t * &q.transpose())
-}
 
 #[cfg(test)]
 mod tests {
@@ -240,88 +194,93 @@ mod tests {
         }
         true
     }
-
     // Test matrix square root calculation
     #[test]
-    fn test_cholesky_pass() {
-        match cholesky_pass(&BASIC_SQRT) {
-            Some(sqrt_matrix) => {
-                assert!(is_valid_square_root(&sqrt_matrix, &BASIC_SQRT, 1e-9));
-            },
-            None => panic!("Cholesky decomposition failed for BASIC_SQRT"),
-        }
-        match cholesky_pass(&POSITIVE_DEFINITE) {
-            Some(sqrt_matrix) => {
-                assert!(is_valid_square_root(&sqrt_matrix, &POSITIVE_DEFINITE, 1e-9));
-            },
-            None => panic!("Cholesky decomposition failed for POSITIVE_DEFINITE"),
-        }
-        // Positive semi-definite matrices should not pass Cholesky
-        assert!(cholesky_pass(&POSITIVE_SEMI_DEFINIE).is_none());
-        // Negative definite matrices should not pass Cholesky
-        assert!(cholesky_pass(&NEGATIVE_DEFINITE).is_none());
-        // Negative semi-definite matrices should not pass Cholesky
-        assert!(cholesky_pass(&NEGATIVE_SEMI_DEFINIE).is_none());
-        // Non-square matrices should not pass Cholesky
-        assert!(cholesky_pass(&NON_SQUARE).is_none());
+    fn cholesky_square_root() {
+        let sqrt_matrix = matrix_square_root(&BASIC_SQRT);
+        assert!(is_valid_square_root(&sqrt_matrix, &BASIC_SQRT, 1e-9));
     }
     #[test]
-    fn test_eigenvalue_pass() {
-        match eigenvalue_pass(&BASIC_SQRT) {
-            Some(sqrt_matrix) => {
-                assert!(is_valid_square_root(&sqrt_matrix, &BASIC_SQRT, 1e-9));
-            },
-            None => panic!("Eigenvalue decomposition failed for BASIC_SQRT"),
-        }
-        match eigenvalue_pass(&POSITIVE_DEFINITE) {
-            Some(sqrt_matrix) => {
-                assert!(is_valid_square_root(&sqrt_matrix, &POSITIVE_DEFINITE, 1e-9));
-            },
-            None => panic!("Eigenvalue decomposition failed for POSITIVE_DEFINITE"),
-        }
-        // Primary advantage of eigenvalue decomposition is that it can handle positive semi-definite matrices.
-        match eigenvalue_pass(&POSITIVE_SEMI_DEFINIE) {
-            Some(sqrt_matrix) => {
-                assert!(is_valid_square_root(&sqrt_matrix, &POSITIVE_SEMI_DEFINIE, 1e-9));
-            },
-            None => panic!("Eigenvalue decomposition failed for POSITIVE_SEMI_DEFINIE"),
-        }
-        // Negative definite matrices should not pass eigenvalue decomposition
-        assert!(eigenvalue_pass(&NEGATIVE_DEFINITE).is_none());
-        // Negative semi-definite matrices should not pass eigenvalue decomposition
-        assert!(eigenvalue_pass(&NEGATIVE_SEMI_DEFINIE).is_none());
-        // Non-square matrices should not pass eigenvalue decomposition
-        assert!(eigenvalue_pass(&NON_SQUARE).is_none());
+    fn cholesky_positive_definite() {
+        let sqrt_matrix = matrix_square_root(&POSITIVE_DEFINITE);
+        assert!(is_valid_square_root(&sqrt_matrix, &POSITIVE_DEFINITE, 1e-9));
     }
     #[test]
-    fn test_schur_pass() {
-        match schur_pass(&BASIC_SQRT) {
-            Some(sqrt_matrix) => {
-                assert!(is_valid_square_root(&sqrt_matrix, &BASIC_SQRT, 1e-9));
-                println!("Schur decomposition passed for BASIC_SQRT.");
-            },
-            None => panic!("Schur decomposition failed for BASIC_SQRT"),
-        }
-        match schur_pass(&POSITIVE_DEFINITE) {
-            Some(sqrt_matrix) => {
-                assert!(is_valid_square_root(&sqrt_matrix, &POSITIVE_DEFINITE, 1e-9));
-                println!("Schur decomposition passed for POSITIVE_DEFINITE.");
-            },
-            None => panic!("Schur decomposition failed for POSITIVE_DEFINITE"),
-        }
-        match schur_pass(&POSITIVE_SEMI_DEFINIE) {
-            Some(sqrt_matrix) => {
-                assert!(is_valid_square_root(&sqrt_matrix, &POSITIVE_SEMI_DEFINIE, 1e-9));
-                println!("Schur decomposition passed for POSITIVE_SEMI_DEFINIE.");
-            },
-            None => panic!("Schur decomposition failed for POSITIVE_SEMI_DEFINIE"),
-        }
-        // Negative definite matrices should not pass Cholesky
-        assert!(schur_pass(&NEGATIVE_DEFINITE).is_none());
-        // Negative semi-definite matrices should not pass Cholesky
-        assert!(schur_pass(&NEGATIVE_SEMI_DEFINIE).is_none());
-        // Non-square matrices should not pass Cholesky
-        assert!(schur_pass(&NON_SQUARE).is_none());
+    #[should_panic]
+    fn cholesky_negative_definite() {
+        // This should panic because the matrix is negative definite.
+        let _sqrt_matrix = matrix_square_root(&NEGATIVE_DEFINITE);
     }
-
+    #[test]
+    #[should_panic]
+    fn cholesky_negative_semi_definite() {
+        // This should panic because the matrix is negative semi-definite.
+        let _sqrt_matrix = matrix_square_root(&NEGATIVE_SEMI_DEFINIE);
+    }
+    #[test]
+    #[should_panic]
+    fn cholesky_non_square() {
+        // This should panic because the matrix is not square.
+        let _sqrt_matrix = matrix_square_root(&NON_SQUARE);
+    }
+    #[test]
+    fn eigenvalue_square_root() {
+        let sqrt_matrix = matrix_square_root(&POSITIVE_SEMI_DEFINIE);
+        assert!(is_valid_square_root(&sqrt_matrix, &POSITIVE_SEMI_DEFINIE, 1e-9));
+    }
+    #[test]
+    fn eigenvalue_positive_definite() {
+        let sqrt_matrix = matrix_square_root(&POSITIVE_DEFINITE);
+        assert!(is_valid_square_root(&sqrt_matrix, &POSITIVE_DEFINITE, 1e-9));
+    }
+    #[test]
+    fn eigenvalue_positive_semi_definite() {
+        let sqrt_matrix = matrix_square_root(&POSITIVE_SEMI_DEFINIE);
+        assert!(is_valid_square_root(&sqrt_matrix, &POSITIVE_SEMI_DEFINIE, 1e-9));
+    }
+    #[test]
+    #[should_panic]
+    fn eigenvalue_negative_definite() {
+        // This should panic because the matrix is negative definite.
+        let _sqrt_matrix = matrix_square_root(&NEGATIVE_DEFINITE);
+    }
+    #[test]
+    #[should_panic]
+    fn eigenvalue_negative_semi_definite() {
+        // This should panic because the matrix is negative semi-definite.
+        let _sqrt_matrix = matrix_square_root(&NEGATIVE_SEMI_DEFINIE);
+    }
+    #[test]
+    #[should_panic]
+    fn eigenvalue_non_square() {
+        // This should panic because the matrix is not square.
+        let _sqrt_matrix = matrix_square_root(&NON_SQUARE);
+    }
+    #[test]
+    fn public_api_square_root() {
+        let sqrt_matrix = matrix_square_root(&POSITIVE_DEFINITE);
+        assert!(is_valid_square_root(&sqrt_matrix, &POSITIVE_DEFINITE, 1e-9));
+        let sqrt_matrix = matrix_square_root(&POSITIVE_SEMI_DEFINIE);
+        assert!(is_valid_square_root(&sqrt_matrix, &POSITIVE_SEMI_DEFINIE, 1e-9));
+        let sqrt_matrix = matrix_square_root(&BASIC_SQRT);
+        assert!(is_valid_square_root(&sqrt_matrix, &BASIC_SQRT, 1e-9));
+    }
+    #[test]
+    #[should_panic]
+    fn public_api_negative_definite() {
+        // This should panic because the matrix is negative definite.
+        let _sqrt_matrix = matrix_square_root(&NEGATIVE_DEFINITE);
+    }
+    #[test]
+    #[should_panic]
+    fn public_api_negative_semi_definite() {
+        // This should panic because the matrix is negative semi-definite.
+        let _sqrt_matrix = matrix_square_root(&NEGATIVE_SEMI_DEFINIE);
+    }
+    #[test]
+    #[should_panic]
+    fn public_api_non_square() {
+        // This should panic because the matrix is not square.
+        let _sqrt_matrix = matrix_square_root(&NON_SQUARE);
+    }
 }
