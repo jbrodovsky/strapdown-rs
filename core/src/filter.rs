@@ -17,7 +17,7 @@
 use std::fmt::Debug;
 use rand;
 use rand_distr::{Distribution, Normal};
-use nalgebra::{DMatrix, DVector, SMatrix, SVector, Vector3};
+use nalgebra::{DMatrix, DVector, SVector, Vector3};
 use crate::{IMUData, StrapdownState};
 use crate::linalg::matrix_square_root;
 
@@ -226,7 +226,6 @@ impl SigmaPoint {
         let velocity: Vector3<f64> = Vector3::new(state[3], state[4], state[5]);
         let attitude: Vector3<f64> = Vector3::new(state[6], state[7], state[8]);        
         let other_states = state.rows(9, state.len() - 9).iter().cloned().collect::<Vec<f64>>();
-        let n: usize = 9 + other_states.len();
         let nav_state: StrapdownState = StrapdownState::new_from(position, velocity, attitude);
         SigmaPoint::new(nav_state, other_states, weight)
     }
@@ -347,7 +346,6 @@ impl UKF {
     /// # Returns
     /// * none
     pub fn propagate(&mut self, imu_data: &IMUData, dt: f64) {
-        let position = self.mean_state.view_range(0..3, 0);
         // Propagate the strapdown state using the strapdown equations
         let mut sigma_points = self.get_sigma_points();
         for sigma_point in &mut sigma_points {
@@ -356,7 +354,6 @@ impl UKF {
         let mut mu_bar = DVector::<f64>::zeros(self.state_size);
         // Update the mean state through a naive loop
         for (i, sigma_point) in sigma_points.iter().enumerate() {
-            let state = sigma_point.get_state(false);
             mu_bar += self.weights_mean[i] * sigma_point.get_state(false);
         }        
         let mut cov_bar = DMatrix::<f64>::zeros(self.state_size, self.state_size);
@@ -611,7 +608,6 @@ pub fn position_measurement_model(sigma_points: &Vec<SigmaPoint>, with_altitude:
         let state = sigma_point.get_state(false);
         
         if with_altitude {
-            state.view_range(0..3, 0);
             measurement_sigma_points.push(state.view_range(0..3, 0).as_slice().to_vec().into());
         } else {
             // If we don't want the altitude, just use the first three elements
