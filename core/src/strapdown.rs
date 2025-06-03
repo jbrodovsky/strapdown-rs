@@ -267,7 +267,7 @@ impl StrapdownState {
     /// * `position` - A Vector3 representing the position in the form of latitude (degrees), longitude (degrees), and altitude (meters).
     /// * `velocity` - A Vector3 representing the velocity in the NED/ENU frame (meters per second).
     /// * `attitude` - A Vector3 representing the attitude in the form of roll, pitch, and yaw angles (degrees).
-    ///  /// # Returns
+    /// # Returns
     /// * A StrapdownState instance containing the position, velocity, and attitude.
     /// # Example
     /// ```rust
@@ -334,17 +334,6 @@ impl StrapdownState {
     /// 
     /// # Returns
     /// * A Matrix3 representing the updated attitude matrix in the NED frame.
-    /// 
-    /// # Example
-    /// ```
-    /// use strapdown::StrapdownState;
-    /// use nalgebra::{Vector3, Matrix3};
-    /// 
-    /// let state = StrapdownState::new();
-    /// let gyros = Vector3::new(0.1, 0.0, 0.0); // Example gyroscope data in rad/s
-    /// let dt = 0.1; // Example time step in seconds
-    /// let updated_attitude: Matrix3<f64> = state.attitude_update(&gyros, dt);
-    /// ```
     fn attitude_update(&self, gyros: &Vector3<f64>, dt: f64) -> Matrix3<f64> {
         let transport_rate: Matrix3<f64> = earth::vector_to_skew_symmetric(&earth::transport_rate(
             &self.position[0],
@@ -354,8 +343,8 @@ impl StrapdownState {
         let rotation_rate: Matrix3<f64> =
             earth::vector_to_skew_symmetric(&earth::earth_rate_lla(&self.position[0]));
         let omega_ib: Matrix3<f64> = earth::vector_to_skew_symmetric(gyros);
-        let c_1: Matrix3<f64> = &self.attitude * (Matrix3::identity() + omega_ib * dt)
-            - (rotation_rate + transport_rate) * &self.attitude * dt;
+        let c_1: Matrix3<f64> = self.attitude * (Matrix3::identity() + omega_ib * dt)
+            - (rotation_rate + transport_rate) * self.attitude * dt;
         c_1
     }
     /// Velocity update in NED
@@ -370,16 +359,6 @@ impl StrapdownState {
     /// 
     /// # Returns
     /// * A Vector3 representing the updated velocity vector in the NED frame.
-    /// 
-    /// # Example
-    /// ```
-    /// use strapdown::StrapdownState;
-    /// use nalgebra::{Vector3, Matrix3};
-    /// let state = StrapdownState::new();
-    /// let f_1 = Vector3::new(0.0, 0.0, -9.81); // Example specific force vector in m/s^2; This is gravitational freefall
-    /// let dt = 0.1; // Example time step in seconds
-    /// let updated_velocity: Vector3<f64> = state.velocity_update(&f_1, dt);
-    /// ```
     fn velocity_update(&self, f_1: &Vector3<f64>, dt: f64) -> Vector3<f64> {
         let transport_rate: Matrix3<f64> = earth::vector_to_skew_symmetric(&earth::transport_rate(
             &self.position[0],
@@ -390,8 +369,8 @@ impl StrapdownState {
             earth::vector_to_skew_symmetric(&earth::earth_rate_lla(&self.position[0]));
         let r = earth::ecef_to_lla(&self.position[0], &self.position[1]);
         // let grav: Vector3<f64> = earth::gravitation(&self.position[0], &self.position[1], &self.position[2]);
-        let v_1: Vector3<f64> = &self.velocity
-            + (f_1 - r * (transport_rate + 2.0 * rotation_rate) * &self.velocity) * dt;
+        let v_1: Vector3<f64> = self.velocity
+            + (f_1 - r * (transport_rate + 2.0 * rotation_rate) * self.velocity) * dt;
         v_1
     }
 
@@ -437,14 +416,14 @@ impl StrapdownState {
         // Altitude update
         self.position[2] += 0.5 * (v_0[2] + v_1[2]) * dt;
         // Latitude update
-        let lat_1: f64 = &self.position[0].to_radians()
-            + 0.5 * (v_0[0] / (r_n + alt_0) + v_1[0] / (r_n + &self.position[2])) * dt;
+        let lat_1: f64 = self.position[0].to_radians()
+            + 0.5 * (v_0[0] / (r_n + alt_0) + v_1[0] / (r_n + self.position[2])) * dt;
         // Longitude update
         let (_, r_e_1, _) = earth::principal_radii(&lat_1, &self.position[2]);
-        let lon_1: f64 = &self.position[1].to_radians()
+        let lon_1: f64 = self.position[1].to_radians()
             + 0.5
                 * (v_0[1] / ((r_e_0 + alt_0) * lat_0.cos())
-                    + v_1[1] / ((r_e_1 + &self.position[2]) * &lat_1.cos()))
+                    + v_1[1] / ((r_e_1 + self.position[2]) * lat_1.cos()))
                 * dt;
         // Update position to degrees
         self.position[0] = lat_1.to_degrees();
@@ -590,9 +569,9 @@ where
 /// ```rust
 /// use strapdown::wrap_to_pi;
 /// use std::f64::consts::PI;
-/// let angle = 3.0 * PI / 4.0; // radians
+/// let angle = 3.0 * PI / 2.0; // radians
 /// let wrapped_angle = wrap_to_pi(angle);
-/// assert_eq!(wrapped_angle, -PI / 4.0); // 3π/4 radians wrapped to -π/4 radians
+/// assert_eq!(wrapped_angle, -PI / 2.0); // 3π/4 radians wrapped to -π/4 radians
 /// ```
 pub fn wrap_to_pi<T>(angle: T) -> T
 where
