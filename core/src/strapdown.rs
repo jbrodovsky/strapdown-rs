@@ -221,7 +221,6 @@ pub struct StrapdownState {
     pub position: Vector3<f64>, // latitude (rad), longitude (rad), altitude (m)
     pub velocity: Vector3<f64>, // velocity in NED/ENU frame (m/s)
     pub attitude: Rotation3<f64>, // attitude in the form of a rotation matrix (direction cosine matrix; roll-pitch-yaw Euler angles)
-//    ned: bool,                    // NED or ENU; true for NED, false for ENU
 }
 impl Debug for StrapdownState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -253,15 +252,15 @@ impl StrapdownState {
             position: Vector3::zeros(),
             velocity: Vector3::zeros(),
             attitude: Rotation3::identity(),
-            //ned: true,
         }
     }
     /// Create a new StrapdownState from a position, velocity, and attitude vectors.
     /// 
     /// This function initializes a new StrapdownState instance with the given position, velocity, and attitude vectors.
-    /// The position is in the form of latitude (degrees), longitude (degrees), and altitude (meters). The corresponding
-    /// velocities are in the NED/ENU frame (meters per second) and the attitude is given as roll, pitch, and yaw angles 
-    /// in degrees. 
+    /// The position is in the form of latitude, longitude, and altitude (meters). The corresponding velocities are in 
+    /// the NED/ENU frame (meters per second) and the attitude is given as roll, pitch, and yaw angles. These angles 
+    /// (both attitude angles, latitude, and longitude) can be specified in either degrees or radians using the `in_degrees` 
+    /// parameter. Note that internally, the angles are converted to radians for calculations.
     /// 
     /// # Arguments
     /// * `position` - A Vector3 representing the position in the form of latitude (degrees), longitude (degrees), and altitude (meters).
@@ -276,32 +275,37 @@ impl StrapdownState {
     /// let position = Vector3::new(37.7749, -122.4194, 0.0); // San Francisco coordinates
     /// let velocity = Vector3::new(0.0, 0.0, 0.0); // No initial velocity
     /// let attitude = Vector3::new(0.0, 0.0, 0.0); // No initial attitude
-    /// let state = StrapdownState::new_from(position, velocity, attitude);
+    /// let state = StrapdownState::new_from(position, velocity, attitude, false);
     /// ```
     pub fn new_from(
         position: Vector3<f64>,
         velocity: Vector3<f64>,
         attitude: Vector3<f64>,
+        in_degrees: bool
     ) -> StrapdownState {
         StrapdownState {
-            attitude: Rotation3::from_euler_angles(
-                attitude[0].to_radians(),
-                attitude[1].to_radians(),
-                attitude[2].to_radians(),
+            position: Vector3::new(
+                if in_degrees { position[0].to_radians() } else { position[0] },
+                if in_degrees { position[1].to_radians() } else { position[1] },
+                position[2],
             ),
             velocity,
-            position,
-            //ned: true,
+            attitude: Rotation3::from_euler_angles(
+                if in_degrees { attitude[0].to_radians() } else { attitude[0] },
+                if in_degrees { attitude[1].to_radians() } else { attitude[1] },
+                if in_degrees { attitude[2].to_radians() } else { attitude[2] },
+            ),
         }
     }
     /// Create a StrapdownState from a vector of states
     ///
     /// Creates a StrapdownState object from a cannoincal strapdown state vector. The vector is in the 
-    /// form of: $\left(p_n, p_e, p_d, v_n, v_e, v_d, \phi, \theta, \psi\right)$ where the angles for 
-    /// attitude (roll, pitch, yaw), latitude ($p_n$), and longitude ($p_e$) are in radians.
+    /// form of: $\left(p_n, p_e, p_d, v_n, v_e, v_d, \phi, \theta, \psi\right)$. Radian or degree mode
+    /// can be toggled via the `in_degrees` parameter.
     /// 
     /// # Arguments
     /// * `state` - A SVector of shape (9,) representing the strapdown state vector.
+    /// * `in_degrees` - A boolean indicating whether the angles are in degrees (true) or radians (false).
     ///
     /// # Returns
     /// * A StrapdownState instance containing the position, velocity, and attitude.
@@ -312,14 +316,21 @@ impl StrapdownState {
     /// use nalgebra::SVector;
     /// 
     /// let state_vector: SVector<f64, 9> = SVector::from_vec(vec![37.7749, -122.4194, 0.0, 10.0, 0.0, 0.0, 0.0, 45.0, 0.0]); // Example state vector
-    /// let strapdown_state = StrapdownState::new_from_vector(state_vector);
+    /// let strapdown_state = StrapdownState::new_from_vector(state_vector, true);
     /// ```
-    pub fn new_from_vector(state: SVector<f64, 9>) -> StrapdownState {
+    pub fn new_from_vector(state: SVector<f64, 9>, in_degrees: bool) -> StrapdownState {
         StrapdownState {
-            position: Vector3::new(state[0], state[1], state[2]),
+            position: Vector3::new(
+                if in_degrees { state[0].to_radians() } else { state[0] },
+                if in_degrees { state[1].to_radians() } else { state[1] },
+                state[2],
+            ),
             velocity: Vector3::new(state[3], state[4], state[5]),
-            attitude: Rotation3::from_euler_angles(state[6], state[7], state[8]),
-            //ned: is_ned,
+            attitude: Rotation3::from_euler_angles(
+                if in_degrees { state[6].to_radians() } else { state[6] },
+                if in_degrees { state[7].to_radians() } else { state[7] },
+                if in_degrees { state[8].to_radians() } else { state[8] },
+            ),
         }
     }
     /// NED Attitude update equation
@@ -359,7 +370,7 @@ impl StrapdownState {
     /// 
     /// # Returns
     /// * A Vector3 representing the updated velocity vector in the NED frame.
-    fn velocity_update(&self, f_1: &Vector3<f64>, dt: f64) -> Vector3<f64> {
+    fn velocity_update(&self, f: &Vector3<f64>, dt: f64) -> Vector3<f64> {
         let transport_rate: Matrix3<f64> = earth::vector_to_skew_symmetric(&earth::transport_rate(
             &self.position[0],
             &self.position[2],
@@ -370,7 +381,7 @@ impl StrapdownState {
         let r = earth::ecef_to_lla(&self.position[0], &self.position[1]);
         // let grav: Vector3<f64> = earth::gravitation(&self.position[0], &self.position[1], &self.position[2]);
         let v_1: Vector3<f64> = self.velocity
-            + (f_1 - r * (transport_rate + 2.0 * rotation_rate) * self.velocity) * dt;
+            + (f - r * (transport_rate + 2.0 * rotation_rate) * self.velocity) * dt;
         v_1
     }
 
@@ -416,18 +427,18 @@ impl StrapdownState {
         // Altitude update
         self.position[2] += 0.5 * (v_0[2] + v_1[2]) * dt;
         // Latitude update
-        let lat_1: f64 = self.position[0].to_radians()
+        let lat_1: f64 = self.position[0]
             + 0.5 * (v_0[0] / (r_n + alt_0) + v_1[0] / (r_n + self.position[2])) * dt;
         // Longitude update
         let (_, r_e_1, _) = earth::principal_radii(&lat_1, &self.position[2]);
-        let lon_1: f64 = self.position[1].to_radians()
+        let lon_1: f64 = self.position[1]
             + 0.5
                 * (v_0[1] / ((r_e_0 + alt_0) * lat_0.cos())
                     + v_1[1] / ((r_e_1 + self.position[2]) * lat_1.cos()))
                 * dt;
         // Update position to degrees
-        self.position[0] = lat_1.to_degrees();
-        self.position[1] = lon_1.to_degrees();
+        self.position[0] = lat_1;
+        self.position[1] = lon_1;
         // Update attitude to rotation
         self.attitude = Rotation3::from_matrix(&c_1);
         // Update velocity
@@ -446,26 +457,7 @@ impl StrapdownState {
     /// # Returns
     /// * An SVector of shape (9,) representing the strapdown state vector.
     pub fn to_vector(&self, in_degrees: bool) -> SVector<f64, 9> {
-        let mut state: SVector<f64, 9> = SVector::zeros();
-        state[0] = self.position[0];
-        state[1] = self.position[1];
-        state[2] = self.position[2];
-        state[3] = self.velocity[0];
-        state[4] = self.velocity[1];
-        state[5] = self.velocity[2];
-        let (roll, pitch, yaw) = &self.attitude.euler_angles();
-        if in_degrees {
-            state[0] = self.position[0].to_degrees();
-            state[1] = self.position[1].to_degrees();
-            state[6] = Deg(roll.to_degrees()).0;
-            state[7] = Deg(pitch.to_degrees()).0;
-            state[8] = Deg(yaw.to_degrees()).0;
-        } else {
-            state[6] = *roll;
-            state[7] = *pitch;
-            state[8] = *yaw;
-        }
-        state
+        SVector::from_vec(self.to_vec(in_degrees))
     }
     /// Convert the StrapdownState to a one dimensional vector, native vec (list) style
     /// 
@@ -493,6 +485,8 @@ impl StrapdownState {
             state[7] = Deg(pitch.to_degrees()).0;
             state[8] = Deg(yaw.to_degrees()).0;
         } else {
+            state[0] = self.position[0];
+            state[1] = self.position[1];
             state[6] = *roll;
             state[7] = *pitch;
             state[8] = *yaw;
@@ -652,7 +646,7 @@ mod tests {
         let pitch: f64 = 45.0;
         let yaw: f64 = 90.0;
         let state_vector: SVector<f64, 9> = nalgebra::vector![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, roll.to_radians(), pitch.to_radians(), yaw.to_radians()];
-        let state: StrapdownState = StrapdownState::new_from_vector(state_vector);
+        let state: StrapdownState = StrapdownState::new_from_vector(state_vector, false);
         assert_eq!(state.position, Vector3::new(0.0, 0.0, 0.0));
         assert_eq!(state.velocity, Vector3::new(0.0, 0.0, 0.0));
         let eulers = state.attitude.euler_angles();
@@ -663,9 +657,10 @@ mod tests {
     #[test]
     fn test_dcm_to_vector() {
         let state: StrapdownState = StrapdownState::new_from(
-            Vector3::new(0.0, 1.0, 2.0),
+            Vector3::new(0.0, (1.0_f64).to_degrees(), 2.0),
             Vector3::new(0.0, 15.0, 45.0),
             Vector3::new(0.0, 0.0, 0.0),
+            true, // angles provided in degrees
         );
         let state_vector = state.to_vector(true);
         assert_eq!(state_vector[0], 0.0);
@@ -736,6 +731,7 @@ mod tests {
             Vector3::new(0.0, 0.0, 0.0),
             Vector3::new(0.0, 0.0, 0.0),
             Vector3::new(0.0, 0.0, 0.0),
+            false, // angles provided in radians
         );
         let imu_data = IMUData {
             accel: Vector3::new(0.0, 0.0, -earth::gravity(&0.0, &0.0)), // Currently configured as relative body-frame acceleration
@@ -767,6 +763,7 @@ mod tests {
             Vector3::new(0.0, 0.0, 0.0),
             Vector3::new(0.0, 0.0, 0.0),
             Vector3::new(0.0, 0.0, 0.0),
+            false, // angles provided in radians
         );
         let imu_data = IMUData {
             accel: Vector3::new(0.0, 0.0, 0.0), // Currently configured as relative body-frame acceleration

@@ -563,13 +563,15 @@ pub fn closed_loop(records: &[TestDataRecord]) -> Vec<NavigationResult> {
         Some(&ukf.get_covariance()),
     ));
     // Clip to the first 1000 records for performance
-    //let records = if records.len() > 1000 {
-    //    &records[0..2]
-    //} else {
-    //    records
-    //};
+    // let records = if records.len() > 1000 {
+    //     &records[0..1000]
+    // } else {
+    //     records
+    // };
     // Iterate through the records, updating the UKF with each IMU measurement
+    let mut i : i16 = 1;
     for record in records.iter().skip(1) {
+        println!("======================================================\n{}", i);
         // Calculate time difference from the previous record
         let dt = match (
             DateTime::parse_from_str(&results.last().unwrap().timestamp, "%Y-%m-%d %H:%M:%S%z"),
@@ -585,30 +587,28 @@ pub fn closed_loop(records: &[TestDataRecord]) -> Vec<NavigationResult> {
         );
         // Update the UKF with the IMU data
         ukf.propagate(&imu_data, dt);
-        println!("======================================================");
         // If GPS data is available, update the UKF with the GPS measurement
-        // let sigma_points = ukf.get_sigma_points(); // <-- BUG FIXED? Ok, there is a bug in get_sigma_points()
         if !record.latitude.is_nan() && !record.longitude.is_nan() && !record.altitude.is_nan() {
             let measurement = DVector::from_vec(
                 vec![
-                    record.longitude,
-                    record.latitude,
+                    record.longitude.to_radians(),
+                    record.latitude.to_radians(),
                     record.altitude
                 ]
             );
             // Create the measurement sigma points using the position measurement model
             let measurement_sigma_points = position_measurement_model(&ukf.get_sigma_points(), true);
-            println!("Measurement: {:?}", measurement);
-            //println!("Measurement Sigma Points: {:?}", measurement_sigma_points);
+            //println!("Measurement: [{:?}, {:?}, {:?}]", measurement[0], measurement[1], measurement[2]);
             // Update the UKF with the GPS measurement
             ukf.update(&measurement, &measurement_sigma_points);
-        } 
+        }
         // Store the current state and covariance in results
         results.push(NavigationResult::new_from_vector(
             &ukf.get_mean(),
             record.time.clone(),
             Some(&ukf.get_covariance()),
         ));
+        i += 1;
     }
     results
 }
@@ -656,7 +656,7 @@ pub fn initialize_ukf(initial_pose: TestDataRecord, attitude_covariance: Option<
         Some(imu_biases) => covariance_diagonal.extend(imu_biases),
         None => covariance_diagonal.extend(vec![1e-3; 6]), // Default values if not provided
     }
-    let mut process_noise_diagonal = vec![0.0; 9];
+    let mut process_noise_diagonal = vec![1e-9; 9];
     process_noise_diagonal.extend(vec![1e-3; 6]); // Process noise for imu biases
     let process_noise_diagonal = DVector::from_vec(process_noise_diagonal);
     //DVector::from_vec(vec![0.0; 15]);
@@ -675,6 +675,7 @@ pub fn initialize_ukf(initial_pose: TestDataRecord, attitude_covariance: Option<
         1e-3,
         2.0,
         0.0,
+        true
     )
 }
 
