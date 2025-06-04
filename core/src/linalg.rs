@@ -1,17 +1,17 @@
 /// Basic linear algebra utilities for matrix square root computation.
-/// 
+///
 /// This module provides linear algebra utilities for matrix square root calculations in an attempt to
-/// provide similar functionality to the `scipy.linalg.sqrtm` function in Python. That said, due to 
-/// the applied nature of this crate, the problem is simplified to only handle square, positive 
+/// provide similar functionality to the `scipy.linalg.sqrtm` function in Python. That said, due to
+/// the applied nature of this crate, the problem is simplified to only handle square, positive
 /// definite, and positive semi-definite matrices. The inclusion of this module is to provide an implementation
 /// of matrix square root calculations for the Unscented Kalman Filter (UKF) algorithm, which requires
-/// the computation of the square root of a covariance matrix. Covariance matrices are symmetric and positive 
+/// the computation of the square root of a covariance matrix. Covariance matrices are symmetric and positive
 /// semi-definite, making them suitable for this approach.
-/// 
+///
 /// Two methods are implemented:
 /// 1. **Cholesky Decomposition**: Computes the square root of a symmetric positive definite matrix.
 /// 2. **Eigenvalue Decomposition**: Computes the square root of a symmetric positive semi-definite matrix.
-/// 
+///
 /// These calculations are intended to be used through the `matrix_square_root` function, which will
 /// attempt to compute the square root using Cholesky decomposition first, then eigenvalue decomposition. If both
 /// methods fail, then the method will panic.
@@ -43,16 +43,14 @@ pub fn matrix_square_root(matrix: &DMatrix<f64>) -> DMatrix<f64> {
     match cholesky_pass(matrix) {
         Some(chol_l) => {
             return chol_l;
-        },
-        None => { 
+        }
+        None => {
             //println!("Cholesky decomposition failed. Attempting eigenvalue decomposition.");
         }
     }
     // If Cholesky failed, we try eigenvalue decomposition.
     match eigenvalue_pass(matrix) {
-        Some(eigen_sqrt) => {
-            eigen_sqrt
-        },
+        Some(eigen_sqrt) => eigen_sqrt,
         None => {
             panic!("Cholesky and Eigenvalue decomposition failed. No valid square root found.");
         }
@@ -62,7 +60,7 @@ pub fn matrix_square_root(matrix: &DMatrix<f64>) -> DMatrix<f64> {
 ///
 /// This method is only applicable to symmetric positive definite matrices.
 /// If successful, it returns the lower triangular matrix `L` such that `matrix = L * L.transpose()`.
-/// 
+///
 /// When the computation _fails_ (e.g., the matrix is not positive definite or not square),
 /// a None value is returned instead of panicking, permitting the public API to proceed to the
 /// next method.
@@ -78,7 +76,10 @@ fn cholesky_pass(matrix: &DMatrix<f64>) -> Option<DMatrix<f64>> {
         eprintln!("Error: Matrix must be square for Cholesky decomposition.");
         return None;
     }
-    matrix.clone().cholesky().map(|chol: Cholesky<f64, nalgebra::Dyn>| chol.l())
+    matrix
+        .clone()
+        .cholesky()
+        .map(|chol: Cholesky<f64, nalgebra::Dyn>| chol.l())
 }
 /// Computes a symmetric matrix square root using eigenvalue decomposition.
 ///
@@ -86,11 +87,11 @@ fn cholesky_pass(matrix: &DMatrix<f64>) -> Option<DMatrix<f64>> {
 /// It returns a symmetric matrix `S` such that `matrix = S * S`.
 /// Eigenvalues are clamped to be non-negative to handle positive semi-definite cases
 /// and minor numerical inaccuracies.
-/// 
+///
 /// When the computation _fails_ (e.g., the matrix is not positive definite or not square),
 /// a None value is returned instead of panicking, permitting the public API to proceed to the
 /// next method.
-/// 
+///
 /// # Arguments
 /// * `matrix` - The DMatrix<f64> to find the square root of. Assumed to be symmetric and square.
 ///
@@ -111,7 +112,9 @@ fn eigenvalue_pass(matrix: &DMatrix<f64>) -> Option<DMatrix<f64>> {
     // Check for significantly negative eigenvalues, indicating non-positive semi-definiteness.
     // While we clamp them, a warning is useful for diagnosis.
     if eigenvalues.iter().any(|&val| val < -1e-9) {
-        eprintln!("Warning: Negative eigenvalues encountered during eigenvalue decomposition. The input matrix was not positive semi-definite.");
+        eprintln!(
+            "Warning: Negative eigenvalues encountered during eigenvalue decomposition. The input matrix was not positive semi-definite."
+        );
         eprintln!("{:?}", matrix);
         return None;
     }
@@ -131,61 +134,42 @@ fn eigenvalue_pass(matrix: &DMatrix<f64>) -> Option<DMatrix<f64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::LazyLock;
     use nalgebra::DMatrix;
+    use std::sync::LazyLock;
 
     static BASIC_SQRT: LazyLock<DMatrix<f64>> = LazyLock::new(|| {
-        DMatrix::from_row_slice(3,3, &[
-            4.0, 0.0, 0.0,
-            0.0, 9.0, 0.0,
-            0.0, 0.0, 16.0]
-        )
+        DMatrix::from_row_slice(3, 3, &[4.0, 0.0, 0.0, 0.0, 9.0, 0.0, 0.0, 0.0, 16.0])
     });
     static POSITIVE_DEFINITE: LazyLock<DMatrix<f64>> = LazyLock::new(|| {
-        DMatrix::from_row_slice(3,3, &[
-            4.0, 2.0, 0.0,
-            2.0, 9.0, 3.0,
-            0.0, 3.0, 16.0]
-        )
+        DMatrix::from_row_slice(3, 3, &[4.0, 2.0, 0.0, 2.0, 9.0, 3.0, 0.0, 3.0, 16.0])
     });
     static POSITIVE_SEMI_DEFINIE: LazyLock<DMatrix<f64>> = LazyLock::new(|| {
-        DMatrix::from_row_slice(3,3, &[
-            1.0, 0.0, 1.0,
-            0.0, 1.0, 0.0,
-            1.0, 0.0, 1.0]
-        )
+        DMatrix::from_row_slice(3, 3, &[1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0])
     });
     static NEGATIVE_DEFINITE: LazyLock<DMatrix<f64>> = LazyLock::new(|| {
-        DMatrix::from_row_slice(3,3, &[
-            -4.0, 0.0, 0.0,
-            0.0, -9.0, 0.0,
-            0.0, 0.0, -16.0]
-        )
+        DMatrix::from_row_slice(3, 3, &[-4.0, 0.0, 0.0, 0.0, -9.0, 0.0, 0.0, 0.0, -16.0])
     });
     static NEGATIVE_SEMI_DEFINIE: LazyLock<DMatrix<f64>> = LazyLock::new(|| {
-        DMatrix::from_row_slice(3,3, &[
-            -1.0, 0.0, -1.0,
-            0.0, -1.0, 0.0,
-            -1.0, 0.0, -1.0]
-        )
+        DMatrix::from_row_slice(3, 3, &[-1.0, 0.0, -1.0, 0.0, -1.0, 0.0, -1.0, 0.0, -1.0])
     });
-    static NON_SQUARE: LazyLock<DMatrix<f64>> = LazyLock::new(|| {
-        DMatrix::from_row_slice(2,3, &[
-            1.0, 2.0, 3.0,
-            4.0, 5.0, 6.0]
-        )
-    });
+    static NON_SQUARE: LazyLock<DMatrix<f64>> =
+        LazyLock::new(|| DMatrix::from_row_slice(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]));
 
     /// Helper function to verify if a matrix is a valid square root of another matrix.
     /// Returns true if sqrt_matrix * sqrt_matrix.T ≈ original_matrix within tolerance.
-    fn is_valid_square_root(sqrt_matrix: &DMatrix<f64>, original_matrix: &DMatrix<f64>, tolerance: f64) -> bool {
+    fn is_valid_square_root(
+        sqrt_matrix: &DMatrix<f64>,
+        original_matrix: &DMatrix<f64>,
+        tolerance: f64,
+    ) -> bool {
         let reconstructed = sqrt_matrix * sqrt_matrix.transpose();
-        
-        if reconstructed.nrows() != original_matrix.nrows() || 
-           reconstructed.ncols() != original_matrix.ncols() {
+
+        if reconstructed.nrows() != original_matrix.nrows()
+            || reconstructed.ncols() != original_matrix.ncols()
+        {
             return false;
         }
-        
+
         for i in 0..original_matrix.nrows() {
             for j in 0..original_matrix.ncols() {
                 if (reconstructed[(i, j)] - original_matrix[(i, j)]).abs() > tolerance {
@@ -227,7 +211,11 @@ mod tests {
     #[test]
     fn eigenvalue_square_root() {
         let sqrt_matrix = matrix_square_root(&POSITIVE_SEMI_DEFINIE);
-        assert!(is_valid_square_root(&sqrt_matrix, &POSITIVE_SEMI_DEFINIE, 1e-9));
+        assert!(is_valid_square_root(
+            &sqrt_matrix,
+            &POSITIVE_SEMI_DEFINIE,
+            1e-9
+        ));
     }
     #[test]
     fn eigenvalue_positive_definite() {
@@ -237,7 +225,11 @@ mod tests {
     #[test]
     fn eigenvalue_positive_semi_definite() {
         let sqrt_matrix = matrix_square_root(&POSITIVE_SEMI_DEFINIE);
-        assert!(is_valid_square_root(&sqrt_matrix, &POSITIVE_SEMI_DEFINIE, 1e-9));
+        assert!(is_valid_square_root(
+            &sqrt_matrix,
+            &POSITIVE_SEMI_DEFINIE,
+            1e-9
+        ));
     }
     #[test]
     #[should_panic]
@@ -262,7 +254,11 @@ mod tests {
         let sqrt_matrix = matrix_square_root(&POSITIVE_DEFINITE);
         assert!(is_valid_square_root(&sqrt_matrix, &POSITIVE_DEFINITE, 1e-9));
         let sqrt_matrix = matrix_square_root(&POSITIVE_SEMI_DEFINIE);
-        assert!(is_valid_square_root(&sqrt_matrix, &POSITIVE_SEMI_DEFINIE, 1e-9));
+        assert!(is_valid_square_root(
+            &sqrt_matrix,
+            &POSITIVE_SEMI_DEFINIE,
+            1e-9
+        ));
         let sqrt_matrix = matrix_square_root(&BASIC_SQRT);
         assert!(is_valid_square_root(&sqrt_matrix, &BASIC_SQRT, 1e-9));
     }

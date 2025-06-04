@@ -1,37 +1,37 @@
 //! Inertial Navigation Filters
-//! 
+//!
 //! This module contains implementations of various inertial navigation filters, including
 //! Kalman filters and particle filters. These filters are used to estimate the state of a
 //! strapdown inertial navigation system based on IMU measurements and other sensor data.
-//! The filters use the strapdown equations (provided by the StrapdownState) to propagate 
+//! The filters use the strapdown equations (provided by the StrapdownState) to propagate
 //! the state in the local level frame.
-//! 
-//! Currently, this module contains an implementation of a full-state Unscented Kalman Filter 
-//! (UKF) and a full-state particle filter. For completeness, an Extended Kalman Filter (EKF) 
-//! should be included, however, a strapdown EKF INS is typically implemented as an error state 
+//!
+//! Currently, this module contains an implementation of a full-state Unscented Kalman Filter
+//! (UKF) and a full-state particle filter. For completeness, an Extended Kalman Filter (EKF)
+//! should be included, however, a strapdown EKF INS is typically implemented as an error state
 //! filter, which would require a slightly different architecture.
-//! 
+//!
 //! Contained in this module is also a simple standard position measurement model for both
 //! the UKF and particle filter. This model is used to update the state based on position
 //! measurements in the local level frame (i.e. a GPS fix).
-use std::fmt::Debug;
+use crate::linalg::matrix_square_root;
+use crate::{IMUData, StrapdownState};
+use nalgebra::{DMatrix, DVector, SVector, Vector3};
 use rand;
 use rand_distr::{Distribution, Normal};
-use nalgebra::{DMatrix, DVector, SVector, Vector3};
-use crate::{IMUData, StrapdownState};
-use crate::linalg::matrix_square_root;
+use std::fmt::Debug;
 
 /// Helper struct for UKF and Particle Filter implementations
-/// 
-/// This struct is used to represent a sigma point in the UKF or a particle in the particle filter. 
+///
+/// This struct is used to represent a sigma point in the UKF or a particle in the particle filter.
 /// Functionally, these two data structures are the same, but they are used in different contexts.
-/// It contains the strapdown state and other states. The strapdown state is used to propagate the 
-/// state using the strapdown navigation equations. `other_states` is used to represent any other 
+/// It contains the strapdown state and other states. The strapdown state is used to propagate the
+/// state using the strapdown navigation equations. `other_states` is used to represent any other
 /// states that are being estimated by the filter. In the canonical 15-state INS filter, these
 /// other states would be the six IMU biases, however, this struct is generic and can be used for
 /// any other states that are being estimated by the filter and can be stored as a floating point
 /// value.
-/// 
+///
 /// Note that the `weight` field is primarily used in the particle filter, but is included here
 /// for brevity as a particle is pretty much just a sigma point with only one weighting scheme.
 /// Note that the UKF uses two different weighting schemes, one for the mean and one for the covariance.
@@ -49,13 +49,13 @@ pub struct SigmaPoint {
 impl SigmaPoint {
     /// Create new sigma point from a strapdown state vector plus whatever other states the UKF
     /// estimates.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `nav_state` - The strapdown state to use for the sigma point.
     /// * `other_states` - The other states to use for the sigma point.
     /// * `weight` - The weight of the sigma point.
-    /// 
+    ///
     /// # Returns
     /// * A new SigmaPoint struct.
     /// # Example
@@ -63,12 +63,16 @@ impl SigmaPoint {
     /// use strapdown::filter::SigmaPoint;
     /// use strapdown::StrapdownState;
     /// use nalgebra::SVector;
-    /// 
+    ///
     /// let nav_state = StrapdownState::new_from_vector(SVector::<f64, 9>::zeros(), false);
     /// let other_states = vec![0.0, 0.0, 0.0];
     /// let sigma_point = SigmaPoint::new(nav_state, other_states, Some(1.0));
     /// ```
-    pub fn new(nav_state: StrapdownState, other_states: Vec<f64>, weight: Option<f64>) -> SigmaPoint {
+    pub fn new(
+        nav_state: StrapdownState,
+        other_states: Vec<f64>,
+        weight: Option<f64>,
+    ) -> SigmaPoint {
         let n: usize = nav_state.to_vector(false).len() + other_states.len();
         SigmaPoint {
             n,
@@ -78,20 +82,20 @@ impl SigmaPoint {
         }
     }
     /// Get the strapdown state of the sigma point as an nalgebra vector.
-    /// 
+    ///
     /// # Returns
     /// * A vector containing the strapdown state and other states.
-    /// 
+    ///
     /// # Example
     /// ```rust
     /// use strapdown::filter::SigmaPoint;
     /// use strapdown::StrapdownState;
     /// use nalgebra::SVector;
-    /// 
+    ///
     /// let nav_state = StrapdownState::new_from_vector(SVector::<f64, 9>::zeros(), false);
     /// let other_states = vec![0.0, 0.0, 0.0];
     /// let sigma_point = SigmaPoint::new(nav_state, other_states, None);
-    /// 
+    ///
     /// let state = sigma_point.get_state(false);
     /// assert_eq!(state.len(), 12);
     /// ```
@@ -101,20 +105,20 @@ impl SigmaPoint {
         DVector::from_vec(state)
     }
     /// Get the weight of the sigma point.
-    /// 
+    ///
     /// # Returns
     /// * The weight of the sigma point.
-    /// 
+    ///
     /// # Example
     /// ```rust
     /// use strapdown::filter::SigmaPoint;
     /// use strapdown::StrapdownState;
     /// use nalgebra::SVector;
-    /// 
+    ///
     /// let nav_state = StrapdownState::new_from_vector(SVector::<f64, 9>::zeros(), false);
     /// let other_states = vec![0.0, 0.0, 0.0];
     /// let sigma_point = SigmaPoint::new(nav_state, other_states, Some(1.0));
-    /// 
+    ///
     /// let weight = sigma_point.get_weight();
     /// assert_eq!(weight, 1.0);
     pub fn get_weight(&self) -> f64 {
@@ -123,7 +127,7 @@ impl SigmaPoint {
 
     /// Forward mechanization (propagation) of the strapdown state. Serves
     /// as a thin wrapper around the strapdown state `forward` function.
-    /// 
+    ///
     /// # Arguments
     /// * `imu_data` - The IMU measurements to propagate the state with.
     /// * `dt` - The time step for the propagation.
@@ -135,21 +139,21 @@ impl SigmaPoint {
     /// use strapdown::StrapdownState;
     /// use strapdown::IMUData;
     /// use nalgebra::SVector;
-    /// 
+    ///
     /// let nav_state = StrapdownState::new_from_vector(SVector::<f64, 9>::zeros(), false);
     /// let other_states = vec![0.0, 0.0, 0.0];
     /// let mut sigma_point = SigmaPoint::new(nav_state, other_states, None);
-    /// 
+    ///
     /// let imu_data = IMUData::new_from_vec(vec![0.0, 0.0, 0.0], vec![0.0, 0.0, 0.0]);
     /// let dt = 0.1;
-    /// 
+    ///
     /// sigma_point.forward(&imu_data, dt, None);
     /// ```
     pub fn forward(&mut self, imu_data: &IMUData, dt: f64, noise: Option<Vec<f64>>) {
         // Propagate the strapdown state using the strapdown equations
         self.nav_state.forward(imu_data, dt);
-        let noise_vect  = match noise {
-            None => return,           // UKF mode, does not use noise in propagation
+        let noise_vect = match noise {
+            None => return, // UKF mode, does not use noise in propagation
             Some(v) => v,   // Particle filter mode, uses noise in propagation
         };
         let mut rng = rand::rng();
@@ -160,29 +164,26 @@ impl SigmaPoint {
         }
         // Convert jitter to DVector for addition
         let jitter_vec = DVector::from_vec(jitter);
-        
+
         // Get current state and add jitter
         let state = self.get_state(false);
         let perturbed_state = state + jitter_vec;
-        
+
         // Update the state with perturbed values
         // First 9 elements go to nav_state
         let nav_part = perturbed_state.rows(0, 9);
         self.nav_state = StrapdownState::new_from_vector(
             SVector::from_iterator(nav_part.iter().cloned()),
-            false
+            false,
         );
         // Remaining elements go to other_states
         let other_len = perturbed_state.len() - 9;
         if other_len > 0 {
-            self.other_states = perturbed_state.rows(9, other_len)
-                .iter()
-                .cloned()
-                .collect();
-        }        
+            self.other_states = perturbed_state.rows(9, other_len).iter().cloned().collect();
+        }
     }
     /// Convert the sigma point to an nalgebra vector.
-    /// 
+    ///
     /// # Returns
     /// * A vector containing the strapdown state and other states.
     /// # Example
@@ -190,11 +191,11 @@ impl SigmaPoint {
     /// use strapdown::filter::SigmaPoint;
     /// use strapdown::StrapdownState;
     /// use nalgebra::SVector;
-    /// 
+    ///
     /// let nav_state = StrapdownState::new_from_vector(SVector::<f64, 9>::zeros(), false);
     /// let other_states = vec![0.0, 0.0, 0.0];
     /// let sigma_point = SigmaPoint::new(nav_state, other_states, None);
-    /// 
+    ///
     /// let state = sigma_point.to_vector(true);
     /// assert_eq!(state.len(), 12);
     /// ```
@@ -204,46 +205,54 @@ impl SigmaPoint {
         DVector::from_vec(state)
     }
     /// Convert an nalgebra vector to a sigma point.
-    /// 
+    ///
     /// # Arguments
     /// * `state` - The vector to convert to a sigma point.
     /// * `weight` - The weight of the sigma point, if any.
     /// # `in_degrees` - Whether the input vector is in degrees or radians.
-    /// 
+    ///
     /// # Returns
     /// * A new SigmaPoint struct.
-    /// 
+    ///
     /// # Example
     /// ```rust
     /// use strapdown::filter::SigmaPoint;
     /// use nalgebra::DVector;
-    /// 
+    ///
     /// let state = DVector::from_vec(vec![0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0,1.1]);
     /// let sigma_point = SigmaPoint::from_vector(state, Some(1.0), false);
     /// ```
     pub fn from_vector(state: DVector<f64>, weight: Option<f64>, in_degrees: bool) -> SigmaPoint {
-        assert!(state.len() >= 9, "Expected a cannonical state vector of at least 9 states.");
+        assert!(
+            state.len() >= 9,
+            "Expected a cannonical state vector of at least 9 states."
+        );
         let position: Vector3<f64> = Vector3::new(state[0], state[1], state[2]);
         let velocity: Vector3<f64> = Vector3::new(state[3], state[4], state[5]);
-        let attitude: Vector3<f64> = Vector3::new(state[6], state[7], state[8]);        
-        let other_states = state.rows(9, state.len() - 9).iter().cloned().collect::<Vec<f64>>();
-        let nav_state: StrapdownState = StrapdownState::new_from(position, velocity, attitude, in_degrees);
+        let attitude: Vector3<f64> = Vector3::new(state[6], state[7], state[8]);
+        let other_states = state
+            .rows(9, state.len() - 9)
+            .iter()
+            .cloned()
+            .collect::<Vec<f64>>();
+        let nav_state: StrapdownState =
+            StrapdownState::new_from(position, velocity, attitude, in_degrees);
         SigmaPoint::new(nav_state, other_states, weight)
     }
 }
 /// Strapdown Unscented Kalman Filter Inertial Navigation Filter
-/// 
-/// This filter uses the Unscented Kalman Filter (UKF) algorithm to estimate the state of a 
+///
+/// This filter uses the Unscented Kalman Filter (UKF) algorithm to estimate the state of a
 /// strapdown inertial navigation system. It uses the strapdown equations to propagate the state
 /// in the local level frame based on IMU measurements in the body frame. The filter also uses
-/// a generic position measurement model to update the state based on position measurements in 
+/// a generic position measurement model to update the state based on position measurements in
 /// the local level frame.
-/// 
+///
 /// Because of the generic nature of both the UKF and this toolbox, the filter requires the user to
 /// implement the measurement model. The measurement model must calculate the measurement sigma points
 /// ($\mathcal{Z} = h(\mathcal{X})$) and the innovation matrix ($S$) for the filter. Some basic
 /// GNSS-based are provided in this module.
-/// 
+///
 /// Note that, internally, angles are always stored in radians (both for the attitude and the position),
 /// however, the user can choose to convert them to degrees when retrieving the state vector and the UKF
 /// and underlying strapdown state can be constructed from data in degrees by using the boolean `in_degrees`
@@ -273,7 +282,7 @@ impl Debug for UKF {
 impl UKF {
     /// Creates a new UKF with the given initial state, biases, covariance, process noise,
     /// any additional other states, and UKF hyperparameters.
-    /// 
+    ///
     /// # Arguments
     /// * `position` - The initial position of the strapdown state.
     /// * `velocity` - The initial velocity of the strapdown state.
@@ -287,7 +296,7 @@ impl UKF {
     /// * `beta` - The beta parameter for the UKF.
     /// * `kappa` - The kappa parameter for the UKF.
     /// * `in_degrees` - Whether the input vectors are in degrees or radians.
-    /// 
+    ///
     /// # Returns
     /// * A new UKF struct.
     pub fn new(
@@ -304,8 +313,14 @@ impl UKF {
         kappa: f64,
         in_degrees: bool,
     ) -> UKF {
-        assert!(measurement_noise.nrows() == measurement_noise.ncols(), "Measurement noise matrix must be square");
-        assert!(process_noise.nrows() == process_noise.ncols(), "Process noise matrix must be square");
+        assert!(
+            measurement_noise.nrows() == measurement_noise.ncols(),
+            "Measurement noise matrix must be square"
+        );
+        assert!(
+            process_noise.nrows() == process_noise.ncols(),
+            "Process noise matrix must be square"
+        );
 
         // If in_degrees, convert the position and attitude to radians
         let position = if in_degrees {
@@ -338,7 +353,8 @@ impl UKF {
         );
         assert!(
             mean.len() == covariance_diagonal.len(),
-            "{}", &format!(
+            "{}",
+            &format!(
                 "Mean vector and covariance diagonal must be of the same size (mean: {}, covariance_diagonal: {})",
                 mean.len(),
                 covariance_diagonal.len()
@@ -347,8 +363,14 @@ impl UKF {
         let state_size = mean.len();
         let mean_state = DVector::from_vec(mean);
         let covariance = DMatrix::<f64>::from_diagonal(&DVector::from_vec(covariance_diagonal));
-        assert!(covariance.shape() == (state_size, state_size), "Covariance matrix must be square");
-        assert!(covariance.shape() == process_noise.shape(), "Covariance and process noise must be of the same size");
+        assert!(
+            covariance.shape() == (state_size, state_size),
+            "Covariance matrix must be square"
+        );
+        assert!(
+            covariance.shape() == process_noise.shape(),
+            "Covariance and process noise must be of the same size"
+        );
         let lambda = alpha * alpha * (state_size as f64 + kappa) - state_size as f64;
         let mut weights_mean = DVector::zeros(2 * state_size + 1);
         let mut weights_cov = DVector::zeros(2 * state_size + 1);
@@ -365,20 +387,20 @@ impl UKF {
             process_noise,
             measurement_noise,
             lambda,
-            state_size, 
+            state_size,
             weights_mean,
             weights_cov,
         }
     }
     /// Propagates the state using the strapdown equations and IMU measurements.
-    /// 
+    ///
     /// The IMU measurements are used to update the strapdown state in the local level frame.
     /// The IMU measurements are assumed to be in the body frame.
-    /// 
+    ///
     /// # Arguments
     /// * `imu_data` - The IMU measurements to propagate the state with (e.g. relative accelerations (m/s^2) and angular rates (rad/s)).
     /// * `dt` - The time step for the propagation.
-    /// 
+    ///
     /// # Returns
     /// * none
     pub fn propagate(&mut self, imu_data: &IMUData, dt: f64) {
@@ -391,7 +413,7 @@ impl UKF {
         // Update the mean state through a naive loop
         for (i, sigma_point) in sigma_points.iter().enumerate() {
             mu_bar += self.weights_mean[i] * sigma_point.get_state(false);
-        }        
+        }
         let mut cov_bar = DMatrix::<f64>::zeros(self.state_size, self.state_size);
         // Update the covariance through a naive loop
         for (i, sigma_point) in sigma_points.iter().enumerate() {
@@ -401,34 +423,37 @@ impl UKF {
             cov_bar += weight_cov * &diff * &diff.transpose();
         }
         self.mean_state = mu_bar;
-        self.covariance = cov_bar + &self.process_noise;        
+        self.covariance = cov_bar + &self.process_noise;
     }
     /// Perform the Kalman measurement update step.
-    /// 
-    /// This method updates the state and covariance based on the measurement and measurement 
+    ///
+    /// This method updates the state and covariance based on the measurement and measurement
     /// sigma points. The measurement model is specific to a given implementation of the UKF
     /// and must be provided by the user. This model determines the shape and quantities of
-    /// the measurement vector and the measurement sigma points. This module contains some 
+    /// the measurement vector and the measurement sigma points. This module contains some
     /// standard GNSS-aided measurements models (`position_measurement_model`, `velocity_measurement_model`,
-    /// and `position_and_velocity_measurement_model`) that can be used. See the `sim` module for 
+    /// and `position_and_velocity_measurement_model`) that can be used. See the `sim` module for
     /// a canonical example of a GPS-aided INS implementation that uses these models.
-    /// 
-    /// **Note**: Canonical INS implementations use a position measurement model. Typically, 
+    ///
+    /// **Note**: Canonical INS implementations use a position measurement model. Typically,
     /// position is reported in _degrees_ for latitude and longitude, and in meters for altitude.
     /// Internally, the UKF stores the latitude and longitude in _radians_, and the measurement models make no
     /// assumptions about the units of the position measurements. However, the user should
     /// ensure that the provided measurement to this function is in the same units as the
     /// measurement model.
-    /// 
+    ///
     /// # Arguments
     /// * `measurement` - The measurement vector to update the state with.
     /// * `measurement_sigma_points` - The measurement sigma points to use for the update.
-    pub fn update(&mut self, measurement: &DVector<f64>, measurement_sigma_points: &[DVector<f64>]) {
+    pub fn update(
+        &mut self,
+        measurement: &DVector<f64>,
+        measurement_sigma_points: &[DVector<f64>],
+    ) {
         // Assert that the measurement is the correct size as the measurement noise diagonal
         assert!(
             measurement.len() == self.measurement_noise.nrows(),
             "Measurement and measurement noise must be of the same size"
-
         );
         // Calculate expected measurement
         let mut z_hat = DVector::<f64>::zeros(measurement.len());
@@ -496,7 +521,7 @@ impl UKF {
         //let mean_update = &k * (z_diff);
         //println!("Mean update: \n [{:.4}, {:.4}, {:.4}]", mean_update[0], mean_update[1], mean_update[2]);
         self.mean_state += &k * (measurement - &z_hat);
-        self.covariance -= &k * s * &k.transpose();        
+        self.covariance -= &k * s * &k.transpose();
     }
     /// Get the UKF mean state.
     pub fn get_mean(&self) -> DVector<f64> {
@@ -509,19 +534,27 @@ impl UKF {
     /// Calculate the sigma points for the UKF based on the current state and covariance.
     pub fn get_sigma_points(&self) -> Vec<SigmaPoint> {
         //dbg!("UKF::get_sigma_points -> state_size: {}", self.state_size);
-        let scaled_covariance = (self.state_size as f64 + self.lambda) * self.covariance.clone(); 
+        let scaled_covariance = (self.state_size as f64 + self.lambda) * self.covariance.clone();
         let sqrt_cov = matrix_square_root(&scaled_covariance);
-        let mut sigma_points = Vec::<SigmaPoint>::with_capacity(2*self.state_size + 1);
+        let mut sigma_points = Vec::<SigmaPoint>::with_capacity(2 * self.state_size + 1);
         // Add the mean state as the first sigma point, note that the UKF uses two sets of weights
         let mean = self.mean_state.clone();
         sigma_points.push(SigmaPoint::from_vector(mean.clone(), Some(0.0), false));
-        
+
         let mut left: Vec<SigmaPoint> = Vec::with_capacity(self.state_size);
         let mut right: Vec<SigmaPoint> = Vec::with_capacity(self.state_size);
         for i in 0..self.state_size {
-            let sqrt_cov_i = sqrt_cov.column(i);            
-            left.push(SigmaPoint::from_vector(&mean + sqrt_cov_i, Some(0.0), false));
-            right.push(SigmaPoint::from_vector(&mean - sqrt_cov_i, Some(0.0), false));
+            let sqrt_cov_i = sqrt_cov.column(i);
+            left.push(SigmaPoint::from_vector(
+                &mean + sqrt_cov_i,
+                Some(0.0),
+                false,
+            ));
+            right.push(SigmaPoint::from_vector(
+                &mean - sqrt_cov_i,
+                Some(0.0),
+                false,
+            ));
         }
         sigma_points.extend(left);
         sigma_points.extend(right);
@@ -617,24 +650,26 @@ impl ParticleFilter {
 // Below is a set of generic measurement models for the UKF and particle filter.
 // These models provide a vec of "expected measurements" based on the sigma points
 // location. When used in a filter, you should simulatanously iterate through the
-// list of sigma points or particles and the expected measurements in order to 
+// list of sigma points or particles and the expected measurements in order to
 // calculate the innovation matrix or the particle weighting.
 // ===============================================================================================
 
-
 /// GPS or Position-based measurement model
-/// 
-/// Standard GNSS-aided loosely-coupled INS measurement model. This model is used to update the state 
-/// based on position measurements in the local level frame. The model assumes that the position 
+///
+/// Standard GNSS-aided loosely-coupled INS measurement model. This model is used to update the state
+/// based on position measurements in the local level frame. The model assumes that the position
 /// measurements are in the local level frame and that the strapdown state is in the body frame.
-/// 
+///
 /// # Arguments
 /// * `sigma_points` - the strapdown UKF's sigma points
 /// * `with_altitude` - whether to include altitude in the measurement
-/// 
+///
 /// # Returns
 /// * A vector of measurement sigma points either (N x 3) or (N x 2) depending on the `with_altitude` flag
-pub fn position_measurement_model(sigma_points: &Vec<SigmaPoint>, with_altitude: bool) -> Vec<DVector<f64>> {
+pub fn position_measurement_model(
+    sigma_points: &Vec<SigmaPoint>,
+    with_altitude: bool,
+) -> Vec<DVector<f64>> {
     let mut measurement_sigma_points = Vec::<DVector<f64>>::with_capacity(sigma_points.len());
     for sigma_point in sigma_points {
         let state = sigma_point.get_state(false);
@@ -652,19 +687,22 @@ pub fn position_measurement_model(sigma_points: &Vec<SigmaPoint>, with_altitude:
     measurement_sigma_points
 }
 /// UKF velocity-based measurement model
-/// 
+///
 /// Velocity measurement model. This model is used to update the state based on
-/// velocity measurements in the local level frame. The model assumes that the velocity 
-/// measurements are in the local level frame and that the strapdown state is in the 
+/// velocity measurements in the local level frame. The model assumes that the velocity
+/// measurements are in the local level frame and that the strapdown state is in the
 /// body frame.
-/// 
+///
 /// # Arguments
 /// * `sigma_points` - the strapdown UKF's sigma points
 /// * `with_altitude` - whether to include altitude in the measurement
-/// 
+///
 /// # Returns
 /// * A vector of measurement sigma points either (N x 3) or (N x 2) depending on the `with_altitude` flag
-pub fn velocity_measurement_model(sigma_points: &Vec<SigmaPoint>, with_altitude: bool) -> Vec<DVector<f64>> {
+pub fn velocity_measurement_model(
+    sigma_points: &Vec<SigmaPoint>,
+    with_altitude: bool,
+) -> Vec<DVector<f64>> {
     let mut measurement_sigma_points = Vec::<DVector<f64>>::with_capacity(sigma_points.len());
     for sigma_point in sigma_points {
         let state = sigma_point.get_state(false);
@@ -682,21 +720,24 @@ pub fn velocity_measurement_model(sigma_points: &Vec<SigmaPoint>, with_altitude:
     measurement_sigma_points
 }
 /// GPS or Position-based measurement model
-/// 
-/// GPS-aided INS measurement model for a combined position-velocity measuremet. 
-/// This model is used to update the state based on both position and velocity 
-/// measurements in the local level frame. The model assumes that the position 
+///
+/// GPS-aided INS measurement model for a combined position-velocity measuremet.
+/// This model is used to update the state based on both position and velocity
+/// measurements in the local level frame. The model assumes that the position
 /// measurements are in the local level frame (latitude, longitude, altitude)
 /// and that the velocity is orient along the northward, eastward, and downward
 /// axes.
-/// 
+///
 /// # Arguments
 /// * `sigma_points` - the strapdown UKF's sigma points
 /// * `with_altitude` - whether to include altitude in the measurement
-/// 
+///
 /// # Returns
 /// * A vector of measurement sigma points either (N x 6) or (N x 4) depending on the `with_altitude` flag
-pub fn position_and_velocity_measurement_model(sigma_points: &Vec<SigmaPoint>, with_altitude: bool) -> Vec<DVector<f64>> {
+pub fn position_and_velocity_measurement_model(
+    sigma_points: &Vec<SigmaPoint>,
+    with_altitude: bool,
+) -> Vec<DVector<f64>> {
     let mut measurement_sigma_points = Vec::<DVector<f64>>::with_capacity(sigma_points.len());
     for sigma_point in sigma_points {
         let state = sigma_point.get_state(false);
@@ -725,22 +766,21 @@ pub fn position_and_velocity_measurement_model(sigma_points: &Vec<SigmaPoint>, w
     measurement_sigma_points
 }
 
-
 /// Tests
 #[cfg(test)]
 mod tests {
     use super::*;
+    use assert_approx_eq::assert_approx_eq;
     use nalgebra::{SVector, Vector3};
-    use assert_approx_eq::assert_approx_eq;    
     // Test sigma point functionality
     #[test]
-    fn test_sigma_point() {        
+    fn test_sigma_point() {
         let nav_state = StrapdownState::new_from_vector(SVector::<f64, 9>::zeros(), false);
         let other_states = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
         let mut sigma_point = SigmaPoint::new(nav_state, other_states.clone(), Some(1.0));
         assert_eq!(sigma_point.get_state(false).len(), 15);
         assert_eq!(sigma_point.get_weight(), 1.0);
-        
+
         let state = sigma_point.get_state(false);
         let state_vector = sigma_point.to_vector(false);
         assert_eq!(state.len(), state_vector.len());
@@ -788,11 +828,11 @@ mod tests {
         assert_approx_eq!(sigma_point.nav_state.velocity[1], velocity[1], 0.1);
         assert_approx_eq!(sigma_point.nav_state.velocity[2], velocity[2], 0.1);
 
-        let debug_str = format!("{:?}", sigma_point, );
+        let debug_str = format!("{:?}", sigma_point,);
         assert!(debug_str.contains("nav_state"));
     }
     #[test]
-     fn test_ukf_construction() {
+    fn test_ukf_construction() {
         let position = vec![0.0, 0.0, 0.0];
         let velocity = vec![0.0, 0.0, 0.0];
         let attitude = vec![0.0, 0.0, 0.0];
@@ -817,9 +857,16 @@ mod tests {
             alpha,
             beta,
             kappa,
-            false
+            false,
         );
-        assert_eq!(ukf.mean_state.len(), position.len() + velocity.len() + attitude.len() + imu_biases.len() + measurement_bias.len());
+        assert_eq!(
+            ukf.mean_state.len(),
+            position.len()
+                + velocity.len()
+                + attitude.len()
+                + imu_biases.len()
+                + measurement_bias.len()
+        );
     }
     #[test]
     #[should_panic]
@@ -848,7 +895,7 @@ mod tests {
             alpha,
             beta,
             kappa,
-            false
+            false,
         );
     }
     #[test]
@@ -877,17 +924,14 @@ mod tests {
             alpha,
             beta,
             kappa,
-            false
+            false,
         );
         let sigma_points = ukf.get_sigma_points();
         assert_eq!(sigma_points.len(), (2 * ukf.state_size) + 1);
     }
     #[test]
     fn test_ukf_propagate() {
-        let imu_data = IMUData::new_from_vec(
-            vec![0.0, 0.0, 0.0], 
-            vec![0.0, 0.0, 0.0]
-        );
+        let imu_data = IMUData::new_from_vec(vec![0.0, 0.0, 0.0], vec![0.0, 0.0, 0.0]);
         let position = vec![0.0, 0.0, 0.0];
         let velocity = vec![0.0, 0.0, 0.0];
         let attitude = vec![1.0, 0.0, 0.0];
@@ -912,11 +956,18 @@ mod tests {
             alpha,
             beta,
             kappa,
-            false
+            false,
         );
         let dt = 1.0;
         ukf.propagate(&imu_data, dt);
-        assert!(ukf.mean_state.len() == position.len() + velocity.len() + attitude.len() + imu_biases.len() + measurement_bias.len());
+        assert!(
+            ukf.mean_state.len()
+                == position.len()
+                    + velocity.len()
+                    + attitude.len()
+                    + imu_biases.len()
+                    + measurement_bias.len()
+        );
         assert_approx_eq!(ukf.mean_state[0], position[0], 1e-3);
         assert_approx_eq!(ukf.mean_state[1], position[1], 1e-3);
         assert_approx_eq!(ukf.mean_state[2], position[2], 0.1);
@@ -938,17 +989,14 @@ mod tests {
             1e-3,
             2.0,
             1e-3,
-            false
+            false,
         );
         let debug_str = format!("{:?}", ukf);
         assert!(debug_str.contains("mean_state"));
     }
     #[test]
     fn test_ukf_hover() {
-        let imu_data = IMUData::new_from_vec(
-            vec![0.0, 0.0, 0.0], 
-            vec![0.0, 0.0, 0.0]
-        );
+        let imu_data = IMUData::new_from_vec(vec![0.0, 0.0, 0.0], vec![0.0, 0.0, 0.0]);
         let position = vec![0.0, 0.0, 0.0];
         let velocity = vec![0.0, 0.0, 0.0];
         let attitude = vec![0.0, 0.0, 0.0];
@@ -972,7 +1020,7 @@ mod tests {
             alpha,
             beta,
             kappa,
-            false
+            false,
         );
         let dt = 1.0;
         let measurement_sigmas = position_measurement_model(&ukf.get_sigma_points(), true);

@@ -12,11 +12,11 @@ use std::path::Path;
 
 use chrono::DateTime;
 use nalgebra::{DMatrix, DVector, Vector3};
-use serde::{Deserialize, Serialize, Serializer, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::{IMUData, StrapdownState};
+use crate::earth::METERS_TO_DEGREES;
 use crate::filter::{UKF, position_measurement_model};
-use crate::earth::{METERS_TO_DEGREES};
+use crate::{IMUData, StrapdownState};
 /// Struct representing a single row of test data from the CSV file.
 ///
 /// Fields correspond to columns in the CSV, with appropriate renaming for Rust style.
@@ -113,7 +113,9 @@ impl TestDataRecord {
     ///     .expect("Failed to read test data");
     /// println!("Loaded {} records", records.len());
     /// ```
-    pub fn from_csv<P: AsRef<std::path::Path>>(path: P) -> Result<Vec<Self>, Box<dyn std::error::Error>> {
+    pub fn from_csv<P: AsRef<std::path::Path>>(
+        path: P,
+    ) -> Result<Vec<Self>, Box<dyn std::error::Error>> {
         let mut rdr = csv::Reader::from_path(path)?;
         let mut records = Vec::new();
         for result in rdr.deserialize() {
@@ -148,11 +150,11 @@ impl TestDataRecord {
     /// ```
     pub fn to_csv<P: AsRef<Path>>(records: &[Self], path: P) -> io::Result<()> {
         let mut writer = csv::Writer::from_path(path)?;
-        
+
         for record in records {
             writer.serialize(record)?;
         }
-        
+
         writer.flush()?;
         Ok(())
     }
@@ -167,7 +169,7 @@ impl Display for TestDataRecord {
     }
 }
 /// Generic result struct for navigation simulations.
-/// 
+///
 /// This structure contains a single row of position, velocity, and attitude vectors
 /// representing the navigation solution at a specific timestamp, along with error estimates
 /// and confidence values derived from filter covariance, when available.
@@ -203,33 +205,37 @@ pub struct NavigationResult {
     pub attitude_error_pitch: f64,
     pub attitude_error_yaw: f64,
     /// Full state covariance matrix if available - serialized as a string in CSV
-    #[serde(serialize_with = "serialize_covariance", deserialize_with = "deserialize_covariance")]
+    #[serde(
+        serialize_with = "serialize_covariance",
+        deserialize_with = "deserialize_covariance"
+    )]
     pub covariance: Option<Vec<f64>>,
 }
 
 impl NavigationResult {
     /// Creates a new NavigationResult with default values.
-    pub fn new(timestamp: &str,
-            latitude: &f64,
-            longitude: &f64,
-            altitude: &f64,
-            velocity_n: &f64,
-            velocity_e: &f64,
-            velocity_d: &f64,
-            roll: &f64,
-            pitch: &f64,
-            yaw: &f64,
-            position_error_lat: &f64,
-            position_error_lon: &f64,
-            position_error_alt: &f64,
-            velocity_error_n: &f64,
-            velocity_error_e: &f64,
-            velocity_error_d: &f64,
-            attitude_error_roll: &f64,
-            attitude_error_pitch: &f64,
-            attitude_error_yaw: &f64,
-            covariance: Option<Vec<f64>>,
-            ) -> Self {
+    pub fn new(
+        timestamp: &str,
+        latitude: &f64,
+        longitude: &f64,
+        altitude: &f64,
+        velocity_n: &f64,
+        velocity_e: &f64,
+        velocity_d: &f64,
+        roll: &f64,
+        pitch: &f64,
+        yaw: &f64,
+        position_error_lat: &f64,
+        position_error_lon: &f64,
+        position_error_alt: &f64,
+        velocity_error_n: &f64,
+        velocity_error_e: &f64,
+        velocity_error_d: &f64,
+        attitude_error_roll: &f64,
+        attitude_error_pitch: &f64,
+        attitude_error_yaw: &f64,
+        covariance: Option<Vec<f64>>,
+    ) -> Self {
         NavigationResult {
             timestamp: timestamp.to_string(),
             latitude: *latitude,
@@ -250,19 +256,23 @@ impl NavigationResult {
             attitude_error_roll: *attitude_error_roll,
             attitude_error_pitch: *attitude_error_pitch,
             attitude_error_yaw: *attitude_error_yaw,
-            covariance
+            covariance,
         }
     }
     /// Creates a new NavigationResult from a StrapdownState, and covariance.
-    /// 
+    ///
     /// This function takes a StrapdownState and a INS filter covariance matrix, and
     /// constructs a NavigationResult with the state values and covariance.
-    /// 
+    ///
     /// # Arguments
     /// * `state` - StrapdownState containing the current state of the navigation system
     /// * `timestamp` - Timestamp of the navigation solution
     /// * `covariance` - Covariance matrix from the filter, if available
-    pub fn new_from_nav_state(state: &StrapdownState, timestamp: String, covariance: Option<DMatrix<f64>>) -> Self {
+    pub fn new_from_nav_state(
+        state: &StrapdownState,
+        timestamp: String,
+        covariance: Option<DMatrix<f64>>,
+    ) -> Self {
         let cov_vec: Option<Vec<f64>>;
         if let Some(cov) = covariance {
             cov_vec = Some(cov.as_slice().to_vec());
@@ -297,12 +307,12 @@ impl NavigationResult {
     ///
     /// This function creates a NavigationResult directly from a DVector representing the 9-state NED navigation solution,
     /// and an optional covariance matrix.
-    /// 
+    ///
     /// # Arguments
     /// * `state` - DVector containing the navigation state (latitude, longitude, altitude, velocity_n, velocity_e, velocity_d, roll, pitch, yaw)
     /// * `timestamp` - Timestamp of the navigation solution
     /// * `covariance` - Optional DMatrix representing the covariance of the state
-    /// 
+    ///
     /// # Returns
     /// * `NavigationResult` - A new NavigationResult instance with the state values and covariance.
     pub fn new_from_vector(
@@ -340,20 +350,20 @@ impl NavigationResult {
         }
     }
     /// Writes the NavigationResult to a CSV file.
-    /// 
+    ///
     /// # Arguments
     /// * `records` - Vector of NavigationResult structs to write
     /// * `path` - Path where the CSV file will be saved
-    /// 
+    ///
     /// # Returns
     /// * `io::Result<()>` - Ok if successful, Err otherwise
-    /// 
+    ///
     /// # Example
     /// ```
     /// use strapdown::sim::NavigationResult;
     /// use std::path::Path;
     /// let records = vec![NavigationResult::new(
-    ///     "2023-01-01 00:00:00+00:00", &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, 
+    ///     "2023-01-01 00:00:00+00:00", &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, &0.0,
     ///     &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, None )];
     /// NavigationResult::to_csv(&records, "navigation_results.csv").expect("Failed to write CSV");
     /// // doctest cleanup
@@ -361,23 +371,25 @@ impl NavigationResult {
     /// ```
     pub fn to_csv<P: AsRef<Path>>(records: &[Self], path: P) -> io::Result<()> {
         let mut writer = csv::Writer::from_path(path)?;
-        
+
         for record in records {
             writer.serialize(record)?;
         }
-        
+
         writer.flush()?;
         Ok(())
     }
     /// Reads a CSV file and returns a vector of NavigationResult structs.
-    /// 
+    ///
     /// # Arguments
     /// * `path` - Path to the CSV file to read.
-    /// 
+    ///
     /// # Returns
     /// * `Ok(Vec<NavigationResult>)` if successful.
     /// * `Err` if the file cannot be read or parsed.
-    pub fn from_csv<P: AsRef<std::path::Path>>(path: P) -> Result<Vec<Self>, Box<dyn std::error::Error>> {
+    pub fn from_csv<P: AsRef<std::path::Path>>(
+        path: P,
+    ) -> Result<Vec<Self>, Box<dyn std::error::Error>> {
         let mut rdr = csv::Reader::from_path(path)?;
         let mut records = Vec::new();
         for result in rdr.deserialize() {
@@ -386,7 +398,6 @@ impl NavigationResult {
         }
         Ok(records)
     }
-
 }
 
 /// Custom serializer for the covariance field to serialize it as a single string in CSV
@@ -417,11 +428,8 @@ where
     match s {
         Some(s) if !s.is_empty() => {
             // Parse the comma-separated string back to a Vec<f64>
-            let values: Result<Vec<f64>, _> = s
-                .split(',')
-                .map(|v| v.parse::<f64>())
-                .collect();
-            
+            let values: Result<Vec<f64>, _> = s.split(',').map(|v| v.parse::<f64>()).collect();
+
             match values {
                 Ok(vec) => Ok(Some(vec)),
                 Err(_) => Ok(None), // Handle parsing errors gracefully
@@ -436,7 +444,7 @@ where
 /// This function processes a sequence of sensor records through a StrapdownState, using
 /// the "forward" method to propagate the state based on IMU measurements. It initializes
 /// the StrapdownState with position, velocity, and attitude from the first record, and
-/// then applies the IMU measurements from subsequent records. It does not record the 
+/// then applies the IMU measurements from subsequent records. It does not record the
 /// errors or confidence values, as this is a simple dead reckoning simulation and in testing
 /// these values would be used as a baseline for comparison.
 ///
@@ -543,15 +551,15 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
 }
 
 /// Closed-loop GPS-aided inertial navigation simulation.
-/// 
-/// This function simulates a closed-loop full-state navigation system where GPS measurements are used 
-/// to correct the inertial navigation solution. It implements an Unscented Kalman Filter (UKF) to propagate 
+///
+/// This function simulates a closed-loop full-state navigation system where GPS measurements are used
+/// to correct the inertial navigation solution. It implements an Unscented Kalman Filter (UKF) to propagate
 /// the state and update it with GPS measurements when available.
-/// 
+///
 /// # Arguments
 /// * `records` - Vector of test data records containing IMU measurements and GPS data.
 /// # Returns
-/// * `Vec<NavigationResult>` - A vector of navigation results containing the state estimates and covariances at each timestamp. 
+/// * `Vec<NavigationResult>` - A vector of navigation results containing the state estimates and covariances at each timestamp.
 pub fn closed_loop(records: &[TestDataRecord]) -> Vec<NavigationResult> {
     let mut results: Vec<NavigationResult> = Vec::with_capacity(records.len());
     // Initialize the UKF with the first record
@@ -569,9 +577,12 @@ pub fn closed_loop(records: &[TestDataRecord]) -> Vec<NavigationResult> {
     //     records
     // };
     // Iterate through the records, updating the UKF with each IMU measurement
-    let mut i : i16 = 1;
+    let mut i: i16 = 1;
     for record in records.iter().skip(1) {
-        println!("======================================================\n{}", i);
+        println!(
+            "======================================================\n{}",
+            i
+        );
         // Calculate time difference from the previous record
         let dt = match (
             DateTime::parse_from_str(&results.last().unwrap().timestamp, "%Y-%m-%d %H:%M:%S%z"),
@@ -589,15 +600,14 @@ pub fn closed_loop(records: &[TestDataRecord]) -> Vec<NavigationResult> {
         ukf.propagate(&imu_data, dt);
         // If GPS data is available, update the UKF with the GPS measurement
         if !record.latitude.is_nan() && !record.longitude.is_nan() && !record.altitude.is_nan() {
-            let measurement = DVector::from_vec(
-                vec![
-                    record.longitude.to_radians(),
-                    record.latitude.to_radians(),
-                    record.altitude
-                ]
-            );
+            let measurement = DVector::from_vec(vec![
+                record.longitude.to_radians(),
+                record.latitude.to_radians(),
+                record.altitude,
+            ]);
             // Create the measurement sigma points using the position measurement model
-            let measurement_sigma_points = position_measurement_model(&ukf.get_sigma_points(), true);
+            let measurement_sigma_points =
+                position_measurement_model(&ukf.get_sigma_points(), true);
             //println!("Measurement: [{:?}, {:?}, {:?}]", measurement[0], measurement[1], measurement[2]);
             // Update the UKF with the GPS measurement
             ukf.update(&measurement, &measurement_sigma_points);
@@ -614,23 +624,31 @@ pub fn closed_loop(records: &[TestDataRecord]) -> Vec<NavigationResult> {
 }
 
 /// Helper function to initialize a UKF for closed-loop mode.
-/// 
-/// This function sets up the Unscented Kalman Filter (UKF) with initial pose, attitude covariance, and IMU biases based on 
+///
+/// This function sets up the Unscented Kalman Filter (UKF) with initial pose, attitude covariance, and IMU biases based on
 /// the provided `TestDataRecord`. It initializes the UKF with position, velocity, attitude, and covariance matrices.
 /// Optional parameters for attitude covariance and IMU biases can be provided to customize the filter's initial state.
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `initial_pose` - A `TestDataRecord` containing the initial pose information.
 /// * `attitude_covariance` - Optional vector of f64 representing the initial attitude covariance (default is a small value).
 /// * `imu_biases` - Optional vector of f64 representing the initial IMU biases (default is a small value).
-/// 
+///
 /// # Returns
-/// 
-/// * `UKF` - An instance of the Unscented Kalman Filter initialized with the provided parameters. 
-pub fn initialize_ukf(initial_pose: TestDataRecord, attitude_covariance: Option<Vec<f64>>, imu_biases: Option<Vec<f64>>) -> UKF {
+///
+/// * `UKF` - An instance of the Unscented Kalman Filter initialized with the provided parameters.
+pub fn initialize_ukf(
+    initial_pose: TestDataRecord,
+    attitude_covariance: Option<Vec<f64>>,
+    imu_biases: Option<Vec<f64>>,
+) -> UKF {
     // Initialize the UKF with the initial pose
-    let position = vec![initial_pose.longitude, initial_pose.latitude, initial_pose.altitude];
+    let position = vec![
+        initial_pose.longitude,
+        initial_pose.latitude,
+        initial_pose.altitude,
+    ];
     let velocity = vec![
         initial_pose.speed * initial_pose.bearing.cos(),
         initial_pose.speed * initial_pose.bearing.sin(),
@@ -640,11 +658,11 @@ pub fn initialize_ukf(initial_pose: TestDataRecord, attitude_covariance: Option<
     let position_accuracy = initial_pose.horizontal_accuracy.sqrt();
     let mut covariance_diagonal = vec![
         position_accuracy * METERS_TO_DEGREES,
-        position_accuracy * METERS_TO_DEGREES, 
+        position_accuracy * METERS_TO_DEGREES,
         initial_pose.vertical_accuracy,
         initial_pose.speed_accuracy,
         initial_pose.speed_accuracy,
-        initial_pose.speed_accuracy
+        initial_pose.speed_accuracy,
     ];
     // extend the covariance diagonal if attitude covariance is provided
     match attitude_covariance {
@@ -662,7 +680,10 @@ pub fn initialize_ukf(initial_pose: TestDataRecord, attitude_covariance: Option<
     //DVector::from_vec(vec![0.0; 15]);
     let measurement_noise_diagonal = DVector::from_vec(vec![1e-12; 3]);
 
-    println!("UKF initialized with position: {:?}, velocity: {:?}, attitude: {:?}", position, velocity, attitude);
+    println!(
+        "UKF initialized with position: {:?}, velocity: {:?}, attitude: {:?}",
+        position, velocity, attitude
+    );
     UKF::new(
         position,
         velocity,
@@ -675,16 +696,15 @@ pub fn initialize_ukf(initial_pose: TestDataRecord, attitude_covariance: Option<
         1e-3,
         2.0,
         0.0,
-        true
+        true,
     )
 }
-
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
     use std::fs::File;
+    use std::path::Path;
 
     /// Generate a test record for northward motion at constant velocity (1 knot = 1852 m/h).
     /// This helper returns a Vec<TestDataRecord> for 1 hour, sampled once per second.
@@ -698,7 +718,8 @@ mod tests {
 
         for t in 0..3600 {
             // Each second, latitude increases by dlat = (v / R) * (180/pi)
-            let dlat: f64 = (velocity_mps * t as f64) / earth_radius * (180.0 / std::f64::consts::PI);
+            let dlat: f64 =
+                (velocity_mps * t as f64) / earth_radius * (180.0 / std::f64::consts::PI);
             let time_str: String = format!("2023-01-01 00:{:02}:{:02}+00:00", t / 60, t % 60);
 
             records.push(TestDataRecord {
@@ -779,33 +800,39 @@ mod tests {
         let path = Path::new("nonexistent.csv");
         let result = TestDataRecord::from_csv(path);
         assert!(result.is_err(), "Should error on missing file");
-    }    
+    }
     /// Test writing TestDataRecord to CSV and reading it back
     #[test]
     fn test_test_data_record_to_csv() {
         // Read original records
         let path = Path::new("./data/test_data.csv");
-        let original_records = TestDataRecord::from_csv(path).expect("Failed to read test_data.csv");
-        
+        let original_records =
+            TestDataRecord::from_csv(path).expect("Failed to read test_data.csv");
+
         // Take just a few records to keep the test fast
         let subset = if original_records.len() > 3 {
             original_records[0..3].to_vec()
         } else {
             original_records.clone()
         };
-        
+
         // Write to temporary file
         let temp_file = std::env::temp_dir().join("test_data_subset.csv");
         let temp_path = temp_file.to_string_lossy().to_string();
-        
+
         TestDataRecord::to_csv(&subset, &temp_path).expect("Failed to write CSV");
-        
+
         // Read back from temporary file
-        let read_records = TestDataRecord::from_csv(&temp_path).expect("Failed to read temporary CSV");
-        
+        let read_records =
+            TestDataRecord::from_csv(&temp_path).expect("Failed to read temporary CSV");
+
         // Verify count
-        assert_eq!(subset.len(), read_records.len(), "Should read same number of records as written");
-        
+        assert_eq!(
+            subset.len(),
+            read_records.len(),
+            "Should read same number of records as written"
+        );
+
         // Clean up
         let _ = std::fs::remove_file(&temp_path);
     }
@@ -813,9 +840,25 @@ mod tests {
     fn test_navigation_result_new() {
         let nav = NavigationResult::new(
             "2023-01-01 00:00:00+00:00",
-            &1.0, &2.0, &3.0, &4.0, &5.0, &6.0, &7.0, &8.0, &9.0,
-            &10.0, &11.0, &12.0, &13.0, &14.0, &15.0, &16.0, &17.0, &18.0,
-            Some(vec![1.0, 2.0, 3.0])
+            &1.0,
+            &2.0,
+            &3.0,
+            &4.0,
+            &5.0,
+            &6.0,
+            &7.0,
+            &8.0,
+            &9.0,
+            &10.0,
+            &11.0,
+            &12.0,
+            &13.0,
+            &14.0,
+            &15.0,
+            &16.0,
+            &17.0,
+            &18.0,
+            Some(vec![1.0, 2.0, 3.0]),
         );
         assert_eq!(nav.timestamp, "2023-01-01 00:00:00+00:00");
         assert_eq!(nav.latitude, 1.0);
@@ -849,9 +892,25 @@ mod tests {
     fn test_navigation_result_to_csv_and_from_csv() {
         let nav = NavigationResult::new(
             "2023-01-01 00:00:00+00:00",
-            &1.0, &2.0, &3.0, &4.0, &5.0, &6.0, &7.0, &8.0, &9.0,
-            &10.0, &11.0, &12.0, &13.0, &14.0, &15.0, &16.0, &17.0, &18.0,
-            Some(vec![1.0, 2.0, 3.0])
+            &1.0,
+            &2.0,
+            &3.0,
+            &4.0,
+            &5.0,
+            &6.0,
+            &7.0,
+            &8.0,
+            &9.0,
+            &10.0,
+            &11.0,
+            &12.0,
+            &13.0,
+            &14.0,
+            &15.0,
+            &16.0,
+            &17.0,
+            &18.0,
+            Some(vec![1.0, 2.0, 3.0]),
         );
         let temp_file = std::env::temp_dir().join("test_nav_result.csv");
         NavigationResult::to_csv(&[nav.clone()], &temp_file).unwrap();
@@ -877,8 +936,42 @@ mod tests {
         let empty: Vec<TestDataRecord> = vec![];
         let res = dead_reckoning(&empty);
         assert!(res.is_empty());
-        let rec = TestDataRecord::from_csv("./data/test_data.csv").ok().and_then(|v| v.into_iter().next()).unwrap_or_else(|| TestDataRecord {
-            time: "t".to_string(), bearing_accuracy: 0.0, speed_accuracy: 0.0, vertical_accuracy: 0.0, horizontal_accuracy: 0.0, speed: 0.0, bearing: 0.0, altitude: 0.0, longitude: 0.0, latitude: 0.0, qz: 0.0, qy: 0.0, qx: 0.0, qw: 1.0, roll: 0.0, pitch: 0.0, yaw: 0.0, acc_z: 0.0, acc_y: 0.0, acc_x: 0.0, gyro_z: 0.0, gyro_y: 0.0, gyro_x: 0.0, mag_z: 0.0, mag_y: 0.0, mag_x: 0.0, relative_altitude: 0.0, pressure: 0.0, grav_z: 0.0, grav_y: 0.0, grav_x: 0.0 });
+        let rec = TestDataRecord::from_csv("./data/test_data.csv")
+            .ok()
+            .and_then(|v| v.into_iter().next())
+            .unwrap_or_else(|| TestDataRecord {
+                time: "t".to_string(),
+                bearing_accuracy: 0.0,
+                speed_accuracy: 0.0,
+                vertical_accuracy: 0.0,
+                horizontal_accuracy: 0.0,
+                speed: 0.0,
+                bearing: 0.0,
+                altitude: 0.0,
+                longitude: 0.0,
+                latitude: 0.0,
+                qz: 0.0,
+                qy: 0.0,
+                qx: 0.0,
+                qw: 1.0,
+                roll: 0.0,
+                pitch: 0.0,
+                yaw: 0.0,
+                acc_z: 0.0,
+                acc_y: 0.0,
+                acc_x: 0.0,
+                gyro_z: 0.0,
+                gyro_y: 0.0,
+                gyro_x: 0.0,
+                mag_z: 0.0,
+                mag_y: 0.0,
+                mag_x: 0.0,
+                relative_altitude: 0.0,
+                pressure: 0.0,
+                grav_z: 0.0,
+                grav_y: 0.0,
+                grav_x: 0.0,
+            });
         let res = dead_reckoning(&[rec.clone()]);
         assert_eq!(res.len(), 1);
         let mut rec2 = rec.clone();
@@ -888,18 +981,87 @@ mod tests {
     }
     #[test]
     fn test_closed_loop_minimal() {
-        let rec = TestDataRecord::from_csv("./data/test_data.csv").ok().and_then(|v| v.into_iter().next()).unwrap_or_else(|| TestDataRecord {
-            time: "t".to_string(), bearing_accuracy: 0.0, speed_accuracy: 0.0, vertical_accuracy: 0.0, horizontal_accuracy: 0.0, speed: 0.0, bearing: 0.0, altitude: 0.0, longitude: 0.0, latitude: 0.0, qz: 0.0, qy: 0.0, qx: 0.0, qw: 1.0, roll: 0.0, pitch: 0.0, yaw: 0.0, acc_z: 0.0, acc_y: 0.0, acc_x: 0.0, gyro_z: 0.0, gyro_y: 0.0, gyro_x: 0.0, mag_z: 0.0, mag_y: 0.0, mag_x: 0.0, relative_altitude: 0.0, pressure: 0.0, grav_z: 0.0, grav_y: 0.0, grav_x: 0.0 });
+        let rec = TestDataRecord::from_csv("./data/test_data.csv")
+            .ok()
+            .and_then(|v| v.into_iter().next())
+            .unwrap_or_else(|| TestDataRecord {
+                time: "t".to_string(),
+                bearing_accuracy: 0.0,
+                speed_accuracy: 0.0,
+                vertical_accuracy: 0.0,
+                horizontal_accuracy: 0.0,
+                speed: 0.0,
+                bearing: 0.0,
+                altitude: 0.0,
+                longitude: 0.0,
+                latitude: 0.0,
+                qz: 0.0,
+                qy: 0.0,
+                qx: 0.0,
+                qw: 1.0,
+                roll: 0.0,
+                pitch: 0.0,
+                yaw: 0.0,
+                acc_z: 0.0,
+                acc_y: 0.0,
+                acc_x: 0.0,
+                gyro_z: 0.0,
+                gyro_y: 0.0,
+                gyro_x: 0.0,
+                mag_z: 0.0,
+                mag_y: 0.0,
+                mag_x: 0.0,
+                relative_altitude: 0.0,
+                pressure: 0.0,
+                grav_z: 0.0,
+                grav_y: 0.0,
+                grav_x: 0.0,
+            });
         let res = closed_loop(&vec![rec.clone()]);
         assert!(!res.is_empty());
     }
     #[test]
     fn test_initialize_ukf_default_and_custom() {
         let rec = TestDataRecord {
-            time: "t".to_string(), bearing_accuracy: 0.0, speed_accuracy: 0.0, vertical_accuracy: 1.0, horizontal_accuracy: 4.0, speed: 1.0, bearing: 0.0, altitude: 10.0, longitude: 20.0, latitude: 30.0, qz: 0.0, qy: 0.0, qx: 0.0, qw: 1.0, roll: 0.0, pitch: 0.0, yaw: 0.0, acc_z: 0.0, acc_y: 0.0, acc_x: 0.0, gyro_z: 0.0, gyro_y: 0.0, gyro_x: 0.0, mag_z: 0.0, mag_y: 0.0, mag_x: 0.0, relative_altitude: 0.0, pressure: 0.0, grav_z: 0.0, grav_y: 0.0, grav_x: 0.0 };
+            time: "t".to_string(),
+            bearing_accuracy: 0.0,
+            speed_accuracy: 0.0,
+            vertical_accuracy: 1.0,
+            horizontal_accuracy: 4.0,
+            speed: 1.0,
+            bearing: 0.0,
+            altitude: 10.0,
+            longitude: 20.0,
+            latitude: 30.0,
+            qz: 0.0,
+            qy: 0.0,
+            qx: 0.0,
+            qw: 1.0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            acc_z: 0.0,
+            acc_y: 0.0,
+            acc_x: 0.0,
+            gyro_z: 0.0,
+            gyro_y: 0.0,
+            gyro_x: 0.0,
+            mag_z: 0.0,
+            mag_y: 0.0,
+            mag_x: 0.0,
+            relative_altitude: 0.0,
+            pressure: 0.0,
+            grav_z: 0.0,
+            grav_y: 0.0,
+            grav_x: 0.0,
+        };
         let ukf = initialize_ukf(rec.clone(), None, None);
         assert!(!ukf.get_mean().is_empty());
-        let ukf2 = initialize_ukf(rec, Some(vec![0.1, 0.2, 0.3]), Some(vec![0.4, 0.5, 0.6, 0.7, 0.8, 0.9]));
+        let ukf2 = initialize_ukf(
+            rec,
+            Some(vec![0.1, 0.2, 0.3]),
+            Some(vec![0.4, 0.5, 0.6, 0.7, 0.8, 0.9]),
+        );
         assert!(!ukf2.get_mean().is_empty());
     }
 }

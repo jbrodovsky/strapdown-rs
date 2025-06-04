@@ -1,8 +1,8 @@
 use clap::Parser;
-use std::{path::PathBuf};
-use strapdown::sim::{dead_reckoning, closed_loop, NavigationResult, TestDataRecord};
-use std::error::Error;
 use csv::{ReaderBuilder, WriterBuilder};
+use std::error::Error;
+use std::path::PathBuf;
+use strapdown::sim::{NavigationResult, TestDataRecord, closed_loop, dead_reckoning};
 
 /// Command line arguments
 #[derive(Parser, Debug)]
@@ -21,7 +21,10 @@ struct Args {
     output: PathBuf,
 }
 
-fn write_results_to_csv(results: &[NavigationResult], output: &PathBuf) -> Result<(), Box<dyn Error>> {
+fn write_results_to_csv(
+    results: &[NavigationResult],
+    output: &PathBuf,
+) -> Result<(), Box<dyn Error>> {
     let mut wtr = WriterBuilder::new().from_path(output)?;
     for result in results {
         wtr.serialize(result)?;
@@ -42,7 +45,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let records: Vec<TestDataRecord> = rdr.deserialize().collect::<Result<_, _>>()?;
     let results: Vec<NavigationResult>;
-    
+
     if args.mode == "closed-loop" {
         results = closed_loop(&records);
         match write_results_to_csv(&results, &args.output) {
@@ -58,8 +61,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     } else {
         return Err("Invalid mode specified. Use 'open-loop' or 'closed-loop'.".into());
     }
-    
-    
+
     // If results are empty, we can return an error
     // if !records.is_empty() {
     //     // Write the results to the output CSV file
@@ -69,8 +71,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     //     }
     //     wtr.flush()?;
     // }
-    
 
     Ok(())
 }
-
