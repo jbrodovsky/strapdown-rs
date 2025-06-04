@@ -1,2 +1,5 @@
 /target
 .vscode/settings.json
+/strapdown_py/.venv
+/strapdown_py/.pytest_cache
+/strapdown_py/dist
