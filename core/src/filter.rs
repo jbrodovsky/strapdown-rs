@@ -576,6 +576,11 @@ impl ParticleFilter {
             particle.forward(imu_data, dt, None);
         }
     }
+    /// Update the weights of the particles based on a measurement
+    pub fn update(&mut self, measurement: &DVector<f64>) {
+        
+    }
+
     /// Set the weights of the particles (e.g., after a measurement update)
     pub fn set_weights(&mut self, weights: &[f64]) {
         assert_eq!(weights.len(), self.particles.len());
