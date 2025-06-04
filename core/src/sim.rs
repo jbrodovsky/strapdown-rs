@@ -570,19 +570,16 @@ pub fn closed_loop(records: &[TestDataRecord]) -> Vec<NavigationResult> {
         records[0].time.clone(),
         Some(&ukf.get_covariance()),
     ));
-    // Clip to the first 1000 records for performance
-    // let records = if records.len() > 1000 {
-    //     &records[0..1000]
-    // } else {
-    //     records
-    // };
     // Iterate through the records, updating the UKF with each IMU measurement
-    let mut i: i16 = 1;
+    let total:usize  = records.len();
+    let mut i: usize = 1;
     for record in records.iter().skip(1) {
-        println!(
-            "======================================================\n{}",
-            i
-        );
+        // Print progress every 100 iterations
+        if i % 100 == 0 || i == total - 1 {
+            print!("\rProcessing data {:.2}%...", (i as f64 / total as f64) * 100.0);
+            use std::io::Write;
+            std::io::stdout().flush().ok();
+        }
         // Calculate time difference from the previous record
         let dt = match (
             DateTime::parse_from_str(&results.last().unwrap().timestamp, "%Y-%m-%d %H:%M:%S%z"),
@@ -620,6 +617,8 @@ pub fn closed_loop(records: &[TestDataRecord]) -> Vec<NavigationResult> {
         ));
         i += 1;
     }
+    // Print newline at the end to avoid overwriting the last line
+    println!("Done!");
     results
 }
 
@@ -681,7 +680,7 @@ pub fn initialize_ukf(
     let measurement_noise_diagonal = DVector::from_vec(vec![1e-12; 3]);
 
     println!(
-        "UKF initialized with position: {:?}, velocity: {:?}, attitude: {:?}",
+        "UKF initialized\nPosition: {:?}\nVelocity: {:?}\nAttitude: {:?}",
         position, velocity, attitude
     );
     UKF::new(
