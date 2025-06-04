@@ -92,7 +92,6 @@ pub struct TestDataRecord {
     /// Acceleration due to gravity in the x-direction in m/s^2
     pub grav_x: f64,
 }
-
 impl TestDataRecord {
     /// Reads a CSV file and returns a vector of `TestDataRecord` structs.
     ///
@@ -124,7 +123,6 @@ impl TestDataRecord {
         }
         Ok(records)
     }
-
     /// Writes a vector of TestDataRecord structs to a CSV file.
     ///
     /// # Arguments
@@ -150,11 +148,9 @@ impl TestDataRecord {
     /// ```
     pub fn to_csv<P: AsRef<Path>>(records: &[Self], path: P) -> io::Result<()> {
         let mut writer = csv::Writer::from_path(path)?;
-
         for record in records {
             writer.serialize(record)?;
         }
-
         writer.flush()?;
         Ok(())
     }
@@ -192,18 +188,6 @@ pub struct NavigationResult {
     pub roll: f64,
     pub pitch: f64,
     pub yaw: f64,
-    /// Position error estimates (latitude, longitude, altitude)
-    pub position_error_lat: f64,
-    pub position_error_lon: f64,
-    pub position_error_alt: f64,
-    /// Velocity error estimates (north, east, down)
-    pub velocity_error_n: f64,
-    pub velocity_error_e: f64,
-    pub velocity_error_d: f64,
-    /// Attitude error estimates (roll, pitch, yaw)
-    pub attitude_error_roll: f64,
-    pub attitude_error_pitch: f64,
-    pub attitude_error_yaw: f64,
     /// Full state covariance matrix if available - serialized as a string in CSV
     #[serde(
         serialize_with = "serialize_covariance",
@@ -225,15 +209,6 @@ impl NavigationResult {
         roll: &f64,
         pitch: &f64,
         yaw: &f64,
-        position_error_lat: &f64,
-        position_error_lon: &f64,
-        position_error_alt: &f64,
-        velocity_error_n: &f64,
-        velocity_error_e: &f64,
-        velocity_error_d: &f64,
-        attitude_error_roll: &f64,
-        attitude_error_pitch: &f64,
-        attitude_error_yaw: &f64,
         covariance: Option<Vec<f64>>,
     ) -> Self {
         NavigationResult {
@@ -247,15 +222,6 @@ impl NavigationResult {
             roll: *roll,
             pitch: *pitch,
             yaw: *yaw,
-            position_error_lat: *position_error_lat,
-            position_error_lon: *position_error_lon,
-            position_error_alt: *position_error_alt,
-            velocity_error_n: *velocity_error_n,
-            velocity_error_e: *velocity_error_e,
-            velocity_error_d: *velocity_error_d,
-            attitude_error_roll: *attitude_error_roll,
-            attitude_error_pitch: *attitude_error_pitch,
-            attitude_error_yaw: *attitude_error_yaw,
             covariance,
         }
     }
@@ -290,15 +256,6 @@ impl NavigationResult {
             roll: state.attitude.euler_angles().0,
             pitch: state.attitude.euler_angles().1,
             yaw: state.attitude.euler_angles().2,
-            position_error_lat: 0.0,
-            position_error_lon: 0.0,
-            position_error_alt: 0.0,
-            velocity_error_n: 0.0,
-            velocity_error_e: 0.0,
-            velocity_error_d: 0.0,
-            attitude_error_roll: 0.0,
-            attitude_error_pitch: 0.0,
-            attitude_error_yaw: 0.0,
             covariance: cov_vec,
         }
     }
@@ -337,15 +294,6 @@ impl NavigationResult {
             roll: state[6],
             pitch: state[7],
             yaw: state[8],
-            position_error_lat: 0.0,
-            position_error_lon: 0.0,
-            position_error_alt: 0.0,
-            velocity_error_n: 0.0,
-            velocity_error_e: 0.0,
-            velocity_error_d: 0.0,
-            attitude_error_roll: 0.0,
-            attitude_error_pitch: 0.0,
-            attitude_error_yaw: 0.0,
             covariance: cov_vec,
         }
     }
@@ -363,8 +311,7 @@ impl NavigationResult {
     /// use strapdown::sim::NavigationResult;
     /// use std::path::Path;
     /// let records = vec![NavigationResult::new(
-    ///     "2023-01-01 00:00:00+00:00", &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, &0.0,
-    ///     &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, None )];
+    ///     "2023-01-01 00:00:00+00:00", &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, None )];
     /// NavigationResult::to_csv(&records, "navigation_results.csv").expect("Failed to write CSV");
     /// // doctest cleanup
     /// std::fs::remove_file("navigation_results.csv").unwrap();
@@ -489,15 +436,6 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
         roll: state.attitude.euler_angles().0,
         pitch: state.attitude.euler_angles().1,
         yaw: state.attitude.euler_angles().2,
-        position_error_lat: 0.0,
-        position_error_lon: 0.0,
-        position_error_alt: 0.0,
-        velocity_error_n: 0.0,
-        velocity_error_e: 0.0,
-        velocity_error_d: 0.0,
-        attitude_error_roll: 0.0,
-        attitude_error_pitch: 0.0,
-        attitude_error_yaw: 0.0,
         covariance: None,
     });
     // For the time difference calculation, use a fixed value if timestamps can't be parsed
@@ -533,15 +471,6 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
             roll: state.attitude.euler_angles().0,
             pitch: state.attitude.euler_angles().1,
             yaw: state.attitude.euler_angles().2,
-            position_error_lat: 0.0,
-            position_error_lon: 0.0,
-            position_error_alt: 0.0,
-            velocity_error_n: 0.0,
-            velocity_error_e: 0.0,
-            velocity_error_d: 0.0,
-            attitude_error_roll: 0.0,
-            attitude_error_pitch: 0.0,
-            attitude_error_yaw: 0.0,
             covariance: None,
         });
         // Update previous time string for next iteration
@@ -565,11 +494,20 @@ pub fn closed_loop(records: &[TestDataRecord]) -> Vec<NavigationResult> {
     // Initialize the UKF with the first record
     let mut ukf = initialize_ukf(records[0].clone(), None, None);
     // Set the initial result to the UKF initial state
-    results.push(NavigationResult::new_from_vector(
-        &ukf.get_mean(),
-        records[0].time.clone(),
-        Some(&ukf.get_covariance()),
-    ));
+    let state = ukf.get_mean();
+    results.push(NavigationResult { 
+        timestamp: records[0].time.clone(), 
+        latitude: state[1], 
+        longitude: state[0], 
+        altitude: state[2], 
+        velocity_n: state[3], 
+        velocity_e: state[4], 
+        velocity_d: state[5], 
+        roll: state[6], 
+        pitch: state[7], 
+        yaw: state[8], 
+        covariance: Some(ukf.get_covariance().as_slice().to_vec()),
+        });
     // Iterate through the records, updating the UKF with each IMU measurement
     let total:usize  = records.len();
     let mut i: usize = 1;
@@ -610,11 +548,25 @@ pub fn closed_loop(records: &[TestDataRecord]) -> Vec<NavigationResult> {
             ukf.update(&measurement, &measurement_sigma_points);
         }
         // Store the current state and covariance in results
-        results.push(NavigationResult::new_from_vector(
-            &ukf.get_mean(),
-            record.time.clone(),
-            Some(&ukf.get_covariance()),
-        ));
+        let state = ukf.get_mean();
+        //results.push(NavigationResult::new_from_vector(
+        //    &ukf.get_mean(),
+        //    record.time.clone(),
+        //    Some(&ukf.get_covariance()),
+        //));
+        results.push(NavigationResult { 
+            timestamp: record.time.clone(), 
+            latitude: state[1], 
+            longitude: state[0], 
+            altitude: state[2], 
+            velocity_n: state[3], 
+            velocity_e: state[4], 
+            velocity_d: state[5], 
+            roll: state[6], 
+            pitch: state[7], 
+            yaw: state[8], 
+            covariance: Some(ukf.get_covariance().as_slice().to_vec()),
+         });
         i += 1;
     }
     // Print newline at the end to avoid overwriting the last line
@@ -848,15 +800,6 @@ mod tests {
             &7.0,
             &8.0,
             &9.0,
-            &10.0,
-            &11.0,
-            &12.0,
-            &13.0,
-            &14.0,
-            &15.0,
-            &16.0,
-            &17.0,
-            &18.0,
             Some(vec![1.0, 2.0, 3.0]),
         );
         assert_eq!(nav.timestamp, "2023-01-01 00:00:00+00:00");
@@ -900,15 +843,6 @@ mod tests {
             &7.0,
             &8.0,
             &9.0,
-            &10.0,
-            &11.0,
-            &12.0,
-            &13.0,
-            &14.0,
-            &15.0,
-            &16.0,
-            &17.0,
-            &18.0,
             Some(vec![1.0, 2.0, 3.0]),
         );
         let temp_file = std::env::temp_dir().join("test_nav_result.csv");
