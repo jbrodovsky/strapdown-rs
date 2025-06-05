@@ -15,7 +15,7 @@
 //! and rotation of the sensor whereas the navigation filter will use the gravity and orientation corrected
 //! acceleration and rotation to estimate the position
 //!
-//! Primarily built off of three crate dependencies:
+//! Primarily built off of two crate dependencies:
 //! - [`nav-types`](https://crates.io/crates/nav-types): Provides basic coordinate types and conversions.
 //! - [`nalgebra`](https://crates.io/crates/nalgebra): Provides the linear algebra tools for the filters.
 //!
