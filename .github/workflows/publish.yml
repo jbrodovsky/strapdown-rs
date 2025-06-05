@@ -1,0 +1,52 @@
+name: Publish Crate
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*' # Trigger on tags like v0.1.0, v1.0.0-alpha
+
+jobs:
+  publish:
+    name: Build and publish crate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run linters
+        run: cargo fmt --all && cargo clippy --fix
+
+      - name: Run tests
+        run: cargo test --all-features --verbose
+
+      - name: Build in release mode
+        run: cargo build --release --all-features
+
+      - name: Publish to crates.io
+        if: startsWith(github.ref, 'refs/tags/v') # Only publish on version tags
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_TOKEN }}
+        run: cargo publish
+
+      # Optional: Create a GitHub Release
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            target/release/<your_crate_name_here>  # Adjust if you have specific binaries to attach
+            # Add other assets like README.md, LICENSE, etc.
+          # You can customize the release notes, name, etc.
+          # See https://github.com/softprops/action-gh-release for more options
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
