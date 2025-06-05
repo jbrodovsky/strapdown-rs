@@ -16,7 +16,7 @@
 //! measurements in the local level frame (i.e. a GPS fix).
 use crate::linalg::matrix_square_root;
 use crate::{IMUData, StrapdownState};
-use nalgebra::{vector, DMatrix, DVector, SVector, Vector3};
+use nalgebra::{DMatrix, DVector, SVector, Vector3};
 use rand;
 use rand_distr::{Distribution, Normal};
 use std::fmt::Debug;
