@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 cbindgen = "0.26"
+nalgebra = "0.33.2"
 strapdown-rs = { path = "../core" }
 
 [lib]

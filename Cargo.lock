@@ -890,6 +890,7 @@ name = "strapdown_c"
 version = "0.1.0"
 dependencies = [
  "cbindgen",
+ "nalgebra 0.33.2",
  "strapdown-rs",
 ]
 

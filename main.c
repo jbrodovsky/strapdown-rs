@@ -4,7 +4,7 @@
 
 // Include the generated header file.
 // Make sure your compiler's include path points to `your_workspace_root/target/include/`
-#include "strapdown.h" // Or "strapdown.h" if you named it that
+#include "strapdown_c/strapdown.h" // Or "strapdown.h" if you named it that
 
 int main() {
     size_t result = strapdown_add(15, 27);
