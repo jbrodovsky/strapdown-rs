@@ -10,6 +10,7 @@ authors:
     - name: James Brodovsky
       orcid: 0000-0002-1371-9044
       equal-contrib: true
+      corresponding: true
       affiliation: 1
 affiliations:
     - name: Temple University, United States
@@ -66,7 +67,7 @@ The `earth` module contains constants and functions related to the Earth’s sha
 
 The `strapdown` module provides some helper functions as well as the forward mechanicization equations for strapdown inertial navigation systems. It provides a set of structs for modeling both IMU data and the base nine element strapdown state (latitude, longitude, and altitude; velocities north, east, and down; and attitude). It includes and implementation for the local-level frame forward mechanization, which is a common approach for strapdown INS and follows the equations from Chapter 5.4 of [@groves].
 
-The `filter` module contains the core functionality for implementing strapdown INS algorithms, primarily of which is a loosely-couple integration architecture according to CHapter 14.1.2 of [@groves]. This module contains implementations of various inertial navigation filters, including Kalman filters and particle filters. These filters are used to estimate the state of a strapdown inertial navigation system based on IMU measurements and other sensor data. The filters use the strapdown equations (provided by the StrapdownState) to propagate the state in the local level frame.
+The `filter` module contains the core functionality for implementing strapdown INS algorithms, primarily of which is a loosely-couple integration architecture according to Chapter 14.1.2 of [@groves]. This module contains implementations of various inertial navigation filters, including Kalman filters and particle filters. These filters are used to estimate the state of a strapdown inertial navigation system based on IMU measurements and other sensor data. The filters use the strapdown equations (provided by the StrapdownState) to propagate the state in the local level frame.
 
 ## Executable Modules
 
