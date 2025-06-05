@@ -495,26 +495,29 @@ pub fn closed_loop(records: &[TestDataRecord]) -> Vec<NavigationResult> {
     let mut ukf = initialize_ukf(records[0].clone(), None, None);
     // Set the initial result to the UKF initial state
     let state = ukf.get_mean();
-    results.push(NavigationResult { 
-        timestamp: records[0].time.clone(), 
-        latitude: state[1], 
-        longitude: state[0], 
-        altitude: state[2], 
-        velocity_n: state[3], 
-        velocity_e: state[4], 
-        velocity_d: state[5], 
-        roll: state[6], 
-        pitch: state[7], 
-        yaw: state[8], 
+    results.push(NavigationResult {
+        timestamp: records[0].time.clone(),
+        latitude: state[1],
+        longitude: state[0],
+        altitude: state[2],
+        velocity_n: state[3],
+        velocity_e: state[4],
+        velocity_d: state[5],
+        roll: state[6],
+        pitch: state[7],
+        yaw: state[8],
         covariance: Some(ukf.get_covariance().as_slice().to_vec()),
-        });
+    });
     // Iterate through the records, updating the UKF with each IMU measurement
-    let total:usize  = records.len();
+    let total: usize = records.len();
     let mut i: usize = 1;
     for record in records.iter().skip(1) {
         // Print progress every 100 iterations
         if i % 100 == 0 || i == total - 1 {
-            print!("\rProcessing data {:.2}%...", (i as f64 / total as f64) * 100.0);
+            print!(
+                "\rProcessing data {:.2}%...",
+                (i as f64 / total as f64) * 100.0
+            );
             use std::io::Write;
             std::io::stdout().flush().ok();
         }
@@ -554,19 +557,19 @@ pub fn closed_loop(records: &[TestDataRecord]) -> Vec<NavigationResult> {
         //    record.time.clone(),
         //    Some(&ukf.get_covariance()),
         //));
-        results.push(NavigationResult { 
-            timestamp: record.time.clone(), 
-            latitude: state[1], 
-            longitude: state[0], 
-            altitude: state[2], 
-            velocity_n: state[3], 
-            velocity_e: state[4], 
-            velocity_d: state[5], 
-            roll: state[6], 
-            pitch: state[7], 
-            yaw: state[8], 
+        results.push(NavigationResult {
+            timestamp: record.time.clone(),
+            latitude: state[1],
+            longitude: state[0],
+            altitude: state[2],
+            velocity_n: state[3],
+            velocity_e: state[4],
+            velocity_d: state[5],
+            roll: state[6],
+            pitch: state[7],
+            yaw: state[8],
             covariance: Some(ukf.get_covariance().as_slice().to_vec()),
-         });
+        });
         i += 1;
     }
     // Print newline at the end to avoid overwriting the last line

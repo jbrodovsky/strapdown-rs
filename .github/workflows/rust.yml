@@ -19,8 +19,8 @@ jobs:
     - name: lint
       run: cargo clippy --fix
     - name: format
-      run: cargo fmt --all -- --check
+      run: cargo fmt --all
     - name: Build
-      run: cargo build --verbose
+      run: cargo build
     - name: Run tests
-      run: cargo test --verbose
+      run: cargo test

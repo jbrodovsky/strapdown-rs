@@ -529,10 +529,10 @@ impl UKF {
     }
 }
 /// Particle filter for strapdown inertial navigation
-/// 
+///
 /// This filter uses a particle filter algorithm to estimate the state of a strapdown inertial navigation system.
 /// Similarly to the UKF, it uses thin wrappers around the StrapdownState's forward function to propagate the state.
-/// The particle filter is a little more generic in implementation than the UKF, as all it fundamentally is is a set 
+/// The particle filter is a little more generic in implementation than the UKF, as all it fundamentally is is a set
 /// of particles and several related functions to propagate, update, and resample the particles.
 pub struct ParticleFilter {
     /// The particles in the particle filter
@@ -540,14 +540,14 @@ pub struct ParticleFilter {
 }
 impl ParticleFilter {
     /// Create a new particle filter with the given particles
-    /// 
+    ///
     /// # Arguments
     /// * `particles` - The particles to use for the particle filter.
     pub fn new(particles: Vec<SigmaPoint>) -> Self {
         ParticleFilter { particles }
     }
     /// Propagate all particles forward using the strapdown equations
-    /// 
+    ///
     /// # Arguments
     /// * `imu_data` - The IMU measurements to propagate the particles with.
     pub fn propagate(&mut self, imu_data: &IMUData, dt: f64) {
@@ -556,17 +556,17 @@ impl ParticleFilter {
         }
     }
     /// Update the weights of the particles based on a measurement
-    /// 
+    ///
     /// Generic measurement update function for the particle filter. This function requires the user to provide
     /// a measurement vector and a list of expected measurements for each particle. This list of expected measurements
-    /// is the result of a measurement model that is specific to the filter implementation. This model determines 
-    /// the shape and quantities of the measurement vector and the expected measurements sigma points. This module 
-    /// contains some standard GNSS-aided measurements models (`position_measurement_model`, 
-    /// `velocity_measurement_model`, and `position_and_velocity_measurement_model`) that can be used. 
+    /// is the result of a measurement model that is specific to the filter implementation. This model determines
+    /// the shape and quantities of the measurement vector and the expected measurements sigma points. This module
+    /// contains some standard GNSS-aided measurements models (`position_measurement_model`,
+    /// `velocity_measurement_model`, and `position_and_velocity_measurement_model`) that can be used.
     ///
     /// **Note**: Canonical INS implementations use a position measurement model. Typically,
     /// position is reported in _degrees_ for latitude and longitude, and in meters for altitude.
-    /// Internally, the particle filter stores the latitude and longitude in _radians_, and the measurement models 
+    /// Internally, the particle filter stores the latitude and longitude in _radians_, and the measurement models
     /// make no assumptions about the units of the position measurements. However, the user should
     /// ensure that the provided measurement to this function is in the same units as the
     /// measurement model.
@@ -581,10 +581,9 @@ impl ParticleFilter {
         }
         // self.set_weights(weights.as_slice());
         self.normalize_weights();
-        
     }
     /// Set the weights of the particles (e.g., after a measurement update)
-    /// 
+    ///
     /// # Arguments
     /// * `weights` - The weights to set for the particles.
     pub fn set_weights(&mut self, weights: &[f64]) {
