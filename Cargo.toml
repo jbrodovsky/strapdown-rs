@@ -1,8 +1,8 @@
 [workspace]
 members = [
     "core",
-    "strapdown_c",
-    "strapdown_py",
+    #"strapdown_c",  <-- Future C bindings
+    #"strapdown_py", <-- Future Python bindings 
 ]
 resolver = "2"
 
