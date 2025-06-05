@@ -1,5 +1,5 @@
 ---
-title: 'strapdown-rs: A Simple Strapdown INS Implementation'
+title: 'strapdown-rs: A Simple Strapdown INS Implementation in Rust'
 tags:
     - strapdown-ins
     - inertial-navigation
