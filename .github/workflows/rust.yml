@@ -1,4 +1,4 @@
-name: test-and-lint-rust
+name: Test, Lint, and Build Rust Project
 
 on:
   push:
@@ -11,9 +11,7 @@ env:
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
-
     steps:
     - uses: actions/checkout@v4
     - name: lint
