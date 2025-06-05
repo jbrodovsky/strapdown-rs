@@ -1,4 +1,4 @@
-name: Rust
+name: test-and-lint-rust
 
 on:
   push:
@@ -16,6 +16,10 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    - name: lint
+      run: cargo clippy --all-targets --all-features -- -D warnings
+    - name: format
+      run: cargo fmt --all -- --check
     - name: Build
       run: cargo build --verbose
     - name: Run tests
