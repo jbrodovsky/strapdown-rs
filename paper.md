@@ -7,7 +7,7 @@ tags:
     - robotics
     - aerospace
 authors:
-    - James Brodovsky
+    - name: James Brodovsky
       orcid: 0000-0002-1371-9044
       equal-contrib: true
       affiliation: 1
@@ -15,7 +15,7 @@ affiliations:
     - name: Temple University, United States
       index: 1
 date: 5 June 2025
-citations: paper.bib
+bibliography: paper.bib
 ---
 
 # Summary
