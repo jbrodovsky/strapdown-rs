@@ -195,7 +195,6 @@ pub struct NavigationResult {
     )]
     pub covariance: Option<Vec<f64>>,
 }
-
 impl NavigationResult {
     /// Creates a new NavigationResult with default values.
     pub fn new(
@@ -346,7 +345,6 @@ impl NavigationResult {
         Ok(records)
     }
 }
-
 /// Custom serializer for the covariance field to serialize it as a single string in CSV
 fn serialize_covariance<S>(cov: &Option<Vec<f64>>, serializer: S) -> Result<S::Ok, S::Error>
 where
@@ -365,7 +363,6 @@ where
         None => serializer.serialize_none(),
     }
 }
-
 /// Custom deserializer for the covariance field to deserialize from a string in CSV
 fn deserialize_covariance<'de, D>(deserializer: D) -> Result<Option<Vec<f64>>, D::Error>
 where
@@ -385,7 +382,6 @@ where
         _ => Ok(None),
     }
 }
-
 /// Run dead reckoning or "open-loop" simulation using test data.
 ///
 /// This function processes a sequence of sensor records through a StrapdownState, using
