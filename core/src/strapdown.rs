@@ -122,8 +122,8 @@ pub mod filter;
 pub mod linalg;
 pub mod sim;
 
-use angle::Deg; // might be overkill to need this entire create just for this
-use nalgebra::{DVector, Matrix3, Rotation3, SVector, Vector3};
+ // might be overkill to need this entire create just for this
+use nalgebra::{Matrix3, Rotation3, SVector, Vector3};
 use std::fmt::{Debug, Display};
 
 /// Basic structure for holding IMU data in the form of acceleration and angular rate vectors.
@@ -462,16 +462,16 @@ impl StrapdownState {
     /// ```
     pub fn forward(&mut self, imu_data: &IMUData, dt: f64) {
         // Extract the attitude matrix from the current state
-        let c_0: Rotation3<f64> = self.attitude.clone();
+        let c_0: Rotation3<f64> = self.attitude;
         // Attitude update; Equation 5.46
         let c_1: Matrix3<f64> = self.attitude_update(&imu_data.gyro, dt);
         // Specific force transformation; Equation 5.47
         let f: Vector3<f64> = 0.5 * (c_0.matrix() + c_1) * imu_data.accel;
         // Velocity update; Equation 5.54
         //let v_0: Vector3<f64> = self.get_velocity();
-        let v_n_0 = self.velocity_north.clone();
-        let v_e_0 = self.velocity_east.clone();
-        let v_d_0 = self.velocity_down.clone();
+        let v_n_0 = self.velocity_north;
+        let v_e_0 = self.velocity_east;
+        let v_d_0 = self.velocity_down;
         //let v_1: Vector3<f64> = self.velocity_update(&f, dt);
         let v = self.velocity_update(&f, dt);
         let v_n_1 = v[0];
@@ -479,8 +479,8 @@ impl StrapdownState {
         let v_d_1 = v[2];
         // Position update; Equation 5.56
         let (r_n, r_e_0, _) = earth::principal_radii(&self.latitude, &self.altitude);
-        let lat_0 = self.latitude.clone();
-        let alt_0 = self.altitude.clone();
+        let lat_0 = self.latitude;
+        let alt_0 = self.altitude;
         // Altitude update
         self.altitude += 0.5 * (v_d_0 + v_d_1) * dt;
         // Latitude update
@@ -781,7 +781,7 @@ mod tests {
     // Test the forward mechanization (basic structure, not full dynamics)
     fn test_forward_freefall_stub() {
         let attitude = Rotation3::identity();
-        let mut state = StrapdownState::new_from_components(
+        let state = StrapdownState::new_from_components(
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, true, // NED convention
         );
         // This is a stub: actual forward propagation logic should be tested in integration with the mechanization equations.
@@ -796,7 +796,7 @@ mod tests {
     #[test]
     fn test_hover_stub() {
         let attitude = Rotation3::identity();
-        let mut state = StrapdownState::new_from_components(
+        let state = StrapdownState::new_from_components(
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, true, // NED convention
         );
         // This is a stub: actual hover logic should be tested in integration with the mechanization equations.

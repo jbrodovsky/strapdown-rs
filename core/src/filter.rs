@@ -17,7 +17,7 @@
 use crate::earth::METERS_TO_DEGREES;
 use crate::linalg::matrix_square_root;
 use crate::{IMUData, StrapdownState};
-use nalgebra::{DMatrix, DVector, SVector, Vector3};
+use nalgebra::{DMatrix, DVector, SVector};
 use rand;
 use rand_distr::{Distribution, Normal};
 use std::fmt::Debug;
@@ -907,9 +907,9 @@ mod tests {
     }
     #[test]
     fn test_ukf_construction() {
-        let position = vec![0.0, 0.0, 0.0];
-        let velocity = vec![0.0, 0.0, 0.0];
-        let attitude = vec![0.0, 0.0, 0.0];
+        let position = [0.0, 0.0, 0.0];
+        let velocity = [0.0, 0.0, 0.0];
+        let attitude = [0.0, 0.0, 0.0];
         let imu_biases = vec![0.0, 0.0, 0.0];
         let measurement_bias = vec![1.0, 1.0, 1.0];
         let n = 9 + imu_biases.len() + measurement_bias.len();
@@ -952,9 +952,9 @@ mod tests {
     }
     #[test]
     fn test_ukf_get_sigma_points() {
-        let position = vec![0.0, 0.0, 0.0];
-        let velocity = vec![0.0, 0.0, 0.0];
-        let attitude = vec![0.0, 0.0, 0.0];
+        let position = [0.0, 0.0, 0.0];
+        let velocity = [0.0, 0.0, 0.0];
+        let attitude = [0.0, 0.0, 0.0];
         let imu_biases = vec![0.0, 0.0, 0.0];
         let measurement_bias = vec![1.0, 1.0, 1.0];
         let n = 9 + imu_biases.len() + measurement_bias.len();
@@ -992,9 +992,9 @@ mod tests {
     #[test]
     fn test_ukf_propagate() {
         let imu_data = IMUData::new_from_vec(vec![0.0, 0.0, 0.0], vec![0.0, 0.0, 0.0]);
-        let position = vec![0.0, 0.0, 0.0];
-        let velocity = vec![0.0, 0.0, 0.0];
-        let attitude = vec![0.0, 0.0, 0.0];
+        let position = [0.0, 0.0, 0.0];
+        let velocity = [0.0, 0.0, 0.0];
+        let attitude = [0.0, 0.0, 0.0];
         let imu_biases = vec![0.0, 0.0, 0.0];
         let measurement_bias = vec![1.0, 1.0, 1.0];
         let n = 9 + imu_biases.len() + measurement_bias.len();
@@ -1081,13 +1081,13 @@ mod tests {
     fn test_ukf_hover() {
         let imu_data = IMUData::new_from_vec(vec![0.0, 0.0, 0.0], vec![0.0, 0.0, 0.0]);
         let position = vec![0.0, 0.0, 0.0];
-        let velocity = vec![0.0, 0.0, 0.0];
-        let attitude = vec![0.0, 0.0, 0.0];
+        let velocity = [0.0, 0.0, 0.0];
+        let attitude = [0.0, 0.0, 0.0];
         let imu_biases = vec![0.0, 0.0, 0.0];
         let measurement_bias = vec![0.0, 0.0, 0.0];
         let covariance_diagonal = vec![1e-12; 9 + imu_biases.len() + measurement_bias.len()];
         let process_noise_diagonal = vec![1e-12; 9 + imu_biases.len() + measurement_bias.len()];
-        let measurement_noise_diagonal = vec![1e-12; 3];
+        let measurement_noise_diagonal = [1e-12; 3];
         let alpha = 1e-3;
         let beta = 2.0;
         let kappa = 1e-3;

@@ -461,11 +461,11 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
     );
     // Store the initial state and metadata
     results.push(NavigationResult::from((&state, &records[0].time)));
-    let mut previous_time = records[0].time.clone();
+    let mut previous_time = records[0].time;
     // Process each subsequent record
     for record in records.iter().skip(1) {
         // Try to calculate time difference from timestamps, default to 1 second if parsing fails
-        let current_time = record.time.clone();
+        let current_time = record.time;
         let dt = (current_time - previous_time).as_seconds_f64();
         // Create IMU data from the record
         let imu_data = IMUData::new_from_vec(
@@ -495,7 +495,7 @@ pub fn closed_loop(records: &[TestDataRecord]) -> Vec<NavigationResult> {
     let mut ukf = initialize_ukf(records[0].clone(), None, None);
     // Set the initial result to the UKF initial state
     results.push(NavigationResult::from((&ukf, &records[0].time)));
-    let mut previous_timestamp = records[0].time.clone();
+    let mut previous_timestamp = records[0].time;
     // Iterate through the records, updating the UKF with each IMU measurement
     let total: usize = records.len();
     let mut i: usize = 1;
@@ -510,7 +510,7 @@ pub fn closed_loop(records: &[TestDataRecord]) -> Vec<NavigationResult> {
             std::io::stdout().flush().ok();
         }
         // Calculate time difference from the previous record
-        let current_timestamp = record.time.clone();
+        let current_timestamp = record.time;
         let dt = (current_timestamp - previous_timestamp).as_seconds_f64();
         // Create IMU data from the record
         let imu_data = IMUData::new_from_vec(
