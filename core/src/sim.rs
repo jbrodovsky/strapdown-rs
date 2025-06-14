@@ -16,7 +16,7 @@ use nalgebra::{DMatrix, DVector};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::earth::METERS_TO_DEGREES;
-use crate::filter::{UKF, GPS, StrapdownParams};
+use crate::filter::{GPS, StrapdownParams, UKF};
 use crate::{IMUData, StrapdownState};
 /// Struct representing a single row of test data from the CSV file.
 ///
@@ -460,15 +460,12 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
         true,
     );
     // Store the initial state and metadata
-    results.push(NavigationResult::from((
-        &state,
-        &records[0].time,
-    )));
+    results.push(NavigationResult::from((&state, &records[0].time)));
     let mut previous_time = records[0].time.clone();
     // Process each subsequent record
     for record in records.iter().skip(1) {
         // Try to calculate time difference from timestamps, default to 1 second if parsing fails
-        let current_time = record.time.clone(); 
+        let current_time = record.time.clone();
         let dt = (current_time - previous_time).as_seconds_f64();
         // Create IMU data from the record
         let imu_data = IMUData::new_from_vec(
@@ -477,10 +474,7 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
         );
         // Propagate the state forward (replace with stub for now)
         state.forward(&imu_data, dt);
-        results.push(NavigationResult::from((
-            &state,
-            &current_time,
-        )));
+        results.push(NavigationResult::from((&state, &current_time)));
         previous_time = record.time;
     }
     results
@@ -500,10 +494,7 @@ pub fn closed_loop(records: &[TestDataRecord]) -> Vec<NavigationResult> {
     // Initialize the UKF with the first record
     let mut ukf = initialize_ukf(records[0].clone(), None, None);
     // Set the initial result to the UKF initial state
-    results.push(NavigationResult::from((
-        &ukf,
-        &records[0].time,
-    )));
+    results.push(NavigationResult::from((&ukf, &records[0].time)));
     let mut previous_timestamp = records[0].time.clone();
     // Iterate through the records, updating the UKF with each IMU measurement
     let total: usize = records.len();
@@ -602,17 +593,17 @@ pub fn initialize_ukf(
         Some(imu_biases) => {
             covariance_diagonal.extend(&imu_biases);
             imu_biases
-        },
+        }
         None => {
             covariance_diagonal.extend(vec![1e-3; 6]);
             vec![0.0; 6] // Default values if not provided
-        },
+        }
     };
     let mut process_noise_diagonal = vec![1e-9; 9];
     process_noise_diagonal.extend(vec![1e-3; 6]); // Process noise for imu biases
     let process_noise_diagonal = DVector::from_vec(process_noise_diagonal);
     //DVector::from_vec(vec![0.0; 15]);
-    let measurement_noise_diagonal = DVector::from_vec(vec![1e-12; 3]);    
+    let measurement_noise_diagonal = DVector::from_vec(vec![1e-12; 3]);
     UKF::new(
         ukf_params,
         imu_bias,
@@ -621,7 +612,7 @@ pub fn initialize_ukf(
         DMatrix::from_diagonal(&process_noise_diagonal),
         1e-3, // Use a scalar for measurement noise as expected by UKF::new
         2.0,
-        0.0
+        0.0,
     )
 }
 
@@ -648,12 +639,9 @@ mod tests {
             let time_str: String = format!("2023-01-01 00:{:02}:{:02}+00:00", t / 60, t % 60);
 
             records.push(TestDataRecord {
-                time: DateTime::parse_from_str(
-                    &time_str,
-                    "%Y-%m-%d %H:%M:%S%z",
-                )
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap(),
+                time: DateTime::parse_from_str(&time_str, "%Y-%m-%d %H:%M:%S%z")
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap(),
                 bearing_accuracy: 0.0,
                 speed_accuracy: 0.0,
                 vertical_accuracy: 0.0,
@@ -780,9 +768,10 @@ mod tests {
             &9.0,
             Some(vec![1.0, 2.0, 3.0]),
         );
-        let expected_timestamp = chrono::DateTime::parse_from_str("2023-01-01 00:00:00+00:00", "%Y-%m-%d %H:%M:%S%z")
-            .unwrap()
-            .with_timezone(&chrono::Utc);
+        let expected_timestamp =
+            chrono::DateTime::parse_from_str("2023-01-01 00:00:00+00:00", "%Y-%m-%d %H:%M:%S%z")
+                .unwrap()
+                .with_timezone(&chrono::Utc);
         assert_eq!(nav.timestamp, expected_timestamp);
         assert_eq!(nav.latitude, 1.0);
         assert_eq!(nav.covariance.as_ref().unwrap().len(), 3);

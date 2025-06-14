@@ -435,11 +435,11 @@ impl UKF {
     /// sigma points. The measurement model is specific to a given implementation of the UKF
     /// and must be provided by the user as the model determines the shape and quantities of
     /// the measurement vector and the measurement sigma points. Measurement models should be
-    /// implemented as traits and applied to the UKF as needed. 
-    /// 
-    /// This module contains some standard GNSS-aided measurements models (`position_measurement_model`, 
-    /// `velocity_measurement_model`, and `position_and_velocity_measurement_model`) that can be 
-    /// used. See the `sim` module for a canonical example of a GPS-aided INS implementation 
+    /// implemented as traits and applied to the UKF as needed.
+    ///
+    /// This module contains some standard GNSS-aided measurements models (`position_measurement_model`,
+    /// `velocity_measurement_model`, and `position_and_velocity_measurement_model`) that can be
+    /// used. See the `sim` module for a canonical example of a GPS-aided INS implementation
     /// that uses these models.
     ///
     /// **Note**: Canonical INS implementations use a position measurement model. Typically,
@@ -688,10 +688,7 @@ pub trait GPS {
     ///
     /// # Returns
     /// * A vector of measurement sigma points either (N x 3) or (N x 2) depending on the `with_altitude` flag
-    fn position_measurement_model(
-        &self,
-        with_altitude: bool,
-    ) -> Vec<DVector<f64>>;
+    fn position_measurement_model(&self, with_altitude: bool) -> Vec<DVector<f64>>;
     /// UKF velocity-based measurement model
     ///
     /// Velocity measurement model. This model is used to update the state based on
@@ -704,10 +701,7 @@ pub trait GPS {
     ///
     /// # Returns
     /// * A vector of measurement sigma points either (N x 3) or (N x 2) depending on the `with_altitude` flag
-    fn velocity_measurement_model(
-        &self,
-        with_altitude: bool,
-    ) -> Vec<DVector<f64>>;
+    fn velocity_measurement_model(&self, with_altitude: bool) -> Vec<DVector<f64>>;
     /// GPS or Position-based measurement model
     ///
     /// GPS-aided INS measurement model for a combined position-velocity measuremet.
@@ -722,53 +716,39 @@ pub trait GPS {
     ///
     /// # Returns
     /// * A vector of measurement sigma points either (N x 6) or (N x 4) depending on the `with_altitude` flag
-    fn position_and_velocity_measurement_model(
-        &self,
-        with_altitude: bool,
-    ) -> Vec<DVector<f64>>;
+    fn position_and_velocity_measurement_model(&self, with_altitude: bool) -> Vec<DVector<f64>>;
     /// Position measurement noise model
-    fn position_measurement_noise(
-        &self,
-        with_altitude: bool,
-    ) -> DMatrix<f64>;
+    fn position_measurement_noise(&self, with_altitude: bool) -> DMatrix<f64>;
     /// Velocity measurement noise model
-    fn velocity_measurement_noise(
-        &self,
-        with_altitude: bool,
-    ) -> DMatrix<f64>;
+    fn velocity_measurement_noise(&self, with_altitude: bool) -> DMatrix<f64>;
     /// Position and velocity measurement noise model
-    fn position_and_velocity_measurement_noise(
-        &self,
-        with_altitude: bool,
-    ) -> DMatrix<f64>;
+    fn position_and_velocity_measurement_noise(&self, with_altitude: bool) -> DMatrix<f64>;
 }
-impl GPS for UKF {    
-    fn position_measurement_model(&self,
-        with_altitude: bool,
-    ) -> Vec<DVector<f64>> {
+impl GPS for UKF {
+    fn position_measurement_model(&self, with_altitude: bool) -> Vec<DVector<f64>> {
         let sigma_points = self.get_sigma_points();
         let mut measurement_sigma_points = Vec::<DVector<f64>>::with_capacity(sigma_points.len());
         for sigma_point in sigma_points {
-            let mut measurement_sigma_point = DVector::<f64>::zeros(if with_altitude { 3 } else { 2 });
+            let mut measurement_sigma_point =
+                DVector::<f64>::zeros(if with_altitude { 3 } else { 2 });
             if with_altitude {
-                measurement_sigma_point[0] = sigma_point.nav_state.latitude; 
+                measurement_sigma_point[0] = sigma_point.nav_state.latitude;
                 measurement_sigma_point[1] = sigma_point.nav_state.longitude;
-                measurement_sigma_point[2] = sigma_point.nav_state.altitude; 
+                measurement_sigma_point[2] = sigma_point.nav_state.altitude;
             } else {
-                measurement_sigma_point[0] = sigma_point.nav_state.latitude; 
-                measurement_sigma_point[1] = sigma_point.nav_state.longitude; 
+                measurement_sigma_point[0] = sigma_point.nav_state.latitude;
+                measurement_sigma_point[1] = sigma_point.nav_state.longitude;
             }
             measurement_sigma_points.push(measurement_sigma_point);
         }
         measurement_sigma_points
     }
-    fn velocity_measurement_model(&self,
-        with_altitude: bool,
-    ) -> Vec<DVector<f64>> {
+    fn velocity_measurement_model(&self, with_altitude: bool) -> Vec<DVector<f64>> {
         let sigma_points = self.get_sigma_points();
         let mut measurement_sigma_points = Vec::<DVector<f64>>::with_capacity(sigma_points.len());
         for sigma_point in sigma_points {
-            let mut measurement_sigma_point = DVector::<f64>::zeros(if with_altitude { 3 } else { 2 });
+            let mut measurement_sigma_point =
+                DVector::<f64>::zeros(if with_altitude { 3 } else { 2 });
             if with_altitude {
                 measurement_sigma_point[0] = sigma_point.nav_state.velocity_north; // Northward
                 measurement_sigma_point[1] = sigma_point.nav_state.velocity_east; // Eastward
@@ -781,18 +761,16 @@ impl GPS for UKF {
         }
         measurement_sigma_points
     }
-    fn position_and_velocity_measurement_model(&self,
-        with_altitude: bool,
-    ) -> Vec<DVector<f64>> {
+    fn position_and_velocity_measurement_model(&self, with_altitude: bool) -> Vec<DVector<f64>> {
         let sigma_points = self.get_sigma_points();
         let mut measurement_sigma_points = Vec::<DVector<f64>>::with_capacity(sigma_points.len());
         for sigma_point in sigma_points {
             if with_altitude {
                 // Position and velocity with altitude
                 let measurement_sigma_point = DVector::<f64>::from_vec(vec![
-                    sigma_point.nav_state.latitude, // Latitude
-                    sigma_point.nav_state.longitude, // Longitude
-                    sigma_point.nav_state.altitude,  // Altitude
+                    sigma_point.nav_state.latitude,       // Latitude
+                    sigma_point.nav_state.longitude,      // Longitude
+                    sigma_point.nav_state.altitude,       // Altitude
                     sigma_point.nav_state.velocity_north, // Northward velocity
                     sigma_point.nav_state.velocity_east,  // Eastward velocity
                     sigma_point.nav_state.velocity_down,  // Downward velocity
@@ -801,8 +779,8 @@ impl GPS for UKF {
             } else {
                 // Position and velocity without altitude
                 let measurement_sigma_point = DVector::<f64>::from_vec(vec![
-                    sigma_point.nav_state.latitude, // Latitude
-                    sigma_point.nav_state.longitude, // Longitude
+                    sigma_point.nav_state.latitude,       // Latitude
+                    sigma_point.nav_state.longitude,      // Longitude
                     sigma_point.nav_state.velocity_north, // Northward velocity
                     sigma_point.nav_state.velocity_east,  // Eastward velocity
                 ]);
@@ -815,61 +793,50 @@ impl GPS for UKF {
     fn position_measurement_noise(&self, with_altitude: bool) -> DMatrix<f64> {
         // Default implementation returns an identity matrix, can be overridden
         match with_altitude {
-            true => DMatrix::from_diagonal(&DVector::from_vec(
-                vec![
-                    5.0 * METERS_TO_DEGREES, 
-                    5.0 * METERS_TO_DEGREES, 
-                    5.0 ]
-                )),
-            false => DMatrix::from_diagonal(&DVector::from_vec(
-                vec![
-                    5.0 * METERS_TO_DEGREES, 
-                    5.0 * METERS_TO_DEGREES
-                    ]
-                ))
+            true => DMatrix::from_diagonal(&DVector::from_vec(vec![
+                5.0 * METERS_TO_DEGREES,
+                5.0 * METERS_TO_DEGREES,
+                5.0,
+            ])),
+            false => DMatrix::from_diagonal(&DVector::from_vec(vec![
+                5.0 * METERS_TO_DEGREES,
+                5.0 * METERS_TO_DEGREES,
+            ])),
         }
     }
     /// Velocity measurement noise covariance matrix
     fn velocity_measurement_noise(&self, with_altitude: bool) -> DMatrix<f64> {
         // Default implementation returns an identity matrix, can be overridden
         match with_altitude {
-            true => DMatrix::from_diagonal(&DVector::from_vec(
-                vec![
-                    0.1, // Northward velocity noise (m/s)
-                    0.1, // Eastward velocity noise (m/s)
-                    0.1, // Downward velocity noise (m/s)
-                ]
-            )),
-            false => DMatrix::from_diagonal(&DVector::from_vec(
-                vec![
-                    0.1, // Northward velocity noise (m/s)
-                    0.1, // Eastward velocity noise (m/s)
-                ]
-            ))
+            true => DMatrix::from_diagonal(&DVector::from_vec(vec![
+                0.1, // Northward velocity noise (m/s)
+                0.1, // Eastward velocity noise (m/s)
+                0.1, // Downward velocity noise (m/s)
+            ])),
+            false => DMatrix::from_diagonal(&DVector::from_vec(vec![
+                0.1, // Northward velocity noise (m/s)
+                0.1, // Eastward velocity noise (m/s)
+            ])),
         }
     }
     /// Position and velocity measurement noise covariance matrix
     fn position_and_velocity_measurement_noise(&self, with_altitude: bool) -> DMatrix<f64> {
         // Default implementation returns an identity matrix, can be overridden
         match with_altitude {
-            true => DMatrix::from_diagonal(&DVector::from_vec(
-                vec![
-                    5.0 * METERS_TO_DEGREES, // Latitude noise (degrees)
-                    5.0 * METERS_TO_DEGREES, // Longitude noise (degrees)
-                    5.0, // Altitude noise (meters)
-                    0.1, // Northward velocity noise (m/s)
-                    0.1, // Eastward velocity noise (m/s)
-                    0.1, // Downward velocity noise (m/s)
-                ]
-            )),
-            false => DMatrix::from_diagonal(&DVector::from_vec(
-                vec![
-                    5.0 * METERS_TO_DEGREES, // Latitude noise (degrees)
-                    5.0 * METERS_TO_DEGREES, // Longitude noise (degrees)
-                    0.1, // Northward velocity noise (m/s)
-                    0.1, // Eastward velocity noise (m/s)
-                ]
-            ))
+            true => DMatrix::from_diagonal(&DVector::from_vec(vec![
+                5.0 * METERS_TO_DEGREES, // Latitude noise (degrees)
+                5.0 * METERS_TO_DEGREES, // Longitude noise (degrees)
+                5.0,                     // Altitude noise (meters)
+                0.1,                     // Northward velocity noise (m/s)
+                0.1,                     // Eastward velocity noise (m/s)
+                0.1,                     // Downward velocity noise (m/s)
+            ])),
+            false => DMatrix::from_diagonal(&DVector::from_vec(vec![
+                5.0 * METERS_TO_DEGREES, // Latitude noise (degrees)
+                5.0 * METERS_TO_DEGREES, // Longitude noise (degrees)
+                0.1,                     // Northward velocity noise (m/s)
+                0.1,                     // Eastward velocity noise (m/s)
+            ])),
         }
     }
 }
