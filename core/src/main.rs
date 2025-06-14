@@ -21,7 +21,8 @@ struct Args {
     output: PathBuf,
 }
 
-fn write_results_to_csv( // TODO: make this public and move to sim.rs
+fn write_results_to_csv(
+    // TODO: make this public and move to sim.rs
     results: &[NavigationResult],
     output: &PathBuf,
 ) -> Result<(), Box<dyn Error>> {
