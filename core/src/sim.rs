@@ -782,95 +782,105 @@ mod tests {
         let path = Path::new("test_file.csv");
         let mut records: Vec<TestDataRecord> = vec![];
         // Create some test data records
-        records.push(
-            TestDataRecord {
-                time: DateTime::parse_from_str("2023-01-01 00:00:00+00:00", "%Y-%m-%d %H:%M:%S%z")
-                    .unwrap()
-                    .with_timezone(&Utc),
-                bearing_accuracy: 0.1,
-                speed_accuracy: 0.1,
-                vertical_accuracy: 0.1,
-                horizontal_accuracy: 0.1,
-                speed: 1.0,
-                bearing: 90.0,
-                altitude: 100.0,
-                longitude: -122.0,
-                latitude: 37.0,
-                qz: 0.0,
-                qy: 0.0,
-                qx: 0.0,
-                qw: 1.0,
-                roll: 0.0,
-                pitch: 0.0,
-                yaw: 0.0,
-                acc_z: 9.81,
-                acc_y: 0.0,
-                acc_x: 0.0,
-                gyro_z: 0.01,
-                gyro_y: 0.01,
-                gyro_x: 0.01,
-                mag_z: 50.0,
-                mag_y: -30.0,
-                mag_x: -20.0,
-                relative_altitude: 5.0,
-                pressure: 1013.25,
-                grav_z: 9.81,
-                grav_y: 0.0,
-                grav_x: 0.0
-            }
-        );
-        records.push(
-            TestDataRecord {
-                time: DateTime::parse_from_str("2023-01-01 00:01:00+00:00", "%Y-%m-%d %H:%M:%S%z")
-                    .unwrap()
-                    .with_timezone(&Utc),
-                bearing_accuracy: 0.1,
-                speed_accuracy: 0.1,
-                vertical_accuracy: 0.1,
-                horizontal_accuracy: 0.1,
-                speed: 2.0,
-                bearing: 180.0,
-                altitude: 200.0,
-                longitude: -121.0,
-                latitude: 38.0,
-                qz: 0.0,
-                qy: 0.0,
-                qx: 0.0,
-                qw: 1.0,
-                roll: 0.1,
-                pitch: 0.1,
-                yaw: 0.1,
-                acc_z: 9.81,
-                acc_y: 0.01,
-                acc_x: -0.01,
-                gyro_z: 0.02,
-                gyro_y: -0.02,
-                gyro_x: 0.02,
-                mag_z: 55.0,
-                mag_y: -25.0,
-                mag_x: -15.0,
-                relative_altitude: 10.0,
-                pressure: 1012.25,
-                grav_z: 9.81,
-                grav_y: 0.01,
-                grav_x: -0.01
-            }
-        );
+        records.push(TestDataRecord {
+            time: DateTime::parse_from_str("2023-01-01 00:00:00+00:00", "%Y-%m-%d %H:%M:%S%z")
+                .unwrap()
+                .with_timezone(&Utc),
+            bearing_accuracy: 0.1,
+            speed_accuracy: 0.1,
+            vertical_accuracy: 0.1,
+            horizontal_accuracy: 0.1,
+            speed: 1.0,
+            bearing: 90.0,
+            altitude: 100.0,
+            longitude: -122.0,
+            latitude: 37.0,
+            qz: 0.0,
+            qy: 0.0,
+            qx: 0.0,
+            qw: 1.0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            acc_z: 9.81,
+            acc_y: 0.0,
+            acc_x: 0.0,
+            gyro_z: 0.01,
+            gyro_y: 0.01,
+            gyro_x: 0.01,
+            mag_z: 50.0,
+            mag_y: -30.0,
+            mag_x: -20.0,
+            relative_altitude: 5.0,
+            pressure: 1013.25,
+            grav_z: 9.81,
+            grav_y: 0.0,
+            grav_x: 0.0,
+        });
+        records.push(TestDataRecord {
+            time: DateTime::parse_from_str("2023-01-01 00:01:00+00:00", "%Y-%m-%d %H:%M:%S%z")
+                .unwrap()
+                .with_timezone(&Utc),
+            bearing_accuracy: 0.1,
+            speed_accuracy: 0.1,
+            vertical_accuracy: 0.1,
+            horizontal_accuracy: 0.1,
+            speed: 2.0,
+            bearing: 180.0,
+            altitude: 200.0,
+            longitude: -121.0,
+            latitude: 38.0,
+            qz: 0.0,
+            qy: 0.0,
+            qx: 0.0,
+            qw: 1.0,
+            roll: 0.1,
+            pitch: 0.1,
+            yaw: 0.1,
+            acc_z: 9.81,
+            acc_y: 0.01,
+            acc_x: -0.01,
+            gyro_z: 0.02,
+            gyro_y: -0.02,
+            gyro_x: 0.02,
+            mag_z: 55.0,
+            mag_y: -25.0,
+            mag_x: -15.0,
+            relative_altitude: 10.0,
+            pressure: 1012.25,
+            grav_z: 9.81,
+            grav_y: 0.01,
+            grav_x: -0.01,
+        });
         // Write to CSV
         TestDataRecord::to_csv(&records, path).expect("Failed to write test data to CSV");
         // Check to make sure the file exists
         assert!(path.exists(), "Test data CSV file should exist");
         // Read back from CSV
-        let read_records = TestDataRecord::from_csv(path).expect("Failed to read test data from CSV");
+        let read_records =
+            TestDataRecord::from_csv(path).expect("Failed to read test data from CSV");
         // Check that the read records match the original
-        assert_eq!(read_records.len(), records.len(), "Record count should match");
+        assert_eq!(
+            read_records.len(),
+            records.len(),
+            "Record count should match"
+        );
         for (i, record) in read_records.iter().enumerate() {
             assert_eq!(record.time, records[i].time, "Timestamps should match");
-            assert!((record.latitude - records[i].latitude).abs() < 1e-6, "Latitudes should match");
-            assert!((record.longitude - records[i].longitude).abs() < 1e-6, "Longitudes should match");
-            assert!((record.altitude - records[i].altitude).abs() < 1e-6, "Altitudes should match");
+            assert!(
+                (record.latitude - records[i].latitude).abs() < 1e-6,
+                "Latitudes should match"
+            );
+            assert!(
+                (record.longitude - records[i].longitude).abs() < 1e-6,
+                "Longitudes should match"
+            );
+            assert!(
+                (record.altitude - records[i].altitude).abs() < 1e-6,
+                "Altitudes should match"
+            );
             // Add more assertions as needed for other fields
-        }        
+        }
         // Clean up
         let _ = std::fs::remove_file(path);
     }

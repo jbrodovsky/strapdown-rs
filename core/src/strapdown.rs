@@ -122,7 +122,7 @@ pub mod filter;
 pub mod linalg;
 pub mod sim;
 
- // might be overkill to need this entire create just for this
+// might be overkill to need this entire create just for this
 use nalgebra::{Matrix3, Rotation3, SVector, Vector3};
 use std::fmt::{Debug, Display};
 
