@@ -110,9 +110,46 @@ impl TestDataRecord {
     /// use strapdown::sim::TestDataRecord;
     /// use std::path::Path;
     ///
-    /// let records = TestDataRecord::from_csv("data/test_data.csv")
-    ///     .expect("Failed to read test data");
-    /// println!("Loaded {} records", records.len());
+    /// let record = TestDataRecord {
+    ///     time: chrono::Utc::now(),
+    ///     bearing_accuracy: 0.1,
+    ///     speed_accuracy: 0.1,
+    ///     vertical_accuracy: 0.1,
+    ///     horizontal_accuracy: 0.1,
+    ///     speed: 1.0,
+    ///     bearing: 90.0,
+    ///     altitude: 100.0,
+    ///     longitude: -122.0,
+    ///     latitude: 37.0,
+    ///     qz: 0.0,
+    ///     qy: 0.0,
+    ///     qx: 0.0,
+    ///     qw: 1.0,
+    ///     roll: 0.0,
+    ///     pitch: 0.0,
+    ///     yaw: 0.0,
+    ///     acc_z: 9.81,
+    ///     acc_y: 0.0,
+    ///     acc_x: 0.0,
+    ///     gyro_z: 0.01,
+    ///     gyro_y: 0.01,
+    ///     gyro_x: 0.01,
+    ///     mag_z: 50.0,
+    ///     mag_y: -30.0,
+    ///     mag_x: -20.0,
+    ///     relative_altitude: 0.0,
+    ///     pressure: 1013.25,
+    ///     grav_z: 9.81,
+    ///     grav_y: 0.0,
+    ///     grav_x: 0.0,
+    /// };
+    /// let records = vec![record];
+    /// TestDataRecord::to_csv(&records, "data.csv")
+    ///    .expect("Failed to write test data to CSV");
+    /// let read_records = TestDataRecord::from_csv("data.csv")
+    ///   .expect("Failed to read test data from CSV");
+    /// // doctest cleanup
+    /// std::fs::remove_file("data.csv").unwrap();
     /// ```
     pub fn from_csv<P: AsRef<std::path::Path>>(
         path: P,
@@ -140,13 +177,44 @@ impl TestDataRecord {
     /// use strapdown::sim::TestDataRecord;
     /// use std::path::Path;
     ///
-    /// let records = TestDataRecord::from_csv("./data/test_data.csv").unwrap();
-    /// // Create a subset or modify records
-    /// let subset = records.into_iter().take(10).collect::<Vec<_>>();
-    /// // Save the subset to a new file
-    /// TestDataRecord::to_csv(&subset, "subset_data.csv").expect("Failed to write CSV");
+    /// let record = TestDataRecord {
+    ///     time: chrono::Utc::now(),
+    ///     bearing_accuracy: 0.1,
+    ///     speed_accuracy: 0.1,
+    ///     vertical_accuracy: 0.1,
+    ///     horizontal_accuracy: 0.1,
+    ///     speed: 1.0,
+    ///     bearing: 90.0,
+    ///     altitude: 100.0,
+    ///     longitude: -122.0,
+    ///     latitude: 37.0,
+    ///     qz: 0.0,
+    ///     qy: 0.0,
+    ///     qx: 0.0,
+    ///     qw: 1.0,
+    ///     roll: 0.0,
+    ///     pitch: 0.0,
+    ///     yaw: 0.0,
+    ///     acc_z: 9.81,
+    ///     acc_y: 0.0,
+    ///     acc_x: 0.0,
+    ///     gyro_z: 0.01,
+    ///     gyro_y: 0.01,
+    ///     gyro_x: 0.01,
+    ///     mag_z: 50.0,
+    ///     mag_y: -30.0,
+    ///     mag_x: -20.0,
+    ///     relative_altitude: 0.0,
+    ///     pressure: 1013.25,
+    ///     grav_z: 9.81,
+    ///     grav_y: 0.0,
+    ///     grav_x: 0.0,
+    /// };
+    /// let records = vec![record];
+    /// TestDataRecord::to_csv(&records, "data.csv")
+    ///    .expect("Failed to write test data to CSV");
     /// // doctest cleanup
-    /// std::fs::remove_file("subset_data.csv").unwrap();
+    /// std::fs::remove_file("data.csv").unwrap();
     /// ```
     pub fn to_csv<P: AsRef<Path>>(records: &[Self], path: P) -> io::Result<()> {
         let mut writer = csv::Writer::from_path(path)?;
@@ -603,7 +671,6 @@ pub fn initialize_ukf(
     process_noise_diagonal.extend(vec![1e-3; 6]); // Process noise for imu biases
     let process_noise_diagonal = DVector::from_vec(process_noise_diagonal);
     //DVector::from_vec(vec![0.0; 15]);
-    let measurement_noise_diagonal = DVector::from_vec(vec![1e-12; 3]);
     UKF::new(
         ukf_params,
         imu_bias,
@@ -621,6 +688,7 @@ mod tests {
     use super::*;
     use std::fs::File;
     use std::path::Path;
+    use std::vec;
 
     /// Generate a test record for northward motion at constant velocity (1 knot = 1852 m/h).
     /// This helper returns a Vec<TestDataRecord> for 1 hour, sampled once per second.
@@ -700,17 +768,6 @@ mod tests {
         // Clean up the test file
         let _ = std::fs::remove_file("northward_motion.csv");
     }
-    /// Test that reading a valid CSV file returns records and parses fields correctly.
-    #[test]
-    fn test_test_data_record_from_csv() {
-        let path = Path::new("./data/test_data.csv");
-        let records = TestDataRecord::from_csv(path).expect("Failed to read test_data.csv");
-        assert!(!records.is_empty(), "CSV should not be empty");
-        // Check a few fields of the first record
-        let first = &records[0];
-        assert!(first.latitude.abs() > 0.0);
-        assert!(first.longitude.abs() > 0.0);
-    }
     /// Test that reading a missing file returns an error.
     #[test]
     fn test_test_data_record_from_csv_invalid_path() {
@@ -720,38 +777,102 @@ mod tests {
     }
     /// Test writing TestDataRecord to CSV and reading it back
     #[test]
-    fn test_test_data_record_to_csv() {
+    fn test_data_record_to_and_from_csv() {
         // Read original records
-        let path = Path::new("./data/test_data.csv");
-        let original_records =
-            TestDataRecord::from_csv(path).expect("Failed to read test_data.csv");
-
-        // Take just a few records to keep the test fast
-        let subset = if original_records.len() > 3 {
-            original_records[0..3].to_vec()
-        } else {
-            original_records.clone()
-        };
-
-        // Write to temporary file
-        let temp_file = std::env::temp_dir().join("test_data_subset.csv");
-        let temp_path = temp_file.to_string_lossy().to_string();
-
-        TestDataRecord::to_csv(&subset, &temp_path).expect("Failed to write CSV");
-
-        // Read back from temporary file
-        let read_records =
-            TestDataRecord::from_csv(&temp_path).expect("Failed to read temporary CSV");
-
-        // Verify count
-        assert_eq!(
-            subset.len(),
-            read_records.len(),
-            "Should read same number of records as written"
+        let path = Path::new("test_file.csv");
+        let mut records: Vec<TestDataRecord> = vec![];
+        // Create some test data records
+        records.push(
+            TestDataRecord {
+                time: DateTime::parse_from_str("2023-01-01 00:00:00+00:00", "%Y-%m-%d %H:%M:%S%z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+                bearing_accuracy: 0.1,
+                speed_accuracy: 0.1,
+                vertical_accuracy: 0.1,
+                horizontal_accuracy: 0.1,
+                speed: 1.0,
+                bearing: 90.0,
+                altitude: 100.0,
+                longitude: -122.0,
+                latitude: 37.0,
+                qz: 0.0,
+                qy: 0.0,
+                qx: 0.0,
+                qw: 1.0,
+                roll: 0.0,
+                pitch: 0.0,
+                yaw: 0.0,
+                acc_z: 9.81,
+                acc_y: 0.0,
+                acc_x: 0.0,
+                gyro_z: 0.01,
+                gyro_y: 0.01,
+                gyro_x: 0.01,
+                mag_z: 50.0,
+                mag_y: -30.0,
+                mag_x: -20.0,
+                relative_altitude: 5.0,
+                pressure: 1013.25,
+                grav_z: 9.81,
+                grav_y: 0.0,
+                grav_x: 0.0
+            }
         );
-
+        records.push(
+            TestDataRecord {
+                time: DateTime::parse_from_str("2023-01-01 00:01:00+00:00", "%Y-%m-%d %H:%M:%S%z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+                bearing_accuracy: 0.1,
+                speed_accuracy: 0.1,
+                vertical_accuracy: 0.1,
+                horizontal_accuracy: 0.1,
+                speed: 2.0,
+                bearing: 180.0,
+                altitude: 200.0,
+                longitude: -121.0,
+                latitude: 38.0,
+                qz: 0.0,
+                qy: 0.0,
+                qx: 0.0,
+                qw: 1.0,
+                roll: 0.1,
+                pitch: 0.1,
+                yaw: 0.1,
+                acc_z: 9.81,
+                acc_y: 0.01,
+                acc_x: -0.01,
+                gyro_z: 0.02,
+                gyro_y: -0.02,
+                gyro_x: 0.02,
+                mag_z: 55.0,
+                mag_y: -25.0,
+                mag_x: -15.0,
+                relative_altitude: 10.0,
+                pressure: 1012.25,
+                grav_z: 9.81,
+                grav_y: 0.01,
+                grav_x: -0.01
+            }
+        );
+        // Write to CSV
+        TestDataRecord::to_csv(&records, &path).expect("Failed to write test data to CSV");
+        // Check to make sure the file exists
+        assert!(path.exists(), "Test data CSV file should exist");
+        // Read back from CSV
+        let read_records = TestDataRecord::from_csv(&path).expect("Failed to read test data from CSV");
+        // Check that the read records match the original
+        assert_eq!(read_records.len(), records.len(), "Record count should match");
+        for (i, record) in read_records.iter().enumerate() {
+            assert_eq!(record.time, records[i].time, "Timestamps should match");
+            assert!((record.latitude - records[i].latitude).abs() < 1e-6, "Latitudes should match");
+            assert!((record.longitude - records[i].longitude).abs() < 1e-6, "Longitudes should match");
+            assert!((record.altitude - records[i].altitude).abs() < 1e-6, "Altitudes should match");
+            // Add more assertions as needed for other fields
+        }        
         // Clean up
-        let _ = std::fs::remove_file(&temp_path);
+        let _ = std::fs::remove_file(&path);
     }
     #[test]
     fn test_navigation_result_new() {
