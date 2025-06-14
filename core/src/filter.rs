@@ -1087,7 +1087,6 @@ mod tests {
         let measurement_bias = vec![0.0, 0.0, 0.0];
         let covariance_diagonal = vec![1e-12; 9 + imu_biases.len() + measurement_bias.len()];
         let process_noise_diagonal = vec![1e-12; 9 + imu_biases.len() + measurement_bias.len()];
-        let measurement_noise_diagonal = [1e-12; 3];
         let alpha = 1e-3;
         let beta = 2.0;
         let kappa = 1e-3;
