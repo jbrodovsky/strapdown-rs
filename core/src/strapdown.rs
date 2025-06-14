@@ -485,13 +485,13 @@ impl StrapdownState {
         self.altitude += 0.5 * (v_d_0 + v_d_1) * dt;
         // Latitude update
         let lat_1: f64 =
-            &self.latitude + 0.5 * (v_n_0 / (r_n + alt_0) + v_n_1 / (r_n + &self.longitude)) * dt;
+            self.latitude + 0.5 * (v_n_0 / (r_n + alt_0) + v_n_1 / (r_n + self.longitude)) * dt;
         // Longitude update
         let (_, r_e_1, _) = earth::principal_radii(&lat_1, &self.altitude);
-        let lon_1: f64 = &self.longitude
+        let lon_1: f64 = self.longitude
             + 0.5
                 * (v_e_0 / ((r_e_0 + alt_0) * lat_0.cos())
-                    + v_e_1 / ((r_e_1 + &self.altitude) * lat_1.cos()))
+                    + v_e_1 / ((r_e_1 + self.altitude) * lat_1.cos()))
                 * dt;
         // Save updated position
         self.latitude = lat_1;

@@ -857,11 +857,11 @@ mod tests {
             }
         );
         // Write to CSV
-        TestDataRecord::to_csv(&records, &path).expect("Failed to write test data to CSV");
+        TestDataRecord::to_csv(&records, path).expect("Failed to write test data to CSV");
         // Check to make sure the file exists
         assert!(path.exists(), "Test data CSV file should exist");
         // Read back from CSV
-        let read_records = TestDataRecord::from_csv(&path).expect("Failed to read test data from CSV");
+        let read_records = TestDataRecord::from_csv(path).expect("Failed to read test data from CSV");
         // Check that the read records match the original
         assert_eq!(read_records.len(), records.len(), "Record count should match");
         for (i, record) in read_records.iter().enumerate() {
@@ -872,7 +872,7 @@ mod tests {
             // Add more assertions as needed for other fields
         }        
         // Clean up
-        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path);
     }
     #[test]
     fn test_navigation_result_new() {
