@@ -16,8 +16,8 @@
 //! measurements in the local level frame (i.e. a GPS fix).
 use crate::earth::METERS_TO_DEGREES;
 use crate::linalg::matrix_square_root;
-use crate::{IMUData, StrapdownState, wrap_to_2pi};
-use nalgebra::{DMatrix, DVector, SVector, Rotation3, Vector3};
+use crate::{IMUData, StrapdownState, wrap_to_2pi, wrap_to_360};
+use nalgebra::{DMatrix, DVector, Rotation3, SVector};
 use rand;
 use rand_distr::{Distribution, Normal};
 use std::fmt::Debug;
@@ -149,19 +149,19 @@ impl SigmaPoint {
     /// sigma_point.forward(&imu_data, dt, None);
     /// ```
     pub fn forward(&mut self, imu_data: &IMUData, dt: f64, noise: Option<Vec<f64>>) {
-        let acceleration_biases = Vector3::from_vec(
-            self.other_states.iter().take(3).cloned().collect::<Vec<f64>>()
-        );
-        let gyro_biases = Vector3::from_vec(
-            self.other_states.iter().skip(3).take(3).cloned().collect::<Vec<f64>>()
-        );
-        // Subtract out the IMU biases from the IMU data
-        let imu_data = IMUData {
-            accel: imu_data.accel - acceleration_biases,
-            gyro: imu_data.gyro - gyro_biases
-        };
+        // let acceleration_biases = Vector3::from_vec(
+        //     self.other_states.iter().take(3).cloned().collect::<Vec<f64>>()
+        // );
+        // let gyro_biases = Vector3::from_vec(
+        //     self.other_states.iter().skip(3).take(3).cloned().collect::<Vec<f64>>()
+        // );
+        // // Subtract out the IMU biases from the IMU data
+        // let imu_data = IMUData {
+        //     accel: imu_data.accel - acceleration_biases,
+        //     gyro: imu_data.gyro - gyro_biases
+        // };
         // Propagate the strapdown state using the strapdown equations
-        self.nav_state.forward(&imu_data, dt);
+        self.nav_state.forward(imu_data, dt);
         let noise_vect = match noise {
             None => return, // UKF mode, does not use noise in propagation
             Some(v) => v,   // Particle filter mode, uses noise in propagation
@@ -261,11 +261,23 @@ impl SigmaPoint {
             velocity_east: state[4],
             velocity_down: state[5],
             attitude: Rotation3::from_euler_angles(
-                if in_degrees { state[6].to_radians() } else { state[6] },
-                if in_degrees { state[7].to_radians() } else { state[7] },
-                if in_degrees { state[8].to_radians() } else { state[8] },
+                if in_degrees {
+                    wrap_to_2pi(state[6].to_radians())
+                } else {
+                    wrap_to_360(state[6])
+                },
+                if in_degrees {
+                    wrap_to_2pi(state[7].to_radians())
+                } else {
+                    wrap_to_360(state[7])
+                },
+                if in_degrees {
+                    wrap_to_2pi(state[8].to_radians())
+                } else {
+                    wrap_to_360(state[8])
+                },
             ),
-            coordinate_convention: true
+            coordinate_convention: true,
         };
         SigmaPoint::new(nav_state, other_states, weight)
     }
@@ -444,12 +456,16 @@ impl UKF {
         for sigma_point in &mut sigma_points {
             sigma_point.forward(imu_data, dt, None);
         }
-        println!("predicted sigma points");
         let mut mu_bar = DVector::<f64>::zeros(self.state_size);
         // Update the mean state through a naive loop
         for (i, sigma_point) in sigma_points.iter().enumerate() {
             mu_bar += self.weights_mean[i] * sigma_point.to_vector(false);
         }
+        // wrap mu bar attitude angles to 2pi
+        mu_bar[6] = wrap_to_2pi(mu_bar[6]);
+        mu_bar[7] = wrap_to_2pi(mu_bar[7]);
+        mu_bar[8] = wrap_to_2pi(mu_bar[8]);
+
         let mut cov_bar = DMatrix::<f64>::zeros(self.state_size, self.state_size);
         // Update the covariance through a naive loop
         for (i, sigma_point) in sigma_points.iter().enumerate() {
@@ -502,7 +518,7 @@ impl UKF {
         );
         // Print the measurement sigma points recieved
         // for sigma in measurement_sigma_points.iter() {
-        //     println!("[UKF::update] measurement sigma point: [{:.4}, {:.4}, {:.2}]", 
+        //     println!("[UKF::update] measurement sigma point: [{:.4}, {:.4}, {:.2}]",
         //              sigma[0].to_degrees(), sigma[1].to_degrees(), sigma[2]);
         // }
         // Calculate expected measurement
@@ -537,6 +553,11 @@ impl UKF {
             panic!("Kalman gain and measurement differential are not compatible");
         }
         self.mean_state += &k * (measurement - &z_hat);
+        // wrap attitude angles to 2pi
+        // TODO: #30 Refactor attitude angles to use a more robust representation
+        self.mean_state[6] = wrap_to_2pi(self.mean_state[6]);
+        self.mean_state[7] = wrap_to_2pi(self.mean_state[7]);
+        self.mean_state[8] = wrap_to_2pi(self.mean_state[8]);
         self.covariance -= &k * s * &k.transpose();
     }
     /// Get the UKF mean state.
@@ -768,7 +789,7 @@ pub trait GPS {
 }
 impl GPS for UKF {
     fn position_measurement_model(&self, with_altitude: bool) -> Vec<DVector<f64>> {
-        let sigma_points = self.get_sigma_points();
+        let sigma_points = self.get_sigma_points(); // Crashing issue occurs here
         let mut measurement_sigma_points = Vec::<DVector<f64>>::with_capacity(sigma_points.len());
         for sigma_point in sigma_points {
             let mut measurement_sigma_point =
@@ -836,14 +857,13 @@ impl GPS for UKF {
         // Default implementation returns an identity matrix, can be overridden
         match with_altitude {
             true => DMatrix::from_diagonal(&DVector::from_vec(vec![
-                (5.0 * METERS_TO_DEGREES).powf(2.0), // Latitude noise (degrees)
-                (5.0 * METERS_TO_DEGREES).powf(2.0), // Longitude noise (degrees)
-                (5.0_f64).powf(2.0),                 // Altitude noise (meters)
-                
+                ((5.0 * METERS_TO_DEGREES).to_radians()).powf(2.0), // Latitude noise (degrees)
+                ((5.0 * METERS_TO_DEGREES).to_radians()).powf(2.0), // Longitude noise (degrees)
+                (5.0_f64).powf(2.0),                                // Altitude noise (meters)
             ])),
             false => DMatrix::from_diagonal(&DVector::from_vec(vec![
-                (5.0 * METERS_TO_DEGREES).powf(2.0), // Latitude noise (degrees)
-                (5.0 * METERS_TO_DEGREES).powf(2.0), // Longitude noise (degrees)
+                ((5.0 * METERS_TO_DEGREES).to_radians()).powf(2.0), // Latitude noise (degrees)
+                ((5.0 * METERS_TO_DEGREES).to_radians()).powf(2.0), // Longitude noise (degrees)
             ])),
         }
     }
@@ -867,18 +887,18 @@ impl GPS for UKF {
         // Default implementation returns an identity matrix, can be overridden
         match with_altitude {
             true => DMatrix::from_diagonal(&DVector::from_vec(vec![
-                (5.0 * METERS_TO_DEGREES).powf(2.0), // Latitude noise (degrees)
-                (5.0 * METERS_TO_DEGREES).powf(2.0), // Longitude noise (degrees)
-                (5.0_f64).powf(2.0),                     // Altitude noise (meters)
-                (0.1_f64).powf(2.0),                     // Northward velocity noise (m/s)
-                (0.1_f64).powf(2.0),                     // Eastward velocity noise (m/s)
-                (0.1_f64).powf(2.0),                     // Downward velocity noise (m/s)
+                ((5.0 * METERS_TO_DEGREES).to_radians()).powf(2.0), // Latitude noise (degrees)
+                ((5.0 * METERS_TO_DEGREES).to_radians()).powf(2.0), // Longitude noise (degrees)
+                (5.0_f64).powf(2.0),                                // Altitude noise (meters)
+                (0.1_f64).powf(2.0), // Northward velocity noise (m/s)
+                (0.1_f64).powf(2.0), // Eastward velocity noise (m/s)
+                (0.1_f64).powf(2.0), // Downward velocity noise (m/s)
             ])),
             false => DMatrix::from_diagonal(&DVector::from_vec(vec![
-                (5.0 * METERS_TO_DEGREES).powf(2.0), // Latitude noise (degrees)
-                (5.0 * METERS_TO_DEGREES).powf(2.0), // Longitude noise (degrees)
-                (0.1_f64).powf(2.0),                     // Northward velocity noise (m/s)
-                (0.1_f64).powf(2.0),                     // Eastward velocity noise (m/s)
+                ((5.0 * METERS_TO_DEGREES).to_radians()).powf(2.0), // Latitude noise (degrees)
+                ((5.0 * METERS_TO_DEGREES).to_radians()).powf(2.0), // Longitude noise (degrees)
+                (0.1_f64).powf(2.0), // Northward velocity noise (m/s)
+                (0.1_f64).powf(2.0), // Eastward velocity noise (m/s)
             ])),
         }
     }

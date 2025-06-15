@@ -52,7 +52,10 @@ pub fn matrix_square_root(matrix: &DMatrix<f64>) -> DMatrix<f64> {
     match eigenvalue_pass(matrix) {
         Some(eigen_sqrt) => eigen_sqrt,
         None => {
-            panic!("Cholesky and Eigenvalue decomposition failed. No valid square root found for the covariance matrix: \n {:?}", matrix);
+            panic!(
+                "Cholesky and Eigenvalue decomposition failed. No valid square root found for the covariance matrix: \n {:?}",
+                matrix
+            );
         }
     }
 }

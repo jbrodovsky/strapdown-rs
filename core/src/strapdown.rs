@@ -555,10 +555,7 @@ impl StrapdownState {
         ));
         let rotation_rate: Matrix3<f64> =
             earth::vector_to_skew_symmetric(&earth::earth_rate_lla(&self.latitude.to_degrees()));
-        let r = earth::ecef_to_lla(
-            &self.latitude.to_degrees(), 
-            &self.longitude.to_degrees()
-        );
+        let r = earth::ecef_to_lla(&self.latitude.to_degrees(), &self.longitude.to_degrees());
         // let grav: Vector3<f64> = earth::gravitation(&self.position[0], &self.position[1], &self.position[2]);
         let velocity: Vector3<f64> =
             Vector3::new(self.velocity_north, self.velocity_east, self.velocity_down);
