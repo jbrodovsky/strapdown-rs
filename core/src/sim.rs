@@ -523,7 +523,7 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
         velocity_north: first_record.speed * first_record.bearing.cos(),
         velocity_east: first_record.speed * first_record.bearing.sin(),
         velocity_down: 0.0, // initial velocities
-        attitude: attitude,
+        attitude,
         coordinate_convention: true,
     };
     // Store the initial state and metadata
