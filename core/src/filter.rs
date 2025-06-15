@@ -444,7 +444,6 @@ impl UKF {
         for sigma_point in &mut sigma_points {
             sigma_point.forward(imu_data, dt, None);
         }
-        println!("predicted sigma points");
         let mut mu_bar = DVector::<f64>::zeros(self.state_size);
         // Update the mean state through a naive loop
         for (i, sigma_point) in sigma_points.iter().enumerate() {

@@ -35,18 +35,15 @@ fn write_results_to_csv(
 }
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
-
     // Read the input CSV file
-    let mut rdr = ReaderBuilder::new().from_path(args.input)?;
-
+    let mut rdr = ReaderBuilder::new().from_path(&args.input)?;
     // Validate the mode
     if args.mode != "open-loop" && args.mode != "closed-loop" {
         return Err("Invalid mode specified. Use 'open-loop' or 'closed-loop'.".into());
     }
-
     let records: Vec<TestDataRecord> = rdr.deserialize().collect::<Result<_, _>>()?;
+    println!("Read {} records from {}", records.len(), &args.input.display());
     let results: Vec<NavigationResult>;
-
     if args.mode == "closed-loop" {
         results = closed_loop(&records);
         match write_results_to_csv(&results, &args.output) {
