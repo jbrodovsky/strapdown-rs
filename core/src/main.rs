@@ -42,7 +42,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err("Invalid mode specified. Use 'open-loop' or 'closed-loop'.".into());
     }
     let records: Vec<TestDataRecord> = rdr.deserialize().collect::<Result<_, _>>()?;
-    println!("Read {} records from {}", records.len(), &args.input.display());
+    println!(
+        "Read {} records from {}",
+        records.len(),
+        &args.input.display()
+    );
     let results: Vec<NavigationResult>;
     if args.mode == "closed-loop" {
         results = closed_loop(&records);

@@ -560,7 +560,7 @@ pub fn closed_loop(records: &[TestDataRecord]) -> Vec<NavigationResult> {
     let mut results: Vec<NavigationResult> = Vec::with_capacity(records.len());
     // Initialize the UKF with the first record
     let mut ukf = initialize_ukf(
-        records[0].clone(), 
+        records[0].clone(),
         None, //Some(vec![1e-9; 3]), // attitude covariance
         None, //Some(vec![1e-6; 6])
     );
@@ -632,55 +632,60 @@ pub fn closed_loop(records: &[TestDataRecord]) -> Vec<NavigationResult> {
     results
 }
 pub fn print_ukf(ukf: &UKF, record: &TestDataRecord) {
-    println!("\rUKF position: ({:.4}, {:.4}, {:.4})  |  Covariance: {:.4e}, {:.4e}, {:.4}  |  Error: {:.4e}, {:.4e}, {:.4}",
-            ukf.get_mean()[0].to_degrees(),
-            ukf.get_mean()[1].to_degrees(),
-            ukf.get_mean()[2],
-            ukf.get_covariance()[(0,0)],
-            ukf.get_covariance()[(1,1)],
-            ukf.get_covariance()[(2,2)],
-            ukf.get_mean()[0].to_degrees() - record.latitude,
-            ukf.get_mean()[1].to_degrees() - record.longitude,
-            ukf.get_mean()[2] - record.altitude
-        );
-        println!("\rUKF velocity: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4}, {:.4}, {:.4}  | Error: {:.4}, {:.4}, {:.4}",
-            ukf.get_mean()[3],
-            ukf.get_mean()[4],
-            ukf.get_mean()[5],
-            ukf.get_covariance()[(3,3)],
-            ukf.get_covariance()[(4,4)],
-            ukf.get_covariance()[(5,5)],
-            ukf.get_mean()[3] - record.speed * record.bearing.cos(),
-            ukf.get_mean()[4] - record.speed * record.bearing.sin(),
-            ukf.get_mean()[5] - 0.0 // Assuming no vertical velocity
-        );
-        println!("\rUKF attitude: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4}, {:.4}, {:.4}  | Error: {:.4}, {:.4}, {:.4}",
-            ukf.get_mean()[6],
-            ukf.get_mean()[7],
-            ukf.get_mean()[8],
-            ukf.get_covariance()[(6,6)],
-            ukf.get_covariance()[(7,7)],
-            ukf.get_covariance()[(8,8)],
-            ukf.get_mean()[6] - record.roll,
-            ukf.get_mean()[7] - record.pitch,
-            ukf.get_mean()[8] - record.yaw
-        );
-        println!("\rUKF accel biases: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4e}, {:.4e}, {:.4e}",
-            ukf.get_mean()[9],
-            ukf.get_mean()[10],
-            ukf.get_mean()[11],
-            ukf.get_covariance()[(9,9)],
-            ukf.get_covariance()[(10,10)],
-            ukf.get_covariance()[(11,11)]
-        );
-        println!("\rUKF gyro biases: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4e}, {:.4e}, {:.4e}",
-            ukf.get_mean()[12],
-            ukf.get_mean()[13],
-            ukf.get_mean()[14],
-            ukf.get_covariance()[(12,12)],
-            ukf.get_covariance()[(13,13)],
-            ukf.get_covariance()[(14,14)]
-        );
+    println!(
+        "\rUKF position: ({:.4}, {:.4}, {:.4})  |  Covariance: {:.4e}, {:.4e}, {:.4}  |  Error: {:.4e}, {:.4e}, {:.4}",
+        ukf.get_mean()[0].to_degrees(),
+        ukf.get_mean()[1].to_degrees(),
+        ukf.get_mean()[2],
+        ukf.get_covariance()[(0, 0)],
+        ukf.get_covariance()[(1, 1)],
+        ukf.get_covariance()[(2, 2)],
+        ukf.get_mean()[0].to_degrees() - record.latitude,
+        ukf.get_mean()[1].to_degrees() - record.longitude,
+        ukf.get_mean()[2] - record.altitude
+    );
+    println!(
+        "\rUKF velocity: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4}, {:.4}, {:.4}  | Error: {:.4}, {:.4}, {:.4}",
+        ukf.get_mean()[3],
+        ukf.get_mean()[4],
+        ukf.get_mean()[5],
+        ukf.get_covariance()[(3, 3)],
+        ukf.get_covariance()[(4, 4)],
+        ukf.get_covariance()[(5, 5)],
+        ukf.get_mean()[3] - record.speed * record.bearing.cos(),
+        ukf.get_mean()[4] - record.speed * record.bearing.sin(),
+        ukf.get_mean()[5] - 0.0 // Assuming no vertical velocity
+    );
+    println!(
+        "\rUKF attitude: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4}, {:.4}, {:.4}  | Error: {:.4}, {:.4}, {:.4}",
+        ukf.get_mean()[6],
+        ukf.get_mean()[7],
+        ukf.get_mean()[8],
+        ukf.get_covariance()[(6, 6)],
+        ukf.get_covariance()[(7, 7)],
+        ukf.get_covariance()[(8, 8)],
+        ukf.get_mean()[6] - record.roll,
+        ukf.get_mean()[7] - record.pitch,
+        ukf.get_mean()[8] - record.yaw
+    );
+    println!(
+        "\rUKF accel biases: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4e}, {:.4e}, {:.4e}",
+        ukf.get_mean()[9],
+        ukf.get_mean()[10],
+        ukf.get_mean()[11],
+        ukf.get_covariance()[(9, 9)],
+        ukf.get_covariance()[(10, 10)],
+        ukf.get_covariance()[(11, 11)]
+    );
+    println!(
+        "\rUKF gyro biases: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4e}, {:.4e}, {:.4e}",
+        ukf.get_mean()[12],
+        ukf.get_mean()[13],
+        ukf.get_mean()[14],
+        ukf.get_covariance()[(12, 12)],
+        ukf.get_covariance()[(13, 13)],
+        ukf.get_covariance()[(14, 14)]
+    );
 }
 
 /// Helper function to initialize a UKF for closed-loop mode.
@@ -716,7 +721,7 @@ pub fn initialize_ukf(
         in_degrees: true,
     };
     // Covariance parameters
-    let position_accuracy = initial_pose.horizontal_accuracy;//.sqrt();
+    let position_accuracy = initial_pose.horizontal_accuracy; //.sqrt();
     let mut covariance_diagonal = vec![
         (position_accuracy * METERS_TO_DEGREES).powf(2.0),
         (position_accuracy * METERS_TO_DEGREES).powf(2.0),
