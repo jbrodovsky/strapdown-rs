@@ -21,7 +21,8 @@ struct Args {
     output: PathBuf,
 }
 
-fn write_results_to_csv( // TODO: make this public and move to sim.rs
+fn write_results_to_csv(
+    // TODO: make this public and move to sim.rs
     results: &[NavigationResult],
     output: &PathBuf,
 ) -> Result<(), Box<dyn Error>> {
@@ -61,16 +62,5 @@ fn main() -> Result<(), Box<dyn Error>> {
     } else {
         return Err("Invalid mode specified. Use 'open-loop' or 'closed-loop'.".into());
     }
-
-    // If results are empty, we can return an error
-    // if !records.is_empty() {
-    //     // Write the results to the output CSV file
-    //     let mut wtr = WriterBuilder::new().from_path(args.output)?;
-    //     for result in results {
-    //         wtr.serialize(result)?;
-    //     }
-    //     wtr.flush()?;
-    // }
-
     Ok(())
 }
