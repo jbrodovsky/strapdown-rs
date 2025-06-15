@@ -122,7 +122,6 @@ pub mod filter;
 pub mod linalg;
 pub mod sim;
 
-// might be overkill to need this entire create just for this
 use nalgebra::{Matrix3, Rotation3, SVector, Vector3};
 use std::fmt::{Debug, Display};
 
@@ -485,7 +484,7 @@ impl StrapdownState {
         self.altitude += 0.5 * (v_d_0 + v_d_1) * dt;
         // Latitude update
         let lat_1: f64 =
-            self.latitude + 0.5 * (v_n_0 / (r_n + alt_0) + v_n_1 / (r_n + self.longitude)) * dt;
+            self.latitude + 0.5 * (v_n_0 / (r_n + alt_0) + v_n_1 / (r_n + self.altitude)) * dt;
         // Longitude update
         let (_, r_e_1, _) = earth::principal_radii(&lat_1, &self.altitude);
         let lon_1: f64 = self.longitude
@@ -517,7 +516,7 @@ impl StrapdownState {
     /// * A Matrix3 representing the updated attitude matrix in the NED frame.
     fn attitude_update(&self, gyros: &Vector3<f64>, dt: f64) -> Matrix3<f64> {
         let transport_rate: Matrix3<f64> = earth::vector_to_skew_symmetric(&earth::transport_rate(
-            &self.latitude,
+            &self.latitude.to_degrees(),
             &self.altitude,
             &Vector3::from_vec(vec![
                 self.velocity_north,
@@ -526,7 +525,7 @@ impl StrapdownState {
             ]),
         ));
         let rotation_rate: Matrix3<f64> =
-            earth::vector_to_skew_symmetric(&earth::earth_rate_lla(&self.latitude));
+            earth::vector_to_skew_symmetric(&earth::earth_rate_lla(&self.latitude.to_degrees()));
         let omega_ib: Matrix3<f64> = earth::vector_to_skew_symmetric(gyros);
         let c_1: Matrix3<f64> = self.attitude * (Matrix3::identity() + omega_ib * dt)
             - (rotation_rate + transport_rate) * self.attitude * dt;
@@ -546,7 +545,7 @@ impl StrapdownState {
     /// * A Vector3 representing the updated velocity vector in the NED frame.
     fn velocity_update(&self, f: &Vector3<f64>, dt: f64) -> Vector3<f64> {
         let transport_rate: Matrix3<f64> = earth::vector_to_skew_symmetric(&earth::transport_rate(
-            &self.latitude,
+            &self.latitude.to_degrees(),
             &self.altitude,
             &Vector3::from_vec(vec![
                 self.velocity_north,
@@ -555,8 +554,11 @@ impl StrapdownState {
             ]),
         ));
         let rotation_rate: Matrix3<f64> =
-            earth::vector_to_skew_symmetric(&earth::earth_rate_lla(&self.latitude));
-        let r = earth::ecef_to_lla(&self.latitude, &self.longitude);
+            earth::vector_to_skew_symmetric(&earth::earth_rate_lla(&self.latitude.to_degrees()));
+        let r = earth::ecef_to_lla(
+            &self.latitude.to_degrees(), 
+            &self.longitude.to_degrees()
+        );
         // let grav: Vector3<f64> = earth::gravitation(&self.position[0], &self.position[1], &self.position[2]);
         let velocity: Vector3<f64> =
             Vector3::new(self.velocity_north, self.velocity_east, self.velocity_down);

@@ -26,7 +26,7 @@ use crate::{IMUData, StrapdownState};
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct TestDataRecord {
     /// Date-time string: YYYY-MM-DD hh:mm:ss+UTCTZ
-    #[serde(with = "ts_seconds")]
+    //#[serde(with = "ts_seconds")]
     pub time: DateTime<Utc>,
     /// accuracy of the bearing (magnetic heading) in degrees
     #[serde(rename = "bearingAccuracy")]
@@ -418,8 +418,8 @@ impl From<(&StrapdownState, &DateTime<Utc>)> for NavigationResult {
         let (roll, pitch, yaw) = state.attitude.euler_angles();
         NavigationResult {
             timestamp: *timestamp,
-            latitude: state.latitude,
-            longitude: state.longitude,
+            latitude: state.latitude.to_degrees(),
+            longitude: state.longitude.to_degrees(),
             altitude: state.altitude,
             velocity_n: state.velocity_north,
             velocity_e: state.velocity_east,
@@ -475,8 +475,8 @@ impl From<(&UKF, &DateTime<Utc>)> for NavigationResult {
         let covariance = ukf.get_covariance();
         NavigationResult {
             timestamp: *timestamp,
-            latitude: state[0],
-            longitude: state[1],
+            latitude: state[0].to_degrees(),
+            longitude: state[1].to_degrees(),
             altitude: state[2],
             velocity_n: state[3],
             velocity_e: state[4],
@@ -516,17 +516,16 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
         first_record.pitch,
         first_record.yaw,
     );
-    let mut state = StrapdownState::new_from_components(
-        first_record.latitude.to_radians(),
-        first_record.longitude.to_radians(),
-        first_record.altitude,
-        0.0,
-        0.0,
-        0.0, // initial velocities
-        attitude,
-        false,
-        true,
-    );
+    let mut state = StrapdownState {
+        latitude: first_record.latitude.to_radians(),
+        longitude: first_record.longitude.to_radians(),
+        altitude: first_record.altitude,
+        velocity_north: first_record.speed * first_record.bearing.cos(),
+        velocity_east: first_record.speed * first_record.bearing.sin(),
+        velocity_down: 0.0, // initial velocities
+        attitude: attitude,
+        coordinate_convention: true,
+    };
     // Store the initial state and metadata
     results.push(NavigationResult::from((&state, &records[0].time)));
     let mut previous_time = records[0].time;
@@ -560,23 +559,72 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
 pub fn closed_loop(records: &[TestDataRecord]) -> Vec<NavigationResult> {
     let mut results: Vec<NavigationResult> = Vec::with_capacity(records.len());
     // Initialize the UKF with the first record
-    let mut ukf = initialize_ukf(records[0].clone(), None, None);
+    let mut ukf = initialize_ukf(
+        records[0].clone(), 
+        Some(vec![1e-3; 3]), // attitude covariance
+        Some(vec![1e-6; 6])
+    );
     // Set the initial result to the UKF initial state
     results.push(NavigationResult::from((&ukf, &records[0].time)));
     let mut previous_timestamp = records[0].time;
     // Iterate through the records, updating the UKF with each IMU measurement
     let total: usize = records.len();
     let mut i: usize = 1;
+    println!("Initialized UKF: \n {:?}", ukf);
+    // clip to first 10 records for testing
+    //let records = records.iter().take(10).collect::<Vec<_>>();
+
     for record in records.iter().skip(1) {
+        println!("Processing record {}/{}", i, total);
         // Print progress every 100 iterations
-        if i % 100 == 0 || i == total - 1 {
-            print!(
-                "\rProcessing data {:.2}%...",
-                (i as f64 / total as f64) * 100.0
-            );
-            use std::io::Write;
-            std::io::stdout().flush().ok();
-        }
+        println!("UKF position: ({:.4}, {:.4}, {:.2})  |  Covariance: {:.4?}, {:.4?}, {:.4?}",
+            ukf.get_mean()[0].to_degrees(),
+            ukf.get_mean()[1].to_degrees(),
+            ukf.get_mean()[2],
+            ukf.get_covariance()[(0,0)],
+            ukf.get_covariance()[(1,1)],
+            ukf.get_covariance()[(2,2)]
+        );
+        println!("UKF velocity: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4?}, {:.4?}, {:.4?}",
+            ukf.get_mean()[3],
+            ukf.get_mean()[4],
+            ukf.get_mean()[5],
+            ukf.get_covariance()[(3,3)],
+            ukf.get_covariance()[(4,4)],
+            ukf.get_covariance()[(5,5)]
+        );
+        println!("UKF attitude: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4?}, {:.4?}, {:.4?}",
+            ukf.get_mean()[6],
+            ukf.get_mean()[7],
+            ukf.get_mean()[8],
+            ukf.get_covariance()[(6,6)],
+            ukf.get_covariance()[(7,7)],
+            ukf.get_covariance()[(8,8)]
+        );
+        println!("UKF accel biases: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4?}, {:.4?}, {:.4?}",
+            ukf.get_mean()[9],
+            ukf.get_mean()[10],
+            ukf.get_mean()[11],
+            ukf.get_covariance()[(9,9)],
+            ukf.get_covariance()[(10,10)],
+            ukf.get_covariance()[(11,11)]
+        );
+        println!("UKF gyro biases: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4?}, {:.4?}, {:.4?}",
+            ukf.get_mean()[12],
+            ukf.get_mean()[13],
+            ukf.get_mean()[14],
+            ukf.get_covariance()[(12,12)],
+            ukf.get_covariance()[(13,13)],
+            ukf.get_covariance()[(14,14)]
+        );
+        // if i % 10 == 0 || i == total - 1 {
+        //     print!(
+        //         "\rProcessing data {:.2}%...",
+        //         (i as f64 / total as f64) * 100.0
+        //     );
+        //     use std::io::Write;
+        //     std::io::stdout().flush().ok();
+        // }
         // Calculate time difference from the previous record
         let current_timestamp = record.time;
         let dt = (current_timestamp - previous_timestamp).as_seconds_f64();
@@ -587,19 +635,28 @@ pub fn closed_loop(records: &[TestDataRecord]) -> Vec<NavigationResult> {
         );
         // Update the UKF with the IMU data
         ukf.predict(&imu_data, dt);
+        println!("predicted!");
         // If GPS data is available, update the UKF with the GPS measurement
         if !record.latitude.is_nan() && !record.longitude.is_nan() && !record.altitude.is_nan() {
             let measurement = DVector::from_vec(vec![
-                record.longitude.to_radians(),
                 record.latitude.to_radians(),
+                record.longitude.to_radians(),
                 record.altitude,
             ]);
             // Create the measurement sigma points using the position measurement model
             let measurement_sigma_points = ukf.position_measurement_model(true);
+            // print the sigma points for debugging
+            // println!(
+            //     "Measurement Sigma Points:"
+            // );
+            // for point in measurement_sigma_points.iter() {
+            //     println!("{:?}", point);
+            // }
             let measurement_noise = ukf.position_measurement_noise(true);
             // Update the UKF with the GPS measurement
             ukf.update(&measurement, &measurement_sigma_points, &measurement_noise);
         }
+
         // Store the current state and covariance in results
         results.push(NavigationResult::from((&ukf, &current_timestamp)));
         i += 1;
@@ -642,14 +699,14 @@ pub fn initialize_ukf(
         in_degrees: true,
     };
     // Covariance parameters
-    let position_accuracy = initial_pose.horizontal_accuracy.sqrt();
+    let position_accuracy = initial_pose.horizontal_accuracy;//.sqrt();
     let mut covariance_diagonal = vec![
-        position_accuracy * METERS_TO_DEGREES,
-        position_accuracy * METERS_TO_DEGREES,
-        initial_pose.vertical_accuracy,
-        initial_pose.speed_accuracy,
-        initial_pose.speed_accuracy,
-        initial_pose.speed_accuracy,
+        (position_accuracy * METERS_TO_DEGREES).powf(2.0),
+        (position_accuracy * METERS_TO_DEGREES).powf(2.0),
+        initial_pose.vertical_accuracy.powf(2.0),
+        initial_pose.speed_accuracy.powf(2.0),
+        initial_pose.speed_accuracy.powf(2.0),
+        initial_pose.speed_accuracy.powf(2.0),
     ];
     // extend the covariance diagonal if attitude covariance is provided
     match attitude_covariance {
@@ -663,11 +720,11 @@ pub fn initialize_ukf(
             imu_biases
         }
         None => {
-            covariance_diagonal.extend(vec![1e-3; 6]);
+            covariance_diagonal.extend(vec![1e-9; 6]);
             vec![0.0; 6] // Default values if not provided
         }
     };
-    let mut process_noise_diagonal = vec![1e-9; 9];
+    let mut process_noise_diagonal = vec![1e-9; 9]; // adds a minor amount of noise to base states
     process_noise_diagonal.extend(vec![1e-3; 6]); // Process noise for imu biases
     let process_noise_diagonal = DVector::from_vec(process_noise_diagonal);
     //DVector::from_vec(vec![0.0; 15]);
@@ -682,7 +739,6 @@ pub fn initialize_ukf(
         0.0,
     )
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
