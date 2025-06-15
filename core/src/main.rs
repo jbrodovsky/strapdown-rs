@@ -22,6 +22,7 @@ struct Args {
 }
 
 fn write_results_to_csv(
+    // TODO: make this public and move to sim.rs
     results: &[NavigationResult],
     output: &PathBuf,
 ) -> Result<(), Box<dyn Error>> {
@@ -34,18 +35,19 @@ fn write_results_to_csv(
 }
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
-
     // Read the input CSV file
-    let mut rdr = ReaderBuilder::new().from_path(args.input)?;
-
+    let mut rdr = ReaderBuilder::new().from_path(&args.input)?;
     // Validate the mode
     if args.mode != "open-loop" && args.mode != "closed-loop" {
         return Err("Invalid mode specified. Use 'open-loop' or 'closed-loop'.".into());
     }
-
     let records: Vec<TestDataRecord> = rdr.deserialize().collect::<Result<_, _>>()?;
+    println!(
+        "Read {} records from {}",
+        records.len(),
+        &args.input.display()
+    );
     let results: Vec<NavigationResult>;
-
     if args.mode == "closed-loop" {
         results = closed_loop(&records);
         match write_results_to_csv(&results, &args.output) {
@@ -61,16 +63,5 @@ fn main() -> Result<(), Box<dyn Error>> {
     } else {
         return Err("Invalid mode specified. Use 'open-loop' or 'closed-loop'.".into());
     }
-
-    // If results are empty, we can return an error
-    // if !records.is_empty() {
-    //     // Write the results to the output CSV file
-    //     let mut wtr = WriterBuilder::new().from_path(args.output)?;
-    //     for result in results {
-    //         wtr.serialize(result)?;
-    //     }
-    //     wtr.flush()?;
-    // }
-
     Ok(())
 }

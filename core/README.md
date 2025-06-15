@@ -38,3 +38,7 @@ In addition to the core library there is a basic command line tool for evaluatin
 
 1. **Open Loop**: This mode processes a set of inertial measurements (IMU data) and outputs the estimated position, velocity, and orientation over time in an open loop INS configuration; i.e. dead reckoning. This can be used to build an error state filter on top of or to develop a drift trajectory to compare your INS implementation to.
 2. **Closed Loop**: This mode processes a set of inertial measurements (IMU data) and outputs the estimated position, velocity, and orientation over time in a closed loop INS configuration; i.e. with aiding from an external source such as GNSS or a visual odometry system. This specific implementation uses a three-state position measurement (latitude, longitude, and altitude) to correct the INS state. This can be used to compare alternative or complimentary navigation aides to GPS-aided performance.
+
+## Installation
+
+There is both a library of navigation functionality and a command line tool for running dead-reckoning and cannonical closed-loop INS simulations. The library can be added to your Rust project as a dependency in your `Cargo.toml` file: `cargo add strapdown-rs`. The command line tool can be installed via `cargo install strapdown-rs`.
