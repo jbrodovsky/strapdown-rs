@@ -836,13 +836,14 @@ impl GPS for UKF {
         // Default implementation returns an identity matrix, can be overridden
         match with_altitude {
             true => DMatrix::from_diagonal(&DVector::from_vec(vec![
-                5.0 * METERS_TO_DEGREES,
-                5.0 * METERS_TO_DEGREES,
-                5.0,
+                (5.0 * METERS_TO_DEGREES).powf(2.0), // Latitude noise (degrees)
+                (5.0 * METERS_TO_DEGREES).powf(2.0), // Longitude noise (degrees)
+                (5.0_f64).powf(2.0),                 // Altitude noise (meters)
+                
             ])),
             false => DMatrix::from_diagonal(&DVector::from_vec(vec![
-                5.0 * METERS_TO_DEGREES,
-                5.0 * METERS_TO_DEGREES,
+                (5.0 * METERS_TO_DEGREES).powf(2.0), // Latitude noise (degrees)
+                (5.0 * METERS_TO_DEGREES).powf(2.0), // Longitude noise (degrees)
             ])),
         }
     }
@@ -851,13 +852,13 @@ impl GPS for UKF {
         // Default implementation returns an identity matrix, can be overridden
         match with_altitude {
             true => DMatrix::from_diagonal(&DVector::from_vec(vec![
-                0.1, // Northward velocity noise (m/s)
-                0.1, // Eastward velocity noise (m/s)
-                0.1, // Downward velocity noise (m/s)
+                (0.1_f64).powf(2.0), // Northward velocity noise (m/s)
+                (0.1_f64).powf(2.0), // Eastward velocity noise (m/s)
+                (0.1_f64).powf(2.0), // Downward velocity noise (m/s)
             ])),
             false => DMatrix::from_diagonal(&DVector::from_vec(vec![
-                0.1, // Northward velocity noise (m/s)
-                0.1, // Eastward velocity noise (m/s)
+                (0.1_f64).powf(2.0), // Northward velocity noise (m/s)
+                (0.1_f64).powf(2.0), // Eastward velocity noise (m/s)
             ])),
         }
     }
@@ -866,18 +867,18 @@ impl GPS for UKF {
         // Default implementation returns an identity matrix, can be overridden
         match with_altitude {
             true => DMatrix::from_diagonal(&DVector::from_vec(vec![
-                5.0 * METERS_TO_DEGREES, // Latitude noise (degrees)
-                5.0 * METERS_TO_DEGREES, // Longitude noise (degrees)
-                5.0,                     // Altitude noise (meters)
-                0.1,                     // Northward velocity noise (m/s)
-                0.1,                     // Eastward velocity noise (m/s)
-                0.1,                     // Downward velocity noise (m/s)
+                (5.0 * METERS_TO_DEGREES).powf(2.0), // Latitude noise (degrees)
+                (5.0 * METERS_TO_DEGREES).powf(2.0), // Longitude noise (degrees)
+                (5.0_f64).powf(2.0),                     // Altitude noise (meters)
+                (0.1_f64).powf(2.0),                     // Northward velocity noise (m/s)
+                (0.1_f64).powf(2.0),                     // Eastward velocity noise (m/s)
+                (0.1_f64).powf(2.0),                     // Downward velocity noise (m/s)
             ])),
             false => DMatrix::from_diagonal(&DVector::from_vec(vec![
-                5.0 * METERS_TO_DEGREES, // Latitude noise (degrees)
-                5.0 * METERS_TO_DEGREES, // Longitude noise (degrees)
-                0.1,                     // Northward velocity noise (m/s)
-                0.1,                     // Eastward velocity noise (m/s)
+                (5.0 * METERS_TO_DEGREES).powf(2.0), // Latitude noise (degrees)
+                (5.0 * METERS_TO_DEGREES).powf(2.0), // Longitude noise (degrees)
+                (0.1_f64).powf(2.0),                     // Northward velocity noise (m/s)
+                (0.1_f64).powf(2.0),                     // Eastward velocity noise (m/s)
             ])),
         }
     }
