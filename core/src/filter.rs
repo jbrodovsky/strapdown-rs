@@ -17,7 +17,7 @@
 use crate::earth::METERS_TO_DEGREES;
 use crate::linalg::matrix_square_root;
 use crate::{IMUData, StrapdownState, wrap_to_2pi, wrap_to_360};
-use nalgebra::{DMatrix, DVector, Rotation3, SVector, Vector3};
+use nalgebra::{DMatrix, DVector, Rotation3, SVector};
 use rand;
 use rand_distr::{Distribution, Normal};
 use std::fmt::Debug;
@@ -161,7 +161,7 @@ impl SigmaPoint {
         //     gyro: imu_data.gyro - gyro_biases
         // };
         // Propagate the strapdown state using the strapdown equations
-        self.nav_state.forward(&imu_data, dt);
+        self.nav_state.forward(imu_data, dt);
         let noise_vect = match noise {
             None => return, // UKF mode, does not use noise in propagation
             Some(v) => v,   // Particle filter mode, uses noise in propagation
