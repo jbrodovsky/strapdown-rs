@@ -1,7 +1,7 @@
 [package]
 name = "strapdown-rs"
 authors = ["James Brodovsky"]
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 description = "A toolbox for building and analyzing strapdown inertial navigation systems."
 license = "MIT"
@@ -25,7 +25,7 @@ path = "src/strapdown.rs"
 
 [dependencies]
 angle = "0.5.0"
-chrono = "0.4.41"
+chrono = {version = "0.4.41", features = ["serde"] }
 csv = "1.3.1"
 nalgebra = "0.33.2"
 nav-types = "0.5.2"
