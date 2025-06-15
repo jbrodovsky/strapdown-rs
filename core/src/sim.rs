@@ -570,22 +570,17 @@ pub fn closed_loop(records: &[TestDataRecord]) -> Vec<NavigationResult> {
     // Iterate through the records, updating the UKF with each IMU measurement
     let total: usize = records.len();
     let mut i: usize = 1;
-    println!("Initialized UKF: \n {:?}", ukf);
-    // clip to first 10 records for testing
-    //let records = records.iter().take(10).collect::<Vec<_>>();
-
     for record in records.iter().skip(1) {
-        println!("Processing record {}/{}", i, total);
         // Print progress every 100 iterations
-        
-        // if i % 10 == 0 || i == total - 1 {
-        //     print!(
-        //         "\rProcessing data {:.2}%...",
-        //         (i as f64 / total as f64) * 100.0
-        //     );
-        //     use std::io::Write;
-        //     std::io::stdout().flush().ok();
-        // }
+        if i % 10 == 0 || i == total - 1 {
+            print!(
+                "\rProcessing data {:.2}%...",
+                (i as f64 / total as f64) * 100.0
+            );
+            //print_ukf(&ukf, record);
+            use std::io::Write;
+            std::io::stdout().flush().ok();
+        }
         // Calculate time difference from the previous record
         let current_timestamp = record.time;
         let dt = (current_timestamp - previous_timestamp).as_seconds_f64();
@@ -605,8 +600,7 @@ pub fn closed_loop(records: &[TestDataRecord]) -> Vec<NavigationResult> {
         );
         // Update the UKF with the IMU data
         ukf.predict(&imu_data, dt);
-        println!("predicted!");
-        print_ukf(&ukf, record);
+
         // If GPS data is available, update the UKF with the GPS measurement
         if !record.latitude.is_nan() && !record.longitude.is_nan() && !record.altitude.is_nan() {
             let measurement = DVector::from_vec(vec![
@@ -638,7 +632,7 @@ pub fn closed_loop(records: &[TestDataRecord]) -> Vec<NavigationResult> {
     results
 }
 pub fn print_ukf(ukf: &UKF, record: &TestDataRecord) {
-    println!("UKF position: ({:.4}, {:.4}, {:.4})  |  Covariance: {:.4e}, {:.4e}, {:.4}  |  Error: {:.4e}, {:.4e}, {:.4}",
+    println!("\rUKF position: ({:.4}, {:.4}, {:.4})  |  Covariance: {:.4e}, {:.4e}, {:.4}  |  Error: {:.4e}, {:.4e}, {:.4}",
             ukf.get_mean()[0].to_degrees(),
             ukf.get_mean()[1].to_degrees(),
             ukf.get_mean()[2],
@@ -649,7 +643,7 @@ pub fn print_ukf(ukf: &UKF, record: &TestDataRecord) {
             ukf.get_mean()[1].to_degrees() - record.longitude,
             ukf.get_mean()[2] - record.altitude
         );
-        println!("UKF velocity: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4}, {:.4}, {:.4}  | Error: {:.4}, {:.4}, {:.4}",
+        println!("\rUKF velocity: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4}, {:.4}, {:.4}  | Error: {:.4}, {:.4}, {:.4}",
             ukf.get_mean()[3],
             ukf.get_mean()[4],
             ukf.get_mean()[5],
@@ -660,7 +654,7 @@ pub fn print_ukf(ukf: &UKF, record: &TestDataRecord) {
             ukf.get_mean()[4] - record.speed * record.bearing.sin(),
             ukf.get_mean()[5] - 0.0 // Assuming no vertical velocity
         );
-        println!("UKF attitude: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4}, {:.4}, {:.4}  | Error: {:.4}, {:.4}, {:.4}",
+        println!("\rUKF attitude: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4}, {:.4}, {:.4}  | Error: {:.4}, {:.4}, {:.4}",
             ukf.get_mean()[6],
             ukf.get_mean()[7],
             ukf.get_mean()[8],
@@ -671,7 +665,7 @@ pub fn print_ukf(ukf: &UKF, record: &TestDataRecord) {
             ukf.get_mean()[7] - record.pitch,
             ukf.get_mean()[8] - record.yaw
         );
-        println!("UKF accel biases: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4e}, {:.4e}, {:.4e}",
+        println!("\rUKF accel biases: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4e}, {:.4e}, {:.4e}",
             ukf.get_mean()[9],
             ukf.get_mean()[10],
             ukf.get_mean()[11],
@@ -679,7 +673,7 @@ pub fn print_ukf(ukf: &UKF, record: &TestDataRecord) {
             ukf.get_covariance()[(10,10)],
             ukf.get_covariance()[(11,11)]
         );
-        println!("UKF gyro biases: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4e}, {:.4e}, {:.4e}",
+        println!("\rUKF gyro biases: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4e}, {:.4e}, {:.4e}",
             ukf.get_mean()[12],
             ukf.get_mean()[13],
             ukf.get_mean()[14],
