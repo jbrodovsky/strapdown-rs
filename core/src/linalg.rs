@@ -52,7 +52,7 @@ pub fn matrix_square_root(matrix: &DMatrix<f64>) -> DMatrix<f64> {
     match eigenvalue_pass(matrix) {
         Some(eigen_sqrt) => eigen_sqrt,
         None => {
-            panic!("Cholesky and Eigenvalue decomposition failed. No valid square root found.");
+            panic!("Cholesky and Eigenvalue decomposition failed. No valid square root found for the covariance matrix: \n {:?}", matrix);
         }
     }
 }
@@ -112,10 +112,10 @@ fn eigenvalue_pass(matrix: &DMatrix<f64>) -> Option<DMatrix<f64>> {
     // Check for significantly negative eigenvalues, indicating non-positive semi-definiteness.
     // While we clamp them, a warning is useful for diagnosis.
     if eigenvalues.iter().any(|&val| val < -1e-9) {
-        eprintln!(
+        println!(
             "Warning: Negative eigenvalues encountered during eigenvalue decomposition. The input matrix was not positive semi-definite."
         );
-        eprintln!("{:?}", matrix);
+        println!("{:?}", matrix.data);
         return None;
     }
 
