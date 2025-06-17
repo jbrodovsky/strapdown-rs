@@ -467,7 +467,7 @@ impl UKF {
         let mut cov_bar = DMatrix::<f64>::zeros(self.state_size, self.state_size);
         // Update the covariance through a naive loop
         for (i, sigma_point) in sigma_points.iter().enumerate() {
-          //let sigma_point = &sigma_points[i];
+            //let sigma_point = &sigma_points[i];
             let weight_cov = self.weights_cov[i];
             let diff = sigma_point.to_vector(false) - &mu_bar;
             cov_bar += weight_cov * (&diff * &diff.transpose());
@@ -577,17 +577,16 @@ impl UKF {
         sigma_points
     }
     /// Convert a Vec<SigmaPoint> to a DMatrix<f64>
-    pub fn sigma_points_as_matrix(
-        &self,
-    ) -> DMatrix<f64> {
-        let p = (self.state_size as f64 + self.lambda)  * self.covariance.clone();
+    pub fn sigma_points_as_matrix(&self) -> DMatrix<f64> {
+        let p = (self.state_size as f64 + self.lambda) * self.covariance.clone();
         let sqrt_p = matrix_square_root(&p);
         let mu = self.mean_state.clone();
         let mut pts = DMatrix::<f64>::zeros(self.state_size, 2 * self.state_size + 1);
         pts.column_mut(0).copy_from(&mu);
         for i in 0..sqrt_p.ncols() {
-            pts.column_mut(i+1).copy_from(&(&mu + sqrt_p.column(i)));
-            pts.column_mut(i+1+self.state_size).copy_from(&(&mu - sqrt_p.column(i)));
+            pts.column_mut(i + 1).copy_from(&(&mu + sqrt_p.column(i)));
+            pts.column_mut(i + 1 + self.state_size)
+                .copy_from(&(&mu - sqrt_p.column(i)));
         }
         pts
     }
@@ -921,7 +920,7 @@ mod tests {
         // test forward propagation
         // Test at rest
         let imu_data = IMUData {
-            accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)), 
+            accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
             gyro: Vector3::new(0.0, 0.0, 0.0),
         };
         let dt = 1.0;
@@ -1022,7 +1021,7 @@ mod tests {
         assert_approx_eq!(wcs[0], wc_0, 1e-6);
         for i in 1..wms.len() {
             assert_approx_eq!(wms[i], w_i, 1e-6);
-            assert_approx_eq!(wcs[i], w_i, 1e-6);   
+            assert_approx_eq!(wcs[i], w_i, 1e-6);
         }
     }
     #[test]
@@ -1062,7 +1061,7 @@ mod tests {
         );
         let sigma_points = ukf.get_sigma_points();
         assert_eq!(sigma_points.len(), (2 * ukf.state_size) + 1);
-        
+
         let mu = ukf.sigma_points_as_matrix() * ukf.weights_mean;
         println!("mu: {}", mu);
         assert_eq!(mu.nrows(), ukf.state_size);
@@ -1114,9 +1113,10 @@ mod tests {
         );
         let dt = 1.0;
         let imu_data = IMUData::new_from_vec(
-            vec![0.0, 0.0, earth::gravity(&0.0, &0.0)], 
-            vec![0.0, 0.0, 0.0]);
-        
+            vec![0.0, 0.0, earth::gravity(&0.0, &0.0)],
+            vec![0.0, 0.0, 0.0],
+        );
+
         ukf.predict(&imu_data, dt);
         assert!(
             ukf.mean_state.len()
@@ -1171,8 +1171,9 @@ mod tests {
     #[test]
     fn ukf_hover() {
         let imu_data = IMUData::new_from_vec(
-            vec![0.0, 0.0, earth::gravity(&0.0, &0.0)], 
-            vec![0.0, 0.0, 0.0]);
+            vec![0.0, 0.0, earth::gravity(&0.0, &0.0)],
+            vec![0.0, 0.0, 0.0],
+        );
         let position = vec![0.0, 0.0, 0.0];
         let velocity = [0.0, 0.0, 0.0];
         let attitude = [0.0, 0.0, 0.0];
@@ -1209,8 +1210,8 @@ mod tests {
         let measurement_noise = ukf.position_measurement_noise(true);
         let measurement = DVector::from_vec(position.clone());
         //for _i in 0..60 {
-            ukf.predict(&imu_data, dt);
-            //ukf.update(&measurement, &measurement_sigma_points, &measurement_noise);
+        ukf.predict(&imu_data, dt);
+        //ukf.update(&measurement, &measurement_sigma_points, &measurement_noise);
         //}
         assert_approx_eq!(ukf.mean_state[0], position[0], 1e-6);
         assert_approx_eq!(ukf.mean_state[1], position[1], 1e-6);

@@ -567,12 +567,12 @@ impl StrapdownState {
         let gravity = Vector3::new(
             0.0,
             0.0,
-            earth::gravity(&self.latitude.to_degrees(), &self.altitude)
+            earth::gravity(&self.latitude.to_degrees(), &self.altitude),
         );
         //let accel = &gravity;
         //println!("[StrapdownState::velocity_update] position: [{:?}, {:?}, {:?}]", self.latitude.to_degrees(), self.longitude.to_degrees(), self.altitude);
         //println!("[StrapdownState::velocity_update] gravity vector: [{:?}, {:?}, {:?}] | Gravity scalar {:?}", accel[0], accel[1], accel[2], (accel[0].powi(2) + accel[1].powi(2) + accel[2].powi(2)).sqrt());
-    
+
         velocity + (f - gravity - r * (transport_rate + 2.0 * rotation_rate) * velocity) * dt
     }
 }
@@ -698,12 +698,12 @@ pub fn add(a: f64, b: f64) -> f64 {
     a + b
 }
 /// Wrap latitude to the range -90 to 90 degrees
-/// 
+///
 /// This function is generic and can be used with any type that implements the necessary traits.
-/// This function is useful for ensuring that latitude values remain within the valid range for 
+/// This function is useful for ensuring that latitude values remain within the valid range for
 /// WGS84 coordinates. Keep in mind that the local level frame (NED/ENU) is typically used for
-/// navigation and positioning in middling latitudes. 
-/// 
+/// navigation and positioning in middling latitudes.
+///
 /// # Arguments
 /// * `latitude` - The latitude to be wrapped, which can be of any type that implements the necessary traits.
 /// # Returns
@@ -847,7 +847,7 @@ mod tests {
         assert_eq!(state.velocity_down, 0.0);
         let imu_data = IMUData::new_from_vector(
             Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)), // free fall acceleration in m/s^2
-            Vector3::new(0.0, 0.0, 0.0), // No rotation
+            Vector3::new(0.0, 0.0, 0.0),                        // No rotation
         );
         let dt = 1.0; // Example time step in seconds
         state.forward(&imu_data, dt);
@@ -855,7 +855,7 @@ mod tests {
         assert_approx_eq!(state.latitude, 0.0, 1e-6);
         assert_approx_eq!(state.longitude, 0.0, 1e-6);
         assert_approx_eq!(state.altitude, 0.0, 0.1);
-        assert_approx_eq!(state.velocity_north, 0.0,1e-3);
+        assert_approx_eq!(state.velocity_north, 0.0, 1e-3);
         assert_approx_eq!(state.velocity_east, 0.0, 1e-3);
         assert_approx_eq!(state.velocity_down, 0.0, 0.1);
         //assert_approx_eq!(state.attitude, Rotation3::identity(), 1e-3);
@@ -869,7 +869,6 @@ mod tests {
         assert_approx_eq!(attitude[(2, 0)], 0.0, 1e-3);
         assert_approx_eq!(attitude[(2, 1)], 0.0, 1e-3);
         assert_approx_eq!(attitude[(2, 2)], 0.0, 1e-3);
-
     }
     #[test]
     fn test_wrap_to_180() {

@@ -42,9 +42,9 @@
 // Rotations can be handled using nalgebra's Rotation3 type, which can be converted to a DCM using the into() method. The Rotation3 type can be created from
 // Euler angles for the body to local-level frame rotation. The inverse of the Rotation3 type can be used to convert from the local-level frame to the body frame.
 // ----------
+use crate::{wrap_latitude, wrap_to_180};
 use ::nalgebra::{Matrix3, Vector3};
 use ::nav_types::{ECEF, WGS84};
-use crate::{wrap_to_180, wrap_latitude};
 
 // Earth constants (WGS84)
 /// Earth's rotation rate rad/s ($\omega_{ie}$)
@@ -317,8 +317,8 @@ pub fn gravity(latitude: &f64, altitude: &f64) -> f64 {
 /// with the rotational effects of the Earth to calculate the effective gravity vector. This
 /// differs from the gravity scalar in that it includes the centrifugal effects of the Earth's
 /// rotation.
-/// 
-/// *Note:* Local level frame coordintaes are odd and mixed and can be defined as North, East, 
+///
+/// *Note:* Local level frame coordintaes are odd and mixed and can be defined as North, East,
 /// Down (NED) or East, North, Up (ENU). This function uses the ENU convention, thus gravity acts
 /// along the negative Z-axis (downward) in the local-level frame.
 ///
@@ -650,7 +650,6 @@ mod tests {
         assert_approx_eq!(grav[0], 0.0);
         assert_approx_eq!(grav[1], 0.0);
         assert_approx_eq!(grav[2], GP, 1e-2);
-
     }
     #[test]
     fn magnetic_radial_field() {
