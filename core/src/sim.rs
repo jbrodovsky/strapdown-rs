@@ -574,7 +574,9 @@ pub fn closed_loop(records: &[TestDataRecord]) -> Vec<NavigationResult> {
     let total: usize = records.len();
     let mut i: usize = 1;
     for record in records.iter().skip(1) {
-        println!("======================================================================================================");
+        println!(
+            "======================================================================================================"
+        );
         i = print_progress(i, total, 10);
         print_ukf(&ukf, record);
         // Calculate time difference from the previous record
