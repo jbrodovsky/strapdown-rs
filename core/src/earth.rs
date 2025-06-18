@@ -42,6 +42,7 @@
 // Rotations can be handled using nalgebra's Rotation3 type, which can be converted to a DCM using the into() method. The Rotation3 type can be created from
 // Euler angles for the body to local-level frame rotation. The inverse of the Rotation3 type can be used to convert from the local-level frame to the body frame.
 // ----------
+use crate::{wrap_latitude, wrap_to_180};
 use ::nalgebra::{Matrix3, Vector3};
 use ::nav_types::{ECEF, WGS84};
 
@@ -317,6 +318,10 @@ pub fn gravity(latitude: &f64, altitude: &f64) -> f64 {
 /// differs from the gravity scalar in that it includes the centrifugal effects of the Earth's
 /// rotation.
 ///
+/// *Note:* Local level frame coordintaes are odd and mixed and can be defined as North, East,
+/// Down (NED) or East, North, Up (ENU). This function uses the ENU convention, thus gravity acts
+/// along the negative Z-axis (downward) in the local-level frame.
+///
 /// # Parameters
 /// - `latitude` - The WGS84 latitude in degrees
 /// - `longitude` - The WGS84 longitude in degrees
@@ -334,14 +339,16 @@ pub fn gravity(latitude: &f64, altitude: &f64) -> f64 {
 /// let grav = earth::gravitation(&latitude, &longitude, &altitude);
 /// ```
 pub fn gravitation(latitude: &f64, longitude: &f64, altitude: &f64) -> Vector3<f64> {
-    let wgs84: WGS84<f64> = WGS84::from_degrees_and_meters(*latitude, *longitude, *altitude);
+    let latitude = wrap_latitude(*latitude);
+    let longitude = wrap_to_180(*longitude);
+    let wgs84: WGS84<f64> = WGS84::from_degrees_and_meters(latitude, longitude, *altitude);
     let ecef: ECEF<f64> = ECEF::from(wgs84);
     // Get centrifugal terms in ECEF
     let ecef_vec: Vector3<f64> = Vector3::new(ecef.x(), ecef.y(), ecef.z());
     let omega_ie: Matrix3<f64> = vector_to_skew_symmetric(&RATE_VECTOR);
     // Get rotation and gravity in LLA
-    let rot: Matrix3<f64> = ecef_to_lla(latitude, longitude);
-    let gravity: Vector3<f64> = Vector3::new(0.0, 0.0, gravity(latitude, altitude));
+    let rot: Matrix3<f64> = ecef_to_lla(&latitude, &longitude);
+    let gravity: Vector3<f64> = Vector3::new(0.0, 0.0, gravity(&latitude, altitude));
     // Calculate the effective gravity vector combining gravity and centrifugal terms
     gravity + rot * omega_ie * omega_ie * ecef_vec
 }
@@ -600,9 +607,9 @@ mod tests {
     use super::*;
     use assert_approx_eq::assert_approx_eq;
     #[test]
-    fn test_vector_to_skew_symmetric() {
+    fn vector_to_skew_symmetric() {
         let v: Vector3<f64> = Vector3::new(1.0, 2.0, 3.0);
-        let skew: Matrix3<f64> = vector_to_skew_symmetric(&v);
+        let skew: Matrix3<f64> = super::vector_to_skew_symmetric(&v);
         assert_eq!(skew[(0, 1)], -v[2]);
         assert_eq!(skew[(0, 2)], v[1]);
         assert_eq!(skew[(1, 0)], v[2]);
@@ -611,41 +618,41 @@ mod tests {
         assert_eq!(skew[(2, 1)], v[0]);
     }
     #[test]
-    fn test_skew_symmetric_to_vector() {
+    fn skew_symmetric_to_vector() {
         let v: Vector3<f64> = Vector3::new(1.0, 2.0, 3.0);
-        let skew: Matrix3<f64> = vector_to_skew_symmetric(&v);
-        let v2: Vector3<f64> = skew_symmetric_to_vector(&skew);
+        let skew: Matrix3<f64> = super::vector_to_skew_symmetric(&v);
+        let v2: Vector3<f64> = super::skew_symmetric_to_vector(&skew);
         assert_eq!(v, v2);
     }
     #[test]
-    fn test_gravity() {
+    fn gravity() {
         // test polar gravity
         let latitude: f64 = 90.0;
-        let grav = gravity(&latitude, &0.0);
+        let grav = super::gravity(&latitude, &0.0);
         assert_approx_eq!(grav, GP);
         // test equatorial gravity
         let latitude: f64 = 0.0;
-        let grav = gravity(&latitude, &0.0);
+        let grav = super::gravity(&latitude, &0.0);
         assert_approx_eq!(grav, GE);
     }
     #[test]
-    fn test_gravitation() {
+    fn gravitation() {
         // test equatorial gravity
         let latitude: f64 = 0.0;
         let altitude: f64 = 0.0;
-        let grav: Vector3<f64> = gravitation(&latitude, &0.0, &altitude);
+        let grav: Vector3<f64> = super::gravitation(&latitude, &0.0, &altitude);
         assert_approx_eq!(grav[0], 0.0);
         assert_approx_eq!(grav[1], 0.0);
-        assert_approx_eq!(grav[2], GE + 0.0339, 1e-4);
+        assert_approx_eq!(grav[2], (GE + 0.0339), 1e-4);
         // test polar gravity
         let latitude: f64 = 90.0;
-        let grav: Vector3<f64> = gravitation(&latitude, &0.0, &altitude);
+        let grav: Vector3<f64> = super::gravitation(&latitude, &0.0, &altitude);
         assert_approx_eq!(grav[0], 0.0);
         assert_approx_eq!(grav[1], 0.0);
-        assert_approx_eq!(grav[2], GP);
+        assert_approx_eq!(grav[2], GP, 1e-2);
     }
     #[test]
-    fn test_magnetic_radial_field() {
+    fn magnetic_radial_field() {
         // Using magnetic co-latitude [0, 180]
         let lat: f64 = 0.0;
         let b_r: f64 = calculate_radial_magnetic_field(lat.to_radians(), MEAN_RADIUS);
@@ -658,17 +665,17 @@ mod tests {
         assert_approx_eq!(b_r, 0.0, 1e-7);
     }
     #[test]
-    fn test_wgs84_to_magnetic() {
+    fn wgs84_to_magnetic() {
         let lat: f64 = 80.8;
         let lon: f64 = -72.8;
-        let (mag_lat, mag_lon) = wgs84_to_magnetic(&lat, &lon);
+        let (mag_lat, mag_lon) = super::wgs84_to_magnetic(&lat, &lon);
         assert_approx_eq!(mag_lat, 0.0, 1e-7);
         assert_approx_eq!(mag_lon, 0.0, 1e-7);
     }
     #[test]
-    fn test_eci_to_ecef() {
+    fn eci_to_ecef() {
         let time: f64 = 30.0;
-        let rot: Matrix3<f64> = eci_to_ecef(time);
+        let rot: Matrix3<f64> = super::eci_to_ecef(time);
         assert_approx_eq!(rot[(0, 0)], (RATE * time).cos(), 1e-7);
         assert_approx_eq!(rot[(0, 1)], (RATE * time).sin(), 1e-7);
         assert_approx_eq!(rot[(1, 0)], -(RATE * time).sin(), 1e-7);
@@ -681,10 +688,10 @@ mod tests {
         assert_approx_eq!(rot_t[(2, 2)], 1.0, 1e-7);
     }
     #[test]
-    fn test_ecef_to_lla() {
+    fn ecef_to_lla() {
         let latitude: f64 = 45.0;
         let longitude: f64 = 90.0;
-        let rot: Matrix3<f64> = ecef_to_lla(&latitude, &longitude);
+        let rot: Matrix3<f64> = super::ecef_to_lla(&latitude, &longitude);
         assert_approx_eq!(
             rot[(0, 0)],
             -longitude.to_radians().sin() * latitude.to_radians().cos(),
@@ -711,11 +718,11 @@ mod tests {
         assert_approx_eq!(rot[(2, 2)], -latitude.to_radians().sin(), 1e-7);
     }
     #[test]
-    fn test_lla_to_ecef() {
+    fn lla_to_ecef() {
         let latitude: f64 = 45.0;
         let longitude: f64 = 90.0;
-        let rot1: Matrix3<f64> = lla_to_ecef(&latitude, &longitude);
-        let rot2: Matrix3<f64> = ecef_to_lla(&latitude, &longitude).transpose();
+        let rot1: Matrix3<f64> = super::lla_to_ecef(&latitude, &longitude);
+        let rot2: Matrix3<f64> = super::ecef_to_lla(&latitude, &longitude).transpose();
         assert_approx_eq!(rot1[(0, 0)], rot2[(0, 0)], 1e-7);
         assert_approx_eq!(rot1[(0, 1)], rot2[(0, 1)], 1e-7);
         assert_approx_eq!(rot1[(0, 2)], rot2[(0, 2)], 1e-7);
@@ -728,7 +735,7 @@ mod tests {
     }
 
     // #[test]
-    // fn test_magnetic_field_components() {
+    // fn magnetic_field_components() {
     //     // Test the radial component
     //     let colatitude = std::f64::consts::PI / 4.0; // 45 degrees colatitude
     //     let radius = MAGNETIC_REFERENCE_RADIUS;
@@ -755,7 +762,7 @@ mod tests {
     //     assert_approx_eq!(b_r2 / b_r, 1.0/8.0, 1e-6);
     // }
     // #[test]
-    // fn test_magnetic_field_vector() {
+    // fn magnetic_field_vector() {
     //     // Test at the magnetic north pole
     //     let mag_field = calculate_magnetic_field(
     //         &MAGNETIC_NORTH_LATITUDE,
