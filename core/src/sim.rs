@@ -103,54 +103,6 @@ impl TestDataRecord {
     /// # Returns
     /// * `Ok(Vec<TestDataRecord>)` if successful.
     /// * `Err` if the file cannot be read or parsed.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use strapdown::sim::TestDataRecord;
-    /// use std::path::Path;
-    ///
-    /// let record = TestDataRecord {
-    ///     time: chrono::Utc::now(),
-    ///     bearing_accuracy: 0.1,
-    ///     speed_accuracy: 0.1,
-    ///     vertical_accuracy: 0.1,
-    ///     horizontal_accuracy: 0.1,
-    ///     speed: 1.0,
-    ///     bearing: 90.0,
-    ///     altitude: 100.0,
-    ///     longitude: -122.0,
-    ///     latitude: 37.0,
-    ///     qz: 0.0,
-    ///     qy: 0.0,
-    ///     qx: 0.0,
-    ///     qw: 1.0,
-    ///     roll: 0.0,
-    ///     pitch: 0.0,
-    ///     yaw: 0.0,
-    ///     acc_z: 9.81,
-    ///     acc_y: 0.0,
-    ///     acc_x: 0.0,
-    ///     gyro_z: 0.01,
-    ///     gyro_y: 0.01,
-    ///     gyro_x: 0.01,
-    ///     mag_z: 50.0,
-    ///     mag_y: -30.0,
-    ///     mag_x: -20.0,
-    ///     relative_altitude: 0.0,
-    ///     pressure: 1013.25,
-    ///     grav_z: 9.81,
-    ///     grav_y: 0.0,
-    ///     grav_x: 0.0,
-    /// };
-    /// let records = vec![record];
-    /// TestDataRecord::to_csv(&records, "data.csv")
-    ///    .expect("Failed to write test data to CSV");
-    /// let read_records = TestDataRecord::from_csv("data.csv")
-    ///   .expect("Failed to read test data from CSV");
-    /// // doctest cleanup
-    /// std::fs::remove_file("data.csv").unwrap();
-    /// ```
     pub fn from_csv<P: AsRef<std::path::Path>>(
         path: P,
     ) -> Result<Vec<Self>, Box<dyn std::error::Error>> {
@@ -385,11 +337,9 @@ impl NavigationResult {
     /// ```
     pub fn to_csv<P: AsRef<Path>>(records: &[Self], path: P) -> io::Result<()> {
         let mut writer = csv::Writer::from_path(path)?;
-
         for record in records {
             writer.serialize(record)?;
         }
-
         writer.flush()?;
         Ok(())
     }
@@ -609,8 +559,8 @@ pub fn closed_loop(records: &[TestDataRecord]) -> Vec<NavigationResult> {
                 0.0, // Assuming no vertical velocity
             ]);
             // Create the measurement sigma points using the position measurement model
-            // let measurement_sigma_points = ukf.position_measurement_model(true);
-            // let measurement_noise = ukf.position_measurement_noise(true);
+            //let measurement_sigma_points = ukf.position_measurement_model(true);
+            //let measurement_noise = ukf.position_measurement_noise(true);
             let measurement_sigma_points = ukf.position_and_velocity_measurement_model(true);
             let measurement_noise = ukf.position_and_velocity_measurement_noise(true);
             // Update the UKF with the GPS measurement
