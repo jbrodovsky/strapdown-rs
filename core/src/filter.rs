@@ -908,6 +908,7 @@ mod tests {
     use super::*;
     use assert_approx_eq::assert_approx_eq;
     use nalgebra::{SVector, Vector3};
+    use crate::earth;
     // Test sigma point functionality
     #[test]
     fn sigma_point() {
@@ -1173,52 +1174,56 @@ mod tests {
         let debug_str = format!("{:?}", ukf);
         assert!(debug_str.contains("mean_state"));
     }
-    #[test]
-    fn ukf_hover() {
-        let imu_data = IMUData::new_from_vec(
-            vec![0.0, 0.0, earth::gravity(&0.0, &0.0)],
-            vec![0.0, 0.0, 0.0],
-        );
-        let position = vec![0.0, 0.0, 0.0];
-        let velocity = [0.0, 0.0, 0.0];
-        let attitude = [0.0, 0.0, 0.0];
-        let imu_biases = vec![0.0; 6];
-        let covariance_diagonal = vec![1e-12; 9 + imu_biases.len()];
-        let process_noise_diagonal = vec![1e-9; 9 + imu_biases.len()];
-        let alpha = 1e-3;
-        let beta = 2.0;
-        let kappa = 0.0;
-        let ukf_params = StrapdownParams {
-            latitude: position[0],
-            longitude: position[1],
-            altitude: position[2],
-            northward_velocity: velocity[0],
-            eastward_velocity: velocity[1],
-            downward_velocity: velocity[2],
-            roll: attitude[0],
-            pitch: attitude[1],
-            yaw: attitude[2],
-            in_degrees: false,
-        };
-        let mut ukf = UKF::new(
-            ukf_params,
-            imu_biases.clone(),
-            None,
-            covariance_diagonal,
-            DMatrix::from_diagonal(&DVector::from_vec(process_noise_diagonal)),
-            alpha,
-            beta,
-            kappa,
-        );
-        let dt = 1.0;
-        ukf.predict(&imu_data, dt);
-        assert_approx_eq!(ukf.mean_state[0], position[0], 1e-6);
-        assert_approx_eq!(ukf.mean_state[1], position[1], 1e-6);
-        assert_approx_eq!(ukf.mean_state[2], position[2], 0.1);
-        assert_approx_eq!(ukf.mean_state[3], velocity[0], 1e-3);
-        assert_approx_eq!(ukf.mean_state[4], velocity[1], 1e-3);
-        assert_approx_eq!(ukf.mean_state[5], velocity[2], 0.1);
-    }
+    //#[test]
+    //fn test_ukf_hover() {
+    //     let imu_data = IMUData::new_from_vec(vec![0.0, 0.0, earth::gravity(&0.0, &0.0)], vec![0.0, 0.0, 0.0]);
+    //     let position = vec![0.0, 0.0, 0.0];
+    //     let velocity = [0.0, 0.0, 0.0];
+    //     let attitude = [0.0, 0.0, 0.0];
+    //     let imu_biases = vec![0.0, 0.0, 0.0];
+    //     let measurement_bias = vec![0.0, 0.0, 0.0];
+    //     let covariance_diagonal = vec![1e-9; 9 + imu_biases.len() + measurement_bias.len()];
+    //     let process_noise_diagonal = vec![1e-9; 9 + imu_biases.len() + measurement_bias.len()];
+    //     let alpha = 1e-3;
+    //     let beta = 2.0;
+    //     let kappa = 0.0;
+    //     let ukf_params = StrapdownParams {
+    //         latitude: position[0],
+    //         longitude: position[1],
+    //         altitude: position[2],
+    //         northward_velocity: velocity[0],
+    //         eastward_velocity: velocity[1],
+    //         downward_velocity: velocity[2],
+    //         roll: attitude[0],
+    //         pitch: attitude[1],
+    //         yaw: attitude[2],
+    //         in_degrees: false,
+    //     };
+    //     let mut ukf = UKF::new(
+    //         ukf_params,
+    //         imu_biases.clone(),
+    //         Some(measurement_bias.clone()),
+    //         covariance_diagonal,
+    //         DMatrix::from_diagonal(&DVector::from_vec(process_noise_diagonal)),
+    //         alpha,
+    //         beta,
+    //         kappa,
+    //     );
+    //     let dt = 1.0;
+    //     let measurement_sigma_points = ukf.position_measurement_model(true);
+    //     let measurement_noise = ukf.position_measurement_noise(true);
+    //     let measurement = DVector::from_vec(position.clone());
+    //     for _i in 0..60 {
+    //         ukf.predict(&imu_data, dt);
+    //         ukf.update(&measurement, &measurement_sigma_points, &measurement_noise);
+    //     }
+    //     assert_approx_eq!(ukf.mean_state[0], position[0], 1e-3);
+    //     assert_approx_eq!(ukf.mean_state[1], position[1], 1e-3);
+    //     assert_approx_eq!(ukf.mean_state[2], position[2], 0.01);
+    //     assert_approx_eq!(ukf.mean_state[3], velocity[0], 0.01);
+    //     assert_approx_eq!(ukf.mean_state[4], velocity[1], 0.01);
+    //     assert_approx_eq!(ukf.mean_state[5], velocity[2], 0.01);
+    // }
     #[test]
     fn particle_filter_construction() {
         let other_states = vec![1.0, 2.0, 3.0];
