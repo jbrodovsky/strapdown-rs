@@ -908,7 +908,6 @@ mod tests {
     use super::*;
     use assert_approx_eq::assert_approx_eq;
     use nalgebra::{SVector, Vector3};
-    use crate::earth;
     // Test sigma point functionality
     #[test]
     fn sigma_point() {
