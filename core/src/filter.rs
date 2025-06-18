@@ -458,13 +458,12 @@ impl UKF {
         //}
         let mut sigma_points = self.sigma_points_as_matrix();
         for i in 0..sigma_points.ncols() {
-            let mut sigma_point = SigmaPoint::from_vector(
-                sigma_points.column(i).into(),
-                None,
-                false,
-            );
+            let mut sigma_point =
+                SigmaPoint::from_vector(sigma_points.column(i).into(), None, false);
             sigma_point.forward(imu_data, dt, None);
-            sigma_points.column_mut(i).copy_from(&sigma_point.to_vector(false));
+            sigma_points
+                .column_mut(i)
+                .copy_from(&sigma_point.to_vector(false));
         }
         // Convert to matrix form for easier calculations
         // let sigma_points_matrix = self.sigma_points_as_matrix();
