@@ -524,11 +524,8 @@ pub fn closed_loop(records: &[TestDataRecord]) -> Vec<NavigationResult> {
     let total: usize = records.len();
     let mut i: usize = 1;
     for record in records.iter().skip(1) {
-        println!(
-            "======================================================================================================"
-        );
         i = print_progress(i, total, 10);
-        print_ukf(&ukf, record);
+        // print_ukf(&ukf, record);
         // Calculate time difference from the previous record
         let current_timestamp = record.time;
         let dt = (current_timestamp - previous_timestamp).as_seconds_f64();
@@ -576,6 +573,10 @@ pub fn closed_loop(records: &[TestDataRecord]) -> Vec<NavigationResult> {
     results
 }
 pub fn print_ukf(ukf: &UKF, record: &TestDataRecord) {
+    println!(
+            "======================================================================================================"
+        );
+        
     println!(
         "\rUKF position: ({:.4}, {:.4}, {:.4})  |  Covariance: {:.4e}, {:.4e}, {:.4}  |  Error: {:.4e}, {:.4e}, {:.4}",
         ukf.get_mean()[0].to_degrees(),
