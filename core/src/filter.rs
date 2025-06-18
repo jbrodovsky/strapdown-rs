@@ -452,25 +452,31 @@ impl UKF {
     /// * none
     pub fn predict(&mut self, imu_data: &IMUData, dt: f64) {
         // Propagate the strapdown state using the strapdown equations
-        let mut sigma_points = self.get_sigma_points();
-        for sigma_point in &mut sigma_points {
-            sigma_point.forward(imu_data, dt, None);
-        }
-        let sigma_points_matrix = self.sigma_points_as_matrix();
-        let mu_bar = sigma_points_matrix * &self.weights_mean;
-        //let mut mu_bar = DVector::<f64>::zeros(self.state_size);
-        // Update the mean state through a naive loop
-        // Something is off here either the weights are incorrect or this is not the proper calculation
-        //for (i, sigma_point) in sigma_points.iter().enumerate() {
-        //    mu_bar += self.weights_mean[i] * sigma_point.to_vector(false);
+        //let mut sigma_points = self.get_sigma_points();
+        //for sigma_point in &mut sigma_points {
+        //    sigma_point.forward(imu_data, dt, None);
         //}
+        let mut sigma_points = self.sigma_points_as_matrix();
+        for i in 0..sigma_points.ncols() {
+            let mut sigma_point = SigmaPoint::from_vector(
+                sigma_points.column(i).into(),
+                None,
+                false,
+            );
+            sigma_point.forward(imu_data, dt, None);
+            sigma_points.column_mut(i).copy_from(&sigma_point.to_vector(false));
+        }
+        // Convert to matrix form for easier calculations
+        // let sigma_points_matrix = self.sigma_points_as_matrix();
+        // let first_sigma_point = self.get_sigma_points()[0].to_vector(false);
+        // let first_matrix_point: DVector<f64> = sigma_points_matrix.column(0).clone().into();
+        // assert_eq!(first_matrix_point, first_sigma_point);
+        let mu_bar = &sigma_points * &self.weights_mean;
         let mut cov_bar = DMatrix::<f64>::zeros(self.state_size, self.state_size);
         // Update the covariance through a naive loop
-        for (i, sigma_point) in sigma_points.iter().enumerate() {
-            //let sigma_point = &sigma_points[i];
-            let weight_cov = self.weights_cov[i];
-            let diff = sigma_point.to_vector(false) - &mu_bar;
-            cov_bar += weight_cov * (&diff * &diff.transpose());
+        for (i, column) in sigma_points.column_iter().enumerate() {
+            let diff = column - &mu_bar;
+            cov_bar += self.weights_cov[i] * (&diff * &diff.transpose());
         }
         self.mean_state = mu_bar;
         self.covariance = cov_bar + &self.process_noise;
