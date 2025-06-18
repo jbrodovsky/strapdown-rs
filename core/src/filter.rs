@@ -1211,13 +1211,7 @@ mod tests {
             kappa,
         );
         let dt = 1.0;
-        let measurement_sigma_points = ukf.position_measurement_model(true);
-        let measurement_noise = ukf.position_measurement_noise(true);
-        let measurement = DVector::from_vec(position.clone());
-        //for _i in 0..60 {
         ukf.predict(&imu_data, dt);
-        //ukf.update(&measurement, &measurement_sigma_points, &measurement_noise);
-        //}
         assert_approx_eq!(ukf.mean_state[0], position[0], 1e-6);
         assert_approx_eq!(ukf.mean_state[1], position[1], 1e-6);
         assert_approx_eq!(ukf.mean_state[2], position[2], 0.1);
