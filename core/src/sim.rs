@@ -509,7 +509,8 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
 /// * `records` - Vector of test data records containing IMU measurements and GPS data.
 /// # Returns
 /// * `Vec<NavigationResult>` - A vector of navigation results containing the state estimates and covariances at each timestamp.
-pub fn closed_loop(records: &[TestDataRecord]) -> Vec<NavigationResult> {
+pub fn closed_loop(records: &[TestDataRecord], gps_measurement_interval: Option<usize>) -> Vec<NavigationResult> {
+    let gps_measurement_interval = gps_measurement_interval.unwrap_or(1);
     let mut results: Vec<NavigationResult> = Vec::with_capacity(records.len());
     // Initialize the UKF with the first record
     let mut ukf = initialize_ukf(
@@ -546,7 +547,7 @@ pub fn closed_loop(records: &[TestDataRecord]) -> Vec<NavigationResult> {
         // Update the UKF with the IMU data
         ukf.predict(&imu_data, dt);
         // If GPS data is available, update the UKF with the GPS measurement
-        if !record.latitude.is_nan() && !record.longitude.is_nan() && !record.altitude.is_nan() {
+        if (!record.latitude.is_nan() && !record.longitude.is_nan() && !record.altitude.is_nan()) && i % gps_measurement_interval == 0 {
             let measurement = DVector::from_vec(vec![
                 record.latitude.to_radians(),
                 record.longitude.to_radians(),
@@ -1080,7 +1081,7 @@ mod tests {
                 grav_y: 0.0,
                 grav_x: 0.0,
             });
-        let res = closed_loop(&vec![rec.clone()]);
+        let res = closed_loop(&vec![rec.clone()], Some(1));
         assert!(!res.is_empty());
     }
     #[test]
