@@ -574,9 +574,9 @@ pub fn closed_loop(records: &[TestDataRecord]) -> Vec<NavigationResult> {
 }
 pub fn print_ukf(ukf: &UKF, record: &TestDataRecord) {
     println!(
-            "======================================================================================================"
-        );
-        
+        "======================================================================================================"
+    );
+
     println!(
         "\rUKF position: ({:.4}, {:.4}, {:.4})  |  Covariance: {:.4e}, {:.4e}, {:.4}  |  Error: {:.4e}, {:.4e}, {:.4}",
         ukf.get_mean()[0].to_degrees(),
