@@ -71,7 +71,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // for i in 0..state_size {
     //     sigma_points.column_mut(i + 1).copy_from(&(&mu + sqrt_p.column(i)));
     //     sigma_points.column_mut(i + 1 + state_size).copy_from(&(&mu - sqrt_p.column(i)));
-    // }   
+    // }
     // println!("Sigma points:\n{}", &sigma_points);
     // println!("Updated mean:\n{}", &sigma_points * &weights_mean);
     // let mu_bar = sigma_points.clone() * &weights_mean;

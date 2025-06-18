@@ -451,7 +451,8 @@ impl UKF {
         //         .copy_from(&sigma_point.to_vector(false));
         // }
         let mut sigma_points = self.get_sigma_points();
-        let mut sigma_points_matrix = DMatrix::<f64>::zeros(self.state_size, 2 * self.state_size + 1);
+        let mut sigma_points_matrix =
+            DMatrix::<f64>::zeros(self.state_size, 2 * self.state_size + 1);
         for (i, sigma_point) in sigma_points.iter_mut().enumerate() {
             sigma_point.forward(imu_data, dt, None);
             sigma_points_matrix
@@ -1083,7 +1084,7 @@ mod tests {
         let attitude = [0.0, 0.0, 0.0];
         let imu_biases = vec![0.0; 6];
         //let measurement_bias = vec![1.0, 1.0, 1.0];
-        let n = 9 + imu_biases.len();// + measurement_bias.len();
+        let n = 9 + imu_biases.len(); // + measurement_bias.len();
         let covariance_diagonal = vec![1e-3; n];
         let process_noise_diagonal = vec![1e-6; n];
         let alpha = 1e-3;
@@ -1122,11 +1123,7 @@ mod tests {
         ukf.predict(&imu_data, dt);
         assert!(
             ukf.mean_state.len()
-                == position.len()
-                    + velocity.len()
-                    + attitude.len()
-                    + imu_biases.len()
-                    //+ measurement_bias.len()
+                == position.len() + velocity.len() + attitude.len() + imu_biases.len() //+ measurement_bias.len()
         );
         println!("mean_state: {:.4e}", ukf.mean_state);
         println!("covariance: {:.2e}", ukf.covariance);
