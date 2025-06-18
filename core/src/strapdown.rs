@@ -874,7 +874,7 @@ mod tests {
     fn yawing() {
         // Testing the forward mechanization with a state that is yawing
         let attitude = Rotation3::from_euler_angles(0.0, 0.0, 0.1); // 0.1 rad yaw
-        let mut state = StrapdownState::new_from_components(
+        let state = StrapdownState::new_from_components(
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, // angles provided in radians
             true,  // NED convention
         );
@@ -906,7 +906,7 @@ mod tests {
     fn pitching() {
         // Testing the forward mechanization with a state that is yawing
         let attitude = Rotation3::from_euler_angles(0.0, 0.1, 0.0); // 0.1 rad yaw
-        let mut state = StrapdownState::new_from_components(
+        let state = StrapdownState::new_from_components(
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, // angles provided in radians
             true,  // NED convention
         );
@@ -975,7 +975,7 @@ mod tests {
     #[test]
     fn test_velocity_update_zero_force() {
         // Zero specific force, velocity should remain unchanged
-        let mut state = StrapdownState::new();
+        let state = StrapdownState::new();
         let f = nalgebra::Vector3::new(
             0.0,
             0.0,
@@ -990,7 +990,7 @@ mod tests {
     #[test]
     fn test_velocity_update_constant_force() {
         // Constant specific force in north direction, expect velocity to increase linearly
-        let mut state = StrapdownState::new();
+        let state = StrapdownState::new();
         let f = nalgebra::Vector3::new(1.0, 0.0, earth::gravity(&0.0, &0.0)); // 1 m/s^2 north
         let dt = 2.0;
         let v_new = state.velocity_update(&f, dt);
