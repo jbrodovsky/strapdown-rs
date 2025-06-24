@@ -493,7 +493,7 @@ impl StrapdownState {
                     + v_e_1 / ((r_e_1 + self.altitude) * lat_1.cos()))
                 * dt;
         // Save updated position
-        self.latitude = lat_1;
+        self.latitude = wrap_latitude(lat_1.to_degrees()).to_radians();
         self.longitude = lon_1;
         // Save updated attitude as rotation
         self.attitude = Rotation3::from_matrix(&c_1);
@@ -559,7 +559,21 @@ impl StrapdownState {
         // let grav: Vector3<f64> = earth::gravitation(&self.position[0], &self.position[1], &self.position[2]);
         let velocity: Vector3<f64> =
             Vector3::new(self.velocity_north, self.velocity_east, self.velocity_down);
-        velocity + (f - r * (transport_rate + 2.0 * rotation_rate) * velocity) * dt
+        // let gravity = earth::gravitation(
+        //     &self.latitude.to_degrees(),
+        //     &self.longitude.to_degrees(),
+        //     &self.altitude,
+        // );
+        let gravity = Vector3::new(
+            0.0,
+            0.0,
+            earth::gravity(&self.latitude.to_degrees(), &self.altitude),
+        );
+        //let accel = &gravity;
+        //println!("[StrapdownState::velocity_update] position: [{:?}, {:?}, {:?}]", self.latitude.to_degrees(), self.longitude.to_degrees(), self.altitude);
+        //println!("[StrapdownState::velocity_update] gravity vector: [{:?}, {:?}, {:?}] | Gravity scalar {:?}", accel[0], accel[1], accel[2], (accel[0].powi(2) + accel[1].powi(2) + accel[2].powi(2)).sqrt());
+
+        velocity + (f - gravity - r * (transport_rate + 2.0 * rotation_rate) * velocity) * dt
     }
 }
 // --- Miscellaneous functions for wrapping angles ---
@@ -591,7 +605,6 @@ where
     }
     wrapped
 }
-
 /// Wrap an angle to the range 0 to 360 degrees
 ///
 /// This function is generic and can be used with any type that implements the necessary traits.
@@ -684,7 +697,37 @@ where
 pub fn add(a: f64, b: f64) -> f64 {
     a + b
 }
-
+/// Wrap latitude to the range -90 to 90 degrees
+///
+/// This function is generic and can be used with any type that implements the necessary traits.
+/// This function is useful for ensuring that latitude values remain within the valid range for
+/// WGS84 coordinates. Keep in mind that the local level frame (NED/ENU) is typically used for
+/// navigation and positioning in middling latitudes.
+///
+/// # Arguments
+/// * `latitude` - The latitude to be wrapped, which can be of any type that implements the necessary traits.
+/// # Returns
+/// * The wrapped latitude, which will be in the range -90 to 90 degrees.
+/// # Example
+/// ```rust
+/// use strapdown::wrap_latitude;
+/// let latitude = 95.0; // degrees
+/// let wrapped_latitude = wrap_latitude(latitude);
+/// assert_eq!(wrapped_latitude, -85.0); // 95 degrees wrapped to -85 degrees
+/// ```
+pub fn wrap_latitude<T>(latitude: T) -> T
+where
+    T: PartialOrd + Copy + std::ops::SubAssign + std::ops::AddAssign + From<f64>,
+{
+    let mut wrapped: T = latitude;
+    while wrapped > T::from(90.0) {
+        wrapped -= T::from(180.0);
+    }
+    while wrapped < T::from(-90.0) {
+        wrapped += T::from(180.0);
+    }
+    wrapped
+}
 // Note: nalgebra does not yet have a well developed testing framework for directly comparing
 // nalgebra data structures. Rather than directly comparing, check the individual items.
 #[cfg(test)]
@@ -793,15 +836,87 @@ mod tests {
         assert_eq!(state.attitude, Rotation3::identity());
     }
     #[test]
-    fn test_hover_stub() {
+    fn rest() {
+        // Test the forward mechanization with a state at rest
         let attitude = Rotation3::identity();
-        let state = StrapdownState::new_from_components(
+        let mut state = StrapdownState::new_from_components(
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, true, // NED convention
         );
-        // This is a stub: actual hover logic should be tested in integration with the mechanization equations.
         assert_eq!(state.velocity_north, 0.0);
         assert_eq!(state.velocity_east, 0.0);
         assert_eq!(state.velocity_down, 0.0);
+        let imu_data = IMUData::new_from_vector(
+            Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
+            Vector3::new(0.0, 0.0, 0.0), // No rotation
+        );
+        let dt = 1.0; // Example time step in seconds
+        state.forward(&imu_data, dt);
+        // After a forward step, the state should still be at rest
+        assert_approx_eq!(state.latitude, 0.0, 1e-6);
+        assert_approx_eq!(state.longitude, 0.0, 1e-6);
+        assert_approx_eq!(state.altitude, 0.0, 0.1);
+        assert_approx_eq!(state.velocity_north, 0.0, 1e-3);
+        assert_approx_eq!(state.velocity_east, 0.0, 1e-3);
+        assert_approx_eq!(state.velocity_down, 0.0, 0.1);
+        //assert_approx_eq!(state.attitude, Rotation3::identity(), 1e-3);
+        let attitude = state.attitude.matrix() - Rotation3::identity().matrix();
+        assert_approx_eq!(attitude[(0, 0)], 0.0, 1e-3);
+        assert_approx_eq!(attitude[(0, 1)], 0.0, 1e-3);
+        assert_approx_eq!(attitude[(0, 2)], 0.0, 1e-3);
+        assert_approx_eq!(attitude[(1, 0)], 0.0, 1e-3);
+        assert_approx_eq!(attitude[(1, 1)], 0.0, 1e-3);
+        assert_approx_eq!(attitude[(1, 2)], 0.0, 1e-3);
+        assert_approx_eq!(attitude[(2, 0)], 0.0, 1e-3);
+        assert_approx_eq!(attitude[(2, 1)], 0.0, 1e-3);
+        assert_approx_eq!(attitude[(2, 2)], 0.0, 1e-3);
+    }
+    #[test]
+    fn yawing() {
+        // Testing the forward mechanization with a state that is yawing
+        let attitude = Rotation3::from_euler_angles(0.0, 0.0, 0.1); // 0.1 rad yaw
+        let state = StrapdownState::new_from_components(
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, // angles provided in radians
+            true,  // NED convention
+        );
+        assert_approx_eq!(state.attitude.euler_angles().2, 0.1, 1e-6); // Check initial yaw
+        let gyros = Vector3::new(0.0, 0.0, 0.1); // Gyro data for yawing
+        let dt = 1.0; // Example time step in seconds
+        let new_attitude = Rotation3::from_matrix(&state.attitude_update(&gyros, dt));
+        // Check if the yaw has changed
+        let new_yaw = new_attitude.euler_angles().2;
+        assert_approx_eq!(new_yaw, 0.1 + 0.1, 1e-3); // 0.1 rad initial + 0.1 rad
+    }
+    #[test]
+    fn rolling() {
+        // Testing the forward mechanization with a state that is yawing
+        let attitude = Rotation3::from_euler_angles(0.1, 0.0, 0.0); // 0.1 rad yaw
+        let state = StrapdownState::new_from_components(
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, // angles provided in radians
+            true,  // NED convention
+        );
+        assert_approx_eq!(state.attitude.euler_angles().0, 0.1, 1e-6); // Check initial roll
+        let gyros = Vector3::new(0.10, 0.0, 0.0); // Gyro data for yawing
+        let dt = 1.0; // Example time step in seconds
+        let new_attitude = Rotation3::from_matrix(&state.attitude_update(&gyros, dt));
+        // Check if the yaw has changed
+        let new_roll = new_attitude.euler_angles().0;
+        assert_approx_eq!(new_roll, 0.1 + 0.1, 1e-3); // 0.1 rad initial + 0.1 rad
+    }
+    #[test]
+    fn pitching() {
+        // Testing the forward mechanization with a state that is yawing
+        let attitude = Rotation3::from_euler_angles(0.0, 0.1, 0.0); // 0.1 rad yaw
+        let state = StrapdownState::new_from_components(
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, // angles provided in radians
+            true,  // NED convention
+        );
+        assert_approx_eq!(state.attitude.euler_angles().1, 0.1, 1e-6); // Check initial yaw
+        let gyros = Vector3::new(0.0, 0.1, 0.0); // Gyro data for yawing
+        let dt = 1.0; // Example time step in seconds
+        let new_attitude = Rotation3::from_matrix(&state.attitude_update(&gyros, dt));
+        // Check if the yaw has changed
+        let new_pitch = new_attitude.euler_angles().1;
+        assert_approx_eq!(new_pitch, 0.1 + 0.1, 1e-3); // 0.1 rad initial + 0.1 rad
     }
     #[test]
     fn test_wrap_to_180() {
@@ -856,5 +971,141 @@ mod tests {
             super::wrap_to_2pi(-std::f64::consts::PI),
             std::f64::consts::PI
         );
+    }
+    #[test]
+    fn test_velocity_update_zero_force() {
+        // Zero specific force, velocity should remain unchanged
+        let state = StrapdownState::new();
+        let f = nalgebra::Vector3::new(
+            0.0,
+            0.0,
+            earth::gravity(&0.0, &0.0), // Gravity vector in NED
+        );
+        let dt = 1.0;
+        let v_new = state.velocity_update(&f, dt);
+        assert_eq!(v_new[0], 0.0);
+        assert_eq!(v_new[1], 0.0);
+        assert_eq!(v_new[2], 0.0);
+    }
+    #[test]
+    fn test_velocity_update_constant_force() {
+        // Constant specific force in north direction, expect velocity to increase linearly
+        let state = StrapdownState::new();
+        let f = nalgebra::Vector3::new(1.0, 0.0, earth::gravity(&0.0, &0.0)); // 1 m/s^2 north
+        let dt = 2.0;
+        let v_new = state.velocity_update(&f, dt);
+        // Should be v = a * dt
+        assert!((v_new[0] - 2.0).abs() < 1e-6);
+        assert!((v_new[1]).abs() < 1e-6);
+        assert!((v_new[2]).abs() < 1e-6);
+    }
+    #[test]
+    fn test_velocity_update_initial_velocity() {
+        // Initial velocity, zero force, should remain unchanged
+        let mut state = StrapdownState::new();
+        state.velocity_north = 5.0;
+        state.velocity_east = -3.0;
+        state.velocity_down = 2.0;
+        let f = Vector3::from_vec(vec![0.0, 0.0, earth::gravity(&0.0, &0.0)]);
+        let dt = 1.0;
+        let v_new = state.velocity_update(&f, dt);
+        assert_approx_eq!(v_new[0], 5.0, 1e-3);
+        assert_approx_eq!(v_new[1], -3.0, 1e-3);
+        assert_approx_eq!(v_new[2], 2.0, 1e-3);
+    }
+    #[test]
+    fn vertical_acceleration() {
+        // Test vertical acceleration
+        let mut state = StrapdownState::new();
+        state.velocity_north = 0.0;
+        state.velocity_east = 0.0;
+        state.velocity_down = 0.0;
+        let f = Vector3::from_vec(vec![0.0, 0.0, 2.0 * earth::gravity(&0.0, &0.0)]); // Downward acceleration
+        let dt = 1.0;
+        let v_new = state.velocity_update(&f, dt);
+        assert_approx_eq!(v_new[2], earth::gravity(&0.0, &0.0), 1e-3);
+    }
+    #[test]
+    fn test_forward_yawing() {
+        // Yaw rate only, expect yaw to increase by gyro_z * dt
+        let attitude = nalgebra::Rotation3::identity();
+        let mut state = StrapdownState::new_from_components(
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, true,
+        );
+        let imu_data = IMUData::new_from_vec(vec![0.0, 0.0, 0.0], vec![0.0, 0.0, 0.1]);
+        let dt = 1.0;
+        state.forward(&imu_data, dt);
+        let (_, _, yaw) = state.attitude.euler_angles();
+        assert!((yaw - 0.1).abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_forward_rolling() {
+        // Roll rate only, expect roll to increase by gyro_x * dt
+        let attitude = nalgebra::Rotation3::identity();
+        let mut state = StrapdownState::new_from_components(
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, true,
+        );
+        let imu_data = IMUData::new_from_vec(vec![0.0, 0.0, 0.0], vec![0.1, 0.0, 0.0]);
+        let dt = 1.0;
+        state.forward(&imu_data, dt);
+        let (roll, _, _) = state.attitude.euler_angles();
+        assert!((roll - 0.1).abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_forward_pitching() {
+        // Pitch rate only, expect pitch to increase by gyro_y * dt
+        let attitude = nalgebra::Rotation3::identity();
+        let mut state = StrapdownState::new_from_components(
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, true,
+        );
+        let imu_data = IMUData::new_from_vec(vec![0.0, 0.0, 0.0], vec![0.0, 0.1, 0.0]);
+        let dt = 1.0;
+        state.forward(&imu_data, dt);
+        let (_, pitch, _) = state.attitude.euler_angles();
+        assert!((pitch - 0.1).abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_forward_velocity_north() {
+        // Constant acceleration north, expect velocity_north to increase by accel * dt
+        let attitude = nalgebra::Rotation3::identity();
+        let mut state = StrapdownState::new_from_components(
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, true,
+        );
+        let imu_data = IMUData::new_from_vec(vec![1.0, 0.0, 0.0], vec![0.0, 0.0, 0.0]);
+        let dt = 2.0;
+        state.forward(&imu_data, dt);
+        assert!((state.velocity_north - 2.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_forward_velocity_east() {
+        // Constant acceleration east, expect velocity_east to increase by accel * dt
+        let attitude = nalgebra::Rotation3::identity();
+        let mut state = StrapdownState::new_from_components(
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, true,
+        );
+        let imu_data = IMUData::new_from_vec(vec![0.0, 1.0, 0.0], vec![0.0, 0.0, 0.0]);
+        let dt = 2.0;
+        state.forward(&imu_data, dt);
+        assert!((state.velocity_east - 2.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_forward_velocity_down() {
+        // Constant acceleration down, expect velocity_down to increase by accel * dt
+        let attitude = nalgebra::Rotation3::identity();
+        let mut state = StrapdownState::new_from_components(
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, true,
+        );
+        let imu_data = IMUData::new_from_vec(
+            vec![0.0, 0.0, 2.0 + earth::gravity(&0.0, &0.0)],
+            vec![0.0, 0.0, 0.0],
+        );
+        let dt = 1.0;
+        state.forward(&imu_data, dt);
+        assert_approx_eq!(state.velocity_down, 2.0, 1e-3);
     }
 }
