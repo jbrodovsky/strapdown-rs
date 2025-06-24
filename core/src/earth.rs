@@ -345,6 +345,39 @@ pub fn gravitation(latitude: &f64, longitude: &f64, altitude: &f64) -> Vector3<f
     // Calculate the effective gravity vector combining gravity and centrifugal terms
     gravity + rot * omega_ie * omega_ie * ecef_vec
 }
+/// Calculate local gravity anomaly from IMU accelerometer measurements
+pub fn gravity_anomaly(
+    latitude: &f64,
+    altitude: &f64,
+    north_velocity: &f64,
+    east_velocity: &f64,
+    gravity_observed: &f64,
+) -> f64 {
+    let normal_gravity: f64 = gravity(latitude, &0.0);
+    let eotvos_correction: f64 = eotvos(latitude, altitude, north_velocity, east_velocity);
+    *gravity_observed - normal_gravity
+}
+/// Calculate the Eotvos correction for the local-level frame
+/// 
+/// The Eötvös correction accounts for the centrifugal acceleration caused by the vehicle's motion 
+/// relative to the Earth's rotation. It depends on the platform's velocity, latitude, and Earth's 
+/// angular velocity. The correction is generally added to the observed gravity measurement to 
+/// account for this effect. The formula can be complex, involving latitude, velocity components 
+/// (East-West), and Earth's rotation rate.
+/// 
+/// # Arguments
+/// - `latitude` - The WGS84 latitude in radians
+/// - `altitude` - The WGS84 altitude in meters
+/// - `north_velocity` - The northward velocity component in m/s
+/// - `east_velocity` - The eastward velocity component in m/s
+/// 
+/// # Returns
+/// The Eötvös correction in m/s^2
+pub fn eotvos(latitude: &f64, altitude: &f64, north_velocity: &f64, east_velocity: &f64) -> f64 {
+    let (_, _, r_p) = principal_radii(latitude, altitude);
+    2.0 * RATE * *east_velocity *latitude.cos() + (north_velocity.powi(2) + east_velocity.powi(2)) / r_p
+}
+
 /// Calculate the Earth rotation rate vector in the local-level frame
 ///
 /// The Earth's rotation rate modeled as a vector in the local-level frame. This vector
@@ -479,7 +512,6 @@ pub fn calculate_radial_magnetic_field(colatitude: f64, radius: f64) -> f64 {
 pub fn calculate_latitudinal_magnetic_field(colatitude: f64, radius: f64) -> f64 {
     -MAGNETIC_FIELD_STRENGTH * (MEAN_RADIUS / radius).powi(3) * colatitude.sin()
 }
-
 /// Calculate magnetic colatitude and longitude from WGS84 coordinates
 ///
 /// This function transforms WGS84 geographic coordinates to geomagnetic coordinates
@@ -526,7 +558,6 @@ pub fn wgs84_to_magnetic(latitude: &f64, longitude: &f64) -> (f64, f64) {
 
     (mag_latitude, mag_longitude)
 }
-
 /// Calculate the magnetic inclination (dip angle) at a given location
 ///
 /// The magnetic inclination is the angle between the horizontal plane and the
@@ -561,7 +592,6 @@ pub fn magnetic_inclination(latitude: &f64, longitude: &f64, altitude: &f64) -> 
 
     (b_vector[2] / b_h).atan().to_degrees()
 }
-
 /// Calculate the magnetic declination (variation) at a given location
 ///
 /// The magnetic declination is the angle between true north and magnetic north,
@@ -593,7 +623,17 @@ pub fn magnetic_declination(latitude: &f64, longitude: &f64, altitude: &f64) -> 
 
     (b_vector[1] / b_vector[0]).atan().to_degrees()
 }
-
+/// Calculate the magnetic anomaly at a given location
+pub fn magnetic_anomaly(
+    latitude: &f64,
+    longitude: &f64,
+    altitude: &f64,
+    mag_x: &f64,
+    mag_y: &f64,
+    mag_z: &f64,
+) -> f64 {
+    0.0 // Placeholder for magnetic anomaly calculation
+}
 // === Unit tests ===
 #[cfg(test)]
 mod tests {
@@ -726,58 +766,4 @@ mod tests {
         assert_approx_eq!(rot1[(2, 1)], rot2[(2, 1)], 1e-7);
         assert_approx_eq!(rot1[(2, 2)], rot2[(2, 2)], 1e-7);
     }
-
-    // #[test]
-    // fn test_magnetic_field_components() {
-    //     // Test the radial component
-    //     let colatitude = std::f64::consts::PI / 4.0; // 45 degrees colatitude
-    //     let radius = MAGNETIC_REFERENCE_RADIUS;
-    //     let b_r = calculate_radial_magnetic_field(colatitude, radius);
-    //     let b_theta = calculate_latitudinal_magnetic_field(colatitude, radius);
-    //
-    //     // For a dipole model with colatitude = 45°:
-    //     // Br should be negative at 45° colatitude (pointing inward)
-    //     // Bθ should be negative (pointing toward magnetic north)
-    //     assert!(b_r < 0.0);
-    //     assert!(b_theta < 0.0);
-    //     println!("b_r: {}, b_theta: {}", b_r, b_theta);
-    //
-    //     // Test the ratio of components at 45° colatitude
-    //     // For a dipole at 45°, |Br| should be = |Bθ| * cot(θ)
-    //     // let expected_ratio = colatitude.tan();
-    //     // let actual_ratio = b_theta.abs() / b_r.abs();
-    //     // assert_approx_eq!(actual_ratio, expected_ratio, 1e-6);
-    //
-    //     // Test field strength follows inverse cube law
-    //     let radius2 = radius * 2.0;
-    //     let b_r2 = calculate_radial_magnetic_field(colatitude, radius2);
-    //     // Field should be 1/8 at double the distance
-    //     assert_approx_eq!(b_r2 / b_r, 1.0/8.0, 1e-6);
-    // }
-    // #[test]
-    // fn test_magnetic_field_vector() {
-    //     // Test at the magnetic north pole
-    //     let mag_field = calculate_magnetic_field(
-    //         &MAGNETIC_NORTH_LATITUDE,
-    //         &MAGNETIC_NORTH_LONGITUDE,
-    //         &0.0
-    //     );
-    //     // At magnetic north pole, field should point downward (positive Z)
-    //     // with minimal X and Y components
-    //     // assert_approx_eq!(mag_field[0], 0.0, 1e-4);
-    //     assert_approx_eq!(mag_field[1], 0.0, 1e-4);
-    //     assert!(mag_field[2] > 0.0);
-    //     // Test at the magnetic equator (90° from magnetic north)
-    //     // Calculate a point 90° away from the magnetic north pole
-    //     let lat_eq = (MAGNETIC_NORTH_LATITUDE - 90.0).to_radians().cos().acos().to_degrees();
-    //     let lon_eq = MAGNETIC_NORTH_LONGITUDE;
-    //
-    //     let mag_field_eq = calculate_magnetic_field(&lat_eq, &lon_eq, &0.0);
-    //
-    //     // At magnetic equator, field should be horizontal (minimal Z component)
-    //     // and pointing northward (negative X in NED)
-    //     assert!(mag_field_eq[0] < 0.0);
-    //     assert_approx_eq!(mag_field_eq[1], 0.0, 1e-4);
-    //     assert_approx_eq!(mag_field_eq[2], 0.0, 1e-2);
-    // }
 }
