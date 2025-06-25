@@ -149,6 +149,8 @@ impl SigmaPoint {
     /// sigma_point.forward(&imu_data, dt, None);
     /// ```
     pub fn forward(&mut self, imu_data: &IMUData, dt: f64, noise: Option<Vec<f64>>) {
+        // Subtract out the imu biases
+        
         // Propagate the strapdown state using the strapdown equations
         self.nav_state.forward(imu_data, dt);
         let noise_vect = match noise {
@@ -882,7 +884,7 @@ impl GPS for UKF {
             true => DMatrix::from_diagonal(&DVector::from_vec(vec![
                 ((5.0 * METERS_TO_DEGREES).to_radians()).powf(2.0), // Latitude noise (degrees)
                 ((5.0 * METERS_TO_DEGREES).to_radians()).powf(2.0), // Longitude noise (degrees)
-                (5.0_f64).powf(2.0),                                // Altitude noise (meters)
+                (5.0_f64).powf(2.0), // Altitude noise (meters)
                 (0.1_f64).powf(2.0), // Northward velocity noise (m/s)
                 (0.1_f64).powf(2.0), // Eastward velocity noise (m/s)
                 (0.1_f64).powf(2.0), // Downward velocity noise (m/s)

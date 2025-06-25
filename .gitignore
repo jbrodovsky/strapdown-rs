@@ -3,3 +3,7 @@
 /strapdown_py/.venv
 /strapdown_py/.pytest_cache
 /strapdown_py/dist
+
+# pixi environments
+.pixi
+*.egg-info

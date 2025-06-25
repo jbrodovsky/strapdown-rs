@@ -1,0 +1,17 @@
+[workspace]
+authors = ["James Brodovsky <james.brodovsky@gmail.com>"]
+channels = ["conda-forge"]
+name = "strapdown-rs"
+platforms = ["linux-64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+jupyter = ">=1.1.1,<2"
+numpy = ">=2.3.0,<3"
+scipy = ">=1.15.2,<2"
+haversine = ">=2.9.0,<3"
+matplotlib = ">=3.10.3,<4"
+pandas = ">=2.3.0,<3"
+pygmt = ">=0.16.0,<0.17"
