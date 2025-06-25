@@ -254,11 +254,11 @@ pub struct NavigationResult {
     /// Altitude in meters
     pub altitude: f64,
     /// Northward velocity in m/s
-    pub velocity_n: f64,
+    pub velocity_north: f64,
     /// Eastward velocity in m/s
-    pub velocity_e: f64,
+    pub velocity_east: f64,
     /// Downward velocity in m/s
-    pub velocity_d: f64,
+    pub velocity_down: f64,
     /// Roll angle in radians
     pub roll: f64,
     /// Pitch angle in radians
@@ -342,9 +342,9 @@ impl NavigationResult {
             latitude: 0.0,
             longitude: 0.0,
             altitude: 0.0,
-            velocity_n: 0.0,
-            velocity_e: 0.0,
-            velocity_d: 0.0,
+            velocity_north: 0.0,
+            velocity_east: 0.0,
+            velocity_down: 0.0,
             roll: 0.0,
             pitch: 0.0,
             yaw: 0.0,
@@ -375,12 +375,12 @@ impl NavigationResult {
             gyro_x: 0.0,
             gyro_y: 0.0,
             gyro_z: 0.0,
-            mag_x: earth::MAGNETIC_FIELD_STRENGTH,//50.0, // default magnetic field strength
-            mag_y: -30.0, // default values
-            mag_z: -20.0, // default values
-            pressure: 1013.25, // standard atmospheric pressure in millibars
-            freeair: 9.81 * METERS_TO_DEGREES, // free-air gravity anomaly in mGal
-            mag_anomaly: -30.0, // default magnetic anomaly in nT
+            mag_x: earth::MAGNETIC_FIELD_STRENGTH, //50.0, // default magnetic field strength
+            mag_y: -30.0,                          // default values
+            mag_z: -20.0,                          // default values
+            pressure: 1013.25,                     // standard atmospheric pressure in millibars
+            freeair: 9.81 * METERS_TO_DEGREES,     // free-air gravity anomaly in mGal
+            mag_anomaly: -30.0,                    // default magnetic anomaly in nT
         }
     }
     /// Creates a new NavigationResult from a StrapdownState, and covariance.
@@ -400,15 +400,15 @@ impl NavigationResult {
         gyro_bias_x: f64,
         gyro_bias_y: f64,
         gyro_bias_z: f64,
-        latitude_cov:  f64, 
+        latitude_cov: f64,
         longitude_cov: f64,
-        altitude_cov:  f64,
+        altitude_cov: f64,
         velocity_n_cov: f64,
         velocity_e_cov: f64,
         velocity_d_cov: f64,
-        roll_cov:  f64,
+        roll_cov: f64,
         pitch_cov: f64,
-        yaw_cov:   f64,
+        yaw_cov: f64,
         acc_bias_x_cov: f64,
         acc_bias_y_cov: f64,
         acc_bias_z_cov: f64,
@@ -417,15 +417,15 @@ impl NavigationResult {
         gyro_bias_z_cov: f64,
         acc_x: f64,
         acc_y: f64,
-        acc_z: f64, 
+        acc_z: f64,
         gyro_x: f64,
         gyro_y: f64,
         gyro_z: f64,
         mag_x: f64,
-        mag_y: f64, 
-        mag_z: f64, 
-        pressure: f64, 
-        freeair: f64, 
+        mag_y: f64,
+        mag_z: f64,
+        pressure: f64,
+        freeair: f64,
         mag_anomaly: f64,
     ) -> Self {
         NavigationResult {
@@ -433,9 +433,9 @@ impl NavigationResult {
             latitude: state.latitude,
             longitude: state.longitude,
             altitude: state.altitude,
-            velocity_n: state.velocity_north,
-            velocity_e: state.velocity_east,
-            velocity_d: state.velocity_down,
+            velocity_north: state.velocity_north,
+            velocity_east: state.velocity_east,
+            velocity_down: state.velocity_down,
             roll: state.attitude.euler_angles().0,
             pitch: state.attitude.euler_angles().1,
             yaw: state.attitude.euler_angles().2,
@@ -471,7 +471,7 @@ impl NavigationResult {
             mag_z,
             pressure,
             freeair,
-            mag_anomaly,           
+            mag_anomaly,
         }
     }
     /// Creates a new NavigationResult from an nalgebra vector and covariance.
@@ -507,9 +507,9 @@ impl NavigationResult {
             latitude: state[0],
             longitude: state[1],
             altitude: state[2],
-            velocity_n: state[3],
-            velocity_e: state[4],
-            velocity_d: state[5],
+            velocity_north: state[3],
+            velocity_east: state[4],
+            velocity_down: state[5],
             roll: state[6],
             pitch: state[7],
             yaw: state[8],
@@ -597,7 +597,17 @@ impl NavigationResult {
 }
 /// Convert NED UKF to NavigationResult.
 impl From<(&DateTime<Utc>, &UKF, &IMUData, &f64, &f64, &f64, &f64)> for NavigationResult {
-    fn from((timestamp, ukf, imu_data, mag_x, mag_y, mag_z, pressure): (&DateTime<Utc>, &UKF, &IMUData, &f64, &f64, &f64, &f64)) -> Self {
+    fn from(
+        (timestamp, ukf, imu_data, mag_x, mag_y, mag_z, pressure): (
+            &DateTime<Utc>,
+            &UKF,
+            &IMUData,
+            &f64,
+            &f64,
+            &f64,
+            &f64,
+        ),
+    ) -> Self {
         let state = ukf.get_mean();
         let covariance = ukf.get_covariance();
         NavigationResult {
@@ -605,9 +615,9 @@ impl From<(&DateTime<Utc>, &UKF, &IMUData, &f64, &f64, &f64, &f64)> for Navigati
             latitude: state[0].to_degrees(),
             longitude: state[1].to_degrees(),
             altitude: state[2],
-            velocity_n: state[3],
-            velocity_e: state[4],
-            velocity_d: state[5],
+            velocity_north: state[3],
+            velocity_east: state[4],
+            velocity_down: state[5],
             roll: state[6],
             pitch: state[7],
             yaw: state[8],
@@ -647,7 +657,10 @@ impl From<(&DateTime<Utc>, &UKF, &IMUData, &f64, &f64, &f64, &f64)> for Navigati
                 &state[2],
                 &state[3],
                 &state[4],
-                &(imu_data.accel[0].powi(2) + imu_data.accel[1].powi(2) + imu_data.accel[2].powi(2)).sqrt()
+                &(imu_data.accel[0].powi(2)
+                    + imu_data.accel[1].powi(2)
+                    + imu_data.accel[2].powi(2))
+                .sqrt(),
             ),
             mag_anomaly: earth::magnetic_anomaly(
                 &state[0].to_radians(),
@@ -660,8 +673,28 @@ impl From<(&DateTime<Utc>, &UKF, &IMUData, &f64, &f64, &f64, &f64)> for Navigati
         }
     }
 }
-impl From<(&DateTime<Utc>, &StrapdownState, &IMUData, &f64, &f64, &f64, &f64)> for NavigationResult {
-    fn from((timestamp, state, imu_data, mag_x, mag_y, mag_z, pressure): (&DateTime<Utc>, &StrapdownState, &IMUData, &f64, &f64, &f64, &f64)) -> Self {
+impl
+    From<(
+        &DateTime<Utc>,
+        &StrapdownState,
+        &IMUData,
+        &f64,
+        &f64,
+        &f64,
+        &f64,
+    )> for NavigationResult
+{
+    fn from(
+        (timestamp, state, imu_data, mag_x, mag_y, mag_z, pressure): (
+            &DateTime<Utc>,
+            &StrapdownState,
+            &IMUData,
+            &f64,
+            &f64,
+            &f64,
+            &f64,
+        ),
+    ) -> Self {
         //let state = ukf.get_mean();
         //let covariance = ukf.get_covariance();
         NavigationResult {
@@ -669,9 +702,9 @@ impl From<(&DateTime<Utc>, &StrapdownState, &IMUData, &f64, &f64, &f64, &f64)> f
             latitude: state.latitude.to_degrees(),
             longitude: state.longitude.to_degrees(),
             altitude: state.altitude,
-            velocity_n: state.velocity_north,
-            velocity_e: state.velocity_east,
-            velocity_d: state.velocity_down,
+            velocity_north: state.velocity_north,
+            velocity_east: state.velocity_east,
+            velocity_down: state.velocity_down,
             roll: state.attitude.euler_angles().0,
             pitch: state.attitude.euler_angles().1,
             yaw: state.attitude.euler_angles().2,
@@ -681,15 +714,15 @@ impl From<(&DateTime<Utc>, &StrapdownState, &IMUData, &f64, &f64, &f64, &f64)> f
             gyro_bias_x: 0.0,
             gyro_bias_y: 0.0,
             gyro_bias_z: 0.0,
-            latitude_cov:  0.0,
+            latitude_cov: 0.0,
             longitude_cov: 0.0,
-            altitude_cov:  0.0,
+            altitude_cov: 0.0,
             velocity_n_cov: 0.0,
             velocity_e_cov: 0.0,
             velocity_d_cov: 0.0,
-            roll_cov:  0.0,
+            roll_cov: 0.0,
             pitch_cov: 0.0,
-            yaw_cov:   0.0,
+            yaw_cov: 0.0,
             acc_bias_x_cov: 0.0,
             acc_bias_y_cov: 0.0,
             acc_bias_z_cov: 0.0,
@@ -711,7 +744,10 @@ impl From<(&DateTime<Utc>, &StrapdownState, &IMUData, &f64, &f64, &f64, &f64)> f
                 &state.altitude,
                 &state.velocity_north,
                 &state.velocity_east,
-                &(imu_data.accel[0].powi(2) + imu_data.accel[1].powi(2) + imu_data.accel[2].powi(2)).sqrt()
+                &(imu_data.accel[0].powi(2)
+                    + imu_data.accel[1].powi(2)
+                    + imu_data.accel[2].powi(2))
+                .sqrt(),
             ),
             mag_anomaly: earth::magnetic_anomaly(
                 &state.latitude,
@@ -802,18 +838,21 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
     };
     // Store the initial state and metadata
     results.push(NavigationResult::from((
-        &records[0].time, 
-        &state, 
+        &records[0].time,
+        &state,
         &IMUData::new_from_vec(
             vec![first_record.acc_x, first_record.acc_y, first_record.acc_z],
-            vec![first_record.gyro_x, first_record.gyro_y, first_record.gyro_z],
+            vec![
+                first_record.gyro_x,
+                first_record.gyro_y,
+                first_record.gyro_z,
+            ],
         ),
         &first_record.mag_x,
         &first_record.mag_y,
         &first_record.mag_z,
         &first_record.pressure,
-        ))
-    );
+    )));
     let mut previous_time = records[0].time;
     // Process each subsequent record
     for record in records.iter().skip(1) {
@@ -835,7 +874,7 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
             &record.mag_y,
             &record.mag_z,
             &record.pressure,
-            )));
+        )));
         previous_time = record.time;
     }
     results
@@ -850,7 +889,10 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
 /// * `records` - Vector of test data records containing IMU measurements and GPS data.
 /// # Returns
 /// * `Vec<NavigationResult>` - A vector of navigation results containing the state estimates and covariances at each timestamp.
-pub fn closed_loop(records: &[TestDataRecord], gps_interval: Option<usize>) -> Vec<NavigationResult> {
+pub fn closed_loop(
+    records: &[TestDataRecord],
+    gps_interval: Option<usize>,
+) -> Vec<NavigationResult> {
     let gps_interval = gps_interval.unwrap_or(1); // Default to every record if not specified
     let mut results: Vec<NavigationResult> = Vec::with_capacity(records.len());
     // Initialize the UKF with the first record
@@ -915,12 +957,16 @@ pub fn closed_loop(records: &[TestDataRecord], gps_interval: Option<usize>) -> V
         // Update the UKF with the IMU data
         ukf.predict(&imu_data, dt);
         // If GPS data is available, update the UKF with the GPS measurement
-        if !record.latitude.is_nan() && !record.longitude.is_nan() && !record.altitude.is_nan() && i % gps_interval == 0 {
+        if !record.latitude.is_nan()
+            && !record.longitude.is_nan()
+            && !record.altitude.is_nan()
+            && i % gps_interval == 0
+        {
             let mean = ukf.get_mean();
             //let angles = mean.columns(6, 3);
             //println!("UKF attitude angles: {:?}", angles);
             let attitude = Rotation3::from_euler_angles(mean[5], mean[6], mean[7]);
-            let velocity = attitude * Vector3::new(record.speed, 0.0, 0.0);  
+            let velocity = attitude * Vector3::new(record.speed, 0.0, 0.0);
             let measurement = DVector::from_vec(vec![
                 record.latitude.to_radians(),
                 record.longitude.to_radians(),
@@ -1295,13 +1341,14 @@ mod tests {
     #[test]
     fn test_navigation_result_new() {
         let nav = NavigationResult::new();
-        let expected_timestamp =
-            chrono::DateTime::parse_from_str("2023-01-01 00:00:00+00:00", "%Y-%m-%d %H:%M:%S%z")
-                .unwrap()
-                .with_timezone(&chrono::Utc);
-        assert_eq!(nav.timestamp, expected_timestamp);
+        //let expected_timestamp = chrono::Utc::now();
+        //assert_eq!(nav.timestamp, expected_timestamp);
         assert_eq!(nav.latitude, 0.0);
-        //assert_eq!(nav.covariance.as_ref().unwrap().len(), 3);
+        assert_eq!(nav.longitude, 0.0);
+        assert_eq!(nav.altitude, 0.0);
+        assert_eq!(nav.velocity_north, 0.0);
+        assert_eq!(nav.velocity_east, 0.0);
+        assert_eq!(nav.velocity_down, 0.0);
     }
     #[test]
     fn test_navigation_result_new_from_nav_state() {
@@ -1313,9 +1360,7 @@ mod tests {
         state.velocity_east = 5.0;
         state.velocity_down = 6.0;
         state.attitude = nalgebra::Rotation3::from_euler_angles(7.0, 8.0, 9.0);
-        let cov = DMatrix::from_element(9, 9, 0.5);
         let timestamp = chrono::Utc::now();
-        //let nav = NavigationResult::new_from_nav_state(&state, timestamp, Some(cov.clone()));
         let nav = NavigationResult::from((
             &timestamp,
             &state,
@@ -1325,29 +1370,37 @@ mod tests {
             &0.0,
             &1000.0, // dummy pressure
         ));
-        assert_eq!(nav.latitude, 1.0);
+        assert_eq!(nav.latitude, (1.0_f64).to_degrees());
+        assert_eq!(nav.longitude, (2.0_f64).to_degrees());
+        assert_eq!(nav.altitude, 3.0);
+        assert_eq!(nav.velocity_north, 4.0);
+        assert_eq!(nav.velocity_east, 5.0);
+        assert_eq!(nav.velocity_down, 6.0);
     }
-    // #[test]
-    // fn test_navigation_result_new_from_vector() {
-    //     let v = DVector::from_vec((1..=9).map(|x| x as f64).collect());
-    //     let cov = DMatrix::from_element(9, 9, 0.1);
-    //     let timestamp = chrono::Utc::now();
-    //     let nav = NavigationResult::new_from_vector(&v, timestamp, Some(&cov));
-    //     assert_eq!(nav.latitude, 1.0);
-    //     assert_eq!(nav.yaw, 9.0);
-    //     assert_eq!(nav.covariance.as_ref().unwrap().len(), 81);
-    //     let timestamp = chrono::Utc::now();
-    //     let nav2 = NavigationResult::new_from_vector(&v, timestamp, None);
-    //     assert!(nav2.covariance.is_none());
-    // }
     #[test]
     fn test_navigation_result_to_csv_and_from_csv() {
-        let nav = NavigationResult::new();
+        let mut nav = NavigationResult::new();
+        nav.latitude = 1.0;
+        nav.longitude = 2.0;
+        nav.altitude = 3.0;
+        nav.velocity_north = 4.0;
+        nav.velocity_east = 5.0;
+        nav.velocity_down = 6.0;
+        //nav.attitude = nalgebra::Rotation3::from_euler_angles(0.1, 0.2, 0.3);
         let temp_file = std::env::temp_dir().join("test_nav_result.csv");
         NavigationResult::to_csv(&[nav.clone()], &temp_file).unwrap();
         let read = NavigationResult::from_csv(&temp_file).unwrap();
         assert_eq!(read.len(), 1);
         assert_eq!(read[0].latitude, 1.0);
+        assert_eq!(read[0].longitude, 2.0);
+        assert_eq!(read[0].altitude, 3.0);
+        assert_eq!(read[0].velocity_north, 4.0);
+        assert_eq!(read[0].velocity_east, 5.0);
+        assert_eq!(read[0].velocity_down, 6.0);
+        //assert!(read[0].attitude.matrix().abs_diff_eq(
+        //    nalgebra::Rotation3::from_euler_angles(0.1, 0.2, 0.3).matrix(),
+        //    1e-12
+        //));
         let _ = std::fs::remove_file(&temp_file);
     }
     #[test]
