@@ -362,7 +362,7 @@ pub fn gravity_anomaly(
 ) -> f64 {
     let normal_gravity: f64 = gravity(latitude, &0.0);
     let eotvos_correction: f64 = eotvos(latitude, altitude, north_velocity, east_velocity);
-    *gravity_observed - normal_gravity
+    *gravity_observed - normal_gravity - eotvos_correction
 }
 /// Calculate the Eotvos correction for the local-level frame
 ///
