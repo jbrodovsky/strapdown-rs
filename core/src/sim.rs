@@ -10,10 +10,9 @@ use std::fmt::Display;
 use std::io::{self};
 use std::path::Path;
 
-use chrono::serde::ts_seconds;
 use chrono::{DateTime, Utc};
-use nalgebra::{DMatrix, DVector, Rotation, Rotation3, Vector3};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use nalgebra::{DMatrix, DVector, Rotation3, Vector3};
+use serde::{Deserialize, Serialize};
 
 use crate::earth;
 use crate::earth::METERS_TO_DEGREES;
@@ -334,6 +333,12 @@ pub struct NavigationResult {
     /// Magnetic field strength anomaly in nT
     pub mag_anomaly: f64,
 }
+impl Default for NavigationResult {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NavigationResult {
     /// Creates a new NavigationResult with default values.
     pub fn new() -> Self {
@@ -519,7 +524,7 @@ impl NavigationResult {
             gyro_bias_x: state[12],
             gyro_bias_y: state[13],
             gyro_bias_z: state[14],
-            latitude_cov: covariance_vec.get(0).cloned().unwrap_or(0.0),
+            latitude_cov: covariance_vec.first().cloned().unwrap_or(0.0),
             longitude_cov: covariance_vec.get(1).cloned().unwrap_or(0.0),
             altitude_cov: covariance_vec.get(2).cloned().unwrap_or(0.0),
             velocity_n_cov: covariance_vec.get(3).cloned().unwrap_or(0.0),
@@ -666,9 +671,9 @@ impl From<(&DateTime<Utc>, &UKF, &IMUData, &f64, &f64, &f64, &f64)> for Navigati
                 &state[0].to_radians(),
                 &state[1].to_radians(),
                 &state[2],
-                &mag_x,
-                &mag_y,
-                &mag_z,
+                mag_x,
+                mag_y,
+                mag_z,
             ),
         }
     }
@@ -753,49 +758,11 @@ impl
                 &state.latitude,
                 &state.longitude,
                 &state.altitude,
-                &mag_x,
-                &mag_y,
-                &mag_z,
+                mag_x,
+                mag_y,
+                mag_z,
             ),
         }
-    }
-}
-
-/// Custom serializer for the covariance field to serialize it as a single string in CSV
-fn serialize_covariance<S>(cov: &Option<Vec<f64>>, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    match cov {
-        Some(vec) => {
-            // Join the vector elements with commas and serialize as a single string
-            let cov_str = vec
-                .iter()
-                .map(|v| v.to_string())
-                .collect::<Vec<String>>()
-                .join(",");
-            serializer.serialize_str(&cov_str)
-        }
-        None => serializer.serialize_none(),
-    }
-}
-/// Custom deserializer for the covariance field to deserialize from a string in CSV
-fn deserialize_covariance<'de, D>(deserializer: D) -> Result<Option<Vec<f64>>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let s: Option<String> = Option::deserialize(deserializer)?;
-    match s {
-        Some(s) if !s.is_empty() => {
-            // Parse the comma-separated string back to a Vec<f64>
-            let values: Result<Vec<f64>, _> = s.split(',').map(|v| v.parse::<f64>()).collect();
-
-            match values {
-                Ok(vec) => Ok(Some(vec)),
-                Err(_) => Ok(None), // Handle parsing errors gracefully
-            }
-        }
-        _ => Ok(None),
     }
 }
 /// Run dead reckoning or "open-loop" simulation using test data.
