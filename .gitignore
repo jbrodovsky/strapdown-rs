@@ -6,4 +6,12 @@
 
 # pixi environments
 .pixi
+pixi.lock
+pixi.toml
 *.egg-info
+
+# python notes
+*.ipynb_checkpoints
+*.pyc
+__pycache__
+*.ipynb
