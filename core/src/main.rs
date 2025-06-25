@@ -105,8 +105,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
     let results: Vec<NavigationResult>;
     if args.mode == "closed-loop" {
-        println!("Running in closed-loop mode with GPS interval: {:?}", args.gps_interval);
-        
+        println!(
+            "Running in closed-loop mode with GPS interval: {:?}",
+            args.gps_interval
+        );
+
         results = closed_loop(&records, args.gps_interval);
         match write_results_to_csv(&results, &args.output) {
             Ok(_) => println!("Results written to {}", args.output.display()),

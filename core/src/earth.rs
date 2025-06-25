@@ -365,24 +365,25 @@ pub fn gravity_anomaly(
     *gravity_observed - normal_gravity
 }
 /// Calculate the Eotvos correction for the local-level frame
-/// 
-/// The Eötvös correction accounts for the centrifugal acceleration caused by the vehicle's motion 
-/// relative to the Earth's rotation. It depends on the platform's velocity, latitude, and Earth's 
-/// angular velocity. The correction is generally added to the observed gravity measurement to 
-/// account for this effect. The formula can be complex, involving latitude, velocity components 
+///
+/// The Eötvös correction accounts for the centrifugal acceleration caused by the vehicle's motion
+/// relative to the Earth's rotation. It depends on the platform's velocity, latitude, and Earth's
+/// angular velocity. The correction is generally added to the observed gravity measurement to
+/// account for this effect. The formula can be complex, involving latitude, velocity components
 /// (East-West), and Earth's rotation rate.
-/// 
+///
 /// # Arguments
 /// - `latitude` - The WGS84 latitude in radians
 /// - `altitude` - The WGS84 altitude in meters
 /// - `north_velocity` - The northward velocity component in m/s
 /// - `east_velocity` - The eastward velocity component in m/s
-/// 
+///
 /// # Returns
 /// The Eötvös correction in m/s^2
 pub fn eotvos(latitude: &f64, altitude: &f64, north_velocity: &f64, east_velocity: &f64) -> f64 {
     let (_, _, r_p) = principal_radii(latitude, altitude);
-    2.0 * RATE * *east_velocity *latitude.cos() + (north_velocity.powi(2) + east_velocity.powi(2)) / r_p
+    2.0 * RATE * *east_velocity * latitude.cos()
+        + (north_velocity.powi(2) + east_velocity.powi(2)) / r_p
 }
 
 /// Calculate the Earth rotation rate vector in the local-level frame
