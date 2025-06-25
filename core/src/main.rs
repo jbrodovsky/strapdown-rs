@@ -19,6 +19,9 @@ struct Args {
     /// Output CSV file path
     #[clap(short, long, value_parser)]
     output: PathBuf,
+    /// Optional: GPS measurement intervale in seconds (for simulating intermittent GPS outages)
+    #[clap(long, value_parser)]
+    gps_interval: Option<usize>,
 }
 
 fn write_results_to_csv(
@@ -102,7 +105,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
     let results: Vec<NavigationResult>;
     if args.mode == "closed-loop" {
-        results = closed_loop(&records);
+        println!("Running in closed-loop mode with GPS interval: {:?}", args.gps_interval);
+        
+        results = closed_loop(&records, args.gps_interval);
         match write_results_to_csv(&results, &args.output) {
             Ok(_) => println!("Results written to {}", args.output.display()),
             Err(e) => eprintln!("Error writing results: {}", e),

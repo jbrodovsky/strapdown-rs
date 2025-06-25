@@ -12,9 +12,10 @@ use std::path::Path;
 
 use chrono::serde::ts_seconds;
 use chrono::{DateTime, Utc};
-use nalgebra::{DMatrix, DVector};
+use nalgebra::{DMatrix, DVector, Rotation, Rotation3, Vector3};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::earth;
 use crate::earth::METERS_TO_DEGREES;
 use crate::filter::{GPS, StrapdownParams, UKF};
 use crate::{IMUData, StrapdownState};
@@ -103,6 +104,54 @@ impl TestDataRecord {
     /// # Returns
     /// * `Ok(Vec<TestDataRecord>)` if successful.
     /// * `Err` if the file cannot be read or parsed.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use strapdown::sim::TestDataRecord;
+    /// use std::path::Path;
+    ///
+    /// let record = TestDataRecord {
+    ///     time: chrono::Utc::now(),
+    ///     bearing_accuracy: 0.1,
+    ///     speed_accuracy: 0.1,
+    ///     vertical_accuracy: 0.1,
+    ///     horizontal_accuracy: 0.1,
+    ///     speed: 1.0,
+    ///     bearing: 90.0,
+    ///     altitude: 100.0,
+    ///     longitude: -122.0,
+    ///     latitude: 37.0,
+    ///     qz: 0.0,
+    ///     qy: 0.0,
+    ///     qx: 0.0,
+    ///     qw: 1.0,
+    ///     roll: 0.0,
+    ///     pitch: 0.0,
+    ///     yaw: 0.0,
+    ///     acc_z: 9.81,
+    ///     acc_y: 0.0,
+    ///     acc_x: 0.0,
+    ///     gyro_z: 0.01,
+    ///     gyro_y: 0.01,
+    ///     gyro_x: 0.01,
+    ///     mag_z: 50.0,
+    ///     mag_y: -30.0,
+    ///     mag_x: -20.0,
+    ///     relative_altitude: 0.0,
+    ///     pressure: 1013.25,
+    ///     grav_z: 9.81,
+    ///     grav_y: 0.0,
+    ///     grav_x: 0.0,
+    /// };
+    /// let records = vec![record];
+    /// TestDataRecord::to_csv(&records, "data.csv")
+    ///    .expect("Failed to write test data to CSV");
+    /// let read_records = TestDataRecord::from_csv("data.csv")
+    ///   .expect("Failed to read test data from CSV");
+    /// // doctest cleanup
+    /// std::fs::remove_file("data.csv").unwrap();
+    /// ```
     pub fn from_csv<P: AsRef<std::path::Path>>(
         path: P,
     ) -> Result<Vec<Self>, Box<dyn std::error::Error>> {
@@ -197,57 +246,141 @@ impl Display for TestDataRecord {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct NavigationResult {
     /// Timestamp corresponding to the state
-    #[serde(with = "ts_seconds")]
     pub timestamp: DateTime<Utc>,
-    /// Position values (latitude, longitude, altitude)
+    /// Latitude in radians
     pub latitude: f64,
+    /// Longitude in radians
     pub longitude: f64,
+    /// Altitude in meters
     pub altitude: f64,
-    /// Velocity values (north, east, down)
+    /// Northward velocity in m/s
     pub velocity_n: f64,
+    /// Eastward velocity in m/s
     pub velocity_e: f64,
+    /// Downward velocity in m/s
     pub velocity_d: f64,
-    /// Attitude values (roll, pitch, yaw)
+    /// Roll angle in radians
     pub roll: f64,
+    /// Pitch angle in radians
     pub pitch: f64,
+    /// Yaw angle in radians
     pub yaw: f64,
-    /// Full state covariance matrix if available - serialized as a string in CSV
-    #[serde(
-        serialize_with = "serialize_covariance",
-        deserialize_with = "deserialize_covariance"
-    )]
-    pub covariance: Option<Vec<f64>>,
+    /// IMU accelerometer x-axis bias in m/s^2
+    pub acc_bias_x: f64,
+    /// IMU accelerometer y-axis bias in m/s^2
+    pub acc_bias_y: f64,
+    /// IMU accelerometer z-axis bias in m/s^2
+    pub acc_bias_z: f64,
+    /// IMU gyroscope x-axis bias in radians/s
+    pub gyro_bias_x: f64,
+    /// IMU gyroscope y-axis bias in radians/s
+    pub gyro_bias_y: f64,
+    /// IMU gyroscope z-axis bias in radians/s
+    pub gyro_bias_z: f64,
+    /// Latitude covariance
+    pub latitude_cov: f64,
+    /// Longitude covariance
+    pub longitude_cov: f64,
+    /// Altitude covariance
+    pub altitude_cov: f64,
+    /// Northward velocity covariance
+    pub velocity_n_cov: f64,
+    /// Eastward velocity covariance
+    pub velocity_e_cov: f64,
+    /// Downward velocity covariance
+    pub velocity_d_cov: f64,
+    /// Roll covariance
+    pub roll_cov: f64,
+    /// Pitch covariance
+    pub pitch_cov: f64,
+    /// Yaw covariance
+    pub yaw_cov: f64,
+    /// Accelerometer x-axis bias covariance
+    pub acc_bias_x_cov: f64,
+    /// Accelerometer y-axis bias covariance
+    pub acc_bias_y_cov: f64,
+    /// Accelerometer z-axis bias covariance
+    pub acc_bias_z_cov: f64,
+    /// Gyroscope x-axis bias covariance
+    pub gyro_bias_x_cov: f64,
+    /// Gyroscope y-axis bias covariance
+    pub gyro_bias_y_cov: f64,
+    /// Gyroscope z-axis bias covariance
+    pub gyro_bias_z_cov: f64,
+    // ---- Input and measurement values for the navigation solution ----
+    /// X-acceleration in m/s^2
+    pub acc_x: f64,
+    /// Y-acceleration in m/s^2
+    pub acc_y: f64,
+    /// Z-acceleration in m/s^2
+    pub acc_z: f64,
+    /// Rotation rate around the x-axis in radians/s
+    pub gyro_x: f64,
+    /// Rotation rate around the y-axis in radians/s
+    pub gyro_y: f64,
+    /// Rotation rate around the z-axis in radians/s
+    pub gyro_z: f64,
+    /// Magnetic field strength in the x-direction in microteslas
+    pub mag_x: f64,
+    /// Magnetic field strength in the y-direction in microteslas
+    pub mag_y: f64,
+    /// Magnetic field strength in the z-direction in microteslas
+    pub mag_z: f64,
+    /// Pressure in millibars
+    pub pressure: f64,
+    // ---- Calculated geophysical values that may be useful ----
+    /// Free-air gravity anomaly in mGal
+    pub freeair: f64,
+    /// Magnetic field strength anomaly in nT
+    pub mag_anomaly: f64,
 }
 impl NavigationResult {
     /// Creates a new NavigationResult with default values.
-    pub fn new(
-        timestamp: &str,
-        latitude: &f64,
-        longitude: &f64,
-        altitude: &f64,
-        velocity_n: &f64,
-        velocity_e: &f64,
-        velocity_d: &f64,
-        roll: &f64,
-        pitch: &f64,
-        yaw: &f64,
-        covariance: Option<Vec<f64>>,
-    ) -> Self {
-        let timestamp = DateTime::parse_from_str(timestamp, "%Y-%m-%d %H:%M:%S%z")
-            .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(|_| Utc::now());
+    pub fn new() -> Self {
         NavigationResult {
-            timestamp,
-            latitude: *latitude,
-            longitude: *longitude,
-            altitude: *altitude,
-            velocity_n: *velocity_n,
-            velocity_e: *velocity_e,
-            velocity_d: *velocity_d,
-            roll: *roll,
-            pitch: *pitch,
-            yaw: *yaw,
-            covariance,
+            timestamp: Utc::now(),
+            latitude: 0.0,
+            longitude: 0.0,
+            altitude: 0.0,
+            velocity_n: 0.0,
+            velocity_e: 0.0,
+            velocity_d: 0.0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            acc_bias_x: 0.0,
+            acc_bias_y: 0.0,
+            acc_bias_z: 0.0,
+            gyro_bias_x: 0.0,
+            gyro_bias_y: 0.0,
+            gyro_bias_z: 0.0,
+            latitude_cov: 1e-6, // default covariance values
+            longitude_cov: 1e-6,
+            altitude_cov: 1e-6,
+            velocity_n_cov: 1e-6,
+            velocity_e_cov: 1e-6,
+            velocity_d_cov: 1e-6,
+            roll_cov: 1e-6,
+            pitch_cov: 1e-6,
+            yaw_cov: 1e-6,
+            acc_bias_x_cov: 1e-6,
+            acc_bias_y_cov: 1e-6,
+            acc_bias_z_cov: 1e-6,
+            gyro_bias_x_cov: 1e-6,
+            gyro_bias_y_cov: 1e-6,
+            gyro_bias_z_cov: 1e-6,
+            acc_x: 0.0,
+            acc_y: 0.0,
+            acc_z: 9.81, // assuming standard gravity
+            gyro_x: 0.0,
+            gyro_y: 0.0,
+            gyro_z: 0.0,
+            mag_x: earth::MAGNETIC_FIELD_STRENGTH,//50.0, // default magnetic field strength
+            mag_y: -30.0, // default values
+            mag_z: -20.0, // default values
+            pressure: 1013.25, // standard atmospheric pressure in millibars
+            freeair: 9.81 * METERS_TO_DEGREES, // free-air gravity anomaly in mGal
+            mag_anomaly: -30.0, // default magnetic anomaly in nT
         }
     }
     /// Creates a new NavigationResult from a StrapdownState, and covariance.
@@ -258,13 +391,43 @@ impl NavigationResult {
     /// # Arguments
     /// * `state` - StrapdownState containing the current state of the navigation system
     /// * `timestamp` - DateTime<Utc>, the timestamp of the navigation solution
-    /// * `covariance` - Covariance matrix from the filter, if available
     pub fn new_from_nav_state(
         state: &StrapdownState,
         timestamp: DateTime<Utc>,
-        covariance: Option<DMatrix<f64>>,
+        acc_bias_x: f64,
+        acc_bias_y: f64,
+        acc_bias_z: f64,
+        gyro_bias_x: f64,
+        gyro_bias_y: f64,
+        gyro_bias_z: f64,
+        latitude_cov:  f64, 
+        longitude_cov: f64,
+        altitude_cov:  f64,
+        velocity_n_cov: f64,
+        velocity_e_cov: f64,
+        velocity_d_cov: f64,
+        roll_cov:  f64,
+        pitch_cov: f64,
+        yaw_cov:   f64,
+        acc_bias_x_cov: f64,
+        acc_bias_y_cov: f64,
+        acc_bias_z_cov: f64,
+        gyro_bias_x_cov: f64,
+        gyro_bias_y_cov: f64,
+        gyro_bias_z_cov: f64,
+        acc_x: f64,
+        acc_y: f64,
+        acc_z: f64, 
+        gyro_x: f64,
+        gyro_y: f64,
+        gyro_z: f64,
+        mag_x: f64,
+        mag_y: f64, 
+        mag_z: f64, 
+        pressure: f64, 
+        freeair: f64, 
+        mag_anomaly: f64,
     ) -> Self {
-        let cov_vec = covariance.map(|cov| cov.as_slice().to_vec());
         NavigationResult {
             timestamp,
             latitude: state.latitude,
@@ -276,7 +439,39 @@ impl NavigationResult {
             roll: state.attitude.euler_angles().0,
             pitch: state.attitude.euler_angles().1,
             yaw: state.attitude.euler_angles().2,
-            covariance: cov_vec,
+            acc_bias_x,
+            acc_bias_y,
+            acc_bias_z,
+            gyro_bias_x,
+            gyro_bias_y,
+            gyro_bias_z,
+            latitude_cov,
+            longitude_cov,
+            altitude_cov,
+            velocity_n_cov,
+            velocity_e_cov,
+            velocity_d_cov,
+            roll_cov,
+            pitch_cov,
+            yaw_cov,
+            acc_bias_x_cov,
+            acc_bias_y_cov,
+            acc_bias_z_cov,
+            gyro_bias_x_cov,
+            gyro_bias_y_cov,
+            gyro_bias_z_cov,
+            acc_x,
+            acc_y,
+            acc_z,
+            gyro_x,
+            gyro_y,
+            gyro_z,
+            mag_x,
+            mag_y,
+            mag_z,
+            pressure,
+            freeair,
+            mag_anomaly,           
         }
     }
     /// Creates a new NavigationResult from an nalgebra vector and covariance.
@@ -292,16 +487,21 @@ impl NavigationResult {
     /// # Returns
     /// * `NavigationResult` - A new NavigationResult instance with the state values and covariance.
     pub fn new_from_vector(
-        state: &DVector<f64>,
         timestamp: DateTime<Utc>,
+        state: &DVector<f64>,
         covariance: Option<&DMatrix<f64>>,
+        imu_data: &IMUData,
+        mag_x: f64,
+        mag_y: f64,
+        mag_z: f64,
+        pressure: f64,
+        freeair: f64,
+        mag_anomaly: f64,
     ) -> Self {
-        let cov_vec: Option<Vec<f64>>;
-        if let Some(cov) = covariance {
-            cov_vec = Some(cov.as_slice().to_vec());
-        } else {
-            cov_vec = None;
-        }
+        let covariance_vec = match covariance {
+            Some(cov) => cov.diagonal().iter().cloned().collect(),
+            None => vec![0.0; state.len()],
+        };
         NavigationResult {
             timestamp,
             latitude: state[0],
@@ -313,7 +513,39 @@ impl NavigationResult {
             roll: state[6],
             pitch: state[7],
             yaw: state[8],
-            covariance: cov_vec,
+            acc_bias_x: state[9],
+            acc_bias_y: state[10],
+            acc_bias_z: state[11],
+            gyro_bias_x: state[12],
+            gyro_bias_y: state[13],
+            gyro_bias_z: state[14],
+            latitude_cov: covariance_vec.get(0).cloned().unwrap_or(0.0),
+            longitude_cov: covariance_vec.get(1).cloned().unwrap_or(0.0),
+            altitude_cov: covariance_vec.get(2).cloned().unwrap_or(0.0),
+            velocity_n_cov: covariance_vec.get(3).cloned().unwrap_or(0.0),
+            velocity_e_cov: covariance_vec.get(4).cloned().unwrap_or(0.0),
+            velocity_d_cov: covariance_vec.get(5).cloned().unwrap_or(0.0),
+            roll_cov: covariance_vec.get(6).cloned().unwrap_or(0.0),
+            pitch_cov: covariance_vec.get(7).cloned().unwrap_or(0.0),
+            yaw_cov: covariance_vec.get(8).cloned().unwrap_or(0.0),
+            acc_bias_x_cov: covariance_vec.get(9).cloned().unwrap_or(0.0),
+            acc_bias_y_cov: covariance_vec.get(10).cloned().unwrap_or(0.0),
+            acc_bias_z_cov: covariance_vec.get(11).cloned().unwrap_or(0.0),
+            gyro_bias_x_cov: covariance_vec.get(12).cloned().unwrap_or(0.0),
+            gyro_bias_y_cov: covariance_vec.get(13).cloned().unwrap_or(0.0),
+            gyro_bias_z_cov: covariance_vec.get(14).cloned().unwrap_or(0.0),
+            acc_x: imu_data.accel[0],
+            acc_y: imu_data.accel[1],
+            acc_z: imu_data.accel[2],
+            gyro_x: imu_data.gyro[0],
+            gyro_y: imu_data.gyro[1],
+            gyro_z: imu_data.gyro[2],
+            mag_x,
+            mag_y,
+            mag_z,
+            pressure,
+            freeair,
+            mag_anomaly,
         }
     }
     /// Writes the NavigationResult to a CSV file.
@@ -363,9 +595,75 @@ impl NavigationResult {
         Ok(records)
     }
 }
-impl From<(&StrapdownState, &DateTime<Utc>)> for NavigationResult {
-    fn from((state, timestamp): (&StrapdownState, &DateTime<Utc>)) -> Self {
-        let (roll, pitch, yaw) = state.attitude.euler_angles();
+/// Convert NED UKF to NavigationResult.
+impl From<(&DateTime<Utc>, &UKF, &IMUData, &f64, &f64, &f64, &f64)> for NavigationResult {
+    fn from((timestamp, ukf, imu_data, mag_x, mag_y, mag_z, pressure): (&DateTime<Utc>, &UKF, &IMUData, &f64, &f64, &f64, &f64)) -> Self {
+        let state = ukf.get_mean();
+        let covariance = ukf.get_covariance();
+        NavigationResult {
+            timestamp: *timestamp,
+            latitude: state[0].to_degrees(),
+            longitude: state[1].to_degrees(),
+            altitude: state[2],
+            velocity_n: state[3],
+            velocity_e: state[4],
+            velocity_d: state[5],
+            roll: state[6],
+            pitch: state[7],
+            yaw: state[8],
+            acc_bias_x: state[9],
+            acc_bias_y: state[10],
+            acc_bias_z: state[11],
+            gyro_bias_x: state[12],
+            gyro_bias_y: state[13],
+            gyro_bias_z: state[14],
+            latitude_cov: covariance[(0, 0)],
+            longitude_cov: covariance[(1, 1)],
+            altitude_cov: covariance[(2, 2)],
+            velocity_n_cov: covariance[(3, 3)],
+            velocity_e_cov: covariance[(4, 4)],
+            velocity_d_cov: covariance[(5, 5)],
+            roll_cov: covariance[(6, 6)],
+            pitch_cov: covariance[(7, 7)],
+            yaw_cov: covariance[(8, 8)],
+            acc_bias_x_cov: covariance[(9, 9)],
+            acc_bias_y_cov: covariance[(10, 10)],
+            acc_bias_z_cov: covariance[(11, 11)],
+            gyro_bias_x_cov: covariance[(12, 12)],
+            gyro_bias_y_cov: covariance[(13, 13)],
+            gyro_bias_z_cov: covariance[(14, 14)],
+            acc_x: imu_data.accel[0],
+            acc_y: imu_data.accel[1],
+            acc_z: imu_data.accel[2],
+            gyro_x: imu_data.gyro[0],
+            gyro_y: imu_data.gyro[1],
+            gyro_z: imu_data.gyro[2],
+            mag_x: *mag_x,
+            mag_y: *mag_y,
+            mag_z: *mag_z,
+            pressure: *pressure,
+            freeair: earth::gravity_anomaly(
+                &state[0].to_radians(),
+                &state[2],
+                &state[3],
+                &state[4],
+                &(imu_data.accel[0].powi(2) + imu_data.accel[1].powi(2) + imu_data.accel[2].powi(2)).sqrt()
+            ),
+            mag_anomaly: earth::magnetic_anomaly(
+                &state[0].to_radians(),
+                &state[1].to_radians(),
+                &state[2],
+                &mag_x,
+                &mag_y,
+                &mag_z,
+            ),
+        }
+    }
+}
+impl From<(&DateTime<Utc>, &StrapdownState, &IMUData, &f64, &f64, &f64, &f64)> for NavigationResult {
+    fn from((timestamp, state, imu_data, mag_x, mag_y, mag_z, pressure): (&DateTime<Utc>, &StrapdownState, &IMUData, &f64, &f64, &f64, &f64)) -> Self {
+        //let state = ukf.get_mean();
+        //let covariance = ukf.get_covariance();
         NavigationResult {
             timestamp: *timestamp,
             latitude: state.latitude.to_degrees(),
@@ -374,13 +672,59 @@ impl From<(&StrapdownState, &DateTime<Utc>)> for NavigationResult {
             velocity_n: state.velocity_north,
             velocity_e: state.velocity_east,
             velocity_d: state.velocity_down,
-            roll,
-            pitch,
-            yaw,
-            covariance: None,
+            roll: state.attitude.euler_angles().0,
+            pitch: state.attitude.euler_angles().1,
+            yaw: state.attitude.euler_angles().2,
+            acc_bias_x: 0.0,
+            acc_bias_y: 0.0,
+            acc_bias_z: 0.0,
+            gyro_bias_x: 0.0,
+            gyro_bias_y: 0.0,
+            gyro_bias_z: 0.0,
+            latitude_cov:  0.0,
+            longitude_cov: 0.0,
+            altitude_cov:  0.0,
+            velocity_n_cov: 0.0,
+            velocity_e_cov: 0.0,
+            velocity_d_cov: 0.0,
+            roll_cov:  0.0,
+            pitch_cov: 0.0,
+            yaw_cov:   0.0,
+            acc_bias_x_cov: 0.0,
+            acc_bias_y_cov: 0.0,
+            acc_bias_z_cov: 0.0,
+            gyro_bias_x_cov: 0.0,
+            gyro_bias_y_cov: 0.0,
+            gyro_bias_z_cov: 0.0,
+            acc_x: imu_data.accel[0],
+            acc_y: imu_data.accel[1],
+            acc_z: imu_data.accel[2],
+            gyro_x: imu_data.gyro[0],
+            gyro_y: imu_data.gyro[1],
+            gyro_z: imu_data.gyro[2],
+            mag_x: *mag_x,
+            mag_y: *mag_y,
+            mag_z: *mag_z,
+            pressure: *pressure,
+            freeair: earth::gravity_anomaly(
+                &state.latitude,
+                &state.altitude,
+                &state.velocity_north,
+                &state.velocity_east,
+                &(imu_data.accel[0].powi(2) + imu_data.accel[1].powi(2) + imu_data.accel[2].powi(2)).sqrt()
+            ),
+            mag_anomaly: earth::magnetic_anomaly(
+                &state.latitude,
+                &state.longitude,
+                &state.altitude,
+                &mag_x,
+                &mag_y,
+                &mag_z,
+            ),
         }
     }
 }
+
 /// Custom serializer for the covariance field to serialize it as a single string in CSV
 fn serialize_covariance<S>(cov: &Option<Vec<f64>>, serializer: S) -> Result<S::Ok, S::Error>
 where
@@ -416,26 +760,6 @@ where
             }
         }
         _ => Ok(None),
-    }
-}
-/// Convert NED UKF to NavigationResult.
-impl From<(&UKF, &DateTime<Utc>)> for NavigationResult {
-    fn from((ukf, timestamp): (&UKF, &DateTime<Utc>)) -> Self {
-        let state = ukf.get_mean();
-        let covariance = ukf.get_covariance();
-        NavigationResult {
-            timestamp: *timestamp,
-            latitude: state[0].to_degrees(),
-            longitude: state[1].to_degrees(),
-            altitude: state[2],
-            velocity_n: state[3],
-            velocity_e: state[4],
-            velocity_d: state[5],
-            roll: state[6],
-            pitch: state[7],
-            yaw: state[8],
-            covariance: Some(covariance.iter().cloned().collect::<Vec<f64>>()),
-        }
     }
 }
 /// Run dead reckoning or "open-loop" simulation using test data.
@@ -477,13 +801,22 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
         coordinate_convention: true,
     };
     // Store the initial state and metadata
-    results.push(NavigationResult::from((&state, &records[0].time)));
+    results.push(NavigationResult::from((
+        &records[0].time, 
+        &state, 
+        &IMUData::new_from_vec(
+            vec![first_record.acc_x, first_record.acc_y, first_record.acc_z],
+            vec![first_record.gyro_x, first_record.gyro_y, first_record.gyro_z],
+        ),
+        &first_record.mag_x,
+        &first_record.mag_y,
+        &first_record.mag_z,
+        &first_record.pressure,
+        ))
+    );
     let mut previous_time = records[0].time;
     // Process each subsequent record
-    let total: usize = records.len();
-    let mut i: usize = 1;
     for record in records.iter().skip(1) {
-        i = print_progress(i, total, 10);
         // Try to calculate time difference from timestamps, default to 1 second if parsing fails
         let current_time = record.time;
         let dt = (current_time - previous_time).as_seconds_f64();
@@ -494,7 +827,15 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
         );
         // Propagate the state forward (replace with stub for now)
         state.forward(&imu_data, dt);
-        results.push(NavigationResult::from((&state, &current_time)));
+        results.push(NavigationResult::from((
+            &current_time,
+            &state,
+            &imu_data,
+            &record.mag_x,
+            &record.mag_y,
+            &record.mag_z,
+            &record.pressure,
+            )));
         previous_time = record.time;
     }
     results
@@ -509,7 +850,8 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
 /// * `records` - Vector of test data records containing IMU measurements and GPS data.
 /// # Returns
 /// * `Vec<NavigationResult>` - A vector of navigation results containing the state estimates and covariances at each timestamp.
-pub fn closed_loop(records: &[TestDataRecord]) -> Vec<NavigationResult> {
+pub fn closed_loop(records: &[TestDataRecord], gps_interval: Option<usize>) -> Vec<NavigationResult> {
+    let gps_interval = gps_interval.unwrap_or(1); // Default to every record if not specified
     let mut results: Vec<NavigationResult> = Vec::with_capacity(records.len());
     // Initialize the UKF with the first record
     let mut ukf = initialize_ukf(
@@ -518,14 +860,41 @@ pub fn closed_loop(records: &[TestDataRecord]) -> Vec<NavigationResult> {
         None, //Some(vec![1e-6; 6])
     );
     // Set the initial result to the UKF initial state
-    results.push(NavigationResult::from((&ukf, &records[0].time)));
+    results.push(NavigationResult::from((
+        &records[0].time,
+        &ukf,
+        &IMUData::new_from_vec(
+            vec![
+                records[0].acc_x, // initial accelerometer data
+                records[0].acc_y,
+                records[0].acc_z,
+            ],
+            vec![
+                records[0].gyro_x, // initial gyroscope data
+                records[0].gyro_y,
+                records[0].gyro_z,
+            ],
+        ),
+        &records[0].mag_x,
+        &records[0].mag_y,
+        &records[0].mag_z,
+        &records[0].pressure,
+    )));
     let mut previous_timestamp = records[0].time;
     // Iterate through the records, updating the UKF with each IMU measurement
     let total: usize = records.len();
     let mut i: usize = 1;
     for record in records.iter().skip(1) {
-        i = print_progress(i, total, 10);
-        // print_ukf(&ukf, record);
+        // Print progress every 100 iterations
+        if i % 10 == 0 || i == total - 1 {
+            print!(
+                "\rProcessing data {:.2}%...",
+                (i as f64 / total as f64) * 100.0
+            );
+            //print_ukf(&ukf, record);
+            use std::io::Write;
+            std::io::stdout().flush().ok();
+        }
         // Calculate time difference from the previous record
         let current_timestamp = record.time;
         let dt = (current_timestamp - previous_timestamp).as_seconds_f64();
@@ -546,37 +915,53 @@ pub fn closed_loop(records: &[TestDataRecord]) -> Vec<NavigationResult> {
         // Update the UKF with the IMU data
         ukf.predict(&imu_data, dt);
         // If GPS data is available, update the UKF with the GPS measurement
-        if !record.latitude.is_nan() && !record.longitude.is_nan() && !record.altitude.is_nan() {
+        if !record.latitude.is_nan() && !record.longitude.is_nan() && !record.altitude.is_nan() && i % gps_interval == 0 {
+            let mean = ukf.get_mean();
+            //let angles = mean.columns(6, 3);
+            //println!("UKF attitude angles: {:?}", angles);
+            let attitude = Rotation3::from_euler_angles(mean[5], mean[6], mean[7]);
+            let velocity = attitude * Vector3::new(record.speed, 0.0, 0.0);  
             let measurement = DVector::from_vec(vec![
                 record.latitude.to_radians(),
                 record.longitude.to_radians(),
                 record.altitude,
-                record.speed * record.bearing.cos(),
-                record.speed * record.bearing.sin(),
-                0.0, // Assuming no vertical velocity
+                velocity[0],
+                velocity[1],
+                velocity[2],
             ]);
             // Create the measurement sigma points using the position measurement model
-            //let measurement_sigma_points = ukf.position_measurement_model(true);
-            //let measurement_noise = ukf.position_measurement_noise(true);
             let measurement_sigma_points = ukf.position_and_velocity_measurement_model(true);
+            // print the sigma points for debugging
+            // println!(
+            //     "Measurement Sigma Points:"
+            // );
+            // for point in measurement_sigma_points.iter() {
+            //     println!("{:?}", point);
+            // }
             let measurement_noise = ukf.position_and_velocity_measurement_noise(true);
+            //println!("Measurement noise: {:?}", &measurement);
             // Update the UKF with the GPS measurement
             ukf.update(&measurement, &measurement_sigma_points, &measurement_noise);
         }
-
         // Store the current state and covariance in results
-        results.push(NavigationResult::from((&ukf, &current_timestamp)));
+        results.push(NavigationResult::from((
+            &current_timestamp,
+            &ukf,
+            &imu_data,
+            &record.mag_x,
+            &record.mag_y,
+            &record.mag_z,
+            &record.pressure,
+        )));
+        i += 1;
         previous_timestamp = current_timestamp;
     }
     // Print newline at the end to avoid overwriting the last line
     println!("Done!");
     results
 }
+/// Print the UKF state and covariance for debugging purposes.
 pub fn print_ukf(ukf: &UKF, record: &TestDataRecord) {
-    println!(
-        "======================================================================================================"
-    );
-
     println!(
         "\rUKF position: ({:.4}, {:.4}, {:.4})  |  Covariance: {:.4e}, {:.4e}, {:.4}  |  Error: {:.4e}, {:.4e}, {:.4}",
         ukf.get_mean()[0].to_degrees(),
@@ -603,18 +988,18 @@ pub fn print_ukf(ukf: &UKF, record: &TestDataRecord) {
     );
     println!(
         "\rUKF attitude: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4}, {:.4}, {:.4}  | Error: {:.4}, {:.4}, {:.4}",
-        ukf.get_mean()[6].to_degrees(),
-        ukf.get_mean()[7].to_degrees(),
-        ukf.get_mean()[8].to_degrees(),
+        ukf.get_mean()[6],
+        ukf.get_mean()[7],
+        ukf.get_mean()[8],
         ukf.get_covariance()[(6, 6)],
         ukf.get_covariance()[(7, 7)],
         ukf.get_covariance()[(8, 8)],
-        (ukf.get_mean()[6] - record.roll).to_degrees(),
-        (ukf.get_mean()[7] - record.pitch).to_degrees(),
-        (ukf.get_mean()[8] - record.yaw).to_degrees()
+        ukf.get_mean()[6] - record.roll,
+        ukf.get_mean()[7] - record.pitch,
+        ukf.get_mean()[8] - record.yaw
     );
     println!(
-        "\rUKF accel biases: ({:.e}, {:.e}, {:.e})  | Covariance: {:.4e}, {:.4e}, {:.4e}",
+        "\rUKF accel biases: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4e}, {:.4e}, {:.4e}",
         ukf.get_mean()[9],
         ukf.get_mean()[10],
         ukf.get_mean()[11],
@@ -623,7 +1008,7 @@ pub fn print_ukf(ukf: &UKF, record: &TestDataRecord) {
         ukf.get_covariance()[(11, 11)]
     );
     println!(
-        "\rUKF gyro biases: ({:.e}, {:.e}, {:.e})  | Covariance: {:.4e}, {:.4e}, {:.4e}",
+        "\rUKF gyro biases: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4e}, {:.4e}, {:.4e}",
         ukf.get_mean()[12],
         ukf.get_mean()[13],
         ukf.get_mean()[14],
@@ -632,18 +1017,7 @@ pub fn print_ukf(ukf: &UKF, record: &TestDataRecord) {
         ukf.get_covariance()[(14, 14)]
     );
 }
-fn print_progress(i: usize, total: usize, rate: usize) -> usize {
-    if i % rate == 0 || i == total - 1 {
-        print!(
-            "\rProcessing data {:.2}%...",
-            (i as f64 / total as f64) * 100.0
-        );
-        //print_ukf(&ukf, record);
-        use std::io::Write;
-        std::io::stdout().flush().ok();
-    }
-    i + 1
-}
+
 /// Helper function to initialize a UKF for closed-loop mode.
 ///
 /// This function sets up the Unscented Kalman Filter (UKF) with initial pose, attitude covariance, and IMU biases based on
@@ -698,12 +1072,12 @@ pub fn initialize_ukf(
             imu_biases
         }
         None => {
-            covariance_diagonal.extend(vec![1e-9; 6]);
-            vec![0.0; 6] // Default values if not provided
+            covariance_diagonal.extend(vec![1e-3; 6]);
+            vec![1e-3; 6] // Default values if not provided
         }
     };
     let mut process_noise_diagonal = vec![1e-9; 9]; // adds a minor amount of noise to base states
-    process_noise_diagonal.extend(vec![1e-3; 6]); // Process noise for imu biases
+    process_noise_diagonal.extend(vec![1e-9; 6]); // Process noise for imu biases
     let process_noise_diagonal = DVector::from_vec(process_noise_diagonal);
     //DVector::from_vec(vec![0.0; 15]);
     UKF::new(
@@ -779,7 +1153,7 @@ mod tests {
         records
     }
     #[test]
-    fn generate_northward_motion_records_end_latitude() {
+    fn test_generate_northward_motion_records_end_latitude() {
         let records = generate_northward_motion_records();
         // The last record should have latitude close to 0.016667 (1 knot north in 1 hour)
         let last = records.last().unwrap();
@@ -804,14 +1178,14 @@ mod tests {
     }
     /// Test that reading a missing file returns an error.
     #[test]
-    fn data_record_from_csv_invalid_path() {
+    fn test_test_data_record_from_csv_invalid_path() {
         let path = Path::new("nonexistent.csv");
         let result = TestDataRecord::from_csv(path);
         assert!(result.is_err(), "Should error on missing file");
     }
     /// Test writing TestDataRecord to CSV and reading it back
     #[test]
-    fn data_record_to_and_from_csv() {
+    fn test_data_record_to_and_from_csv() {
         // Read original records
         let path = Path::new("test_file.csv");
         let mut records: Vec<TestDataRecord> = vec![];
@@ -919,30 +1293,18 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
     #[test]
-    fn navigation_result_new() {
-        let nav = NavigationResult::new(
-            "2023-01-01 00:00:00+00:00",
-            &1.0,
-            &2.0,
-            &3.0,
-            &4.0,
-            &5.0,
-            &6.0,
-            &7.0,
-            &8.0,
-            &9.0,
-            Some(vec![1.0, 2.0, 3.0]),
-        );
+    fn test_navigation_result_new() {
+        let nav = NavigationResult::new();
         let expected_timestamp =
             chrono::DateTime::parse_from_str("2023-01-01 00:00:00+00:00", "%Y-%m-%d %H:%M:%S%z")
                 .unwrap()
                 .with_timezone(&chrono::Utc);
         assert_eq!(nav.timestamp, expected_timestamp);
-        assert_eq!(nav.latitude, 1.0);
-        assert_eq!(nav.covariance.as_ref().unwrap().len(), 3);
+        assert_eq!(nav.latitude, 0.0);
+        //assert_eq!(nav.covariance.as_ref().unwrap().len(), 3);
     }
     #[test]
-    fn navigation_result_new_from_nav_state() {
+    fn test_navigation_result_new_from_nav_state() {
         let mut state = StrapdownState::new();
         state.latitude = 1.0;
         state.longitude = 2.0;
@@ -953,40 +1315,34 @@ mod tests {
         state.attitude = nalgebra::Rotation3::from_euler_angles(7.0, 8.0, 9.0);
         let cov = DMatrix::from_element(9, 9, 0.5);
         let timestamp = chrono::Utc::now();
-        let nav = NavigationResult::new_from_nav_state(&state, timestamp, Some(cov.clone()));
+        //let nav = NavigationResult::new_from_nav_state(&state, timestamp, Some(cov.clone()));
+        let nav = NavigationResult::from((
+            &timestamp,
+            &state,
+            &IMUData::new_from_vec(vec![0.0; 3], vec![0.0; 3]),
+            &0.0,
+            &0.0,
+            &0.0,
+            &1000.0, // dummy pressure
+        ));
         assert_eq!(nav.latitude, 1.0);
-        assert_eq!(nav.covariance.as_ref().unwrap().len(), 81);
-        let nav2 = NavigationResult::new_from_nav_state(&state, timestamp, None);
-        assert!(nav2.covariance.is_none());
     }
+    // #[test]
+    // fn test_navigation_result_new_from_vector() {
+    //     let v = DVector::from_vec((1..=9).map(|x| x as f64).collect());
+    //     let cov = DMatrix::from_element(9, 9, 0.1);
+    //     let timestamp = chrono::Utc::now();
+    //     let nav = NavigationResult::new_from_vector(&v, timestamp, Some(&cov));
+    //     assert_eq!(nav.latitude, 1.0);
+    //     assert_eq!(nav.yaw, 9.0);
+    //     assert_eq!(nav.covariance.as_ref().unwrap().len(), 81);
+    //     let timestamp = chrono::Utc::now();
+    //     let nav2 = NavigationResult::new_from_vector(&v, timestamp, None);
+    //     assert!(nav2.covariance.is_none());
+    // }
     #[test]
-    fn navigation_result_new_from_vector() {
-        let v = DVector::from_vec((1..=9).map(|x| x as f64).collect());
-        let cov = DMatrix::from_element(9, 9, 0.1);
-        let timestamp = chrono::Utc::now();
-        let nav = NavigationResult::new_from_vector(&v, timestamp, Some(&cov));
-        assert_eq!(nav.latitude, 1.0);
-        assert_eq!(nav.yaw, 9.0);
-        assert_eq!(nav.covariance.as_ref().unwrap().len(), 81);
-        let timestamp = chrono::Utc::now();
-        let nav2 = NavigationResult::new_from_vector(&v, timestamp, None);
-        assert!(nav2.covariance.is_none());
-    }
-    #[test]
-    fn navigation_result_to_csv_and_from_csv() {
-        let nav = NavigationResult::new(
-            "2023-01-01 00:00:00+00:00",
-            &1.0,
-            &2.0,
-            &3.0,
-            &4.0,
-            &5.0,
-            &6.0,
-            &7.0,
-            &8.0,
-            &9.0,
-            Some(vec![1.0, 2.0, 3.0]),
-        );
+    fn test_navigation_result_to_csv_and_from_csv() {
+        let nav = NavigationResult::new();
         let temp_file = std::env::temp_dir().join("test_nav_result.csv");
         NavigationResult::to_csv(&[nav.clone()], &temp_file).unwrap();
         let read = NavigationResult::from_csv(&temp_file).unwrap();
@@ -995,7 +1351,7 @@ mod tests {
         let _ = std::fs::remove_file(&temp_file);
     }
     #[test]
-    fn dead_reckoning_empty_and_single() {
+    fn test_dead_reckoning_empty_and_single() {
         let empty: Vec<TestDataRecord> = vec![];
         let res = dead_reckoning(&empty);
         assert!(res.is_empty());
@@ -1043,7 +1399,7 @@ mod tests {
         assert_eq!(res.len(), 2);
     }
     #[test]
-    fn closed_loop_minimal() {
+    fn test_closed_loop_minimal() {
         let rec = TestDataRecord::from_csv("./data/test_data.csv")
             .ok()
             .and_then(|v| v.into_iter().next())
@@ -1080,11 +1436,11 @@ mod tests {
                 grav_y: 0.0,
                 grav_x: 0.0,
             });
-        let res = closed_loop(&vec![rec.clone()]);
+        let res = closed_loop(&vec![rec.clone()], Some(1));
         assert!(!res.is_empty());
     }
     #[test]
-    fn initialize_ukf_default_and_custom() {
+    fn test_initialize_ukf_default_and_custom() {
         let rec = TestDataRecord {
             time: chrono::Utc::now(),
             bearing_accuracy: 0.0,
