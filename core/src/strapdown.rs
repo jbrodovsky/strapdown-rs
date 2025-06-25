@@ -692,11 +692,6 @@ where
     }
     wrapped
 }
-
-/// tester function for building bindings
-pub fn add(a: f64, b: f64) -> f64 {
-    a + b
-}
 /// Wrap latitude to the range -90 to 90 degrees
 ///
 /// This function is generic and can be used with any type that implements the necessary traits.

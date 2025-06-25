@@ -561,17 +561,6 @@ impl NavigationResult {
     ///
     /// # Returns
     /// * `io::Result<()>` - Ok if successful, Err otherwise
-    ///
-    /// # Example
-    /// ```
-    /// use strapdown::sim::NavigationResult;
-    /// use std::path::Path;
-    /// let records = vec![NavigationResult::new(
-    ///     "2023-01-01 00:00:00+00:00", &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, &0.0, None )];
-    /// NavigationResult::to_csv(&records, "navigation_results.csv").expect("Failed to write CSV");
-    /// // doctest cleanup
-    /// std::fs::remove_file("navigation_results.csv").unwrap();
-    /// ```
     pub fn to_csv<P: AsRef<Path>>(records: &[Self], path: P) -> io::Result<()> {
         let mut writer = csv::Writer::from_path(path)?;
         for record in records {
