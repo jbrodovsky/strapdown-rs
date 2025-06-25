@@ -1,5 +1,12 @@
 # Strapdown - A simple strapdown INS implementation
 
+HTML: <a href="https://joss.theoj.org/papers/5079592cc860d1435482a4a7764edcd4"><img src="https://joss.theoj.org/papers/5079592cc860d1435482a4a7764edcd4/status.svg"></a>
+Markdown: [![status](https://joss.theoj.org/papers/5079592cc860d1435482a4a7764edcd4/status.svg)](https://joss.theoj.org/papers/5079592cc860d1435482a4a7764edcd4)
+
+[![Crates.io](https://img.shields.io/crates/v/strapdown-rs.svg)](https://crates.io/crates/strapdown-rs)
+[![Documentation](https://docs.rs/strapdown-rs/badge.svg)](https://docs.rs/strapdown-rs)
+[![License](https://img.shields.io/crates/l/strapdown-rs.svg)]
+
 Strapdown-rs is a straightforward strapdown inertial navigation system (INS) implementation in Rust. It is designed to be simple and easy to understand, making it a great starting point for those interested in learning about or implementing strapdown INS algorithms. It is currently under active development.
 
 ## Installation
