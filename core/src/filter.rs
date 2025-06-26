@@ -464,7 +464,6 @@ impl UKF {
         // Propagate the strapdown state using the strapdown equations
         let mut sigma_points = self.get_sigma_points();
         for sigma_point in &mut sigma_points {
-            println!("{}", sigma_point.get_string());
             sigma_point.forward(imu_data, dt, None);
         }
         // Update the mean state as mu_bar
@@ -523,11 +522,6 @@ impl UKF {
             measurement_sigma_points[0].len() == measurement.len(),
             "Measurement sigma points and measurement vector must be of the same size"
         );
-        // Print the measurement sigma points recieved
-        // for sigma in measurement_sigma_points.iter() {
-        //     println!("[UKF::update] measurement sigma point: [{:.4}, {:.4}, {:.2}]",
-        //              sigma[0].to_degrees(), sigma[1].to_degrees(), sigma[2]);
-        // }
         // Calculate expected measurement
         let mut z_hat = DVector::<f64>::zeros(measurement.len());
         for (i, sigma_point) in measurement_sigma_points.iter().enumerate() {
@@ -1074,7 +1068,6 @@ mod tests {
         assert_eq!(sigma_points.len(), (2 * ukf.state_size) + 1);
 
         let mu = ukf.sigma_points_as_matrix() * ukf.weights_mean;
-        //println!("mu: {}", mu);
         assert_eq!(mu.nrows(), ukf.state_size);
         assert_eq!(mu.ncols(), 1);
         assert_approx_eq!(mu[0], position[0], 1e-6);
