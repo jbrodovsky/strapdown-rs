@@ -65,6 +65,8 @@ pub const ECCENTRICITY_SQUARED: f64 = ECCENTRICITY * ECCENTRICITY;
 pub const GE: f64 = 9.7803253359; // m/s^2, equatorial radius
 /// Earth's gravitational acceleration at the poles ($g_p$) in $m/s^2$
 pub const GP: f64 = 9.8321849378; // $m/s^2$, polar radius
+/// Earth's average standard gravitational accelleration
+pub const G: f64 = 9.80665; // m/s^2, standard gravitational acceleration
 /// Earth's flattening factor ($f$)
 pub const F: f64 = 1.0 / 298.257223563; // Flattening factor
 /// Somigliana's constant ($K$)
@@ -82,7 +84,52 @@ pub const MAGNETIC_FIELD_STRENGTH: f64 = 3.12e-5; // T, reference mean magnetic 
 pub const METERS_TO_DEGREES: f64 = 1.0 / (60.0 * 1852.0);
 /// Rough conversion factor from degrees to meters for latitude/longitude via nautical miles (1 degree ~ 60 nautical miles; 1 nautical mile ~ 1852 meters)
 pub const DEGREES_TO_METERS: f64 = 60.0 * 1852.0;
+/// Atmospheric pressure at sea level in Pascals ($P_0$)
+pub const SEA_LEVEL_PRESSURE: f64 = 101325.0;
+/// Standard temperature at sea level in Kelvin ($T_0$)
+pub const SEA_LEVEL_TEMPERATURE: f64 = 288.15; 
+/// Molar mass of dry air in kg/mol ($M$)
+pub const MOLAR_MASS_DRY_AIR: f64 = 0.0289644; 
+/// Universal gas constant in J/(mol·K) ($R_0$)
+pub const UNIVERSAL_GAS_CONSTANT: f64 = 8.314462618;
+/// Standard lapse rate in K/m ($L$)
+pub const STANDARD_LAPSE_RATE: f64 = 0.0065;
 
+/// Convert milibar to Pascals
+pub fn mbar_to_pa(mbar: f64) -> f64 {
+    mbar * 100.0
+}
+/// Calculate a barometric altitude from a measured pressure
+/// 
+/// This function calculates the altitude above sea level based on the measured pressure
+/// using the barometric formula. The formula assumes a standard atmosphere and uses the
+/// universal gas constant, standard lapse rate, and molar mass of dry air.
+/// 
+/// # Parameters
+/// - `pressure` - The measured pressure in Pascals
+/// # Returns
+/// The calculated altitude in meters above sea level
+pub fn barometric_altitude(pressure: &f64) -> f64 {
+    let exponent: f64 = - (UNIVERSAL_GAS_CONSTANT * STANDARD_LAPSE_RATE) / (G * MOLAR_MASS_DRY_AIR);
+    (SEA_LEVEL_PRESSURE / STANDARD_LAPSE_RATE) * (pressure / SEA_LEVEL_PRESSURE - 1.0) * exponent.exp()
+}
+/// Calculate the relative barometric altitude from a measured pressure
+/// 
+/// This function calculates the relative altitude from a reference pressure using the
+/// barometric formula. The formula assumes a standard atmosphere and uses the universal 
+/// gas constant, standard lapse rate, and molar mass of dry air.
+/// 
+/// # Parameters
+/// - `pressure` - The measured pressure in Pascals
+/// - `initial_pressure` - The reference pressure in Pascals
+/// - `average_temperature` - Optional average temperature in Kelvin (defaults to standard sea level temperature)
+/// 
+/// # Returns
+/// The calculated relative altitude in meters above the reference pressure
+pub fn relative_barometric_altitude(pressure: f64, initial_pressure: f64, average_temperature: Option<f64>) -> f64 {
+    let average_temperature = average_temperature.unwrap_or(SEA_LEVEL_TEMPERATURE);
+    ((UNIVERSAL_GAS_CONSTANT * average_temperature) / (G * MOLAR_MASS_DRY_AIR)) * (initial_pressure / pressure).ln()
+}
 /// Convert a three-element vector to a skew-symmetric matrix
 ///
 /// Groves' notation uses a lot of skew-symmetric matrices to represent cross products
