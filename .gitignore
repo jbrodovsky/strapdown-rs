@@ -3,6 +3,7 @@
 /strapdown_py/.venv
 /strapdown_py/.pytest_cache
 /strapdown_py/dist
+/core/*.csv
 
 # pixi environments
 .pixi
@@ -15,3 +16,6 @@ pixi.toml
 *.pyc
 __pycache__
 *.ipynb
+# pixi environments
+.pixi
+*.egg-info

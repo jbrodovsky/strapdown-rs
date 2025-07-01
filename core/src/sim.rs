@@ -754,6 +754,7 @@ impl
         }
     }
 }
+
 /// Run dead reckoning or "open-loop" simulation using test data.
 ///
 /// This function processes a sequence of sensor records through a StrapdownState, using
@@ -918,30 +919,17 @@ pub fn closed_loop(
             && !record.altitude.is_nan()
             && i % gps_interval == 0
         {
-            let mean = ukf.get_mean();
-            //let angles = mean.columns(6, 3);
-            //println!("UKF attitude angles: {:?}", angles);
-            let attitude = Rotation3::from_euler_angles(mean[5], mean[6], mean[7]);
-            let velocity = attitude * Vector3::new(record.speed, 0.0, 0.0);
             let measurement = DVector::from_vec(vec![
                 record.latitude.to_radians(),
                 record.longitude.to_radians(),
                 record.altitude,
-                velocity[0],
-                velocity[1],
-                velocity[2],
+                record.speed * record.bearing.cos(),
+                record.speed * record.bearing.sin(),
+                0.0, // Assuming no vertical velocity in GPS measurement
             ]);
             // Create the measurement sigma points using the position measurement model
             let measurement_sigma_points = ukf.position_and_velocity_measurement_model(true);
-            // print the sigma points for debugging
-            // println!(
-            //     "Measurement Sigma Points:"
-            // );
-            // for point in measurement_sigma_points.iter() {
-            //     println!("{:?}", point);
-            // }
             let measurement_noise = ukf.position_and_velocity_measurement_noise(true);
-            //println!("Measurement noise: {:?}", &measurement);
             // Update the UKF with the GPS measurement
             ukf.update(&measurement, &measurement_sigma_points, &measurement_noise);
         }
@@ -958,7 +946,6 @@ pub fn closed_loop(
         i += 1;
         previous_timestamp = current_timestamp;
     }
-    // Print newline at the end to avoid overwriting the last line
     println!("Done!");
     results
 }
