@@ -23,27 +23,14 @@ struct Args {
     #[clap(long, value_parser)]
     gps_interval: Option<usize>,
 }
-
-fn write_results_to_csv(
-    // TODO: make this public and move to sim.rs
-    results: &[NavigationResult],
-    output: &PathBuf,
-) -> Result<(), Box<dyn Error>> {
-    let mut wtr = WriterBuilder::new().from_path(output)?;
-    for result in results {
-        wtr.serialize(result)?;
-    }
-    wtr.flush()?;
-    Ok(())
-}
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
-    // Read the input CSV file
-    let mut rdr = ReaderBuilder::new().from_path(&args.input)?;
     // Validate the mode
     if args.mode != "open-loop" && args.mode != "closed-loop" {
         return Err("Invalid mode specified. Use 'open-loop' or 'closed-loop'.".into());
     }
+    // Read the input CSV file
+    let mut rdr = ReaderBuilder::new().from_path(&args.input)?;
     let records: Vec<TestDataRecord> = rdr.deserialize().collect::<Result<_, _>>()?;
     println!(
         "Read {} records from {}",
@@ -58,13 +45,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         );
 
         results = closed_loop(&records, args.gps_interval);
-        match write_results_to_csv(&results, &args.output) {
+        //match write_results_to_csv(&results, &args.output) {
+        match NavigationResult::to_csv(&results, &args.output) {
             Ok(_) => println!("Results written to {}", args.output.display()),
             Err(e) => eprintln!("Error writing results: {}", e),
         };
     } else if args.mode == "open-loop" {
         results = dead_reckoning(&records);
-        match write_results_to_csv(&results, &args.output) {
+        // match write_results_to_csv(&results, &args.output) {
+        match NavigationResult::to_csv(&results, &args.output) {
             Ok(_) => println!("Results written to {}", args.output.display()),
             Err(e) => eprintln!("Error writing results: {}", e),
         };
