@@ -11,7 +11,7 @@ use std::io::{self};
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
-use nalgebra::{DMatrix, DVector, Rotation3, Vector3};
+use nalgebra::{DMatrix, DVector};
 use serde::{Deserialize, Serialize};
 
 use crate::earth;
