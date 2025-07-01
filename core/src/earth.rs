@@ -353,6 +353,21 @@ pub fn gravitation(latitude: &f64, longitude: &f64, altitude: &f64) -> Vector3<f
     gravity + rot * omega_ie * omega_ie * ecef_vec
 }
 /// Calculate local gravity anomaly from IMU accelerometer measurements
+/// 
+/// This function calculates the local gravity anomaly by comparing the observed gravity from the
+/// IMU accelerometer measurements (eg: $\sqrt(a_x^2 + a_y^2 + a_z^2)$) with the normal gravity 
+/// at the given latitude and altitude via the Somigliana method. Additionally, this function 
+/// compensates for the motion of the platform (if any) using the Eötvös correction.
+/// 
+/// # Parameters
+/// - `latitude` - The WGS84 latitude in degrees
+/// - `altitude` - The WGS84 altitude in meters
+/// - `north_velocity` - The northward velocity component in m/s
+/// - `east_velocity` - The eastward velocity component in m/s
+/// - `gravity_observed` - The observed gravity from the IMU accelerometer measurements in m/s^2
+/// 
+/// # Returns
+/// The local gravity anomaly in m/s^2, which is the difference between the observed gravity and the normal gravity at the given latitude and altitude, adjusted for the Eötvös correction.
 pub fn gravity_anomaly(
     latitude: &f64,
     altitude: &f64,
