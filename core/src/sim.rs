@@ -237,15 +237,16 @@ impl Display for TestDataRecord {
 /// Generic result struct for navigation simulations.
 ///
 /// This structure contains a single row of position, velocity, and attitude vectors
-/// representing the navigation solution at a specific timestamp, along with error estimates
-/// and confidence values derived from filter covariance, when available.
-///
+/// representing the navigation solution at a specific timestamp, along with the covariance diagonal,
+/// input IMU measurements, and derived geophysical values.
+/// 
 /// It can be used across different types of navigation simulations such as dead reckoning,
 /// Kalman filtering, or any other navigation algorithm.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Clone, Default, Debug, Serialize, Deserialize)]
 pub struct NavigationResult {
     /// Timestamp corresponding to the state
     pub timestamp: DateTime<Utc>,
+    // ---- Navigation solution states ----
     /// Latitude in radians
     pub latitude: f64,
     /// Longitude in radians
@@ -276,6 +277,7 @@ pub struct NavigationResult {
     pub gyro_bias_y: f64,
     /// IMU gyroscope z-axis bias in radians/s
     pub gyro_bias_z: f64,
+    // ---- Covariance values for the navigation solution ----
     /// Latitude covariance
     pub latitude_cov: f64,
     /// Longitude covariance
@@ -328,17 +330,11 @@ pub struct NavigationResult {
     /// Pressure in millibars
     pub pressure: f64,
     // ---- Calculated geophysical values that may be useful ----
-    /// Free-air gravity anomaly in mGal
+    /// Free-air gravity anomaly in Gal (note that most maps will be in mGal)
     pub freeair: f64,
     /// Magnetic field strength anomaly in nT
     pub mag_anomaly: f64,
 }
-impl Default for NavigationResult {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl NavigationResult {
     /// Creates a new NavigationResult with default values.
     pub fn new() -> Self {
@@ -380,12 +376,12 @@ impl NavigationResult {
             gyro_x: 0.0,
             gyro_y: 0.0,
             gyro_z: 0.0,
-            mag_x: earth::MAGNETIC_FIELD_STRENGTH, //50.0, // default magnetic field strength
-            mag_y: -30.0,                          // default values
-            mag_z: -20.0,                          // default values
-            pressure: 1013.25,                     // standard atmospheric pressure in millibars
-            freeair: 9.81 * METERS_TO_DEGREES,     // free-air gravity anomaly in mGal
-            mag_anomaly: -30.0,                    // default magnetic anomaly in nT
+            mag_x: earth::MAGNETIC_FIELD_STRENGTH,  // default magnetic field strength
+            mag_y: 0.0,                             // default values
+            mag_z: 0.0,                             // default values
+            pressure: 1013.25,                      // standard atmospheric pressure in millibars
+            freeair: 0.0,                           // free-air gravity anomaly in mGal
+            mag_anomaly: 0.0,                       // default magnetic anomaly in nT
         }
     }
     /// Creates a new NavigationResult from a StrapdownState, and covariance.
@@ -397,6 +393,7 @@ impl NavigationResult {
     /// * `state` - StrapdownState containing the current state of the navigation system
     /// * `timestamp` - DateTime<Utc>, the timestamp of the navigation solution
     pub fn new_from_nav_state(
+        // TODO: #55 implement this using the From trait
         state: &StrapdownState,
         timestamp: DateTime<Utc>,
         acc_bias_x: f64,
@@ -492,6 +489,7 @@ impl NavigationResult {
     /// # Returns
     /// * `NavigationResult` - A new NavigationResult instance with the state values and covariance.
     pub fn new_from_vector(
+        // TODO: #56 Implement this using the From trait
         timestamp: DateTime<Utc>,
         state: &DVector<f64>,
         covariance: Option<&DMatrix<f64>>,
@@ -1006,7 +1004,6 @@ pub fn print_ukf(ukf: &UKF, record: &TestDataRecord) {
         ukf.get_covariance()[(14, 14)]
     );
 }
-
 /// Helper function to initialize a UKF for closed-loop mode.
 ///
 /// This function sets up the Unscented Kalman Filter (UKF) with initial pose, attitude covariance, and IMU biases based on
