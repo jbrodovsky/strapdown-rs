@@ -292,6 +292,117 @@ impl SigmaPoint {
         state_str
     }
 }
+// ==== Measurement Models ========================================================
+// Below is a set of generic measurement models for the UKF and particle filter.
+// These models provide a vec of "expected measurements" based on the sigma points
+// location. When used in a filter, you should simulatanously iterate through the
+// list of sigma points or particles and the expected measurements in order to
+// calculate the innovation matrix or the particle weighting.
+// ================================================================================
+/// Parameters for GPS measurement noise models.
+#[derive(Debug, Clone)]
+pub struct GPSNoiseParams {
+    /// Position std dev in meters (for lat/lon, will be converted)
+    pub pos_std_m: f64,      
+    /// Altitude std dev in meters
+    pub alt_std_m: f64,      
+    /// Velocity std dev in m/s
+    pub vel_std_mps: f64, 
+}
+impl Default for GPSNoiseParams {
+    fn default() -> Self {
+        GPSNoiseParams {
+            pos_std_m: 5.0,
+            alt_std_m: 10.0,
+            vel_std_mps: 0.1,
+        }
+    }
+}
+/// GPS measurement model trait for cannonical INS implementations.
+///
+/// Standard GNSS-aided loosely-coupled INS measurement model. This model is used to update the state
+/// based on position measurements in the local level frame. The model assumes that the position
+/// measurements are in the local level frame and that the strapdown state is in the body frame.
+pub trait GPS {
+    /// GPS or Position-based measurement model
+    ///
+    /// Standard GNSS-aided loosely-coupled INS measurement model. This model is used to update the state
+    /// based on position measurements in the local level frame. The model assumes that the position
+    /// measurements are in the local level frame and that the strapdown state is in the body frame.
+    ///
+    /// # Arguments
+    /// * `with_altitude` - whether to include altitude in the measurement
+    ///
+    /// # Returns
+    /// * A vector of measurement sigma points either (N x 3) or (N x 2) depending on the `with_altitude` flag
+    fn position_measurement_model(&self, with_altitude: bool) -> Vec<DVector<f64>>;
+    /// UKF velocity-based measurement model
+    ///
+    /// Velocity measurement model. This model is used to update the state based on
+    /// velocity measurements in the local level frame. The model assumes that the velocity
+    /// measurements are in the local level frame and that the strapdown state is in the
+    /// body frame.
+    ///
+    /// # Arguments
+    /// * `with_altitude` - whether to include altitude in the measurement
+    ///
+    /// # Returns
+    /// * A vector of measurement sigma points either (N x 3) or (N x 2) depending on the `with_altitude` flag
+    fn velocity_measurement_model(&self, with_altitude: bool) -> Vec<DVector<f64>>;
+    /// GPS or Position-based measurement model
+    ///
+    /// GPS-aided INS measurement model for a combined position-velocity measuremet.
+    /// This model is used to update the state based on both position and velocity
+    /// measurements in the local level frame. The model assumes that the position
+    /// measurements are in the local level frame (latitude, longitude, altitude)
+    /// and that the velocity is orient along the northward, eastward, and downward
+    /// axes.
+    ///
+    /// # Arguments
+    /// * `with_altitude` - whether to include altitude in the measurement
+    ///
+    /// # Returns
+    /// * A vector of measurement sigma points either (N x 6) or (N x 4) depending on the `with_altitude` flag
+    fn position_and_velocity_measurement_model(&self, with_altitude: bool) -> Vec<DVector<f64>>;
+    /// Position measurement noise model
+    fn position_measurement_noise(&self, with_altitude: bool) -> DMatrix<f64>;
+    /// Velocity measurement noise model
+    fn velocity_measurement_noise(&self, with_altitude: bool) -> DMatrix<f64>;
+    /// Position and velocity measurement noise model
+    fn position_and_velocity_measurement_noise(&self, with_altitude: bool) -> DMatrix<f64>;
+}
+/// Parameters for barometric measurement noise models.
+#[derive(Debug, Clone)]
+pub struct BaroModelParams {
+    /// Pressure measurement std dev in Pascals
+    pub pressure_std_pa: f64,
+    /// Altitude measurement std dev in meters (optional, if you convert pressure to altitude)
+    pub alt_std_m: f64,
+    /// Initial pressure in Pascals (optional, if you convert pressure to altitude)
+    pub initial_pressure_pa: Option<f64>,
+    /// Initial altitude in meters (optional, if you convert pressure to altitude)
+    pub initial_altitude_m: Option<f64>,
+}
+
+impl Default for BaroModelParams {
+    fn default() -> Self {
+        BaroModelParams {
+            pressure_std_pa: 1.0, // Example default
+            alt_std_m: 0.5,       // Example default
+            initial_pressure_pa: Some(101325.0), // Optional, can be set later
+            initial_altitude_m: Some(0.0),  // Optional, can be set later
+        }
+    }
+}
+
+/// Barometric measurement model trait for INS implementations.
+pub trait Baro {
+    /// Returns expected barometric measurement sigma points (e.g., altitude or pressure).
+    fn baro_measurement_model(&self) -> Vec<DVector<f64>>;
+    /// Returns the barometric measurement noise covariance matrix.
+    fn baro_measurement_noise(&self) -> DMatrix<f64>;
+}
+
 
 /// Basic strapdown state parameters for the UKF and particle filter initialization.
 pub struct StrapdownParams {
@@ -311,18 +422,22 @@ pub struct StrapdownParams {
 /// This filter uses the Unscented Kalman Filter (UKF) algorithm to estimate the state of a
 /// strapdown inertial navigation system. It uses the strapdown equations to propagate the state
 /// in the local level frame based on IMU measurements in the body frame. The filter also uses
-/// a generic position measurement model to update the state based on position measurements in
-/// the local level frame.
+/// a generic measurement model to update the state based on measurements in the local level frame.
 ///
 /// Because of the generic nature of both the UKF and this toolbox, the filter requires the user to
-/// implement the measurement model. The measurement model must calculate the measurement sigma points
-/// ($\mathcal{Z} = h(\mathcal{X})$) and the innovation matrix ($S$) for the filter. Some basic
-/// GNSS-based are provided in this module.
+/// implement the measurement model(s). The measurement model must calculate the measurement sigma points
+/// ($\mathcal{Z} = h(\mathcal{X})$) and the measurement noise matrix ($R$) for the filter. Some basic
+/// GNSS-based are provided in this module (position, velocity, position and velocity, barometric altitude).
+/// In a given scenario's implementation, the user should then call these measurement models. Please see the
+/// `sim` module for a reference implmentation of a full state UKF INS with a position and velocity GPS-based
+/// measurement model and barometric alitude measurement model.
 ///
 /// Note that, internally, angles are always stored in radians (both for the attitude and the position),
 /// however, the user can choose to convert them to degrees when retrieving the state vector and the UKF
 /// and underlying strapdown state can be constructed from data in degrees by using the boolean `in_degrees`
-/// toggle where applicable.
+/// toggle where applicable. Generally speaking, the design of this crate is such that methods that expect 
+/// a WGS84 coordinate (e.g. latitude or longitude) will expect the value in degrees, whereas trigonometric
+/// functions (e.g. sine, cosine, tangent) will expect the value in radians.
 pub struct UKF {
     mean_state: DVector<f64>,
     covariance: DMatrix<f64>,
@@ -331,6 +446,7 @@ pub struct UKF {
     state_size: usize,
     weights_mean: DVector<f64>,
     weights_cov: DVector<f64>,
+    gps_noise: GPSNoiseParams,
 }
 impl Debug for UKF {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -447,6 +563,7 @@ impl UKF {
             state_size,
             weights_mean,
             weights_cov,
+            gps_noise: GPSNoiseParams::default(),
         }
     }
     /// Predicts the state using the strapdown equations and IMU measurements.
@@ -722,66 +839,30 @@ impl ParticleFilter {
         self.particles = new_particles;
     }
 }
-// ==== Measurement Models ========================================================
-// Below is a set of generic measurement models for the UKF and particle filter.
-// These models provide a vec of "expected measurements" based on the sigma points
-// location. When used in a filter, you should simulatanously iterate through the
-// list of sigma points or particles and the expected measurements in order to
-// calculate the innovation matrix or the particle weighting.
-// ================================================================================
-/// GPS measurement model trait for cannonical INS implementations.
-///
-/// Standard GNSS-aided loosely-coupled INS measurement model. This model is used to update the state
-/// based on position measurements in the local level frame. The model assumes that the position
-/// measurements are in the local level frame and that the strapdown state is in the body frame.
-pub trait GPS {
-    /// GPS or Position-based measurement model
-    ///
-    /// Standard GNSS-aided loosely-coupled INS measurement model. This model is used to update the state
-    /// based on position measurements in the local level frame. The model assumes that the position
-    /// measurements are in the local level frame and that the strapdown state is in the body frame.
-    ///
-    /// # Arguments
-    /// * `with_altitude` - whether to include altitude in the measurement
-    ///
-    /// # Returns
-    /// * A vector of measurement sigma points either (N x 3) or (N x 2) depending on the `with_altitude` flag
-    fn position_measurement_model(&self, with_altitude: bool) -> Vec<DVector<f64>>;
-    /// UKF velocity-based measurement model
-    ///
-    /// Velocity measurement model. This model is used to update the state based on
-    /// velocity measurements in the local level frame. The model assumes that the velocity
-    /// measurements are in the local level frame and that the strapdown state is in the
-    /// body frame.
-    ///
-    /// # Arguments
-    /// * `with_altitude` - whether to include altitude in the measurement
-    ///
-    /// # Returns
-    /// * A vector of measurement sigma points either (N x 3) or (N x 2) depending on the `with_altitude` flag
-    fn velocity_measurement_model(&self, with_altitude: bool) -> Vec<DVector<f64>>;
-    /// GPS or Position-based measurement model
-    ///
-    /// GPS-aided INS measurement model for a combined position-velocity measuremet.
-    /// This model is used to update the state based on both position and velocity
-    /// measurements in the local level frame. The model assumes that the position
-    /// measurements are in the local level frame (latitude, longitude, altitude)
-    /// and that the velocity is orient along the northward, eastward, and downward
-    /// axes.
-    ///
-    /// # Arguments
-    /// * `with_altitude` - whether to include altitude in the measurement
-    ///
-    /// # Returns
-    /// * A vector of measurement sigma points either (N x 6) or (N x 4) depending on the `with_altitude` flag
-    fn position_and_velocity_measurement_model(&self, with_altitude: bool) -> Vec<DVector<f64>>;
-    /// Position measurement noise model
-    fn position_measurement_noise(&self, with_altitude: bool) -> DMatrix<f64>;
-    /// Velocity measurement noise model
-    fn velocity_measurement_noise(&self, with_altitude: bool) -> DMatrix<f64>;
-    /// Position and velocity measurement noise model
-    fn position_and_velocity_measurement_noise(&self, with_altitude: bool) -> DMatrix<f64>;
+
+
+// Implement the Baro trait for UKF:
+impl Baro for UKF {
+    fn baro_measurement_model(&self) -> Vec<DVector<f64>> {
+        let sigma_points = self.get_sigma_points();
+        let mut measurement_sigma_points = Vec::with_capacity(sigma_points.len());
+        for sigma_point in sigma_points {
+            // Example: use altitude as the barometric measurement
+            let measurement = DVector::from_vec(vec![sigma_point.nav_state.altitude]);
+            measurement_sigma_points.push(measurement);
+        }
+        measurement_sigma_points
+    }
+
+    fn baro_measurement_noise(&self) -> DMatrix<f64> {
+        // Example: use altitude noise
+        DMatrix::from_diagonal(&DVector::from_vec(vec![self.baro_noise.alt_std_m.powi(2)]))
+    }
 }
+
+
+
+
 impl GPS for UKF {
     fn position_measurement_model(&self, with_altitude: bool) -> Vec<DVector<f64>> {
         let sigma_points = self.get_sigma_points(); // Crashing issue occurs here
@@ -898,11 +979,10 @@ impl GPS for UKF {
         }
     }
 }
+
 /// Tests
 #[cfg(test)]
 mod tests {
-    use std::os::unix::process;
-
     use crate::earth;
 
     use super::*;
