@@ -441,7 +441,7 @@ impl StrapdownState {
 /// ```rust
 /// use strapdown::{StrapdownState, IMUData, forward};
 /// use nalgebra::Vector3;
-/// let mut state = StrapdownState::new();
+/// let mut state = StrapdownState::default();
 /// let imu_data = IMUData::new_from_vector(
 ///    Vector3::new(0.0, 0.0, -9.81), // free fall acceleration in m/s^2
 ///    Vector3::new(0.0, 0.0, 0.0) // No rotation
@@ -730,7 +730,7 @@ mod tests {
 
     #[test]
     fn test_strapdown_state_new() {
-        let state = StrapdownState::new();
+        let state = StrapdownState::default();
         assert_eq!(state.latitude, 0.0);
         assert_eq!(state.longitude, 0.0);
         assert_eq!(state.altitude, 0.0);
@@ -741,7 +741,7 @@ mod tests {
     }
     #[test]
     fn test_to_vector_zeros() {
-        let state = StrapdownState::new();
+        let state = StrapdownState::default();
         let state_vector = state.to_vector(true);
         let zeros: SVector<f64, 9> = SVector::zeros();
         assert_eq!(state_vector, zeros);
@@ -777,7 +777,7 @@ mod tests {
     #[test]
     fn test_dcm_to_vector() {
         let attitude = Rotation3::from_euler_angles(0.0, 0.0, 0.0);
-        let state: StrapdownState = StrapdownState::new_from_components(
+        let state: StrapdownState = StrapdownState::new(
             0.0,
             (1.0_f64).to_degrees(),
             2.0,
@@ -816,7 +816,7 @@ mod tests {
     // Test the forward mechanization (basic structure, not full dynamics)
     fn test_forward_freefall_stub() {
         let attitude = Rotation3::identity();
-        let state = StrapdownState::new_from_components(
+        let state = StrapdownState::new(
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, true, // NED convention
         );
         // This is a stub: actual forward propagation logic should be tested in integration with the mechanization equations.
@@ -832,7 +832,7 @@ mod tests {
     fn rest() {
         // Test the forward mechanization with a state at rest
         let attitude = Rotation3::identity();
-        let mut state = StrapdownState::new_from_components(
+        let mut state = StrapdownState::new(
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, true, // NED convention
         );
         assert_eq!(state.velocity_north, 0.0);
@@ -867,7 +867,7 @@ mod tests {
     fn yawing() {
         // Testing the forward mechanization with a state that is yawing
         let attitude = Rotation3::from_euler_angles(0.0, 0.0, 0.1); // 0.1 rad yaw
-        let state = StrapdownState::new_from_components(
+        let state = StrapdownState::new(
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, // angles provided in radians
             true,  // NED convention
         );
@@ -883,7 +883,7 @@ mod tests {
     fn rolling() {
         // Testing the forward mechanization with a state that is yawing
         let attitude = Rotation3::from_euler_angles(0.1, 0.0, 0.0); // 0.1 rad yaw
-        let state = StrapdownState::new_from_components(
+        let state = StrapdownState::new(
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, // angles provided in radians
             true,  // NED convention
         );
@@ -899,7 +899,7 @@ mod tests {
     fn pitching() {
         // Testing the forward mechanization with a state that is yawing
         let attitude = Rotation3::from_euler_angles(0.0, 0.1, 0.0); // 0.1 rad yaw
-        let state = StrapdownState::new_from_components(
+        let state = StrapdownState::new(
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, // angles provided in radians
             true,  // NED convention
         );
@@ -968,7 +968,7 @@ mod tests {
     #[test]
     fn test_velocity_update_zero_force() {
         // Zero specific force, velocity should remain unchanged
-        let state = StrapdownState::new();
+        let state = StrapdownState::default();
         let f = nalgebra::Vector3::new(
             0.0,
             0.0,
@@ -983,7 +983,7 @@ mod tests {
     #[test]
     fn test_velocity_update_constant_force() {
         // Constant specific force in north direction, expect velocity to increase linearly
-        let state = StrapdownState::new();
+        let state = StrapdownState::default();
         let f = nalgebra::Vector3::new(1.0, 0.0, earth::gravity(&0.0, &0.0)); // 1 m/s^2 north
         let dt = 2.0;
         let v_new = velocity_update(&state, f, dt);
@@ -995,7 +995,7 @@ mod tests {
     #[test]
     fn test_velocity_update_initial_velocity() {
         // Initial velocity, zero force, should remain unchanged
-        let mut state = StrapdownState::new();
+        let mut state = StrapdownState::default();
         state.velocity_north = 5.0;
         state.velocity_east = -3.0;
         state.velocity_down = 2.0;
@@ -1009,7 +1009,7 @@ mod tests {
     #[test]
     fn vertical_acceleration() {
         // Test vertical acceleration
-        let mut state = StrapdownState::new();
+        let mut state = StrapdownState::default();
         state.velocity_north = 0.0;
         state.velocity_east = 0.0;
         state.velocity_down = 0.0;
@@ -1022,7 +1022,7 @@ mod tests {
     fn test_forward_yawing() {
         // Yaw rate only, expect yaw to increase by gyro_z * dt
         let attitude = nalgebra::Rotation3::identity();
-        let mut state = StrapdownState::new_from_components(
+        let mut state = StrapdownState::new(
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, true,
         );
         let imu_data = IMUData::new_from_vec(vec![0.0, 0.0, 0.0], vec![0.0, 0.0, 0.1]);
@@ -1036,7 +1036,7 @@ mod tests {
     fn test_forward_rolling() {
         // Roll rate only, expect roll to increase by gyro_x * dt
         let attitude = nalgebra::Rotation3::identity();
-        let mut state = StrapdownState::new_from_components(
+        let mut state = StrapdownState::new(
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, true,
         );
         let imu_data = IMUData::new_from_vec(vec![0.0, 0.0, 0.0], vec![0.1, 0.0, 0.0]);
@@ -1052,7 +1052,7 @@ mod tests {
     fn test_forward_pitching() {
         // Pitch rate only, expect pitch to increase by gyro_y * dt
         let attitude = nalgebra::Rotation3::identity();
-        let mut state = StrapdownState::new_from_components(
+        let mut state = StrapdownState::new(
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, true,
         );
         let imu_data = IMUData::new_from_vec(vec![0.0, 0.0, 0.0], vec![0.0, 0.1, 0.0]);
@@ -1066,7 +1066,7 @@ mod tests {
     fn test_forward_velocity_north() {
         // Constant acceleration north, expect velocity_north to increase by accel * dt
         let attitude = nalgebra::Rotation3::identity();
-        let mut state = StrapdownState::new_from_components(
+        let mut state = StrapdownState::new(
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, true,
         );
         let imu_data = IMUData::new_from_vec(vec![1.0, 0.0, 0.0], vec![0.0, 0.0, 0.0]);
@@ -1079,7 +1079,7 @@ mod tests {
     fn test_forward_velocity_east() {
         // Constant acceleration east, expect velocity_east to increase by accel * dt
         let attitude = nalgebra::Rotation3::identity();
-        let mut state = StrapdownState::new_from_components(
+        let mut state = StrapdownState::new(
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, true,
         );
         let imu_data = IMUData::new_from_vec(vec![0.0, 1.0, 0.0], vec![0.0, 0.0, 0.0]);
@@ -1092,7 +1092,7 @@ mod tests {
     fn test_forward_velocity_down() {
         // Constant acceleration down, expect velocity_down to increase by accel * dt
         let attitude = nalgebra::Rotation3::identity();
-        let mut state = StrapdownState::new_from_components(
+        let mut state = StrapdownState::new(
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, true,
         );
         let imu_data = IMUData::new_from_vec(
