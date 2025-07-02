@@ -519,19 +519,19 @@ pub fn forward(state: StrapdownState, imu_data: IMUData, dt: f64) {
 /// * A Matrix3 representing the updated attitude matrix in the NED frame.
 fn attitude_update(state: &StrapdownState, gyros: Vector3<f64>, dt: f64) -> Matrix3<f64> {
     let transport_rate: Matrix3<f64> = earth::vector_to_skew_symmetric(&earth::transport_rate(
-        &self.latitude.to_degrees(),
-        &self.altitude,
+        &state.latitude.to_degrees(),
+        &state.altitude,
         &Vector3::from_vec(vec![
-            self.velocity_north,
-            self.velocity_east,
-            self.velocity_down,
+            state.velocity_north,
+            state.velocity_east,
+            state.velocity_down,
         ]),
     ));
     let rotation_rate: Matrix3<f64> =
-        earth::vector_to_skew_symmetric(&earth::earth_rate_lla(&self.latitude.to_degrees()));
-    let omega_ib: Matrix3<f64> = earth::vector_to_skew_symmetric(gyros);
-    let c_1: Matrix3<f64> = self.attitude * (Matrix3::identity() + omega_ib * dt)
-        - (rotation_rate + transport_rate) * self.attitude * dt;
+        earth::vector_to_skew_symmetric(&earth::earth_rate_lla(&state.latitude.to_degrees()));
+    let omega_ib: Matrix3<f64> = earth::vector_to_skew_symmetric(&gyros);
+    let c_1: Matrix3<f64> = state.attitude * (Matrix3::identity() + omega_ib * dt)
+        - (rotation_rate + transport_rate) * state.attitude * dt;
     c_1
 }
 /// Velocity update in NED
