@@ -462,48 +462,27 @@ impl StrapdownState {
 /// let dt = 0.1; // Example time step in seconds
 /// state = forward(&imu_data, dt);
 /// ```
-pub fn forward(state: StrapdownState, imu_data: IMUData, dt: f64) {
+pub fn forward(mut state: StrapdownState, imu_data: IMUData, dt: f64) {
     // Extract the attitude matrix from the current state
-    let c_0: Rotation3<f64> = self.attitude;
+    let c_0: Rotation3<f64> = state.attitude;
     // Attitude update; Equation 5.46
-    let c_1: Matrix3<f64> = self.attitude_update(&imu_data.gyro, dt);
+    let c_1: Matrix3<f64> = attitude_update(&state, imu_data.gyro, dt.clone());
     // Specific force transformation; Equation 5.47
     let f: Vector3<f64> = 0.5 * (c_0.matrix() + c_1) * imu_data.accel;
     // Velocity update; Equation 5.54
-    //let v_0: Vector3<f64> = self.get_velocity();
-    let v_n_0 = self.velocity_north;
-    let v_e_0 = self.velocity_east;
-    let v_d_0 = self.velocity_down;
-    //let v_1: Vector3<f64> = self.velocity_update(&f, dt);
-    let v = self.velocity_update(&f, dt);
-    let v_n_1 = v[0];
-    let v_e_1 = v[1];
-    let v_d_1 = v[2];
+    let velocity = velocity_update(&state, f, dt.clone());
     // Position update; Equation 5.56
-    let (r_n, r_e_0, _) = earth::principal_radii(&self.latitude, &self.altitude);
-    let lat_0 = self.latitude;
-    let alt_0 = self.altitude;
-    // Altitude update
-    self.altitude += 0.5 * (v_d_0 + v_d_1) * dt;
-    // Latitude update
-    let lat_1: f64 =
-        self.latitude + 0.5 * (v_n_0 / (r_n + alt_0) + v_n_1 / (r_n + self.altitude)) * dt;
-    // Longitude update
-    let (_, r_e_1, _) = earth::principal_radii(&lat_1, &self.altitude);
-    let lon_1: f64 = self.longitude
-        + 0.5
-            * (v_e_0 / ((r_e_0 + alt_0) * lat_0.cos())
-                + v_e_1 / ((r_e_1 + self.altitude) * lat_1.cos()))
-            * dt;
-    // Save updated position
-    self.latitude = wrap_latitude(lat_1.to_degrees()).to_radians();
-    self.longitude = lon_1;
+    let (lat_1, lon_1, alt_1) = position_update(&state, velocity, dt.clone());
     // Save updated attitude as rotation
-    self.attitude = Rotation3::from_matrix(&c_1);
+    state.attitude = Rotation3::from_matrix(&c_1);
     // Save update velocity
-    self.velocity_north = v_n_1;
-    self.velocity_east = v_e_1;
-    self.velocity_down = v_d_1;
+    state.velocity_north = velocity[0];
+    state.velocity_east =  velocity[1];
+    state.velocity_down =  velocity[2];
+    // Save updated position
+    state.latitude = lat_1;
+    state.longitude = lon_1;
+    state.altitude = alt_1;
 }
 /// NED Attitude update equation
 ///
@@ -568,7 +547,41 @@ fn velocity_update(state: &StrapdownState, specific_force: Vector3<f64>, dt: f64
     );
     velocity + (specific_force - gravity - r * (transport_rate + 2.0 * rotation_rate) * velocity) * dt
 }
-
+/// Position update in NED
+/// 
+/// This function implements the position update equation for the strapdown navigation system. It takes the current state,
+/// the velocity vector, and the time step as inputs and returns the updated position (latitude, longitude, altitude).
+/// 
+/// # Arguments
+/// * `state` - A reference to the current StrapdownState containing the position and velocity.
+/// * `velocity` - A Vector3 representing the velocity vector in m/s in the NED frame.
+/// * `dt` - A f64 representing the time step in seconds.
+/// 
+/// # Returns
+/// * A tuple (latitude, longitude, altitude) representing the updated position in radians and meters.
+pub fn position_update(state: &StrapdownState, velocity: Vector3<f64>, dt: f64) -> (f64, f64, f64) {
+    let (r_n, r_e_0, _) = earth::principal_radii(&state.latitude, &state.altitude);
+    let lat_0 = state.latitude;
+    let alt_0 = state.altitude;
+    // Altitude update
+    let alt_1 = alt_0 + 0.5 * (state.velocity_down + velocity[2]) * dt;
+    // Latitude update
+    let lat_1: f64 =
+        state.latitude + 0.5 * (state.velocity_north / (r_n + alt_0) + velocity[1] / (r_n + state.altitude)) * dt;
+    // Longitude update
+    let (_, r_e_1, _) = earth::principal_radii(&lat_1, &state.altitude);
+    let lon_1: f64 = state.longitude
+        + 0.5
+            * (state.velocity_east / ((r_e_0 + alt_0) * lat_0.cos())
+                + velocity[1] / ((r_e_1 + state.altitude) * lat_1.cos()))
+            * dt;
+    // Save updated position
+    (
+        wrap_latitude(lat_1.to_degrees()).to_radians(),
+        wrap_to_pi(lon_1),
+        alt_1
+    )
+}
 
 
 // --- Miscellaneous functions for wrapping angles ---
