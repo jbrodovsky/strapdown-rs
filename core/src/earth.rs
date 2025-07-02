@@ -648,14 +648,14 @@ pub fn magnetic_declination(latitude: &f64, longitude: &f64, altitude: &f64) -> 
 }
 /// Calculate the magnetic anomaly at a given location
 pub fn magnetic_anomaly(
-    latitude: &f64,
-    longitude: &f64,
-    altitude: &f64,
-    mag_x: &f64,
-    mag_y: &f64,
-    mag_z: &f64,
+    latitude: f64,
+    longitude: f64,
+    altitude: f64,
+    mag_x: f64,
+    mag_y: f64,
+    mag_z: f64,
 ) -> f64 {
-    0.0 // Placeholder for magnetic anomaly calculation
+    0.0 * latitude * longitude * altitude * mag_x * mag_y * mag_z // Placeholder for magnetic anomaly calculation
 }
 // === Unit tests ===
 #[cfg(test)]

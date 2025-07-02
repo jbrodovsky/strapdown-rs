@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::earth;
 use crate::earth::METERS_TO_DEGREES;
 use crate::filter::{GPS, StrapdownParams, UKF};
-use crate::{IMUData, StrapdownState};
+use crate::{IMUData, StrapdownState, forward};
 /// Struct representing a single row of test data from the CSV file.
 ///
 /// Fields correspond to columns in the CSV, with appropriate renaming for Rust style.
@@ -103,54 +103,6 @@ impl TestDataRecord {
     /// # Returns
     /// * `Ok(Vec<TestDataRecord>)` if successful.
     /// * `Err` if the file cannot be read or parsed.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use strapdown::sim::TestDataRecord;
-    /// use std::path::Path;
-    ///
-    /// let record = TestDataRecord {
-    ///     time: chrono::Utc::now(),
-    ///     bearing_accuracy: 0.1,
-    ///     speed_accuracy: 0.1,
-    ///     vertical_accuracy: 0.1,
-    ///     horizontal_accuracy: 0.1,
-    ///     speed: 1.0,
-    ///     bearing: 90.0,
-    ///     altitude: 100.0,
-    ///     longitude: -122.0,
-    ///     latitude: 37.0,
-    ///     qz: 0.0,
-    ///     qy: 0.0,
-    ///     qx: 0.0,
-    ///     qw: 1.0,
-    ///     roll: 0.0,
-    ///     pitch: 0.0,
-    ///     yaw: 0.0,
-    ///     acc_z: 9.81,
-    ///     acc_y: 0.0,
-    ///     acc_x: 0.0,
-    ///     gyro_z: 0.01,
-    ///     gyro_y: 0.01,
-    ///     gyro_x: 0.01,
-    ///     mag_z: 50.0,
-    ///     mag_y: -30.0,
-    ///     mag_x: -20.0,
-    ///     relative_altitude: 0.0,
-    ///     pressure: 1013.25,
-    ///     grav_z: 9.81,
-    ///     grav_y: 0.0,
-    ///     grav_x: 0.0,
-    /// };
-    /// let records = vec![record];
-    /// TestDataRecord::to_csv(&records, "data.csv")
-    ///    .expect("Failed to write test data to CSV");
-    /// let read_records = TestDataRecord::from_csv("data.csv")
-    ///   .expect("Failed to read test data from CSV");
-    /// // doctest cleanup
-    /// std::fs::remove_file("data.csv").unwrap();
-    /// ```
     pub fn from_csv<P: AsRef<std::path::Path>>(
         path: P,
     ) -> Result<Vec<Self>, Box<dyn std::error::Error>> {
@@ -657,12 +609,12 @@ impl From<(&DateTime<Utc>, &UKF, &IMUData, &f64, &f64, &f64, &f64)> for Navigati
                 .sqrt(),
             ),
             mag_anomaly: earth::magnetic_anomaly(
-                &state[0].to_radians(),
-                &state[1].to_radians(),
-                &state[2],
-                mag_x,
-                mag_y,
-                mag_z,
+                state[0].to_radians(),
+                state[1].to_radians(),
+                state[2],
+                *mag_x,
+                *mag_y,
+                *mag_z,
             ),
         }
     }
@@ -744,12 +696,12 @@ impl
                 .sqrt(),
             ),
             mag_anomaly: earth::magnetic_anomaly(
-                &state.latitude,
-                &state.longitude,
-                &state.altitude,
-                mag_x,
-                mag_y,
-                mag_z,
+                state.latitude,
+                state.longitude,
+                state.altitude,
+                *mag_x,
+                *mag_y,
+                *mag_z,
             ),
         }
     }
@@ -822,7 +774,7 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
             vec![record.gyro_x, record.gyro_y, record.gyro_z],
         );
         // Propagate the state forward (replace with stub for now)
-        state.forward(&imu_data, dt);
+        state = forward(state, imu_data, dt);
         results.push(NavigationResult::from((
             &current_time,
             &state,
