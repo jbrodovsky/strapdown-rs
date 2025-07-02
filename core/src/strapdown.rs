@@ -427,14 +427,6 @@ impl StrapdownState {
             ]
         }
     }
-    pub fn get_velocity(&self) -> Vector3<f64> {
-        if self.coordinate_convention {
-            Vector3::new(self.velocity_north, self.velocity_east, self.velocity_down)
-        } else {
-            // ENU convention: North is East, East is North, Down is negative
-            Vector3::new(self.velocity_east, self.velocity_north, -self.velocity_down)
-        }
-    }
 }
 /// NED form of the forward kinematics equations. Corresponds to section 5.4 Local-Navigation Frame Equations
 /// from the book _Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems, Second Edition_
