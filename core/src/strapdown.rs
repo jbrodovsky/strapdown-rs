@@ -556,13 +556,23 @@ impl StrapdownState {
         let rotation_rate: Matrix3<f64> =
             earth::vector_to_skew_symmetric(&earth::earth_rate_lla(&self.latitude.to_degrees()));
         let r = earth::ecef_to_lla(&self.latitude.to_degrees(), &self.longitude.to_degrees());
+        // let grav: Vector3<f64> = earth::gravitation(&self.position[0], &self.position[1], &self.position[2]);
         let velocity: Vector3<f64> =
             Vector3::new(self.velocity_north, self.velocity_east, self.velocity_down);
+        // let gravity = earth::gravitation(
+        //     &self.latitude.to_degrees(),
+        //     &self.longitude.to_degrees(),
+        //     &self.altitude,
+        // );
         let gravity = Vector3::new(
             0.0,
             0.0,
             earth::gravity(&self.latitude.to_degrees(), &self.altitude),
         );
+        //let accel = &gravity;
+        //println!("[StrapdownState::velocity_update] position: [{:?}, {:?}, {:?}]", self.latitude.to_degrees(), self.longitude.to_degrees(), self.altitude);
+        //println!("[StrapdownState::velocity_update] gravity vector: [{:?}, {:?}, {:?}] | Gravity scalar {:?}", accel[0], accel[1], accel[2], (accel[0].powi(2) + accel[1].powi(2) + accel[2].powi(2)).sqrt());
+
         velocity + (f - gravity - r * (transport_rate + 2.0 * rotation_rate) * velocity) * dt
     }
 }
@@ -835,7 +845,7 @@ mod tests {
             Vector3::new(0.0, 0.0, 0.0), // No rotation
         );
         let dt = 1.0; // Example time step in seconds
-        state.forward(&imu_data, dt);
+        state = forward(state, imu_data, dt);
         // After a forward step, the state should still be at rest
         assert_approx_eq!(state.latitude, 0.0, 1e-6);
         assert_approx_eq!(state.longitude, 0.0, 1e-6);
@@ -866,7 +876,7 @@ mod tests {
         assert_approx_eq!(state.attitude.euler_angles().2, 0.1, 1e-6); // Check initial yaw
         let gyros = Vector3::new(0.0, 0.0, 0.1); // Gyro data for yawing
         let dt = 1.0; // Example time step in seconds
-        let new_attitude = Rotation3::from_matrix(&state.attitude_update(&gyros, dt));
+        let new_attitude = Rotation3::from_matrix(&attitude_update(&state, gyros, dt));
         // Check if the yaw has changed
         let new_yaw = new_attitude.euler_angles().2;
         assert_approx_eq!(new_yaw, 0.1 + 0.1, 1e-3); // 0.1 rad initial + 0.1 rad
@@ -882,7 +892,7 @@ mod tests {
         assert_approx_eq!(state.attitude.euler_angles().0, 0.1, 1e-6); // Check initial roll
         let gyros = Vector3::new(0.10, 0.0, 0.0); // Gyro data for yawing
         let dt = 1.0; // Example time step in seconds
-        let new_attitude = Rotation3::from_matrix(&state.attitude_update(&gyros, dt));
+        let new_attitude = Rotation3::from_matrix(&attitude_update(&state, gyros, dt));
         // Check if the yaw has changed
         let new_roll = new_attitude.euler_angles().0;
         assert_approx_eq!(new_roll, 0.1 + 0.1, 1e-3); // 0.1 rad initial + 0.1 rad
@@ -898,7 +908,7 @@ mod tests {
         assert_approx_eq!(state.attitude.euler_angles().1, 0.1, 1e-6); // Check initial yaw
         let gyros = Vector3::new(0.0, 0.1, 0.0); // Gyro data for yawing
         let dt = 1.0; // Example time step in seconds
-        let new_attitude = Rotation3::from_matrix(&state.attitude_update(&gyros, dt));
+        let new_attitude = Rotation3::from_matrix(&attitude_update(&state, gyros, dt));
         // Check if the yaw has changed
         let new_pitch = new_attitude.euler_angles().1;
         assert_approx_eq!(new_pitch, 0.1 + 0.1, 1e-3); // 0.1 rad initial + 0.1 rad
@@ -967,7 +977,7 @@ mod tests {
             earth::gravity(&0.0, &0.0), // Gravity vector in NED
         );
         let dt = 1.0;
-        let v_new = state.velocity_update(&f, dt);
+        let v_new = velocity_update(&state, f, dt);
         assert_eq!(v_new[0], 0.0);
         assert_eq!(v_new[1], 0.0);
         assert_eq!(v_new[2], 0.0);
@@ -978,7 +988,7 @@ mod tests {
         let state = StrapdownState::new();
         let f = nalgebra::Vector3::new(1.0, 0.0, earth::gravity(&0.0, &0.0)); // 1 m/s^2 north
         let dt = 2.0;
-        let v_new = state.velocity_update(&f, dt);
+        let v_new = velocity_update(&state, f, dt);
         // Should be v = a * dt
         assert!((v_new[0] - 2.0).abs() < 1e-6);
         assert!((v_new[1]).abs() < 1e-6);
@@ -993,7 +1003,7 @@ mod tests {
         state.velocity_down = 2.0;
         let f = Vector3::from_vec(vec![0.0, 0.0, earth::gravity(&0.0, &0.0)]);
         let dt = 1.0;
-        let v_new = state.velocity_update(&f, dt);
+        let v_new = velocity_update(&state, f, dt);
         assert_approx_eq!(v_new[0], 5.0, 1e-3);
         assert_approx_eq!(v_new[1], -3.0, 1e-3);
         assert_approx_eq!(v_new[2], 2.0, 1e-3);
@@ -1007,7 +1017,7 @@ mod tests {
         state.velocity_down = 0.0;
         let f = Vector3::from_vec(vec![0.0, 0.0, 2.0 * earth::gravity(&0.0, &0.0)]); // Downward acceleration
         let dt = 1.0;
-        let v_new = state.velocity_update(&f, dt);
+        let v_new = velocity_update(&state, f, dt);
         assert_approx_eq!(v_new[2], earth::gravity(&0.0, &0.0), 1e-3);
     }
     #[test]
@@ -1019,7 +1029,7 @@ mod tests {
         );
         let imu_data = IMUData::new_from_vec(vec![0.0, 0.0, 0.0], vec![0.0, 0.0, 0.1]);
         let dt = 1.0;
-        state.forward(&imu_data, dt);
+        state = forward(state, imu_data, dt);
         let (_, _, yaw) = state.attitude.euler_angles();
         assert!((yaw - 0.1).abs() < 1e-3);
     }
@@ -1033,7 +1043,7 @@ mod tests {
         );
         let imu_data = IMUData::new_from_vec(vec![0.0, 0.0, 0.0], vec![0.1, 0.0, 0.0]);
         let dt = 1.0;
-        state.forward(&imu_data, dt);
+        state = forward(state, imu_data, dt);
         let (roll, _, _) = state.attitude.euler_angles();
         assert!((roll - 0.1).abs() < 1e-3);
     }
@@ -1047,7 +1057,7 @@ mod tests {
         );
         let imu_data = IMUData::new_from_vec(vec![0.0, 0.0, 0.0], vec![0.0, 0.1, 0.0]);
         let dt = 1.0;
-        state.forward(&imu_data, dt);
+        state = forward(state, imu_data, dt);
         let (_, pitch, _) = state.attitude.euler_angles();
         assert!((pitch - 0.1).abs() < 1e-3);
     }
@@ -1061,7 +1071,7 @@ mod tests {
         );
         let imu_data = IMUData::new_from_vec(vec![1.0, 0.0, 0.0], vec![0.0, 0.0, 0.0]);
         let dt = 2.0;
-        state.forward(&imu_data, dt);
+        state = forward(state, imu_data, dt);
         assert!((state.velocity_north - 2.0).abs() < 1e-3);
     }
 
@@ -1074,7 +1084,7 @@ mod tests {
         );
         let imu_data = IMUData::new_from_vec(vec![0.0, 1.0, 0.0], vec![0.0, 0.0, 0.0]);
         let dt = 2.0;
-        state.forward(&imu_data, dt);
+        state = forward(state, imu_data, dt);
         assert!((state.velocity_east - 2.0).abs() < 1e-3);
     }
 
@@ -1090,7 +1100,7 @@ mod tests {
             vec![0.0, 0.0, 0.0],
         );
         let dt = 1.0;
-        state.forward(&imu_data, dt);
+        state = forward(state, imu_data, dt);
         assert_approx_eq!(state.velocity_down, 2.0, 1e-3);
     }
 }
