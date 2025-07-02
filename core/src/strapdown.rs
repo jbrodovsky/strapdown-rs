@@ -256,13 +256,6 @@ impl Debug for StrapdownState {
 
 impl Default for StrapdownState {
     fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl StrapdownState {
-    /// Create a new StrapdownState with all zeros
-    pub fn new() -> StrapdownState {
         StrapdownState {
             latitude: 0.0,
             longitude: 0.0,
@@ -274,6 +267,9 @@ impl StrapdownState {
             coordinate_convention: true, // NED by default
         }
     }
+}
+
+impl StrapdownState {
     /// Create a new StrapdownState from explicit position and velocity components, and attitude
     ///
     /// # Arguments
@@ -286,7 +282,7 @@ impl StrapdownState {
     /// * `attitude` - Rotation3<f64> attitude matrix.
     /// * `in_degrees` - If true, angles are provided in degrees and will be converted to radians.
     /// * `ned` - If true, the coordinate convention is NED (North, East, Down), otherwise ENU (East, North, Up).
-    pub fn new_from_components(
+    pub fn new(
         latitude: f64,
         longitude: f64,
         altitude: f64,
