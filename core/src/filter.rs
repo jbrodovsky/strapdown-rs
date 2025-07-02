@@ -150,7 +150,7 @@ impl SigmaPoint {
     /// ```
     pub fn forward(&mut self, imu_data: IMUData, dt: f64, noise: Option<Vec<f64>>) {
         // Propagate the strapdown state using the strapdown equations
-        forward(self.nav_state, imu_data, dt);
+        forward(&mut self.nav_state, imu_data, dt);
         let noise_vect = match noise {
             None => return, // UKF mode, does not use noise in propagation
             Some(v) => v,   // Particle filter mode, uses noise in propagation

@@ -452,7 +452,7 @@ impl StrapdownState {
 ///
 /// # Example
 /// ```rust
-/// use strapdown::{StrapdownState, IMUData};
+/// use strapdown::{StrapdownState, IMUData, forward};
 /// use nalgebra::Vector3;
 /// let mut state = StrapdownState::new();
 /// let imu_data = IMUData::new_from_vector(
@@ -460,9 +460,9 @@ impl StrapdownState {
 ///    Vector3::new(0.0, 0.0, 0.0) // No rotation
 /// );
 /// let dt = 0.1; // Example time step in seconds
-/// state = forward(&imu_data, dt);
+/// forward(&mut state, imu_data, dt);
 /// ```
-pub fn forward(mut state: StrapdownState, imu_data: IMUData, dt: f64) {
+pub fn forward(state: &mut StrapdownState, imu_data: IMUData, dt: f64) {
     // Extract the attitude matrix from the current state
     let c_0: Rotation3<f64> = state.attitude;
     // Attitude update; Equation 5.46
@@ -842,7 +842,7 @@ mod tests {
     fn rest() {
         // Test the forward mechanization with a state at rest
         let attitude = Rotation3::identity();
-        let state = StrapdownState::new_from_components(
+        let mut state = StrapdownState::new_from_components(
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, true, // NED convention
         );
         assert_eq!(state.velocity_north, 0.0);
@@ -853,7 +853,7 @@ mod tests {
             Vector3::new(0.0, 0.0, 0.0), // No rotation
         );
         let dt = 1.0; // Example time step in seconds
-        forward(state, imu_data, dt);
+        forward(&mut state, imu_data, dt);
         // After a forward step, the state should still be at rest
         assert_approx_eq!(state.latitude, 0.0, 1e-6);
         assert_approx_eq!(state.longitude, 0.0, 1e-6);
@@ -1032,12 +1032,12 @@ mod tests {
     fn test_forward_yawing() {
         // Yaw rate only, expect yaw to increase by gyro_z * dt
         let attitude = nalgebra::Rotation3::identity();
-        let state = StrapdownState::new_from_components(
+        let mut state = StrapdownState::new_from_components(
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, true,
         );
         let imu_data = IMUData::new_from_vec(vec![0.0, 0.0, 0.0], vec![0.0, 0.0, 0.1]);
         let dt = 1.0;
-        forward(state, imu_data, dt);
+        forward(&mut state, imu_data, dt);
         let (_, _, yaw) = state.attitude.euler_angles();
         assert!((yaw - 0.1).abs() < 1e-3);
     }
@@ -1046,26 +1046,28 @@ mod tests {
     fn test_forward_rolling() {
         // Roll rate only, expect roll to increase by gyro_x * dt
         let attitude = nalgebra::Rotation3::identity();
-        let state = StrapdownState::new_from_components(
+        let mut state = StrapdownState::new_from_components(
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, true,
         );
         let imu_data = IMUData::new_from_vec(vec![0.0, 0.0, 0.0], vec![0.1, 0.0, 0.0]);
         let dt = 1.0;
-        forward(state, imu_data, dt);
-        let (roll, _, _) = state.attitude.euler_angles();
-        assert!((roll - 0.1).abs() < 1e-3);
+        forward(&mut state, imu_data, dt);
+        
+        //let (roll, _, _) = state.attitude.euler_angles();
+        let roll = state.attitude.euler_angles().0;
+        assert_approx_eq!(roll, 0.1, 1e-3);
     }
 
     #[test]
     fn test_forward_pitching() {
         // Pitch rate only, expect pitch to increase by gyro_y * dt
         let attitude = nalgebra::Rotation3::identity();
-        let state = StrapdownState::new_from_components(
+        let mut state = StrapdownState::new_from_components(
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, true,
         );
         let imu_data = IMUData::new_from_vec(vec![0.0, 0.0, 0.0], vec![0.0, 0.1, 0.0]);
         let dt = 1.0;
-        forward(state, imu_data, dt);
+        forward(&mut state, imu_data, dt);
         let (_, pitch, _) = state.attitude.euler_angles();
         assert!((pitch - 0.1).abs() < 1e-3);
     }
@@ -1074,12 +1076,12 @@ mod tests {
     fn test_forward_velocity_north() {
         // Constant acceleration north, expect velocity_north to increase by accel * dt
         let attitude = nalgebra::Rotation3::identity();
-        let state = StrapdownState::new_from_components(
+        let mut state = StrapdownState::new_from_components(
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, true,
         );
         let imu_data = IMUData::new_from_vec(vec![1.0, 0.0, 0.0], vec![0.0, 0.0, 0.0]);
         let dt = 2.0;
-        forward(state, imu_data, dt);
+        forward(&mut state, imu_data, dt);
         assert!((state.velocity_north - 2.0).abs() < 1e-3);
     }
 
@@ -1087,12 +1089,12 @@ mod tests {
     fn test_forward_velocity_east() {
         // Constant acceleration east, expect velocity_east to increase by accel * dt
         let attitude = nalgebra::Rotation3::identity();
-        let state = StrapdownState::new_from_components(
+        let mut state = StrapdownState::new_from_components(
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, true,
         );
         let imu_data = IMUData::new_from_vec(vec![0.0, 1.0, 0.0], vec![0.0, 0.0, 0.0]);
         let dt = 2.0;
-        forward(state, imu_data, dt);
+        forward(&mut state, imu_data, dt);
         assert!((state.velocity_east - 2.0).abs() < 1e-3);
     }
 
@@ -1100,7 +1102,7 @@ mod tests {
     fn test_forward_velocity_down() {
         // Constant acceleration down, expect velocity_down to increase by accel * dt
         let attitude = nalgebra::Rotation3::identity();
-        let state = StrapdownState::new_from_components(
+        let mut state = StrapdownState::new_from_components(
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, true,
         );
         let imu_data = IMUData::new_from_vec(
@@ -1108,7 +1110,7 @@ mod tests {
             vec![0.0, 0.0, 0.0],
         );
         let dt = 1.0;
-        forward(state, imu_data, dt);
+        forward(&mut state, imu_data, dt);
         assert_approx_eq!(state.velocity_down, 2.0, 1e-3);
     }
 }
