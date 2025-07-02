@@ -928,7 +928,7 @@ mod tests {
             gyro: Vector3::new(0.0, 0.0, 0.0),
         };
         let dt = 1.0;
-        sigma_point.forward(imu_data.clone(), dt, None);
+        sigma_point.forward(imu_data, dt, None);
 
         let position = [0.0, 0.0, 0.0];
         let velocity = [0.0, 0.0, 0.0];
@@ -948,7 +948,7 @@ mod tests {
             0.01, 0.01, 0.01, // IMU biases noise
             0.01, 0.01, 0.01, // Measurement bias noise
         ];
-        sigma_point.forward(imu_data.clone(), dt, Some(noise));
+        sigma_point.forward(imu_data, dt, Some(noise));
         // Check that the state has changed
         assert!(sigma_point.nav_state.latitude != position[0]);
         assert!(sigma_point.nav_state.longitude != position[1]);

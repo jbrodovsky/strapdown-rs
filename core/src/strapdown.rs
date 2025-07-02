@@ -465,13 +465,13 @@ pub fn forward(state: &mut StrapdownState, imu_data: IMUData, dt: f64) {
     // Extract the attitude matrix from the current state
     let c_0: Rotation3<f64> = state.attitude;
     // Attitude update; Equation 5.46
-    let c_1: Matrix3<f64> = attitude_update(&state, imu_data.gyro, dt.clone());
+    let c_1: Matrix3<f64> = attitude_update(state, imu_data.gyro, dt);
     // Specific force transformation; Equation 5.47
     let f: Vector3<f64> = 0.5 * (c_0.matrix() + c_1) * imu_data.accel;
     // Velocity update; Equation 5.54
-    let velocity = velocity_update(&state, f, dt.clone());
+    let velocity = velocity_update(state, f, dt);
     // Position update; Equation 5.56
-    let (lat_1, lon_1, alt_1) = position_update(&state, velocity, dt.clone());
+    let (lat_1, lon_1, alt_1) = position_update(state, velocity, dt);
     // Save updated attitude as rotation
     state.attitude = Rotation3::from_matrix(&c_1);
     // Save update velocity
