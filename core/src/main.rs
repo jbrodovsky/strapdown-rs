@@ -1,5 +1,5 @@
 use clap::Parser;
-use csv::{ReaderBuilder, WriterBuilder};
+use csv::{ReaderBuilder};
 use std::error::Error;
 use std::path::PathBuf;
 use strapdown::sim::{NavigationResult, TestDataRecord, closed_loop, dead_reckoning};

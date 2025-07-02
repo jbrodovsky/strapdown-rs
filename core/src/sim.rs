@@ -11,7 +11,7 @@ use std::io::{self};
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
-use nalgebra::{DMatrix, DVector, Rotation3, Vector3};
+use nalgebra::{DMatrix, DVector};
 use serde::{Deserialize, Serialize};
 
 use crate::earth;
@@ -735,7 +735,7 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
         first_record.pitch,
         first_record.yaw,
     );
-    let mut state = StrapdownState {
+    let state = StrapdownState {
         latitude: first_record.latitude.to_radians(),
         longitude: first_record.longitude.to_radians(),
         altitude: first_record.altitude,
@@ -773,8 +773,7 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
             vec![record.acc_x, record.acc_y, record.acc_z],
             vec![record.gyro_x, record.gyro_y, record.gyro_z],
         );
-        // Propagate the state forward (replace with stub for now)
-        state = forward(state, imu_data, dt);
+        forward(state, imu_data, dt);
         results.push(NavigationResult::from((
             &current_time,
             &state,
