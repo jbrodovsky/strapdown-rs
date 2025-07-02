@@ -1246,7 +1246,7 @@ mod tests {
     }
     #[test]
     fn test_navigation_result_new_from_nav_state() {
-        let mut state = StrapdownState::new();
+        let mut state = StrapdownState::default();
         state.latitude = 1.0;
         state.longitude = 2.0;
         state.altitude = 3.0;
