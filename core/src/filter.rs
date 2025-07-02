@@ -483,7 +483,7 @@ impl UKF {
         // Update the mean state and covariance
         self.mean_state = mu_bar;
         self.covariance = p_bar;
-    }    
+    }
     /// Perform the Kalman measurement update step.
     ///
     /// This method updates the state and covariance based on the measurement and measurement
@@ -1088,8 +1088,8 @@ mod tests {
             longitude: 0.0,
             altitude: 0.0,
             northward_velocity: 0.0,
-            eastward_velocity:  0.0,
-            downward_velocity:  0.0,
+            eastward_velocity: 0.0,
+            downward_velocity: 0.0,
             roll: 0.0,
             pitch: 0.0,
             yaw: 0.0,
@@ -1098,7 +1098,7 @@ mod tests {
         let mut ukf = UKF::new(
             ukf_params,
             vec![0.0; 6],
-            None, //Some(measurement_bias.clone()),
+            None,         //Some(measurement_bias.clone()),
             vec![0.0; n], // Absolute certainty use for testing the process
             DMatrix::from_diagonal(&DVector::from_vec(process_noise_diagonal)),
             1e-3,
@@ -1112,8 +1112,7 @@ mod tests {
         );
         ukf.predict(&imu_data, dt);
         assert!(
-            ukf.mean_state.len()
-                == 15 //+ measurement_bias.len()
+            ukf.mean_state.len() == 15 //+ measurement_bias.len()
         );
         let measurement = DVector::from_vec(vec![0.0; 3]);
         ukf.update(
