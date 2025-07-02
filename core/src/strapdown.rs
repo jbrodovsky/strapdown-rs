@@ -434,147 +434,158 @@ impl StrapdownState {
             Vector3::new(self.velocity_east, self.velocity_north, -self.velocity_down)
         }
     }
-    /// NED form of the forward kinematics equations. Corresponds to section 5.4 Local-Navigation Frame Equations
-    /// from the book _Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems, Second Edition_
-    /// by Paul D. Groves; Second Edition.
-    ///
-    /// This function implements the forward kinematics equations for the strapdown navigation system. It takes
-    /// the IMU data and the time step as inputs and updates the position, velocity, and attitude of the system.
-    /// The IMU data is assumed to be pre-processed and ready for use in the mechanization equations (i.e. the
-    /// gravity vector has already been filtered out and the data represents relative motion).
-    ///
-    /// # Arguments
-    /// * `imu_data` - A reference to an IMUData instance containing the acceleration and gyro data in the body frame.
-    /// * `dt` - A f64 representing the time step in seconds.
-    ///
-    /// # Example
-    /// ```rust
-    /// use strapdown::{StrapdownState, IMUData};
-    /// use nalgebra::Vector3;
-    /// let mut state = StrapdownState::new();
-    /// let imu_data = IMUData::new_from_vector(
-    ///    Vector3::new(0.0, 0.0, -9.81), // free fall acceleration in m/s^2
-    ///    Vector3::new(0.0, 0.0, 0.0) // No rotation
-    /// );
-    /// let dt = 0.1; // Example time step in seconds
-    /// state.forward(&imu_data, dt);
-    /// ```
-    pub fn forward(&mut self, imu_data: &IMUData, dt: f64) {
-        // Extract the attitude matrix from the current state
-        let c_0: Rotation3<f64> = self.attitude;
-        // Attitude update; Equation 5.46
-        let c_1: Matrix3<f64> = self.attitude_update(&imu_data.gyro, dt);
-        // Specific force transformation; Equation 5.47
-        let f: Vector3<f64> = 0.5 * (c_0.matrix() + c_1) * imu_data.accel;
-        // Velocity update; Equation 5.54
-        //let v_0: Vector3<f64> = self.get_velocity();
-        let v_n_0 = self.velocity_north;
-        let v_e_0 = self.velocity_east;
-        let v_d_0 = self.velocity_down;
-        //let v_1: Vector3<f64> = self.velocity_update(&f, dt);
-        let v = self.velocity_update(&f, dt);
-        let v_n_1 = v[0];
-        let v_e_1 = v[1];
-        let v_d_1 = v[2];
-        // Position update; Equation 5.56
-        let (r_n, r_e_0, _) = earth::principal_radii(&self.latitude, &self.altitude);
-        let lat_0 = self.latitude;
-        let alt_0 = self.altitude;
-        // Altitude update
-        self.altitude += 0.5 * (v_d_0 + v_d_1) * dt;
-        // Latitude update
-        let lat_1: f64 =
-            self.latitude + 0.5 * (v_n_0 / (r_n + alt_0) + v_n_1 / (r_n + self.altitude)) * dt;
-        // Longitude update
-        let (_, r_e_1, _) = earth::principal_radii(&lat_1, &self.altitude);
-        let lon_1: f64 = self.longitude
-            + 0.5
-                * (v_e_0 / ((r_e_0 + alt_0) * lat_0.cos())
-                    + v_e_1 / ((r_e_1 + self.altitude) * lat_1.cos()))
-                * dt;
-        // Save updated position
-        self.latitude = wrap_latitude(lat_1.to_degrees()).to_radians();
-        self.longitude = lon_1;
-        // Save updated attitude as rotation
-        self.attitude = Rotation3::from_matrix(&c_1);
-        // Save update velocity
-        self.velocity_north = v_n_1;
-        self.velocity_east = v_e_1;
-        self.velocity_down = v_d_1;
-    }
-    /// NED Attitude update equation
-    ///
-    /// This function implements the attitude update equation for the strapdown navigation system. It takes the gyroscope
-    /// data and the time step as inputs and returns the updated attitude matrix. The attitude update equation is based
-    /// on the book _Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems, Second Edition_ by Paul D. Groves.
-    ///
-    /// # Arguments
-    /// * `gyros` - A Vector3 representing the gyroscope data in rad/s in the body frame x, y, z axis.
-    /// * `dt` - A f64 representing the time step in seconds.
-    ///
-    /// # Returns
-    /// * A Matrix3 representing the updated attitude matrix in the NED frame.
-    fn attitude_update(&self, gyros: &Vector3<f64>, dt: f64) -> Matrix3<f64> {
-        let transport_rate: Matrix3<f64> = earth::vector_to_skew_symmetric(&earth::transport_rate(
-            &self.latitude.to_degrees(),
-            &self.altitude,
-            &Vector3::from_vec(vec![
-                self.velocity_north,
-                self.velocity_east,
-                self.velocity_down,
-            ]),
-        ));
-        let rotation_rate: Matrix3<f64> =
-            earth::vector_to_skew_symmetric(&earth::earth_rate_lla(&self.latitude.to_degrees()));
-        let omega_ib: Matrix3<f64> = earth::vector_to_skew_symmetric(gyros);
-        let c_1: Matrix3<f64> = self.attitude * (Matrix3::identity() + omega_ib * dt)
-            - (rotation_rate + transport_rate) * self.attitude * dt;
-        c_1
-    }
-    /// Velocity update in NED
-    ///
-    /// This function implements the velocity update equation for the strapdown navigation system. It takes the specific force
-    /// vector and the time step as inputs and returns the updated velocity vector. The velocity update equation is based
-    /// on the book _Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems, Second Edition_ by Paul D. Groves.
-    ///
-    /// # Arguments
-    /// * `f` - A Vector3 representing the specific force vector in m/s^2 in the NED frame.
-    /// * `dt` - A f64 representing the time step in seconds.
-    ///
-    /// # Returns
-    /// * A Vector3 representing the updated velocity vector in the NED frame.
-    fn velocity_update(&self, f: &Vector3<f64>, dt: f64) -> Vector3<f64> {
-        let transport_rate: Matrix3<f64> = earth::vector_to_skew_symmetric(&earth::transport_rate(
-            &self.latitude.to_degrees(),
-            &self.altitude,
-            &Vector3::from_vec(vec![
-                self.velocity_north,
-                self.velocity_east,
-                self.velocity_down,
-            ]),
-        ));
-        let rotation_rate: Matrix3<f64> =
-            earth::vector_to_skew_symmetric(&earth::earth_rate_lla(&self.latitude.to_degrees()));
-        let r = earth::ecef_to_lla(&self.latitude.to_degrees(), &self.longitude.to_degrees());
-        // let grav: Vector3<f64> = earth::gravitation(&self.position[0], &self.position[1], &self.position[2]);
-        let velocity: Vector3<f64> =
-            Vector3::new(self.velocity_north, self.velocity_east, self.velocity_down);
-        // let gravity = earth::gravitation(
-        //     &self.latitude.to_degrees(),
-        //     &self.longitude.to_degrees(),
-        //     &self.altitude,
-        // );
-        let gravity = Vector3::new(
-            0.0,
-            0.0,
-            earth::gravity(&self.latitude.to_degrees(), &self.altitude),
-        );
-        //let accel = &gravity;
-        //println!("[StrapdownState::velocity_update] position: [{:?}, {:?}, {:?}]", self.latitude.to_degrees(), self.longitude.to_degrees(), self.altitude);
-        //println!("[StrapdownState::velocity_update] gravity vector: [{:?}, {:?}, {:?}] | Gravity scalar {:?}", accel[0], accel[1], accel[2], (accel[0].powi(2) + accel[1].powi(2) + accel[2].powi(2)).sqrt());
+}
 
-        velocity + (f - gravity - r * (transport_rate + 2.0 * rotation_rate) * velocity) * dt
-    }
+/// NED form of the forward kinematics equations. Corresponds to section 5.4 Local-Navigation Frame Equations
+/// from the book _Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems, Second Edition_
+/// by Paul D. Groves; Second Edition.
+///
+/// This function implements the forward kinematics equations for the strapdown navigation system. It takes
+/// the IMU data and the time step as inputs and updates the position, velocity, and attitude of the system.
+/// The IMU data is assumed to be pre-processed and ready for use in the mechanization equations (i.e. the
+/// gravity vector has already been filtered out and the data represents relative motion).
+///
+/// # Arguments
+/// * `imu_data` - A reference to an IMUData instance containing the acceleration and gyro data in the body frame.
+/// * `dt` - A f64 representing the time step in seconds.
+///
+/// # Example
+/// ```rust
+/// use strapdown::{StrapdownState, IMUData, forward};
+/// use nalgebra::Vector3;
+/// let mut state = StrapdownState::new();
+/// let imu_data = IMUData::new_from_vector(
+///    Vector3::new(0.0, 0.0, -9.81), // free fall acceleration in m/s^2
+///    Vector3::new(0.0, 0.0, 0.0) // No rotation
+/// );
+/// let dt = 0.1; // Example time step in seconds
+/// state = forward(state, imu_data, dt);
+/// ```
+pub fn forward(mut state: StrapdownState, imu_data: IMUData, dt: f64) -> StrapdownState {
+    // Extract the attitude matrix from the current state
+    let c_0: Rotation3<f64> = state.attitude;
+    // Attitude update; Equation 5.46
+    let c_1: Matrix3<f64> = attitude_update(&state, imu_data.gyro, dt);
+    // Specific force transformation; Equation 5.47
+    let f: Vector3<f64> = 0.5 * (c_0.matrix() + c_1) * imu_data.accel;
+    // Velocity update; Equation 5.54
+    //let v_1: Vector3<f64> = self.velocity_update(&f, dt);
+    let velocity = velocity_update(&state, f, dt);
+    // Position update; Equation 5.56
+    let (lat_1, lon_1, alt_1) = position_update(&state, velocity, dt);
+    // Save updated attitude as rotation
+    state.attitude = Rotation3::from_matrix(&c_1);
+    // Save update velocity
+    state.velocity_north = velocity[0];
+    state.velocity_east = velocity[1];
+    state.velocity_down = velocity[2];
+    // Save updated position
+    state.latitude = lat_1;
+    state.longitude = lon_1;
+    state.altitude = alt_1;
+    state
+}
+/// NED Attitude update equation
+///
+/// This function implements the attitude update equation for the strapdown navigation system. It takes the gyroscope
+/// data and the time step as inputs and returns the updated attitude matrix. The attitude update equation is based
+/// on the book _Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems, Second Edition_ by Paul D. Groves.
+///
+/// # Arguments
+/// * `gyros` - A Vector3 representing the gyroscope data in rad/s in the body frame x, y, z axis.
+/// * `dt` - A f64 representing the time step in seconds.
+///
+/// # Returns
+/// * A Matrix3 representing the updated attitude matrix in the NED frame.
+fn attitude_update(state: &StrapdownState, gyros: Vector3<f64>, dt: f64) -> Matrix3<f64> {
+    let transport_rate: Matrix3<f64> = earth::vector_to_skew_symmetric(&earth::transport_rate(
+        &state.latitude.to_degrees(),
+        &state.altitude,
+        &Vector3::from_vec(vec![
+            state.velocity_north,
+            state.velocity_east,
+            state.velocity_down,
+        ]),
+    ));
+    let rotation_rate: Matrix3<f64> =
+        earth::vector_to_skew_symmetric(&earth::earth_rate_lla(&state.latitude.to_degrees()));
+    let omega_ib: Matrix3<f64> = earth::vector_to_skew_symmetric(&gyros);
+    let c_1: Matrix3<f64> = state.attitude * (Matrix3::identity() + omega_ib * dt)
+        - (rotation_rate + transport_rate) * state.attitude * dt;
+    c_1
+}
+/// Velocity update in NED
+///
+/// This function implements the velocity update equation for the strapdown navigation system. It takes the specific force
+/// vector and the time step as inputs and returns the updated velocity vector. The velocity update equation is based
+/// on the book _Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems, Second Edition_ by Paul D. Groves.
+///
+/// # Arguments
+/// * `f` - A Vector3 representing the specific force vector in m/s^2 in the NED frame.
+/// * `dt` - A f64 representing the time step in seconds.
+///
+/// # Returns
+/// * A Vector3 representing the updated velocity vector in the NED frame.
+fn velocity_update(state: &StrapdownState, f: Vector3<f64>, dt: f64) -> Vector3<f64> {
+    let transport_rate: Matrix3<f64> = earth::vector_to_skew_symmetric(&earth::transport_rate(
+        &state.latitude.to_degrees(),
+        &state.altitude,
+        &Vector3::from_vec(vec![
+            state.velocity_north,
+            state.velocity_east,
+            state.velocity_down,
+        ]),
+    ));
+    let rotation_rate: Matrix3<f64> =
+        earth::vector_to_skew_symmetric(&earth::earth_rate_lla(&state.latitude.to_degrees()));
+    let r = earth::ecef_to_lla(&state.latitude.to_degrees(), &state.longitude.to_degrees());
+    let velocity: Vector3<f64> =
+        Vector3::new(state.velocity_north, state.velocity_east, state.velocity_down);
+    let gravity = Vector3::new(
+        0.0,
+        0.0,
+        earth::gravity(&state.latitude.to_degrees(), &state.altitude),
+    );
+    velocity + (f - gravity - r * (transport_rate + 2.0 * rotation_rate) * velocity) * dt
+}
+/// Position update in NED
+/// 
+/// This function implements the position update equation for the strapdown navigation system. It takes the current state,
+/// the velocity vector, and the time step as inputs and returns the updated position (latitude, longitude, altitude).
+/// 
+/// # Arguments
+/// * `state` - A reference to the StrapdownState containing the current position and velocity
+/// * `velocity` - A Vector3 representing the velocity vector in m/s in the NED frame.
+/// * `dt` - A f64 representing the time step in seconds.
+/// 
+/// # Returns
+/// * A tuple (latitude, longitude, altitude) representing the updated position in radians and meters.
+pub fn position_update(
+    state: &StrapdownState,
+    velocity: Vector3<f64>,
+    dt: f64,
+) -> (f64, f64, f64) {
+    let (r_n, r_e_0, _) = earth::principal_radii(&state.latitude, &state.altitude);
+    let lat_0 = state.latitude;
+    let alt_0 = state.altitude;
+    // Altitude update
+    let alt_1 = alt_0 + 0.5 * (state.velocity_down + velocity[2]) * dt;
+    // Latitude update
+    let lat_1 = state.latitude
+        + 0.5 * (state.velocity_north / (r_n + alt_0) + velocity[0] / (r_n + alt_1)) * dt;
+    // Longitude update
+    let (_, r_e_1, _) = earth::principal_radii(&lat_1, &alt_1);
+    let lon_1 = state.longitude
+        + 0.5
+            * (state.velocity_east / ((r_e_0 + alt_0) * lat_0.cos())
+                + velocity[1] / ((r_e_1 + alt_1) * lat_1.cos()))
+            * dt;
+    // Return updated position
+    (
+        wrap_latitude(lat_1.to_degrees()).to_radians(),
+        wrap_to_pi(lon_1),
+        alt_1,
+    )
 }
 // --- Miscellaneous functions for wrapping angles ---
 /// Wrap an angle to the range -180 to 180 degrees
@@ -845,7 +856,7 @@ mod tests {
             Vector3::new(0.0, 0.0, 0.0), // No rotation
         );
         let dt = 1.0; // Example time step in seconds
-        state.forward(&imu_data, dt);
+        state = forward(state, imu_data, dt);
         // After a forward step, the state should still be at rest
         assert_approx_eq!(state.latitude, 0.0, 1e-6);
         assert_approx_eq!(state.longitude, 0.0, 1e-6);
@@ -876,7 +887,7 @@ mod tests {
         assert_approx_eq!(state.attitude.euler_angles().2, 0.1, 1e-6); // Check initial yaw
         let gyros = Vector3::new(0.0, 0.0, 0.1); // Gyro data for yawing
         let dt = 1.0; // Example time step in seconds
-        let new_attitude = Rotation3::from_matrix(&state.attitude_update(&gyros, dt));
+        let new_attitude = Rotation3::from_matrix(&attitude_update(&state, gyros, dt));
         // Check if the yaw has changed
         let new_yaw = new_attitude.euler_angles().2;
         assert_approx_eq!(new_yaw, 0.1 + 0.1, 1e-3); // 0.1 rad initial + 0.1 rad
@@ -892,7 +903,7 @@ mod tests {
         assert_approx_eq!(state.attitude.euler_angles().0, 0.1, 1e-6); // Check initial roll
         let gyros = Vector3::new(0.10, 0.0, 0.0); // Gyro data for yawing
         let dt = 1.0; // Example time step in seconds
-        let new_attitude = Rotation3::from_matrix(&state.attitude_update(&gyros, dt));
+        let new_attitude = Rotation3::from_matrix(&attitude_update(&state, gyros, dt));
         // Check if the yaw has changed
         let new_roll = new_attitude.euler_angles().0;
         assert_approx_eq!(new_roll, 0.1 + 0.1, 1e-3); // 0.1 rad initial + 0.1 rad
@@ -908,7 +919,7 @@ mod tests {
         assert_approx_eq!(state.attitude.euler_angles().1, 0.1, 1e-6); // Check initial yaw
         let gyros = Vector3::new(0.0, 0.1, 0.0); // Gyro data for yawing
         let dt = 1.0; // Example time step in seconds
-        let new_attitude = Rotation3::from_matrix(&state.attitude_update(&gyros, dt));
+        let new_attitude = Rotation3::from_matrix(&attitude_update(&state, gyros, dt));
         // Check if the yaw has changed
         let new_pitch = new_attitude.euler_angles().1;
         assert_approx_eq!(new_pitch, 0.1 + 0.1, 1e-3); // 0.1 rad initial + 0.1 rad
@@ -977,7 +988,7 @@ mod tests {
             earth::gravity(&0.0, &0.0), // Gravity vector in NED
         );
         let dt = 1.0;
-        let v_new = state.velocity_update(&f, dt);
+        let v_new = velocity_update(&state, f, dt);
         assert_eq!(v_new[0], 0.0);
         assert_eq!(v_new[1], 0.0);
         assert_eq!(v_new[2], 0.0);
@@ -988,7 +999,7 @@ mod tests {
         let state = StrapdownState::new();
         let f = nalgebra::Vector3::new(1.0, 0.0, earth::gravity(&0.0, &0.0)); // 1 m/s^2 north
         let dt = 2.0;
-        let v_new = state.velocity_update(&f, dt);
+        let v_new = velocity_update(&state, f, dt);
         // Should be v = a * dt
         assert!((v_new[0] - 2.0).abs() < 1e-6);
         assert!((v_new[1]).abs() < 1e-6);
@@ -1003,7 +1014,7 @@ mod tests {
         state.velocity_down = 2.0;
         let f = Vector3::from_vec(vec![0.0, 0.0, earth::gravity(&0.0, &0.0)]);
         let dt = 1.0;
-        let v_new = state.velocity_update(&f, dt);
+        let v_new = velocity_update(&state, f, dt);
         assert_approx_eq!(v_new[0], 5.0, 1e-3);
         assert_approx_eq!(v_new[1], -3.0, 1e-3);
         assert_approx_eq!(v_new[2], 2.0, 1e-3);
@@ -1017,7 +1028,7 @@ mod tests {
         state.velocity_down = 0.0;
         let f = Vector3::from_vec(vec![0.0, 0.0, 2.0 * earth::gravity(&0.0, &0.0)]); // Downward acceleration
         let dt = 1.0;
-        let v_new = state.velocity_update(&f, dt);
+        let v_new = velocity_update(&state, f, dt);
         assert_approx_eq!(v_new[2], earth::gravity(&0.0, &0.0), 1e-3);
     }
     #[test]
@@ -1029,7 +1040,7 @@ mod tests {
         );
         let imu_data = IMUData::new_from_vec(vec![0.0, 0.0, 0.0], vec![0.0, 0.0, 0.1]);
         let dt = 1.0;
-        state.forward(&imu_data, dt);
+        state = forward(state, imu_data, dt);
         let (_, _, yaw) = state.attitude.euler_angles();
         assert!((yaw - 0.1).abs() < 1e-3);
     }
@@ -1043,7 +1054,7 @@ mod tests {
         );
         let imu_data = IMUData::new_from_vec(vec![0.0, 0.0, 0.0], vec![0.1, 0.0, 0.0]);
         let dt = 1.0;
-        state.forward(&imu_data, dt);
+        state = forward(state, imu_data, dt);
         let (roll, _, _) = state.attitude.euler_angles();
         assert!((roll - 0.1).abs() < 1e-3);
     }
@@ -1057,7 +1068,7 @@ mod tests {
         );
         let imu_data = IMUData::new_from_vec(vec![0.0, 0.0, 0.0], vec![0.0, 0.1, 0.0]);
         let dt = 1.0;
-        state.forward(&imu_data, dt);
+        state = forward(state, imu_data, dt);
         let (_, pitch, _) = state.attitude.euler_angles();
         assert!((pitch - 0.1).abs() < 1e-3);
     }
@@ -1071,7 +1082,7 @@ mod tests {
         );
         let imu_data = IMUData::new_from_vec(vec![1.0, 0.0, 0.0], vec![0.0, 0.0, 0.0]);
         let dt = 2.0;
-        state.forward(&imu_data, dt);
+        state = forward(state, imu_data, dt);
         assert!((state.velocity_north - 2.0).abs() < 1e-3);
     }
 
@@ -1084,7 +1095,7 @@ mod tests {
         );
         let imu_data = IMUData::new_from_vec(vec![0.0, 1.0, 0.0], vec![0.0, 0.0, 0.0]);
         let dt = 2.0;
-        state.forward(&imu_data, dt);
+        state = forward(state, imu_data, dt);
         assert!((state.velocity_east - 2.0).abs() < 1e-3);
     }
 
@@ -1100,7 +1111,7 @@ mod tests {
             vec![0.0, 0.0, 0.0],
         );
         let dt = 1.0;
-        state.forward(&imu_data, dt);
+        state = forward(state, imu_data, dt);
         assert_approx_eq!(state.velocity_down, 2.0, 1e-3);
     }
 }

@@ -16,7 +16,7 @@
 //! measurements in the local level frame (i.e. a GPS fix).
 use crate::earth::METERS_TO_DEGREES;
 use crate::linalg::matrix_square_root;
-use crate::{IMUData, StrapdownState, wrap_to_2pi, wrap_to_360};
+use crate::{IMUData, StrapdownState, forward, wrap_to_2pi, wrap_to_360};
 use nalgebra::{DMatrix, DVector, Rotation3, SVector};
 use rand;
 use rand_distr::{Distribution, Normal};
@@ -146,11 +146,11 @@ impl SigmaPoint {
     /// let imu_data = IMUData::new_from_vec(vec![0.0, 0.0, 0.0], vec![0.0, 0.0, 0.0]);
     /// let dt = 0.1;
     ///
-    /// sigma_point.forward(&imu_data, dt, None);
+    /// sigma_point.forward(imu_data, dt, None);
     /// ```
-    pub fn forward(&mut self, imu_data: &IMUData, dt: f64, noise: Option<Vec<f64>>) {
+    pub fn forward(&mut self, imu_data: IMUData, dt: f64, noise: Option<Vec<f64>>) {
         // Propagate the strapdown state using the strapdown equations
-        self.nav_state.forward(imu_data, dt);
+        self.nav_state = forward(self.nav_state, imu_data, dt);
         let noise_vect = match noise {
             None => return, // UKF mode, does not use noise in propagation
             Some(v) => v,   // Particle filter mode, uses noise in propagation
@@ -465,7 +465,7 @@ impl UKF {
         let mut sigma_points = self.get_sigma_points();
         for sigma_point in &mut sigma_points {
             println!("{}", sigma_point.get_string());
-            sigma_point.forward(imu_data, dt, None);
+            sigma_point.forward(*imu_data, dt, None);
         }
         // Update the mean state as mu_bar
         let mut mu_bar = DVector::<f64>::zeros(self.state_size);
@@ -624,7 +624,7 @@ impl ParticleFilter {
     /// * `imu_data` - The IMU measurements to propagate the particles with.
     pub fn propagate(&mut self, imu_data: &IMUData, dt: f64) {
         for particle in &mut self.particles {
-            particle.forward(imu_data, dt, None);
+            particle.forward(*imu_data, dt, None);
         }
     }
     /// Update the weights of the particles based on a measurement
@@ -907,8 +907,6 @@ impl GPS for UKF {
 /// Tests
 #[cfg(test)]
 mod tests {
-    use std::os::unix::process;
-
     use crate::earth;
 
     use super::*;
@@ -935,7 +933,7 @@ mod tests {
             gyro: Vector3::new(0.0, 0.0, 0.0),
         };
         let dt = 1.0;
-        sigma_point.forward(&imu_data, dt, None);
+        sigma_point.forward(imu_data.clone(), dt, None);
 
         let position = [0.0, 0.0, 0.0];
         let velocity = [0.0, 0.0, 0.0];
@@ -955,7 +953,7 @@ mod tests {
             0.01, 0.01, 0.01, // IMU biases noise
             0.01, 0.01, 0.01, // Measurement bias noise
         ];
-        sigma_point.forward(&imu_data, dt, Some(noise));
+        sigma_point.forward(imu_data.clone(), dt, Some(noise));
         // Check that the state has changed
         assert!(sigma_point.nav_state.latitude != position[0]);
         assert!(sigma_point.nav_state.longitude != position[1]);
