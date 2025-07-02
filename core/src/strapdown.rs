@@ -117,7 +117,6 @@
 //! $$
 //!
 
-
 // deconflict2
 pub mod earth;
 pub mod filter;
@@ -477,8 +476,8 @@ pub fn forward(state: &mut StrapdownState, imu_data: IMUData, dt: f64) {
     state.attitude = Rotation3::from_matrix(&c_1);
     // Save update velocity
     state.velocity_north = velocity[0];
-    state.velocity_east =  velocity[1];
-    state.velocity_down =  velocity[2];
+    state.velocity_east = velocity[1];
+    state.velocity_down = velocity[2];
     // Save updated position
     state.latitude = lat_1;
     state.longitude = lon_1;
@@ -538,25 +537,29 @@ fn velocity_update(state: &StrapdownState, specific_force: Vector3<f64>, dt: f64
     let rotation_rate: Matrix3<f64> =
         earth::vector_to_skew_symmetric(&earth::earth_rate_lla(&state.latitude.to_degrees()));
     let r = earth::ecef_to_lla(&state.latitude.to_degrees(), &state.longitude.to_degrees());
-    let velocity: Vector3<f64> =
-        Vector3::new(state.velocity_north, state.velocity_east, state.velocity_down);
+    let velocity: Vector3<f64> = Vector3::new(
+        state.velocity_north,
+        state.velocity_east,
+        state.velocity_down,
+    );
     let gravity = Vector3::new(
         0.0,
         0.0,
         earth::gravity(&state.latitude.to_degrees(), &state.altitude),
     );
-    velocity + (specific_force - gravity - r * (transport_rate + 2.0 * rotation_rate) * velocity) * dt
+    velocity
+        + (specific_force - gravity - r * (transport_rate + 2.0 * rotation_rate) * velocity) * dt
 }
 /// Position update in NED
-/// 
+///
 /// This function implements the position update equation for the strapdown navigation system. It takes the current state,
 /// the velocity vector, and the time step as inputs and returns the updated position (latitude, longitude, altitude).
-/// 
+///
 /// # Arguments
 /// * `state` - A reference to the current StrapdownState containing the position and velocity.
 /// * `velocity` - A Vector3 representing the velocity vector in m/s in the NED frame.
 /// * `dt` - A f64 representing the time step in seconds.
-/// 
+///
 /// # Returns
 /// * A tuple (latitude, longitude, altitude) representing the updated position in radians and meters.
 pub fn position_update(state: &StrapdownState, velocity: Vector3<f64>, dt: f64) -> (f64, f64, f64) {
@@ -566,8 +569,8 @@ pub fn position_update(state: &StrapdownState, velocity: Vector3<f64>, dt: f64) 
     // Altitude update
     let alt_1 = alt_0 + 0.5 * (state.velocity_down + velocity[2]) * dt;
     // Latitude update
-    let lat_1: f64 =
-        state.latitude + 0.5 * (state.velocity_north / (r_n + alt_0) + velocity[1] / (r_n + state.altitude)) * dt;
+    let lat_1: f64 = state.latitude
+        + 0.5 * (state.velocity_north / (r_n + alt_0) + velocity[1] / (r_n + state.altitude)) * dt;
     // Longitude update
     let (_, r_e_1, _) = earth::principal_radii(&lat_1, &state.altitude);
     let lon_1: f64 = state.longitude
@@ -579,10 +582,9 @@ pub fn position_update(state: &StrapdownState, velocity: Vector3<f64>, dt: f64) 
     (
         wrap_latitude(lat_1.to_degrees()).to_radians(),
         wrap_to_pi(lon_1),
-        alt_1
+        alt_1,
     )
 }
-
 
 // --- Miscellaneous functions for wrapping angles ---
 /// Wrap an angle to the range -180 to 180 degrees
@@ -1052,7 +1054,7 @@ mod tests {
         let imu_data = IMUData::new_from_vec(vec![0.0, 0.0, 0.0], vec![0.1, 0.0, 0.0]);
         let dt = 1.0;
         forward(&mut state, imu_data, dt);
-        
+
         //let (roll, _, _) = state.attitude.euler_angles();
         let roll = state.attitude.euler_angles().0;
         assert_approx_eq!(roll, 0.1, 1e-3);
