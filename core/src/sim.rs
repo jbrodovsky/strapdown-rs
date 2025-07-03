@@ -1,11 +1,18 @@
 //! Simulation utilities and CSV data loading for strapdown inertial navigation.
 //!
-//! This module provides:
-//! - A struct (`TestDataRecord`) for reading and writing test data to/from CSV files
-//! - Functions for running simulations like dead reckoning
-//! - `NavigationResult` structure for storing and analyzing navigation solutions
-//! - CSV import/export functionality for both test data and navigation results
-//! - Unit tests for validating functionality
+//! This module provides tools for simulating and evaluting strapdown inertial navigation systems.
+//! It is primarily designed to work with data produced from the [Sensor Logger](https://www.tszheichoi.com/sensorlogger) 
+//! app, as such it makes assumptions about the data format and structure that that corresponds to 
+//! how that app records data. That data is typically stored in CSV format and is represented by the
+//! `TestDataRecord` struct. This struct is fairly comprehensive and should be easily reusable for
+//! other applications. Modeling off of that struct is the `NavigationResult` struct which is used 
+//! to store navigation solutions from simulations, such as dead reckoning or Kalman filtering.
+//! 
+//! This module also provides basic functionality for analyzing cannonical strapdown inertial navigation
+//! systems via the `dead_reckoning` and `closed_loop` functions. The `closed_loop` function in particular
+//! can also be used to simulate various types of GNSS-denied scenarios, such as intermittent, degraded,
+//! or intermitent and degraded GNSS via the measurement models provided in this module. You can install 
+//! the programs that execute this generic simulation by installing the binary via `cargo install strapdown-rs`.
 use std::fmt::Display;
 use std::io::{self};
 use std::path::Path;
@@ -16,14 +23,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::earth;
 use crate::earth::METERS_TO_DEGREES;
-use crate::filter::{GPS, StrapdownParams, UKF};
+use crate::filter::{StrapdownParams, UKF, GPSPositionMeasurement, GPSVelocityMeasurement, RelativeBarometricAltitudeMeasurement};
 use crate::{IMUData, StrapdownState, forward};
 /// Struct representing a single row of test data from the CSV file.
 ///
 /// Fields correspond to columns in the CSV, with appropriate renaming for Rust style.
 /// This struct is setup to capture the data recorded from the [Sensor Logger](https://www.tszheichoi.com/sensorlogger) app.
 /// Primarily, this represents IMU data as (relative to the device) and GPS data.
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct TestDataRecord {
     /// Date-time string: YYYY-MM-DD hh:mm:ss+UTCTZ
     //#[serde(with = "ts_seconds")]
@@ -194,7 +201,7 @@ impl Display for TestDataRecord {
 ///
 /// It can be used across different types of navigation simulations such as dead reckoning,
 /// Kalman filtering, or any other navigation algorithm.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct NavigationResult {
     /// Timestamp corresponding to the state
     pub timestamp: DateTime<Utc>,
@@ -290,7 +297,6 @@ impl Default for NavigationResult {
         Self::new()
     }
 }
-
 impl NavigationResult {
     /// Creates a new NavigationResult with default values.
     pub fn new() -> Self {
@@ -706,7 +712,6 @@ impl
         }
     }
 }
-
 /// Run dead reckoning or "open-loop" simulation using test data.
 ///
 /// This function processes a sequence of sensor records through a StrapdownState, using
@@ -714,7 +719,13 @@ impl
 /// the StrapdownState with position, velocity, and attitude from the first record, and
 /// then applies the IMU measurements from subsequent records. It does not record the
 /// errors or confidence values, as this is a simple dead reckoning simulation and in testing
-/// these values would be used as a baseline for comparison.
+/// these values would be used as a baseline for comparison. Keep in mind that this toolbox
+/// is designed for the local level frame of reference and the forward mechanization is typically
+/// only valid at lower latitude (e.g. < 60 degrees) and at low altitudes (e.g. < 1000m). With 
+/// that, remember that dead reckoning is subject to drift and errors accumulate over time relative
+/// to the quality of the IMU data. Poor quality IMU data (e.g. MEMS grade IMUs) will lead to 
+/// significant drift very quickly which may cause this function to produce unrealistic results,
+/// hang, or crash.
 ///
 /// # Arguments
 /// * `records` - Vector of test data records containing IMU measurements and other sensor data
@@ -799,9 +810,10 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
 /// * `Vec<NavigationResult>` - A vector of navigation results containing the state estimates and covariances at each timestamp.
 pub fn closed_loop(
     records: &[TestDataRecord],
-    gps_interval: Option<usize>,
+    gps_interval: Option<usize>
 ) -> Vec<NavigationResult> {
     let gps_interval = gps_interval.unwrap_or(1); // Default to every record if not specified
+    let reference_pressure = records[0].pressure; // Use the first record's pressure as reference
     let mut results: Vec<NavigationResult> = Vec::with_capacity(records.len());
     // Initialize the UKF with the first record
     let mut ukf = initialize_ukf(
@@ -863,26 +875,41 @@ pub fn closed_loop(
             ],
         );
         // Update the UKF with the IMU data
-        ukf.predict(&imu_data, dt);
-        // If GPS data is available, update the UKF with the GPS measurement
+        ukf.predict(imu_data, dt);
+        // ---- Perform various measurement updates based on the available data ----
+        // If GPS data is available, update the UKF with the GPS position measurement
         if !record.latitude.is_nan()
             && !record.longitude.is_nan()
             && !record.altitude.is_nan()
             && i % gps_interval == 0
         {
-            let measurement = DVector::from_vec(vec![
-                record.latitude.to_radians(),
-                record.longitude.to_radians(),
-                record.altitude,
-                record.speed * record.bearing.cos(),
-                record.speed * record.bearing.sin(),
-                0.0, // Assuming no vertical velocity in GPS measurement
-            ]);
-            // Create the measurement sigma points using the position measurement model
-            let measurement_sigma_points = ukf.position_and_velocity_measurement_model(true);
-            let measurement_noise = ukf.position_and_velocity_measurement_noise(true);
-            // Update the UKF with the GPS measurement
-            ukf.update(&measurement, &measurement_sigma_points, &measurement_noise);
+            let measurement = GPSPositionMeasurement {
+                latitude: record.latitude.to_radians(),
+                longitude: record.longitude.to_radians(),
+                altitude: record.altitude,
+                horizontal_noise_std: record.horizontal_accuracy.sqrt(),
+                vertical_noise_std: record.vertical_accuracy,
+            };
+            ukf.update(measurement);
+        }
+        // If speed information is available, update the UKF with the speed measurement
+        if !record.speed.is_nan() && i % gps_interval == 0 && !record.bearing.is_nan() {
+            let speed = GPSVelocityMeasurement {
+                northward_velocity: record.speed * record.bearing.cos(),
+                eastward_velocity: record.speed * record.bearing.sin(),
+                downward_velocity: 0.0, // Assuming no vertical velocity
+                horizontal_noise_std: record.speed_accuracy.sqrt(),
+                vertical_noise_std: 0.0,
+            };
+            ukf.update(speed);
+        }
+        // If barometric altimeter data is available, update the UKF with the altitude measurement
+        if !record.relative_altitude.is_nan() {
+            let altitude = RelativeBarometricAltitudeMeasurement {
+                pressure: record.pressure,
+                reference_pressure,
+            };
+            ukf.update(altitude);
         }
         // Store the current state and covariance in results
         results.push(NavigationResult::from((
