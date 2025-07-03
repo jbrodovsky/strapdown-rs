@@ -17,9 +17,9 @@
 use crate::earth::{METERS_TO_DEGREES, relative_barometric_altitude};
 use crate::linalg::matrix_square_root;
 use crate::{IMUData, StrapdownState, forward, wrap_to_2pi};
-use nalgebra::{DMatrix, DVector, Rotation3, SVector};
+use nalgebra::{DMatrix, DVector, Rotation3};
 use rand;
-use rand_distr::{Distribution, Normal};
+//use rand_distr::{Distribution, Normal};
 use std::fmt::Debug;
 
 /// Basic strapdown state parameters for the UKF and particle filter initialization.
@@ -414,7 +414,7 @@ impl UKF {
     /// * `measurement_sigma_points` - The measurement sigma points to use for the update.
     pub fn update<M: MeasurementModel>(
         &mut self,
-        measurement: &M,
+        measurement: M,
     ) {
         let measurement_sigma_points = measurement.get_sigma_points(&self.get_sigma_points());
         // Calculate expected measurement
