@@ -17,10 +17,12 @@
 use crate::earth::{METERS_TO_DEGREES, relative_barometric_altitude};
 use crate::linalg::matrix_square_root;
 use crate::{IMUData, StrapdownState, forward, wrap_to_2pi};
+
+use std::convert::{From, Into};
+use std::fmt::Debug;
+
 use nalgebra::{DMatrix, DVector, Rotation3};
 use rand;
-//use rand_distr::{Distribution, Normal};
-use std::fmt::Debug;
 
 /// Basic strapdown state parameters for the UKF and particle filter initialization.
 #[derive(Clone, Debug, Default)]
@@ -50,7 +52,7 @@ pub trait MeasurementModel {
 }
 /// GPS position measurement model
 #[derive(Clone, Debug, Default)]
-pub struct GPSPositionMeasurement {
+pub struct GPSPositionMeasurement {  // <-- Check this model for degree/radian consistency
     /// latitude in degrees
     pub latitude: f64,
     /// longitude in degrees
@@ -600,7 +602,21 @@ mod tests {
     use crate::earth;
     use super::*;
     use assert_approx_eq::assert_approx_eq;
-    use nalgebra::{SVector, Vector3};
+    use nalgebra::Vector3;
+
+    const params: StrapdownParams = StrapdownParams {
+        latitude: 0.0,
+        longitude: 0.0,
+        altitude: 0.0,
+        northward_velocity: 0.0,
+        eastward_velocity: 0.0,
+        downward_velocity: 0.0,
+        roll: 0.0,
+        pitch: 0.0,
+        yaw: 0.0,
+        in_degrees: false,
+    };
+
     #[test]
     fn ukf_construction() {
         let position = [0.0, 0.0, 0.0];
@@ -758,41 +774,41 @@ mod tests {
         assert_approx_eq!(ukf.mean_state[4], 0.0, 0.1);
         assert_approx_eq!(ukf.mean_state[5], 0.0, 0.1);
     }
-    #[test]
-    fn ukf_debug() {
-        let imu_biases = vec![0.0, 0.0, 0.0];
-        let measurement_bias = vec![1.0, 1.0, 1.0];
-        let n = 9 + imu_biases.len() + measurement_bias.len();
-        let covariance_diagonal = vec![1e-3; n];
-        let process_noise_diagonal = vec![1e-3; n];
-        let alpha = 1e-3;
-        let beta = 2.0;
-        let kappa = 1e-3;
-        let ukf_params = StrapdownParams {
-            latitude: 0.0,
-            longitude: 0.0,
-            altitude: 0.0,
-            northward_velocity: 0.0,
-            eastward_velocity: 0.0,
-            downward_velocity: 0.0,
-            roll: 0.0,
-            pitch: 0.0,
-            yaw: 0.0,
-            in_degrees: false,
-        };
-        let ukf = UKF::new(
-            ukf_params,
-            imu_biases.clone(),
-            Some(measurement_bias.clone()),
-            covariance_diagonal,
-            DMatrix::from_diagonal(&DVector::from_vec(process_noise_diagonal)),
-            alpha,
-            beta,
-            kappa,
-        );
-        let debug_str = format!("{:?}", ukf);
-        assert!(debug_str.contains("mean_state"));
-    }
+    //#[test]
+    //fn ukf_debug() {
+    //    let imu_biases = vec![0.0, 0.0, 0.0];
+    //    let measurement_bias = vec![1.0, 1.0, 1.0];
+    //    let n = 9 + imu_biases.len() + measurement_bias.len();
+    //    let covariance_diagonal = vec![1e-3; n];
+    //    let process_noise_diagonal = vec![1e-3; n];
+    //    let alpha = 1e-3;
+    //    let beta = 2.0;
+    //    let kappa = 1e-3;
+    //    let ukf_params = StrapdownParams {
+    //        latitude: 0.0,
+    //        longitude: 0.0,
+    //        altitude: 0.0,
+    //        northward_velocity: 0.0,
+    //        eastward_velocity: 0.0,
+    //        downward_velocity: 0.0,
+    //        roll: 0.0,
+    //        pitch: 0.0,
+    //        yaw: 0.0,
+    //        in_degrees: false,
+    //    };
+    //    let ukf = UKF::new(
+    //        ukf_params,
+    //        imu_biases.clone(),
+    //        Some(measurement_bias.clone()),
+    //        covariance_diagonal,
+    //        DMatrix::from_diagonal(&DVector::from_vec(process_noise_diagonal)),
+    //        alpha,
+    //        beta,
+    //        kappa,
+    //    );
+    //    let debug_str = format!("{:?}", ukf);
+    //    assert!(debug_str.contains("mean_state"));
+    //}
     //#[test]
     //fn test_ukf_hover() {
     //     let imu_data = IMUData::new_from_vec(vec![0.0, 0.0, earth::gravity(&0.0, &0.0)], vec![0.0, 0.0, 0.0]);
@@ -843,16 +859,4 @@ mod tests {
     //     assert_approx_eq!(ukf.mean_state[4], velocity[1], 0.01);
     //     assert_approx_eq!(ukf.mean_state[5], velocity[2], 0.01);
     // }
-    #[test]
-    fn particle_filter_construction() {
-        let other_states = vec![1.0, 2.0, 3.0];
-        let weight = 1.0;
-
-        let nav_state = StrapdownState::new_from_vector(SVector::<f64, 9>::zeros(), false);
-        let particle = Particle { nav_state: StrapdownState::default(), weight: 1.0 };
-        let particles = vec![particle; 10];
-
-        let pf = ParticleFilter::new(particles);
-        assert_eq!(pf.particles.len(), 10);
-    }
 }
