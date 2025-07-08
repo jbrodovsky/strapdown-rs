@@ -176,7 +176,7 @@ impl Into<Vec<f64>> for IMUData {
 /// vectors. The order or the states depends on the coordinate system used. The struct does not care, but the
 /// coordinate system used will determine which functions you should use. Default is NED but nonetheless must be
 /// assigned. For computational simplicity, latitude and longitude are stored as radians.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 pub struct StrapdownState {
     /// Latitude in radians
     pub latitude: f64,
