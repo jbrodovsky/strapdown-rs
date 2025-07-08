@@ -18,7 +18,6 @@ use crate::earth::{METERS_TO_DEGREES, relative_barometric_altitude};
 use crate::linalg::matrix_square_root;
 use crate::{IMUData, StrapdownState, forward, wrap_to_2pi};
 
-use std::convert::{From, Into};
 use std::fmt::Debug;
 
 use nalgebra::{DMatrix, DVector, Rotation3};
@@ -604,7 +603,15 @@ mod tests {
     use assert_approx_eq::assert_approx_eq;
     use nalgebra::Vector3;
 
-    const params: StrapdownParams = StrapdownParams {
+    const IMU_BIASES: [f64; 6] = [0.0; 6];
+    const N: usize = 15;
+    const COVARIANCE_DIAGONAL: [f64; N] = [1e-9; N];
+    const PROCESS_NOISE_DIAGONAL: [f64; N] = [1e-9; N];
+
+    const ALPHA: f64 = 1e-3;
+    const BETA: f64 = 2.0;
+    const KAPPA: f64 = 0.0;
+    const UKF_PARAMS: StrapdownParams = StrapdownParams {
         latitude: 0.0,
         longitude: 0.0,
         altitude: 0.0,
@@ -619,58 +626,31 @@ mod tests {
 
     #[test]
     fn ukf_construction() {
-        let position = [0.0, 0.0, 0.0];
-        let velocity = [0.0, 0.0, 0.0];
-        let attitude = [0.0, 0.0, 0.0];
-        let imu_biases = vec![0.0, 0.0, 0.0];
-        let measurement_bias = vec![1.0, 1.0, 1.0];
-        let n = 9 + imu_biases.len() + measurement_bias.len();
-        let covariance_diagonal = vec![1e-3; n];
-        let process_noise_diagonal = vec![1e-3; n];
-        let alpha = 1e-3;
-        let beta = 2.0;
-        let kappa = 0.0;
-        let ukf_params = StrapdownParams {
-            latitude: position[0],
-            longitude: position[1],
-            altitude: position[2],
-            northward_velocity: velocity[0],
-            eastward_velocity: velocity[1],
-            downward_velocity: velocity[2],
-            roll: attitude[0],
-            pitch: attitude[1],
-            yaw: attitude[2],
-            in_degrees: false,
-        };
-
+        let measurement_bias = vec![0.0; 3]; // Example measurement bias
         let ukf = UKF::new(
-            ukf_params,
-            imu_biases.clone(),
+            UKF_PARAMS,
+            IMU_BIASES.to_vec(),
             Some(measurement_bias.clone()),
-            covariance_diagonal,
-            DMatrix::from_diagonal(&DVector::from_vec(process_noise_diagonal)),
-            alpha,
-            beta,
-            kappa,
+            vec![1e-3; 18],
+            DMatrix::from_diagonal(&DVector::from_vec(vec![1e-3; 18])),
+            ALPHA,
+            BETA,
+            KAPPA,
         );
         assert_eq!(
             ukf.mean_state.len(),
-            position.len()
-                + velocity.len()
-                + attitude.len()
-                + imu_biases.len()
-                + measurement_bias.len()
+            18
         );
         let wms = ukf.weights_mean;
         let wcs = ukf.weights_cov;
         assert_eq!(wms.len(), (2 * ukf.state_size) + 1);
         assert_eq!(wcs.len(), (2 * ukf.state_size) + 1);
         // Check that the weights are correct
-        let lambda = alpha.powi(2) * (n as f64 + kappa) - n as f64;
+        let lambda = ALPHA.powi(2) * (18.0 + KAPPA) - 18.0;
         assert_eq!(lambda, ukf.lambda);
-        let wm_0 = lambda / (n as f64 + lambda);
-        let wc_0 = wm_0 + (1.0 - alpha.powi(2)) + beta;
-        let w_i = 1.0 / (2.0 * (n as f64 + lambda));
+        let wm_0 = lambda / (18.0 + lambda);
+        let wc_0 = wm_0 + (1.0 - ALPHA.powi(2)) + BETA;
+        let w_i = 1.0 / (2.0 * (18.0 + lambda));
         assert_approx_eq!(wms[0], wm_0, 1e-6);
         assert_approx_eq!(wcs[0], wc_0, 1e-6);
         for i in 1..wms.len() {
@@ -680,92 +660,61 @@ mod tests {
     }
     #[test]
     fn ukf_get_sigma_points() {
-        let position = [0.0, 0.0, 0.0];
-        let velocity = [0.0, 0.0, 0.0];
-        let attitude = [0.0, 0.0, 0.0];
-        let imu_biases = vec![0.0; 6];
-        let n = 9 + imu_biases.len();
-        let covariance_diagonal = vec![1e-9; n];
-        let process_noise_diagonal = vec![1e-9; n];
-        let alpha = 1e-3;
-        let beta = 2.0;
-        let kappa = 0.0;
-        let ukf_params = StrapdownParams {
-            latitude: position[0],
-            longitude: position[1],
-            altitude: position[2],
-            northward_velocity: velocity[0],
-            eastward_velocity: velocity[1],
-            downward_velocity: velocity[2],
-            roll: attitude[0],
-            pitch: attitude[1],
-            yaw: attitude[2],
-            in_degrees: false,
-        };
-
         let ukf = UKF::new(
-            ukf_params,
-            imu_biases.clone(),
+            UKF_PARAMS,
+            IMU_BIASES.to_vec(),
             None,
-            covariance_diagonal,
-            DMatrix::from_diagonal(&DVector::from_vec(process_noise_diagonal)),
-            alpha,
-            beta,
-            kappa,
+            COVARIANCE_DIAGONAL.to_vec(),
+            DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
+            ALPHA,
+            BETA,
+            KAPPA,
         );
         let sigma_points = ukf.get_sigma_points();
-        assert_eq!(sigma_points.len(), (2 * ukf.state_size) + 1);
+        assert_eq!(sigma_points.ncols(), (2 * ukf.state_size) + 1);
 
         let mu = ukf.get_sigma_points() * ukf.weights_mean;
         assert_eq!(mu.nrows(), ukf.state_size);
         assert_eq!(mu.ncols(), 1);
-        assert_approx_eq!(mu[0], position[0], 1e-6);
-        assert_approx_eq!(mu[1], position[1], 1e-6);
-        assert_approx_eq!(mu[2], position[2], 1e-6);
-        assert_approx_eq!(mu[3], velocity[0], 1e-6);
-        assert_approx_eq!(mu[4], velocity[1], 1e-6);
-        assert_approx_eq!(mu[5], velocity[2], 1e-6);
-        assert_approx_eq!(mu[6], attitude[0], 1e-6);
-        assert_approx_eq!(mu[7], attitude[1], 1e-6);
-        assert_approx_eq!(mu[8], attitude[2], 1e-6);
+        assert_approx_eq!(mu[0], 0.0, 1e-6);
+        assert_approx_eq!(mu[1], 0.0, 1e-6);
+        assert_approx_eq!(mu[2], 0.0, 1e-6);
+        assert_approx_eq!(mu[3], 0.0, 1e-6);
+        assert_approx_eq!(mu[4], 0.0, 1e-6);
+        assert_approx_eq!(mu[5], 0.0, 1e-6);
+        assert_approx_eq!(mu[6], 0.0, 1e-6);
+        assert_approx_eq!(mu[7], 0.0, 1e-6);
+        assert_approx_eq!(mu[8], 0.0, 1e-6);
     }
     #[test]
     fn ukf_propagate() {
-        let n = 15;
-        let process_noise_diagonal = vec![1e-3; n];
-        let ukf_params = StrapdownParams {
-            latitude: 0.0,
-            longitude: 0.0,
-            altitude: 0.0,
-            northward_velocity: 0.0,
-            eastward_velocity: 0.0,
-            downward_velocity: 0.0,
-            roll: 0.0,
-            pitch: 0.0,
-            yaw: 0.0,
-            in_degrees: false,
-        };
         let mut ukf = UKF::new(
-            ukf_params,
+            UKF_PARAMS,
             vec![0.0; 6],
             None,         //Some(measurement_bias.clone()),
-            vec![0.0; n], // Absolute certainty use for testing the process
-            DMatrix::from_diagonal(&DVector::from_vec(process_noise_diagonal)),
+            vec![0.0; N], // Absolute certainty use for testing the process
+            DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
             1e-3,
             2.0,
             0.0,
         );
         let dt = 1.0;
-        let imu_data = IMUData::new_from_vector(
-            Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
-            Vector3::new(0.0, 0.0, 0.0), // No rotation
-        );
+        let imu_data = IMUData {
+            accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
+            gyro: Vector3::new(0.0, 0.0, 0.0), // No rotation
+        };
         ukf.predict(imu_data, dt);
         assert!(
             ukf.mean_state.len() == 15 //+ measurement_bias.len()
         );
-        let measurement = DVector::from_vec(vec![0.0; 3]);
-        //ukf.update();
+        let measurement = GPSPositionMeasurement {
+                latitude: 0.0,
+                longitude: 0.0,
+                altitude: 0.0,
+                horizontal_noise_std: 1e-3,
+                vertical_noise_std: 1e-3,
+            };
+        ukf.update(measurement);
         // Check that the state has not changed
         assert_approx_eq!(ukf.mean_state[0], 0.0, 1e-3);
         assert_approx_eq!(ukf.mean_state[1], 0.0, 1e-3);
