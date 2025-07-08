@@ -687,7 +687,7 @@ pub fn magnetic_anomaly(
     mag_y: f64,
     mag_z: f64,
 ) -> f64 {
-    0.0 * latitude * longitude * altitude * mag_x * mag_y * mag_z // Placeholder for magnetic anomaly calculation
+    f64::NAN * latitude * longitude * altitude * mag_x * mag_y * mag_z // Placeholder for magnetic anomaly calculation to squash warnings
 }
 // === Unit tests ===
 #[cfg(test)]
