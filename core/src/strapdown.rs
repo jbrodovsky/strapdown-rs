@@ -357,11 +357,11 @@ impl From<&StrapdownState> for DVector<f64> {
 /// ```rust
 /// use strapdown::{StrapdownState, IMUData, forward};
 /// use nalgebra::Vector3;
-/// let mut state = StrapdownState::new();
-/// let imu_data = IMUData::new_from_vector(
-///    Vector3::new(0.0, 0.0, -9.81), // free fall acceleration in m/s^2
-///    Vector3::new(0.0, 0.0, 0.0) // No rotation
-/// );
+/// let mut state = StrapdownState::default();
+/// let imu_data = IMUData {
+///    accel: Vector3::new(0.0, 0.0, -9.81), // free fall acceleration in m/s^2
+///    gyro: Vector3::new(0.0, 0.0, 0.0) // No rotation
+/// };
 /// let dt = 0.1; // Example time step in seconds
 /// forward(&mut state, imu_data, dt);
 /// ```
