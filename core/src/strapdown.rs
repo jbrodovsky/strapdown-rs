@@ -214,6 +214,20 @@ impl Debug for StrapdownState {
         )
     }
 }
+impl Default for StrapdownState {
+    fn default() -> Self {
+        StrapdownState {
+            latitude: 0.0,
+            longitude: 0.0,
+            altitude: 0.0,
+            velocity_north: 0.0,
+            velocity_east: 0.0,
+            velocity_down: 0.0,
+            attitude: Rotation3::identity(),
+            coordinate_convention: true, // NED by default
+        }
+    }
+}
 impl StrapdownState {
     /// Create a new StrapdownState from explicit position and velocity components, and attitude
     ///
