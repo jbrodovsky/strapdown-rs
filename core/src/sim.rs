@@ -831,8 +831,8 @@ pub fn closed_loop(
             && i % gps_interval == 0
         {
             let measurement = GPSPositionMeasurement {
-                latitude: record.latitude.to_radians(),
-                longitude: record.longitude.to_radians(),
+                latitude: record.latitude,
+                longitude: record.longitude,
                 altitude: record.altitude,
                 horizontal_noise_std: record.horizontal_accuracy.sqrt(),
                 vertical_noise_std: record.vertical_accuracy,
