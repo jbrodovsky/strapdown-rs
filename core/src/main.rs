@@ -4,6 +4,8 @@ use std::error::Error;
 use std::path::PathBuf;
 use strapdown::sim::{NavigationResult, TestDataRecord, closed_loop, dead_reckoning};
 
+/// git deconflict
+
 /// Command line arguments
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
