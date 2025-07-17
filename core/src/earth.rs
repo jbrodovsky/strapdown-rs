@@ -115,6 +115,32 @@ pub fn barometric_altitude(pressure: f64) -> f64 {
 pub fn relative_barometric_altitude(pressure: f64, initial_pressure: f64) -> f64 {
     ((UNIVERSAL_GAS_CONSTANT * SEA_LEVEL_PRESSURE) / (G0 * MOLAR_MASS_DRY_AIR)) * (initial_pressure / pressure).ln()
 }
+/// Calculates the expected barometric pressure at a given altitude
+///
+/// This function calculates the expected atmospheric pressure at a given altitude using the barometric formula,
+/// given a reference sea level pressure. This is the inverse of the relative_barometric_altitude function.
+///
+/// # Arguments
+/// - `altitude` - The altitude above sea level in meters
+/// - `sea_level_pressure` - The atmospheric pressure at sea level in pascals
+///
+/// # Returns
+/// The expected atmospheric pressure at the given altitude in pascals
+///
+/// # Example
+/// ```rust
+/// use strapdown::earth;
+/// let altitude = 1000.0;
+/// let sea_level_pressure = 101325.0;
+/// let pressure = earth::expected_barometric_pressure(altitude, sea_level_pressure);
+/// ```
+pub fn expected_barometric_pressure(altitude: f64, sea_level_pressure: f64) -> f64 {
+    // Barometric formula (assuming isothermal atmosphere):
+    // P = P0 * exp(- (g0 * M * h) / (R * T0))
+    // Here we use the same constants as in barometric_altitude
+    let exponent = - (G0 * MOLAR_MASS_DRY_AIR * altitude) / (UNIVERSAL_GAS_CONSTANT * SEA_LEVEL_STANDARD_TEMPERATURE);
+    sea_level_pressure * exponent.exp()
+}
 /// Convert a three-element vector to a skew-symmetric matrix
 ///
 /// Groves' notation uses a lot of skew-symmetric matrices to represent cross products
