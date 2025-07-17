@@ -29,123 +29,6 @@ use rand;
 // list of sigma points or particles and the expected measurements in order to
 // calculate the innovation matrix or the particle weighting.
 // ================================================================================
-/// Parameters for GPS measurement noise models.
-#[derive(Debug, Clone)]
-pub struct GPSNoiseParams {
-    /// Position std dev in meters (for lat/lon, will be converted)
-    pub pos_std_m: f64,      
-    /// Altitude std dev in meters
-    pub alt_std_m: f64,      
-    /// Velocity std dev in m/s
-    pub vel_std_mps: f64, 
-}
-impl Default for GPSNoiseParams {
-    fn default() -> Self {
-        GPSNoiseParams {
-            pos_std_m: 5.0,
-            alt_std_m: 10.0,
-            vel_std_mps: 0.1,
-        }
-    }
-}
-/// GPS measurement model trait for cannonical INS implementations.
-///
-/// Standard GNSS-aided loosely-coupled INS measurement model. This model is used to update the state
-/// based on position measurements in the local level frame. The model assumes that the position
-/// measurements are in the local level frame and that the strapdown state is in the body frame.
-pub trait GPS {
-    /// GPS or Position-based measurement model
-    ///
-    /// Standard GNSS-aided loosely-coupled INS measurement model. This model is used to update the state
-    /// based on position measurements in the local level frame. The model assumes that the position
-    /// measurements are in the local level frame and that the strapdown state is in the body frame.
-    ///
-    /// # Arguments
-    /// * `with_altitude` - whether to include altitude in the measurement
-    ///
-    /// # Returns
-    /// * A vector of measurement sigma points either (N x 3) or (N x 2) depending on the `with_altitude` flag
-    fn position_measurement_model(&self, with_altitude: bool) -> Vec<DVector<f64>>;
-    /// UKF velocity-based measurement model
-    ///
-    /// Velocity measurement model. This model is used to update the state based on
-    /// velocity measurements in the local level frame. The model assumes that the velocity
-    /// measurements are in the local level frame and that the strapdown state is in the
-    /// body frame.
-    ///
-    /// # Arguments
-    /// * `with_altitude` - whether to include altitude in the measurement
-    ///
-    /// # Returns
-    /// * A vector of measurement sigma points either (N x 3) or (N x 2) depending on the `with_altitude` flag
-    fn velocity_measurement_model(&self, with_altitude: bool) -> Vec<DVector<f64>>;
-    /// GPS or Position-based measurement model
-    ///
-    /// GPS-aided INS measurement model for a combined position-velocity measuremet.
-    /// This model is used to update the state based on both position and velocity
-    /// measurements in the local level frame. The model assumes that the position
-    /// measurements are in the local level frame (latitude, longitude, altitude)
-    /// and that the velocity is orient along the northward, eastward, and downward
-    /// axes.
-    ///
-    /// # Arguments
-    /// * `with_altitude` - whether to include altitude in the measurement
-    ///
-    /// # Returns
-    /// * A vector of measurement sigma points either (N x 6) or (N x 4) depending on the `with_altitude` flag
-    fn position_and_velocity_measurement_model(&self, with_altitude: bool) -> Vec<DVector<f64>>;
-    /// Position measurement noise model
-    fn position_measurement_noise(&self, with_altitude: bool) -> DMatrix<f64>;
-    /// Velocity measurement noise model
-    fn velocity_measurement_noise(&self, with_altitude: bool) -> DMatrix<f64>;
-    /// Position and velocity measurement noise model
-    fn position_and_velocity_measurement_noise(&self, with_altitude: bool) -> DMatrix<f64>;
-}
-/// Parameters for barometric measurement noise models.
-#[derive(Debug, Clone)]
-pub struct BaroModelParams {
-    /// Pressure measurement std dev in Pascals
-    pub pressure_std_pa: f64,
-    /// Altitude measurement std dev in meters (optional, if you convert pressure to altitude)
-    pub alt_std_m: f64,
-    /// Initial pressure in Pascals (optional, if you convert pressure to altitude)
-    pub initial_pressure_pa: Option<f64>,
-    /// Initial altitude in meters (optional, if you convert pressure to altitude)
-    pub initial_altitude_m: Option<f64>,
-}
-
-impl Default for BaroModelParams {
-    fn default() -> Self {
-        BaroModelParams {
-            pressure_std_pa: 1.0, // Example default
-            alt_std_m: 0.5,       // Example default
-            initial_pressure_pa: Some(101325.0), // Optional, can be set later
-            initial_altitude_m: Some(0.0),  // Optional, can be set later
-        }
-    }
-}
-
-/// Barometric measurement model trait for INS implementations.
-pub trait Baro {
-    /// Returns expected barometric measurement sigma points (e.g., altitude or pressure).
-    fn baro_measurement_model(&self) -> Vec<DVector<f64>>;
-    /// Returns the barometric measurement noise covariance matrix.
-    fn baro_measurement_noise(&self) -> DMatrix<f64>;
-}
-/// Basic strapdown state parameters for the UKF and particle filter initialization.
-#[derive(Clone, Debug, Default)]
-pub struct StrapdownParams {
-    pub latitude: f64,
-    pub longitude: f64,
-    pub altitude: f64,
-    pub northward_velocity: f64,
-    pub eastward_velocity: f64,
-    pub downward_velocity: f64,
-    pub roll: f64,
-    pub pitch: f64,
-    pub yaw: f64,
-    pub in_degrees: bool,
-}
 /// Generic measurement model trait for all filters
 pub trait MeasurementModel {
     /// Get the dimensionality of the measurement vector.
@@ -329,6 +212,20 @@ impl MeasurementModel for RelativeAltitudeMeasurement {
         measurement_sigma_points
     }
 }
+/// Basic strapdown state parameters for the UKF and particle filter initialization.
+#[derive(Clone, Debug, Default)]
+pub struct StrapdownParams {
+    pub latitude: f64,
+    pub longitude: f64,
+    pub altitude: f64,
+    pub northward_velocity: f64,
+    pub eastward_velocity: f64,
+    pub downward_velocity: f64,
+    pub roll: f64,
+    pub pitch: f64,
+    pub yaw: f64,
+    pub in_degrees: bool,
+}
 /// Strapdown Unscented Kalman Filter Inertial Navigation Filter
 ///
 /// This filter uses the Unscented Kalman Filter (UKF) algorithm to estimate the state of a
@@ -358,7 +255,6 @@ pub struct UKF {
     state_size: usize,
     weights_mean: DVector<f64>,
     weights_cov: DVector<f64>,
-    gps_noise: GPSNoiseParams,
 }
 impl Debug for UKF {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -474,8 +370,7 @@ impl UKF {
             lambda,
             state_size,
             weights_mean,
-            weights_cov,
-            gps_noise: GPSNoiseParams::default(),
+            weights_cov
         }
     }
     /// Predicts the state using the strapdown equations and IMU measurements.
@@ -765,142 +660,6 @@ impl ParticleFilter {
         self.particles = new_particles;
     }
 }
-
-// Implement the Baro trait for UKF:
-impl Baro for UKF {
-    fn baro_measurement_model(&self) -> Vec<DVector<f64>> {
-        let sigma_points = self.get_sigma_points();
-        let mut measurement_sigma_points = Vec::with_capacity(sigma_points.len());
-        for sigma_point in sigma_points {
-            // Example: use altitude as the barometric measurement
-            let measurement = DVector::from_vec(vec![sigma_point.nav_state.altitude]);
-            measurement_sigma_points.push(measurement);
-        }
-        measurement_sigma_points
-    }
-
-    fn baro_measurement_noise(&self) -> DMatrix<f64> {
-        // Example: use altitude noise
-        DMatrix::from_diagonal(&DVector::from_vec(vec![self.baro_noise.alt_std_m.powi(2)]))
-    }
-}
-impl GPS for UKF {
-    fn position_measurement_model(&self, with_altitude: bool) -> Vec<DVector<f64>> {
-        let sigma_points = self.get_sigma_points(); // Crashing issue occurs here
-        let mut measurement_sigma_points = Vec::<DVector<f64>>::with_capacity(sigma_points.len());
-        for sigma_point in sigma_points {
-            let mut measurement_sigma_point =
-                DVector::<f64>::zeros(if with_altitude { 3 } else { 2 });
-            if with_altitude {
-                measurement_sigma_point[0] = sigma_point.nav_state.latitude;
-                measurement_sigma_point[1] = sigma_point.nav_state.longitude;
-                measurement_sigma_point[2] = sigma_point.nav_state.altitude;
-            } else {
-                measurement_sigma_point[0] = sigma_point.nav_state.latitude;
-                measurement_sigma_point[1] = sigma_point.nav_state.longitude;
-            }
-            measurement_sigma_points.push(measurement_sigma_point);
-        }
-        measurement_sigma_points
-    }
-    fn velocity_measurement_model(&self, with_altitude: bool) -> Vec<DVector<f64>> {
-        let sigma_points = self.get_sigma_points();
-        let mut measurement_sigma_points = Vec::<DVector<f64>>::with_capacity(sigma_points.len());
-        for sigma_point in sigma_points {
-            let mut measurement_sigma_point =
-                DVector::<f64>::zeros(if with_altitude { 3 } else { 2 });
-            if with_altitude {
-                measurement_sigma_point[0] = sigma_point.nav_state.velocity_north; // Northward
-                measurement_sigma_point[1] = sigma_point.nav_state.velocity_east; // Eastward
-                measurement_sigma_point[2] = sigma_point.nav_state.velocity_down; // downward
-            } else {
-                measurement_sigma_point[0] = sigma_point.nav_state.velocity_north; // Northward
-                measurement_sigma_point[1] = sigma_point.nav_state.velocity_east; // Eastward
-            }
-            measurement_sigma_points.push(measurement_sigma_point);
-        }
-        measurement_sigma_points
-    }
-    fn position_and_velocity_measurement_model(&self, with_altitude: bool) -> Vec<DVector<f64>> {
-        let sigma_points = self.get_sigma_points();
-        let mut measurement_sigma_points = Vec::<DVector<f64>>::with_capacity(sigma_points.len());
-        for sigma_point in sigma_points {
-            if with_altitude {
-                // Position and velocity with altitude
-                let measurement_sigma_point = DVector::<f64>::from_vec(vec![
-                    sigma_point.nav_state.latitude,       // Latitude
-                    sigma_point.nav_state.longitude,      // Longitude
-                    sigma_point.nav_state.altitude,       // Altitude
-                    sigma_point.nav_state.velocity_north, // Northward velocity
-                    sigma_point.nav_state.velocity_east,  // Eastward velocity
-                    sigma_point.nav_state.velocity_down,  // Downward velocity
-                ]);
-                measurement_sigma_points.push(measurement_sigma_point);
-            } else {
-                // Position and velocity without altitude
-                let measurement_sigma_point = DVector::<f64>::from_vec(vec![
-                    sigma_point.nav_state.latitude,       // Latitude
-                    sigma_point.nav_state.longitude,      // Longitude
-                    sigma_point.nav_state.velocity_north, // Northward velocity
-                    sigma_point.nav_state.velocity_east,  // Eastward velocity
-                ]);
-                measurement_sigma_points.push(measurement_sigma_point);
-            }
-        }
-        measurement_sigma_points
-    }
-    /// Position measurement noise covariance matrix
-    fn position_measurement_noise(&self, with_altitude: bool) -> DMatrix<f64> {
-        // Default implementation returns an identity matrix, can be overridden
-        match with_altitude {
-            true => DMatrix::from_diagonal(&DVector::from_vec(vec![
-                ((5.0 * METERS_TO_DEGREES).to_radians()).powf(2.0), // Latitude noise (degrees)
-                ((5.0 * METERS_TO_DEGREES).to_radians()).powf(2.0), // Longitude noise (degrees)
-                (5.0_f64).powf(2.0),                                // Altitude noise (meters)
-            ])),
-            false => DMatrix::from_diagonal(&DVector::from_vec(vec![
-                ((5.0 * METERS_TO_DEGREES).to_radians()).powf(2.0), // Latitude noise (degrees)
-                ((5.0 * METERS_TO_DEGREES).to_radians()).powf(2.0), // Longitude noise (degrees)
-            ])),
-        }
-    }
-    /// Velocity measurement noise covariance matrix
-    fn velocity_measurement_noise(&self, with_altitude: bool) -> DMatrix<f64> {
-        // Default implementation returns an identity matrix, can be overridden
-        match with_altitude {
-            true => DMatrix::from_diagonal(&DVector::from_vec(vec![
-                (0.1_f64).powf(2.0), // Northward velocity noise (m/s)
-                (0.1_f64).powf(2.0), // Eastward velocity noise (m/s)
-                (0.1_f64).powf(2.0), // Downward velocity noise (m/s)
-            ])),
-            false => DMatrix::from_diagonal(&DVector::from_vec(vec![
-                (0.1_f64).powf(2.0), // Northward velocity noise (m/s)
-                (0.1_f64).powf(2.0), // Eastward velocity noise (m/s)
-            ])),
-        }
-    }
-    /// Position and velocity measurement noise covariance matrix
-    fn position_and_velocity_measurement_noise(&self, with_altitude: bool) -> DMatrix<f64> {
-        // Default implementation returns an identity matrix, can be overridden
-        match with_altitude {
-            true => DMatrix::from_diagonal(&DVector::from_vec(vec![
-                ((5.0 * METERS_TO_DEGREES).to_radians()).powf(2.0), // Latitude noise (degrees)
-                ((5.0 * METERS_TO_DEGREES).to_radians()).powf(2.0), // Longitude noise (degrees)
-                (5.0_f64).powf(2.0),                                // Altitude noise (meters)
-                (0.1_f64).powf(2.0), // Northward velocity noise (m/s)
-                (0.1_f64).powf(2.0), // Eastward velocity noise (m/s)
-                (0.1_f64).powf(2.0), // Downward velocity noise (m/s)
-            ])),
-            false => DMatrix::from_diagonal(&DVector::from_vec(vec![
-                ((5.0 * METERS_TO_DEGREES).to_radians()).powf(2.0), // Latitude noise (degrees)
-                ((5.0 * METERS_TO_DEGREES).to_radians()).powf(2.0), // Longitude noise (degrees)
-                (0.1_f64).powf(2.0), // Northward velocity noise (m/s)
-                (0.1_f64).powf(2.0), // Eastward velocity noise (m/s)
-            ])),
-        }
-    }
-}
-
 /// Tests
 #[cfg(test)]
 mod tests {
