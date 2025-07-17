@@ -6,28 +6,23 @@
 //! to estimate the position and velocity of the sensor. While utilities exist for IMU data, this crate does
 //! not currently support IMU output directly and should not be thought of as a full inertial navigation system
 //! (INS). This crate is designed to be used to test the filters that would be used in an INS. It does not
-//! provide utilities for reading raw output from the IMU or act as an IMU firmware or driver.
+//! provide utilities for reading raw output from the IMU or act as IMU firmware or driver. As such the IMU data 
+//! is assumed to be pre-filtered and contain the total accelerations and relative rotations. 
 //!
-//! As such the IMU data is assumed to be _relative_ accelerations and rotations with the orientation and gravity
-//! vector pre-filtered. Additional signals that can be derived using IMU data, such as gravity or magnetic vector
-//! and anomalies, should come be provided to this toolbox as a seperate sensor channel. In other words, to
-//! calculate the gravity vector the IMU output should be parsed to separately output the overall acceleration
-//! and rotation of the sensor whereas the navigation filter will use the gravity and orientation corrected
-//! acceleration and rotation to estimate the position
-//!
-//! Primarily built off of two crate dependencies:
+//! This crate is primarily built off of three additional dependencies:
 //! - [`nav-types`](https://crates.io/crates/nav-types): Provides basic coordinate types and conversions.
 //! - [`nalgebra`](https://crates.io/crates/nalgebra): Provides the linear algebra tools for the filters.
+//! - [`rand`](https://crates.io/crates/rand) and [`rand_distr`](https://crates.io/crates/rand_distr): Provides random number generation for noise and simulation (primarily for particle filter methods).
 //!
-//! All other functionality is built on top of these crates. The primary reference text is _Principles of GNSS,
-//! Inertial, and Multisensor Integrated Navigation Systems, 2nd Edition_ by Paul D. Groves. Where applicable,
-//! calculations will be referenced by the appropriate equation number tied to the book. In general, variables
-//! will be named according to the quantity they represent and not the symbol used in the book. For example,
-//! the Earth's equatorial radius is named `EQUATORIAL_RADIUS` instead of `a`. This style is sometimes relaxed
-//! within the body of a given function, but the general rule is to use descriptive names for variables and not
-//! mathematical symbols.
+//! All other functionality is built on top of these crates or is auxiliary functionality (e.g. I/O). The primary 
+//! reference text is _Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems, 2nd Edition_ 
+//! by Paul D. Groves. Where applicable, calculations will be referenced by the appropriate equation number tied 
+//! to the book. In general, variables will be named according to the quantity they represent and not the symbol 
+//! used in the book. For example, the Earth's equatorial radius is named `EQUATORIAL_RADIUS` instead of `a`. 
+//! This style is sometimes relaxed within the body of a given function, but the general rule is to use descriptive 
+//! names for variables and not mathematical symbols.
 //!
-//! # Strapdown mechanization data and equations
+//! ## Strapdown mechanization data and equations
 //!
 //! This crate contains the implementation details for the strapdown navigation equations implemented in the Local
 //! Navigation Frame. The equations are based on the book _Principles of GNSS, Inertial, and Multisensor Integrated
@@ -47,22 +42,23 @@
 //! - $v_n$, $v_e$, and $v_d$ are the local level frame (NED/ENU) velocities (m/s) along the north axis, east axis, and vertical axis.
 //! - $\phi$, $\theta$, and $\psi$ are the Euler angles (radians) representing the orientation of the body frame relative to the local level frame (XYZ Euler rotation).
 //!
-//! The coordinate convention and order is in NED. ENU implementations are to be added in the future.
+//! The coordinate convention and order is in NED.
 //!
-//! ## Strapdown equations in the Local-Level Frame
-//! This crates implements the strapdown mechanization equations in the Local-Level Frame. These equations form the basis
+//! ### Strapdown equations in the Local-Level Frame
+//! 
+//! This module implements the strapdown mechanization equations in the Local-Level Frame. These equations form the basis
 //! of the forward propagation step (motion/system/state-transition model) of all the filters implemented in this crate.
-//! The rational for this was to design and test it once, then re-used on the various filters which really only need to
+//! The rational for this was to design and test it once, then re-use it on the various filters which really only need to
 //! act on the given probability distribution and are largely ambivilent to the actual function and use generic representations
 //! in thier mathematics.
 //!
 //! The equations are based on the book _Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems, Second Edition_
 //! by Paul D. Groves. Below is a summary of the equations implemented in Chapter 5.4 implemented by this module.
 //!
-//! ### Skew-Symmetric notation
+//! #### Skew-Symmetric notation
 //!
 //! Groves uses a direction cosine matrix representation of orientation (attitude, rotation). As such, to make the matrix math
-//! work out, rotational quantities need to also be represented using matricies. As such, Groves' convention is to use a lower-case
+//! work out, rotational quantities need to also be represented using matricies. Groves' convention is to use a lower-case
 //! letter for vector quantities (arrays of shape (N,) Python-style, or (N,1) nalgebra/Matlab style) and capital letters for the
 //! skew-symmetric matrix representation of the same vector.
 //!
@@ -70,7 +66,7 @@
 //! x = \begin{bmatrix} a \\\\ b \\\\ c \end{bmatrix} \rightarrow X = \begin{bmatrix} 0 & -c & b \\\\ c & 0 & -a \\\\ -b & a & 0 \end{bmatrix}
 //! $$
 //!
-//! ### Attitude update
+//! #### Attitude update
 //!
 //! Given a direction-cosine matrix $C_b^n$ representing the orientation (attitude, rotation) of the platform's body frame ($b$)
 //! with respect to the local level frame ($n$), the transport rate $\Omega_{en}^n$ representing the rotation of the local level frame
@@ -88,7 +84,7 @@
 //! f_{ib}^n \approx \frac{1}{2} \left( C_b^n(+) + C_b^n(-) \right) f_{ib}^b
 //! $$
 //!
-//! ### Velocity Update
+//! #### Velocity Update
 //!
 //! The velocity update equation is given by:
 //!
@@ -96,7 +92,7 @@
 //! v(+) \approx v(-) + \left( f_{ib}^n + g_{b}^n - \left( \Omega_{en}^n - \Omega_{ie}^e \right) v(-) \right) t
 //! $$
 //!
-//! ### Position update
+//! #### Position update
 //!
 //! Finally, we update the base position states in three steps. First  we update the altitude:
 //!
@@ -116,6 +112,8 @@
 //! p_e = p_e(-) + \frac{1}{2} \left( \frac{v_e(-)}{R_e + p_d(-) \cos(p_n(-))} + \frac{v_e(+)}{R_e + p_d(+) \cos(p_n(+))} \right) t
 //! $$
 //!
+//! This top-level module provides a public API for each step of the forward mechanization equations, allowing users to
+//! easily pass data in and out.
 
 // deconflict2
 pub mod earth;
