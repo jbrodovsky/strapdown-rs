@@ -14,7 +14,7 @@
 //! Contained in this module is also a simple standard position measurement model for both
 //! the UKF and particle filter. This model is used to update the state based on position
 //! measurements in the local level frame (i.e. a GPS fix).
-use crate::earth::{METERS_TO_DEGREES, relative_barometric_altitude};
+use crate::earth::{expected_barometric_pressure, relative_barometric_altitude, METERS_TO_DEGREES};
 use crate::linalg::matrix_square_root;
 use crate::{IMUData, StrapdownState, forward, wrap_to_2pi};
 
@@ -133,34 +133,89 @@ impl MeasurementModel for GPSVelocityMeasurement {
         measurement_sigma_points
     }
 }
-/// A releative barometric altitude measurement model that describes the relative altitude
-/// based on a pressure measurement. This is typically used in barometric altimeters to
-/// estimate the altitude relative to a reference pressure.
+
+/// GPS Position and Velocity measurement model
 #[derive(Clone, Debug, Default)]
-pub struct RelativeBarometricAltitudeMeasurement {
-    /// Measured pressure in Pa
-    pub pressure: f64,
-    /// Reference pressure in Pa
-    pub reference_pressure: f64,
+pub struct GPSPositionAndVelocityMeasurement {
+    /// latitude in degrees
+    pub latitude: f64,
+    /// longitude in degrees
+    pub longitude: f64,
+    /// altitude in meters
+    pub altitude: f64,
+    /// Northward velocity in m/s
+    pub northward_velocity: f64,
+    /// Eastward velocity in m/s
+    pub eastward_velocity: f64,
+    /// Downward velocity in m/s
+    // pub downward_velocity: f64, // GPS speed measurements do not typically provide vertical velocity
+    /// noise standard deviation in meters for position
+    pub horizontal_noise_std: f64,
+    /// vertical noise standard deviation in meters for position
+    pub vertical_noise_std: f64,
+    /// noise standard deviation in m/s for velocity
+    pub velocity_noise_std: f64,
 }
-impl MeasurementModel for RelativeBarometricAltitudeMeasurement {
+impl MeasurementModel for GPSPositionAndVelocityMeasurement {
+    fn get_dimension(&self) -> usize {
+        5 // latitude, longitude, altitude, northward velocity, eastward velocity
+    }
+    fn get_vector(&self) -> DVector<f64> {
+        DVector::from_vec(vec![
+            self.latitude.to_radians(),
+            self.longitude.to_radians(),
+            self.altitude,
+            self.northward_velocity,
+            self.eastward_velocity,
+        ])
+    }
+    fn get_noise(&self) -> DMatrix<f64> {
+        DMatrix::from_diagonal(&DVector::from_vec(vec![
+            (self.horizontal_noise_std * METERS_TO_DEGREES).powi(2),
+            (self.horizontal_noise_std * METERS_TO_DEGREES).powi(2),
+            self.vertical_noise_std.powi(2),
+            self.velocity_noise_std.powi(2),
+            self.velocity_noise_std.powi(2),
+        ]))
+    }
+    fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
+        let mut measurement_sigma_points = DMatrix::<f64>::zeros(5, state_sigma_points.ncols());
+        for (i, sigma_point) in state_sigma_points.column_iter().enumerate() {
+            measurement_sigma_points[(0, i)] = sigma_point[0];
+            measurement_sigma_points[(1, i)] = sigma_point[1];
+            measurement_sigma_points[(2, i)] = sigma_point[2];
+            measurement_sigma_points[(3, i)] = sigma_point[3];
+            measurement_sigma_points[(4, i)] = sigma_point[4];
+        }
+        measurement_sigma_points
+    }
+}
+
+/// A releative relative altitude measurement derived from barometric pressure. 
+/// Note that this measurement model is an altitude measurement derived from 
+/// a barometric altimeter and not a direct calculation of altitude from the 
+/// barometric pressure.
+#[derive(Clone, Debug, Default)]
+pub struct RelativeAltitudeMeasurement {
+    /// Measured relative altitude in meters
+    pub relative_altitude: f64,
+    /// Reference pressure in Pa
+    pub reference_altitude: f64,
+}
+impl MeasurementModel for RelativeAltitudeMeasurement {
     fn get_dimension(&self) -> usize {
         1 // relative altitude
     }
     fn get_vector(&self) -> DVector<f64> {
-        DVector::from_vec(vec![relative_barometric_altitude(
-            self.pressure, self.reference_pressure,
-        )])
+        DVector::from_vec(vec![self.relative_altitude + self.reference_altitude])
     }
     fn get_noise(&self) -> DMatrix<f64> {
-        DMatrix::from_diagonal(&DVector::from_vec(vec![1e-3])) // 1 mm noise
+        DMatrix::from_diagonal(&DVector::from_vec(vec![5.0])) // 1 mm noise
     }
     fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
-        let mut measurement_sigma_points = DMatrix::<f64>::zeros(1, state_sigma_points.ncols());
+        let mut measurement_sigma_points = DMatrix::<f64>::zeros(self.get_dimension(), state_sigma_points.ncols());
         for (i, sigma_point) in state_sigma_points.column_iter().enumerate() {
-            measurement_sigma_points[(0, i)] = relative_barometric_altitude(
-                sigma_point[2], self.reference_pressure,
-            );
+            measurement_sigma_points[(0, i)] = sigma_point[2];
         }
         measurement_sigma_points
     }
