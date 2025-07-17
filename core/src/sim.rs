@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::earth;
 use crate::earth::METERS_TO_DEGREES;
-use crate::filter::{StrapdownParams, UKF, GPSPositionMeasurement, GPSVelocityMeasurement, RelativeBarometricAltitudeMeasurement};
+use crate::filter::{GPSPositionAndVelocityMeasurement, GPSPositionMeasurement, GPSVelocityMeasurement, RelativeAltitudeMeasurement, StrapdownParams, UKF};
 use crate::{IMUData, StrapdownState, forward};
 /// Struct representing a single row of test data from the CSV file.
 ///
@@ -766,7 +766,7 @@ pub fn closed_loop(
     gps_interval: Option<usize>
 ) -> Vec<NavigationResult> {
     let gps_interval = gps_interval.unwrap_or(1); // Default to every record if not specified
-    let reference_pressure = records[0].pressure; // Use the first record's pressure as reference
+    let reference_altitude = records[0].altitude; // Use the first record's pressure as reference
     let mut results: Vec<NavigationResult> = Vec::with_capacity(records.len());
     // Initialize the UKF with the first record
     let mut ukf = initialize_ukf(
@@ -824,37 +824,31 @@ pub fn closed_loop(
         // Update the UKF with the IMU data
         ukf.predict(imu_data, dt);
         // ---- Perform various measurement updates based on the available data ----
-        // If GPS data is available, update the UKF with the GPS position measurement
+        // If GPS data is available, update the UKF with the GPS position and speed measurement
         if !record.latitude.is_nan()
             && !record.longitude.is_nan()
             && !record.altitude.is_nan()
+            && !record.bearing.is_nan()
+            && !record.speed.is_nan()
             && i % gps_interval == 0
         {
-            let measurement = GPSPositionMeasurement {
+            let measurement = GPSPositionAndVelocityMeasurement {
                 latitude: record.latitude,
                 longitude: record.longitude,
                 altitude: record.altitude,
+                northward_velocity: record.speed * record.bearing.cos(),
+                eastward_velocity: record.speed * record.bearing.sin(),
                 horizontal_noise_std: record.horizontal_accuracy.sqrt(),
                 vertical_noise_std: record.vertical_accuracy,
+                velocity_noise_std: record.speed_accuracy,
             };
             ukf.update(measurement);
         }
-        // If speed information is available, update the UKF with the speed measurement
-        if !record.speed.is_nan() && i % gps_interval == 0 && !record.bearing.is_nan() {
-            let speed = GPSVelocityMeasurement {
-                northward_velocity: record.speed * record.bearing.cos(),
-                eastward_velocity: record.speed * record.bearing.sin(),
-                downward_velocity: 0.0, // Assuming no vertical velocity
-                horizontal_noise_std: record.speed_accuracy.sqrt(),
-                vertical_noise_std: 0.0,
-            };
-            ukf.update(speed);
-        }
         // If barometric altimeter data is available, update the UKF with the altitude measurement
-        if !record.relative_altitude.is_nan() {
-            let altitude = RelativeBarometricAltitudeMeasurement {
-                pressure: record.pressure,
-                reference_pressure,
+        if !record.pressure.is_nan() {
+            let altitude = RelativeAltitudeMeasurement {
+                relative_altitude: record.relative_altitude,
+                reference_altitude: reference_altitude,
             };
             ukf.update(altitude);
         }
@@ -992,9 +986,27 @@ pub fn initialize_ukf(
             vec![1e-3; 6] // Default values if not provided
         }
     };
-    let mut process_noise_diagonal = vec![1e-9; 9]; // adds a minor amount of noise to base states
-    process_noise_diagonal.extend(vec![1e-9; 6]); // Process noise for imu biases
-    let process_noise_diagonal = DVector::from_vec(process_noise_diagonal);
+    //let mut process_noise_diagonal = vec![1e-9; 9]; // adds a minor amount of noise to base states
+    //process_noise_diagonal.extend(vec![1e-9; 6]); // Process noise for imu biases
+    let process_noise_diagonal = DVector::from_vec(
+        vec![
+            1e-6, // position noise
+            1e-6, // position noise
+            1e-6, // altitude noise
+            1e-3, // velocity north noise
+            1e-3, // velocity east noise
+            1e-3, // velocity down noise
+            1e-5, // roll noise
+            1e-5, // pitch noise
+            1e-5, // yaw noise
+            1e-6, // acc bias x noise
+            1e-6, // acc bias y noise
+            1e-6, // acc bias z noise
+            1e-8, // gyro bias x noise
+            1e-8, // gyro bias y noise
+            1e-8, // gyro bias z noise
+        ],
+    );
     //DVector::from_vec(vec![0.0; 15]);
     UKF::new(
         ukf_params,
