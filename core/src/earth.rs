@@ -32,21 +32,9 @@
 //! are primarily used to convert between the ECEF and local-level frames. The rotations
 //! from the local level frame to the body frame can be taken care of by the `nalgebra`
 //! crate, which provides the necessary rotation matrices using the Rotation3 type.
-
-// ----------
-// Working notes:
-// The canonical strapdown navigation state vector is WGS84 geodetic position (latitude, longitude, altitude) and local tangent plane (NED) velocities (north, east,
-// down). The state vector is updated by integrating the IMU measurements (body frame) to estimate the position and velocity of the sensor. Velocities are updated
-// in NED, whereas the positions are updated in WGS84.
-// ----------
-// Rotations can be handled using nalgebra's Rotation3 type, which can be converted to a DCM using the into() method. The Rotation3 type can be created from
-// Euler angles for the body to local-level frame rotation. The inverse of the Rotation3 type can be used to convert from the local-level frame to the body frame.
-// ----------
 use crate::{wrap_latitude, wrap_to_180};
 use ::nalgebra::{Matrix3, Vector3};
 use ::nav_types::{ECEF, WGS84};
-
-// Earth constants (WGS84)
 /// Earth's rotation rate rad/s ($\omega_{ie}$)
 pub const RATE: f64 = 7.2921159e-5;
 /// Earth's rotation rate rad/s ($\omega_{ie}$) in a vector form
@@ -65,8 +53,8 @@ pub const ECCENTRICITY_SQUARED: f64 = ECCENTRICITY * ECCENTRICITY;
 pub const GE: f64 = 9.7803253359; // m/s^2, equatorial radius
 /// Earth's gravitational acceleration at the poles ($g_p$) in $m/s^2$
 pub const GP: f64 = 9.8321849378; // $m/s^2$, polar radius
-/// Earth's average standard gravitational accelleration
-pub const G: f64 = 9.80665; // m/s^2, standard gravitational acceleration
+/// Earth's average gravitational acceleration ($g$) in $m/s^2$
+pub const G0: f64 = 9.80665; // m/s^2, average gravitational acceleration
 /// Earth's flattening factor ($f$)
 pub const F: f64 = 1.0 / 298.257223563; // Flattening factor
 /// Somigliana's constant ($K$)
@@ -94,11 +82,6 @@ pub const MOLAR_MASS_DRY_AIR: f64 = 0.0289644;
 pub const UNIVERSAL_GAS_CONSTANT: f64 = 8.314462618;
 /// Standard lapse rate in K/m ($L$)
 pub const STANDARD_LAPSE_RATE: f64 = 0.0065;
-
-/// Convert milibar to Pascals
-pub fn mbar_to_pa(mbar: f64) -> f64 {
-    mbar * 100.0
-}
 /// Calculate a barometric altitude from a measured pressure
 /// 
 /// This function calculates the altitude above sea level based on the measured pressure
@@ -188,7 +171,7 @@ pub fn skew_symmetric_to_vector(skew: &Matrix3<f64>) -> Vector3<f64> {
 /// system with the origin at the Earth's center. The ECI frame is fixed with respect to the
 /// stars, whereas the ECEF frame rotates with the Earth.
 ///
-/// # Parameters
+/// # Arguments
 /// - `time` - The time in seconds that define the rotation period
 ///
 /// # Returns
@@ -218,7 +201,7 @@ pub fn eci_to_ecef(time: f64) -> Matrix3<f64> {
 /// system with the origin at the Earth's center. The ECI frame is fixed with respect to the
 /// stars, whereas the ECEF frame rotates with the Earth.
 ///     
-/// # Parameters
+/// # Arguments
 /// - `time` - The time in seconds that define the rotation period
 ///
 /// # Returns
@@ -241,7 +224,7 @@ pub fn ecef_to_eci(time: f64) -> Matrix3<f64> {
 /// position. The local-level frame is defined by the tangent to the ellipsoidal surface at the sensor's
 /// position. The local level frame is defined by the WGS84 latitude and longitude.
 ///
-/// # Parameters
+/// # Arguments
 /// - `latitude` - The WGS84 latitude in degrees
 /// - `longitude` - The WGS84 longitude in degrees
 ///
@@ -278,7 +261,7 @@ pub fn ecef_to_lla(latitude: &f64, longitude: &f64) -> Matrix3<f64> {
 /// position. The local-level frame is defined by the tangent to the ellipsoidal surface at the sensor's
 /// position. The local level frame is defined by the WGS84 latitude and longitude.
 ///
-/// # Parameters
+/// # Arguments
 /// - `latitude` - The WGS84 latitude in degrees
 /// - `longitude` - The WGS84 longitude in degrees
 ///
@@ -301,7 +284,7 @@ pub fn lla_to_ecef(latitude: &f64, longitude: &f64) -> Matrix3<f64> {
 /// The [principal radii of curvature](https://en.wikipedia.org/wiki/Earth_radius) are used to
 /// calculate and convert Cartesian body frame quantities to the local-level frame WGS84 coordinates.
 ///
-/// # Parameters
+/// # Arguments
 /// - `latitude` - The WGS84 latitude in degrees
 /// - `altitude` - The WGS84 altitude in meters
 ///
@@ -335,7 +318,7 @@ pub fn principal_radii(latitude: &f64, altitude: &f64) -> (f64, f64, f64) {
 /// the Earth's gravity as a function of the latitude and altitude. The gravity model is used to
 /// calculate the gravitational force scalar in the local-level frame. Free-air correction is applied.
 ///
-/// # Parameters
+/// # Arguments
 /// - `latitude` - The WGS84 latitude in degrees
 /// - `altitude` - The WGS84 altitude in meters
 ///
@@ -369,7 +352,7 @@ pub fn gravity(latitude: &f64, altitude: &f64) -> f64 {
 /// Down (NED) or East, North, Up (ENU). This function uses the ENU convention, thus gravity acts
 /// along the negative Z-axis (downward) in the local-level frame.
 ///
-/// # Parameters
+/// # Arguments
 /// - `latitude` - The WGS84 latitude in degrees
 /// - `longitude` - The WGS84 longitude in degrees
 /// - `altitude` - The WGS84 altitude in meters
@@ -400,19 +383,19 @@ pub fn gravitation(latitude: &f64, longitude: &f64, altitude: &f64) -> Vector3<f
     gravity + rot * omega_ie * omega_ie * ecef_vec
 }
 /// Calculate local gravity anomaly from IMU accelerometer measurements
-/// 
+///
 /// This function calculates the local gravity anomaly by comparing the observed gravity from the
-/// IMU accelerometer measurements (eg: $\sqrt(a_x^2 + a_y^2 + a_z^2)$) with the normal gravity 
-/// at the given latitude and altitude via the Somigliana method. Additionally, this function 
+/// IMU accelerometer measurements (eg: $\sqrt(a_x^2 + a_y^2 + a_z^2)$) with the normal gravity
+/// at the given latitude and altitude via the Somigliana method. Additionally, this function
 /// compensates for the motion of the platform (if any) using the Eötvös correction.
-/// 
-/// # Parameters
+///
+/// # Arguments
 /// - `latitude` - The WGS84 latitude in degrees
 /// - `altitude` - The WGS84 altitude in meters
 /// - `north_velocity` - The northward velocity component in m/s
 /// - `east_velocity` - The eastward velocity component in m/s
 /// - `gravity_observed` - The observed gravity from the IMU accelerometer measurements in m/s^2
-/// 
+///
 /// # Returns
 /// The local gravity anomaly in m/s^2, which is the difference between the observed gravity and the normal gravity at the given latitude and altitude, adjusted for the Eötvös correction.
 pub fn gravity_anomaly(
@@ -453,7 +436,7 @@ pub fn eotvos(latitude: &f64, altitude: &f64, north_velocity: &f64, east_velocit
 /// The Earth's rotation rate modeled as a vector in the local-level frame. This vector
 /// is used to calculate the Coriolis and centrifugal effects in the local-level frame.
 ///
-/// # Parameters
+/// # Arguments
 /// - `latitude` - The WGS84 latitude in degrees
 ///
 /// # Returns
@@ -477,7 +460,7 @@ pub fn earth_rate_lla(latitude: &f64) -> Vector3<f64> {
 /// with respect to the ECEF frame since the origin point of the local-level frame is
 /// always tangential to the WGS84 ellipsoid and thus constantly moving in the ECEF frame.
 ///
-/// # Parameters
+/// # Arguments
 /// - `latitude` - The WGS84 latitude in degrees
 /// - `altitude` - The WGS84 altitude in meters
 /// - `velocities` - The velocity vector in the local-level frame (northward, eastward, downward)
@@ -510,7 +493,7 @@ pub fn transport_rate(latitude: &f64, altitude: &f64, velocities: &Vector3<f64>)
 /// dipole model. The dipole model approximates the Earth's magnetic field as a magnetic
 /// dipole with the axis through the geographic poles.
 ///
-/// # Parameters
+/// # Arguments
 /// - `latitude` - The WGS84 latitude in degrees
 /// - `longitude` - The WGS84 longitude in degrees  
 /// - `altitude` - The WGS84 altitude in meters
@@ -543,7 +526,7 @@ pub fn calculate_magnetic_field(latitude: &f64, longitude: &f64, altitude: &f64)
 
 /// Calculate the radial component of Earth's magnetic field using the dipole model
 ///
-/// # Parameters
+/// # Arguments
 /// - `colatitude` - The magnetic *colatitude* in radians (angle from magnetic north pole)
 /// - `radius` - The distance from Earth's center in meters
 ///
@@ -565,7 +548,7 @@ pub fn calculate_radial_magnetic_field(colatitude: f64, radius: f64) -> f64 {
 
 /// Calculate the latitudinal component of Earth's magnetic field using the dipole model
 ///
-/// # Parameters
+/// # Arguments
 /// - `colatitude` - The magnetic *colatitude* in radians (angle from magnetic north pole)
 /// - `radius` - The distance from Earth's center in meters
 ///
@@ -588,7 +571,7 @@ pub fn calculate_latitudinal_magnetic_field(colatitude: f64, radius: f64) -> f64
 /// using the dipole model of Earth's magnetic field. The transformation is based on
 /// the location of the geomagnetic north pole.
 ///
-/// # Parameters
+/// # Arguments
 /// - `latitude` - The WGS84 latitude in degrees
 /// - `longitude` - The WGS84 longitude in degrees
 ///
@@ -634,7 +617,7 @@ pub fn wgs84_to_magnetic(latitude: &f64, longitude: &f64) -> (f64, f64) {
 /// magnetic field vector, positive downward. At the magnetic equator, the inclination
 /// is zero. At the magnetic poles, the inclination is ±90°.
 ///
-/// # Parameters
+/// # Arguments
 /// - `latitude` - The WGS84 latitude in degrees
 /// - `longitude` - The WGS84 longitude in degrees
 /// - `altitude` - The WGS84 altitude in meters
@@ -668,7 +651,7 @@ pub fn magnetic_inclination(latitude: &f64, longitude: &f64, altitude: &f64) -> 
 /// positive eastward. This is essential for navigation as it represents the correction
 /// needed to convert between magnetic compass readings and true bearings.
 ///
-/// # Parameters
+/// # Arguments
 /// - `latitude` - The WGS84 latitude in degrees
 /// - `longitude` - The WGS84 longitude in degrees
 /// - `altitude` - The WGS84 altitude in meters
@@ -695,14 +678,14 @@ pub fn magnetic_declination(latitude: &f64, longitude: &f64, altitude: &f64) -> 
 }
 /// Calculate the magnetic anomaly at a given location
 pub fn magnetic_anomaly(
-    latitude: &f64,
-    longitude: &f64,
-    altitude: &f64,
-    mag_x: &f64,
-    mag_y: &f64,
-    mag_z: &f64,
+    latitude: f64,
+    longitude: f64,
+    altitude: f64,
+    mag_x: f64,
+    mag_y: f64,
+    mag_z: f64,
 ) -> f64 {
-    0.0 * *latitude * *longitude * *altitude * *mag_x * *mag_y * *mag_z // Placeholder for magnetic anomaly calculation, mostly here to have clippy be quiet
+    f64::NAN * latitude * longitude * altitude * mag_x * mag_y * mag_z // Placeholder for magnetic anomaly calculation to squash warnings
 }
 // === Unit tests ===
 #[cfg(test)]
