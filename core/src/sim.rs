@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::earth;
 use crate::earth::METERS_TO_DEGREES;
-use crate::filter::{GPSPositionAndVelocityMeasurement, GPSPositionMeasurement, GPSVelocityMeasurement, RelativeAltitudeMeasurement, StrapdownParams, UKF};
+use crate::filter::{GPSPositionAndVelocityMeasurement, RelativeAltitudeMeasurement, StrapdownParams, UKF};
 use crate::{IMUData, StrapdownState, forward};
 /// Struct representing a single row of test data from the CSV file.
 ///
