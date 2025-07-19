@@ -14,7 +14,7 @@
 //! Contained in this module is also a simple standard position measurement model for both
 //! the UKF and particle filter. This model is used to update the state based on position
 //! measurements in the local level frame (i.e. a GPS fix).
-use crate::earth::{expected_barometric_pressure, relative_barometric_altitude, METERS_TO_DEGREES};
+use crate::earth::METERS_TO_DEGREES;
 use crate::linalg::matrix_square_root;
 use crate::{IMUData, StrapdownState, forward, wrap_to_2pi};
 
