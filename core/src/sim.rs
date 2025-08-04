@@ -437,7 +437,7 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>, &IMUData, &Vector3<f64>
             &f64,
         ),
     ) -> Self {
-        assert!(state.len() == 15, "State vector must have 15 elements");
+        assert!(state.len() == 15, "State vector must have 15 elements; got {}", state.len());
         assert!(covariance.nrows() == 15 && covariance.ncols() == 15, "Covariance matrix must be 15x15");
         let covariance = DVector::from_vec(covariance.diagonal().iter().map(|&x| x).collect());
         NavigationResult {
