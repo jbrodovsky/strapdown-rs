@@ -31,7 +31,7 @@ The toolbox is designed for research, teaching, and development purposes and aim
 
 ## Statement of Need
 
-Strapdown INS implementations are commonly written in MATLAB, Python, or C++, and are typically *proprietary* or are heavily integrated into an existing architecture or framework. This project provides a high-performance, memory-safe, and cross-platform implementation in Rust — a modern systems language well-suited for embedded and real-time applications. Why Rust and why another INS library? Several reasons that are pertinent critiques of each language:
+Strapdown INS implementations are commonly written in MATLAB, Python, or C++, and are typically proprietary or are heavily integrated into an existing architecture or framework. This project provides a high-performance, memory-safe, and cross-platform implementation in Rust — a modern systems language well-suited for embedded and real-time applications. Why Rust and why another INS library? Several reasons that are pertinent critiques of each language:
 
 ### MATLAB
 
@@ -53,7 +53,7 @@ Thus what is needed is a modern, compiled, systems programming language with a u
 
 ### Rust
 
-Rust is a modern systems programming language that combines the performance of C/C++ with the safety and concurrency features of higher-level garbage-collected languages. It is designed for performance-critical applications and has a strong focus on memory safety, making it an ideal choice for implementing strapdown INS algorithms. From a scientific development perspective, Rust puts guardrails on scientist-developers who's primary skill set isn't in writing production-grade memory safe code. By following basic good practices in Rust, you get the benefits of modern tooling and language syntax that you get with Python, Java, and Go with the performance of C or C++, with the additional guarantee of if it compiles the only bugs are *logic* bugs.
+Rust is a modern systems programming language that combines the performance of C/C++ with the safety and concurrency features of higher-level garbage-collected languages. It is designed for performance-critical applications and has a strong focus on memory safety, making it an ideal choice for implementing strapdown INS algorithms. From a scientific development perspective, Rust puts guardrails on scientist-developers who's primary skill set isn't in writing production-grade memory safe code. Additionally, similar to Python's PIP ecosystem and package management, Rust provides Cargo and the corresponding crates ecosystem. Of which, `strapdown-rs` uses the `nalgebra` [@nalgebra] crate which provides high-performance linear algebra capabilities and the `nav-types` [@nav-types] crate which covers some basic unit and coordinate utilities. By following basic good practices in Rust, you get the benefits of modern tooling and language syntax that you get with Python, Java, and Go with the performance of C or C++, with the additional guarantee of if it compiles the only bugs are logic bugs.
 
 ### Open Source
 
@@ -69,10 +69,14 @@ The `earth` module contains constants and functions related to the Earth’s sha
 
 The `strapdown` module provides some helper functions as well as the forward mechanicization equations for strapdown inertial navigation systems. It provides a set of structs for modeling both IMU data and the base nine element strapdown state (latitude, longitude, and altitude; velocities north, east, and down; and attitude). It includes and implementation for the local-level frame forward mechanization, which is a common approach for strapdown INS and follows the equations from Chapter 5.4 of [@groves].
 
-The `filter` module contains the core functionality for implementing strapdown INS algorithms, primarily of which is a loosely-couple integration architecture according to Chapter 14.1.2 of [@groves]. This module contains implementations of various inertial navigation filters, including Kalman filters and particle filters. These filters are used to estimate the state of a strapdown inertial navigation system based on IMU measurements and other sensor data. The filters use the strapdown equations (provided by the StrapdownState) to propagate the state in the local level frame.
+The `filter` module contains the core functionality for implementing strapdown INS algorithms, primarily of which is a loosely-couple integration architecture according to Chapter 14.1.2 of [@groves]. This module contains implementations of various inertial navigation filters, including Kalman filters and particle filters. These filters are used to estimate the state of a strapdown inertial navigation system based on IMU measurements and other sensor data. The filters use the strapdown equations (provided by the strapdown module) to propagate the state in the local level frame.
 
 ## Executable Modules
 
-the `sim` module provides a reference implementation of a loosely-coupled INS using the `strapdown` and `filter` modules. It implements a basic full-state inertial navigation system that uses an unscented Kalman filter (UKF) to estimate the state of the system. It also contains structs for the handling and modeling of test data and navigation solution data.
+The `sim` module provides a reference implementation of a loosely-coupled INS using the `strapdown` and `filter` modules. It implements a basic full-state inertial navigation system that uses an unscented Kalman filter (UKF) to estimate the state of the system. It also contains structs for the handling and modeling of test data and navigation solution data.
+
+This executable can be configured with a few different options to simulate different navigation scenarios. At a basic level, it can be operated in an open-loop (dead reckoning ) or closed-loop (INS) mode. In the open-loop mode, the system will propagate the state using the strapdown equations and IMU measurements without any corrections from aiding sensors. This mode is only recommended when analyzing high-quality IMUs.
+
+In the closed-loop mode, the system will use a UKF to estimate the state and correct it using GPS measurements. The simulation can also be configured to simulate intermittent GPS availability, GPS degradation, and spoofing.
 
 # References
