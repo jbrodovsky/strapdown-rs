@@ -25,7 +25,7 @@ use rand;
 // ==== Measurement Models ========================================================
 // Below is a set of generic measurement models for the UKF and particle filter.
 // These models provide a vec of "expected measurements" based on the sigma points
-// location. When used in a filter, you should simulatanously iterate through the
+// location. When used in a filter, you should simultaneously iterate through the
 // list of sigma points or particles and the expected measurements in order to
 // calculate the innovation matrix or the particle weighting.
 // ================================================================================
@@ -183,7 +183,7 @@ impl MeasurementModel for GPSPositionAndVelocityMeasurement {
     }
 }
 
-/// A releative relative altitude measurement derived from barometric pressure. 
+/// A relative relative altitude measurement derived from barometric pressure. 
 /// Note that this measurement model is an altitude measurement derived from 
 /// a barometric altimeter and not a direct calculation of altitude from the 
 /// barometric pressure.
@@ -238,8 +238,8 @@ pub struct StrapdownParams {
 /// ($\mathcal{Z} = h(\mathcal{X})$) and the measurement noise matrix ($R$) for the filter. Some basic
 /// GNSS-based are provided in this module (position, velocity, position and velocity, barometric altitude).
 /// In a given scenario's implementation, the user should then call these measurement models. Please see the
-/// `sim` module for a reference implmentation of a full state UKF INS with a position and velocity GPS-based
-/// measurement model and barometric alitude measurement model.
+/// `sim` module for a reference implementation of a full state UKF INS with a position and velocity GPS-based
+/// measurement model and barometric altitude measurement model.
 ///
 /// Note that, internally, angles are always stored in radians (both for the attitude and the position),
 /// however, the user can choose to convert them to degrees when retrieving the state vector and the UKF
@@ -269,14 +269,14 @@ impl Debug for UKF {
 }
 impl UKF {
     /// Creates a new UKF with the given initial state, biases, covariance, process noise,
-    /// any additional other states, and UKF hyperparameters.
+    /// any additional other states, and UKF hyper parameters.
     ///
     /// # Arguments
     /// * `position` - The initial position of the strapdown state.
     /// * `velocity` - The initial velocity of the strapdown state.
     /// * `attitude` - The initial attitude of the strapdown state.
     /// * `imu_biases` - The initial IMU biases.
-    /// * `other_states` - Any addtional states the filter is estimating (ex: measurement or sensor bias).
+    /// * `other_states` - Any additional states the filter is estimating (ex: measurement or sensor bias).
     /// * `covariance_diagonal` - The initial covariance diagonal.
     /// * `process_noise_diagonal` - The process noise diagonal.
     /// * `alpha` - The alpha parameter for the UKF.
@@ -331,7 +331,7 @@ impl UKF {
         }
         assert!(
             mean.len() >= 15,
-            "Expected a cannonical state vector of at least 15 states (position, velocity, attitude, imu biases)"
+            "Expected a canonical state vector of at least 15 states (position, velocity, attitude, imu biases)"
         );
         assert!(
             mean.len() == covariance_diagonal.len(),
@@ -632,7 +632,6 @@ impl ParticleFilter {
         if residual_particles > 0 {
             // Normalize residuals
             let sum_residual: f64 = residual.iter().sum();
-            //let cumsum = 0.0;
             let mut positions = Vec::with_capacity(residual_particles);
             let step = sum_residual / residual_particles as f64;
             let mut u = rand::random::<f64>() * step;

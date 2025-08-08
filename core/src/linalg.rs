@@ -146,13 +146,13 @@ mod tests {
     static POSITIVE_DEFINITE: LazyLock<DMatrix<f64>> = LazyLock::new(|| {
         DMatrix::from_row_slice(3, 3, &[4.0, 2.0, 0.0, 2.0, 9.0, 3.0, 0.0, 3.0, 16.0])
     });
-    static POSITIVE_SEMI_DEFINIE: LazyLock<DMatrix<f64>> = LazyLock::new(|| {
+    static POSITIVE_SEMI_DEFINITE: LazyLock<DMatrix<f64>> = LazyLock::new(|| {
         DMatrix::from_row_slice(3, 3, &[1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0])
     });
     static NEGATIVE_DEFINITE: LazyLock<DMatrix<f64>> = LazyLock::new(|| {
         DMatrix::from_row_slice(3, 3, &[-4.0, 0.0, 0.0, 0.0, -9.0, 0.0, 0.0, 0.0, -16.0])
     });
-    static NEGATIVE_SEMI_DEFINIE: LazyLock<DMatrix<f64>> = LazyLock::new(|| {
+    static NEGATIVE_SEMI_DEFINITE: LazyLock<DMatrix<f64>> = LazyLock::new(|| {
         DMatrix::from_row_slice(3, 3, &[-1.0, 0.0, -1.0, 0.0, -1.0, 0.0, -1.0, 0.0, -1.0])
     });
     static NON_SQUARE: LazyLock<DMatrix<f64>> =
@@ -203,7 +203,7 @@ mod tests {
     #[should_panic]
     fn cholesky_negative_semi_definite() {
         // This should panic because the matrix is negative semi-definite.
-        let _sqrt_matrix = matrix_square_root(&NEGATIVE_SEMI_DEFINIE);
+        let _sqrt_matrix = matrix_square_root(&NEGATIVE_SEMI_DEFINITE);
     }
     #[test]
     #[should_panic]
@@ -213,10 +213,10 @@ mod tests {
     }
     #[test]
     fn eigenvalue_square_root() {
-        let sqrt_matrix = matrix_square_root(&POSITIVE_SEMI_DEFINIE);
+        let sqrt_matrix = matrix_square_root(&POSITIVE_SEMI_DEFINITE);
         assert!(is_valid_square_root(
             &sqrt_matrix,
-            &POSITIVE_SEMI_DEFINIE,
+            &POSITIVE_SEMI_DEFINITE,
             1e-9
         ));
     }
@@ -227,10 +227,10 @@ mod tests {
     }
     #[test]
     fn eigenvalue_positive_semi_definite() {
-        let sqrt_matrix = matrix_square_root(&POSITIVE_SEMI_DEFINIE);
+        let sqrt_matrix = matrix_square_root(&POSITIVE_SEMI_DEFINITE);
         assert!(is_valid_square_root(
             &sqrt_matrix,
-            &POSITIVE_SEMI_DEFINIE,
+            &POSITIVE_SEMI_DEFINITE,
             1e-9
         ));
     }
@@ -244,7 +244,7 @@ mod tests {
     #[should_panic]
     fn eigenvalue_negative_semi_definite() {
         // This should panic because the matrix is negative semi-definite.
-        let _sqrt_matrix = matrix_square_root(&NEGATIVE_SEMI_DEFINIE);
+        let _sqrt_matrix = matrix_square_root(&NEGATIVE_SEMI_DEFINITE);
     }
     #[test]
     #[should_panic]
@@ -256,10 +256,10 @@ mod tests {
     fn public_api_square_root() {
         let sqrt_matrix = matrix_square_root(&POSITIVE_DEFINITE);
         assert!(is_valid_square_root(&sqrt_matrix, &POSITIVE_DEFINITE, 1e-9));
-        let sqrt_matrix = matrix_square_root(&POSITIVE_SEMI_DEFINIE);
+        let sqrt_matrix = matrix_square_root(&POSITIVE_SEMI_DEFINITE);
         assert!(is_valid_square_root(
             &sqrt_matrix,
-            &POSITIVE_SEMI_DEFINIE,
+            &POSITIVE_SEMI_DEFINITE,
             1e-9
         ));
         let sqrt_matrix = matrix_square_root(&BASIC_SQRT);
@@ -275,7 +275,7 @@ mod tests {
     #[should_panic]
     fn public_api_negative_semi_definite() {
         // This should panic because the matrix is negative semi-definite.
-        let _sqrt_matrix = matrix_square_root(&NEGATIVE_SEMI_DEFINIE);
+        let _sqrt_matrix = matrix_square_root(&NEGATIVE_SEMI_DEFINITE);
     }
     #[test]
     #[should_panic]
