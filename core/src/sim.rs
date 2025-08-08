@@ -1,6 +1,6 @@
 //! Simulation utilities and CSV data loading for strapdown inertial navigation.
 //!
-//! This module provides tools for simulating and evaluting strapdown inertial navigation systems.
+//! This module provides tools for simulating and evaluating strapdown inertial navigation systems.
 //! It is primarily designed to work with data produced from the [Sensor Logger](https://www.tszheichoi.com/sensorlogger) 
 //! app, as such it makes assumptions about the data format and structure that that corresponds to 
 //! how that app records data. That data is typically stored in CSV format and is represented by the
@@ -8,23 +8,29 @@
 //! other applications. Modeling off of that struct is the `NavigationResult` struct which is used 
 //! to store navigation solutions from simulations, such as dead reckoning or Kalman filtering.
 //! 
-//! This module also provides basic functionality for analyzing cannonical strapdown inertial navigation
+//! This module also provides basic functionality for analyzing canonical strapdown inertial navigation
 //! systems via the `dead_reckoning` and `closed_loop` functions. The `closed_loop` function in particular
 //! can also be used to simulate various types of GNSS-denied scenarios, such as intermittent, degraded,
-//! or intermitent and degraded GNSS via the measurement models provided in this module. You can install 
+//! or intermittent and degraded GNSS via the measurement models provided in this module. You can install 
 //! the programs that execute this generic simulation by installing the binary via `cargo install strapdown-rs`.
 use core::f64;
 use std::fmt::Display;
 use std::io::{self};
 use std::path::Path;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, Utc};
 use nalgebra::{DMatrix, DVector, Vector3};
 use serde::{Deserialize, Serialize};
+use world_magnetic_model::uom::si::angle::radian;
+use world_magnetic_model::uom::si::length::meter;
+use world_magnetic_model::GeomagneticField;
+use world_magnetic_model::uom::si::f32::{Angle, Length};
+use world_magnetic_model::time::{Date, Month};
+
 
 use crate::earth;
 use crate::earth::METERS_TO_DEGREES;
-use crate::filter::{GPSPositionAndVelocityMeasurement, GPSPositionMeasurement, GPSVelocityMeasurement, RelativeAltitudeMeasurement, StrapdownParams, UKF};
+use crate::filter::{GPSPositionAndVelocityMeasurement, RelativeAltitudeMeasurement, StrapdownParams, UKF};
 use crate::{IMUData, StrapdownState, forward};
 /// Struct representing a single row of test data from the CSV file.
 ///
@@ -84,11 +90,11 @@ pub struct TestDataRecord {
     pub gyro_y: f64,
     /// Rotation rate around the x-axis in radians/s
     pub gyro_x: f64,
-    /// Magnetic field strength in the z-direction in microteslas
+    /// Magnetic field strength in the z-direction in micro teslas
     pub mag_z: f64,
-    /// Magnetic field strength in the y-direction in microteslas
+    /// Magnetic field strength in the y-direction in micro teslas
     pub mag_y: f64,
-    /// Magnetic field strength in the x-direction in microteslas
+    /// Magnetic field strength in the x-direction in micro teslas
     pub mag_x: f64,
     /// Change in altitude in meters
     #[serde(rename = "relativeAltitude")]
@@ -194,8 +200,7 @@ impl Display for TestDataRecord {
         )
     }
 }
-
-// ==== Helper structus for navigation simulations ====
+// ==== Helper structs for navigation simulations ====
 /// Struct representing the covariance diagonal of a navigation solution in NED coordinates.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct NEDCovariance {
@@ -215,7 +220,6 @@ pub struct NEDCovariance {
     pub gyro_bias_y_cov: f64,
     pub gyro_bias_z_cov: f64,
 }
-
 /// Generic result struct for navigation simulations.
 ///
 /// This structure contains a single row of position, velocity, and attitude vectors
@@ -303,11 +307,11 @@ pub struct NavigationResult {
     pub gyro_y: f64,
     /// Rotation rate around the z-axis in radians/s
     pub gyro_z: f64,
-    /// Magnetic field strength in the x-direction in microteslas
+    /// Magnetic field strength in the x-direction in micro teslas
     pub mag_x: f64,
-    /// Magnetic field strength in the y-direction in microteslas
+    /// Magnetic field strength in the y-direction in micro teslas
     pub mag_y: f64,
-    /// Magnetic field strength in the z-direction in microteslas
+    /// Magnetic field strength in the z-direction in micro teslas
     pub mag_z: f64,
     /// Pressure in millibars
     pub pressure: f64,
@@ -369,7 +373,7 @@ impl Default for NavigationResult {
 impl NavigationResult {
     /// Creates a new NavigationResult with default values.
     pub fn new() -> Self {
-        // TODO: #70 Re-implement NavigationResult construcutor with validation
+        // TODO: #70 Re-implement NavigationResult constructor with validation
         NavigationResult::default() // add in validation
     }    
 
@@ -420,7 +424,7 @@ impl NavigationResult {
 /// - `state`: A DVector containing the navigation state mean.
 /// - `covariance`: A DMatrix containing the covariance of the state.
 /// - `imu_data`: An IMUData struct containing the IMU measurements.
-/// - `mag_x`, `mag_y`, `mag_z`: Magnetic field strength in microteslas.
+/// - `mag_x`, `mag_y`, `mag_z`: Magnetic field strength in micro teslas.
 /// - `pressure`: Pressure in millibars.
 /// - `freeair`: Free-air gravity anomaly in mGal.
 /// 
@@ -437,9 +441,18 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>, &IMUData, &Vector3<f64>
             &f64,
         ),
     ) -> Self {
-        assert!(state.len() == 15, "State vector must have 15 elements");
+        assert!(state.len() == 15, "State vector must have 15 elements; got {}", state.len());
         assert!(covariance.nrows() == 15 && covariance.ncols() == 15, "Covariance matrix must be 15x15");
         let covariance = DVector::from_vec(covariance.diagonal().iter().map(|&x| x).collect());
+        let wmm_date: Date = Date::from_calendar_date(
+            timestamp.year(), Month::try_from(timestamp.month() as u8).unwrap(), timestamp.day() as u8
+        ).expect("Invalid date for world magnetic model");
+        let magnetic_field = GeomagneticField::new(
+            Length::new::<meter>(state[2] as f32),
+            Angle::new::<radian>(state[0] as f32),
+            Angle::new::<radian>(state[1] as f32),
+            wmm_date
+        );
         NavigationResult {
             timestamp: *timestamp,
             latitude: state[0].to_degrees(),
@@ -489,14 +502,15 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>, &IMUData, &Vector3<f64>
                 &state[4], // velocity_east
                 &(imu_data.accel[0].powi(2) + imu_data.accel[1].powi(2) + imu_data.accel[2].powi(2)).sqrt(),
             ),
-            mag_anomaly: earth::magnetic_anomaly(
-                state[0].to_radians(),
-                state[1].to_radians(),
-                state[2], // altitude
-                magnetic_vector.x,
-                magnetic_vector.y,
-                magnetic_vector.z,
-            ),
+            mag_anomaly: match magnetic_field {
+                Ok(field) => earth::magnetic_anomaly(
+                    field,
+                    magnetic_vector.x,
+                    magnetic_vector.y,
+                    magnetic_vector.z,
+                ),
+                Err(_) => f64::NAN,
+            },
         }
     }
 }
@@ -509,7 +523,7 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>, &IMUData, &Vector3<f64>
 /// - `timestamp`: The timestamp of the navigation solution.
 /// - `ukf`: A reference to the UKF instance containing the navigation state mean and covariance.
 /// - `imu_data`: An IMUData struct containing the IMU measurements.
-/// - `magnetic_vector`: Magnetic field strength measurement in microteslas (body frame x, y, z).
+/// - `magnetic_vector`: Magnetic field strength measurement in micro teslas (body frame x, y, z).
 /// - `pressure`: Pressure in millibars.
 /// 
 /// # Returns
@@ -526,6 +540,15 @@ impl From<(&DateTime<Utc>, &UKF, &IMUData, &Vector3<f64>, &f64)> for NavigationR
     ) -> Self {
         let state = &ukf.get_mean();
         let covariance = ukf.get_covariance();
+        let wmm_date: Date = Date::from_calendar_date(
+            timestamp.year(), Month::try_from(timestamp.month() as u8).unwrap(), timestamp.day() as u8
+        ).expect("Invalid date for world magnetic model");
+        let magnetic_field = GeomagneticField::new(
+            Length::new::<meter>(state[2] as f32),
+            Angle::new::<radian>(state[0] as f32),
+            Angle::new::<radian>(state[1] as f32),
+            wmm_date
+        );
         NavigationResult {
             timestamp: timestamp.clone(),
             latitude: state[0].to_degrees(),
@@ -575,14 +598,15 @@ impl From<(&DateTime<Utc>, &UKF, &IMUData, &Vector3<f64>, &f64)> for NavigationR
                 &state[4], // velocity_east
                 &(imu_data.accel[0].powi(2) + imu_data.accel[1].powi(2) + imu_data.accel[2].powi(2)).sqrt(),
             ),
-            mag_anomaly: earth::magnetic_anomaly(
-                state[0].to_radians(),
-                state[1].to_radians(),
-                state[2], // altitude   
-                magnetic_vector.x,
-                magnetic_vector.y,
-                magnetic_vector.z,
-            ),  
+            mag_anomaly: match magnetic_field {
+                Ok(field) => earth::magnetic_anomaly(
+                    field,
+                    magnetic_vector.x,
+                    magnetic_vector.y,
+                    magnetic_vector.z,
+                ),
+                Err(_) => f64::NAN,
+            },
         }
     }
 }
@@ -595,7 +619,7 @@ impl From<(&DateTime<Utc>, &UKF, &IMUData, &Vector3<f64>, &f64)> for NavigationR
 /// - `timestamp`: The timestamp of the navigation solution.
 /// - `state`: A reference to the StrapdownState instance containing the navigation state.
 /// - `imu_data`: An IMUData struct containing the IMU measurements.
-/// - `magnetic_vector`: Magnetic field strength measurement in microteslas (body frame x, y, z).
+/// - `magnetic_vector`: Magnetic field strength measurement in micro teslas (body frame x, y, z).
 /// - `pressure`: Pressure in millibars.
 /// # Returns
 /// A NavigationResult struct containing the navigation solution.
@@ -609,6 +633,15 @@ impl From<(&DateTime<Utc>, &StrapdownState, &IMUData, &Vector3<f64>, &f64)> for 
             &f64,
         ),
     ) -> Self {
+        let wmm_date: Date = Date::from_calendar_date(
+            timestamp.year(), Month::try_from(timestamp.month() as u8).unwrap(), timestamp.day() as u8
+        ).expect("Invalid date for world magnetic model");
+        let magnetic_field = GeomagneticField::new(
+            Length::new::<meter>(state.altitude as f32),
+            Angle::new::<radian>(state.latitude as f32),
+            Angle::new::<radian>(state.longitude as f32),
+            wmm_date
+        );
         NavigationResult {
             timestamp: timestamp.clone(),
             latitude: state.latitude.to_degrees(),
@@ -658,14 +691,15 @@ impl From<(&DateTime<Utc>, &StrapdownState, &IMUData, &Vector3<f64>, &f64)> for 
                 &state.velocity_east,
                 &(imu_data.accel[0].powi(2) + imu_data.accel[1].powi(2) + imu_data.accel[2].powi(2)).sqrt(),
             ),
-            mag_anomaly: earth::magnetic_anomaly(
-                state.latitude.to_radians(),
-                state.longitude.to_radians(),
-                state.altitude,
-                magnetic_vector.x,
-                magnetic_vector.y,
-                magnetic_vector.z,
-            ),  
+            mag_anomaly: match magnetic_field {
+                Ok(field) => earth::magnetic_anomaly(
+                    field,
+                    magnetic_vector.x,
+                    magnetic_vector.y,
+                    magnetic_vector.z,
+                ),
+                Err(_) => f64::NAN,
+            }, 
         }
     }
 }
@@ -766,10 +800,15 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
 /// * `Vec<NavigationResult>` - A vector of navigation results containing the state estimates and covariances at each timestamp.
 pub fn closed_loop(
     records: &[TestDataRecord],
-    gps_interval: Option<usize>
+    gps_interval: Option<f64>
 ) -> Vec<NavigationResult> {
-    let gps_interval = gps_interval.unwrap_or(1); // Default to every record if not specified
+    let gps_interval = gps_interval.unwrap_or(1.0); // Default to every record if not specified
     let reference_altitude = records[0].altitude; // Use the first record's pressure as reference
+    let start_time = records[0].time;
+    let records_with_elapsed: Vec<(f64, &TestDataRecord)> = records
+        .iter()
+        .map(|r| ((r.time - start_time).num_milliseconds() as f64 / 1000.0, r))
+        .collect();
     let mut results: Vec<NavigationResult> = Vec::with_capacity(records.len());
     // Initialize the UKF with the first record
     let mut ukf = initialize_ukf(
@@ -796,7 +835,8 @@ pub fn closed_loop(
     // Iterate through the records, updating the UKF with each IMU measurement
     let total: usize = records.len();
     let mut i: usize = 1;
-    for record in records.iter().skip(1) {
+    let mut last_gps_update_time = 0.0;
+    for (elapsed, record) in records_with_elapsed.iter().skip(1) {
         // Print progress every 100 iterations
         if i % 10 == 0 || i == total - 1 {
             print!(
@@ -833,7 +873,7 @@ pub fn closed_loop(
             && !record.altitude.is_nan()
             && !record.bearing.is_nan()
             && !record.speed.is_nan()
-            && i % gps_interval == 0
+            && (*elapsed - last_gps_update_time) >= gps_interval
         {
             let measurement = GPSPositionAndVelocityMeasurement {
                 latitude: record.latitude,
@@ -846,6 +886,7 @@ pub fn closed_loop(
                 velocity_noise_std: record.speed_accuracy,
             };
             ukf.update(measurement);
+            last_gps_update_time = *elapsed;
         }
         // If barometric altimeter data is available, update the UKF with the altitude measurement
         if !record.pressure.is_nan() {
@@ -869,6 +910,7 @@ pub fn closed_loop(
         )));
         i += 1;
         previous_timestamp = current_timestamp;
+        
     }
     println!("Done!");
     results
@@ -1393,7 +1435,7 @@ mod tests {
                 grav_y: 0.0,
                 grav_x: 0.0,
             });
-        let res = closed_loop(&vec![rec.clone()], Some(1));
+        let res = closed_loop(&vec![rec.clone()], Some(1.0));
         assert!(!res.is_empty());
     }
     #[test]

@@ -33,13 +33,15 @@
 //! from the local level frame to the body frame can be taken care of by the `nalgebra`
 //! crate, which provides the necessary rotation matrices using the Rotation3 type.
 use crate::{wrap_latitude, wrap_to_180};
-use ::nalgebra::{Matrix3, Vector3};
-use ::nav_types::{ECEF, WGS84};
+use nalgebra::{Matrix3, Vector3};
+use nav_types::{ECEF, WGS84};
+use world_magnetic_model::GeomagneticField;
+
 /// Earth's rotation rate rad/s ($\omega_{ie}$)
 pub const RATE: f64 = 7.2921159e-5;
 /// Earth's rotation rate rad/s ($\omega_{ie}$) in a vector form
 pub const RATE_VECTOR: Vector3<f64> = Vector3::new(0.0, 0.0, RATE);
-/// Earth's equitorial radius in meters
+/// Earth's equatorial radius in meters
 pub const EQUATORIAL_RADIUS: f64 = 6378137.0; // meters
 /// Earth's polar radius in meters
 pub const POLAR_RADIUS: f64 = 6356752.31425; // meters
@@ -374,7 +376,7 @@ pub fn gravity(latitude: &f64, altitude: &f64) -> f64 {
 /// differs from the gravity scalar in that it includes the centrifugal effects of the Earth's
 /// rotation.
 ///
-/// *Note:* Local level frame coordintaes are odd and mixed and can be defined as North, East,
+/// *Note:* Local level frame coordinates are odd and mixed and can be defined as North, East,
 /// Down (NED) or East, North, Up (ENU). This function uses the ENU convention, thus gravity acts
 /// along the negative Z-axis (downward) in the local-level frame.
 ///
@@ -435,7 +437,7 @@ pub fn gravity_anomaly(
     let eotvos_correction: f64 = eotvos(latitude, altitude, north_velocity, east_velocity);
     *gravity_observed - normal_gravity - eotvos_correction
 }
-/// Calculate the Eotvos correction for the local-level frame
+/// Calculate the Eötvös correction for the local-level frame
 ///
 /// The Eötvös correction accounts for the centrifugal acceleration caused by the vehicle's motion
 /// relative to the Earth's rotation. It depends on the platform's velocity, latitude, and Earth's
@@ -525,7 +527,7 @@ pub fn transport_rate(latitude: &f64, altitude: &f64, velocities: &Vector3<f64>)
 /// - `altitude` - The WGS84 altitude in meters
 ///
 /// # Returns
-/// The magnetic field vector in nanoteslas (nT) in the local-level frame (North, East, Down)
+/// The magnetic field vector in nano teslas (nT) in the local-level frame (North, East, Down)
 ///
 /// # Example
 /// ```rust
@@ -557,7 +559,7 @@ pub fn calculate_magnetic_field(latitude: &f64, longitude: &f64, altitude: &f64)
 /// - `radius` - The distance from Earth's center in meters
 ///
 /// # Returns
-/// The radial component of the magnetic field in nanoteslas (nT)
+/// The radial component of the magnetic field in nano teslas (nT)
 ///
 /// # Example
 /// ```rust
@@ -579,7 +581,7 @@ pub fn calculate_radial_magnetic_field(colatitude: f64, radius: f64) -> f64 {
 /// - `radius` - The distance from Earth's center in meters
 ///
 /// # Returns
-/// The latitudinal component of the magnetic field in nanoteslas (nT)
+/// The latitudinal component of the magnetic field in nano teslas (nT)
 ///
 /// # Example
 /// ```rust
@@ -704,14 +706,14 @@ pub fn magnetic_declination(latitude: &f64, longitude: &f64, altitude: &f64) -> 
 }
 /// Calculate the magnetic anomaly at a given location
 pub fn magnetic_anomaly(
-    latitude: f64,
-    longitude: f64,
-    altitude: f64,
+    magnetic_field: GeomagneticField,
     mag_x: f64,
     mag_y: f64,
     mag_z: f64,
 ) -> f64 {
-    f64::NAN * latitude * longitude * altitude * mag_x * mag_y * mag_z // Placeholder for magnetic anomaly calculation to squash warnings
+    // f64::NAN * latitude * longitude * altitude * mag_x * mag_y * mag_z // Placeholder for magnetic anomaly calculation to squash warnings
+    let obs = (mag_x.powi(2) + mag_y.powi(2) + mag_z.powi(2)).sqrt();
+    obs - (magnetic_field.f().value as f64)
 }
 // === Unit tests ===
 #[cfg(test)]
