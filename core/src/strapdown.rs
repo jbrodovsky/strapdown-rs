@@ -49,8 +49,8 @@
 //! This module implements the strapdown mechanization equations in the Local-Level Frame. These equations form the basis
 //! of the forward propagation step (motion/system/state-transition model) of all the filters implemented in this crate.
 //! The rational for this was to design and test it once, then re-use it on the various filters which really only need to
-//! act on the given probability distribution and are largely ambivilent to the actual function and use generic representations
-//! in thier mathematics.
+//! act on the given probability distribution and are largely ambivalent to the actual function and use generic representations
+//! in their mathematics.
 //!
 //! The equations are based on the book _Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems, Second Edition_
 //! by Paul D. Groves. Below is a summary of the equations implemented in Chapter 5.4 implemented by this module.
@@ -58,7 +58,7 @@
 //! #### Skew-Symmetric notation
 //!
 //! Groves uses a direction cosine matrix representation of orientation (attitude, rotation). As such, to make the matrix math
-//! work out, rotational quantities need to also be represented using matricies. Groves' convention is to use a lower-case
+//! work out, rotational quantities need to also be represented using matrices. Groves' convention is to use a lower-case
 //! letter for vector quantities (arrays of shape (N,) Python-style, or (N,1) nalgebra/Matlab style) and capital letters for the
 //! skew-symmetric matrix representation of the same vector.
 //!
@@ -77,7 +77,7 @@
 //! C_b^n(+) \approx C_b^n(-) \left( I + \Omega_{ib}^b t \right) - \left( \Omega_{ie}^e - \Omega_{en}^n \right) C_b^n(-) t
 //! $$
 //!
-//! where $t$ is the time differential and $C(-)$ is the prior attitude. These attitude matricies are then used to transform the
+//! where $t$ is the time differential and $C(-)$ is the prior attitude. These attitude matrices are then used to transform the
 //! specific forces from the IMU:
 //!
 //! $$
@@ -114,8 +114,6 @@
 //!
 //! This top-level module provides a public API for each step of the forward mechanization equations, allowing users to
 //! easily pass data in and out.
-
-// deconflict2
 pub mod earth;
 pub mod filter;
 pub mod linalg;
