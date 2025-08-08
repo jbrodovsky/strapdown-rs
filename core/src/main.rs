@@ -4,26 +4,29 @@ use std::error::Error;
 use std::path::PathBuf;
 use strapdown::sim::{NavigationResult, TestDataRecord, closed_loop, dead_reckoning};
 
-/// git deconflict
-
 /// Command line arguments
+// ...existing code...
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
     /// Mode of operation, either open-loop or closed-loop
-    #[clap(short, long, value_parser, default_value = "open-loop")]
+    #[clap(short, long, value_parser, default_value = "open-loop", help = "Mode of operation: 'open-loop' or 'closed-loop'")]
     mode: String,
-
     /// Input CSV file path
-    #[clap(short, long, value_parser)]
+    #[clap(short, long, value_parser, help = "Path to the input CSV file containing IMU and (optionally) GPS data")]
     input: PathBuf,
-
     /// Output CSV file path
-    #[clap(short, long, value_parser)]
+    #[clap(short, long, value_parser, help = "Path to the output CSV file for navigation results")]
     output: PathBuf,
-    /// Optional: GPS measurement intervale in seconds (for simulating intermittent GPS outages)
-    #[clap(long, value_parser)]
-    gps_interval: Option<usize>,
+    /// Optional: GPS measurement interval in seconds (for simulating intermittent GPS outages)
+    #[clap(long, value_parser, help = "Interval (in seconds) between GPS measurements; used to simulate GPS outages")]
+    gps_interval: Option<f64>,
+    /// Optional: GPS degradation factor
+    #[clap(long, value_parser, default_value = "1.0", help = "Factor by which GPS accuracy is degraded. 1.0 is no degradation. >= 1.0 is a degradation factor.")]
+    gps_degradation: Option<f32>,
+    /// Optional: GPS spoofing offset
+    #[clap(long, value_parser, default_value = "0.0", help = "Offset to apply to GPS coordinates (in meters)")]
+    gps_spoofing_offset: Option<f32>,
 }
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
@@ -45,7 +48,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             "Running in closed-loop mode with GPS interval: {:?}",
             args.gps_interval
         );
-
         results = closed_loop(&records, args.gps_interval);
         //match write_results_to_csv(&results, &args.output) {
         match NavigationResult::to_csv(&results, &args.output) {
