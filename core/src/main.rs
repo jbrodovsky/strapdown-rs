@@ -2,10 +2,9 @@ use clap::Parser;
 use csv::ReaderBuilder;
 use std::error::Error;
 use std::path::PathBuf;
-use strapdown::sim::{NavigationResult, TestDataRecord, closed_loop, dead_reckoning};
+use strapdown::sim::{NavigationResult, TestDataRecord, closed_loop, dead_reckoning, degrade_measurements};
 
 /// Command line arguments
-// ...existing code...
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
@@ -22,11 +21,11 @@ struct Args {
     #[clap(long, value_parser, help = "Interval (in seconds) between GPS measurements; used to simulate GPS outages")]
     gps_interval: Option<f64>,
     /// Optional: GPS degradation factor
-    #[clap(long, value_parser, default_value = "1.0", help = "Factor by which GPS accuracy is degraded. 1.0 is no degradation. >= 1.0 is a degradation factor.")]
-    gps_degradation: Option<f32>,
+    #[clap(long, value_parser, default_value = "1.0", help = "Factor by which GPS accuracy is degraded. 1.0 is no degradation. >= 1.0 is a degradation factor. This factor is applied as a scalar multiplier to the recorded GPS accuracy.")]
+    gps_degradation: Option<f64>,
     /// Optional: GPS spoofing offset
     #[clap(long, value_parser, default_value = "0.0", help = "Offset to apply to GPS coordinates (in meters)")]
-    gps_spoofing_offset: Option<f32>,
+    gps_spoofing_offset: Option<f64>,
 }
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
@@ -36,12 +35,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     // Read the input CSV file
     let mut rdr = ReaderBuilder::new().from_path(&args.input)?;
-    let records: Vec<TestDataRecord> = rdr.deserialize().collect::<Result<_, _>>()?;
+    let mut records: Vec<TestDataRecord> = rdr.deserialize().collect::<Result<_, _>>()?;
     println!(
         "Read {} records from {}",
         records.len(),
         &args.input.display()
     );
+    records = match args.gps_degradation {
+        Some(value) => degrade_measurements(records, value),
+        None => records,
+    };
     let results: Vec<NavigationResult>;
     if args.mode == "closed-loop" {
         println!(
