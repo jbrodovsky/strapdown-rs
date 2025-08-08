@@ -1063,6 +1063,30 @@ pub fn initialize_ukf(
         0.0,
     )
 }
+/// Degrades the certainty of GPS/GNSS measurements by a scalar factor of all specified accuracy metrics.
+/// 
+/// # Arguments
+///
+/// * `measurements`: A vector of TestDataRecord structs representing the measurements to be degraded.
+/// * `factor`: A scalar factor by which to degrade the accuracy metrics.
+/// 
+/// # Returns
+///
+/// A vector of TestDataRecord structs with degraded accuracy metrics.
+pub fn degrade_measurements(measurements: Vec<TestDataRecord>, factor: f64) -> Vec<TestDataRecord> {
+    let degraded: Vec<TestDataRecord> = measurements
+        .into_iter()
+        .map(|mut record| {
+            record.horizontal_accuracy *= factor;
+            record.vertical_accuracy *= factor;
+            record.speed_accuracy *= factor;
+            record.bearing_accuracy *= factor;
+            record
+        })
+        .collect();
+    degraded
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
