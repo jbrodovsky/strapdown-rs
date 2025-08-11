@@ -802,7 +802,7 @@ pub fn closed_loop(
     records: &[TestDataRecord],
     gps_interval: Option<f64>
 ) -> Vec<NavigationResult> {
-    let gps_interval = gps_interval.unwrap_or(1.0); // Default to every record if not specified
+    let gps_interval = gps_interval.unwrap_or(0.0); // Default to every record if not specified
     let reference_altitude = records[0].altitude; // Use the first record's pressure as reference
     let start_time = records[0].time;
     let records_with_elapsed: Vec<(f64, &TestDataRecord)> = records
@@ -837,7 +837,7 @@ pub fn closed_loop(
     let mut i: usize = 1;
     let mut last_gps_update_time = 0.0;
     for (elapsed, record) in records_with_elapsed.iter().skip(1) {
-        // Print progress every 100 iterations
+        // Print progress every 10 iterations
         if i % 10 == 0 || i == total - 1 {
             print!(
                 "\rProcessing data {:.2}%...",

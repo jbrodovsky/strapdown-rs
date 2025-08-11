@@ -18,7 +18,7 @@ struct Args {
     #[clap(short, long, value_parser, help = "Path to the output CSV file for navigation results")]
     output: PathBuf,
     /// Optional: GPS measurement interval in seconds (for simulating intermittent GPS outages)
-    #[clap(long, value_parser, help = "Interval (in seconds) between GPS measurements; used to simulate GPS outages")]
+    #[clap(long, value_parser, help = "Interval (in seconds) between GPS measurements, used to simulate GPS outages. Default is 0.0 which updates at every iteration.")]
     gps_interval: Option<f64>,
     /// Optional: GPS degradation factor
     #[clap(long, value_parser, default_value = "1.0", help = "Factor by which GPS accuracy is degraded. 1.0 is no degradation. >= 1.0 is a degradation factor. This factor is applied as a scalar multiplier to the recorded GPS accuracy.")]
@@ -32,6 +32,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Validate the mode
     if args.mode != "open-loop" && args.mode != "closed-loop" {
         return Err("Invalid mode specified. Use 'open-loop' or 'closed-loop'.".into());
+    }
+    // Validate the GPS measurement interval is positive
+    match args.gps_interval {
+        Some(interval) if interval < 0.0 => {
+            return Err("GPS measurement interval must be a non-negative value.".into());
+        }
+        _ => {}
     }
     // Read the input CSV file
     let mut rdr = ReaderBuilder::new().from_path(&args.input)?;
