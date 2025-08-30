@@ -509,7 +509,7 @@ impl UKF {
             Some(inv) => inv,
             None => panic!("Innovation matrix is singular"),
         };
-        let k = cross_covariance * s_inv;
+        let k = &cross_covariance * s_inv;
         // check that the kalman gain and measurement diff are compatible to multiply
         if k.ncols() != measurement.get_dimension() {
             panic!("Kalman gain and measurement differential are not compatible");
@@ -520,7 +520,12 @@ impl UKF {
         self.mean_state[6] = wrap_to_2pi(self.mean_state[6]);
         self.mean_state[7] = wrap_to_2pi(self.mean_state[7]);
         self.mean_state[8] = wrap_to_2pi(self.mean_state[8]);
-        self.covariance -= &k * s * &k.transpose();
+        // Switch to Joseph Form update here
+        // P = (I - K * H) P (I - K H)^T + K R K^T
+        let I = DMatrix::<f64>::identity(self.state_size, self.state_size);
+        let P = self.covariance.clone();
+        //self.covariance -= &k * s * &k.transpose();
+        self.covariance = (&I - &k * &cross_covariance) * &P * (&I - &k * &cross_covariance).transpose() + &k * measurement.get_noise() * &k.transpose();
     }
 }
 #[derive(Clone, Debug, Default)]
