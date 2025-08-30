@@ -522,12 +522,16 @@ impl UKF {
         self.mean_state[8] = wrap_to_2pi(self.mean_state[8]);
         // Switch to Joseph Form update here
         // P = (I - K * H) P (I - K H)^T + K R K^T
-        let I = DMatrix::<f64>::identity(self.state_size, self.state_size);
-        let P = self.covariance.clone();
-        //self.covariance -= &k * s * &k.transpose();
+        let i = DMatrix::<f64>::identity(self.state_size, self.state_size);
+        let p = self.covariance.clone();
+        // println!("Updating covariance matrix");
+        // println!("Kalman gain: {:?}", k.shape());
+        // println!("Cross covariance: {:?}", cross_covariance.shape());
+        let m = &i - &k * &cross_covariance.transpose();
         self.covariance =
-            (&I - &k * &cross_covariance) * &P * (&I - &k * &cross_covariance).transpose()
+            &m * &p * &m.transpose()
                 + &k * measurement.get_noise() * &k.transpose();
+        //self.covariance -= &k * s * &k.transpose();
     }
 }
 #[derive(Clone, Debug, Default)]
