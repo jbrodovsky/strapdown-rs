@@ -77,43 +77,50 @@ pub const DEGREES_TO_METERS: f64 = 60.0 * 1852.0;
 /// Atmospheric pressure at sea level in Pascals ($P_0$)
 pub const SEA_LEVEL_PRESSURE: f64 = 101325.0;
 /// Standard temperature at sea level in Kelvin ($T_0$)
-pub const SEA_LEVEL_TEMPERATURE: f64 = 288.15; 
+pub const SEA_LEVEL_TEMPERATURE: f64 = 288.15;
 /// Molar mass of dry air in kg/mol ($M$)
-pub const MOLAR_MASS_DRY_AIR: f64 = 0.0289644; 
+pub const MOLAR_MASS_DRY_AIR: f64 = 0.0289644;
 /// Universal gas constant in J/(mol·K) ($R_0$)
 pub const UNIVERSAL_GAS_CONSTANT: f64 = 8.314462618;
 /// Standard lapse rate in K/m ($L$)
 pub const STANDARD_LAPSE_RATE: f64 = 0.0065;
 /// Calculate a barometric altitude from a measured pressure
-/// 
+///
 /// This function calculates the altitude above sea level based on the measured pressure
 /// using the barometric formula. The formula assumes a standard atmosphere and uses the
 /// universal gas constant, standard lapse rate, and molar mass of dry air.
-/// 
+///
 /// # Parameters
 /// - `pressure` - The measured pressure in Pascals
 /// # Returns
 /// The calculated altitude in meters above sea level
 pub fn barometric_altitude(pressure: &f64) -> f64 {
-    let exponent: f64 = - (UNIVERSAL_GAS_CONSTANT * STANDARD_LAPSE_RATE) / (G0 * MOLAR_MASS_DRY_AIR);
-    (SEA_LEVEL_PRESSURE / STANDARD_LAPSE_RATE) * (pressure / SEA_LEVEL_PRESSURE - 1.0) * exponent.exp()
+    let exponent: f64 = -(UNIVERSAL_GAS_CONSTANT * STANDARD_LAPSE_RATE) / (G0 * MOLAR_MASS_DRY_AIR);
+    (SEA_LEVEL_PRESSURE / STANDARD_LAPSE_RATE)
+        * (pressure / SEA_LEVEL_PRESSURE - 1.0)
+        * exponent.exp()
 }
 /// Calculate the relative barometric altitude from a measured pressure
-/// 
+///
 /// This function calculates the relative altitude from a reference pressure using the
-/// barometric formula. The formula assumes a standard atmosphere and uses the universal 
+/// barometric formula. The formula assumes a standard atmosphere and uses the universal
 /// gas constant, standard lapse rate, and molar mass of dry air.
-/// 
+///
 /// # Parameters
 /// - `pressure` - The measured pressure in Pascals
 /// - `initial_pressure` - The reference pressure in Pascals
 /// - `average_temperature` - Optional average temperature in Kelvin (defaults to standard sea level temperature)
-/// 
+///
 /// # Returns
 /// The calculated relative altitude in meters above the reference pressure
-pub fn relative_barometric_altitude(pressure: f64, initial_pressure: f64, average_temperature: Option<f64>) -> f64 {
+pub fn relative_barometric_altitude(
+    pressure: f64,
+    initial_pressure: f64,
+    average_temperature: Option<f64>,
+) -> f64 {
     let average_temperature = average_temperature.unwrap_or(SEA_LEVEL_TEMPERATURE);
-    ((UNIVERSAL_GAS_CONSTANT * average_temperature) / (G0 * MOLAR_MASS_DRY_AIR)) * (initial_pressure / pressure).ln()
+    ((UNIVERSAL_GAS_CONSTANT * average_temperature) / (G0 * MOLAR_MASS_DRY_AIR))
+        * (initial_pressure / pressure).ln()
 }
 /// Calculates the expected barometric pressure at a given altitude
 ///
@@ -138,7 +145,8 @@ pub fn expected_barometric_pressure(altitude: f64, sea_level_pressure: f64) -> f
     // Barometric formula (assuming isothermal atmosphere):
     // P = P0 * exp(- (g0 * M * h) / (R * T0))
     // Here we use the same constants as in barometric_altitude
-    let exponent = - (G0 * MOLAR_MASS_DRY_AIR * altitude) / (UNIVERSAL_GAS_CONSTANT * SEA_LEVEL_TEMPERATURE);
+    let exponent =
+        -(G0 * MOLAR_MASS_DRY_AIR * altitude) / (UNIVERSAL_GAS_CONSTANT * SEA_LEVEL_TEMPERATURE);
     sea_level_pressure * exponent.exp()
 }
 /// Convert a three-element vector to a skew-symmetric matrix
