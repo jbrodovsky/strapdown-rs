@@ -124,7 +124,7 @@ fn eigenvalue_pass(matrix: &DMatrix<f64>) -> Option<DMatrix<f64>> {
 
     // Create diagonal matrix of sqrt(eigenvalues), clamping eigenvalues to be non-negative.
     // `DMatrix::from_diagonal` takes a DVector.
-    let sqrt_eigenvalues_diag_vec = eigenvalues.map(|val| val.max(0.0).sqrt());
+    let sqrt_eigenvalues_diag_vec = eigenvalues.map(|val| val.max(1e-9).sqrt());
     let sqrt_eigenvalues_diag = DMatrix::from_diagonal(&sqrt_eigenvalues_diag_vec);
 
     // Reconstruct the square root: S = V * sqrt(D) * V^T
