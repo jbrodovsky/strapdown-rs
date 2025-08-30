@@ -43,7 +43,8 @@ pub trait MeasurementModel {
 }
 /// GPS position measurement model
 #[derive(Clone, Debug, Default)]
-pub struct GPSPositionMeasurement {  // <-- Check this model for degree/radian consistency
+pub struct GPSPositionMeasurement {
+    // <-- Check this model for degree/radian consistency
     /// latitude in degrees
     pub latitude: f64,
     /// longitude in degrees
@@ -183,9 +184,9 @@ impl MeasurementModel for GPSPositionAndVelocityMeasurement {
     }
 }
 
-/// A relative relative altitude measurement derived from barometric pressure. 
-/// Note that this measurement model is an altitude measurement derived from 
-/// a barometric altimeter and not a direct calculation of altitude from the 
+/// A relative relative altitude measurement derived from barometric pressure.
+/// Note that this measurement model is an altitude measurement derived from
+/// a barometric altimeter and not a direct calculation of altitude from the
 /// barometric pressure.
 #[derive(Clone, Debug, Default)]
 pub struct RelativeAltitudeMeasurement {
@@ -205,7 +206,8 @@ impl MeasurementModel for RelativeAltitudeMeasurement {
         DMatrix::from_diagonal(&DVector::from_vec(vec![5.0])) // 1 mm noise
     }
     fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
-        let mut measurement_sigma_points = DMatrix::<f64>::zeros(self.get_dimension(), state_sigma_points.ncols());
+        let mut measurement_sigma_points =
+            DMatrix::<f64>::zeros(self.get_dimension(), state_sigma_points.ncols());
         for (i, sigma_point) in state_sigma_points.column_iter().enumerate() {
             measurement_sigma_points[(0, i)] = sigma_point[2];
         }
@@ -244,7 +246,7 @@ pub struct StrapdownParams {
 /// Note that, internally, angles are always stored in radians (both for the attitude and the position),
 /// however, the user can choose to convert them to degrees when retrieving the state vector and the UKF
 /// and underlying strapdown state can be constructed from data in degrees by using the boolean `in_degrees`
-/// toggle where applicable. Generally speaking, the design of this crate is such that methods that expect 
+/// toggle where applicable. Generally speaking, the design of this crate is such that methods that expect
 /// a WGS84 coordinate (e.g. latitude or longitude) will expect the value in degrees, whereas trigonometric
 /// functions (e.g. sine, cosine, tangent) will expect the value in radians.
 pub struct UKF {
@@ -370,7 +372,7 @@ impl UKF {
             lambda,
             state_size,
             weights_mean,
-            weights_cov
+            weights_cov,
         }
     }
     /// Predicts the state using the strapdown equations and IMU measurements.
@@ -389,20 +391,20 @@ impl UKF {
         let mut sigma_points = self.get_sigma_points();
         for i in 0..sigma_points.ncols() {
             let mut sigma_point_vec = sigma_points.column(i).clone_owned();
-            let mut state = StrapdownState { 
-                latitude: sigma_point_vec[0], 
-                longitude: sigma_point_vec[1], 
-                altitude: sigma_point_vec[2], 
-                velocity_north: sigma_point_vec[3], 
-                velocity_east:  sigma_point_vec[4], 
-                velocity_down: sigma_point_vec[5], 
+            let mut state = StrapdownState {
+                latitude: sigma_point_vec[0],
+                longitude: sigma_point_vec[1],
+                altitude: sigma_point_vec[2],
+                velocity_north: sigma_point_vec[3],
+                velocity_east: sigma_point_vec[4],
+                velocity_down: sigma_point_vec[5],
                 attitude: Rotation3::from_euler_angles(
-                    sigma_point_vec[6], 
-                    sigma_point_vec[7], 
-                    sigma_point_vec[8]
+                    sigma_point_vec[6],
+                    sigma_point_vec[7],
+                    sigma_point_vec[8],
                 ),
                 coordinate_convention: true,
-             };
+            };
             forward(&mut state, imu_data, dt);
             // Update the sigma point with the new state
             sigma_point_vec[0] = state.latitude;
@@ -478,10 +480,7 @@ impl UKF {
     /// # Arguments
     /// * `measurement` - The measurement vector to update the state with.
     /// * `measurement_sigma_points` - The measurement sigma points to use for the update.
-    pub fn update<M: MeasurementModel>(
-        &mut self,
-        measurement: M,
-    ) {
+    pub fn update<M: MeasurementModel>(&mut self, measurement: M) {
         let measurement_sigma_points = measurement.get_sigma_points(&self.get_sigma_points());
         // Calculate expected measurement
         let mut z_hat = DVector::<f64>::zeros(measurement.get_dimension());
@@ -498,7 +497,8 @@ impl UKF {
         s += measurement.get_noise();
         // Calculate the cross-covariance
         let sigma_points = self.get_sigma_points();
-        let mut cross_covariance = DMatrix::<f64>::zeros(self.state_size, measurement.get_dimension());
+        let mut cross_covariance =
+            DMatrix::<f64>::zeros(self.state_size, measurement.get_dimension());
         for (i, measurement_sigma_point) in measurement_sigma_points.column_iter().enumerate() {
             let measurement_diff = measurement_sigma_point - &z_hat;
             let state_diff = sigma_points.column(i) - &self.mean_state;
@@ -525,7 +525,9 @@ impl UKF {
         let I = DMatrix::<f64>::identity(self.state_size, self.state_size);
         let P = self.covariance.clone();
         //self.covariance -= &k * s * &k.transpose();
-        self.covariance = (&I - &k * &cross_covariance) * &P * (&I - &k * &cross_covariance).transpose() + &k * measurement.get_noise() * &k.transpose();
+        self.covariance =
+            (&I - &k * &cross_covariance) * &P * (&I - &k * &cross_covariance).transpose()
+                + &k * measurement.get_noise() * &k.transpose();
     }
 }
 #[derive(Clone, Debug, Default)]
@@ -667,8 +669,8 @@ impl ParticleFilter {
 /// Tests
 #[cfg(test)]
 mod tests {
-    use crate::earth;
     use super::*;
+    use crate::earth;
     use assert_approx_eq::assert_approx_eq;
     use nalgebra::Vector3;
 
@@ -706,10 +708,7 @@ mod tests {
             BETA,
             KAPPA,
         );
-        assert_eq!(
-            ukf.mean_state.len(),
-            18
-        );
+        assert_eq!(ukf.mean_state.len(), 18);
         let wms = ukf.weights_mean;
         let wcs = ukf.weights_cov;
         assert_eq!(wms.len(), (2 * ukf.state_size) + 1);
@@ -777,12 +776,12 @@ mod tests {
             ukf.mean_state.len() == 15 //+ measurement_bias.len()
         );
         let measurement = GPSPositionMeasurement {
-                latitude: 0.0,
-                longitude: 0.0,
-                altitude: 0.0,
-                horizontal_noise_std: 1e-3,
-                vertical_noise_std: 1e-3,
-            };
+            latitude: 0.0,
+            longitude: 0.0,
+            altitude: 0.0,
+            horizontal_noise_std: 1e-3,
+            vertical_noise_std: 1e-3,
+        };
         ukf.update(measurement);
         // Check that the state has not changed
         assert_approx_eq!(ukf.mean_state[0], 0.0, 1e-3);
