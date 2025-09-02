@@ -118,8 +118,8 @@ fn eigenvalue_pass(matrix: &DMatrix<f64>) -> Option<DMatrix<f64>> {
         println!(
             "Warning: Negative eigenvalues encountered during eigenvalue decomposition. The input matrix was not positive semi-definite."
         );
-        println!("{:?}", matrix.data);
-        return None;
+    //     println!("{:?}", matrix.data);
+    //     // return None;
     }
 
     // Create diagonal matrix of sqrt(eigenvalues), clamping eigenvalues to be non-negative.

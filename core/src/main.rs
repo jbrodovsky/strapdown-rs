@@ -73,6 +73,22 @@ fn main() -> Result<(), Box<dyn Error>> {
         _ => {}
     }
     // Read the input CSV file
+    // Validate that the input file exists and is readable
+    if !args.input.exists() {
+        return Err(format!("Input file '{}' does not exist.", args.input.display()).into());
+    }
+    if !args.input.is_file() {
+        return Err(format!("Input path '{}' is not a file.", args.input.display()).into());
+    }
+    // Validate that the output file is writable
+    if let Some(parent) = args.output.parent() {
+        if !parent.exists() && parent.is_dir() {
+            return Err(format!("Output directory '{}' does not exist.", parent.display()).into());
+        }
+        // if !parent.is_dir() {
+        //     return Err(format!("Output path '{}' is not a directory.", parent.display()).into());
+        // }
+    }
     let mut rdr = ReaderBuilder::new().from_path(&args.input)?;
     let mut records: Vec<TestDataRecord> = rdr.deserialize().collect::<Result<_, _>>()?;
     println!(
