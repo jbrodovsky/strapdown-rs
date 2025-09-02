@@ -4,6 +4,7 @@
 /strapdown_py/.pytest_cache
 /strapdown_py/dist
 /core/*.csv
+/core/db
 
 # pixi environments
 .pixi
@@ -22,3 +23,4 @@ __pycache__
 .python-version
 pyproject.toml
 uv.lock
+batch_process.nu
