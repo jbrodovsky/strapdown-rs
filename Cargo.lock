@@ -680,7 +680,7 @@ dependencies = [
 
 [[package]]
 name = "strapdown-rs"
-version = "0.3.6"
+version = "0.3.7"
 dependencies = [
  "angle",
  "assert_approx_eq",

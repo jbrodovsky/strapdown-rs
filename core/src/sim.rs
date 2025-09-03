@@ -844,6 +844,7 @@ pub fn closed_loop(records: &[TestDataRecord], gps_interval: Option<f64>) -> Vec
     let gps_interval = gps_interval.unwrap_or(0.0); // Default to every record if not specified
     let reference_altitude = records[0].altitude; // Use the first record's pressure as reference
     let start_time = records[0].time;
+    // Add total elapsed time
     let records_with_elapsed: Vec<(f64, &TestDataRecord)> = records
         .iter()
         .map(|r| ((r.time - start_time).num_milliseconds() as f64 / 1000.0, r))
@@ -910,6 +911,7 @@ pub fn closed_loop(records: &[TestDataRecord], gps_interval: Option<f64>) -> Vec
             && !record.speed.is_nan()
             && (*elapsed - last_gps_update_time) >= gps_interval
         {
+            //println!("GPS measurement available at {:.2?} seconds", *elapsed);
             let measurement = GPSPositionAndVelocityMeasurement {
                 latitude: record.latitude,
                 longitude: record.longitude,
