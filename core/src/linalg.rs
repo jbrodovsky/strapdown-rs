@@ -68,7 +68,8 @@ pub fn matrix_square_root(matrix: &DMatrix<f64>) -> DMatrix<f64> {
 /// 
 /// # Returns
 /// A symmetrized version of the input matrix.
-fn symmetrize(m: &DMatrix<f64>) -> DMatrix<f64> {
+#[inline]
+pub fn symmetrize(m: &DMatrix<f64>) -> DMatrix<f64> {
     0.5 * (m + m.transpose())
 }
 /// Plain Cholesky square root
@@ -77,7 +78,7 @@ fn symmetrize(m: &DMatrix<f64>) -> DMatrix<f64> {
 /// This is a quick way to initially attempt to calculate a matrix square root.
 /// 
 /// # Arguments
-/// * `p` - the matrix to factor
+/// * ``p` - the matrix to factor
 /// 
 /// # Returns
 /// A lower triangular matrix L such that P ≈ L Lᵀ, or None if it fails.
@@ -129,6 +130,64 @@ fn evd_symmetric_sqrt_with_floor(p: &DMatrix<f64>, floor: f64) -> DMatrix<f64> {
     let sigma_half = DMatrix::<f64>::from_diagonal(&sqrt_vals);
     &u * sigma_half * u.transpose()
 
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SolveOptions {
+    pub initial_jitter: f64,   // e.g., 1e-12
+    pub max_jitter: f64,       // e.g., 1e-6
+    pub max_tries: usize,      // e.g., 6
+}
+
+impl Default for SolveOptions {
+    fn default() -> Self {
+        Self { initial_jitter: 1e-12, max_jitter: 1e-6, max_tries: 6 }
+    }
+}
+/// Solve A X = B for SPD-ish A via Cholesky, with jitter retries.
+/// Returns None if all attempts fail.
+pub fn chol_solve_spd(
+    a: &DMatrix<f64>,
+    b: &DMatrix<f64>,
+    opt: SolveOptions,
+) -> Option<DMatrix<f64>> {
+    assert!(a.is_square(), "chol_solve_spd: A must be square");
+    assert_eq!(a.nrows(), b.nrows(), "chol_solve_spd: A and B incompatible");
+
+    // Symmetrize first (SPD drift is common).
+    let a_sym = symmetrize(a);
+
+    // Try plain Cholesky
+    if let Some(ch) = Cholesky::new(a_sym.clone()) {
+        return Some(ch.solve(b));
+    }
+
+    // Jitter ramp
+    let n = a_sym.nrows();
+    let mut jitter = opt.initial_jitter;
+    for _ in 0..opt.max_tries {
+        let mut a_j = a_sym.clone();
+        for i in 0..n { a_j[(i, i)] += jitter; }
+        if let Some(ch) = Cholesky::new(a_j) {
+            return Some(ch.solve(b));
+        }
+        jitter *= 10.0;
+        if jitter > opt.max_jitter { break; }
+    }
+    None
+}
+
+/// Robust SPD solve with sane defaults:
+/// - Cholesky + jitter (preferred)
+/// - Last resort: explicit inverse
+pub fn robust_spd_solve(a: &DMatrix<f64>, b: &DMatrix<f64>) -> DMatrix<f64> {
+    if let Some(x) = chol_solve_spd(a, b, SolveOptions::default()) {
+        x
+    } else if let Some(inv) = symmetrize(a).try_inverse() {
+        &inv * b
+    } else {
+        panic!("robust_spd_solve: A is not invertible (even after jitter).");
+    }
 }
 
 /* =============================== Tests ==================================== */
