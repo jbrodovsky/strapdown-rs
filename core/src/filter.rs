@@ -405,6 +405,7 @@ impl UKF {
                 ),
                 coordinate_convention: true,
             };
+            // println!("propagating: lat {}  lon {}", state.latitude.to_degrees(), state.longitude.to_degrees());
             forward(&mut state, imu_data, dt);
             // Update the sigma point with the new state
             sigma_point_vec[0] = state.latitude;
@@ -524,7 +525,9 @@ impl UKF {
         // P = (I - K * H) P (I - K H)^T + K R K^T
         // UKF form:
         // P -= K * S * K^T + K R K^T
-        self.covariance -= &k * s * &k.transpose() + &k * measurement.get_noise() * &k.transpose();
+        self.covariance -= &k * s * &k.transpose();
+        // Re-symmetrize to fight round-off
+        self.covariance = 0.5 * (&self.covariance + self.covariance.transpose());
         // self.covariance -= &k * s * &k.transpose();
     }
 }
