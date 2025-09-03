@@ -489,14 +489,16 @@ pub fn position_update(state: &StrapdownState, velocity: Vector3<f64>, dt: f64) 
     let alt_1 = alt_0 + 0.5 * (state.velocity_down + velocity[2]) * dt;
     // Latitude update
     let lat_1: f64 = state.latitude
-        + 0.5 * (state.velocity_north / (r_n + alt_0) + velocity[1] / (r_n + state.altitude)) * dt;
+        + 0.5 * (state.velocity_north / (r_n + alt_0) + velocity[0] / (r_n + state.altitude)) * dt;
     // Longitude update
     let (_, r_e_1, _) = earth::principal_radii(&lat_1, &state.altitude);
+    let cos_lat0 = lat_0.cos().max(1e-6); // Guard against cos(lat) --> 0 near poles
+    let cos_lat1 = lat_1.cos().max(1e-6);
     let lon_1: f64 = state.longitude
-        + 0.5
-            * (state.velocity_east / ((r_e_0 + alt_0) * lat_0.cos())
-                + velocity[1] / ((r_e_1 + state.altitude) * lat_1.cos()))
-            * dt;
+        + 0.5 * (
+            state.velocity_east / ((r_e_0 + alt_0) * cos_lat0) +
+            velocity[1]       / ((r_e_1 + state.altitude) * cos_lat1)
+        ) * dt;
     // Save updated position
     (
         wrap_latitude(lat_1.to_degrees()).to_radians(),
