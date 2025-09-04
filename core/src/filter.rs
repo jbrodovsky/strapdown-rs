@@ -215,7 +215,9 @@ impl MeasurementModel for RelativeAltitudeMeasurement {
     }
 }
 #[derive(Clone, Debug, Default)]
-pub struct GravityAnomalyMeasurement {}
+pub struct GravityAnomalyMeasurement {
+    // Placeholder
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct MagneticAnomalyMeasurement {}
