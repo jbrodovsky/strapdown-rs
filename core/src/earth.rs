@@ -342,7 +342,7 @@ pub fn lla_to_ecef(latitude: &f64, longitude: &f64) -> Matrix3<f64> {
 /// let lat0 = 40.0_f64.to_radians();
 /// let alt = 0.0;
 /// // Move 100 m north and 50 m east
-/// let (dlat, dlon) = meters_ned_to_dlat_dlon(lat0, alt, 100.0, 50.0);
+/// let (dlat, dlon) = strapdown::earth::meters_ned_to_dlat_dlon(lat0, alt, 100.0, 50.0);
 /// println!("Δlat = {} rad, Δlon = {} rad", dlat, dlon);
 /// ```
 pub fn meters_ned_to_dlat_dlon(lat_rad: f64, alt_m: f64, d_n: f64, d_e: f64) -> (f64, f64) {
@@ -375,7 +375,7 @@ pub fn meters_ned_to_dlat_dlon(lat_rad: f64, alt_m: f64, d_n: f64, d_e: f64) -> 
 ///
 /// ## Example
 /// ```
-/// let d = earth::haversine_distance(
+/// let d = strapdown::earth::haversine_distance(
 ///     40.0_f64.to_radians(), -75.0_f64.to_radians(),
 ///     41.0_f64.to_radians(), -74.0_f64.to_radians(),
 /// );
