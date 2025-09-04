@@ -15,7 +15,7 @@
 //! the UKF and particle filter. This model is used to update the state based on position
 //! measurements in the local level frame (i.e. a GPS fix).
 use crate::earth::METERS_TO_DEGREES;
-use crate::linalg::{matrix_square_root, symmetrize, robust_spd_solve};
+use crate::linalg::{matrix_square_root, robust_spd_solve, symmetrize};
 use crate::{IMUData, StrapdownState, forward, wrap_to_2pi};
 
 use std::fmt::Debug;
@@ -214,6 +214,12 @@ impl MeasurementModel for RelativeAltitudeMeasurement {
         measurement_sigma_points
     }
 }
+#[derive(Clone, Debug, Default)]
+pub struct GravityAnomalyMeasurement {}
+
+#[derive(Clone, Debug, Default)]
+pub struct MagneticAnomalyMeasurement {}
+
 /// Basic strapdown state parameters for the UKF and particle filter initialization.
 #[derive(Clone, Debug, Default)]
 pub struct StrapdownParams {
@@ -434,7 +440,7 @@ impl UKF {
         p_bar += &self.process_noise;
         // Update the mean state and covariance
         self.mean_state = mu_bar;
-        self.covariance = p_bar;
+        self.covariance = symmetrize(&p_bar);
     }
     /// Get the UKF mean state.
     pub fn get_mean(&self) -> DVector<f64> {
@@ -528,8 +534,11 @@ impl UKF {
         // Re-symmetrize to fight round-off
         self.covariance = 0.5 * (&self.covariance + self.covariance.transpose());
     }
-    fn robust_kalman_gain(&mut self, cross_covariance: &DMatrix<f64>, s: &DMatrix<f64>) -> DMatrix<f64> {
-
+    fn robust_kalman_gain(
+        &mut self,
+        cross_covariance: &DMatrix<f64>,
+        s: &DMatrix<f64>,
+    ) -> DMatrix<f64> {
         // Solve S Kᵀ = P_xzᵀ  => K = (S^{-1} P_xz)ᵀ
         let kt = robust_spd_solve(&symmetrize(s), &cross_covariance.transpose());
         kt.transpose()
