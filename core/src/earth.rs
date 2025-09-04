@@ -315,6 +315,90 @@ pub fn ecef_to_lla(latitude: &f64, longitude: &f64) -> Matrix3<f64> {
 pub fn lla_to_ecef(latitude: &f64, longitude: &f64) -> Matrix3<f64> {
     ecef_to_lla(latitude, longitude).transpose()
 }
+/// Convert NED displacements (north/east, meters) into changes in latitude/longitude (radians).
+///
+/// Uses a simplified WGS84 ellipsoidal Earth model to compute radii of curvature
+/// in the meridian and prime vertical, then converts linear displacements to
+/// angular offsets.
+///
+/// ## Arguments
+/// - `lat_rad`: Current geodetic latitude in **radians**.
+/// - `alt_m`: Current altitude above the ellipsoid in meters.
+/// - `d_n`: Northward displacement in meters.
+/// - `d_e`: Eastward displacement in meters.
+///
+/// ## Returns
+/// A tuple `(dlat, dlon)`:
+/// - `dlat`: Change in latitude (radians).
+/// - `dlon`: Change in longitude (radians).
+///
+/// ## Notes
+/// - A small clamp is applied to `cos(lat)` to avoid division by zero at the poles.
+/// - This is an approximation sufficient for small offsets (meters to kilometers).
+///
+/// ## Example
+///
+/// ```
+/// let lat0 = 40.0_f64.to_radians();
+/// let alt = 0.0;
+/// // Move 100 m north and 50 m east
+/// let (dlat, dlon) = meters_ned_to_dlat_dlon(lat0, alt, 100.0, 50.0);
+/// println!("Δlat = {} rad, Δlon = {} rad", dlat, dlon);
+/// ```
+pub fn meters_ned_to_dlat_dlon(lat_rad: f64, alt_m: f64, d_n: f64, d_e: f64) -> (f64, f64) {
+    // WGS84 principal radii (approx)
+    let a = 6378137.0;
+    let e2 = 6.69437999014e-3;
+    let sin_lat = lat_rad.sin();
+    let rn = a / (1.0 - e2 * sin_lat * sin_lat).sqrt();
+    let re = rn * (1.0 - e2) / (1.0 - e2 * sin_lat * sin_lat);
+    let dlat = d_n / (rn + alt_m);
+    let dlon = d_e / ((re + alt_m) * lat_rad.cos().max(1e-6));
+    (dlat, dlon)
+}
+/// Compute the great-circle distance between two geodetic coordinates
+/// using the haversine formula.
+///
+/// This assumes a spherical Earth with mean radius `R = 6,371,000 m`.
+/// For higher precision you can adapt this to use ellipsoidal formulas,
+/// but haversine is usually accurate to within ~0.5% for most navigation
+/// and simulation purposes.
+///
+/// ## Arguments
+/// - `lat1_rad`: Latitude of first point (radians).
+/// - `lon1_rad`: Longitude of first point (radians).
+/// - `lat2_rad`: Latitude of second point (radians).
+/// - `lon2_rad`: Longitude of second point (radians).
+///
+/// ## Returns
+/// Great-circle distance between the two points, in meters.
+///
+/// ## Example
+/// ```
+/// let d = earth::haversine_distance(
+///     40.0_f64.to_radians(), -75.0_f64.to_radians(),
+///     41.0_f64.to_radians(), -74.0_f64.to_radians(),
+/// );
+/// println!("Distance: {:.1} km", d / 1000.0);
+/// ```
+pub fn haversine_distance(
+    lat1_rad: f64,
+    lon1_rad: f64,
+    lat2_rad: f64,
+    lon2_rad: f64,
+) -> f64 {
+    let dlat = lat2_rad - lat1_rad;
+    let dlon = lon2_rad - lon1_rad;
+
+    let a = (dlat / 2.0).sin().powi(2)
+        + lat1_rad.cos() * lat2_rad.cos() * (dlon / 2.0).sin().powi(2);
+
+    let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
+
+    const R: f64 = 6_371_000.0; // mean Earth radius in meters
+    R * c
+}
+
 /// Calculate principal radii of curvature
 ///
 /// The [principal radii of curvature](https://en.wikipedia.org/wiki/Earth_radius) are used to
@@ -728,6 +812,7 @@ pub fn magnetic_anomaly(
 mod tests {
     use super::*;
     use assert_approx_eq::assert_approx_eq;
+    const KM: f64 = 1000.0;
     #[test]
     fn vector_to_skew_symmetric() {
         let v: Vector3<f64> = Vector3::new(1.0, 2.0, 3.0);
@@ -854,5 +939,71 @@ mod tests {
         assert_approx_eq!(rot1[(2, 0)], rot2[(2, 0)], 1e-7);
         assert_approx_eq!(rot1[(2, 1)], rot2[(2, 1)], 1e-7);
         assert_approx_eq!(rot1[(2, 2)], rot2[(2, 2)], 1e-7);
+    }
+    #[test]
+    fn test_meters_ned_to_dlat_dlon() {
+        // Test the conversion from North/East meters to latitude/longitude deltas
+
+        // At the equator, 1 degree of latitude is approximately 111.32 km
+        // and 1 degree of longitude is approximately 111.32 km as well
+        let lat_rad = 0.0; // equator
+        let alt_m = 0.0; // sea level
+
+        // Test northward offset
+        let (dlat, dlon) = meters_ned_to_dlat_dlon(lat_rad, alt_m, 1852.0, 0.0);
+        assert_approx_eq!(dlat.abs(), (1.0 / 60.0 as f64).to_radians(), 0.0001); // ~1 degree latitude change
+        assert_approx_eq!(dlon.abs(), 0.0, 0.0001); // ~0 longitude change
+
+        // Test eastward offset
+        let (dlat, dlon) = meters_ned_to_dlat_dlon(lat_rad, alt_m, 0.0, 1852.0);
+        assert!(dlat.abs() < 0.0001); // ~0 latitude change
+        assert_approx_eq!(dlon.abs(), (1.0 / 60.0 as f64).to_radians(), 0.0001); // ~1 degree longitude change
+
+        // Test at 45 degrees north, where longitude degrees are shorter
+        let lat_rad = 45.0_f64.to_radians();
+
+        // At 45°N, 1 degree of longitude is about 111.32 * cos(45°) = 78.7 km
+        let (dlat, dlon) = meters_ned_to_dlat_dlon(lat_rad, alt_m, 0.0, 111.320);
+        assert_approx_eq!(dlat.abs(), 0.0, 0.0001); // ~0 latitude change
+        assert_approx_eq!(dlon.abs(), 0.0, 0.0001); // ~1 degree longitude change
+    }
+
+    #[test]
+    fn zero_distance() {
+        let lat = 40.0_f64.to_radians();
+        let lon = -75.0_f64.to_radians();
+        let d = haversine_distance(lat, lon, lat, lon);
+        assert!(d.abs() < 1e-9, "Zero distance should be ~0, got {}", d);
+    }
+
+    #[test]
+    fn quarter_circumference_equator() {
+        // From (0,0) to (0,90°E) is a quarter of Earth's circumference
+        let d = haversine_distance(0.0, 0.0, 0.0, 90_f64.to_radians());
+        let expected = std::f64::consts::FRAC_PI_2 * 6_371_000.0; // R * π/2
+        let err = (d - expected).abs();
+        assert!(err < 1e-6 * expected, "Error too large: got {}, expected {}", d, expected);
+    }
+
+    #[test]
+    fn antipodal_points() {
+        // (0,0) vs (0,180°E) → half Earth's circumference
+        let d = haversine_distance(0.0, 0.0, 0.0, 180_f64.to_radians());
+        let expected = std::f64::consts::PI * 6_371_000.0; // R * π
+        let err = (d - expected).abs();
+        assert!(err < 1e-6 * expected, "Error too large: got {}, expected {}", d, expected);
+    }
+
+    #[test]
+    fn known_baseline_nyc_to_london() {
+        // Approx coordinates
+        let nyc_lat = 40.7128_f64.to_radians();
+        let nyc_lon = -74.0060_f64.to_radians();
+        let lon_lat = 51.5074_f64.to_radians();
+        let lon_lon = -0.1278_f64.to_radians();
+
+        let d = haversine_distance(nyc_lat, nyc_lon, lon_lat, lon_lon);
+        // Real-world great-circle distance ~5567 km
+        assert!((d / KM - 5567.0).abs() < 50.0, "NYC-LON distance off: {} km", d / KM);
     }
 }
