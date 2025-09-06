@@ -12,6 +12,7 @@
 pixi.lock
 pixi.toml
 *.egg-info
+.venv
 
 # python notes
 *.ipynb_checkpoints

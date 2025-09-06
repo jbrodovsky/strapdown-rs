@@ -1,7 +1,7 @@
 [package]
 name = "strapdown-rs"
 authors = ["James Brodovsky"]
-version = "0.3.7"
+version = "0.4.0"
 edition = "2024"
 description = "A toolbox for building and analyzing strapdown inertial navigation systems as well as simulating various scenarios of GNSS signal degradation."
 license = "MIT"
