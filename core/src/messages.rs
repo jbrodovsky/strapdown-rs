@@ -1,10 +1,11 @@
 // gnss_degrader.rs
-use nalgebra::{DMatrix, Vector3};
+use chrono::{DateTime, Utc};
+use nalgebra::Vector3;
 use rand::SeedableRng;
 use rand_distr::{Distribution, Normal};
 
 use crate::IMUData;
-use crate::earth::meters_ned_to_dlat_dlon;
+use crate::earth::{meters_ned_to_dlat_dlon, METERS_TO_DEGREES};
 use crate::filter::{
     GPSPositionAndVelocityMeasurement, GravityAnomalyMeasurement, MagneticAnomalyMeasurement,
     RelativeAltitudeMeasurement,
@@ -51,7 +52,6 @@ pub enum GnssScheduler {
     /// Useful as a baseline when you want to test only fault injection without
     /// simulating outages or reduced update rates.
     PassThrough,
-
     /// Emit GNSS measurements at a fixed interval, discarding those in between.
     ///
     /// This simulates reduced-rate operation under jamming or low-power conditions.
@@ -64,7 +64,6 @@ pub enum GnssScheduler {
         /// Initial phase offset before the first emitted fix (seconds).
         phase_s: f64,
     },
-
     /// Alternate between ON and OFF windows to create duty-cycled outages.
     ///
     /// This simulates conditions like periodic GNSS denial or environments
@@ -364,6 +363,10 @@ pub enum Event {
         meas: MagneticAnomalyMeasurement,
         elapsed_s: f64,
     },
+}
+pub struct EventStream {
+    pub start_time: DateTime<Utc>,
+    pub events: Vec<Event>,
 }
 // -------- internal state for AR(1) and bias integration --------
 /// Internal state used to realize stochastic GNSS fault models.
@@ -734,7 +737,7 @@ fn apply_fault(
 ///   fault model (*what*), plus a seed for deterministic noise.
 ///
 /// # Returns
-/// A `Vec<Event>` containing an interleaved sequence of IMU and (optionally
+/// A `EventStream` containing an interleaved sequence of IMU and (optionally
 /// downsampled/corrupted) GNSS events, ordered by `elapsed_s`.
 ///
 /// # Scheduling semantics
@@ -783,7 +786,7 @@ fn apply_fault(
 /// let events = build_event_stream(&records, &cfg);
 /// // feed into your event-driven filter loop
 /// ```
-pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfig) -> Vec<Event> {
+pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfig) -> EventStream {
     let start_time = records[0].time;
     let records_with_elapsed: Vec<(f64, &TestDataRecord)> = records
         .iter()
@@ -853,7 +856,7 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
             let ve = r1.speed * bearing_rad.sin();
 
             // Use your provided accuracies (adjust if these are variances vs std)
-            let horiz_std = r1.horizontal_accuracy.max(1e-3).sqrt();
+            let horiz_std = r1.horizontal_accuracy.max(1e-3);
             let vert_std = r1.vertical_accuracy.max(1e-3);
             let vel_std = r1.speed_accuracy.max(0.1);
 
@@ -877,7 +880,7 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
             });
         }
     }
-    events
+    EventStream { start_time, events }
 }
 
 #[cfg(test)]
@@ -943,14 +946,16 @@ mod tests {
 
         // We expect IMU events for each record except the first,
         // and GNSS events for each record except the first
-        assert_eq!(events.len(), 18); // 9 IMU + 9 GNSS
+        assert_eq!(events.events.len(), 18); // 9 IMU + 9 GNSS
 
         // Count IMU and GNSS events
         let imu_count = events
+            .events
             .iter()
             .filter(|e| matches!(e, Event::Imu { .. }))
             .count();
         let gnss_count = events
+            .events
             .iter()
             .filter(|e| matches!(e, Event::Gnss { .. }))
             .count();
@@ -974,10 +979,12 @@ mod tests {
         // We expect IMU events for each record except the first,
         // and GNSS events every 0.5s (so at records 5, 10, 15...)
         let imu_count = events
+            .events
             .iter()
             .filter(|e| matches!(e, Event::Imu { .. }))
             .count();
         let gnss_count = events
+            .events
             .iter()
             .filter(|e| matches!(e, Event::Gnss { .. }))
             .count();
@@ -1004,6 +1011,7 @@ mod tests {
         // We should only have GNSS events when turning ON
         // (so at 0.0s, 2.0s, 4.0s, ...)
         let gnss_events: Vec<&Event> = events
+            .events
             .iter()
             .filter(|e| matches!(e, Event::Gnss { .. }))
             .collect();
@@ -1056,6 +1064,7 @@ mod tests {
 
         // Find GNSS events
         let gnss_events: Vec<&Event> = events
+            .events
             .iter()
             .filter(|e| matches!(e, Event::Gnss { .. }))
             .collect();
@@ -1150,7 +1159,7 @@ mod tests {
 
         // Find GNSS events and group by time
         let mut gnss_by_time: Vec<(f64, &GPSPositionAndVelocityMeasurement)> = Vec::new();
-        for event in &events {
+        for event in &events.events {
             if let Event::Gnss { meas, elapsed_s } = event {
                 gnss_by_time.push((*elapsed_s, meas));
             }
@@ -1191,7 +1200,7 @@ mod tests {
 
         // This should at least not crash
         let events = build_event_stream(&records, &config);
-        assert!(events.len() > 0);
+        assert!(events.events.len() > 0);
     }
 
     #[test]

@@ -18,7 +18,8 @@ use std::fmt::Display;
 use std::io::{self};
 use std::path::Path;
 
-use chrono::{DateTime, Datelike, Utc};
+use anyhow::{bail, Result};
+use chrono::{DateTime, Datelike, Duration, Utc};
 use nalgebra::{DMatrix, DVector, Vector3};
 use serde::{Deserialize, Serialize};
 use world_magnetic_model::GeomagneticField;
@@ -27,12 +28,14 @@ use world_magnetic_model::uom::si::angle::radian;
 use world_magnetic_model::uom::si::f32::{Angle, Length};
 use world_magnetic_model::uom::si::length::meter;
 
-use crate::earth;
 use crate::earth::METERS_TO_DEGREES;
 use crate::filter::{
     GPSPositionAndVelocityMeasurement, RelativeAltitudeMeasurement, StrapdownParams, UKF,
 };
+use crate::messages::{Event, EventStream};
 use crate::{IMUData, StrapdownState, forward};
+use health::{HealthLimits, HealthMonitor};
+
 /// Struct representing a single row of test data from the CSV file.
 ///
 /// Fields correspond to columns in the CSV, with appropriate renaming for Rust style.
@@ -295,32 +298,6 @@ pub struct NavigationResult {
     pub gyro_bias_y_cov: f64,
     /// Gyroscope z-axis bias covariance
     pub gyro_bias_z_cov: f64,
-    // ---- Input and measurement values for the navigation solution ----
-    /// X-acceleration in m/s^2
-    pub acc_x: f64,
-    /// Y-acceleration in m/s^2
-    pub acc_y: f64,
-    /// Z-acceleration in m/s^2
-    pub acc_z: f64,
-    /// Rotation rate around the x-axis in radians/s
-    pub gyro_x: f64,
-    /// Rotation rate around the y-axis in radians/s
-    pub gyro_y: f64,
-    /// Rotation rate around the z-axis in radians/s
-    pub gyro_z: f64,
-    /// Magnetic field strength in the x-direction in micro teslas
-    pub mag_x: f64,
-    /// Magnetic field strength in the y-direction in micro teslas
-    pub mag_y: f64,
-    /// Magnetic field strength in the z-direction in micro teslas
-    pub mag_z: f64,
-    /// Pressure in millibars
-    pub pressure: f64,
-    // ---- Calculated geophysical values that may be useful ----
-    /// Free-air gravity anomaly in Gal (note that most maps will be in mGal)
-    pub freeair: f64,
-    /// Magnetic field strength anomaly in nT
-    pub mag_anomaly: f64,
 }
 impl Default for NavigationResult {
     fn default() -> Self {
@@ -356,25 +333,12 @@ impl Default for NavigationResult {
             gyro_bias_x_cov: 1e-6,
             gyro_bias_y_cov: 1e-6,
             gyro_bias_z_cov: 1e-6,
-            acc_x: 0.0,
-            acc_y: 0.0,
-            acc_z: 9.81, // assuming standard gravity
-            gyro_x: 0.0,
-            gyro_y: 0.0,
-            gyro_z: 0.0,
-            mag_x: earth::MAGNETIC_FIELD_STRENGTH, // default magnetic field strength
-            mag_y: 0.0,                            // default values
-            mag_z: 0.0,                            // default values
-            pressure: 1013.25,                     // standard atmospheric pressure in millibars
-            freeair: 0.0,                          // free-air gravity anomaly in mGal
-            mag_anomaly: 0.0,                      // default magnetic anomaly in nT
         }
     }
 }
 impl NavigationResult {
     /// Creates a new NavigationResult with default values.
     pub fn new() -> Self {
-        // TODO: #70 Re-implement NavigationResult constructor with validation
         NavigationResult::default() // add in validation
     }
 
@@ -436,19 +400,13 @@ impl
         &DateTime<Utc>,
         &DVector<f64>,
         &DMatrix<f64>,
-        &IMUData,
-        &Vector3<f64>,
-        &f64,
     )> for NavigationResult
 {
     fn from(
-        (timestamp, state, covariance, imu_data, magnetic_vector, pressure): (
+        (timestamp, state, covariance): (
             &DateTime<Utc>,
             &DVector<f64>,
             &DMatrix<f64>,
-            &IMUData,
-            &Vector3<f64>,
-            &f64,
         ),
     ) -> Self {
         assert!(
@@ -505,35 +463,6 @@ impl
             gyro_bias_x_cov: covariance[12],
             gyro_bias_y_cov: covariance[13],
             gyro_bias_z_cov: covariance[14],
-            acc_x: imu_data.accel[0],
-            acc_y: imu_data.accel[1],
-            acc_z: imu_data.accel[2],
-            gyro_x: imu_data.gyro[0],
-            gyro_y: imu_data.gyro[1],
-            gyro_z: imu_data.gyro[2],
-            mag_x: magnetic_vector.x,
-            mag_y: magnetic_vector.y,
-            mag_z: magnetic_vector.z,
-            pressure: *pressure,
-            freeair: earth::gravity_anomaly(
-                &state[0],
-                &state[2], // altitude
-                &state[3], // velocity_north
-                &state[4], // velocity_east
-                &(imu_data.accel[0].powi(2)
-                    + imu_data.accel[1].powi(2)
-                    + imu_data.accel[2].powi(2))
-                .sqrt(),
-            ),
-            mag_anomaly: match magnetic_field {
-                Ok(field) => earth::magnetic_anomaly(
-                    field,
-                    magnetic_vector.x,
-                    magnetic_vector.y,
-                    magnetic_vector.z,
-                ),
-                Err(_) => f64::NAN,
-            },
         }
     }
 }
@@ -551,30 +480,15 @@ impl
 ///
 /// # Returns
 /// A NavigationResult struct containing the navigation solution.
-impl From<(&DateTime<Utc>, &UKF, &IMUData, &Vector3<f64>, &f64)> for NavigationResult {
+impl From<(&DateTime<Utc>, &UKF)> for NavigationResult {
     fn from(
-        (timestamp, ukf, imu_data, magnetic_vector, pressure): (
+        (timestamp, ukf): (
             &DateTime<Utc>,
             &UKF,
-            &IMUData,
-            &Vector3<f64>,
-            &f64,
         ),
     ) -> Self {
         let state = &ukf.get_mean();
         let covariance = ukf.get_covariance();
-        let wmm_date: Date = Date::from_calendar_date(
-            timestamp.year(),
-            Month::try_from(timestamp.month() as u8).unwrap(),
-            timestamp.day() as u8,
-        )
-        .expect("Invalid date for world magnetic model");
-        let magnetic_field = GeomagneticField::new(
-            Length::new::<meter>(state[2] as f32),
-            Angle::new::<radian>(state[0] as f32),
-            Angle::new::<radian>(state[1] as f32),
-            wmm_date,
-        );
         NavigationResult {
             timestamp: timestamp.clone(),
             latitude: state[0].to_degrees(),
@@ -607,35 +521,6 @@ impl From<(&DateTime<Utc>, &UKF, &IMUData, &Vector3<f64>, &f64)> for NavigationR
             gyro_bias_x_cov: covariance[(12, 12)],
             gyro_bias_y_cov: covariance[(13, 13)],
             gyro_bias_z_cov: covariance[(14, 14)],
-            acc_x: imu_data.accel[0],
-            acc_y: imu_data.accel[1],
-            acc_z: imu_data.accel[2],
-            gyro_x: imu_data.gyro[0],
-            gyro_y: imu_data.gyro[1],
-            gyro_z: imu_data.gyro[2],
-            mag_x: magnetic_vector.x,
-            mag_y: magnetic_vector.y,
-            mag_z: magnetic_vector.z,
-            pressure: *pressure,
-            freeair: earth::gravity_anomaly(
-                &state[0],
-                &state[2], // altitude
-                &state[3], // velocity_north
-                &state[4], // velocity_east
-                &(imu_data.accel[0].powi(2)
-                    + imu_data.accel[1].powi(2)
-                    + imu_data.accel[2].powi(2))
-                .sqrt(),
-            ),
-            mag_anomaly: match magnetic_field {
-                Ok(field) => earth::magnetic_anomaly(
-                    field,
-                    magnetic_vector.x,
-                    magnetic_vector.y,
-                    magnetic_vector.z,
-                ),
-                Err(_) => f64::NAN,
-            },
         }
     }
 }
@@ -714,35 +599,6 @@ impl
             gyro_bias_x_cov: f64::NAN,
             gyro_bias_y_cov: f64::NAN,
             gyro_bias_z_cov: f64::NAN,
-            acc_x: imu_data.accel[0],
-            acc_y: imu_data.accel[1],
-            acc_z: imu_data.accel[2],
-            gyro_x: imu_data.gyro[0],
-            gyro_y: imu_data.gyro[1],
-            gyro_z: imu_data.gyro[2],
-            mag_x: magnetic_vector.x,
-            mag_y: magnetic_vector.y,
-            mag_z: magnetic_vector.z,
-            pressure: *pressure,
-            freeair: earth::gravity_anomaly(
-                &state.latitude,
-                &state.altitude,
-                &state.velocity_north,
-                &state.velocity_east,
-                &(imu_data.accel[0].powi(2)
-                    + imu_data.accel[1].powi(2)
-                    + imu_data.accel[2].powi(2))
-                .sqrt(),
-            ),
-            mag_anomaly: match magnetic_field {
-                Ok(field) => earth::magnetic_anomaly(
-                    field,
-                    magnetic_vector.x,
-                    magnetic_vector.y,
-                    magnetic_vector.z,
-                ),
-                Err(_) => f64::NAN,
-            },
         }
     }
 }
@@ -795,16 +651,6 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
         &first_record.time,
         &state.into(),
         &DMatrix::from_diagonal(&DVector::from_element(15, 0.0)),
-        &IMUData {
-            accel: Vector3::new(first_record.acc_x, first_record.acc_y, first_record.acc_z),
-            gyro: Vector3::new(
-                first_record.gyro_x,
-                first_record.gyro_y,
-                first_record.gyro_z,
-            ),
-        },
-        &Vector3::new(first_record.mag_x, first_record.mag_y, first_record.mag_z),
-        &first_record.pressure,
     )));
     let mut previous_time = records[0].time;
     // Process each subsequent record
@@ -822,9 +668,6 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
             &current_time,
             &state.into(),
             &DMatrix::from_diagonal(&DVector::from_element(15, 0.0)),
-            &imu_data,
-            &Vector3::new(record.mag_x, record.mag_y, record.mag_z),
-            &record.pressure,
         )));
         previous_time = record.time;
     }
@@ -840,41 +683,16 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
 /// * `records` - Vector of test data records containing IMU measurements and GPS data.
 /// # Returns
 /// * `Vec<NavigationResult>` - A vector of navigation results containing the state estimates and covariances at each timestamp.
-pub fn closed_loop(records: &[TestDataRecord], gps_interval: Option<f64>) -> Vec<NavigationResult> {
-    let gps_interval = gps_interval.unwrap_or(0.0); // Default to every record if not specified
-    let reference_altitude = records[0].altitude; // Use the first record's pressure as reference
-    let start_time = records[0].time;
-    // Add total elapsed time
-    let records_with_elapsed: Vec<(f64, &TestDataRecord)> = records
-        .iter()
-        .map(|r| ((r.time - start_time).num_milliseconds() as f64 / 1000.0, r))
-        .collect();
-    let mut results: Vec<NavigationResult> = Vec::with_capacity(records.len());
-    // Initialize the UKF with the first record
-    let mut ukf = initialize_ukf(
-        records[0].clone(),
-        None, //Some(vec![1e-9; 3]), // attitude covariance
-        None, //Some(vec![1e-6; 6])
-    );
-    // Set the initial result to the UKF initial state
-    results.push(NavigationResult::from((
-        &records[0].time,
-        &ukf,
-        &IMUData {
-            accel: Vector3::new(records[0].acc_x, records[0].acc_y, records[0].acc_z),
-            gyro: Vector3::new(records[0].gyro_x, records[0].gyro_y, records[0].gyro_z),
-        },
-        &Vector3::new(records[0].mag_x, records[0].mag_y, records[0].mag_z),
-        &records[0].pressure,
-    )));
-    let mut previous_timestamp = records[0].time;
-    // Iterate through the records, updating the UKF with each IMU measurement
-    let total: usize = records.len();
-    let mut i: usize = 1;
-    let mut last_gps_update_time = 0.0;
-    for (elapsed, record) in records_with_elapsed.iter().skip(1) {
+pub fn closed_loop(ukf: &mut UKF, stream: EventStream) -> anyhow::Result<Vec<NavigationResult>> {
+    let start_time = stream.start_time;
+    let mut results: Vec<NavigationResult> = Vec::with_capacity(stream.events.len());
+    let total = stream.events.len();
+    let mut last_ts: Option<DateTime<Utc>> = None;
+    let mut monitor = HealthMonitor::new(HealthLimits::default());
+
+    for (i, event) in stream.events.into_iter().enumerate() {
         // Print progress every 10 iterations
-        if i % 10 == 0 || i == total - 1 {
+        if i % 10 == 0 || i == total {
             print!(
                 "\rProcessing data {:.2}%...",
                 (i as f64 / total as f64) * 100.0
@@ -883,69 +701,59 @@ pub fn closed_loop(records: &[TestDataRecord], gps_interval: Option<f64>) -> Vec
             use std::io::Write;
             std::io::stdout().flush().ok();
         }
-        // Calculate time difference from the previous record
-        let current_timestamp = record.time;
-        let dt = (current_timestamp - previous_timestamp).as_seconds_f64();
-        // Create IMU data from the record subtracting out biases
-        let mean = ukf.get_mean();
-        let imu_data = IMUData {
-            accel: Vector3::new(
-                record.acc_x - mean[9], // subtract accel bias
-                record.acc_y - mean[10],
-                record.acc_z - mean[11],
-            ),
-            gyro: Vector3::new(
-                record.gyro_x - mean[12], // subtract gyro bias
-                record.gyro_y - mean[13],
-                record.gyro_z - mean[14],
-            ),
+        // Compute wall-clock time for this event
+        let elapsed_s = match &event {
+            Event::Imu { elapsed_s, .. } => *elapsed_s,
+            Event::Gnss { elapsed_s, .. } => *elapsed_s,
+            Event::Altitude { elapsed_s, .. } => *elapsed_s,
+            Event::GravityAnomaly { elapsed_s, .. } => *elapsed_s,
+            Event::MagneticAnomaly { elapsed_s, .. } => *elapsed_s,
         };
-        // Update the UKF with the IMU data
-        ukf.predict(imu_data, dt);
-        // ---- Perform various measurement updates based on the available data ----
-        // If GPS data is available, update the UKF with the GPS position and speed measurement
-        if !record.latitude.is_nan()
-            && !record.longitude.is_nan()
-            && !record.altitude.is_nan()
-            && !record.bearing.is_nan()
-            && !record.speed.is_nan()
-            && (*elapsed - last_gps_update_time) >= gps_interval
-        {
-            //println!("GPS measurement available at {:.2?} seconds", *elapsed);
-            let measurement = GPSPositionAndVelocityMeasurement {
-                latitude: record.latitude,
-                longitude: record.longitude,
-                altitude: record.altitude,
-                northward_velocity: record.speed * record.bearing.cos(),
-                eastward_velocity: record.speed * record.bearing.sin(),
-                horizontal_noise_std: record.horizontal_accuracy.sqrt(),
-                vertical_noise_std: record.vertical_accuracy,
-                velocity_noise_std: record.speed_accuracy,
-            };
-            ukf.update(measurement);
-            last_gps_update_time = *elapsed;
+        let ts = start_time + Duration::milliseconds((elapsed_s * 1000.0).round() as i64);
+        // Apply event
+        match event {
+            Event::Imu { dt_s, imu, .. } => {
+                ukf.predict(imu, dt_s);
+                if let Err(e) = monitor.check(ukf.get_mean().as_slice(), &ukf.get_covariance(), None) {
+                    // log::error!("Health fail after predict at {} (#{i}): {e}", ts);
+                    bail!(e);
+                }
+            },
+            Event::Gnss { meas, .. } => {
+                ukf.update(meas);
+                if let Err(e) = monitor.check(ukf.get_mean().as_slice(), &ukf.get_covariance(), None) {
+                    // log::error!("Health fail after GNSS update at {} (#{i}): {e}", ts);
+                    bail!(e);
+                }
+            },
+            Event::Altitude { meas, .. } => {
+                ukf.update(meas);
+                if let Err(e) = monitor.check(ukf.get_mean().as_slice(), &ukf.get_covariance(), None) {
+                    // log::error!("Health fail after altitude update at {} (#{i}): {e}", ts);
+                    bail!(e);
+                }
+            },
+            Event::GravityAnomaly { meas, elapsed_s } => {
+                println!("Gravity anomaly detected: {:?} at {:?}s", meas, elapsed_s);
+            }
+            Event::MagneticAnomaly { meas, elapsed_s } => {
+                println!("Magnetic anomaly detected: {:?} at {:?}s", meas, elapsed_s);
+            }
         }
-        // If barometric altimeter data is available, update the UKF with the altitude measurement
-        if !record.pressure.is_nan() {
-            let altitude = RelativeAltitudeMeasurement {
-                relative_altitude: record.relative_altitude,
-                reference_altitude: reference_altitude,
-            };
-            ukf.update(altitude);
+        // If timestamp changed, or it's the last event, record the previous state
+        if Some(ts) != last_ts {
+            if let Some(prev_ts) = last_ts {
+                results.push(NavigationResult::from((&prev_ts, &*ukf)));
+            }
+            last_ts = Some(ts);
         }
-        // Store the current state and covariance in results
-        results.push(NavigationResult::from((
-            &current_timestamp,
-            &ukf,
-            &imu_data,
-            &Vector3::new(record.mag_x, record.mag_y, record.mag_z),
-            &record.pressure,
-        )));
-        i += 1;
-        previous_timestamp = current_timestamp;
+        // If this is the last event, also push
+        if i == total - 1 {
+            results.push(NavigationResult::from((&ts, &*ukf)));
+        }
     }
     println!("Done!");
-    results
+    Ok(results)
 }
 /// Print the UKF state and covariance for debugging purposes.
 pub fn print_ukf(ukf: &UKF, record: &TestDataRecord) {
@@ -1030,7 +838,7 @@ pub fn initialize_ukf(
         altitude: initial_pose.altitude,
         northward_velocity: initial_pose.speed * initial_pose.bearing.cos(),
         eastward_velocity: initial_pose.speed * initial_pose.bearing.sin(),
-        downward_velocity: 0.0, // Assuming no vertical velocity for simplicity
+        downward_velocity: 0.0, // Assuming no initial vertical velocity for simplicity
         roll: initial_pose.roll,
         pitch: initial_pose.pitch,
         yaw: initial_pose.yaw,
@@ -1065,8 +873,8 @@ pub fn initialize_ukf(
     //let mut process_noise_diagonal = vec![1e-9; 9]; // adds a minor amount of noise to base states
     //process_noise_diagonal.extend(vec![1e-9; 6]); // Process noise for imu biases
     let process_noise_diagonal = DVector::from_vec(vec![
-        1e-6, // position noise
-        1e-6, // position noise
+        1e-6, // position noise 1e-6
+        1e-6, // position noise 1e-6
         1e-6, // altitude noise
         1e-3, // velocity north noise
         1e-3, // velocity east noise
@@ -1093,28 +901,100 @@ pub fn initialize_ukf(
         0.0,
     )
 }
-/// Degrades the certainty of GPS/GNSS measurements by a scalar factor of all specified accuracy metrics.
-///
-/// # Arguments
-///
-/// * `measurements`: A vector of TestDataRecord structs representing the measurements to be degraded.
-/// * `factor`: A scalar factor by which to degrade the accuracy metrics.
-///
-/// # Returns
-///
-/// A vector of TestDataRecord structs with degraded accuracy metrics.
-pub fn degrade_measurements(measurements: Vec<TestDataRecord>, factor: f64) -> Vec<TestDataRecord> {
-    let degraded: Vec<TestDataRecord> = measurements
-        .into_iter()
-        .map(|mut record| {
-            record.horizontal_accuracy *= factor;
-            record.vertical_accuracy *= factor;
-            record.speed_accuracy *= factor;
-            record.bearing_accuracy *= factor;
-            record
-        })
-        .collect();
-    degraded
+
+pub mod health {
+    use super::*;
+
+    #[derive(Clone, Debug)]
+    pub struct HealthLimits {
+        pub lat_rad: (f64, f64),   // [-90°, +90°]
+        pub lon_rad: (f64, f64),   // [-180°, +180°]
+        pub alt_m:   (f64, f64),   // e.g., [-500, 15000]
+        pub speed_mps_max: f64,    // e.g., 120 m/s (road/low-altitude aircraft)
+        pub cov_diag_max: f64,     // e.g., 1e6
+        pub cond_max: f64,         // e.g., 1e12 (optional)
+        pub nis_pos_max: f64,      // e.g., 100 (huge outlier)
+        pub nis_pos_consec_fail: usize, // e.g., 20
+    }
+
+    impl Default for HealthLimits {
+        fn default() -> Self {
+            Self {
+                lat_rad: (-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2),
+                lon_rad: (-std::f64::consts::PI, std::f64::consts::PI),
+                alt_m:   (-500.0, 15000.0),
+                speed_mps_max: 120.0,
+                cov_diag_max: 1e6,
+                cond_max: 1e12,
+                nis_pos_max: 100.0,
+                nis_pos_consec_fail: 20,
+            }
+        }
+    }
+
+    #[derive(Default, Clone, Debug)]
+    pub struct HealthMonitor {
+        limits: HealthLimits,
+        consec_nis_pos_fail: usize,
+    }
+
+    impl HealthMonitor {
+        pub fn new(limits: HealthLimits) -> Self { Self { limits, consec_nis_pos_fail: 0 } }
+
+        /// Call after **every event** (predict or update). Provide optional NIS when you have a GNSS update.
+        pub fn check(
+            &mut self,
+            x: &[f64],             // your mean_state slice
+            p: &nalgebra::DMatrix<f64>,
+            maybe_nis_pos: Option<f64>,
+        ) -> Result<()> {
+            // 1) Finite checks
+            if !x.iter().all(|v| v.is_finite()) { bail!("Non-finite state detected"); }
+            if !p.iter().all(|v| v.is_finite()) { bail!("Non-finite covariance detected"); }
+
+            // 2) Basic bounds (lat, lon, alt)
+            let lat = x[0]; let lon = x[1]; let alt = x[2];
+            if lat < self.limits.lat_rad.0 || lat > self.limits.lat_rad.1 { bail!("Latitude out of range: {lat}"); }
+            if lon < self.limits.lon_rad.0 || lon > self.limits.lon_rad.1 { bail!("Longitude out of range: {lon}"); }
+            if alt < self.limits.alt_m.0   || alt > self.limits.alt_m.1   { bail!("Altitude out of range: {alt} m"); }
+
+            // 3) Speed sanity (assumes NED velocities at indices 3..=5)
+            let v2 = x[3]*x[3] + x[4]*x[4] + x[5]*x[5];
+            if v2.is_finite() && v2.sqrt() > self.limits.speed_mps_max {
+                bail!("Speed exceeded: {:.2} m/s", v2.sqrt());
+            }
+
+            // 4) Covariance sanity: diagonals and simple SPD probe
+            for i in 0..p.nrows().min(p.ncols()) {
+                if p[(i,i)].is_sign_negative() { bail!("Negative variance on diagonal: idx={i}, val={}", p[(i,i)]); }
+                if p[(i,i)] > self.limits.cov_diag_max { bail!("Variance too large on diagonal idx={i}: {}", p[(i,i)]); }
+            }
+            // (Optional) rough condition estimate via Frobenius norm and inverse
+            // Skip if too expensive; enable only for debugging.
+            // if let Some(inv) = p.clone().try_inverse() {
+            //     let cond = p.norm_fro() * inv.norm_fro();
+            //     if !cond.is_finite() || cond > self.limits.cond_max { bail!("Covariance condition number too large: {cond:e}"); }
+            // }
+
+            // 5) GNSS gating streak (if a NIS was computed at update time)
+            if let Some(nis_pos) = maybe_nis_pos {
+                if !nis_pos.is_finite() || nis_pos.is_sign_negative() {
+                    bail!("Invalid NIS value: {nis_pos}");
+                }
+                if nis_pos > self.limits.nis_pos_max {
+                    self.consec_nis_pos_fail += 1;
+                    if self.consec_nis_pos_fail >= self.limits.nis_pos_consec_fail {
+                        bail!("Consecutive NIS exceedances: {} (> {}), last NIS={}",
+                            self.consec_nis_pos_fail, self.limits.nis_pos_consec_fail, nis_pos);
+                    }
+                } else {
+                    self.consec_nis_pos_fail = 0;
+                }
+            }
+
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1363,12 +1243,6 @@ mod tests {
             &timestamp,
             &state_vector.into(),
             &DMatrix::from_diagonal(&DVector::from_element(15, 0.0)), // dummy covariance
-            &IMUData {
-                accel: Vector3::new(0.0, 0.0, 0.0), // dummy IMU data
-                gyro: Vector3::new(0.0, 0.0, 0.0),
-            },
-            &Vector3::new(0.0, 0.0, 0.0), // dummy magnetic vector
-            &1000.0,                      // dummy pressure
         ));
         assert_eq!(nav.latitude, (1.0_f64).to_degrees());
         assert_eq!(nav.longitude, (2.0_f64).to_degrees());
@@ -1489,8 +1363,27 @@ mod tests {
                 grav_y: 0.0,
                 grav_x: 0.0,
             });
-        let res = closed_loop(&vec![rec.clone()], Some(1.0));
-        assert!(!res.is_empty());
+
+        // Initialize UKF
+        let mut ukf = initialize_ukf(rec.clone(), None, None);
+
+        // Create a minimal EventStream with one IMU event
+        let imu_data = IMUData {
+            accel: nalgebra::Vector3::new(rec.acc_x, rec.acc_y, rec.acc_z),
+            gyro: nalgebra::Vector3::new(rec.gyro_x, rec.gyro_y, rec.gyro_z),
+        };
+        let event = Event::Imu {
+            dt_s: 1.0,
+            imu: imu_data,
+            elapsed_s: 0.0,
+        };
+        let stream = EventStream {
+            start_time: rec.time,
+            events: vec![event],
+        };
+
+        let res = closed_loop(&mut ukf, stream);
+        assert!(!res.unwrap().is_empty());
     }
     #[test]
     fn test_initialize_ukf_default_and_custom() {
