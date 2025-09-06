@@ -15,7 +15,7 @@
 //! the UKF and particle filter. This model is used to update the state based on position
 //! measurements in the local level frame (i.e. a GPS fix).
 use crate::earth::METERS_TO_DEGREES;
-use crate::linalg::matrix_square_root;
+use crate::linalg::{matrix_square_root, robust_spd_solve, symmetrize};
 use crate::{IMUData, StrapdownState, forward, wrap_to_2pi};
 
 use std::fmt::Debug;
@@ -214,6 +214,14 @@ impl MeasurementModel for RelativeAltitudeMeasurement {
         measurement_sigma_points
     }
 }
+#[derive(Clone, Debug, Default)]
+pub struct GravityAnomalyMeasurement {
+    // Placeholder
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct MagneticAnomalyMeasurement {}
+
 /// Basic strapdown state parameters for the UKF and particle filter initialization.
 #[derive(Clone, Debug, Default)]
 pub struct StrapdownParams {
@@ -434,7 +442,7 @@ impl UKF {
         p_bar += &self.process_noise;
         // Update the mean state and covariance
         self.mean_state = mu_bar;
-        self.covariance = p_bar;
+        self.covariance = symmetrize(&p_bar);
     }
     /// Get the UKF mean state.
     pub fn get_mean(&self) -> DVector<f64> {
@@ -505,30 +513,37 @@ impl UKF {
             let state_diff = sigma_points.column(i) - &self.mean_state;
             cross_covariance += self.weights_cov[i] * state_diff * measurement_diff.transpose();
         }
-        // Calculate the Kalman gain
-        let s_inv = match s.clone().try_inverse() {
-            Some(inv) => inv,
-            None => panic!("Innovation matrix is singular"),
-        };
-        let k = &cross_covariance * &s_inv;
-        // check that the kalman gain and measurement diff are compatible to multiply
-        if k.ncols() != measurement.get_dimension() {
-            panic!("Kalman gain and measurement differential are not compatible");
-        }
+        // // Calculate the Kalman gain
+        // let s_inv = match s.clone().try_inverse() {
+        //     Some(inv) => inv,
+        //     None => panic!("Innovation matrix is singular"),
+        // };
+        // let k = &cross_covariance * &s_inv;
+        // // check that the kalman gain and measurement diff are compatible to multiply
+        // if k.ncols() != measurement.get_dimension() {
+        //     panic!("Kalman gain and measurement differential are not compatible");
+        // }
+        // K = P_xz * S^{-1} without forming S^{-1}
+        let k = self.robust_kalman_gain(&cross_covariance, &s);
+        // Update the mean and covariance
         self.mean_state += &k * (measurement.get_vector() - &z_hat);
         // wrap attitude angles to 2pi
         // TODO: #30 Refactor attitude angles to use a more robust representation
         self.mean_state[6] = wrap_to_2pi(self.mean_state[6]);
         self.mean_state[7] = wrap_to_2pi(self.mean_state[7]);
         self.mean_state[8] = wrap_to_2pi(self.mean_state[8]);
-        // Switch to Joseph Form update here
-        // P = (I - K * H) P (I - K H)^T + K R K^T
-        // UKF form:
-        // P -= K * S * K^T + K R K^T
-        self.covariance -= &k * s * &k.transpose();
+        self.covariance -= &k * &s * &k.transpose();
         // Re-symmetrize to fight round-off
         self.covariance = 0.5 * (&self.covariance + self.covariance.transpose());
-        // self.covariance -= &k * s * &k.transpose();
+    }
+    fn robust_kalman_gain(
+        &mut self,
+        cross_covariance: &DMatrix<f64>,
+        s: &DMatrix<f64>,
+    ) -> DMatrix<f64> {
+        // Solve S Kᵀ = P_xzᵀ  => K = (S^{-1} P_xz)ᵀ
+        let kt = robust_spd_solve(&symmetrize(s), &cross_covariance.transpose());
+        kt.transpose()
     }
 }
 #[derive(Clone, Debug, Default)]

@@ -117,6 +117,7 @@
 pub mod earth;
 pub mod filter;
 pub mod linalg;
+pub mod messages;
 pub mod sim;
 
 use nalgebra::{DVector, Matrix3, Rotation3, Vector3};
@@ -495,10 +496,10 @@ pub fn position_update(state: &StrapdownState, velocity: Vector3<f64>, dt: f64) 
     let cos_lat0 = lat_0.cos().max(1e-6); // Guard against cos(lat) --> 0 near poles
     let cos_lat1 = lat_1.cos().max(1e-6);
     let lon_1: f64 = state.longitude
-        + 0.5 * (
-            state.velocity_east / ((r_e_0 + alt_0) * cos_lat0) +
-            velocity[1]       / ((r_e_1 + state.altitude) * cos_lat1)
-        ) * dt;
+        + 0.5
+            * (state.velocity_east / ((r_e_0 + alt_0) * cos_lat0)
+                + velocity[1] / ((r_e_1 + state.altitude) * cos_lat1))
+            * dt;
     // Save updated position
     (
         wrap_latitude(lat_1.to_degrees()).to_radians(),
