@@ -1,14 +1,12 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use csv::ReaderBuilder;
 use std::error::Error;
-use std::path::{Path, PathBuf};
-use strapdown::filter::UKF;
+use std::path::PathBuf;
 use strapdown::messages::{
     GnssDegradationConfig, GnssFaultModel, GnssScheduler, build_event_stream,
 };
 use strapdown::sim::{
-    NavigationResult, TestDataRecord, closed_loop, dead_reckoning, degrade_measurements,
-    initialize_ukf,
+    NavigationResult, TestDataRecord, closed_loop, dead_reckoning, initialize_ukf,
 };
 
 const LONG_ABOUT: &str = "STRAPDOWN: A simulation and analysis tool for strapdown inertial navigation systems.
@@ -240,14 +238,19 @@ fn main() -> Result<(), Box<dyn Error>> {
                 fault: build_fault(&args.fault),
                 seed: args.seed,
             };
-
             let events = build_event_stream(&records, &cfg);
-            let ukf = initialize_ukf(records[0].clone(), None, None);
-            // let results = closed_loop_events(ukf, events);
-            // sim::write_results_csv(&cli.output, &results)?;
+            let mut ukf = initialize_ukf(records[0].clone(), None, None);
+            let results = closed_loop(&mut ukf, events);
+            //sim::write_results_csv(&cli.output, &results)?;
+            match results {
+                Ok(ref nav_results) => match NavigationResult::to_csv(nav_results, &cli.output) {
+                    Ok(_) => println!("Results written to {}", cli.output.display()),
+                    Err(e) => eprintln!("Error writing results: {}", e),
+                },
+                Err(e) => eprintln!("Error running closed-loop simulation: {}", e),
+            };
         }
     }
-
     // records = match args.gps_degradation {
     //     Some(value) => degrade_measurements(records, value),
     //     None => records,

@@ -5,6 +5,7 @@
 /strapdown_py/dist
 /core/*.csv
 /core/db
+/out
 
 # pixi environments
 .pixi
