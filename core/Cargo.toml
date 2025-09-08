@@ -1,5 +1,5 @@
 [package]
-name = "strapdown-rs"
+name = "strapdown-core"
 authors = ["James Brodovsky"]
 version = "0.4.0"
 edition = "2024"
@@ -32,7 +32,6 @@ nav-types = "0.5.2"
 rand = "0.9.1"
 rand_distr = "0.5.1"
 serde = { version = "1.0.219", features = ["derive"] }
-clap = { version = "4.5.4", features = ["derive"] }
 world_magnetic_model = "0.4.0"
 anyhow = "1.0.99"
 
