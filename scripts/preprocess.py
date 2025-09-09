@@ -6,7 +6,6 @@ import os
 from argparse import ArgumentParser
 from concurrent import futures
 
-import matplotlib
 import pandas as pd
 
 
@@ -105,6 +104,8 @@ def clean_phone_data(dataset_path: str) -> pd.DataFrame:
     data.index = pd.to_datetime(data.index, utc=True)  # type: ignore
     # Ensure the index is sorted
     data.sort_index(inplace=True)
+    # Drop all the previous rows before the first valid timestamp
+    data = data[data.index >= location.index[0]]
     return data
 
 
@@ -118,19 +119,24 @@ def convert_hz_to_time_str(frequency: int) -> str:
 
 def preprocess(args):
     """Preprocess the data based on the provided arguments."""
-    base_dir = args.base_dir
-    # pictures_dir = os.path.join(base_dir, "pictures")
-    output_dir = os.path.join(args.output_dir, f"{int(args.frequency)}Hz")
-    # frequency = int(args.frequency)
-    # time_str = convert_hz_to_time_str(args.frequency)
-    datasets = os.listdir(base_dir)
+    datasets = os.listdir(args.input_dir)
+    # Check to see if datasets in empty, if true ask if the user would lke to download the dataset
+    if not datasets:
+        download = input("No datasets found. Would you like to download the dataset? (y/n): ")
+        if download.lower() == "y":
+            # Code to download the dataset goes here
+            pass
+        else:
+            print("No datasets found. Exiting.")
+            return
+
     # os.makedirs(os.path.join("data", "cleaned"), exist_ok=True)
-    os.makedirs(output_dir, exist_ok=True)
-    print(f"Preprocessing data from {base_dir}. Output will be saved to {output_dir}.")
+    os.makedirs(args.output_dir, exist_ok=True)
+    print(f"Preprocessing data from {args.input_dir}. Output will be saved to {args.output_dir}.")
 
     def process_dataset(dataset):
         # for dataset in datasets:
-        dataset_path = os.path.join(base_dir, dataset)
+        dataset_path = os.path.join(args.input_dir, dataset)
         cleaned_data = pd.DataFrame()
         if not os.path.isdir(dataset_path):
             print(f"Skipping {dataset}, not a directory.")
@@ -141,8 +147,8 @@ def preprocess(args):
             print(f"Error processing {dataset}: {e}")
             return
         print(f"Processing: {dataset}")
-        cleaned_csv_path = os.path.join(output_dir, f"{dataset}.csv")
-        cleaned_data.to_csv(cleaned_csv_path)
+        cleaned_csv_path = os.path.join(args.output_dir, f"{dataset}.csv")
+        cleaned_data.to_csv(cleaned_csv_path, compression="gzip")
         print(f"Cleaned data for {dataset} saved to {cleaned_csv_path}.")
 
     with futures.ThreadPoolExecutor() as executor:
@@ -155,7 +161,7 @@ def main() -> None:
     """
     parser = ArgumentParser(description="Clean sensor logger app data or plot routes.")
     parser.add_argument(
-        "--base_dir",
+        "--input_dir",
         type=str,
         default="data/raw",
         help="Base directory for the sensor logger app data.",
@@ -167,7 +173,7 @@ def main() -> None:
         help="Output directory for the cleaned data.",
     )
     args = parser.parse_args()
-    assert os.path.exists(args.base_dir), f"Base directory {args.base_dir} does not exist."
+    assert os.path.exists(args.input_dir), f"Input directory {args.input_dir} does not exist."
     preprocess(args)
 
 

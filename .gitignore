@@ -1,6 +1,6 @@
 .vscode
 target
-data/raw
+data
 
 # Map files
 *.nc
