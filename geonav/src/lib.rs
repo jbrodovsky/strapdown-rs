@@ -10,8 +10,6 @@ use std::path::PathBuf;
 
 use nalgebra;
 use nalgebra::{DMatrix, DVector, Vector3};
-use rand::Rng;
-use statrs::distribution::{Continuous, Normal};
 use strapdown::IMUData;
 use strapdown::earth::METERS_TO_DEGREES;
 use strapdown::filter::{
@@ -40,28 +38,28 @@ pub enum ReliefResolution {
     ThreeSeconds,
     OneSecond,
 }
-impl ReliefResolution {
-    /// Convert the resolution to a string. This can be used for calling the GMT library
-    fn as_str(&self) -> &'static str {
-        match self {
-            ReliefResolution::OneDegree => "01d",
-            ReliefResolution::ThirtyMinutes => "30m",
-            ReliefResolution::TwentyMinutes => "20m",
-            ReliefResolution::FifteenMinutes => "15m",
-            ReliefResolution::TenMinutes => "10m",
-            ReliefResolution::SixMinutes => "06m",
-            ReliefResolution::FiveMinutes => "05m",
-            ReliefResolution::FourMinutes => "04m",
-            ReliefResolution::ThreeMinutes => "03m",
-            ReliefResolution::TwoMinutes => "02m",
-            ReliefResolution::OneMinute => "01m",
-            ReliefResolution::ThirtySeconds => "30s",
-            ReliefResolution::FifteenSeconds => "15s",
-            ReliefResolution::ThreeSeconds => "03s",
-            ReliefResolution::OneSecond => "01s",
-        }
-    }
-}
+// impl ReliefResolution {
+//     /// Convert the resolution to a string. This can be used for calling the GMT library
+//     fn as_str(&self) -> &'static str {
+//         match self {
+//             ReliefResolution::OneDegree => "01d",
+//             ReliefResolution::ThirtyMinutes => "30m",
+//             ReliefResolution::TwentyMinutes => "20m",
+//             ReliefResolution::FifteenMinutes => "15m",
+//             ReliefResolution::TenMinutes => "10m",
+//             ReliefResolution::SixMinutes => "06m",
+//             ReliefResolution::FiveMinutes => "05m",
+//             ReliefResolution::FourMinutes => "04m",
+//             ReliefResolution::ThreeMinutes => "03m",
+//             ReliefResolution::TwoMinutes => "02m",
+//             ReliefResolution::OneMinute => "01m",
+//             ReliefResolution::ThirtySeconds => "30s",
+//             ReliefResolution::FifteenSeconds => "15s",
+//             ReliefResolution::ThreeSeconds => "03s",
+//             ReliefResolution::OneSecond => "01s",
+//         }
+//     }
+// }
 /// Resolution values for gravity maps
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GravityResolution {
@@ -77,24 +75,24 @@ pub enum GravityResolution {
     TwoMinutes,
     OneMinute,
 }
-impl GravityResolution {
-    /// Convert the resolution to a string. This can be used for calling the GMT library
-    fn as_str(&self) -> &'static str {
-        match self {
-            GravityResolution::OneDegree => "01d",
-            GravityResolution::ThirtyMinutes => "30m",
-            GravityResolution::TwentyMinutes => "20m",
-            GravityResolution::FifteenMinutes => "15m",
-            GravityResolution::TenMinutes => "10m",
-            GravityResolution::SixMinutes => "06m",
-            GravityResolution::FiveMinutes => "05m",
-            GravityResolution::FourMinutes => "04m",
-            GravityResolution::ThreeMinutes => "03m",
-            GravityResolution::TwoMinutes => "02m",
-            GravityResolution::OneMinute => "01m",
-        }
-    }
-}
+// impl GravityResolution {
+//     /// Convert the resolution to a string. This can be used for calling the GMT library
+//     fn as_str(&self) -> &'static str {
+//         match self {
+//             GravityResolution::OneDegree => "01d",
+//             GravityResolution::ThirtyMinutes => "30m",
+//             GravityResolution::TwentyMinutes => "20m",
+//             GravityResolution::FifteenMinutes => "15m",
+//             GravityResolution::TenMinutes => "10m",
+//             GravityResolution::SixMinutes => "06m",
+//             GravityResolution::FiveMinutes => "05m",
+//             GravityResolution::FourMinutes => "04m",
+//             GravityResolution::ThreeMinutes => "03m",
+//             GravityResolution::TwoMinutes => "02m",
+//             GravityResolution::OneMinute => "01m",
+//         }
+//     }
+// }
 /// Resolution values for magnetic maps
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MagneticResolution {
@@ -109,23 +107,23 @@ pub enum MagneticResolution {
     ThreeMinutes,
     TwoMinutes,
 }
-impl MagneticResolution {
-    /// Convert the resolution to a string. This can be used for calling the GMT library
-    fn as_str(&self) -> &'static str {
-        match self {
-            MagneticResolution::OneDegree => "01d",
-            MagneticResolution::ThirtyMinutes => "30m",
-            MagneticResolution::TwentyMinutes => "20m",
-            MagneticResolution::FifteenMinutes => "15m",
-            MagneticResolution::TenMinutes => "10m",
-            MagneticResolution::SixMinutes => "06m",
-            MagneticResolution::FiveMinutes => "05m",
-            MagneticResolution::FourMinutes => "04m",
-            MagneticResolution::ThreeMinutes => "03m",
-            MagneticResolution::TwoMinutes => "02m",
-        }
-    }
-}
+// impl MagneticResolution {
+//     /// Convert the resolution to a string. This can be used for calling the GMT library
+//     fn as_str(&self) -> &'static str {
+//         match self {
+//             MagneticResolution::OneDegree => "01d",
+//             MagneticResolution::ThirtyMinutes => "30m",
+//             MagneticResolution::TwentyMinutes => "20m",
+//             MagneticResolution::FifteenMinutes => "15m",
+//             MagneticResolution::TenMinutes => "10m",
+//             MagneticResolution::SixMinutes => "06m",
+//             MagneticResolution::FiveMinutes => "05m",
+//             MagneticResolution::FourMinutes => "04m",
+//             MagneticResolution::ThreeMinutes => "03m",
+//             MagneticResolution::TwoMinutes => "02m",
+//         }
+//     }
+// }
 /// Enum for the different types of maps. A GeoMap is defined by its measurement type and resolution.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GeophysicalMeasurementType {
@@ -369,7 +367,7 @@ impl GeoMap {
         let w22: f64 = ((lon - lon1) * (lat - lat1)) / ((lon2 - lon1) * (lat2 - lat1));
         Some(w11 * q11 + w12 * q12 + w21 * q21 + w22 * q22)
     }
-    // TODO: #95 Implement direct GMT interface using syscalls
+    // TODO: #95 Implement direct GMT interface using system shell calls
 }
 //================= Map Information ========================================================================
 
@@ -387,7 +385,7 @@ pub struct GeophysicalMeasurement<'a> {
 ///
 /// The geophysical feedback model is different from traditional measurement models in that it needs to relate
 /// a scalar (or vector) measurement to the position states. We can somewhat do this via a map, but the scalar
-/// values on the map are not neccessarily unique. This means that we cannot directly use the measurement to
+/// values on the map are not necessarily unique. This means that we cannot directly use the measurement to
 /// provide feedback and instead must use it to weight sigma points that do contain position information.
 ///
 /// Working hypothesis: we can treat the UKF as a hybrid KF/PF where the sigma point / particles can be weighted
@@ -642,7 +640,7 @@ pub fn run_geophysical_navigation(
                         + record.grav_z.powf(2.0))
                     .sqrt()
                         - state[15];
-                    let geo_measurement = GeophysicalMeasurement {
+                    let _geo_measurement = GeophysicalMeasurement {
                         map: &geo_map,
                         noise_std: measurement_standard_deviation,
                         measurement: freeair,
@@ -656,7 +654,7 @@ pub fn run_geophysical_navigation(
                         (record.mag_x.powf(2.0) + record.mag_y.powf(2.0) + record.mag_z.powf(2.0))
                             .sqrt()
                             - state[15];
-                    let geo_measurement = GeophysicalMeasurement {
+                    let _geo_measurement = GeophysicalMeasurement {
                         map: &geo_map,
                         noise_std: measurement_standard_deviation,
                         measurement: mag_anom,

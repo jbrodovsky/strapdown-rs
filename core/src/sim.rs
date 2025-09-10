@@ -19,18 +19,13 @@ use std::io::{self};
 use std::path::Path;
 
 use anyhow::{Result, bail};
-use chrono::{DateTime, Datelike, Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use nalgebra::{DMatrix, DVector, Vector3};
 use serde::{Deserialize, Serialize};
-use world_magnetic_model::GeomagneticField;
-use world_magnetic_model::time::{Date, Month};
-use world_magnetic_model::uom::si::angle::radian;
-use world_magnetic_model::uom::si::f32::{Angle, Length};
-use world_magnetic_model::uom::si::length::meter;
 
 use crate::earth::METERS_TO_DEGREES;
 use crate::filter::{
-    GPSPositionAndVelocityMeasurement, RelativeAltitudeMeasurement, StrapdownParams, UKF,
+    StrapdownParams, UKF,
 };
 use crate::messages::{Event, EventStream};
 use crate::{IMUData, StrapdownState, forward};
@@ -409,18 +404,18 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>)> for NavigationResult {
             "Covariance matrix must be 15x15"
         );
         let covariance = DVector::from_vec(covariance.diagonal().iter().map(|&x| x).collect());
-        let wmm_date: Date = Date::from_calendar_date(
-            timestamp.year(),
-            Month::try_from(timestamp.month() as u8).unwrap(),
-            timestamp.day() as u8,
-        )
-        .expect("Invalid date for world magnetic model");
-        let magnetic_field = GeomagneticField::new(
-            Length::new::<meter>(state[2] as f32),
-            Angle::new::<radian>(state[0] as f32),
-            Angle::new::<radian>(state[1] as f32),
-            wmm_date,
-        );
+        // let wmm_date: Date = Date::from_calendar_date(
+        //     timestamp.year(),
+        //     Month::try_from(timestamp.month() as u8).unwrap(),
+        //     timestamp.day() as u8,
+        // )
+        // .expect("Invalid date for world magnetic model");
+        // let magnetic_field = GeomagneticField::new(
+        //     Length::new::<meter>(state[2] as f32),
+        //     Angle::new::<radian>(state[0] as f32),
+        //     Angle::new::<radian>(state[1] as f32),
+        //     wmm_date,
+        // );
         NavigationResult {
             timestamp: *timestamp,
             latitude: state[0].to_degrees(),
@@ -517,41 +512,33 @@ impl From<(&DateTime<Utc>, &UKF)> for NavigationResult {
 /// # Arguments
 /// - `timestamp`: The timestamp of the navigation solution.
 /// - `state`: A reference to the StrapdownState instance containing the navigation state.
-/// - `imu_data`: An IMUData struct containing the IMU measurements.
-/// - `magnetic_vector`: Magnetic field strength measurement in micro teslas (body frame x, y, z).
-/// - `pressure`: Pressure in millibars.
+///
 /// # Returns
 /// A NavigationResult struct containing the navigation solution.
 impl
     From<(
         &DateTime<Utc>,
         &StrapdownState,
-        &IMUData,
-        &Vector3<f64>,
-        &f64,
     )> for NavigationResult
 {
     fn from(
-        (timestamp, state, imu_data, magnetic_vector, pressure): (
+        (timestamp, state): (
             &DateTime<Utc>,
-            &StrapdownState,
-            &IMUData,
-            &Vector3<f64>,
-            &f64,
+            &StrapdownState
         ),
     ) -> Self {
-        let wmm_date: Date = Date::from_calendar_date(
-            timestamp.year(),
-            Month::try_from(timestamp.month() as u8).unwrap(),
-            timestamp.day() as u8,
-        )
-        .expect("Invalid date for world magnetic model");
-        let magnetic_field = GeomagneticField::new(
-            Length::new::<meter>(state.altitude as f32),
-            Angle::new::<radian>(state.latitude as f32),
-            Angle::new::<radian>(state.longitude as f32),
-            wmm_date,
-        );
+        //let wmm_date: Date = Date::from_calendar_date(
+        //    timestamp.year(),
+        //    Month::try_from(timestamp.month() as u8).unwrap(),
+        //    timestamp.day() as u8,
+        //)
+        //.expect("Invalid date for world magnetic model");
+        //let magnetic_field = GeomagneticField::new(
+        //    Length::new::<meter>(state.altitude as f32),
+        //    Angle::new::<radian>(state.latitude as f32),
+        //    Angle::new::<radian>(state.longitude as f32),
+        //    wmm_date,
+        //);
         NavigationResult {
             timestamp: timestamp.clone(),
             latitude: state.latitude.to_degrees(),
