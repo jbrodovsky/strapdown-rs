@@ -27,7 +27,7 @@ use crate::sim::TestDataRecord;
 ///
 /// ## Usage
 /// - `PassThrough` → GNSS data is delivered at its native logging rate.
-/// - `FixedInterval` → Downsample the GNSS stream to a constant interval,
+/// - `FixedInterval` → Down-sample the GNSS stream to a constant interval,
 ///   simulating jamming that allows only low-rate fixes.
 /// - `DutyCycle` → Alternate between ON and OFF windows of fixed length,
 ///   simulating periodic outages.
@@ -49,13 +49,14 @@ use crate::sim::TestDataRecord;
 /// // Alternate 5 s ON, 15 s OFF, starting in ON state at t=0
 /// let sched = GnssScheduler::DutyCycle { on_s: 5.0, off_s: 15.0, start_phase_s: 0.0 };
 /// ```
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum GnssScheduler {
     /// Pass every GNSS fix through to the filter with no rate reduction.
     ///
     /// Useful as a baseline when you want to test only fault injection without
     /// simulating outages or reduced update rates.
+    #[default]
     PassThrough,
     /// Emit GNSS measurements at a fixed interval, discarding those in between.
     ///
@@ -160,7 +161,7 @@ mod serialization_tests {
 ///
 /// - `None`: deliver the fix unchanged.
 /// - `Degraded`: add AR(1)-correlated noise to position and velocity, and
-///   inflate the advertised covariance. Simulates low-SNR or multipath conditions.
+///   inflate the advertised covariance. Simulates low-SNR or multi-path conditions.
 /// - `SlowBias`: apply a slowly drifting offset in N/E position and velocity.
 ///   Simulates soft spoofing where the trajectory is nudged gradually away
 ///   from truth.
@@ -216,7 +217,7 @@ pub enum GnssFaultModel {
     None,
 
     /// (2) Degraded accuracy: AR(1)-correlated noise on position and velocity,
-    /// plus inflated advertised covariance. Models low-SNR or multipath cases.
+    /// plus inflated advertised covariance. Models low-SNR or multi-path cases.
     Degraded {
         /// AR(1) correlation coefficient for position error (close to 1.0).
         rho_pos: f64,
@@ -840,7 +841,20 @@ fn apply_fault(
                 vel_std_mps,
             );
             for m in models {
-                // out = apply_fault(m, st, t, dt, out.0, out.1, out.2, out.3, out.4, out.5, out.6);
+                out = apply_fault(
+                    m,
+                    st,
+                    t,
+                    dt,
+                    out.0,
+                    out.1,
+                    out.2,
+                    out.3,
+                    out.4,
+                    out.5,
+                    vert_std_m,
+                    out.6,
+                );
             }
             out
         }
@@ -872,7 +886,7 @@ fn apply_fault(
 ///
 /// # Returns
 /// A `EventStream` containing an interleaved sequence of IMU and (optionally
-/// downsampled/corrupted) GNSS events, ordered by `elapsed_s`.
+/// down-sampled/corrupted) GNSS events, ordered by `elapsed_s`.
 ///
 /// # Scheduling semantics
 /// - [`GnssScheduler::PassThrough`]: emit a GNSS event at every record step.
@@ -933,15 +947,15 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
     let mut next_emit_time = match cfg.scheduler {
         GnssScheduler::PassThrough => 0.0,
         GnssScheduler::FixedInterval {
-            interval_s,
             phase_s,
+            ..
         } => phase_s,
         GnssScheduler::DutyCycle { start_phase_s, .. } => start_phase_s,
     };
     let mut duty_on = true;
 
     for w in records_with_elapsed.windows(2) {
-        let (t0, r0) = (&w[0].0, &w[0].1);
+        let (t0, _) = (&w[0].0, &w[0].1);
         let (t1, r1) = (&w[1].0, &w[1].1);
         let dt = t1 - t0;
 

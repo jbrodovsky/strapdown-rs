@@ -6,7 +6,7 @@ use strapdown::messages::{
     GnssDegradationConfig, GnssFaultModel, GnssScheduler, build_event_stream,
 };
 use strapdown::sim::{
-    NavigationResult, TestDataRecord, closed_loop, dead_reckoning, initialize_ukf,
+    NavigationResult, TestDataRecord, closed_loop, initialize_ukf,
 };
 
 const LONG_ABOUT: &str = "STRAPDOWN: A simulation and analysis tool for strapdown inertial navigation systems.
