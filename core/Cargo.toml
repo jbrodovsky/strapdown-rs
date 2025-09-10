@@ -1,5 +1,5 @@
 [package]
-name = "strapdown-rs"
+name = "strapdown-core"
 authors = ["James Brodovsky"]
 version = "0.4.0"
 edition = "2024"
@@ -15,10 +15,6 @@ documentation = "https://docs.rs/strapdown-rs/"
 [package.metadata.docs.rs]
 rustdoc-args = [ "--html-in-header", "katex-header.html" ]
 
-[[bin]]
-name = "strapdown"
-path = "src/main.rs"
-
 [lib]
 name = "strapdown"
 path = "src/strapdown.rs"
@@ -32,10 +28,13 @@ nav-types = "0.5.2"
 rand = "0.9.1"
 rand_distr = "0.5.1"
 serde = { version = "1.0.219", features = ["derive"] }
-clap = { version = "4.5.4", features = ["derive"] }
 world_magnetic_model = "0.4.0"
 anyhow = "1.0.99"
+serde_json = "1.0"
+serde_yaml = "0.9"
+toml = "0.7"
 
 [dev-dependencies]
 assert_approx_eq = "1.1.0"
+tempfile = "3.5"
 

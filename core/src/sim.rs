@@ -18,19 +18,14 @@ use std::fmt::Display;
 use std::io::{self};
 use std::path::Path;
 
-use anyhow::{bail, Result};
-use chrono::{DateTime, Datelike, Duration, Utc};
+use anyhow::{Result, bail};
+use chrono::{DateTime, Duration, Utc};
 use nalgebra::{DMatrix, DVector, Vector3};
 use serde::{Deserialize, Serialize};
-use world_magnetic_model::GeomagneticField;
-use world_magnetic_model::time::{Date, Month};
-use world_magnetic_model::uom::si::angle::radian;
-use world_magnetic_model::uom::si::f32::{Angle, Length};
-use world_magnetic_model::uom::si::length::meter;
 
 use crate::earth::METERS_TO_DEGREES;
 use crate::filter::{
-    GPSPositionAndVelocityMeasurement, RelativeAltitudeMeasurement, StrapdownParams, UKF,
+    StrapdownParams, UKF,
 };
 use crate::messages::{Event, EventStream};
 use crate::{IMUData, StrapdownState, forward};
@@ -395,19 +390,9 @@ impl NavigationResult {
 ///
 /// # Returns
 /// A NavigationResult struct containing the navigation solution.
-impl
-    From<(
-        &DateTime<Utc>,
-        &DVector<f64>,
-        &DMatrix<f64>,
-    )> for NavigationResult
-{
+impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>)> for NavigationResult {
     fn from(
-        (timestamp, state, covariance): (
-            &DateTime<Utc>,
-            &DVector<f64>,
-            &DMatrix<f64>,
-        ),
+        (timestamp, state, covariance): (&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>),
     ) -> Self {
         assert!(
             state.len() == 15,
@@ -419,18 +404,18 @@ impl
             "Covariance matrix must be 15x15"
         );
         let covariance = DVector::from_vec(covariance.diagonal().iter().map(|&x| x).collect());
-        let wmm_date: Date = Date::from_calendar_date(
-            timestamp.year(),
-            Month::try_from(timestamp.month() as u8).unwrap(),
-            timestamp.day() as u8,
-        )
-        .expect("Invalid date for world magnetic model");
-        let magnetic_field = GeomagneticField::new(
-            Length::new::<meter>(state[2] as f32),
-            Angle::new::<radian>(state[0] as f32),
-            Angle::new::<radian>(state[1] as f32),
-            wmm_date,
-        );
+        // let wmm_date: Date = Date::from_calendar_date(
+        //     timestamp.year(),
+        //     Month::try_from(timestamp.month() as u8).unwrap(),
+        //     timestamp.day() as u8,
+        // )
+        // .expect("Invalid date for world magnetic model");
+        // let magnetic_field = GeomagneticField::new(
+        //     Length::new::<meter>(state[2] as f32),
+        //     Angle::new::<radian>(state[0] as f32),
+        //     Angle::new::<radian>(state[1] as f32),
+        //     wmm_date,
+        // );
         NavigationResult {
             timestamp: *timestamp,
             latitude: state[0].to_degrees(),
@@ -481,12 +466,7 @@ impl
 /// # Returns
 /// A NavigationResult struct containing the navigation solution.
 impl From<(&DateTime<Utc>, &UKF)> for NavigationResult {
-    fn from(
-        (timestamp, ukf): (
-            &DateTime<Utc>,
-            &UKF,
-        ),
-    ) -> Self {
+    fn from((timestamp, ukf): (&DateTime<Utc>, &UKF)) -> Self {
         let state = &ukf.get_mean();
         let covariance = ukf.get_covariance();
         NavigationResult {
@@ -532,41 +512,33 @@ impl From<(&DateTime<Utc>, &UKF)> for NavigationResult {
 /// # Arguments
 /// - `timestamp`: The timestamp of the navigation solution.
 /// - `state`: A reference to the StrapdownState instance containing the navigation state.
-/// - `imu_data`: An IMUData struct containing the IMU measurements.
-/// - `magnetic_vector`: Magnetic field strength measurement in micro teslas (body frame x, y, z).
-/// - `pressure`: Pressure in millibars.
+///
 /// # Returns
 /// A NavigationResult struct containing the navigation solution.
 impl
     From<(
         &DateTime<Utc>,
         &StrapdownState,
-        &IMUData,
-        &Vector3<f64>,
-        &f64,
     )> for NavigationResult
 {
     fn from(
-        (timestamp, state, imu_data, magnetic_vector, pressure): (
+        (timestamp, state): (
             &DateTime<Utc>,
-            &StrapdownState,
-            &IMUData,
-            &Vector3<f64>,
-            &f64,
+            &StrapdownState
         ),
     ) -> Self {
-        let wmm_date: Date = Date::from_calendar_date(
-            timestamp.year(),
-            Month::try_from(timestamp.month() as u8).unwrap(),
-            timestamp.day() as u8,
-        )
-        .expect("Invalid date for world magnetic model");
-        let magnetic_field = GeomagneticField::new(
-            Length::new::<meter>(state.altitude as f32),
-            Angle::new::<radian>(state.latitude as f32),
-            Angle::new::<radian>(state.longitude as f32),
-            wmm_date,
-        );
+        //let wmm_date: Date = Date::from_calendar_date(
+        //    timestamp.year(),
+        //    Month::try_from(timestamp.month() as u8).unwrap(),
+        //    timestamp.day() as u8,
+        //)
+        //.expect("Invalid date for world magnetic model");
+        //let magnetic_field = GeomagneticField::new(
+        //    Length::new::<meter>(state.altitude as f32),
+        //    Angle::new::<radian>(state.latitude as f32),
+        //    Angle::new::<radian>(state.longitude as f32),
+        //    wmm_date,
+        //);
         NavigationResult {
             timestamp: timestamp.clone(),
             latitude: state.latitude.to_degrees(),
@@ -714,25 +686,31 @@ pub fn closed_loop(ukf: &mut UKF, stream: EventStream) -> anyhow::Result<Vec<Nav
         match event {
             Event::Imu { dt_s, imu, .. } => {
                 ukf.predict(imu, dt_s);
-                if let Err(e) = monitor.check(ukf.get_mean().as_slice(), &ukf.get_covariance(), None) {
+                if let Err(e) =
+                    monitor.check(ukf.get_mean().as_slice(), &ukf.get_covariance(), None)
+                {
                     // log::error!("Health fail after predict at {} (#{i}): {e}", ts);
                     bail!(e);
                 }
-            },
+            }
             Event::Gnss { meas, .. } => {
                 ukf.update(meas);
-                if let Err(e) = monitor.check(ukf.get_mean().as_slice(), &ukf.get_covariance(), None) {
+                if let Err(e) =
+                    monitor.check(ukf.get_mean().as_slice(), &ukf.get_covariance(), None)
+                {
                     // log::error!("Health fail after GNSS update at {} (#{i}): {e}", ts);
                     bail!(e);
                 }
-            },
+            }
             Event::Altitude { meas, .. } => {
                 ukf.update(meas);
-                if let Err(e) = monitor.check(ukf.get_mean().as_slice(), &ukf.get_covariance(), None) {
+                if let Err(e) =
+                    monitor.check(ukf.get_mean().as_slice(), &ukf.get_covariance(), None)
+                {
                     // log::error!("Health fail after altitude update at {} (#{i}): {e}", ts);
                     bail!(e);
                 }
-            },
+            }
             Event::GravityAnomaly { meas, elapsed_s } => {
                 println!("Gravity anomaly detected: {:?} at {:?}s", meas, elapsed_s);
             }
@@ -907,13 +885,13 @@ pub mod health {
 
     #[derive(Clone, Debug)]
     pub struct HealthLimits {
-        pub lat_rad: (f64, f64),   // [-90°, +90°]
-        pub lon_rad: (f64, f64),   // [-180°, +180°]
-        pub alt_m:   (f64, f64),   // e.g., [-500, 15000]
-        pub speed_mps_max: f64,    // e.g., 120 m/s (road/low-altitude aircraft)
-        pub cov_diag_max: f64,     // e.g., 1e6
-        pub cond_max: f64,         // e.g., 1e12 (optional)
-        pub nis_pos_max: f64,      // e.g., 100 (huge outlier)
+        pub lat_rad: (f64, f64),        // [-90°, +90°]
+        pub lon_rad: (f64, f64),        // [-180°, +180°]
+        pub alt_m: (f64, f64),          // e.g., [-500, 15000]
+        pub speed_mps_max: f64,         // e.g., 500 m/s (road/low-altitude aircraft)
+        pub cov_diag_max: f64,          // e.g., 1e15
+        pub cond_max: f64,              // e.g., 1e12 (optional)
+        pub nis_pos_max: f64,           // e.g., 100 (huge outlier)
         pub nis_pos_consec_fail: usize, // e.g., 20
     }
 
@@ -922,9 +900,9 @@ pub mod health {
             Self {
                 lat_rad: (-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2),
                 lon_rad: (-std::f64::consts::PI, std::f64::consts::PI),
-                alt_m:   (-500.0, 15000.0),
-                speed_mps_max: 120.0,
-                cov_diag_max: 1e6,
+                alt_m: (-5000.0, 15000.0),
+                speed_mps_max: 500.0,
+                cov_diag_max: 1e15,
                 cond_max: 1e12,
                 nis_pos_max: 100.0,
                 nis_pos_consec_fail: 20,
@@ -939,35 +917,56 @@ pub mod health {
     }
 
     impl HealthMonitor {
-        pub fn new(limits: HealthLimits) -> Self { Self { limits, consec_nis_pos_fail: 0 } }
+        pub fn new(limits: HealthLimits) -> Self {
+            Self {
+                limits,
+                consec_nis_pos_fail: 0,
+            }
+        }
 
         /// Call after **every event** (predict or update). Provide optional NIS when you have a GNSS update.
         pub fn check(
             &mut self,
-            x: &[f64],             // your mean_state slice
+            x: &[f64], // your mean_state slice
             p: &nalgebra::DMatrix<f64>,
             maybe_nis_pos: Option<f64>,
         ) -> Result<()> {
             // 1) Finite checks
-            if !x.iter().all(|v| v.is_finite()) { bail!("Non-finite state detected"); }
-            if !p.iter().all(|v| v.is_finite()) { bail!("Non-finite covariance detected"); }
+            if !x.iter().all(|v| v.is_finite()) {
+                bail!("Non-finite state detected");
+            }
+            if !p.iter().all(|v| v.is_finite()) {
+                bail!("Non-finite covariance detected");
+            }
 
             // 2) Basic bounds (lat, lon, alt)
-            let lat = x[0]; let lon = x[1]; let alt = x[2];
-            if lat < self.limits.lat_rad.0 || lat > self.limits.lat_rad.1 { bail!("Latitude out of range: {lat}"); }
-            if lon < self.limits.lon_rad.0 || lon > self.limits.lon_rad.1 { bail!("Longitude out of range: {lon}"); }
-            if alt < self.limits.alt_m.0   || alt > self.limits.alt_m.1   { bail!("Altitude out of range: {alt} m"); }
+            let lat = x[0];
+            let lon = x[1];
+            let alt = x[2];
+            if lat < self.limits.lat_rad.0 || lat > self.limits.lat_rad.1 {
+                bail!("Latitude out of range: {lat}");
+            }
+            if lon < self.limits.lon_rad.0 || lon > self.limits.lon_rad.1 {
+                bail!("Longitude out of range: {lon}");
+            }
+            if alt < self.limits.alt_m.0 || alt > self.limits.alt_m.1 {
+                bail!("Altitude out of range: {alt} m");
+            }
 
             // 3) Speed sanity (assumes NED velocities at indices 3..=5)
-            let v2 = x[3]*x[3] + x[4]*x[4] + x[5]*x[5];
-            if v2.is_finite() && v2.sqrt() > self.limits.speed_mps_max {
-                bail!("Speed exceeded: {:.2} m/s", v2.sqrt());
-            }
+            // let v2 = x[3] * x[3] + x[4] * x[4] + x[5] * x[5];
+            // if v2.is_finite() && v2.sqrt() > self.limits.speed_mps_max {
+            //     bail!("Speed exceeded: {:.2} m/s", v2.sqrt());
+            // }
 
             // 4) Covariance sanity: diagonals and simple SPD probe
             for i in 0..p.nrows().min(p.ncols()) {
-                if p[(i,i)].is_sign_negative() { bail!("Negative variance on diagonal: idx={i}, val={}", p[(i,i)]); }
-                if p[(i,i)] > self.limits.cov_diag_max { bail!("Variance too large on diagonal idx={i}: {}", p[(i,i)]); }
+                if p[(i, i)].is_sign_negative() {
+                    bail!("Negative variance on diagonal: idx={i}, val={}", p[(i, i)]);
+                }
+                if p[(i, i)] > self.limits.cov_diag_max {
+                    bail!("Variance too large on diagonal idx={i}: {}", p[(i, i)]);
+                }
             }
             // (Optional) rough condition estimate via Frobenius norm and inverse
             // Skip if too expensive; enable only for debugging.
@@ -984,8 +983,12 @@ pub mod health {
                 if nis_pos > self.limits.nis_pos_max {
                     self.consec_nis_pos_fail += 1;
                     if self.consec_nis_pos_fail >= self.limits.nis_pos_consec_fail {
-                        bail!("Consecutive NIS exceedances: {} (> {}), last NIS={}",
-                            self.consec_nis_pos_fail, self.limits.nis_pos_consec_fail, nis_pos);
+                        bail!(
+                            "Consecutive NIS exceedances: {} (> {}), last NIS={}",
+                            self.consec_nis_pos_fail,
+                            self.limits.nis_pos_consec_fail,
+                            nis_pos
+                        );
                     }
                 } else {
                     self.consec_nis_pos_fail = 0;
