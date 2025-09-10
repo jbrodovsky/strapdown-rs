@@ -6,7 +6,7 @@ use strapdown::messages::{
     GnssDegradationConfig, GnssFaultModel, GnssScheduler, build_event_stream,
 };
 use strapdown::sim::{
-    NavigationResult, TestDataRecord, closed_loop, dead_reckoning, initialize_ukf,
+    NavigationResult, TestDataRecord, closed_loop, initialize_ukf,
 };
 
 const LONG_ABOUT: &str = "STRAPDOWN: A simulation and analysis tool for strapdown inertial navigation systems.
@@ -41,6 +41,15 @@ This program is designed to work with tabular comma-separated value datasets tha
 * grav_z - Gravitational acceleration in the Z direction (meters per second squared)
 * grav_y - Gravitational acceleration in the Y direction (meters per second squared)
 * grav_x - Gravitational acceleration in the X direction (meters per second squared)";
+
+// Example usage (also displayed via --help):
+//
+// Use a config file instead of CLI flags:
+//   strapdown-sim closed-loop --config examples/configs/gnss_degradation.yaml -i data/input/2025-06-11_20-34-24.csv -o out.csv
+//
+// Or supply individual flags as before; the config file, if provided, takes precedence.
+// Add a short note about the new --config flag in the CLI help
+// (kept outside of LONG_ABOUT to avoid editing the long block literal heavily)
 
 /// Command line arguments
 #[derive(Parser)]
@@ -77,6 +86,9 @@ struct ClosedLoopArgs {
     /// Fault model settings (corrupt measurement content)
     #[command(flatten)]
     fault: FaultArgs,
+    /// Path to a GNSS degradation config file (json|yaml|yml|toml)
+    #[arg(long)]
+    config: Option<PathBuf>,
 }
 
 // Scheduler group
@@ -233,10 +245,20 @@ fn main() -> Result<(), Box<dyn Error>> {
                 records.len(),
                 &cli.input.display()
             );
-            let cfg = GnssDegradationConfig {
-                scheduler: build_scheduler(&args.scheduler),
-                fault: build_fault(&args.fault),
-                seed: args.seed,
+            let cfg = if let Some(ref cfg_path) = args.config {
+                match GnssDegradationConfig::from_file(cfg_path) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("Failed to read config {}: {}", cfg_path.display(), e);
+                        return Err(Box::new(e));
+                    }
+                }
+            } else {
+                GnssDegradationConfig {
+                    scheduler: build_scheduler(&args.scheduler),
+                    fault: build_fault(&args.fault),
+                    seed: args.seed,
+                }
             };
             let events = build_event_stream(&records, &cfg);
             let mut ukf = initialize_ukf(records[0].clone(), None, None);

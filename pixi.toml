@@ -1,0 +1,48 @@
+[workspace]
+authors = ["James Brodovsky <james.brodovsky@gmail.com>"]
+channels = ["conda-forge"]
+name = "strapdown-rs"
+platforms = ["linux-64"]
+version = "0.0.1"
+description = "A simple strapdown INS implementation in Rust with accompanying simulation and geolocation capabilities."
+license = "MIT"
+
+[activation.env]
+RUST_BACKTRACE = "1"
+# These might need to be absolute pathes
+HDF5_DIR = "${PIXI_PROJECT_ROOT}/.pixi/envs/default"
+RUSTFLAGS="-C link-args=-Wl,-rpath,.pixi/envs/default/include/lib"
+
+[tasks]
+build = "cargo build --workspace --release"
+lint = "ruff check --select I --fix && cargo clippy --all-targets --all-features -- -D warnings"
+fmt = "ruff format . && cargo fmt"
+preprocess = "python scripts/preprocess.py --input_dir data/raw/ --output_dir data/input/"
+code = "code ."
+#test = "pytest --cov=geophysical_nav --cov-report=xml --cov-report=html"
+
+[tasks.getmaps]
+args = [
+    {"arg" = "input", "default" = "data/input/"},
+    {"arg" = "buffer", "default" = "0.25"},
+    {"arg" = "output", "default" = "data/input/maps/"}
+]
+cmd = "python scripts/get_maps.py --input {{ input }} --buffer {{ buffer }} --output {{ output }}"
+
+[dependencies]
+python = ">=3.13.7,<3.14"
+numpy = ">=2.3.2,<3"
+pandas = ">=2.3.2,<3"
+cartopy = ">=0.25.0,<0.26"
+tqdm = ">=4.67.1,<5"
+pygmt = ">=0.16.0,<0.17"
+matplotlib = ">=3.10.6,<4"
+jupyter = ">=1.1.1,<2"
+haversine = ">=2.9.0,<3"
+scipy = ">=1.16.1,<2"
+rust = ">=1.89.0,<1.90"
+rust-src = ">=1.89.0,<2"
+
+[pypi-dependencies]
+anglewrapper = ">=0.1.1, <0.2"
+
