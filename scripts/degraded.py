@@ -30,7 +30,9 @@ def run_degraded(
             if input_file.endswith(".csv"):
                 fqy = os.path.split(root)[-1]
                 base = os.path.splitext(os.path.basename(input_file))[0]
-                output_file = os.path.join(output_dir, f"{str(gps_interval)}s", fqy, f"{base}.csv")
+                output_file = os.path.join(
+                    output_dir, f"{str(gps_interval)}s", fqy, f"{base}.csv"
+                )
                 os.makedirs(os.path.dirname(output_file), exist_ok=True)
                 print(f"Processing: {input_file}")
                 cmd = f"strapdown --mode closed-loop --input {os.path.join(root, input_file)} --output {output_file} --gps-interval {gps_interval}"
@@ -41,14 +43,18 @@ def run_degraded(
                 try:
                     ret = os.system(cmd)
                     if ret != 0:
-                        print(f"Skipping {input_file} due to error: strapdown exited with code {ret}")
+                        print(
+                            f"Skipping {input_file} due to error: strapdown exited with code {ret}"
+                        )
                 except Exception as err:
                     print(f"Skipping {input_file} due to error: {err}")
     print("Degraded mechanization data sets created.")
 
 
 def main():
-    parser = ArgumentParser(description="Create degraded data sets using strapdown CLI.")
+    parser = ArgumentParser(
+        description="Create degraded data sets using strapdown CLI."
+    )
     parser.add_argument(
         "--input_dir",
         type=str,
@@ -62,8 +68,12 @@ def main():
         help="Output directory for degraded data sets.",
     )
     parser.add_argument("--gps_interval", type=int, required=True, help="GPS interval.")
-    parser.add_argument("--gps_accuracy", type=float, required=True, help="GPS accuracy.")
-    parser.add_argument("--gps_spoofing", type=float, required=True, help="GPS spoofing.")
+    parser.add_argument(
+        "--gps_accuracy", type=float, required=True, help="GPS accuracy."
+    )
+    parser.add_argument(
+        "--gps_spoofing", type=float, required=True, help="GPS spoofing."
+    )
     args = parser.parse_args()
     run_degraded(
         args.input_dir,

@@ -31,7 +31,9 @@ def inflate_bounds(
     return new_min_x, new_min_y, new_max_x, new_max_y
 
 
-def plot_route(cleaned_data: pd.DataFrame, output_path: str, title: Optional[str] = None):
+def plot_route(
+    cleaned_data: pd.DataFrame, output_path: str, title: Optional[str] = None
+):
     """
     Plot the route from cleaned data and save to output_path.
     """
@@ -39,7 +41,9 @@ def plot_route(cleaned_data: pd.DataFrame, output_path: str, title: Optional[str
     east_lon = cleaned_data["longitude"].max()
     south_lat = cleaned_data["latitude"].min()
     north_lat = cleaned_data["latitude"].max()
-    west_lon, south_lat, east_lon, north_lat = inflate_bounds(west_lon, south_lat, east_lon, north_lat, 0.1)
+    west_lon, south_lat, east_lon, north_lat = inflate_bounds(
+        west_lon, south_lat, east_lon, north_lat, 0.1
+    )
     extent = [west_lon, east_lon, south_lat, north_lat]
     request = cimgt.GoogleTiles()
     ax = plt.axes(projection=request.crs)
@@ -60,7 +64,9 @@ def plot_route(cleaned_data: pd.DataFrame, output_path: str, title: Optional[str
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Plot route(s) from cleaned data CSV file(s).")
+    parser = argparse.ArgumentParser(
+        description="Plot route(s) from cleaned data CSV file(s)."
+    )
     parser.add_argument(
         "--input",
         type=str,
@@ -73,7 +79,9 @@ def main():
         required=True,
         help="Output directory for route plot images.",
     )
-    parser.add_argument("--title", type=str, default=None, help="Optional title for the plot(s).")
+    parser.add_argument(
+        "--title", type=str, default=None, help="Optional title for the plot(s)."
+    )
     args = parser.parse_args()
     os.makedirs(args.output, exist_ok=True)
     if os.path.isfile(args.input):
@@ -83,7 +91,9 @@ def main():
             out_path = os.path.join(args.output, out_name)
             plot_route(df, out_path, title=args.title)
         else:
-            print(f"Input file {args.input} does not contain longitude/latitude columns.")
+            print(
+                f"Input file {args.input} does not contain longitude/latitude columns."
+            )
     elif os.path.isdir(args.input):
         for root, _, files in os.walk(args.input):
             for file in tqdm(files):

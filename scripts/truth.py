@@ -19,7 +19,9 @@ def run_truth_mechanization(input_dir: str, output_dir: str):
                 output_file = os.path.join(output_dir, f"{base}_truth.csv")
                 print(f"Processing: {input_file}")
                 try:
-                    os.system(f"strapdown --mode closed-loop --input {input_file} --output {output_file}")
+                    os.system(
+                        f"strapdown --mode closed-loop --input {input_file} --output {output_file}"
+                    )
                 except Exception as err:
                     print(f"Skipping {input_file} due to error: {err}")
     print("Truth mechanization data sets created.")

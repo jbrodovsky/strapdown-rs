@@ -414,7 +414,8 @@ impl MeasurementModel for GeophysicalMeasurement<'_> {
         for (i, sigma_point) in state_sigma_points.column_iter().enumerate() {
             measurement_sigma_points[i] = self
                 .map
-                .get_point(&sigma_point[0].to_degrees(), &sigma_point[1].to_degrees()).unwrap();
+                .get_point(&sigma_point[0].to_degrees(), &sigma_point[1].to_degrees())
+                .unwrap();
         }
         measurement_sigma_points
     }
@@ -557,16 +558,7 @@ pub fn run_geophysical_navigation(
         measurement_standard_deviation,
     );
     // Set the initial result to the UKF initial state
-    results.push(NavigationResult::from((
-        &records[0].time,
-        &ukf,
-        &IMUData {
-            accel: Vector3::new(records[0].acc_x, records[0].acc_y, records[0].acc_z),
-            gyro: Vector3::new(records[0].gyro_x, records[0].gyro_y, records[0].gyro_z),
-        },
-        &Vector3::new(records[0].mag_x, records[0].mag_y, records[0].mag_z),
-        &records[0].pressure,
-    )));
+    results.push(NavigationResult::from((&records[0].time, &ukf)));
     // Begin processing
     let mut previous_timestamp = records[0].time;
     // Iterate through the records, updating the UKF with each IMU measurement
@@ -674,13 +666,7 @@ pub fn run_geophysical_navigation(
             }
         }
         // Store the current state and covariance in results
-        results.push(NavigationResult::from((
-            &current_timestamp,
-            &ukf,
-            &imu_data,
-            &Vector3::new(record.mag_x, record.mag_y, record.mag_z),
-            &record.pressure,
-        )));
+        results.push(NavigationResult::from((&current_timestamp, &ukf)));
         i += 1;
         previous_timestamp = current_timestamp;
     }

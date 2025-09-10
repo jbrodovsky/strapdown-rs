@@ -10,3 +10,4 @@ rand = { workspace = true }
 csv = { workspace = true }
 strapdown-core = { version = "0.4.0", path = "../core" }
 statrs = "0.18.0"
+netcdf = "0.11.0"
