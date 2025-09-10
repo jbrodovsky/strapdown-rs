@@ -49,7 +49,9 @@ def inflate_bounds(
 
 
 def get_maps(
-    input_file_directory: str, buffer: float = 0.25, output_directory: str = os.path.join("data", "input")
+    input_file_directory: str,
+    buffer: float = 0.25,
+    output_directory: str = os.path.join("data", "input"),
 ) -> None:
     """
     Goes through the target directory to download the geophysical maps.
@@ -68,18 +70,28 @@ def get_maps(
         lon_min, lon_max = df["longitude"].min(), df["longitude"].max()
         lat_min, lat_max = df["latitude"].min(), df["latitude"].max()
 
-        lon_min, lon_max, lat_min, lat_max = inflate_bounds(lon_min, lon_max, lat_min, lat_max, buffer)
+        lon_min, lon_max, lat_min, lat_max = inflate_bounds(
+            lon_min, lon_max, lat_min, lat_max, buffer
+        )
 
         print(f"  Longitude bounds: {lon_min} to {lon_max}")
         print(f"  Latitude bounds: {lat_min} to {lat_max}")
 
         # Download the maps
-        relief = load_earth_relief(resolution="15s", region=[lon_min, lon_max, lat_min, lat_max])
-        relief.to_netcdf(os.path.join(output_directory, basename.replace(".csv", "_relief.nc")))
+        relief = load_earth_relief(
+            resolution="15s", region=[lon_min, lon_max, lat_min, lat_max]
+        )
+        relief.to_netcdf(
+            os.path.join(output_directory, basename.replace(".csv", "_relief.nc"))
+        )
         print(f"  Downloaded relief map: {relief.data.shape}.")
 
-        gravity = load_earth_free_air_anomaly(resolution="01m", region=[lon_min, lon_max, lat_min, lat_max])
-        gravity.to_netcdf(os.path.join(output_directory, basename.replace(".csv", "_gravity.nc")))
+        gravity = load_earth_free_air_anomaly(
+            resolution="01m", region=[lon_min, lon_max, lat_min, lat_max]
+        )
+        gravity.to_netcdf(
+            os.path.join(output_directory, basename.replace(".csv", "_gravity.nc"))
+        )
         print(f"  Downloaded gravity map: {gravity.data.shape}.")
 
         magnetic = load_earth_magnetic_anomaly(
@@ -87,12 +99,16 @@ def get_maps(
             region=[lon_min, lon_max, lat_min, lat_max],
             data_source="wdmam",
         )
-        magnetic.to_netcdf(os.path.join(output_directory, basename.replace(".csv", "_magnetic.nc")))
+        magnetic.to_netcdf(
+            os.path.join(output_directory, basename.replace(".csv", "_magnetic.nc"))
+        )
         print(f"  Downloaded magnetic map: {magnetic.data.shape}.")
 
 
 if __name__ == "__main__":
-    parser = ArgumentParser(description="Download geophysical maps from the GMT servers.")
+    parser = ArgumentParser(
+        description="Download geophysical maps from the GMT servers."
+    )
     parser.add_argument(
         "--buffer",
         type=float,

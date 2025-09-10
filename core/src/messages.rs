@@ -3,9 +3,13 @@ use chrono::{DateTime, Utc};
 use nalgebra::Vector3;
 use rand::SeedableRng;
 use rand_distr::{Distribution, Normal};
+use serde::{Deserialize, Serialize};
+use std::fs::File;
+use std::io::{self, Read, Write};
+use std::path::Path;
 
 use crate::IMUData;
-use crate::earth::{meters_ned_to_dlat_dlon, METERS_TO_DEGREES};
+use crate::earth::meters_ned_to_dlat_dlon;
 use crate::filter::{
     GPSPositionAndVelocityMeasurement, GravityAnomalyMeasurement, MagneticAnomalyMeasurement,
     RelativeAltitudeMeasurement,
@@ -45,7 +49,8 @@ use crate::sim::TestDataRecord;
 /// // Alternate 5 s ON, 15 s OFF, starting in ON state at t=0
 /// let sched = GnssScheduler::DutyCycle { on_s: 5.0, off_s: 15.0, start_phase_s: 0.0 };
 /// ```
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum GnssScheduler {
     /// Pass every GNSS fix through to the filter with no rate reduction.
     ///
@@ -80,6 +85,66 @@ pub enum GnssScheduler {
         /// Initial phase offset before the first ON/OFF toggle (seconds).
         start_phase_s: f64,
     },
+}
+
+#[cfg(test)]
+mod serialization_tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    fn sample_cfg() -> GnssDegradationConfig {
+        GnssDegradationConfig {
+            scheduler: GnssScheduler::PassThrough,
+            fault: GnssFaultModel::Degraded {
+                rho_pos: 0.99,
+                sigma_pos_m: 3.0,
+                rho_vel: 0.95,
+                sigma_vel_mps: 0.3,
+                r_scale: 5.0,
+            },
+            seed: 42,
+        }
+    }
+
+    #[test]
+    fn json_roundtrip() {
+        let cfg = sample_cfg();
+        let f = NamedTempFile::new().unwrap();
+        let path = f.path().with_extension("json");
+        cfg.to_json(&path).unwrap();
+        let loaded = GnssDegradationConfig::from_json(&path).unwrap();
+        assert_eq!(cfg.seed, loaded.seed);
+    }
+
+    #[test]
+    fn yaml_roundtrip() {
+        let cfg = sample_cfg();
+        let f = NamedTempFile::new().unwrap();
+        let path = f.path().with_extension("yaml");
+        cfg.to_yaml(&path).unwrap();
+        let loaded = GnssDegradationConfig::from_yaml(&path).unwrap();
+        assert_eq!(cfg.seed, loaded.seed);
+    }
+
+    #[test]
+    fn toml_roundtrip() {
+        let cfg = sample_cfg();
+        let f = NamedTempFile::new().unwrap();
+        let path = f.path().with_extension("toml");
+        cfg.to_toml(&path).unwrap();
+        let loaded = GnssDegradationConfig::from_toml(&path).unwrap();
+        assert_eq!(cfg.seed, loaded.seed);
+    }
+
+    #[test]
+    fn generic_dispatch_roundtrip() {
+        let cfg = sample_cfg();
+        let f = NamedTempFile::new().unwrap();
+        let path = f.path().with_extension("json");
+        cfg.to_file(&path).unwrap();
+        let loaded = GnssDegradationConfig::from_file(&path).unwrap();
+        assert_eq!(cfg.seed, loaded.seed);
+    }
 }
 /// Models how GNSS measurement *content* is corrupted before it reaches the filter.
 ///
@@ -144,7 +209,8 @@ pub enum GnssScheduler {
 ///     GnssFaultModel::Hijack { offset_n_m: 50.0, offset_e_m: 0.0, start_s: 120.0, duration_s: 60.0 },
 /// ]);
 /// ```
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum GnssFaultModel {
     /// No corruption; GNSS fixes are passed through unchanged.
     None,
@@ -236,7 +302,7 @@ pub enum GnssFaultModel {
 ///     seed: 42,
 /// };
 /// ```
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GnssDegradationConfig {
     /// Scheduler that determines when GNSS measurements are emitted
     /// (e.g., pass-through, fixed interval, or duty-cycled).
@@ -251,6 +317,74 @@ pub struct GnssDegradationConfig {
     /// Use the same seed to repeat scenarios exactly; change it to get a new
     /// realization of stochastic processes such as AR(1) degradation.
     pub seed: u64,
+}
+
+impl GnssDegradationConfig {
+    /// Write the configuration to a JSON file (pretty-printed).
+    pub fn to_json<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
+        let file = File::create(path)?;
+        serde_json::to_writer_pretty(file, self).map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+    }
+
+    /// Read the configuration from a JSON file.
+    pub fn from_json<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let file = File::open(path)?;
+        serde_json::from_reader(file).map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+    }
+    /// Write the configuration as YAML.
+    pub fn to_yaml<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
+        let mut file = File::create(path)?;
+        let s = serde_yaml::to_string(self).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        file.write_all(s.as_bytes())
+    }
+
+    /// Read the configuration from YAML.
+    pub fn from_yaml<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let file = File::open(path)?;
+        serde_yaml::from_reader(file).map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+    }
+    /// Write the configuration as TOML.
+    pub fn to_toml<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
+        let mut file = File::create(path)?;
+        let s = toml::to_string(self).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        file.write_all(s.as_bytes())
+    }
+    /// Read the configuration from TOML.
+    pub fn from_toml<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let mut s = String::new();
+        let mut file = File::open(path)?;
+        file.read_to_string(&mut s)?;
+        toml::from_str(&s).map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+    }
+    /// Generic write: choose format by file extension (.json/.yaml/.yml/.toml)
+    pub fn to_file<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
+        let p = path.as_ref();
+        let ext = p
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_lowercase());
+        match ext.as_deref() {
+            Some("json") => self.to_json(p),
+            Some("yaml") | Some("yml") => self.to_yaml(p),
+            Some("toml") => self.to_toml(p),
+            _ => Err(io::Error::new(io::ErrorKind::InvalidInput, "unsupported file extension")),
+        }
+    }
+
+    /// Generic read: choose format by file extension (.json/.yaml/.yml/.toml)
+    pub fn from_file<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let p = path.as_ref();
+        let ext = p
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_lowercase());
+        match ext.as_deref() {
+            Some("json") => Self::from_json(p),
+            Some("yaml") | Some("yml") => Self::from_yaml(p),
+            Some("toml") => Self::from_toml(p),
+            _ => Err(io::Error::new(io::ErrorKind::InvalidInput, "unsupported file extension")),
+        }
+    }
 }
 
 /// A simulation event delivered to the filter in time order.
@@ -473,7 +607,7 @@ impl FaultState {
 ///
 /// ```ignore
 /// use rand::SeedableRng;
-/// 
+///
 /// let mut x = 0.0;
 /// let mut rng = SeedableRng::seed_from_u64(42);
 /// for _ in 0..5 {
@@ -713,7 +847,7 @@ fn apply_fault(
     }
 }
 // --------------------------- public API ---------------------------
-/// Build a time-ordered event stream from recorded data and a GNSS degradation 
+/// Build a time-ordered event stream from recorded data and a GNSS degradation
 /// configuration.
 ///
 /// This function converts raw `records` into a vector of [`Event`]s suitable
@@ -886,8 +1020,8 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{TimeZone, Utc};
     use assert_approx_eq::assert_approx_eq;
+    use chrono::{TimeZone, Utc};
 
     fn create_test_records(count: usize, interval_secs: f64) -> Vec<TestDataRecord> {
         let base_time = Utc.with_ymd_and_hms(2023, 1, 1, 0, 0, 0).unwrap();
@@ -994,7 +1128,11 @@ mod tests {
     #[test]
     fn test_duty_cycle_scheduler() {
         let records = create_test_records(60, 1.0); // 60 records, 1s apart, 60 seconds total
-        assert!(records.len() == 60, "{}", format!("Expected 60 records, found: {}", records.len()));
+        assert!(
+            records.len() == 60,
+            "{}",
+            format!("Expected 60 records, found: {}", records.len())
+        );
 
         let config = GnssDegradationConfig {
             scheduler: GnssScheduler::DutyCycle {
@@ -1005,7 +1143,7 @@ mod tests {
             fault: GnssFaultModel::None,
             seed: 42,
         };
-        // 
+        //
         let events = build_event_stream(&records, &config);
         //assert!(events.len() == 60, "{}", format!("Expected 60 events, found: {}", events.len()));
         // We should only have GNSS events when turning ON
@@ -1018,7 +1156,11 @@ mod tests {
         // We initialize off of the first event and only get GNSS updates every two seconds starting from 1.0
         // (60 - 1) // 2 = 29
         assert!(gnss_events.len() >= 2);
-        assert!(gnss_events.len() == 29, "{}", format!("Expected 29 GNSS events, found: {}", gnss_events.len()));
+        assert!(
+            gnss_events.len() == 29,
+            "{}",
+            format!("Expected 29 GNSS events, found: {}", gnss_events.len())
+        );
 
         // Extract elapsed_s from GNSS events and verify they occur at expected times
         let gnss_times: Vec<f64> = gnss_events
@@ -1126,17 +1268,14 @@ mod tests {
 
         // zero “truth” velocity
         let (_lat, _lon, _alt, vn_c, ve_c, _hstd, _vstd) = apply_fault(
-            &fault, &mut st,
-            /*t*/ 10.0, /*dt*/ 1.0,
-            /*lat_deg*/ 40.0, /*lon_deg*/ -75.0, /*alt_m*/ 0.0,
-            /*vn_mps*/ 0.0,   /*ve_mps*/ 0.0,
+            &fault, &mut st, /*t*/ 10.0, /*dt*/ 1.0, /*lat_deg*/ 40.0,
+            /*lon_deg*/ -75.0, /*alt_m*/ 0.0, /*vn_mps*/ 0.0, /*ve_mps*/ 0.0,
             /*horiz_std_m*/ 3.0, /*vert_std_m*/ 5.0, /*vel_std_mps*/ 0.2,
         );
 
-        assert_approx_eq!(vn_c,  0.02, 0.001);
+        assert_approx_eq!(vn_c, 0.02, 0.001);
         assert_approx_eq!(ve_c, -0.01, 0.001);
     }
-
 
     #[test]
     fn test_hijack_fault_model() {
@@ -1183,8 +1322,6 @@ mod tests {
             }
         }
     }
-
-    
 
     #[test]
     fn test_combo_fault_model() {

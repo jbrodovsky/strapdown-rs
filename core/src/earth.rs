@@ -381,17 +381,12 @@ pub fn meters_ned_to_dlat_dlon(lat_rad: f64, alt_m: f64, d_n: f64, d_e: f64) -> 
 /// );
 /// println!("Distance: {:.1} km", d / 1000.0);
 /// ```
-pub fn haversine_distance(
-    lat1_rad: f64,
-    lon1_rad: f64,
-    lat2_rad: f64,
-    lon2_rad: f64,
-) -> f64 {
+pub fn haversine_distance(lat1_rad: f64, lon1_rad: f64, lat2_rad: f64, lon2_rad: f64) -> f64 {
     let dlat = lat2_rad - lat1_rad;
     let dlon = lon2_rad - lon1_rad;
 
-    let a = (dlat / 2.0).sin().powi(2)
-        + lat1_rad.cos() * lat2_rad.cos() * (dlon / 2.0).sin().powi(2);
+    let a =
+        (dlat / 2.0).sin().powi(2) + lat1_rad.cos() * lat2_rad.cos() * (dlon / 2.0).sin().powi(2);
 
     let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
 
@@ -982,7 +977,12 @@ mod tests {
         let d = haversine_distance(0.0, 0.0, 0.0, 90_f64.to_radians());
         let expected = std::f64::consts::FRAC_PI_2 * 6_371_000.0; // R * π/2
         let err = (d - expected).abs();
-        assert!(err < 1e-6 * expected, "Error too large: got {}, expected {}", d, expected);
+        assert!(
+            err < 1e-6 * expected,
+            "Error too large: got {}, expected {}",
+            d,
+            expected
+        );
     }
 
     #[test]
@@ -991,7 +991,12 @@ mod tests {
         let d = haversine_distance(0.0, 0.0, 0.0, 180_f64.to_radians());
         let expected = std::f64::consts::PI * 6_371_000.0; // R * π
         let err = (d - expected).abs();
-        assert!(err < 1e-6 * expected, "Error too large: got {}, expected {}", d, expected);
+        assert!(
+            err < 1e-6 * expected,
+            "Error too large: got {}, expected {}",
+            d,
+            expected
+        );
     }
 
     #[test]
@@ -1004,6 +1009,10 @@ mod tests {
 
         let d = haversine_distance(nyc_lat, nyc_lon, lon_lat, lon_lon);
         // Real-world great-circle distance ~5567 km
-        assert!((d / KM - 5567.0).abs() < 50.0, "NYC-LON distance off: {} km", d / KM);
+        assert!(
+            (d / KM - 5567.0).abs() < 50.0,
+            "NYC-LON distance off: {} km",
+            d / KM
+        );
     }
 }
