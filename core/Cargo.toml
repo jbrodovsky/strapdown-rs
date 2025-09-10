@@ -15,10 +15,6 @@ documentation = "https://docs.rs/strapdown-rs/"
 [package.metadata.docs.rs]
 rustdoc-args = [ "--html-in-header", "katex-header.html" ]
 
-[[bin]]
-name = "strapdown"
-path = "src/main.rs"
-
 [lib]
 name = "strapdown"
 path = "src/strapdown.rs"

@@ -1,6 +1,7 @@
 .vscode
 target
 data
+examples/strapdown-sim/out
 
 # Map files
 *.nc
@@ -24,7 +25,6 @@ data
 *.ipynb_checkpoints
 *.pyc
 __pycache__
-*.ipynb
 
 # pixi environments
 .pixi
