@@ -10,13 +10,13 @@ license = "MIT"
 [activation.env]
 RUST_BACKTRACE = "1"
 # These might need to be absolute pathes
-# HDF5_DIR = ".pixi/envs/default"
-# RUSTFLAGS="-C link-args=-Wl,-rpath, .pixi/envs/default/include/lib"
+HDF5_DIR = "${PIXI_PROJECT_ROOT}/.pixi/envs/default"
+RUSTFLAGS="-C link-args=-Wl,-rpath,.pixi/envs/default/include/lib"
 
 [tasks]
 build = "cargo build --workspace --release"
 lint = "ruff check --select I --fix && cargo clippy --all-targets --all-features -- -D warnings"
-fmt = "ruff format . && cargo fmt --fix"
+fmt = "ruff format . && cargo fmt"
 preprocess = "python scripts/preprocess.py --input_dir data/raw/ --output_dir data/input/"
 #test = "pytest --cov=geophysical_nav --cov-report=xml --cov-report=html"
 
