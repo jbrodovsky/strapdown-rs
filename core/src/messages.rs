@@ -5,7 +5,7 @@ use rand::SeedableRng;
 use rand_distr::{Distribution, Normal};
 
 use crate::IMUData;
-use crate::earth::{meters_ned_to_dlat_dlon, METERS_TO_DEGREES};
+use crate::earth::{METERS_TO_DEGREES, meters_ned_to_dlat_dlon};
 use crate::filter::{
     GPSPositionAndVelocityMeasurement, GravityAnomalyMeasurement, MagneticAnomalyMeasurement,
     RelativeAltitudeMeasurement,
@@ -473,7 +473,7 @@ impl FaultState {
 ///
 /// ```ignore
 /// use rand::SeedableRng;
-/// 
+///
 /// let mut x = 0.0;
 /// let mut rng = SeedableRng::seed_from_u64(42);
 /// for _ in 0..5 {
@@ -713,7 +713,7 @@ fn apply_fault(
     }
 }
 // --------------------------- public API ---------------------------
-/// Build a time-ordered event stream from recorded data and a GNSS degradation 
+/// Build a time-ordered event stream from recorded data and a GNSS degradation
 /// configuration.
 ///
 /// This function converts raw `records` into a vector of [`Event`]s suitable
@@ -886,8 +886,8 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{TimeZone, Utc};
     use assert_approx_eq::assert_approx_eq;
+    use chrono::{TimeZone, Utc};
 
     fn create_test_records(count: usize, interval_secs: f64) -> Vec<TestDataRecord> {
         let base_time = Utc.with_ymd_and_hms(2023, 1, 1, 0, 0, 0).unwrap();
@@ -994,7 +994,11 @@ mod tests {
     #[test]
     fn test_duty_cycle_scheduler() {
         let records = create_test_records(60, 1.0); // 60 records, 1s apart, 60 seconds total
-        assert!(records.len() == 60, "{}", format!("Expected 60 records, found: {}", records.len()));
+        assert!(
+            records.len() == 60,
+            "{}",
+            format!("Expected 60 records, found: {}", records.len())
+        );
 
         let config = GnssDegradationConfig {
             scheduler: GnssScheduler::DutyCycle {
@@ -1005,7 +1009,7 @@ mod tests {
             fault: GnssFaultModel::None,
             seed: 42,
         };
-        // 
+        //
         let events = build_event_stream(&records, &config);
         //assert!(events.len() == 60, "{}", format!("Expected 60 events, found: {}", events.len()));
         // We should only have GNSS events when turning ON
@@ -1018,7 +1022,11 @@ mod tests {
         // We initialize off of the first event and only get GNSS updates every two seconds starting from 1.0
         // (60 - 1) // 2 = 29
         assert!(gnss_events.len() >= 2);
-        assert!(gnss_events.len() == 29, "{}", format!("Expected 29 GNSS events, found: {}", gnss_events.len()));
+        assert!(
+            gnss_events.len() == 29,
+            "{}",
+            format!("Expected 29 GNSS events, found: {}", gnss_events.len())
+        );
 
         // Extract elapsed_s from GNSS events and verify they occur at expected times
         let gnss_times: Vec<f64> = gnss_events
@@ -1126,17 +1134,14 @@ mod tests {
 
         // zero “truth” velocity
         let (_lat, _lon, _alt, vn_c, ve_c, _hstd, _vstd) = apply_fault(
-            &fault, &mut st,
-            /*t*/ 10.0, /*dt*/ 1.0,
-            /*lat_deg*/ 40.0, /*lon_deg*/ -75.0, /*alt_m*/ 0.0,
-            /*vn_mps*/ 0.0,   /*ve_mps*/ 0.0,
+            &fault, &mut st, /*t*/ 10.0, /*dt*/ 1.0, /*lat_deg*/ 40.0,
+            /*lon_deg*/ -75.0, /*alt_m*/ 0.0, /*vn_mps*/ 0.0, /*ve_mps*/ 0.0,
             /*horiz_std_m*/ 3.0, /*vert_std_m*/ 5.0, /*vel_std_mps*/ 0.2,
         );
 
-        assert_approx_eq!(vn_c,  0.02, 0.001);
+        assert_approx_eq!(vn_c, 0.02, 0.001);
         assert_approx_eq!(ve_c, -0.01, 0.001);
     }
-
 
     #[test]
     fn test_hijack_fault_model() {
@@ -1183,8 +1188,6 @@ mod tests {
             }
         }
     }
-
-    
 
     #[test]
     fn test_combo_fault_model() {
