@@ -38,28 +38,23 @@ pub fn matrix_square_root(matrix: &DMatrix<f64>) -> DMatrix<f64> {
         matrix.is_square(),
         "matrix_square_root: matrix must be square"
     );
-
     // Tunable guards (conservative defaults for double precision INS scales)
     const INITIAL_JITTER: f64 = 1e-12;
     const MAX_JITTER: f64 = 1e-6;
     const MAX_TRIES: usize = 6;
     const EIGEN_FLOOR: f64 = 1e-12;
-
     // 1) Symmetrize to kill round-off asymmetry
     let p = symmetrize(matrix);
-
     // 2) Cholesky (fast path)
     if let Some(s) = chol_sqrt(&p) {
         return s;
     }
-
     // 3) Jittered Cholesky
     if let Some(s) = chol_sqrt_with_jitter(&p, INITIAL_JITTER, MAX_JITTER, MAX_TRIES) {
         return s;
     }
-
     // 4) EVD fallback with eigenvalue floor — symmetric square root
-    return evd_symmetric_sqrt_with_floor(&p, EIGEN_FLOOR);
+    evd_symmetric_sqrt_with_floor(&p, EIGEN_FLOOR)
 }
 /// Symmetrize a matrix: P ← 0.5 (P + Pᵀ)
 ///

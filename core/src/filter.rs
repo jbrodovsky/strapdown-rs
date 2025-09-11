@@ -18,6 +18,7 @@ use crate::earth::METERS_TO_DEGREES;
 use crate::linalg::{matrix_square_root, robust_spd_solve, symmetrize};
 use crate::{IMUData, StrapdownState, forward, wrap_to_2pi};
 
+use std::any::Any;
 use std::fmt::Debug;
 
 use nalgebra::{DMatrix, DVector, Rotation3};
@@ -30,7 +31,11 @@ use rand;
 // calculate the innovation matrix or the particle weighting.
 // ================================================================================
 /// Generic measurement model trait for all filters
-pub trait MeasurementModel {
+pub trait MeasurementModel: Any {
+    /// Allow runtime downcasting of boxed trait objects.
+    fn as_any(&self) -> &dyn Any;
+    /// Allow mutable runtime downcasting of boxed trait objects.
+    fn as_any_mut(&mut self) -> &mut dyn Any;
     /// Get the dimensionality of the measurement vector.
     fn get_dimension(&self) -> usize;
     /// Get the measurement vector
@@ -57,6 +62,12 @@ pub struct GPSPositionMeasurement {
     pub vertical_noise_std: f64,
 }
 impl MeasurementModel for GPSPositionMeasurement {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
     fn get_dimension(&self) -> usize {
         3 // latitude, longitude, altitude
     }
@@ -99,6 +110,12 @@ pub struct GPSVelocityMeasurement {
     pub vertical_noise_std: f64,
 }
 impl MeasurementModel for GPSVelocityMeasurement {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
     fn get_dimension(&self) -> usize {
         3 // northward, eastward, downward velocity
     }
@@ -150,6 +167,12 @@ pub struct GPSPositionAndVelocityMeasurement {
     pub velocity_noise_std: f64,
 }
 impl MeasurementModel for GPSPositionAndVelocityMeasurement {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
     fn get_dimension(&self) -> usize {
         5 // latitude, longitude, altitude, northward velocity, eastward velocity
     }
@@ -196,6 +219,12 @@ pub struct RelativeAltitudeMeasurement {
     pub reference_altitude: f64,
 }
 impl MeasurementModel for RelativeAltitudeMeasurement {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
     fn get_dimension(&self) -> usize {
         1 // relative altitude
     }
@@ -214,17 +243,9 @@ impl MeasurementModel for RelativeAltitudeMeasurement {
         measurement_sigma_points
     }
 }
-#[derive(Clone, Debug, Default)]
-pub struct GravityAnomalyMeasurement {
-    // Placeholder
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct MagneticAnomalyMeasurement {}
-
 /// Basic strapdown state parameters for the UKF and particle filter initialization.
 #[derive(Clone, Debug, Default)]
-pub struct StrapdownParams {
+pub struct InitialState {
     pub latitude: f64,
     pub longitude: f64,
     pub altitude: f64,
@@ -257,7 +278,7 @@ pub struct StrapdownParams {
 /// toggle where applicable. Generally speaking, the design of this crate is such that methods that expect
 /// a WGS84 coordinate (e.g. latitude or longitude) will expect the value in degrees, whereas trigonometric
 /// functions (e.g. sine, cosine, tangent) will expect the value in radians.
-pub struct UKF {
+pub struct UnscentedKalmanFilter {
     mean_state: DVector<f64>,
     covariance: DMatrix<f64>,
     process_noise: DMatrix<f64>,
@@ -266,7 +287,7 @@ pub struct UKF {
     weights_mean: DVector<f64>,
     weights_cov: DVector<f64>,
 }
-impl Debug for UKF {
+impl Debug for UnscentedKalmanFilter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UKF")
             .field("mean_state", &self.mean_state)
@@ -277,9 +298,9 @@ impl Debug for UKF {
             .finish()
     }
 }
-impl UKF {
-    /// Creates a new UKF with the given initial state, biases, covariance, process noise,
-    /// any additional other states, and UKF hyper parameters.
+impl UnscentedKalmanFilter {
+    /// Creates a new UnscentedKalmanFilter with the given initial state, biases, covariance, process noise,
+    /// any additional other states, and UnscentedKalmanFilter hyper parameters.
     ///
     /// # Arguments
     /// * `position` - The initial position of the strapdown state.
@@ -295,9 +316,9 @@ impl UKF {
     /// * `in_degrees` - Whether the input vectors are in degrees or radians.
     ///
     /// # Returns
-    /// * A new UKF struct.
+    /// * A new UnscentedKalmanFilter struct.
     pub fn new(
-        strapdown_state: StrapdownParams,
+        initial_state: InitialState,
         imu_biases: Vec<f64>,
         other_states: Option<Vec<f64>>,
         covariance_diagonal: Vec<f64>,
@@ -305,34 +326,34 @@ impl UKF {
         alpha: f64,
         beta: f64,
         kappa: f64,
-    ) -> UKF {
+    ) -> UnscentedKalmanFilter {
         assert!(
             process_noise.nrows() == process_noise.ncols(),
             "Process noise matrix must be square"
         );
-        let mut mean = if strapdown_state.in_degrees {
+        let mut mean = if initial_state.in_degrees {
             vec![
-                strapdown_state.latitude.to_radians(),
-                strapdown_state.longitude.to_radians(),
-                strapdown_state.altitude,
-                strapdown_state.northward_velocity,
-                strapdown_state.eastward_velocity,
-                strapdown_state.downward_velocity,
-                strapdown_state.roll,
-                strapdown_state.pitch,
-                strapdown_state.yaw,
+                initial_state.latitude.to_radians(),
+                initial_state.longitude.to_radians(),
+                initial_state.altitude,
+                initial_state.northward_velocity,
+                initial_state.eastward_velocity,
+                initial_state.downward_velocity,
+                initial_state.roll,
+                initial_state.pitch,
+                initial_state.yaw,
             ]
         } else {
             vec![
-                strapdown_state.latitude,
-                strapdown_state.longitude,
-                strapdown_state.altitude,
-                strapdown_state.northward_velocity,
-                strapdown_state.eastward_velocity,
-                strapdown_state.downward_velocity,
-                strapdown_state.roll,
-                strapdown_state.pitch,
-                strapdown_state.yaw,
+                initial_state.latitude,
+                initial_state.longitude,
+                initial_state.altitude,
+                initial_state.northward_velocity,
+                initial_state.eastward_velocity,
+                initial_state.downward_velocity,
+                initial_state.roll,
+                initial_state.pitch,
+                initial_state.yaw,
             ]
         };
         mean.extend(imu_biases);
@@ -373,7 +394,7 @@ impl UKF {
             weights_mean[i] = w;
             weights_cov[i] = w;
         }
-        UKF {
+        UnscentedKalmanFilter {
             mean_state,
             covariance,
             process_noise,
@@ -444,11 +465,11 @@ impl UKF {
         self.mean_state = mu_bar;
         self.covariance = symmetrize(&p_bar);
     }
-    /// Get the UKF mean state.
+    /// Get the UnscentedKalmanFilter mean state.
     pub fn get_mean(&self) -> DVector<f64> {
         self.mean_state.clone()
     }
-    /// Get the UKF covariance.
+    /// Get the UnscentedKalmanFilter covariance.
     pub fn get_covariance(&self) -> DMatrix<f64> {
         self.covariance.clone()
     }
@@ -472,7 +493,7 @@ impl UKF {
     /// sigma points. The measurement model is specific to a given implementation of the UKF
     /// and must be provided by the user as the model determines the shape and quantities of
     /// the measurement vector and the measurement sigma points. Measurement models should be
-    /// implemented as traits and applied to the UKF as needed.
+    /// implemented as traits and applied to the UnscentedKalmanFilter as needed.
     ///
     /// This module contains some standard GNSS-aided measurements models (`position_measurement_model`,
     /// `velocity_measurement_model`, and `position_and_velocity_measurement_model`) that can be
@@ -481,7 +502,7 @@ impl UKF {
     ///
     /// **Note**: Canonical INS implementations use a position measurement model. Typically,
     /// position is reported in _degrees_ for latitude and longitude, and in meters for altitude.
-    /// Internally, the UKF stores the latitude and longitude in _radians_, and the measurement models make no
+    /// Internally, the UnscentedKalmanFilter stores the latitude and longitude in _radians_, and the measurement models make no
     /// assumptions about the units of the position measurements. However, the user should
     /// ensure that the provided measurement to this function is in the same units as the
     /// measurement model.
@@ -489,7 +510,7 @@ impl UKF {
     /// # Arguments
     /// * `measurement` - The measurement vector to update the state with.
     /// * `measurement_sigma_points` - The measurement sigma points to use for the update.
-    pub fn update<M: MeasurementModel>(&mut self, measurement: M) {
+    pub fn update<M: MeasurementModel + ?Sized>(&mut self, measurement: &M) {
         let measurement_sigma_points = measurement.get_sigma_points(&self.get_sigma_points());
         // Calculate expected measurement
         let mut z_hat = DVector::<f64>::zeros(measurement.get_dimension());
@@ -698,7 +719,7 @@ mod tests {
     const ALPHA: f64 = 1e-3;
     const BETA: f64 = 2.0;
     const KAPPA: f64 = 0.0;
-    const UKF_PARAMS: StrapdownParams = StrapdownParams {
+    const UKF_PARAMS: InitialState = InitialState {
         latitude: 0.0,
         longitude: 0.0,
         altitude: 0.0,
@@ -714,7 +735,7 @@ mod tests {
     #[test]
     fn ukf_construction() {
         let measurement_bias = vec![0.0; 3]; // Example measurement bias
-        let ukf = UKF::new(
+        let ukf = UnscentedKalmanFilter::new(
             UKF_PARAMS,
             IMU_BIASES.to_vec(),
             Some(measurement_bias.clone()),
@@ -744,7 +765,7 @@ mod tests {
     }
     #[test]
     fn ukf_get_sigma_points() {
-        let ukf = UKF::new(
+        let ukf = UnscentedKalmanFilter::new(
             UKF_PARAMS,
             IMU_BIASES.to_vec(),
             None,
@@ -772,7 +793,7 @@ mod tests {
     }
     #[test]
     fn ukf_propagate() {
-        let mut ukf = UKF::new(
+        let mut ukf = UnscentedKalmanFilter::new(
             UKF_PARAMS,
             vec![0.0; 6],
             None,         //Some(measurement_bias.clone()),
@@ -798,7 +819,7 @@ mod tests {
             horizontal_noise_std: 1e-3,
             vertical_noise_std: 1e-3,
         };
-        ukf.update(measurement);
+        ukf.update(&measurement);
         // Check that the state has not changed
         assert_approx_eq!(ukf.mean_state[0], 0.0, 1e-3);
         assert_approx_eq!(ukf.mean_state[1], 0.0, 1e-3);
@@ -807,89 +828,4 @@ mod tests {
         assert_approx_eq!(ukf.mean_state[4], 0.0, 0.1);
         assert_approx_eq!(ukf.mean_state[5], 0.0, 0.1);
     }
-    //#[test]
-    //fn ukf_debug() {
-    //    let imu_biases = vec![0.0, 0.0, 0.0];
-    //    let measurement_bias = vec![1.0, 1.0, 1.0];
-    //    let n = 9 + imu_biases.len() + measurement_bias.len();
-    //    let covariance_diagonal = vec![1e-3; n];
-    //    let process_noise_diagonal = vec![1e-3; n];
-    //    let alpha = 1e-3;
-    //    let beta = 2.0;
-    //    let kappa = 1e-3;
-    //    let ukf_params = StrapdownParams {
-    //        latitude: 0.0,
-    //        longitude: 0.0,
-    //        altitude: 0.0,
-    //        northward_velocity: 0.0,
-    //        eastward_velocity: 0.0,
-    //        downward_velocity: 0.0,
-    //        roll: 0.0,
-    //        pitch: 0.0,
-    //        yaw: 0.0,
-    //        in_degrees: false,
-    //    };
-    //    let ukf = UKF::new(
-    //        ukf_params,
-    //        imu_biases.clone(),
-    //        Some(measurement_bias.clone()),
-    //        covariance_diagonal,
-    //        DMatrix::from_diagonal(&DVector::from_vec(process_noise_diagonal)),
-    //        alpha,
-    //        beta,
-    //        kappa,
-    //    );
-    //    let debug_str = format!("{:?}", ukf);
-    //    assert!(debug_str.contains("mean_state"));
-    //}
-    //#[test]
-    //fn test_ukf_hover() {
-    //     let imu_data = IMUData::new_from_vec(vec![0.0, 0.0, earth::gravity(&0.0, &0.0)], vec![0.0, 0.0, 0.0]);
-    //     let position = vec![0.0, 0.0, 0.0];
-    //     let velocity = [0.0, 0.0, 0.0];
-    //     let attitude = [0.0, 0.0, 0.0];
-    //     let imu_biases = vec![0.0, 0.0, 0.0];
-    //     let measurement_bias = vec![0.0, 0.0, 0.0];
-    //     let covariance_diagonal = vec![1e-9; 9 + imu_biases.len() + measurement_bias.len()];
-    //     let process_noise_diagonal = vec![1e-9; 9 + imu_biases.len() + measurement_bias.len()];
-    //     let alpha = 1e-3;
-    //     let beta = 2.0;
-    //     let kappa = 0.0;
-    //     let ukf_params = StrapdownParams {
-    //         latitude: position[0],
-    //         longitude: position[1],
-    //         altitude: position[2],
-    //         northward_velocity: velocity[0],
-    //         eastward_velocity: velocity[1],
-    //         downward_velocity: velocity[2],
-    //         roll: attitude[0],
-    //         pitch: attitude[1],
-    //         yaw: attitude[2],
-    //         in_degrees: false,
-    //     };
-    //     let mut ukf = UKF::new(
-    //         ukf_params,
-    //         imu_biases.clone(),
-    //         Some(measurement_bias.clone()),
-    //         covariance_diagonal,
-    //         DMatrix::from_diagonal(&DVector::from_vec(process_noise_diagonal)),
-    //         alpha,
-    //         beta,
-    //         kappa,
-    //     );
-    //     let dt = 1.0;
-    //     let measurement_sigma_points = ukf.position_measurement_model(true);
-    //     let measurement_noise = ukf.position_measurement_noise(true);
-    //     let measurement = DVector::from_vec(position.clone());
-    //     for _i in 0..60 {
-    //         ukf.predict(&imu_data, dt);
-    //         ukf.update(&measurement, &measurement_sigma_points, &measurement_noise);
-    //     }
-    //     assert_approx_eq!(ukf.mean_state[0], position[0], 1e-3);
-    //     assert_approx_eq!(ukf.mean_state[1], position[1], 1e-3);
-    //     assert_approx_eq!(ukf.mean_state[2], position[2], 0.01);
-    //     assert_approx_eq!(ukf.mean_state[3], velocity[0], 0.01);
-    //     assert_approx_eq!(ukf.mean_state[4], velocity[1], 0.01);
-    //     assert_approx_eq!(ukf.mean_state[5], velocity[2], 0.01);
-    // }
 }

@@ -5,9 +5,7 @@ use std::path::PathBuf;
 use strapdown::messages::{
     GnssDegradationConfig, GnssFaultModel, GnssScheduler, build_event_stream,
 };
-use strapdown::sim::{
-    NavigationResult, TestDataRecord, closed_loop, initialize_ukf,
-};
+use strapdown::sim::{NavigationResult, TestDataRecord, closed_loop, initialize_ukf};
 
 const LONG_ABOUT: &str = "STRAPDOWN: A simulation and analysis tool for strapdown inertial navigation systems.
 
@@ -230,10 +228,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err(format!("Input path '{}' is not a file.", cli.input.display()).into());
     }
     // Validate that the output file is writable
-    if let Some(parent) = cli.output.parent() {
-        if !parent.exists() && parent.is_dir() {
-            return Err(format!("Output directory '{}' does not exist.", parent.display()).into());
-        }
+    if let Some(parent) = cli.output.parent()
+        && !parent.exists()
+        && parent.is_dir()
+    {
+        return Err(format!("Output directory '{}' does not exist.", parent.display()).into());
     }
     match cli.mode {
         SimMode::OpenLoop => println!("Running in open-loop mode"),

@@ -24,9 +24,7 @@ use nalgebra::{DMatrix, DVector, Vector3};
 use serde::{Deserialize, Serialize};
 
 use crate::earth::METERS_TO_DEGREES;
-use crate::filter::{
-    StrapdownParams, UKF,
-};
+use crate::filter::{InitialState, UnscentedKalmanFilter};
 use crate::messages::{Event, EventStream};
 use crate::{IMUData, StrapdownState, forward};
 use health::{HealthLimits, HealthMonitor};
@@ -403,7 +401,7 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>)> for NavigationResult {
             covariance.nrows() == 15 && covariance.ncols() == 15,
             "Covariance matrix must be 15x15"
         );
-        let covariance = DVector::from_vec(covariance.diagonal().iter().map(|&x| x).collect());
+        let covariance = DVector::from_vec(covariance.diagonal().iter().copied().collect());
         // let wmm_date: Date = Date::from_calendar_date(
         //     timestamp.year(),
         //     Month::try_from(timestamp.month() as u8).unwrap(),
@@ -465,12 +463,12 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>)> for NavigationResult {
 ///
 /// # Returns
 /// A NavigationResult struct containing the navigation solution.
-impl From<(&DateTime<Utc>, &UKF)> for NavigationResult {
-    fn from((timestamp, ukf): (&DateTime<Utc>, &UKF)) -> Self {
+impl From<(&DateTime<Utc>, &UnscentedKalmanFilter)> for NavigationResult {
+    fn from((timestamp, ukf): (&DateTime<Utc>, &UnscentedKalmanFilter)) -> Self {
         let state = &ukf.get_mean();
         let covariance = ukf.get_covariance();
         NavigationResult {
-            timestamp: timestamp.clone(),
+            timestamp: *timestamp,
             latitude: state[0].to_degrees(),
             longitude: state[1].to_degrees(),
             altitude: state[2],
@@ -515,18 +513,8 @@ impl From<(&DateTime<Utc>, &UKF)> for NavigationResult {
 ///
 /// # Returns
 /// A NavigationResult struct containing the navigation solution.
-impl
-    From<(
-        &DateTime<Utc>,
-        &StrapdownState,
-    )> for NavigationResult
-{
-    fn from(
-        (timestamp, state): (
-            &DateTime<Utc>,
-            &StrapdownState
-        ),
-    ) -> Self {
+impl From<(&DateTime<Utc>, &StrapdownState)> for NavigationResult {
+    fn from((timestamp, state): (&DateTime<Utc>, &StrapdownState)) -> Self {
         //let wmm_date: Date = Date::from_calendar_date(
         //    timestamp.year(),
         //    Month::try_from(timestamp.month() as u8).unwrap(),
@@ -540,7 +528,7 @@ impl
         //    wmm_date,
         //);
         NavigationResult {
-            timestamp: timestamp.clone(),
+            timestamp: *timestamp,
             latitude: state.latitude.to_degrees(),
             longitude: state.longitude.to_degrees(),
             altitude: state.altitude,
@@ -655,7 +643,10 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
 /// * `records` - Vector of test data records containing IMU measurements and GPS data.
 /// # Returns
 /// * `Vec<NavigationResult>` - A vector of navigation results containing the state estimates and covariances at each timestamp.
-pub fn closed_loop(ukf: &mut UKF, stream: EventStream) -> anyhow::Result<Vec<NavigationResult>> {
+pub fn closed_loop(
+    ukf: &mut UnscentedKalmanFilter,
+    stream: EventStream,
+) -> anyhow::Result<Vec<NavigationResult>> {
     let start_time = stream.start_time;
     let mut results: Vec<NavigationResult> = Vec::with_capacity(stream.events.len());
     let total = stream.events.len();
@@ -676,10 +667,7 @@ pub fn closed_loop(ukf: &mut UKF, stream: EventStream) -> anyhow::Result<Vec<Nav
         // Compute wall-clock time for this event
         let elapsed_s = match &event {
             Event::Imu { elapsed_s, .. } => *elapsed_s,
-            Event::Gnss { elapsed_s, .. } => *elapsed_s,
-            Event::Altitude { elapsed_s, .. } => *elapsed_s,
-            Event::GravityAnomaly { elapsed_s, .. } => *elapsed_s,
-            Event::MagneticAnomaly { elapsed_s, .. } => *elapsed_s,
+            Event::Measurement { elapsed_s, .. } => *elapsed_s,
         };
         let ts = start_time + Duration::milliseconds((elapsed_s * 1000.0).round() as i64);
         // Apply event
@@ -693,30 +681,38 @@ pub fn closed_loop(ukf: &mut UKF, stream: EventStream) -> anyhow::Result<Vec<Nav
                     bail!(e);
                 }
             }
-            Event::Gnss { meas, .. } => {
-                ukf.update(meas);
+            Event::Measurement { meas, .. } => {
+                ukf.update(meas.as_ref());
                 if let Err(e) =
                     monitor.check(ukf.get_mean().as_slice(), &ukf.get_covariance(), None)
                 {
-                    // log::error!("Health fail after GNSS update at {} (#{i}): {e}", ts);
+                    // log::error!("Health fail after measurement update at {} (#{i}): {e}", ts);
                     bail!(e);
                 }
-            }
-            Event::Altitude { meas, .. } => {
-                ukf.update(meas);
-                if let Err(e) =
-                    monitor.check(ukf.get_mean().as_slice(), &ukf.get_covariance(), None)
-                {
-                    // log::error!("Health fail after altitude update at {} (#{i}): {e}", ts);
-                    bail!(e);
-                }
-            }
-            Event::GravityAnomaly { meas, elapsed_s } => {
-                println!("Gravity anomaly detected: {:?} at {:?}s", meas, elapsed_s);
-            }
-            Event::MagneticAnomaly { meas, elapsed_s } => {
-                println!("Magnetic anomaly detected: {:?} at {:?}s", meas, elapsed_s);
-            }
+            } // Event::Gnss { meas, .. } => {
+              //     ukf.update(meas);
+              //     if let Err(e) =
+              //         monitor.check(ukf.get_mean().as_slice(), &ukf.get_covariance(), None)
+              //     {
+              //         // log::error!("Health fail after GNSS update at {} (#{i}): {e}", ts);
+              //         bail!(e);
+              //     }
+              // }
+              // Event::Altitude { meas, .. } => {
+              //     ukf.update(meas);
+              //     if let Err(e) =
+              //         monitor.check(ukf.get_mean().as_slice(), &ukf.get_covariance(), None)
+              //     {
+              //         // log::error!("Health fail after altitude update at {} (#{i}): {e}", ts);
+              //         bail!(e);
+              //     }
+              // }
+              // Event::GravityAnomaly { meas, elapsed_s } => {
+              //     println!("Gravity anomaly detected: {:?} at {:?}s", meas, elapsed_s);
+              // }
+              // Event::MagneticAnomaly { meas, elapsed_s } => {
+              //     println!("Magnetic anomaly detected: {:?} at {:?}s", meas, elapsed_s);
+              // }
         }
         // If timestamp changed, or it's the last event, record the previous state
         if Some(ts) != last_ts {
@@ -733,8 +729,8 @@ pub fn closed_loop(ukf: &mut UKF, stream: EventStream) -> anyhow::Result<Vec<Nav
     println!("Done!");
     Ok(results)
 }
-/// Print the UKF state and covariance for debugging purposes.
-pub fn print_ukf(ukf: &UKF, record: &TestDataRecord) {
+/// Print the Unscented Kalman Filter state and covariance for debugging purposes.
+pub fn print_ukf(ukf: &UnscentedKalmanFilter, record: &TestDataRecord) {
     println!(
         "\rUKF position: ({:.4}, {:.4}, {:.4})  |  Covariance: {:.4e}, {:.4e}, {:.4}  |  Error: {:.4e}, {:.4e}, {:.4}",
         ukf.get_mean()[0].to_degrees(),
@@ -809,8 +805,8 @@ pub fn initialize_ukf(
     initial_pose: TestDataRecord,
     attitude_covariance: Option<Vec<f64>>,
     imu_biases: Option<Vec<f64>>,
-) -> UKF {
-    let ukf_params = StrapdownParams {
+) -> UnscentedKalmanFilter {
+    let ukf_params = InitialState {
         latitude: initial_pose.latitude,
         longitude: initial_pose.longitude,
         altitude: initial_pose.altitude,
@@ -868,7 +864,7 @@ pub fn initialize_ukf(
         1e-8, // gyro bias z noise
     ]);
     //DVector::from_vec(vec![0.0; 15]);
-    UKF::new(
+    UnscentedKalmanFilter::new(
         ukf_params,
         imu_bias,
         None,

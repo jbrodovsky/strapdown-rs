@@ -4,20 +4,19 @@
 //! and map matching functionality. It also provides a set of tools for working with geophysical maps, such as
 //! relief, gravity, and magnetic maps. These maps are downloaded from the GMT database and can be used for
 //! navigation and map matching purposes.
+use std::any::Any;
 use std::fmt::Debug;
 use std::io;
 use std::path::PathBuf;
 
-use nalgebra;
 use nalgebra::{DMatrix, DVector, Vector3};
 use strapdown::IMUData;
 use strapdown::earth::METERS_TO_DEGREES;
 use strapdown::filter::{
-    GPSPositionAndVelocityMeasurement, MeasurementModel, RelativeAltitudeMeasurement,
-    StrapdownParams, UKF,
+    GPSPositionAndVelocityMeasurement, InitialState, MeasurementModel, RelativeAltitudeMeasurement,
+    UnscentedKalmanFilter,
 };
 use strapdown::sim::{NavigationResult, TestDataRecord};
-
 //================= Map Information ========================================================================
 /// Resolution values for bathymetric or terrain relief maps
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -168,11 +167,11 @@ impl GeoMap {
     /// # Example
     /// ```rust
     /// use nalgebra::{DVector, DMatrix};
-    /// use navtoolbox::gmt_toolbox::{GeoMap, GeoMeasurement, ReliefResolution};
+    /// use geonav::{GeoMap, GeophysicalMeasurementType, ReliefResolution};
     /// let lats = DVector::from_vec(vec![1.0, 2.0, 3.0]);
     /// let lons = DVector::from_vec(vec![1.0, 2.0, 3.0]);
     /// let data = DMatrix::from_vec(3, 3, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
-    /// let map_type = GeoMeasurement::Relief(ReliefResolution::OneDegree);
+    /// let map_type = GeophysicalMeasurementType::Relief(ReliefResolution::OneDegree);
     /// let map = GeoMap::new(lats, lons, data, map_type);
     /// ```
     pub fn new(
@@ -199,8 +198,8 @@ impl GeoMap {
     /// - A Result containing a reference to the GeoMap object or an error message
     ///
     /// # Example
-    /// ```rust
-    /// use navtoolbox::gmt_toolbox::{GeoMap, GeoMeasurement, ReliefResolution};
+    /// ```ignore
+    /// use geonav::{GeoMap, ReliefResolution, GeophysicalMeasurementType};
     /// use std::path::PathBuf;
     /// let map = GeoMap::load_geomap(PathBuf::from("path/to/file.nc"), GeophysicalMeasurementType::Relief(ReliefResolution::OneDegree));
     /// ```
@@ -279,9 +278,11 @@ impl GeoMap {
     /// - An Option containing the data value at the point, or None if the point is not in the map
     ///
     /// # Example
-    /// ```rust
-    /// use navtoolbox::gmt_toolbox::{GeoMap, GeoMeasurement, ReliefResolution};
-    /// let map = GeoMap::load_geomap(PathBuf::from("path/to/file.nc"), GeoMeasurement::Relief(ReliefResolution::OneDegree));
+    /// ```ignore
+    /// use geonav::{GeoMap, GeophysicalMeasurementType, ReliefResolution};
+    /// use std::path::PathBuf;
+    ///
+    /// let map = GeoMap::load_geomap(PathBuf::from("path/to/file.nc"), GeophysicalMeasurementType::Relief(ReliefResolution::OneDegree));
     /// let value = map.get_point(&1.5, &1.5);
     /// ```
     /// # Panics
@@ -325,7 +326,7 @@ impl GeoMap {
             let b = self.data[(lat_index, lon1_index)];
             println!("a: {}, b: {}", a, b);
             let lon_diff = self.lons[lon_index] - self.lons[lon1_index];
-            let result = ((a - b) / lon_diff) * (lon - &self.lons[lon1_index]) + b;
+            let result = ((a - b) / lon_diff) * (lon - self.lons[lon1_index]) + b;
             return Some(result);
         }
         if lon == &self.lons[0] || lon == &self.lons[self.lons.len() - 1] {
@@ -338,7 +339,7 @@ impl GeoMap {
             let a = self.data[(lat_index, lon_index)];
             let b = self.data[(lat1_index, lon_index)];
             let lat_diff = self.lats[lat_index] - self.lats[lat1_index];
-            return Some(((a - b) / lat_diff) * (lat - &self.lats[lat1_index]) + b);
+            return Some(((a - b) / lat_diff) * (lat - self.lats[lat1_index]) + b);
         }
         // If the lat/lon are not on the edge, use normal bilinear interpolation
         self.bilinear_interpolation(lat, lon)
@@ -373,9 +374,9 @@ impl GeoMap {
 
 /// Generic Geophysical Map Measurement trait
 #[derive(Clone, Debug)]
-pub struct GeophysicalMeasurement<'a> {
+pub struct GeophysicalMeasurement {
     /// Source map
-    pub map: &'a GeoMap,
+    pub map: GeoMap, //&'a should probably a references with lifetimes
     /// Measurement Noise
     pub noise_std: f64,
     /// Measured value
@@ -390,7 +391,13 @@ pub struct GeophysicalMeasurement<'a> {
 ///
 /// Working hypothesis: we can treat the UKF as a hybrid KF/PF where the sigma point / particles can be weighted
 /// in the get_sigma_points function by a generic normally distributed anomaly measurement model.
-impl MeasurementModel for GeophysicalMeasurement<'_> {
+impl MeasurementModel for GeophysicalMeasurement {
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
     fn get_dimension(&self) -> usize {
         1 // Single measurement: map value at current position
     }
@@ -448,9 +455,9 @@ pub fn initialize_geo_ukf(
     imu_biases: Option<Vec<f64>>,
     measurement_bias: f64,
     measurement_standard_deviation: f64,
-) -> UKF {
+) -> UnscentedKalmanFilter {
     //let mut rng = rand::thread_rng();
-    let ukf_params = StrapdownParams {
+    let ukf_params = InitialState {
         latitude: initial_pose.latitude,
         longitude: initial_pose.longitude,
         altitude: initial_pose.altitude,
@@ -508,7 +515,7 @@ pub fn initialize_geo_ukf(
         1e-8, // measurement bias noise
     ]);
     // Create the filter
-    UKF::new(
+    UnscentedKalmanFilter::new(
         ukf_params,
         imu_bias,
         Some(vec![measurement_bias]),
@@ -614,16 +621,16 @@ pub fn run_geophysical_navigation(
                 vertical_noise_std: record.vertical_accuracy * gps_degradation,
                 velocity_noise_std: record.speed_accuracy * gps_degradation,
             };
-            ukf.update(measurement);
+            ukf.update(&measurement);
             last_gps_update_time = *elapsed;
         }
         // If barometric altimeter data is available, update the UKF with the altitude measurement
         if !record.pressure.is_nan() {
             let altitude = RelativeAltitudeMeasurement {
                 relative_altitude: record.relative_altitude,
-                reference_altitude: reference_altitude,
+                reference_altitude,
             };
-            ukf.update(altitude);
+            ukf.update(&altitude);
         }
         // If anomaly data is available, update the UKF with the geophysical anomaly
         let state = ukf.get_mean();
@@ -641,7 +648,7 @@ pub fn run_geophysical_navigation(
                     .sqrt()
                         - state[15];
                     let _geo_measurement = GeophysicalMeasurement {
-                        map: &geo_map,
+                        map: geo_map.clone(),
                         noise_std: measurement_standard_deviation,
                         measurement: freeair,
                     };
@@ -655,7 +662,7 @@ pub fn run_geophysical_navigation(
                             .sqrt()
                             - state[15];
                     let _geo_measurement = GeophysicalMeasurement {
-                        map: &geo_map,
+                        map: geo_map.clone(),
                         noise_std: measurement_standard_deviation,
                         measurement: mag_anom,
                     };

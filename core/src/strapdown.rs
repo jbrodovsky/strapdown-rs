@@ -157,15 +157,15 @@ impl From<Vec<f64>> for IMUData {
         }
     }
 }
-impl Into<Vec<f64>> for IMUData {
-    fn into(self) -> Vec<f64> {
+impl From<IMUData> for Vec<f64> {
+    fn from(data: IMUData) -> Self {
         vec![
-            self.accel[0],
-            self.accel[1],
-            self.accel[2],
-            self.gyro[0],
-            self.gyro[1],
-            self.gyro[2],
+            data.accel[0],
+            data.accel[1],
+            data.accel[2],
+            data.gyro[0],
+            data.gyro[1],
+            data.gyro[2],
         ]
     }
 }
@@ -262,11 +262,11 @@ impl StrapdownState {
             longitude
         };
         assert!(
-            latitude >= -std::f64::consts::PI && latitude <= std::f64::consts::PI,
+            (-std::f64::consts::PI..=std::f64::consts::PI).contains(&latitude),
             "Latitude must be in the range [-π, π]"
         );
         assert!(
-            longitude >= -std::f64::consts::PI && longitude <= std::f64::consts::PI,
+            (-std::f64::consts::PI..=std::f64::consts::PI).contains(&longitude),
             "Longitude must be in the range [-π, π]"
         );
         assert!(
