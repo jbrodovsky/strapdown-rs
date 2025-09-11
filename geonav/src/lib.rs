@@ -17,7 +17,6 @@ use strapdown::filter::{InitialState,
     GPSPositionAndVelocityMeasurement, MeasurementModel, RelativeAltitudeMeasurement, UnscentedKalmanFilter,
 };
 use strapdown::sim::{NavigationResult, TestDataRecord};
-
 //================= Map Information ========================================================================
 /// Resolution values for bathymetric or terrain relief maps
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -168,11 +167,11 @@ impl GeoMap {
     /// # Example
     /// ```rust
     /// use nalgebra::{DVector, DMatrix};
-    /// use navtoolbox::gmt_toolbox::{GeoMap, GeoMeasurement, ReliefResolution};
+    /// use geonav::{GeoMap, GeophysicalMeasurementType, ReliefResolution};
     /// let lats = DVector::from_vec(vec![1.0, 2.0, 3.0]);
     /// let lons = DVector::from_vec(vec![1.0, 2.0, 3.0]);
     /// let data = DMatrix::from_vec(3, 3, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
-    /// let map_type = GeoMeasurement::Relief(ReliefResolution::OneDegree);
+    /// let map_type = GeophysicalMeasurementType::Relief(ReliefResolution::OneDegree);
     /// let map = GeoMap::new(lats, lons, data, map_type);
     /// ```
     pub fn new(
@@ -199,8 +198,8 @@ impl GeoMap {
     /// - A Result containing a reference to the GeoMap object or an error message
     ///
     /// # Example
-    /// ```rust
-    /// use navtoolbox::gmt_toolbox::{GeoMap, GeoMeasurement, ReliefResolution};
+    /// ```ignore
+    /// use geonav::{GeoMap, ReliefResolution, GeophysicalMeasurementType};
     /// use std::path::PathBuf;
     /// let map = GeoMap::load_geomap(PathBuf::from("path/to/file.nc"), GeophysicalMeasurementType::Relief(ReliefResolution::OneDegree));
     /// ```
@@ -279,9 +278,11 @@ impl GeoMap {
     /// - An Option containing the data value at the point, or None if the point is not in the map
     ///
     /// # Example
-    /// ```rust
-    /// use navtoolbox::gmt_toolbox::{GeoMap, GeoMeasurement, ReliefResolution};
-    /// let map = GeoMap::load_geomap(PathBuf::from("path/to/file.nc"), GeoMeasurement::Relief(ReliefResolution::OneDegree));
+    /// ```ignore
+    /// use geonav::{GeoMap, GeophysicalMeasurementType, ReliefResolution};
+    /// use std::path::PathBuf;
+    /// 
+    /// let map = GeoMap::load_geomap(PathBuf::from("path/to/file.nc"), GeophysicalMeasurementType::Relief(ReliefResolution::OneDegree));
     /// let value = map.get_point(&1.5, &1.5);
     /// ```
     /// # Panics
