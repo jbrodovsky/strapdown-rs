@@ -11,3 +11,11 @@ csv = { workspace = true }
 strapdown-core = { path = "../core" }
 statrs = "0.18.0"
 netcdf = "0.11.0"
+
+[lib]
+name = "geonav"
+path = "src/lib.rs"
+
+[[bin]]
+name = "geonav"
+path = "src/main.rs"
