@@ -11,7 +11,7 @@ use std::path::Path;
 use crate::IMUData;
 use crate::earth::meters_ned_to_dlat_dlon;
 use crate::filter::{
-    GPSPositionAndVelocityMeasurement, RelativeAltitudeMeasurement, MeasurementModel
+    GPSPositionAndVelocityMeasurement, MeasurementModel, RelativeAltitudeMeasurement,
 };
 use crate::sim::TestDataRecord;
 /// Scheduler for controlling when GNSS measurements are emitted into the simulation.
@@ -308,7 +308,10 @@ impl GnssDegradationConfig {
             Some("json") => self.to_json(p),
             Some("yaml") | Some("yml") => self.to_yaml(p),
             Some("toml") => self.to_toml(p),
-            _ => Err(io::Error::new(io::ErrorKind::InvalidInput, "unsupported file extension")),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unsupported file extension",
+            )),
         }
     }
     /// Generic read: choose format by file extension (.json/.yaml/.yml/.toml)
@@ -322,7 +325,10 @@ impl GnssDegradationConfig {
             Some("json") => Self::from_json(p),
             Some("yaml") | Some("yml") => Self::from_yaml(p),
             Some("toml") => Self::from_toml(p),
-            _ => Err(io::Error::new(io::ErrorKind::InvalidInput, "unsupported file extension")),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unsupported file extension",
+            )),
         }
     }
 }
@@ -397,7 +403,7 @@ pub enum Event {
     },
     /// Any measurement that implements the MeasurementModel trait.
     Measurement {
-        meas: Box<dyn MeasurementModel>,  // trait object
+        meas: Box<dyn MeasurementModel>, // trait object
         elapsed_s: f64,
     },
 }
@@ -744,18 +750,7 @@ fn apply_fault(
             );
             for m in models {
                 out = apply_fault(
-                    m,
-                    st,
-                    t,
-                    dt,
-                    out.0,
-                    out.1,
-                    out.2,
-                    out.3,
-                    out.4,
-                    out.5,
-                    vert_std_m,
-                    out.6,
+                    m, st, t, dt, out.0, out.1, out.2, out.3, out.4, out.5, vert_std_m, out.6,
                 );
             }
             out
@@ -848,10 +843,7 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
     // Scheduler state
     let mut next_emit_time = match cfg.scheduler {
         GnssScheduler::PassThrough => 0.0,
-        GnssScheduler::FixedInterval {
-            phase_s,
-            ..
-        } => phase_s,
+        GnssScheduler::FixedInterval { phase_s, .. } => phase_s,
         GnssScheduler::DutyCycle { start_phase_s, .. } => start_phase_s,
     };
     let mut duty_on = true;
@@ -930,14 +922,20 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
             //     meas,
             //     elapsed_s: *t1,
             // });
-            events.push(Event::Measurement { meas: Box::new(meas), elapsed_s: *t1 });
+            events.push(Event::Measurement {
+                meas: Box::new(meas),
+                elapsed_s: *t1,
+            });
         }
         if !r1.relative_altitude.is_nan() {
             let baro: RelativeAltitudeMeasurement = RelativeAltitudeMeasurement {
                 relative_altitude: r1.relative_altitude,
-                reference_altitude
+                reference_altitude,
             };
-            events.push(Event::Measurement { meas: Box::new(baro), elapsed_s: *t1 });
+            events.push(Event::Measurement {
+                meas: Box::new(baro),
+                elapsed_s: *t1,
+            });
         }
     }
     EventStream { start_time, events }
@@ -1133,7 +1131,8 @@ mod tests {
         // Check R-scaling is applied
         for event in &gnss_events {
             let meas = if let Event::Measurement { meas, .. } = event {
-                meas.as_any().downcast_ref::<GPSPositionAndVelocityMeasurement>()
+                meas.as_any()
+                    .downcast_ref::<GPSPositionAndVelocityMeasurement>()
             } else {
                 None
             };
@@ -1156,7 +1155,10 @@ mod tests {
 
         for event in &gnss_events {
             if let Event::Measurement { meas, .. } = event {
-                let meas = meas.as_any().downcast_ref::<GPSPositionAndVelocityMeasurement>().unwrap();
+                let meas = meas
+                    .as_any()
+                    .downcast_ref::<GPSPositionAndVelocityMeasurement>()
+                    .unwrap();
                 // Positions should be perturbed from original
                 assert_approx_eq!(meas.latitude, original_lat, 1e-3);
                 assert_approx_eq!(meas.longitude, original_lon, 1e-3);
@@ -1175,7 +1177,7 @@ mod tests {
                     }
                 }
                 prev_lon = Some(meas.longitude);
-            }          
+            }
         }
         // Positions should vary between measurements due to AR(1) process
         assert!(!all_same);
@@ -1225,7 +1227,10 @@ mod tests {
         let mut gnss_by_time: Vec<(f64, &GPSPositionAndVelocityMeasurement)> = Vec::new();
         for event in &events.events {
             if let Event::Measurement { meas, elapsed_s } = event {
-                if let Some(gps) = meas.as_any().downcast_ref::<GPSPositionAndVelocityMeasurement>() {
+                if let Some(gps) = meas
+                    .as_any()
+                    .downcast_ref::<GPSPositionAndVelocityMeasurement>()
+                {
                     gnss_by_time.push((*elapsed_s, gps));
                 }
             }

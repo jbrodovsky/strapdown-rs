@@ -18,8 +18,8 @@ use crate::earth::METERS_TO_DEGREES;
 use crate::linalg::{matrix_square_root, robust_spd_solve, symmetrize};
 use crate::{IMUData, StrapdownState, forward, wrap_to_2pi};
 
-use std::fmt::Debug;
 use std::any::Any;
+use std::fmt::Debug;
 
 use nalgebra::{DMatrix, DVector, Rotation3};
 use rand;
@@ -62,8 +62,12 @@ pub struct GPSPositionMeasurement {
     pub vertical_noise_std: f64,
 }
 impl MeasurementModel for GPSPositionMeasurement {
-    fn as_any(&self) -> &dyn Any { self }
-    fn as_any_mut(&mut self) -> &mut dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
     fn get_dimension(&self) -> usize {
         3 // latitude, longitude, altitude
     }
@@ -106,8 +110,12 @@ pub struct GPSVelocityMeasurement {
     pub vertical_noise_std: f64,
 }
 impl MeasurementModel for GPSVelocityMeasurement {
-    fn as_any(&self) -> &dyn Any { self }
-    fn as_any_mut(&mut self) -> &mut dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
     fn get_dimension(&self) -> usize {
         3 // northward, eastward, downward velocity
     }
@@ -159,8 +167,12 @@ pub struct GPSPositionAndVelocityMeasurement {
     pub velocity_noise_std: f64,
 }
 impl MeasurementModel for GPSPositionAndVelocityMeasurement {
-    fn as_any(&self) -> &dyn Any { self }
-    fn as_any_mut(&mut self) -> &mut dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
     fn get_dimension(&self) -> usize {
         5 // latitude, longitude, altitude, northward velocity, eastward velocity
     }
@@ -207,8 +219,12 @@ pub struct RelativeAltitudeMeasurement {
     pub reference_altitude: f64,
 }
 impl MeasurementModel for RelativeAltitudeMeasurement {
-    fn as_any(&self) -> &dyn Any { self }
-    fn as_any_mut(&mut self) -> &mut dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
     fn get_dimension(&self) -> usize {
         1 // relative altitude
     }
