@@ -9,7 +9,6 @@ use std::fmt::Debug;
 use std::io;
 use std::path::PathBuf;
 
-use nalgebra;
 use nalgebra::{DMatrix, DVector, Vector3};
 use strapdown::IMUData;
 use strapdown::earth::METERS_TO_DEGREES;
@@ -326,7 +325,7 @@ impl GeoMap {
             let b = self.data[(lat_index, lon1_index)];
             println!("a: {}, b: {}", a, b);
             let lon_diff = self.lons[lon_index] - self.lons[lon1_index];
-            let result = ((a - b) / lon_diff) * (lon - &self.lons[lon1_index]) + b;
+            let result = ((a - b) / lon_diff) * (lon - self.lons[lon1_index]) + b;
             return Some(result);
         }
         if lon == &self.lons[0] || lon == &self.lons[self.lons.len() - 1] {
@@ -339,7 +338,7 @@ impl GeoMap {
             let a = self.data[(lat_index, lon_index)];
             let b = self.data[(lat1_index, lon_index)];
             let lat_diff = self.lats[lat_index] - self.lats[lat1_index];
-            return Some(((a - b) / lat_diff) * (lat - &self.lats[lat1_index]) + b);
+            return Some(((a - b) / lat_diff) * (lat - self.lats[lat1_index]) + b);
         }
         // If the lat/lon are not on the edge, use normal bilinear interpolation
         self.bilinear_interpolation(lat, lon)
@@ -628,7 +627,7 @@ pub fn run_geophysical_navigation(
         if !record.pressure.is_nan() {
             let altitude = RelativeAltitudeMeasurement {
                 relative_altitude: record.relative_altitude,
-                reference_altitude: reference_altitude,
+                reference_altitude,
             };
             ukf.update(&altitude);
         }

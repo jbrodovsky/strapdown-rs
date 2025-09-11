@@ -262,11 +262,11 @@ impl StrapdownState {
             longitude
         };
         assert!(
-            latitude >= -std::f64::consts::PI && latitude <= std::f64::consts::PI,
+            (-std::f64::consts::PI..=std::f64::consts::PI).contains(&latitude),
             "Latitude must be in the range [-π, π]"
         );
         assert!(
-            longitude >= -std::f64::consts::PI && longitude <= std::f64::consts::PI,
+            (-std::f64::consts::PI..=std::f64::consts::PI).contains(&longitude),
             "Longitude must be in the range [-π, π]"
         );
         assert!(

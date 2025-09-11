@@ -403,7 +403,7 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>)> for NavigationResult {
             covariance.nrows() == 15 && covariance.ncols() == 15,
             "Covariance matrix must be 15x15"
         );
-        let covariance = DVector::from_vec(covariance.diagonal().iter().map(|&x| x).collect());
+        let covariance = DVector::from_vec(covariance.diagonal().iter().copied().collect());
         // let wmm_date: Date = Date::from_calendar_date(
         //     timestamp.year(),
         //     Month::try_from(timestamp.month() as u8).unwrap(),
@@ -470,7 +470,7 @@ impl From<(&DateTime<Utc>, &UnscentedKalmanFilter)> for NavigationResult {
         let state = &ukf.get_mean();
         let covariance = ukf.get_covariance();
         NavigationResult {
-            timestamp: timestamp.clone(),
+            timestamp: *timestamp,
             latitude: state[0].to_degrees(),
             longitude: state[1].to_degrees(),
             altitude: state[2],
@@ -540,7 +540,7 @@ impl
         //    wmm_date,
         //);
         NavigationResult {
-            timestamp: timestamp.clone(),
+            timestamp: *timestamp,
             latitude: state.latitude.to_degrees(),
             longitude: state.longitude.to_degrees(),
             altitude: state.altitude,

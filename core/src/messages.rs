@@ -264,30 +264,30 @@ impl GnssDegradationConfig {
     /// Write the configuration to a JSON file (pretty-printed).
     pub fn to_json<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
         let file = File::create(path)?;
-        serde_json::to_writer_pretty(file, self).map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+        serde_json::to_writer_pretty(file, self).map_err(|e| io::Error::other(e))
     }
 
     /// Read the configuration from a JSON file.
     pub fn from_json<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let file = File::open(path)?;
-        serde_json::from_reader(file).map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+        serde_json::from_reader(file).map_err(|e| io::Error::other(e))
     }
     /// Write the configuration as YAML.
     pub fn to_yaml<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
         let mut file = File::create(path)?;
-        let s = serde_yaml::to_string(self).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let s = serde_yaml::to_string(self).map_err(|e| io::Error::other(e))?;
         file.write_all(s.as_bytes())
     }
 
     /// Read the configuration from YAML.
     pub fn from_yaml<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let file = File::open(path)?;
-        serde_yaml::from_reader(file).map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+        serde_yaml::from_reader(file).map_err(|e| io::Error::other(e))
     }
     /// Write the configuration as TOML.
     pub fn to_toml<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
         let mut file = File::create(path)?;
-        let s = toml::to_string(self).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let s = toml::to_string(self).map_err(|e| io::Error::other(e))?;
         file.write_all(s.as_bytes())
     }
     /// Read the configuration from TOML.
@@ -295,7 +295,7 @@ impl GnssDegradationConfig {
         let mut s = String::new();
         let mut file = File::open(path)?;
         file.read_to_string(&mut s)?;
-        toml::from_str(&s).map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+        toml::from_str(&s).map_err(|e| io::Error::other(e))
     }
     /// Generic write: choose format by file extension (.json/.yaml/.yml/.toml)
     pub fn to_file<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
@@ -932,7 +932,7 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
             // });
             events.push(Event::Measurement { meas: Box::new(meas), elapsed_s: *t1 });
         }
-        if r1.relative_altitude != f64::NAN {
+        if !r1.relative_altitude.is_nan() {
             let baro: RelativeAltitudeMeasurement = RelativeAltitudeMeasurement {
                 relative_altitude: r1.relative_altitude,
                 reference_altitude
