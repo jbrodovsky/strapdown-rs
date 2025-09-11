@@ -4,6 +4,7 @@
 //! and map matching functionality. It also provides a set of tools for working with geophysical maps, such as
 //! relief, gravity, and magnetic maps. These maps are downloaded from the GMT database and can be used for
 //! navigation and map matching purposes.
+use std::any::Any;
 use std::fmt::Debug;
 use std::io;
 use std::path::PathBuf;
@@ -12,9 +13,8 @@ use nalgebra;
 use nalgebra::{DMatrix, DVector, Vector3};
 use strapdown::IMUData;
 use strapdown::earth::METERS_TO_DEGREES;
-use strapdown::filter::{
-    GPSPositionAndVelocityMeasurement, MeasurementModel, RelativeAltitudeMeasurement,
-    StrapdownParams, UKF,
+use strapdown::filter::{InitialState,
+    GPSPositionAndVelocityMeasurement, MeasurementModel, RelativeAltitudeMeasurement, UnscentedKalmanFilter,
 };
 use strapdown::sim::{NavigationResult, TestDataRecord};
 
@@ -373,9 +373,9 @@ impl GeoMap {
 
 /// Generic Geophysical Map Measurement trait
 #[derive(Clone, Debug)]
-pub struct GeophysicalMeasurement<'a> {
+pub struct GeophysicalMeasurement {
     /// Source map
-    pub map: &'a GeoMap,
+    pub map: GeoMap, //&'a should probably a references with lifetimes
     /// Measurement Noise
     pub noise_std: f64,
     /// Measured value
@@ -390,7 +390,13 @@ pub struct GeophysicalMeasurement<'a> {
 ///
 /// Working hypothesis: we can treat the UKF as a hybrid KF/PF where the sigma point / particles can be weighted
 /// in the get_sigma_points function by a generic normally distributed anomaly measurement model.
-impl MeasurementModel for GeophysicalMeasurement<'_> {
+impl MeasurementModel for GeophysicalMeasurement {
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
     fn get_dimension(&self) -> usize {
         1 // Single measurement: map value at current position
     }
@@ -448,9 +454,9 @@ pub fn initialize_geo_ukf(
     imu_biases: Option<Vec<f64>>,
     measurement_bias: f64,
     measurement_standard_deviation: f64,
-) -> UKF {
+) -> UnscentedKalmanFilter {
     //let mut rng = rand::thread_rng();
-    let ukf_params = StrapdownParams {
+    let ukf_params = InitialState {
         latitude: initial_pose.latitude,
         longitude: initial_pose.longitude,
         altitude: initial_pose.altitude,
@@ -508,7 +514,7 @@ pub fn initialize_geo_ukf(
         1e-8, // measurement bias noise
     ]);
     // Create the filter
-    UKF::new(
+    UnscentedKalmanFilter::new(
         ukf_params,
         imu_bias,
         Some(vec![measurement_bias]),
@@ -614,7 +620,7 @@ pub fn run_geophysical_navigation(
                 vertical_noise_std: record.vertical_accuracy * gps_degradation,
                 velocity_noise_std: record.speed_accuracy * gps_degradation,
             };
-            ukf.update(measurement);
+            ukf.update(&measurement);
             last_gps_update_time = *elapsed;
         }
         // If barometric altimeter data is available, update the UKF with the altitude measurement
@@ -623,7 +629,7 @@ pub fn run_geophysical_navigation(
                 relative_altitude: record.relative_altitude,
                 reference_altitude: reference_altitude,
             };
-            ukf.update(altitude);
+            ukf.update(&altitude);
         }
         // If anomaly data is available, update the UKF with the geophysical anomaly
         let state = ukf.get_mean();
@@ -641,7 +647,7 @@ pub fn run_geophysical_navigation(
                     .sqrt()
                         - state[15];
                     let _geo_measurement = GeophysicalMeasurement {
-                        map: &geo_map,
+                        map: geo_map.clone(),
                         noise_std: measurement_standard_deviation,
                         measurement: freeair,
                     };
@@ -655,7 +661,7 @@ pub fn run_geophysical_navigation(
                             .sqrt()
                             - state[15];
                     let _geo_measurement = GeophysicalMeasurement {
-                        map: &geo_map,
+                        map: geo_map.clone(),
                         noise_std: measurement_standard_deviation,
                         measurement: mag_anom,
                     };

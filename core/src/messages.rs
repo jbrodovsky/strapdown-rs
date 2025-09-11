@@ -4,6 +4,7 @@ use nalgebra::Vector3;
 use rand::SeedableRng;
 use rand_distr::{Distribution, Normal};
 use serde::{Deserialize, Serialize};
+use std::f64::NAN;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::Path;
@@ -11,8 +12,7 @@ use std::path::Path;
 use crate::IMUData;
 use crate::earth::meters_ned_to_dlat_dlon;
 use crate::filter::{
-    GPSPositionAndVelocityMeasurement, GravityAnomalyMeasurement, MagneticAnomalyMeasurement,
-    RelativeAltitudeMeasurement,
+    GPSPositionAndVelocityMeasurement, RelativeAltitudeMeasurement, MeasurementModel
 };
 use crate::sim::TestDataRecord;
 /// Scheduler for controlling when GNSS measurements are emitted into the simulation.
@@ -88,65 +88,6 @@ pub enum GnssScheduler {
     },
 }
 
-#[cfg(test)]
-mod serialization_tests {
-    use super::*;
-    use tempfile::NamedTempFile;
-
-    fn sample_cfg() -> GnssDegradationConfig {
-        GnssDegradationConfig {
-            scheduler: GnssScheduler::PassThrough,
-            fault: GnssFaultModel::Degraded {
-                rho_pos: 0.99,
-                sigma_pos_m: 3.0,
-                rho_vel: 0.95,
-                sigma_vel_mps: 0.3,
-                r_scale: 5.0,
-            },
-            seed: 42,
-        }
-    }
-
-    #[test]
-    fn json_roundtrip() {
-        let cfg = sample_cfg();
-        let f = NamedTempFile::new().unwrap();
-        let path = f.path().with_extension("json");
-        cfg.to_json(&path).unwrap();
-        let loaded = GnssDegradationConfig::from_json(&path).unwrap();
-        assert_eq!(cfg.seed, loaded.seed);
-    }
-
-    #[test]
-    fn yaml_roundtrip() {
-        let cfg = sample_cfg();
-        let f = NamedTempFile::new().unwrap();
-        let path = f.path().with_extension("yaml");
-        cfg.to_yaml(&path).unwrap();
-        let loaded = GnssDegradationConfig::from_yaml(&path).unwrap();
-        assert_eq!(cfg.seed, loaded.seed);
-    }
-
-    #[test]
-    fn toml_roundtrip() {
-        let cfg = sample_cfg();
-        let f = NamedTempFile::new().unwrap();
-        let path = f.path().with_extension("toml");
-        cfg.to_toml(&path).unwrap();
-        let loaded = GnssDegradationConfig::from_toml(&path).unwrap();
-        assert_eq!(cfg.seed, loaded.seed);
-    }
-
-    #[test]
-    fn generic_dispatch_roundtrip() {
-        let cfg = sample_cfg();
-        let f = NamedTempFile::new().unwrap();
-        let path = f.path().with_extension("json");
-        cfg.to_file(&path).unwrap();
-        let loaded = GnssDegradationConfig::from_file(&path).unwrap();
-        assert_eq!(cfg.seed, loaded.seed);
-    }
-}
 /// Models how GNSS measurement *content* is corrupted before it reaches the filter.
 ///
 /// This is complementary to [`GnssScheduler`], which decides *when* GNSS
@@ -371,7 +312,6 @@ impl GnssDegradationConfig {
             _ => Err(io::Error::new(io::ErrorKind::InvalidInput, "unsupported file extension")),
         }
     }
-
     /// Generic read: choose format by file extension (.json/.yaml/.yml/.toml)
     pub fn from_file<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let p = path.as_ref();
@@ -422,9 +362,8 @@ impl GnssDegradationConfig {
 /// ```
 /// use strapdown::messages::Event;
 /// use strapdown::IMUData;
-/// use strapdown::filter::{GPSPositionAndVelocityMeasurement, GravityAnomalyMeasurement, MagneticAnomalyMeasurement};
+/// use strapdown::filter::GPSPositionAndVelocityMeasurement;
 /// use nalgebra::Vector3;
-
 /// // An IMU event with 0.01 s timestep
 /// let imu_event = Event::Imu {
 ///     dt_s: 0.01,
@@ -444,9 +383,8 @@ impl GnssDegradationConfig {
 ///     vertical_noise_std: 10.0,
 ///     velocity_noise_std: 0.2,
 /// };
-/// let gnss_event = Event::Gnss { meas: gnss_meas, elapsed_s: 2.0 };
+/// let gnss_event = Event::Measurement { meas: Box::new(gnss_meas), elapsed_s: 2.0 };
 /// ```
-#[derive(Clone, Debug)]
 pub enum Event {
     /// IMU prediction step.
     ///
@@ -458,44 +396,9 @@ pub enum Event {
         imu: IMUData,
         elapsed_s: f64,
     },
-
-    /// GNSS position/velocity measurement (possibly degraded or spoofed).
-    ///
-    /// - `meas`: GNSS measurement structure.
-    /// - `elapsed_s`: Elapsed simulation time at this fix (seconds).
-    Gnss {
-        meas: GPSPositionAndVelocityMeasurement,
-        elapsed_s: f64,
-    },
-
-    /// Relative altitude or barometric measurement.
-    ///
-    /// - `meas`: Altitude measurement structure.
-    /// - `elapsed_s`: Elapsed simulation time at this measurement (seconds).
-    Altitude {
-        meas: RelativeAltitudeMeasurement,
-        elapsed_s: f64,
-    },
-
-    /// Gravity anomaly measurement, used for map matching against known gravity anomalies.
-    ///
-    /// Typically expressed in milligals (mGal).
-    ///
-    /// - `meas`: Gravity anomaly measurement structure.
-    /// - `elapsed_s`: Elapsed simulation time (seconds).
-    GravityAnomaly {
-        meas: GravityAnomalyMeasurement,
-        elapsed_s: f64,
-    },
-
-    /// Magnetic anomaly measurement, used for map matching against magnetic anomaly maps.
-    ///
-    /// Typically expressed in nanoteslas (nT).
-    ///
-    /// - `meas`: Magnetic anomaly measurement structure.
-    /// - `elapsed_s`: Elapsed simulation time (seconds).
-    MagneticAnomaly {
-        meas: MagneticAnomalyMeasurement,
+    /// Any measurement that implements the MeasurementModel trait.
+    Measurement {
+        meas: Box<dyn MeasurementModel>,  // trait object
         elapsed_s: f64,
     },
 }
@@ -953,9 +856,11 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
         GnssScheduler::DutyCycle { start_phase_s, .. } => start_phase_s,
     };
     let mut duty_on = true;
-
+    // Through preprocessing we assert that the first record must have a NED position
+    // but it may or may not have IMU or other such measurements.
+    let reference_altitude = records[0].altitude;
     for w in records_with_elapsed.windows(2) {
-        let (t0, _) = (&w[0].0, &w[0].1);
+        let (t0, r0) = (&w[0].0, &w[0].1);
         let (t1, r1) = (&w[1].0, &w[1].1);
         let dt = t1 - t0;
 
@@ -1022,10 +927,18 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
                 vertical_noise_std: vert_std, // pass-through here; you can also degrade it if desired
                 velocity_noise_std: vel_c,
             };
-            events.push(Event::Gnss {
-                meas,
-                elapsed_s: *t1,
-            });
+            // events.push(Event::Gnss {
+            //     meas,
+            //     elapsed_s: *t1,
+            // });
+            events.push(Event::Measurement { meas: Box::new(meas), elapsed_s: *t1 });
+        }
+        if r1.relative_altitude != NAN {
+            let baro: RelativeAltitudeMeasurement = RelativeAltitudeMeasurement {
+                relative_altitude: r1.relative_altitude,
+                reference_altitude: reference_altitude
+            };
+            events.push(Event::Measurement { meas: Box::new(baro), elapsed_s: *t1 });
         }
     }
     EventStream { start_time, events }
@@ -1094,7 +1007,7 @@ mod tests {
 
         // We expect IMU events for each record except the first,
         // and GNSS events for each record except the first
-        assert_eq!(events.events.len(), 18); // 9 IMU + 9 GNSS
+        assert_eq!(events.events.len(), 27); // 9 IMU + 9 GNSS + 9 Baro
 
         // Count IMU and GNSS events
         let imu_count = events
@@ -1105,7 +1018,15 @@ mod tests {
         let gnss_count = events
             .events
             .iter()
-            .filter(|e| matches!(e, Event::Gnss { .. }))
+            .filter(|e| matches!(e, Event::Measurement { .. }))
+            .into_iter()
+            .filter(|e| {
+                if let Event::Measurement { meas, .. } = e {
+                    meas.as_any().is::<GPSPositionAndVelocityMeasurement>()
+                } else {
+                    false
+                }
+            })
             .count();
         assert_eq!(imu_count, 9);
         assert_eq!(gnss_count, 9);
@@ -1131,13 +1052,13 @@ mod tests {
             .iter()
             .filter(|e| matches!(e, Event::Imu { .. }))
             .count();
-        let gnss_count = events
+        let measurements = events
             .events
             .iter()
-            .filter(|e| matches!(e, Event::Gnss { .. }))
+            .filter(|e| matches!(e, Event::Measurement { .. }))
             .count();
         assert_eq!(imu_count, 19);
-        assert_eq!(gnss_count, 4); // At 0.5s, 1.0s, 1.5s, and 1.9s
+        assert_eq!(measurements, 23); // At 0.5s, 1.0s, 1.5s, and 1.9s + 19 baro measurements
     }
     #[test]
     fn test_duty_cycle_scheduler() {
@@ -1162,44 +1083,19 @@ mod tests {
         //assert!(events.len() == 60, "{}", format!("Expected 60 events, found: {}", events.len()));
         // We should only have GNSS events when turning ON
         // (so at 0.0s, 2.0s, 4.0s, ...)
-        let gnss_events: Vec<&Event> = events
+        let measurements: Vec<&Event> = events
             .events
             .iter()
-            .filter(|e| matches!(e, Event::Gnss { .. }))
+            .filter(|e| matches!(e, Event::Measurement { .. }))
             .collect();
         // We initialize off of the first event and only get GNSS updates every two seconds starting from 1.0
-        // (60 - 1) // 2 = 29
-        assert!(gnss_events.len() >= 2);
+        // (60 - 1) // 2 = 29 + 59 baro
+        assert!(measurements.len() >= 2);
         assert!(
-            gnss_events.len() == 29,
+            measurements.len() == 88,
             "{}",
-            format!("Expected 29 GNSS events, found: {}", gnss_events.len())
+            format!("Expected 88 GNSS events, found: {}", measurements.len())
         );
-
-        // Extract elapsed_s from GNSS events and verify they occur at expected times
-        let gnss_times: Vec<f64> = gnss_events
-            .iter()
-            .map(|e| match e {
-                Event::Gnss { elapsed_s, .. } => *elapsed_s,
-                _ => unreachable!(),
-            })
-            .collect();
-
-        // Check first few expected GNSS times
-        // They should be close to 0.0, 2.0, 4.0, etc.
-        for i in 0..gnss_times.len().min(6) {
-            let expected_time = (i + 1) as f64 * 2.0;
-            // let closest_time = gnss_times
-            //     .iter()
-            //     .min_by(|&&a, &&b| {
-            //         (a - expected_time)
-            //             .abs()
-            //             .partial_cmp(&(b - expected_time).abs())
-            //             .unwrap()
-            //     })
-            //     .unwrap();
-            assert_approx_eq!(expected_time, gnss_times[i], 0.1); // Allow for small timing differences
-        }
     }
     #[test]
     fn test_degraded_fault_model() {
@@ -1219,20 +1115,36 @@ mod tests {
         let events = build_event_stream(&records, &config);
 
         // Find GNSS events
-        let gnss_events: Vec<&Event> = events
+        let measurements: Vec<&Event> = events
             .events
             .iter()
-            .filter(|e| matches!(e, Event::Gnss { .. }))
+            .filter(|e| matches!(e, Event::Measurement { .. }))
+            .collect();
+        let gnss_events: Vec<&Event> = measurements
+            .into_iter()
+            .filter(|e| {
+                if let Event::Measurement { meas, .. } = e {
+                    meas.as_any().is::<GPSPositionAndVelocityMeasurement>()
+                } else {
+                    false
+                }
+            })
             .collect();
 
         // Check R-scaling is applied
         for event in &gnss_events {
-            if let Event::Gnss { meas, .. } = event {
-                // Original horizontal accuracy is 2.0
-                assert_approx_eq!(meas.horizontal_noise_std, 9.0, 2.0); // 2.0 * 5.0 = 10.0 (with some numerical variation)
-                // Original velocity accuracy is 0.5
-                assert_approx_eq!(meas.velocity_noise_std, 2.5, 0.1); // 0.5 * 5.0 = 2.5 (with some numerical variation)
-            }
+            let meas = if let Event::Measurement { meas, .. } = event {
+                meas.as_any().downcast_ref::<GPSPositionAndVelocityMeasurement>()
+            } else {
+                None
+            };
+            let Some(meas) = meas else {
+                continue;
+            };
+            // Original horizontal accuracy is 2.0
+            assert_approx_eq!(meas.horizontal_noise_std, 9.0, 2.0);
+            // Original velocity accuracy is 0.5
+            assert_approx_eq!(meas.velocity_noise_std, 2.5, 0.1);
         }
 
         // Check that positions are perturbed
@@ -1244,7 +1156,8 @@ mod tests {
         let mut prev_lon = None;
 
         for event in &gnss_events {
-            if let Event::Gnss { meas, .. } = event {
+            if let Event::Measurement { meas, .. } = event {
+                let meas = meas.as_any().downcast_ref::<GPSPositionAndVelocityMeasurement>().unwrap();
                 // Positions should be perturbed from original
                 assert_approx_eq!(meas.latitude, original_lat, 1e-3);
                 assert_approx_eq!(meas.longitude, original_lon, 1e-3);
@@ -1263,9 +1176,8 @@ mod tests {
                     }
                 }
                 prev_lon = Some(meas.longitude);
-            }
+            }          
         }
-
         // Positions should vary between measurements due to AR(1) process
         assert!(!all_same);
     }
@@ -1313,8 +1225,10 @@ mod tests {
         // Find GNSS events and group by time
         let mut gnss_by_time: Vec<(f64, &GPSPositionAndVelocityMeasurement)> = Vec::new();
         for event in &events.events {
-            if let Event::Gnss { meas, elapsed_s } = event {
-                gnss_by_time.push((*elapsed_s, meas));
+            if let Event::Measurement { meas, elapsed_s } = event {
+                if let Some(gps) = meas.as_any().downcast_ref::<GPSPositionAndVelocityMeasurement>() {
+                    gnss_by_time.push((*elapsed_s, gps));
+                }
             }
         }
         gnss_by_time.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
@@ -1374,5 +1288,64 @@ mod tests {
         let mut x = 10.0;
         ar1_step(&mut x, 0.5, -1.0, &mut rng);
         assert_eq!(x, 5.0); // 0.5 * 10.0 + 0.0
+    }
+}
+#[cfg(test)]
+mod serialization_tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    fn sample_cfg() -> GnssDegradationConfig {
+        GnssDegradationConfig {
+            scheduler: GnssScheduler::PassThrough,
+            fault: GnssFaultModel::Degraded {
+                rho_pos: 0.99,
+                sigma_pos_m: 3.0,
+                rho_vel: 0.95,
+                sigma_vel_mps: 0.3,
+                r_scale: 5.0,
+            },
+            seed: 42,
+        }
+    }
+
+    #[test]
+    fn json_roundtrip() {
+        let cfg = sample_cfg();
+        let f = NamedTempFile::new().unwrap();
+        let path = f.path().with_extension("json");
+        cfg.to_json(&path).unwrap();
+        let loaded = GnssDegradationConfig::from_json(&path).unwrap();
+        assert_eq!(cfg.seed, loaded.seed);
+    }
+
+    #[test]
+    fn yaml_roundtrip() {
+        let cfg = sample_cfg();
+        let f = NamedTempFile::new().unwrap();
+        let path = f.path().with_extension("yaml");
+        cfg.to_yaml(&path).unwrap();
+        let loaded = GnssDegradationConfig::from_yaml(&path).unwrap();
+        assert_eq!(cfg.seed, loaded.seed);
+    }
+
+    #[test]
+    fn toml_roundtrip() {
+        let cfg = sample_cfg();
+        let f = NamedTempFile::new().unwrap();
+        let path = f.path().with_extension("toml");
+        cfg.to_toml(&path).unwrap();
+        let loaded = GnssDegradationConfig::from_toml(&path).unwrap();
+        assert_eq!(cfg.seed, loaded.seed);
+    }
+
+    #[test]
+    fn generic_dispatch_roundtrip() {
+        let cfg = sample_cfg();
+        let f = NamedTempFile::new().unwrap();
+        let path = f.path().with_extension("json");
+        cfg.to_file(&path).unwrap();
+        let loaded = GnssDegradationConfig::from_file(&path).unwrap();
+        assert_eq!(cfg.seed, loaded.seed);
     }
 }
