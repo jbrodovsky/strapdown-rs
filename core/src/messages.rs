@@ -4,7 +4,6 @@ use nalgebra::Vector3;
 use rand::SeedableRng;
 use rand_distr::{Distribution, Normal};
 use serde::{Deserialize, Serialize};
-use std::f64::NAN;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::Path;
@@ -456,7 +455,7 @@ struct FaultState {
     /// AR(1) velocity error state (east, m/s).
     ev_e_mps: f64,
     /// AR(1) velocity error state (up, m/s).
-    ev_u_mps: f64,
+    // ev_u_mps: f64,
     /// Integrated slow bias (north, meters).
     b_n_m: f64,
     /// Integrated slow bias (east, meters).
@@ -476,7 +475,7 @@ impl FaultState {
             e_u_m: 0.0,
             ev_n_mps: 0.0,
             ev_e_mps: 0.0,
-            ev_u_mps: 0.0,
+            //ev_u_mps: 0.0,
             b_n_m: 0.0,
             b_e_m: 0.0,
             rng: rand::rngs::StdRng::seed_from_u64(seed),
@@ -860,7 +859,7 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
     // but it may or may not have IMU or other such measurements.
     let reference_altitude = records[0].altitude;
     for w in records_with_elapsed.windows(2) {
-        let (t0, r0) = (&w[0].0, &w[0].1);
+        let (t0, _) = (&w[0].0, &w[0].1);
         let (t1, r1) = (&w[1].0, &w[1].1);
         let dt = t1 - t0;
 
@@ -933,10 +932,10 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
             // });
             events.push(Event::Measurement { meas: Box::new(meas), elapsed_s: *t1 });
         }
-        if r1.relative_altitude != NAN {
+        if r1.relative_altitude != f64::NAN {
             let baro: RelativeAltitudeMeasurement = RelativeAltitudeMeasurement {
                 relative_altitude: r1.relative_altitude,
-                reference_altitude: reference_altitude
+                reference_altitude
             };
             events.push(Event::Measurement { meas: Box::new(baro), elapsed_s: *t1 });
         }

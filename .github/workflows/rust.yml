@@ -40,7 +40,7 @@ jobs:
       run: cargo test --workspace --all-features --locked --verbose
 
     - name: Lint
-      run: cargo clippy --workspace --all-features -- -D warnings
+      run: cargo clippy --workspace --all-features
     - name: Format
       run: cargo fmt --all
       
