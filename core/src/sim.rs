@@ -24,9 +24,7 @@ use nalgebra::{DMatrix, DVector, Vector3};
 use serde::{Deserialize, Serialize};
 
 use crate::earth::METERS_TO_DEGREES;
-use crate::filter::{
-    InitialState, UnscentedKalmanFilter,
-};
+use crate::filter::{InitialState, UnscentedKalmanFilter};
 use crate::messages::{Event, EventStream};
 use crate::{IMUData, StrapdownState, forward};
 use health::{HealthLimits, HealthMonitor};
@@ -515,18 +513,8 @@ impl From<(&DateTime<Utc>, &UnscentedKalmanFilter)> for NavigationResult {
 ///
 /// # Returns
 /// A NavigationResult struct containing the navigation solution.
-impl
-    From<(
-        &DateTime<Utc>,
-        &StrapdownState,
-    )> for NavigationResult
-{
-    fn from(
-        (timestamp, state): (
-            &DateTime<Utc>,
-            &StrapdownState
-        ),
-    ) -> Self {
+impl From<(&DateTime<Utc>, &StrapdownState)> for NavigationResult {
+    fn from((timestamp, state): (&DateTime<Utc>, &StrapdownState)) -> Self {
         //let wmm_date: Date = Date::from_calendar_date(
         //    timestamp.year(),
         //    Month::try_from(timestamp.month() as u8).unwrap(),
@@ -655,7 +643,10 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
 /// * `records` - Vector of test data records containing IMU measurements and GPS data.
 /// # Returns
 /// * `Vec<NavigationResult>` - A vector of navigation results containing the state estimates and covariances at each timestamp.
-pub fn closed_loop(ukf: &mut UnscentedKalmanFilter, stream: EventStream) -> anyhow::Result<Vec<NavigationResult>> {
+pub fn closed_loop(
+    ukf: &mut UnscentedKalmanFilter,
+    stream: EventStream,
+) -> anyhow::Result<Vec<NavigationResult>> {
     let start_time = stream.start_time;
     let mut results: Vec<NavigationResult> = Vec::with_capacity(stream.events.len());
     let total = stream.events.len();
@@ -698,31 +689,30 @@ pub fn closed_loop(ukf: &mut UnscentedKalmanFilter, stream: EventStream) -> anyh
                     // log::error!("Health fail after measurement update at {} (#{i}): {e}", ts);
                     bail!(e);
                 }
-            }
-            // Event::Gnss { meas, .. } => {
-            //     ukf.update(meas);
-            //     if let Err(e) =
-            //         monitor.check(ukf.get_mean().as_slice(), &ukf.get_covariance(), None)
-            //     {
-            //         // log::error!("Health fail after GNSS update at {} (#{i}): {e}", ts);
-            //         bail!(e);
-            //     }
-            // }
-            // Event::Altitude { meas, .. } => {
-            //     ukf.update(meas);
-            //     if let Err(e) =
-            //         monitor.check(ukf.get_mean().as_slice(), &ukf.get_covariance(), None)
-            //     {
-            //         // log::error!("Health fail after altitude update at {} (#{i}): {e}", ts);
-            //         bail!(e);
-            //     }
-            // }
-            // Event::GravityAnomaly { meas, elapsed_s } => {
-            //     println!("Gravity anomaly detected: {:?} at {:?}s", meas, elapsed_s);
-            // }
-            // Event::MagneticAnomaly { meas, elapsed_s } => {
-            //     println!("Magnetic anomaly detected: {:?} at {:?}s", meas, elapsed_s);
-            // }
+            } // Event::Gnss { meas, .. } => {
+              //     ukf.update(meas);
+              //     if let Err(e) =
+              //         monitor.check(ukf.get_mean().as_slice(), &ukf.get_covariance(), None)
+              //     {
+              //         // log::error!("Health fail after GNSS update at {} (#{i}): {e}", ts);
+              //         bail!(e);
+              //     }
+              // }
+              // Event::Altitude { meas, .. } => {
+              //     ukf.update(meas);
+              //     if let Err(e) =
+              //         monitor.check(ukf.get_mean().as_slice(), &ukf.get_covariance(), None)
+              //     {
+              //         // log::error!("Health fail after altitude update at {} (#{i}): {e}", ts);
+              //         bail!(e);
+              //     }
+              // }
+              // Event::GravityAnomaly { meas, elapsed_s } => {
+              //     println!("Gravity anomaly detected: {:?} at {:?}s", meas, elapsed_s);
+              // }
+              // Event::MagneticAnomaly { meas, elapsed_s } => {
+              //     println!("Magnetic anomaly detected: {:?} at {:?}s", meas, elapsed_s);
+              // }
         }
         // If timestamp changed, or it's the last event, record the previous state
         if Some(ts) != last_ts {

@@ -12,8 +12,9 @@ use std::path::PathBuf;
 use nalgebra::{DMatrix, DVector, Vector3};
 use strapdown::IMUData;
 use strapdown::earth::METERS_TO_DEGREES;
-use strapdown::filter::{InitialState,
-    GPSPositionAndVelocityMeasurement, MeasurementModel, RelativeAltitudeMeasurement, UnscentedKalmanFilter,
+use strapdown::filter::{
+    GPSPositionAndVelocityMeasurement, InitialState, MeasurementModel, RelativeAltitudeMeasurement,
+    UnscentedKalmanFilter,
 };
 use strapdown::sim::{NavigationResult, TestDataRecord};
 //================= Map Information ========================================================================
@@ -280,7 +281,7 @@ impl GeoMap {
     /// ```ignore
     /// use geonav::{GeoMap, GeophysicalMeasurementType, ReliefResolution};
     /// use std::path::PathBuf;
-    /// 
+    ///
     /// let map = GeoMap::load_geomap(PathBuf::from("path/to/file.nc"), GeophysicalMeasurementType::Relief(ReliefResolution::OneDegree));
     /// let value = map.get_point(&1.5, &1.5);
     /// ```
