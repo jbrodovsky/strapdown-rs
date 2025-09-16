@@ -855,17 +855,21 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
         let (t1, r1) = (&w[1].0, &w[1].1);
         let dt = t1 - t0;
 
-        // Build IMU event at t1
-        let imu = IMUData {
-            accel: Vector3::new(r1.acc_x, r1.acc_y, r1.acc_z),
-            gyro: Vector3::new(r1.gyro_x, r1.gyro_y, r1.gyro_z),
-            // add other fields as your UKF expects
-        };
-        events.push(Event::Imu {
-            dt_s: dt,
-            imu,
-            elapsed_s: *t1,
-        });
+        // Build IMU event at t1 only if accel and gyro components are present
+        let imu_components = [r1.acc_x, r1.acc_y, r1.acc_z, r1.gyro_x, r1.gyro_y, r1.gyro_z];
+        let imu_present = imu_components.iter().all(|v| !v.is_nan());
+        if imu_present {
+            let imu = IMUData {
+                accel: Vector3::new(r1.acc_x, r1.acc_y, r1.acc_z),
+                gyro: Vector3::new(r1.gyro_x, r1.gyro_y, r1.gyro_z),
+                // add other fields as your UKF expects
+            };
+            events.push(Event::Imu {
+                dt_s: dt,
+                imu,
+                elapsed_s: *t1,
+            });
+        }
 
         // Decide if GNSS should be emitted at t1
         let should_emit = match cfg.scheduler {
@@ -891,41 +895,52 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
         };
 
         if should_emit {
-            // Truth-like GNSS from r1
-            let lat = r1.latitude;
-            let lon = r1.longitude;
-            let alt = r1.altitude;
-            let bearing_rad = r1.bearing.to_radians();
-            let vn = r1.speed * bearing_rad.cos();
-            let ve = r1.speed * bearing_rad.sin();
+            // Only create GNSS event when the core GNSS values are present
+            let gnss_required = [r1.latitude, r1.longitude, r1.altitude, r1.speed, r1.bearing];
+            let gnss_present = gnss_required.iter().all(|v| !v.is_nan());
+            if gnss_present {
+                // Truth-like GNSS from r1
+                let lat = r1.latitude;
+                let lon = r1.longitude;
+                let alt = r1.altitude;
+                let bearing_rad = r1.bearing.to_radians();
+                let vn = r1.speed * bearing_rad.cos();
+                let ve = r1.speed * bearing_rad.sin();
 
-            // Use your provided accuracies (adjust if these are variances vs std)
-            let horiz_std = r1.horizontal_accuracy.max(1e-3);
-            let vert_std = r1.vertical_accuracy.max(1e-3);
-            let vel_std = r1.speed_accuracy.max(0.1);
+                // Use your provided accuracies (adjust if these are variances vs std).
+                // If an accuracy is missing (NaN), substitute a conservative default
+                // to avoid propagating NaN into the measurement noise.
+                let horiz_std = if r1.horizontal_accuracy.is_nan() {
+                    1000.0
+                } else {
+                    r1.horizontal_accuracy.max(1e-3)
+                };
+                let vert_std = if r1.vertical_accuracy.is_nan() {
+                    1000.0
+                } else {
+                    r1.vertical_accuracy.max(1e-3)
+                };
+                let vel_std = if r1.speed_accuracy.is_nan() { 100.0 } else { r1.speed_accuracy.max(0.1) };
 
-            let (lat_c, lon_c, alt_c, vn_c, ve_c, horiz_c, vel_c) = apply_fault(
-                &cfg.fault, &mut st, *t1, dt, lat, lon, alt, vn, ve, horiz_std, vert_std, vel_std,
-            );
+                let (lat_c, lon_c, alt_c, vn_c, ve_c, horiz_c, vel_c) = apply_fault(
+                    &cfg.fault, &mut st, *t1, dt, lat, lon, alt, vn, ve, horiz_std, vert_std, vel_std,
+                );
 
-            let meas = GPSPositionAndVelocityMeasurement {
-                latitude: lat_c,
-                longitude: lon_c,
-                altitude: alt_c,
-                northward_velocity: vn_c,
-                eastward_velocity: ve_c,
-                horizontal_noise_std: horiz_c,
-                vertical_noise_std: vert_std, // pass-through here; you can also degrade it if desired
-                velocity_noise_std: vel_c,
-            };
-            // events.push(Event::Gnss {
-            //     meas,
-            //     elapsed_s: *t1,
-            // });
-            events.push(Event::Measurement {
-                meas: Box::new(meas),
-                elapsed_s: *t1,
-            });
+                let meas = GPSPositionAndVelocityMeasurement {
+                    latitude: lat_c,
+                    longitude: lon_c,
+                    altitude: alt_c,
+                    northward_velocity: vn_c,
+                    eastward_velocity: ve_c,
+                    horizontal_noise_std: horiz_c,
+                    vertical_noise_std: vert_std, // pass-through here; you can also degrade it if desired
+                    velocity_noise_std: vel_c,
+                };
+                events.push(Event::Measurement {
+                    meas: Box::new(meas),
+                    elapsed_s: *t1,
+                });
+            }
         }
         if !r1.relative_altitude.is_nan() {
             let baro: RelativeAltitudeMeasurement = RelativeAltitudeMeasurement {

@@ -1,0 +1,9 @@
+scheduler:
+  kind: passthrough
+fault:
+  kind: hijack
+  start_s: 120.0
+  duration_s: 60.0
+  offset_n_m: 50.0
+  offset_e_m: 0.0
+seed: 42

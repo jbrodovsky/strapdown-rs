@@ -29,6 +29,14 @@ args = [
 ]
 cmd = "python scripts/get_maps.py --input {{ input }} --buffer {{ buffer }} --output {{ output }}"
 
+[tasks.create_dataset]
+args = [
+    {"arg" = "bin", "default" = "target/release/strapdown-sim"},
+    {"arg" = "input", "default" = "data/input/"},
+    {"arg" = "output_root", "default" = "data/"}
+]
+cmd = "python scripts/create_dataset.py --bin {{ bin }} --input {{ input }} --output-root {{ output_root }}"
+
 [dependencies]
 python = ">=3.13.7,<3.14"
 numpy = ">=2.3.2,<3"

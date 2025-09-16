@@ -1,0 +1,4 @@
+{
+  "name": "slowbias_rot",
+  "args": ["--sched", "passthrough", "--fault", "slowbias", "--drift-n-mps", "0.02", "--drift-e-mps", "0.00", "--q-bias", "5e-6", "--rotate-omega-rps", "1e-3", "--seed", "42"]
+}
