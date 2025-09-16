@@ -1,0 +1,4 @@
+{
+  "name": "combo",
+  "args": ["--sched", "fixed", "--interval-s", "5", "--phase-s", "0.0", "--fault", "degraded", "--rho-pos", "0.995", "--sigma-pos-m", "4", "--rho-vel", "0.97", "--sigma-vel-mps", "0.35", "--r-scale", "5", "--seed", "42"]
+}
