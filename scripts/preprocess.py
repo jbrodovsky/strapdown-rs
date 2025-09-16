@@ -26,59 +26,35 @@ def clean_phone_data(dataset_path: str) -> pd.DataFrame:
     assert os.path.exists(dataset_path), f"File {dataset_path} does not exist."
     # Assert the needed .csv files exist
     # assert os.path.exists(os.path.join(dataset_path, "Accelerometer.csv")), "Accelerometer.csv does not exist."
-    assert os.path.exists(os.path.join(dataset_path, "Gyroscope.csv")), (
-        "Gyroscope.csv does not exist."
-    )
+    assert os.path.exists(os.path.join(dataset_path, "Gyroscope.csv")), "Gyroscope.csv does not exist."
     # Check to make sure that the trajectory is of sufficient length (>=300 seconds)
     gyro = pd.read_csv(os.path.join(dataset_path, "Gyroscope.csv"), index_col=0)
     assert gyro["seconds_elapsed"].max() >= 300, (
         f"Trajectory is too short. Minimum required is 300 seconds. Trajectory is {gyro['seconds_elapsed'].max()} seconds."
     )
-    assert os.path.exists(os.path.join(dataset_path, "Magnetometer.csv")), (
-        "Magnetometer.csv does not exist."
-    )
-    assert os.path.exists(os.path.join(dataset_path, "Barometer.csv")), (
-        "Barometer.csv does not exist."
-    )
-    assert os.path.exists(os.path.join(dataset_path, "Gravity.csv")), (
-        "Gravity.csv does not exist."
-    )
+    assert os.path.exists(os.path.join(dataset_path, "Magnetometer.csv")), "Magnetometer.csv does not exist."
+    assert os.path.exists(os.path.join(dataset_path, "Barometer.csv")), "Barometer.csv does not exist."
+    assert os.path.exists(os.path.join(dataset_path, "Gravity.csv")), "Gravity.csv does not exist."
     try:
-        assert os.path.exists(os.path.join(dataset_path, "LocationGps.csv")), (
-            "LocationGps.csv does not exist."
-        )
+        assert os.path.exists(os.path.join(dataset_path, "LocationGps.csv")), "LocationGps.csv does not exist."
     except AssertionError:
-        assert os.path.exists(os.path.join(dataset_path, "Location.csv")), (
-            "Location.csv does not exist."
-        )
-    assert os.path.exists(os.path.join(dataset_path, "Orientation.csv")), (
-        "Orientation.csv does not exist."
-    )
+        assert os.path.exists(os.path.join(dataset_path, "Location.csv")), "Location.csv does not exist."
+    assert os.path.exists(os.path.join(dataset_path, "Orientation.csv")), "Orientation.csv does not exist."
     # Read in raw data
     gyroscope = pd.read_csv(os.path.join(dataset_path, "Gyroscope.csv"), index_col=0)
-    magnetometer = pd.read_csv(
-        os.path.join(dataset_path, "Magnetometer.csv"), index_col=0
-    )
+    magnetometer = pd.read_csv(os.path.join(dataset_path, "Magnetometer.csv"), index_col=0)
     barometer = pd.read_csv(os.path.join(dataset_path, "Barometer.csv"), index_col=0)
     gravity = pd.read_csv(os.path.join(dataset_path, "Gravity.csv"), index_col=0)
-    orientation = pd.read_csv(
-        os.path.join(dataset_path, "Orientation.csv"), index_col=0
-    )
+    orientation = pd.read_csv(os.path.join(dataset_path, "Orientation.csv"), index_col=0)
     try:
-        location = pd.read_csv(
-            os.path.join(dataset_path, "LocationGps.csv"), index_col=0
-        )
+        location = pd.read_csv(os.path.join(dataset_path, "LocationGps.csv"), index_col=0)
     except FileNotFoundError:
         location = pd.read_csv(os.path.join(dataset_path, "Location.csv"), index_col=0)
     try:
-        accelerometer = pd.read_csv(
-            os.path.join(dataset_path, "TotalAcceleration.csv"), index_col=0
-        )
+        accelerometer = pd.read_csv(os.path.join(dataset_path, "TotalAcceleration.csv"), index_col=0)
     except FileNotFoundError as e:
         print(f"TotalAcceleration.csv not found, using Accelerometer.csv instead: {e}")
-        accelerometer = pd.read_csv(
-            os.path.join(dataset_path, "Accelerometer.csv"), index_col=0
-        )
+        accelerometer = pd.read_csv(os.path.join(dataset_path, "Accelerometer.csv"), index_col=0)
         accelerometer["x"] += gravity["x"]
         accelerometer["y"] += gravity["y"]
         accelerometer["z"] += gravity["z"]
@@ -99,12 +75,8 @@ def clean_phone_data(dataset_path: str) -> pd.DataFrame:
     location.drop(columns=["seconds_elapsed"], inplace=True)
     orientation.drop(columns=["seconds_elapsed"], inplace=True)
     # Rename columns
-    magnetometer = magnetometer.rename(
-        columns={"x": "mag_x", "y": "mag_y", "z": "mag_z"}
-    )
-    accelerometer = accelerometer.rename(
-        columns={"x": "acc_x", "y": "acc_y", "z": "acc_z"}
-    )
+    magnetometer = magnetometer.rename(columns={"x": "mag_x", "y": "mag_y", "z": "mag_z"})
+    accelerometer = accelerometer.rename(columns={"x": "acc_x", "y": "acc_y", "z": "acc_z"})
     gyroscope = gyroscope.rename(columns={"x": "gyro_x", "y": "gyro_y", "z": "gyro_z"})
     gravity = gravity.rename(columns={"x": "grav_x", "y": "grav_y", "z": "grav_z"})
     # Merge dataframes
@@ -134,6 +106,9 @@ def clean_phone_data(dataset_path: str) -> pd.DataFrame:
     data.sort_index(inplace=True)
     # Drop all the previous rows before the first valid timestamp
     data = data[data.index >= location.index[0]]
+    data = data.resample(
+        "1s",
+    ).mean()
     return data
 
 
@@ -150,9 +125,7 @@ def preprocess(args):
     datasets = os.listdir(args.input_dir)
     # Check to see if datasets in empty, if true ask if the user would lke to download the dataset
     if not datasets:
-        download = input(
-            "No datasets found. Would you like to download the dataset? (y/n): "
-        )
+        download = input("No datasets found. Would you like to download the dataset? (y/n): ")
         if download.lower() == "y":
             # Code to download the dataset goes here
             pass
@@ -162,9 +135,7 @@ def preprocess(args):
 
     # os.makedirs(os.path.join("data", "cleaned"), exist_ok=True)
     os.makedirs(args.output_dir, exist_ok=True)
-    print(
-        f"Preprocessing data from {args.input_dir}. Output will be saved to {args.output_dir}."
-    )
+    print(f"Preprocessing data from {args.input_dir}. Output will be saved to {args.output_dir}.")
 
     def process_dataset(dataset):
         # for dataset in datasets:
@@ -180,7 +151,7 @@ def preprocess(args):
             return
         print(f"Processing: {dataset}")
         cleaned_csv_path = os.path.join(args.output_dir, f"{dataset}.csv")
-        cleaned_data.to_csv(cleaned_csv_path, compression="gzip")
+        cleaned_data.to_csv(cleaned_csv_path)
         print(f"Cleaned data for {dataset} saved to {cleaned_csv_path}.")
 
     with futures.ThreadPoolExecutor() as executor:
@@ -205,9 +176,7 @@ def main() -> None:
         help="Output directory for the cleaned data.",
     )
     args = parser.parse_args()
-    assert os.path.exists(args.input_dir), (
-        f"Input directory {args.input_dir} does not exist."
-    )
+    assert os.path.exists(args.input_dir), f"Input directory {args.input_dir} does not exist."
     preprocess(args)
 
 

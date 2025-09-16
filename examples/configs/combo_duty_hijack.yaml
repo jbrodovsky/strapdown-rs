@@ -1,0 +1,12 @@
+scheduler:
+  kind: duty
+  on_s: 10.0
+  off_s: 3.0
+  phase_s: 0.0
+fault:
+  kind: hijack
+  start_s: 150.0
+  duration_s: 120.0
+  offset_n_m: 10.0
+  offset_e_m: 10.0
+seed: 42

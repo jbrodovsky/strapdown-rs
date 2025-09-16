@@ -1,5 +1,4 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use csv::ReaderBuilder;
 use std::error::Error;
 use std::path::PathBuf;
 use strapdown::messages::{
@@ -234,11 +233,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     {
         return Err(format!("Output directory '{}' does not exist.", parent.display()).into());
     }
+    // Validate that all directories in the output path exist, if they don't create them
+    let parents = cli.output.parent();
+    if let Some(parent) = parents {
+        if !parent.exists() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
     match cli.mode {
         SimMode::OpenLoop => println!("Running in open-loop mode"),
         SimMode::ClosedLoop(ref args) => {
-            let mut rdr = ReaderBuilder::new().from_path(&cli.input)?;
-            let records: Vec<TestDataRecord> = rdr.deserialize().collect::<Result<_, _>>()?;
+            // Load sensor data records from CSV, tolerant to mixed/variable-length rows and encoding issues.
+            let records = TestDataRecord::from_csv(&cli.input)?;
             println!(
                 "Read {} records from {}",
                 records.len(),

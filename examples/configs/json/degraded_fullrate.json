@@ -1,0 +1,4 @@
+{
+  "name": "degraded_fullrate",
+  "args": ["--sched", "passthrough", "--fault", "degraded", "--rho-pos", "0.99", "--sigma-pos-m", "3", "--rho-vel", "0.95", "--sigma-vel-mps", "0.3", "--r-scale", "5", "--seed", "42"]
+}
