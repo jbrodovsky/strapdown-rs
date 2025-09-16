@@ -1,0 +1,4 @@
+{
+  "name": "hijack",
+  "args": ["--sched", "passthrough", "--fault", "hijack", "--hijack-start-s", "120", "--hijack-duration-s", "60", "--hijack-offset-n-m", "50", "--hijack-offset-e-m", "0", "--seed", "42"]
+}

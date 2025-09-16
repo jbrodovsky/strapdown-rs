@@ -1,0 +1,4 @@
+{
+  "name": "sched_10s",
+  "args": ["--sched", "fixed", "--interval-s", "10", "--phase-s", "0.0", "--fault", "none", "--seed", "42"]
+}

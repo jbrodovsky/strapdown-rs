@@ -1,0 +1,4 @@
+{
+  "name": "duty_10on_2off",
+  "args": ["--sched", "duty", "--on-s", "10", "--off-s", "2", "--phase-s", "1", "--fault", "none", "--seed", "42"]
+}

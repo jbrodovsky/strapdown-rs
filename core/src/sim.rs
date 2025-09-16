@@ -21,13 +21,32 @@ use std::path::Path;
 use anyhow::{Result, bail};
 use chrono::{DateTime, Duration, Utc};
 use nalgebra::{DMatrix, DVector, Vector3};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::earth::METERS_TO_DEGREES;
 use crate::filter::{InitialState, UnscentedKalmanFilter};
 use crate::messages::{Event, EventStream};
 use crate::{IMUData, StrapdownState, forward};
 use health::{HealthLimits, HealthMonitor};
+
+fn de_f64_nan<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    // Read whatever the CSV cell was as an Option<String>.
+    // Missing field -> None; present but empty -> Some(""), etc.
+    let opt = Option::<String>::deserialize(deserializer)?;
+    match opt {
+        None => Ok(f64::NAN),
+        Some(s) => {
+            let t = s.trim();
+            if t.is_empty() || t.eq_ignore_ascii_case("nan") || t.eq_ignore_ascii_case("null") {
+                return Ok(f64::NAN);
+            }
+            t.parse::<f64>().map_err(serde::de::Error::custom)
+        }
+    }
+}
 
 /// Struct representing a single row of test data from the CSV file.
 ///
@@ -40,69 +59,94 @@ pub struct TestDataRecord {
     //#[serde(with = "ts_seconds")]
     pub time: DateTime<Utc>,
     /// accuracy of the bearing (magnetic heading) in degrees
-    #[serde(rename = "bearingAccuracy")]
+    #[serde(rename = "bearingAccuracy", deserialize_with = "de_f64_nan")]
     pub bearing_accuracy: f64,
     /// accuracy of the speed in m/s
-    #[serde(rename = "speedAccuracy")]
+    #[serde(rename = "speedAccuracy", deserialize_with = "de_f64_nan")]
     pub speed_accuracy: f64,
     /// accuracy of the altitude in meters
-    #[serde(rename = "verticalAccuracy")]
+    #[serde(rename = "verticalAccuracy", deserialize_with = "de_f64_nan")]
     pub vertical_accuracy: f64,
     /// accuracy of the horizontal position in meters
-    #[serde(rename = "horizontalAccuracy")]
+    #[serde(rename = "horizontalAccuracy", deserialize_with = "de_f64_nan")]
     pub horizontal_accuracy: f64,
     /// Speed in m/s
+    #[serde(deserialize_with = "de_f64_nan")]
     pub speed: f64,
     /// Bearing in degrees
+    #[serde(deserialize_with = "de_f64_nan")]
     pub bearing: f64,
     /// Altitude in meters
+    #[serde(deserialize_with = "de_f64_nan")]
     pub altitude: f64,
     /// Longitude in degrees
+    #[serde(deserialize_with = "de_f64_nan")]
     pub longitude: f64,
     /// Latitude in degrees
+    #[serde(deserialize_with = "de_f64_nan")]
     pub latitude: f64,
     /// Quaternion component representing the rotation around the z-axis
+    #[serde(deserialize_with = "de_f64_nan")]
     pub qz: f64,
     /// Quaternion component representing the rotation around the y-axis
+    #[serde(deserialize_with = "de_f64_nan")]
     pub qy: f64,
     /// Quaternion component representing the rotation around the x-axis
+    #[serde(deserialize_with = "de_f64_nan")]
     pub qx: f64,
     /// Quaternion component representing the rotation around the w-axis
+    #[serde(deserialize_with = "de_f64_nan")]
     pub qw: f64,
     /// Roll angle in radians
+    #[serde(deserialize_with = "de_f64_nan")]
     pub roll: f64,
     /// Pitch angle in radians
+    #[serde(deserialize_with = "de_f64_nan")]
     pub pitch: f64,
     /// Yaw angle in radians
+    #[serde(deserialize_with = "de_f64_nan")]
     pub yaw: f64,
     /// Z-acceleration in m/s^2
+    #[serde(deserialize_with = "de_f64_nan")]
     pub acc_z: f64,
     /// Y-acceleration in m/s^2
+    #[serde(deserialize_with = "de_f64_nan")]
     pub acc_y: f64,
     /// X-acceleration in m/s^2
+    #[serde(deserialize_with = "de_f64_nan")]
     pub acc_x: f64,
     /// Rotation rate around the z-axis in radians/s
+    #[serde(deserialize_with = "de_f64_nan")]
     pub gyro_z: f64,
     /// Rotation rate around the y-axis in radians/s
+    #[serde(deserialize_with = "de_f64_nan")]
     pub gyro_y: f64,
     /// Rotation rate around the x-axis in radians/s
+    #[serde(deserialize_with = "de_f64_nan")]
     pub gyro_x: f64,
     /// Magnetic field strength in the z-direction in micro teslas
+    #[serde(deserialize_with = "de_f64_nan")]
     pub mag_z: f64,
     /// Magnetic field strength in the y-direction in micro teslas
+    #[serde(deserialize_with = "de_f64_nan")]
     pub mag_y: f64,
     /// Magnetic field strength in the x-direction in micro teslas
+    #[serde(deserialize_with = "de_f64_nan")]
     pub mag_x: f64,
     /// Change in altitude in meters
-    #[serde(rename = "relativeAltitude")]
+    #[serde(rename = "relativeAltitude", deserialize_with = "de_f64_nan")]
     pub relative_altitude: f64,
     /// pressure in millibars
+    #[serde(deserialize_with = "de_f64_nan")]
     pub pressure: f64,
     /// Acceleration due to gravity in the z-direction in m/s^2
+    #[serde(deserialize_with = "de_f64_nan")]
     pub grav_z: f64,
     /// Acceleration due to gravity in the y-direction in m/s^2
+    #[serde(deserialize_with = "de_f64_nan")]
     pub grav_y: f64,
     /// Acceleration due to gravity in the x-direction in m/s^2
+    #[serde(deserialize_with = "de_f64_nan")]
     pub grav_x: f64,
 }
 impl TestDataRecord {
@@ -117,11 +161,21 @@ impl TestDataRecord {
     pub fn from_csv<P: AsRef<std::path::Path>>(
         path: P,
     ) -> Result<Vec<Self>, Box<dyn std::error::Error>> {
-        let mut rdr = csv::Reader::from_path(path)?;
+        let mut rdr = csv::ReaderBuilder::new()
+            .has_headers(true)
+            .flexible(true)
+            .trim(csv::Trim::All)
+            .from_path(path)?;
+
         let mut records = Vec::new();
-        for result in rdr.deserialize() {
-            let record: Self = result?;
-            records.push(record);
+        for (i, result) in rdr.deserialize::<Self>().enumerate() {
+            match result {
+                Ok(r) => records.push(r),
+                Err(e) => {
+                    // Skip only this row; keep going.
+                    eprintln!("Skipping row {} due to parse error: {e}", i + 1);
+                }
+            }
         }
         Ok(records)
     }
@@ -813,9 +867,9 @@ pub fn initialize_ukf(
         northward_velocity: initial_pose.speed * initial_pose.bearing.cos(),
         eastward_velocity: initial_pose.speed * initial_pose.bearing.sin(),
         downward_velocity: 0.0, // Assuming no initial vertical velocity for simplicity
-        roll: initial_pose.roll,
-        pitch: initial_pose.pitch,
-        yaw: initial_pose.yaw,
+        roll: if initial_pose.roll.is_nan() { 0.0 } else { initial_pose.roll },
+        pitch: if initial_pose.pitch.is_nan() { 0.0 } else { initial_pose.pitch },
+        yaw: if initial_pose.yaw.is_nan() { 0.0 } else { initial_pose.yaw },
         in_degrees: true,
     };
     // Covariance parameters
@@ -1002,6 +1056,9 @@ mod tests {
     use std::fs::File;
     use std::path::Path;
     use std::vec;
+    use chrono::Utc;
+    use csv::ReaderBuilder;
+    use csv::Trim;
 
     /// Generate a test record for northward motion at constant velocity (1 knot = 1852 m/h).
     /// This helper returns a Vec<TestDataRecord> for 1 hour, sampled once per second.
@@ -1428,4 +1485,122 @@ mod tests {
         );
         assert!(!ukf2.get_mean().is_empty());
     }
-}
+    
+
+    // Helper to produce the header in the same order the struct expects
+    fn test_header() -> Vec<&'static str> {
+        vec![
+            "time",
+            "bearingAccuracy",
+            "speedAccuracy",
+            "verticalAccuracy",
+            "horizontalAccuracy",
+            "speed",
+            "bearing",
+            "altitude",
+            "longitude",
+            "latitude",
+            "qz",
+            "qy",
+            "qx",
+            "qw",
+            "roll",
+            "pitch",
+            "yaw",
+            "acc_z",
+            "acc_y",
+            "acc_x",
+            "gyro_z",
+            "gyro_y",
+            "gyro_x",
+            "mag_z",
+            "mag_y",
+            "mag_x",
+            "relativeAltitude",
+            "pressure",
+            "grav_z",
+            "grav_y",
+            "grav_x",
+        ]
+    }
+
+    #[test]
+    fn deserialize_with_empty_fields_maps_to_nan() {
+        let headers = test_header();
+        let time = "2023-08-04T21:47:58Z";
+        let mut row: Vec<String> = Vec::with_capacity(headers.len());
+        row.push(time.to_string());
+        for _ in 1..headers.len() {
+            row.push(String::new());
+        }
+        let mut csv_data = String::new();
+        csv_data.push_str(&headers.join(","));
+        csv_data.push('\n');
+        csv_data.push_str(&row.join(","));
+        let temp_file = std::env::temp_dir().join("test_empty_fields_nan.csv");
+        std::fs::write(&temp_file, csv_data).unwrap();
+        let recs = TestDataRecord::from_csv(&temp_file).expect("from_csv should succeed");
+        assert_eq!(recs.len(), 1);
+        let r = &recs[0];
+        assert_eq!(r.time, chrono::DateTime::parse_from_rfc3339(time).unwrap().with_timezone(&Utc));
+        assert!(r.speed.is_nan());
+        assert!(r.latitude.is_nan());
+        assert!(r.longitude.is_nan());
+        assert!(r.acc_x.is_nan());
+        let _ = std::fs::remove_file(&temp_file);
+    }
+
+    #[test]
+    fn deserialize_with_missing_trailing_columns_returns_error() {
+        let headers = test_header();
+        let time = "2023-08-04T21:47:58Z";
+        let mut row: Vec<String> = Vec::new();
+        row.push(time.to_string());
+        row.push(String::from("1.0"));
+        row.push(String::from("2.0"));
+        let mut csv_data = String::new();
+        csv_data.push_str(&headers.join(","));
+        csv_data.push('\n');
+        csv_data.push_str(&row.join(","));
+        let temp_file = std::env::temp_dir().join("test_missing_trailing.csv");
+        std::fs::write(&temp_file, csv_data).unwrap();
+        let recs = TestDataRecord::from_csv(&temp_file).expect("from_csv should succeed");
+        assert_eq!(recs.len(), 1);
+        let rec = &recs[0];
+        assert_eq!(rec.time, chrono::DateTime::parse_from_rfc3339(time).unwrap().with_timezone(&Utc));
+        assert!(rec.speed.is_nan());
+        assert!(rec.latitude.is_nan());
+        assert!(rec.longitude.is_nan());
+        let _ = std::fs::remove_file(&temp_file);
+    }
+
+    #[test]
+    fn manual_padding_then_deserialize_succeeds() {
+        let headers = test_header();
+        let time = "2023-08-04T21:47:58Z";
+        let mut row: Vec<String> = Vec::new();
+        row.push(time.to_string());
+        row.push(String::new()); // bearingAccuracy
+        row.push(String::new()); // speedAccuracy
+        row.push(String::new()); // verticalAccuracy
+        row.push(String::new()); // horizontalAccuracy
+        row.push(String::new()); // speed
+        row.push(String::new()); // bearing
+        row.push(String::new()); // altitude
+        row.push(String::from("-122.0")); // longitude
+        row.push(String::from("37.0")); // latitude
+        let mut csv_data = String::new();
+        csv_data.push_str(&headers.join(","));
+        csv_data.push('\n');
+        csv_data.push_str(&row.join(","));
+        let temp_file = std::env::temp_dir().join("test_manual_padding.csv");
+        std::fs::write(&temp_file, csv_data).unwrap();
+        let got = TestDataRecord::from_csv(&temp_file).expect("from_csv should succeed");
+        assert_eq!(got.len(), 1);
+        let r = &got[0];
+        assert_eq!(r.time, chrono::DateTime::parse_from_rfc3339(time).unwrap().with_timezone(&Utc));
+        assert_eq!(r.longitude, -122.0);
+        assert_eq!(r.latitude, 37.0);
+        let _ = std::fs::remove_file(&temp_file);
+    }
+    }
