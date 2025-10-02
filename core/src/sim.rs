@@ -23,11 +23,32 @@ use chrono::{DateTime, Duration, Utc};
 use nalgebra::{DMatrix, DVector, Vector3};
 use serde::{Deserialize, Deserializer, Serialize};
 
+#[cfg(feature = "clap")]
+use clap::{Args, ValueEnum};
+
 use crate::earth::METERS_TO_DEGREES;
 use crate::filter::{InitialState, UnscentedKalmanFilter};
-use crate::messages::{Event, EventStream};
+use crate::messages::{Event, EventStream, GnssFaultModel, GnssScheduler};
 use crate::{IMUData, StrapdownState, forward};
 use health::{HealthLimits, HealthMonitor};
+
+pub const DEFAULT_PROCESS_NOISE: [f64; 15] = [ // Default process noise if not provided
+            1e-6, // position noise 1e-6
+            1e-6, // position noise 1e-6
+            1e-6, // altitude noise
+            1e-3, // velocity north noise
+            1e-3, // velocity east noise
+            1e-3, // velocity down noise
+            1e-5, // roll noise
+            1e-5, // pitch noise
+            1e-5, // yaw noise
+            1e-6, // acc bias x noise
+            1e-6, // acc bias y noise
+            1e-6, // acc bias z noise
+            1e-8, // gyro bias x noise
+            1e-8, // gyro bias y noise
+            1e-8, // gyro bias z noise
+        ];
 
 fn de_f64_nan<'de, D>(deserializer: D) -> Result<f64, D::Error>
 where
@@ -47,7 +68,6 @@ where
         }
     }
 }
-
 /// Struct representing a single row of test data from the CSV file.
 ///
 /// Fields correspond to columns in the CSV, with appropriate renaming for Rust style.
@@ -743,30 +763,7 @@ pub fn closed_loop(
                     // log::error!("Health fail after measurement update at {} (#{i}): {e}", ts);
                     bail!(e);
                 }
-            } // Event::Gnss { meas, .. } => {
-              //     ukf.update(meas);
-              //     if let Err(e) =
-              //         monitor.check(ukf.get_mean().as_slice(), &ukf.get_covariance(), None)
-              //     {
-              //         // log::error!("Health fail after GNSS update at {} (#{i}): {e}", ts);
-              //         bail!(e);
-              //     }
-              // }
-              // Event::Altitude { meas, .. } => {
-              //     ukf.update(meas);
-              //     if let Err(e) =
-              //         monitor.check(ukf.get_mean().as_slice(), &ukf.get_covariance(), None)
-              //     {
-              //         // log::error!("Health fail after altitude update at {} (#{i}): {e}", ts);
-              //         bail!(e);
-              //     }
-              // }
-              // Event::GravityAnomaly { meas, elapsed_s } => {
-              //     println!("Gravity anomaly detected: {:?} at {:?}s", meas, elapsed_s);
-              // }
-              // Event::MagneticAnomaly { meas, elapsed_s } => {
-              //     println!("Magnetic anomaly detected: {:?} at {:?}s", meas, elapsed_s);
-              // }
+            } 
         }
         // If timestamp changed, or it's the last event, record the previous state
         if Some(ts) != last_ts {
@@ -851,6 +848,7 @@ pub fn print_ukf(ukf: &UnscentedKalmanFilter, record: &TestDataRecord) {
 /// * `initial_pose` - A `TestDataRecord` containing the initial pose information.
 /// * `attitude_covariance` - Optional vector of f64 representing the initial attitude covariance (default is a small value).
 /// * `imu_biases` - Optional vector of f64 representing the initial IMU biases (default is a small value).
+/// * `other_states` - Optional vector of f64 for any additional states (not used in the canonical UKF, but can be useful for custom implementations).
 ///
 /// # Returns
 ///
@@ -859,8 +857,12 @@ pub fn initialize_ukf(
     initial_pose: TestDataRecord,
     attitude_covariance: Option<Vec<f64>>,
     imu_biases: Option<Vec<f64>>,
+    imu_biases_covariance: Option<Vec<f64>>,
+    other_states: Option<Vec<f64>>,
+    other_states_covariance: Option<Vec<f64>>,
+    process_noise_diagonal: Option<Vec<f64>>,
 ) -> UnscentedKalmanFilter {
-    let ukf_params = InitialState {
+    let initial_state = InitialState {
         latitude: initial_pose.latitude,
         longitude: initial_pose.longitude,
         altitude: initial_pose.altitude,
@@ -872,6 +874,10 @@ pub fn initialize_ukf(
         yaw: if initial_pose.yaw.is_nan() { 0.0 } else { initial_pose.yaw },
         in_degrees: true,
     };
+    let process_noise_diagonal = match process_noise_diagonal {
+        Some(pn) => pn,
+        None => DEFAULT_PROCESS_NOISE.to_vec(),
+    };    
     // Covariance parameters
     let position_accuracy = initial_pose.horizontal_accuracy; //.sqrt();
     let mut covariance_diagonal = vec![
@@ -888,9 +894,14 @@ pub fn initialize_ukf(
         None => covariance_diagonal.extend(vec![1e-9; 3]), // Default values if not provided
     }
     // extend the covariance diagonal if imu biases are provided
-    let imu_bias = match imu_biases {
+    let imu_biases = match imu_biases {
         Some(imu_biases) => {
-            covariance_diagonal.extend(&imu_biases);
+            covariance_diagonal.extend(
+                match imu_biases_covariance {
+                    Some(imu_cov) => imu_cov,
+                    None => vec![1e-3; 6], // Default covariance if not provided
+                }
+            );
             imu_biases
         }
         None => {
@@ -898,32 +909,44 @@ pub fn initialize_ukf(
             vec![1e-3; 6] // Default values if not provided
         }
     };
-    //let mut process_noise_diagonal = vec![1e-9; 9]; // adds a minor amount of noise to base states
-    //process_noise_diagonal.extend(vec![1e-9; 6]); // Process noise for imu biases
-    let process_noise_diagonal = DVector::from_vec(vec![
-        1e-6, // position noise 1e-6
-        1e-6, // position noise 1e-6
-        1e-6, // altitude noise
-        1e-3, // velocity north noise
-        1e-3, // velocity east noise
-        1e-3, // velocity down noise
-        1e-5, // roll noise
-        1e-5, // pitch noise
-        1e-5, // yaw noise
-        1e-6, // acc bias x noise
-        1e-6, // acc bias y noise
-        1e-6, // acc bias z noise
-        1e-8, // gyro bias x noise
-        1e-8, // gyro bias y noise
-        1e-8, // gyro bias z noise
-    ]);
+    // extend the covariance diagonal if other states are provided
+    let other_states = match other_states {
+        Some(other_states) => {
+            covariance_diagonal.extend(
+                match other_states_covariance {
+                    Some(other_cov) => other_cov,
+                    None => vec![1e-3; other_states.len()], // Default covariance if not provided
+                }
+            );
+            Some(other_states)
+        }
+        None => None,
+    };
+    assert!(
+        covariance_diagonal.len() == 15 + other_states.as_ref().map_or(0, |v| v.len()),
+        "Covariance diagonal length mismatch: expected {}, got {}",
+        15 + other_states.as_ref().map_or(0, |v| v.len()),
+        covariance_diagonal.len()
+    );
+    assert!(
+        process_noise_diagonal.len() == 15 + other_states.as_ref().map_or(0, |v| v.len()),
+        "Process noise diagonal length mismatch: expected {}, got {}",
+        15 + other_states.as_ref().map_or(0, |v| v.len()),
+        process_noise_diagonal.len()
+    );
+    assert!(
+        process_noise_diagonal.len() == covariance_diagonal.len(),
+        "Process noise and covariance diagonal length mismatch: {} vs {}",
+        process_noise_diagonal.len(), covariance_diagonal.len()
+    );
+    let process_noise = DMatrix::from_diagonal(&DVector::from_vec(process_noise_diagonal));
     //DVector::from_vec(vec![0.0; 15]);
     UnscentedKalmanFilter::new(
-        ukf_params,
-        imu_bias,
-        None,
+        initial_state,
+        imu_biases,
+        other_states,
         covariance_diagonal,
-        DMatrix::from_diagonal(&process_noise_diagonal),
+        process_noise,
         1e-3, // Use a scalar for measurement noise as expected by UKF::new
         2.0,
         0.0,
@@ -1050,6 +1073,131 @@ pub mod health {
     }
 }
 
+//================= CLI Argument Structures for Simulation Programs =====================================
+
+/// Scheduler configuration kind
+#[derive(Copy, Clone, Debug)]
+#[cfg_attr(feature = "clap", derive(ValueEnum))]
+pub enum SchedKind {
+    Passthrough,
+    Fixed,
+    Duty,
+}
+
+/// GNSS scheduler arguments for CLI
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "clap", derive(Args))]
+pub struct SchedulerArgs {
+    /// Scheduler kind: passthrough | fixed | duty
+    #[cfg_attr(feature = "clap", arg(long, value_enum, default_value_t = SchedKind::Passthrough))]
+    pub sched: SchedKind,
+    /// Fixed-interval seconds (sched=fixed)
+    #[cfg_attr(feature = "clap", arg(long, default_value_t = 1.0))]
+    pub interval_s: f64,
+    /// Initial phase seconds (sched=fixed)
+    #[cfg_attr(feature = "clap", arg(long, default_value_t = 0.0))]
+    pub phase_s: f64,
+    /// Duty-cycle ON seconds (sched=duty)
+    #[cfg_attr(feature = "clap", arg(long, default_value_t = 10.0))]
+    pub on_s: f64,
+    /// Duty-cycle OFF seconds (sched=duty)
+    #[cfg_attr(feature = "clap", arg(long, default_value_t = 10.0))]
+    pub off_s: f64,
+    /// Duty-cycle start phase seconds (sched=duty)
+    #[cfg_attr(feature = "clap", arg(long, default_value_t = 0.0))]
+    pub duty_phase_s: f64,
+}
+
+/// Fault configuration kind
+#[derive(Copy, Clone, Debug)]
+#[cfg_attr(feature = "clap", derive(ValueEnum))]
+pub enum FaultKind {
+    None,
+    Degraded,
+    Slowbias,
+    Hijack,
+}
+
+/// GNSS fault model arguments for CLI
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "clap", derive(Args))]
+pub struct FaultArgs {
+    /// Fault kind: none | degraded | slowbias | hijack
+    #[cfg_attr(feature = "clap", arg(long, value_enum, default_value_t = FaultKind::None))]
+    pub fault: FaultKind,
+    /// Degraded (AR(1))
+    #[cfg_attr(feature = "clap", arg(long, default_value_t = 0.99))]
+    pub rho_pos: f64,
+    #[cfg_attr(feature = "clap", arg(long, default_value_t = 3.0))]
+    pub sigma_pos_m: f64,
+    #[cfg_attr(feature = "clap", arg(long, default_value_t = 0.95))]
+    pub rho_vel: f64,
+    #[cfg_attr(feature = "clap", arg(long, default_value_t = 0.3))]
+    pub sigma_vel_mps: f64,
+    #[cfg_attr(feature = "clap", arg(long, default_value_t = 5.0))]
+    pub r_scale: f64,
+    /// Slow bias
+    #[cfg_attr(feature = "clap", arg(long, default_value_t = 0.02))]
+    pub drift_n_mps: f64,
+    #[cfg_attr(feature = "clap", arg(long, default_value_t = 0.0))]
+    pub drift_e_mps: f64,
+    #[cfg_attr(feature = "clap", arg(long, default_value_t = 1e-6))]
+    pub q_bias: f64,
+    #[cfg_attr(feature = "clap", arg(long, default_value_t = 0.0))]
+    pub rotate_omega_rps: f64,
+    /// Hijack
+    #[cfg_attr(feature = "clap", arg(long, default_value_t = 50.0))]
+    pub hijack_offset_n_m: f64,
+    #[cfg_attr(feature = "clap", arg(long, default_value_t = 0.0))]
+    pub hijack_offset_e_m: f64,
+    #[cfg_attr(feature = "clap", arg(long, default_value_t = 120.0))]
+    pub hijack_start_s: f64,
+    #[cfg_attr(feature = "clap", arg(long, default_value_t = 60.0))]
+    pub hijack_duration_s: f64,
+}
+
+/// Build GNSS scheduler from CLI arguments
+pub fn build_scheduler(a: &SchedulerArgs) -> GnssScheduler {
+    match a.sched {
+        SchedKind::Passthrough => GnssScheduler::PassThrough,
+        SchedKind::Fixed => GnssScheduler::FixedInterval {
+            interval_s: a.interval_s,
+            phase_s: a.phase_s,
+        },
+        SchedKind::Duty => GnssScheduler::DutyCycle {
+            on_s: a.on_s,
+            off_s: a.off_s,
+            start_phase_s: a.duty_phase_s,
+        },
+    }
+}
+
+/// Build GNSS fault model from CLI arguments
+pub fn build_fault(a: &FaultArgs) -> GnssFaultModel {
+    match a.fault {
+        FaultKind::None => GnssFaultModel::None,
+        FaultKind::Degraded => GnssFaultModel::Degraded {
+            rho_pos: a.rho_pos,
+            sigma_pos_m: a.sigma_pos_m,
+            rho_vel: a.rho_vel,
+            sigma_vel_mps: a.sigma_vel_mps,
+            r_scale: a.r_scale,
+        },
+        FaultKind::Slowbias => GnssFaultModel::SlowBias {
+            drift_n_mps: a.drift_n_mps,
+            drift_e_mps: a.drift_e_mps,
+            q_bias: a.q_bias,
+            rotate_omega_rps: a.rotate_omega_rps,
+        },
+        FaultKind::Hijack => GnssFaultModel::Hijack {
+            offset_n_m: a.hijack_offset_n_m,
+            offset_e_m: a.hijack_offset_e_m,
+            start_s: a.hijack_start_s,
+            duration_s: a.hijack_duration_s,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1057,8 +1205,6 @@ mod tests {
     use std::path::Path;
     use std::vec;
     use chrono::Utc;
-    use csv::ReaderBuilder;
-    use csv::Trim;
 
     /// Generate a test record for northward motion at constant velocity (1 knot = 1852 m/h).
     /// This helper returns a Vec<TestDataRecord> for 1 hour, sampled once per second.
@@ -1421,7 +1567,7 @@ mod tests {
             });
 
         // Initialize UKF
-        let mut ukf = initialize_ukf(rec.clone(), None, None);
+        let mut ukf = initialize_ukf(rec.clone(), None, None, None, None, None, None);
 
         // Create a minimal EventStream with one IMU event
         let imu_data = IMUData {
@@ -1476,12 +1622,16 @@ mod tests {
             grav_y: 0.0,
             grav_x: 0.0,
         };
-        let ukf = initialize_ukf(rec.clone(), None, None);
+        let ukf = initialize_ukf(rec.clone(), None, None, None, None, None, None);
         assert!(!ukf.get_mean().is_empty());
         let ukf2 = initialize_ukf(
             rec,
             Some(vec![0.1, 0.2, 0.3]),
             Some(vec![0.4, 0.5, 0.6, 0.7, 0.8, 0.9]),
+            None,
+            None,
+            None,
+            None,
         );
         assert!(!ukf2.get_mean().is_empty());
     }

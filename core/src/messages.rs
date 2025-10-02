@@ -206,7 +206,6 @@ pub enum GnssFaultModel {
     /// combining e.g. `SlowBias` with a `Hijack` to simulate multi-stage spoofing.
     Combo(Vec<GnssFaultModel>),
 }
-
 /// Configuration container for GNSS degradation in simulation.
 ///
 /// This ties together a [`GnssScheduler`] (which controls *when* GNSS fixes
@@ -332,7 +331,6 @@ impl GnssDegradationConfig {
         }
     }
 }
-
 /// A simulation event delivered to the filter in time order.
 ///
 /// Events represent sensor updates or other observations that occur during
@@ -449,7 +447,7 @@ pub struct EventStream {
 /// // degradation logic (not shown here).
 /// ```
 #[derive(Clone, Debug)]
-struct FaultState {
+pub struct FaultState {
     /// AR(1) position error state (north, meters).
     e_n_m: f64,
     /// AR(1) position error state (east, meters).
@@ -474,7 +472,7 @@ impl FaultState {
     ///
     /// The random number generator is seeded from the provided `seed`, so
     /// repeated runs with the same seed yield identical noise realizations.
-    fn new(seed: u64) -> Self {
+    pub fn new(seed: u64) -> Self {
         Self {
             e_n_m: 0.0,
             e_e_m: 0.0,
@@ -615,7 +613,7 @@ fn ar1_step(x: &mut f64, rho: f64, sigma: f64, rng: &mut rand::rngs::StdRng) {
 ///     horiz_std_m, vert_std_m, vel_std_mps,
 /// );
 /// ```
-fn apply_fault(
+pub fn apply_fault(
     fault: &GnssFaultModel,
     st: &mut FaultState,
     t: f64,
