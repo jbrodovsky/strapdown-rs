@@ -1,10 +1,13 @@
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand};
 use std::error::Error;
 use std::path::PathBuf;
 use strapdown::messages::{
-    GnssDegradationConfig, GnssFaultModel, GnssScheduler, build_event_stream,
+    GnssDegradationConfig, build_event_stream,
 };
-use strapdown::sim::{NavigationResult, TestDataRecord, closed_loop, initialize_ukf};
+use strapdown::sim::{
+    NavigationResult, TestDataRecord, closed_loop, initialize_ukf,
+    SchedulerArgs, FaultArgs, build_scheduler, build_fault
+};
 
 const LONG_ABOUT: &str = "STRAPDOWN: A simulation and analysis tool for strapdown inertial navigation systems.
 
@@ -38,15 +41,6 @@ This program is designed to work with tabular comma-separated value datasets tha
 * grav_z - Gravitational acceleration in the Z direction (meters per second squared)
 * grav_y - Gravitational acceleration in the Y direction (meters per second squared)
 * grav_x - Gravitational acceleration in the X direction (meters per second squared)";
-
-// Example usage (also displayed via --help):
-//
-// Use a config file instead of CLI flags:
-//   strapdown-sim closed-loop --config examples/configs/gnss_degradation.yaml -i data/input/2025-06-11_20-34-24.csv -o out.csv
-//
-// Or supply individual flags as before; the config file, if provided, takes precedence.
-// Add a short note about the new --config flag in the CLI help
-// (kept outside of LONG_ABOUT to avoid editing the long block literal heavily)
 
 /// Command line arguments
 #[derive(Parser)]
@@ -86,130 +80,6 @@ struct ClosedLoopArgs {
     /// Path to a GNSS degradation config file (json|yaml|yml|toml)
     #[arg(long)]
     config: Option<PathBuf>,
-}
-
-// Scheduler group
-#[derive(Copy, Clone, Debug, ValueEnum)]
-enum SchedKind {
-    Passthrough,
-    Fixed,
-    Duty,
-}
-
-#[derive(Args, Clone, Debug)]
-struct SchedulerArgs {
-    /// Scheduler kind: passthrough | fixed | duty
-    #[arg(long, value_enum, default_value_t = SchedKind::Passthrough)]
-    sched: SchedKind,
-
-    /// Fixed-interval seconds (sched=fixed)
-    #[arg(long, default_value_t = 1.0)]
-    interval_s: f64,
-
-    /// Initial phase seconds (sched=fixed)
-    #[arg(long, default_value_t = 0.0)]
-    phase_s: f64,
-
-    /// Duty-cycle ON seconds (sched=duty)
-    #[arg(long, default_value_t = 10.0)]
-    on_s: f64,
-
-    /// Duty-cycle OFF seconds (sched=duty)
-    #[arg(long, default_value_t = 10.0)]
-    off_s: f64,
-
-    /// Duty-cycle start phase seconds (sched=duty)
-    #[arg(long, default_value_t = 0.0)]
-    duty_phase_s: f64,
-}
-/// Fault group
-#[derive(Args, Clone, Debug)]
-struct FaultArgs {
-    /// Fault kind: none | degraded | slowbias | hijack
-    #[arg(long, value_enum, default_value_t = FaultKind::None)]
-    fault: FaultKind,
-
-    /// Degraded (AR(1))
-    #[arg(long, default_value_t = 0.99)]
-    rho_pos: f64,
-    #[arg(long, default_value_t = 3.0)]
-    sigma_pos_m: f64,
-    #[arg(long, default_value_t = 0.95)]
-    rho_vel: f64,
-    #[arg(long, default_value_t = 0.3)]
-    sigma_vel_mps: f64,
-    #[arg(long, default_value_t = 5.0)]
-    r_scale: f64,
-
-    /// Slow bias
-    #[arg(long, default_value_t = 0.02)]
-    drift_n_mps: f64,
-    #[arg(long, default_value_t = 0.0)]
-    drift_e_mps: f64,
-    #[arg(long, default_value_t = 1e-6)]
-    q_bias: f64,
-    #[arg(long, default_value_t = 0.0)]
-    rotate_omega_rps: f64,
-
-    /// Hijack
-    #[arg(long, default_value_t = 50.0)]
-    hijack_offset_n_m: f64,
-    #[arg(long, default_value_t = 0.0)]
-    hijack_offset_e_m: f64,
-    #[arg(long, default_value_t = 120.0)]
-    hijack_start_s: f64,
-    #[arg(long, default_value_t = 60.0)]
-    hijack_duration_s: f64,
-}
-
-#[derive(Copy, Clone, Debug, ValueEnum)]
-enum FaultKind {
-    None,
-    Degraded,
-    Slowbias,
-    Hijack,
-}
-
-/* -------------------- BUILDERS FROM GROUPS -------------------- */
-
-fn build_scheduler(a: &SchedulerArgs) -> GnssScheduler {
-    match a.sched {
-        SchedKind::Passthrough => GnssScheduler::PassThrough,
-        SchedKind::Fixed => GnssScheduler::FixedInterval {
-            interval_s: a.interval_s,
-            phase_s: a.phase_s,
-        },
-        SchedKind::Duty => GnssScheduler::DutyCycle {
-            on_s: a.on_s,
-            off_s: a.off_s,
-            start_phase_s: a.duty_phase_s,
-        },
-    }
-}
-
-fn build_fault(a: &FaultArgs) -> GnssFaultModel {
-    match a.fault {
-        FaultKind::None => GnssFaultModel::None,
-        FaultKind::Degraded => GnssFaultModel::Degraded {
-            rho_pos: a.rho_pos,
-            sigma_pos_m: a.sigma_pos_m,
-            rho_vel: a.rho_vel,
-            sigma_vel_mps: a.sigma_vel_mps,
-            r_scale: a.r_scale,
-        },
-        FaultKind::Slowbias => GnssFaultModel::SlowBias {
-            drift_n_mps: a.drift_n_mps,
-            drift_e_mps: a.drift_e_mps,
-            q_bias: a.q_bias,
-            rotate_omega_rps: a.rotate_omega_rps,
-        },
-        FaultKind::Hijack => GnssFaultModel::Hijack {
-            offset_n_m: a.hijack_offset_n_m,
-            offset_e_m: a.hijack_offset_e_m,
-            start_s: a.hijack_start_s,
-            duration_s: a.hijack_duration_s,
-        },
-    }
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -266,7 +136,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
             };
             let events = build_event_stream(&records, &cfg);
-            let mut ukf = initialize_ukf(records[0].clone(), None, None);
+            let mut ukf = initialize_ukf(records[0].clone(), None, None, None, None, None, None);
             let results = closed_loop(&mut ukf, events);
             //sim::write_results_csv(&cli.output, &results)?;
             match results {
@@ -278,31 +148,5 @@ fn main() -> Result<(), Box<dyn Error>> {
             };
         }
     }
-    // records = match args.gps_degradation {
-    //     Some(value) => degrade_measurements(records, value),
-    //     None => records,
-    // };
-    // let results: Vec<NavigationResult>;
-    // if args.mode == "closed-loop" {
-    //     println!(
-    //         "Running in closed-loop mode with GPS interval: {:?}",
-    //         args.gps_interval
-    //     );
-    //     results = closed_loop(&records, args.gps_interval);
-    //     //match write_results_to_csv(&results, &args.output) {
-    //     match NavigationResult::to_csv(&results, &args.output) {
-    //         Ok(_) => println!("Results written to {}", args.output.display()),
-    //         Err(e) => eprintln!("Error writing results: {}", e),
-    //     };
-    // } else if args.mode == "open-loop" {
-    //     results = dead_reckoning(&records);
-    //     // match write_results_to_csv(&results, &args.output) {
-    //     match NavigationResult::to_csv(&results, &args.output) {
-    //         Ok(_) => println!("Results written to {}", args.output.display()),
-    //         Err(e) => eprintln!("Error writing results: {}", e),
-    //     };
-    // } else {
-    //     return Err("Invalid mode specified. Use 'open-loop' or 'closed-loop'.".into());
-    // }
     Ok(())
 }

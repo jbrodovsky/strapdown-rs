@@ -4,14 +4,14 @@ channels = ["conda-forge"]
 name = "strapdown-rs"
 platforms = ["linux-64"]
 version = "0.0.1"
-description = "A simple strapdown INS implementation in Rust with accompanying simulation and geolocation capabilities."
+description = "A simple strapdown INS implementation in Rust with accompanying simulation and geo-location capabilities."
 license = "MIT"
 
 [activation.env]
 RUST_BACKTRACE = "1"
-# These might need to be absolute pathes
 HDF5_DIR = "${PIXI_PROJECT_ROOT}/.pixi/envs/default"
 RUSTFLAGS="-C link-args=-Wl,-rpath,.pixi/envs/default/include/lib"
+PATH = "${PIXI_PROJECT_ROOT}/target/release:${PATH}"
 
 [tasks]
 build = "cargo build --workspace --release"
@@ -24,8 +24,8 @@ code = "code ."
 [tasks.getmaps]
 args = [
     {"arg" = "input", "default" = "data/input/"},
-    {"arg" = "buffer", "default" = "0.25"},
-    {"arg" = "output", "default" = "data/input/maps/"}
+    {"arg" = "buffer", "default" = "0.75"},
+    {"arg" = "output", "default" = "data/input/"}
 ]
 cmd = "python scripts/get_maps.py --input {{ input }} --buffer {{ buffer }} --output {{ output }}"
 
@@ -50,6 +50,7 @@ haversine = ">=2.9.0,<3"
 scipy = ">=1.16.1,<2"
 rust = ">=1.89.0,<1.90"
 rust-src = ">=1.89.0,<2"
+filterpy = ">=1.4.5,<2"
 
 [pypi-dependencies]
 anglewrapper = ">=0.1.1, <0.2"
