@@ -35,3 +35,6 @@ uv.lock
 batch_process.nu
 .pixi/*
 !.pixi/config.toml
+
+# Data output
+examples/geonav-sim/out
