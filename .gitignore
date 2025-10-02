@@ -1,24 +1,40 @@
-/target
-.vscode/settings.json
-/strapdown_py/.venv
-/strapdown_py/.pytest_cache
-/strapdown_py/dist
-/core/*.csv
+.vscode
+target
+data
+examples/strapdown-sim/out
+
+# Map files
+*.nc
+
+# Ignore latex junk
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+*.bbl
+*.blg
 
 # pixi environments
 .pixi
-pixi.lock
-pixi.toml
 *.egg-info
+
 
 # python notes
 *.ipynb_checkpoints
 *.pyc
 __pycache__
-*.ipynb
+
 # pixi environments
 .pixi
 *.egg-info
 .python-version
 pyproject.toml
 uv.lock
+batch_process.nu
+.pixi/*
+!.pixi/config.toml
+
+# Data output
+examples/geonav-sim/out

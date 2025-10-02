@@ -1,0 +1,7 @@
+scheduler:
+  kind: fixed_interval
+  interval_s: 10.0
+  phase_s: 0.0
+fault:
+  kind: none
+seed: 42

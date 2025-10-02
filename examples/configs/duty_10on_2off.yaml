@@ -1,0 +1,8 @@
+scheduler:
+  kind: duty
+  on_s: 10.0
+  off_s: 2.0
+  phase_s: 1.0
+fault:
+  kind: none
+seed: 42

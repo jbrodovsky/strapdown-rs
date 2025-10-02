@@ -1,0 +1,4 @@
+{
+  "name": "combo_duty_hijack",
+  "args": ["--sched", "duty", "--on-s", "10", "--off-s", "3", "--phase-s", "0", "--fault", "hijack", "--hijack-start-s", "150", "--hijack-duration-s", "120", "--hijack-offset-n-m", "10", "--hijack-offset-e-m", "10", "--seed", "42"]
+}
