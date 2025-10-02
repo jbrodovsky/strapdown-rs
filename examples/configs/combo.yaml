@@ -1,0 +1,12 @@
+scheduler:
+  kind: fixed_interval
+  interval_s: 5.0
+  phase_s: 0.0
+fault:
+  kind: degraded
+  rho_pos: 0.995
+  sigma_pos_m: 4.0
+  rho_vel: 0.97
+  sigma_vel_mps: 0.35
+  r_scale: 5.0
+seed: 42

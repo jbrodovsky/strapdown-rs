@@ -6,20 +6,20 @@
 //! to estimate the position and velocity of the sensor. While utilities exist for IMU data, this crate does
 //! not currently support IMU output directly and should not be thought of as a full inertial navigation system
 //! (INS). This crate is designed to be used to test the filters that would be used in an INS. It does not
-//! provide utilities for reading raw output from the IMU or act as IMU firmware or driver. As such the IMU data 
-//! is assumed to be pre-filtered and contain the total accelerations and relative rotations. 
+//! provide utilities for reading raw output from the IMU or act as IMU firmware or driver. As such the IMU data
+//! is assumed to be pre-filtered and contain the total accelerations and relative rotations.
 //!
 //! This crate is primarily built off of three additional dependencies:
 //! - [`nav-types`](https://crates.io/crates/nav-types): Provides basic coordinate types and conversions.
 //! - [`nalgebra`](https://crates.io/crates/nalgebra): Provides the linear algebra tools for the filters.
 //! - [`rand`](https://crates.io/crates/rand) and [`rand_distr`](https://crates.io/crates/rand_distr): Provides random number generation for noise and simulation (primarily for particle filter methods).
 //!
-//! All other functionality is built on top of these crates or is auxiliary functionality (e.g. I/O). The primary 
-//! reference text is _Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems, 2nd Edition_ 
-//! by Paul D. Groves. Where applicable, calculations will be referenced by the appropriate equation number tied 
-//! to the book. In general, variables will be named according to the quantity they represent and not the symbol 
-//! used in the book. For example, the Earth's equatorial radius is named `EQUATORIAL_RADIUS` instead of `a`. 
-//! This style is sometimes relaxed within the body of a given function, but the general rule is to use descriptive 
+//! All other functionality is built on top of these crates or is auxiliary functionality (e.g. I/O). The primary
+//! reference text is _Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems, 2nd Edition_
+//! by Paul D. Groves. Where applicable, calculations will be referenced by the appropriate equation number tied
+//! to the book. In general, variables will be named according to the quantity they represent and not the symbol
+//! used in the book. For example, the Earth's equatorial radius is named `EQUATORIAL_RADIUS` instead of `a`.
+//! This style is sometimes relaxed within the body of a given function, but the general rule is to use descriptive
 //! names for variables and not mathematical symbols.
 //!
 //! ## Strapdown mechanization data and equations
@@ -45,12 +45,12 @@
 //! The coordinate convention and order is in NED.
 //!
 //! ### Strapdown equations in the Local-Level Frame
-//! 
+//!
 //! This module implements the strapdown mechanization equations in the Local-Level Frame. These equations form the basis
 //! of the forward propagation step (motion/system/state-transition model) of all the filters implemented in this crate.
 //! The rational for this was to design and test it once, then re-use it on the various filters which really only need to
-//! act on the given probability distribution and are largely ambivilent to the actual function and use generic representations
-//! in thier mathematics.
+//! act on the given probability distribution and are largely ambivalent to the actual function and use generic representations
+//! in their mathematics.
 //!
 //! The equations are based on the book _Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems, Second Edition_
 //! by Paul D. Groves. Below is a summary of the equations implemented in Chapter 5.4 implemented by this module.
@@ -58,7 +58,7 @@
 //! #### Skew-Symmetric notation
 //!
 //! Groves uses a direction cosine matrix representation of orientation (attitude, rotation). As such, to make the matrix math
-//! work out, rotational quantities need to also be represented using matricies. Groves' convention is to use a lower-case
+//! work out, rotational quantities need to also be represented using matrices. Groves' convention is to use a lower-case
 //! letter for vector quantities (arrays of shape (N,) Python-style, or (N,1) nalgebra/Matlab style) and capital letters for the
 //! skew-symmetric matrix representation of the same vector.
 //!
@@ -77,7 +77,7 @@
 //! C_b^n(+) \approx C_b^n(-) \left( I + \Omega_{ib}^b t \right) - \left( \Omega_{ie}^e - \Omega_{en}^n \right) C_b^n(-) t
 //! $$
 //!
-//! where $t$ is the time differential and $C(-)$ is the prior attitude. These attitude matricies are then used to transform the
+//! where $t$ is the time differential and $C(-)$ is the prior attitude. These attitude matrices are then used to transform the
 //! specific forces from the IMU:
 //!
 //! $$
@@ -114,14 +114,13 @@
 //!
 //! This top-level module provides a public API for each step of the forward mechanization equations, allowing users to
 //! easily pass data in and out.
-
-// deconflict2
 pub mod earth;
 pub mod filter;
 pub mod linalg;
+pub mod messages;
 pub mod sim;
 
-use nalgebra::{Matrix3, Rotation3, Vector3, DVector};
+use nalgebra::{DVector, Matrix3, Rotation3, Vector3};
 
 use std::convert::{From, Into, TryFrom};
 use std::fmt::{Debug, Display};
@@ -148,7 +147,9 @@ impl Display for IMUData {
 impl From<Vec<f64>> for IMUData {
     fn from(vec: Vec<f64>) -> Self {
         if vec.len() != 6 {
-            panic!("IMUData must be initialized with a vector of length 6 (3 for accel, 3 for gyro)");
+            panic!(
+                "IMUData must be initialized with a vector of length 6 (3 for accel, 3 for gyro)"
+            );
         }
         IMUData {
             accel: Vector3::new(vec[0], vec[1], vec[2]),
@@ -156,15 +157,15 @@ impl From<Vec<f64>> for IMUData {
         }
     }
 }
-impl Into<Vec<f64>> for IMUData {
-    fn into(self) -> Vec<f64> {
+impl From<IMUData> for Vec<f64> {
+    fn from(data: IMUData) -> Self {
         vec![
-            self.accel[0],
-            self.accel[1],
-            self.accel[2],
-            self.gyro[0],
-            self.gyro[1],
-            self.gyro[2],
+            data.accel[0],
+            data.accel[1],
+            data.accel[2],
+            data.gyro[0],
+            data.gyro[1],
+            data.gyro[2],
         ]
     }
 }
@@ -255,14 +256,23 @@ impl StrapdownState {
         } else {
             latitude
         };
-        let longitude =  if in_degrees {
+        let longitude = if in_degrees {
             longitude.to_radians()
         } else {
             longitude
         };
-        assert!(latitude >= -std::f64::consts::PI && latitude <= std::f64::consts::PI, "Latitude must be in the range [-π, π]");
-        assert!(longitude >= -std::f64::consts::PI && longitude <= std::f64::consts::PI, "Longitude must be in the range [-π, π]");
-        assert!(altitude >= -10_000.0, "Altitude must be greater than -10,000 meters (to avoid unrealistic values)");
+        assert!(
+            (-std::f64::consts::PI..=std::f64::consts::PI).contains(&latitude),
+            "Latitude must be in the range [-π, π]"
+        );
+        assert!(
+            (-std::f64::consts::PI..=std::f64::consts::PI).contains(&longitude),
+            "Longitude must be in the range [-π, π]"
+        );
+        assert!(
+            altitude >= -10_000.0,
+            "Altitude must be greater than -10,000 meters (to avoid unrealistic values)"
+        );
 
         StrapdownState {
             latitude,
@@ -320,13 +330,7 @@ impl TryFrom<&[f64]> for StrapdownState {
         }
         let attitude = Rotation3::from_euler_angles(slice[6], slice[7], slice[8]);
         Ok(StrapdownState::new(
-            slice[0],
-            slice[1],
-            slice[2],
-            slice[3],
-            slice[4],
-            slice[5],
-            attitude,
+            slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], attitude,
             false, // angles are in radians
             true,  // NED convention
         ))
@@ -486,13 +490,15 @@ pub fn position_update(state: &StrapdownState, velocity: Vector3<f64>, dt: f64) 
     let alt_1 = alt_0 + 0.5 * (state.velocity_down + velocity[2]) * dt;
     // Latitude update
     let lat_1: f64 = state.latitude
-        + 0.5 * (state.velocity_north / (r_n + alt_0) + velocity[1] / (r_n + state.altitude)) * dt;
+        + 0.5 * (state.velocity_north / (r_n + state.altitude) + velocity[0] / (r_n + alt_1)) * dt;
     // Longitude update
-    let (_, r_e_1, _) = earth::principal_radii(&lat_1, &state.altitude);
+    let (_, r_e_1, _) = earth::principal_radii(&lat_1, &alt_1);
+    let cos_lat0 = lat_0.cos().max(1e-6); // Guard against cos(lat) --> 0 near poles
+    let cos_lat1 = lat_1.cos().max(1e-6);
     let lon_1: f64 = state.longitude
         + 0.5
-            * (state.velocity_east / ((r_e_0 + alt_0) * lat_0.cos())
-                + velocity[1] / ((r_e_1 + state.altitude) * lat_1.cos()))
+            * (state.velocity_east / ((r_e_0 + alt_0) * cos_lat0)
+                + velocity[1] / ((r_e_1 + state.altitude) * cos_lat1))
             * dt;
     // Save updated position
     (
@@ -728,7 +734,7 @@ mod tests {
         assert_eq!(state.velocity_north, 0.0);
         assert_eq!(state.velocity_east, 0.0);
         assert_eq!(state.velocity_down, 0.0);
-        let imu_data = IMUData{ 
+        let imu_data = IMUData {
             accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
             gyro: Vector3::new(0.0, 0.0, 0.0), // No rotation
         };
@@ -912,11 +918,9 @@ mod tests {
     fn test_forward_yawing() {
         // Yaw rate only, expect yaw to increase by gyro_z * dt
         let attitude = nalgebra::Rotation3::identity();
-        let mut state = StrapdownState::new(
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, true,
-        );
-        let imu_data = IMUData{
-            accel: Vector3::new(0.0, 0.0, 0.0), 
+        let mut state = StrapdownState::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, true);
+        let imu_data = IMUData {
+            accel: Vector3::new(0.0, 0.0, 0.0),
             gyro: Vector3::new(0.0, 0.0, 0.1), // Gyro data for yawing
         };
         let dt = 1.0;
@@ -929,11 +933,9 @@ mod tests {
     fn test_forward_rolling() {
         // Roll rate only, expect roll to increase by gyro_x * dt
         let attitude = nalgebra::Rotation3::identity();
-        let mut state = StrapdownState::new(
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, true,
-        );
+        let mut state = StrapdownState::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, true);
         let imu_data = IMUData {
-            accel: Vector3::new(0.0, 0.0, 0.0), 
+            accel: Vector3::new(0.0, 0.0, 0.0),
             gyro: Vector3::new(0.1, 0.0, 0.0), // Gyro data for rolling
         };
         let dt = 1.0;
@@ -948,11 +950,9 @@ mod tests {
     fn test_forward_pitching() {
         // Pitch rate only, expect pitch to increase by gyro_y * dt
         let attitude = nalgebra::Rotation3::identity();
-        let mut state = StrapdownState::new(
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, true,
-        );
+        let mut state = StrapdownState::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, true);
         let imu_data = IMUData {
-            accel: Vector3::new(0.0, 0.0, 0.0), 
+            accel: Vector3::new(0.0, 0.0, 0.0),
             gyro: Vector3::new(0.0, 0.1, 0.0), // Gyro data for pitching
         };
         let dt = 1.0;

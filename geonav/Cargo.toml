@@ -1,0 +1,26 @@
+[package]
+name = "strapdown-geonav"
+version = "0.1.0"
+edition = "2024"
+
+
+[dependencies]
+nalgebra = { workspace = true }
+rand = { workspace = true }
+csv = { workspace = true }
+strapdown-core = { path = "../core", features = ["clap"] }
+statrs = "0.18.0"
+netcdf = "0.11.0"
+world_magnetic_model = "0.4.0"
+chrono = "0.4.42"
+clap = { version = "4.0", features = ["derive"] }
+anyhow = "1.0.100"
+assert_approx_eq = "1.1.0"
+
+[lib]
+name = "geonav"
+path = "src/lib.rs"
+
+[[bin]]
+name = "geonav-sim"
+path = "src/main.rs"

@@ -33,13 +33,15 @@
 //! from the local level frame to the body frame can be taken care of by the `nalgebra`
 //! crate, which provides the necessary rotation matrices using the Rotation3 type.
 use crate::{wrap_latitude, wrap_to_180};
-use ::nalgebra::{Matrix3, Vector3};
-use ::nav_types::{ECEF, WGS84};
+use nalgebra::{Matrix3, Vector3};
+use nav_types::{ECEF, WGS84};
+use world_magnetic_model::GeomagneticField;
+
 /// Earth's rotation rate rad/s ($\omega_{ie}$)
 pub const RATE: f64 = 7.2921159e-5;
 /// Earth's rotation rate rad/s ($\omega_{ie}$) in a vector form
 pub const RATE_VECTOR: Vector3<f64> = Vector3::new(0.0, 0.0, RATE);
-/// Earth's equitorial radius in meters
+/// Earth's equatorial radius in meters
 pub const EQUATORIAL_RADIUS: f64 = 6378137.0; // meters
 /// Earth's polar radius in meters
 pub const POLAR_RADIUS: f64 = 6356752.31425; // meters
@@ -75,43 +77,50 @@ pub const DEGREES_TO_METERS: f64 = 60.0 * 1852.0;
 /// Atmospheric pressure at sea level in Pascals ($P_0$)
 pub const SEA_LEVEL_PRESSURE: f64 = 101325.0;
 /// Standard temperature at sea level in Kelvin ($T_0$)
-pub const SEA_LEVEL_TEMPERATURE: f64 = 288.15; 
+pub const SEA_LEVEL_TEMPERATURE: f64 = 288.15;
 /// Molar mass of dry air in kg/mol ($M$)
-pub const MOLAR_MASS_DRY_AIR: f64 = 0.0289644; 
+pub const MOLAR_MASS_DRY_AIR: f64 = 0.0289644;
 /// Universal gas constant in J/(mol·K) ($R_0$)
 pub const UNIVERSAL_GAS_CONSTANT: f64 = 8.314462618;
 /// Standard lapse rate in K/m ($L$)
 pub const STANDARD_LAPSE_RATE: f64 = 0.0065;
 /// Calculate a barometric altitude from a measured pressure
-/// 
+///
 /// This function calculates the altitude above sea level based on the measured pressure
 /// using the barometric formula. The formula assumes a standard atmosphere and uses the
 /// universal gas constant, standard lapse rate, and molar mass of dry air.
-/// 
+///
 /// # Parameters
 /// - `pressure` - The measured pressure in Pascals
 /// # Returns
 /// The calculated altitude in meters above sea level
 pub fn barometric_altitude(pressure: &f64) -> f64 {
-    let exponent: f64 = - (UNIVERSAL_GAS_CONSTANT * STANDARD_LAPSE_RATE) / (G0 * MOLAR_MASS_DRY_AIR);
-    (SEA_LEVEL_PRESSURE / STANDARD_LAPSE_RATE) * (pressure / SEA_LEVEL_PRESSURE - 1.0) * exponent.exp()
+    let exponent: f64 = -(UNIVERSAL_GAS_CONSTANT * STANDARD_LAPSE_RATE) / (G0 * MOLAR_MASS_DRY_AIR);
+    (SEA_LEVEL_PRESSURE / STANDARD_LAPSE_RATE)
+        * (pressure / SEA_LEVEL_PRESSURE - 1.0)
+        * exponent.exp()
 }
 /// Calculate the relative barometric altitude from a measured pressure
-/// 
+///
 /// This function calculates the relative altitude from a reference pressure using the
-/// barometric formula. The formula assumes a standard atmosphere and uses the universal 
+/// barometric formula. The formula assumes a standard atmosphere and uses the universal
 /// gas constant, standard lapse rate, and molar mass of dry air.
-/// 
+///
 /// # Parameters
 /// - `pressure` - The measured pressure in Pascals
 /// - `initial_pressure` - The reference pressure in Pascals
 /// - `average_temperature` - Optional average temperature in Kelvin (defaults to standard sea level temperature)
-/// 
+///
 /// # Returns
 /// The calculated relative altitude in meters above the reference pressure
-pub fn relative_barometric_altitude(pressure: f64, initial_pressure: f64, average_temperature: Option<f64>) -> f64 {
+pub fn relative_barometric_altitude(
+    pressure: f64,
+    initial_pressure: f64,
+    average_temperature: Option<f64>,
+) -> f64 {
     let average_temperature = average_temperature.unwrap_or(SEA_LEVEL_TEMPERATURE);
-    ((UNIVERSAL_GAS_CONSTANT * average_temperature) / (G0 * MOLAR_MASS_DRY_AIR)) * (initial_pressure / pressure).ln()
+    ((UNIVERSAL_GAS_CONSTANT * average_temperature) / (G0 * MOLAR_MASS_DRY_AIR))
+        * (initial_pressure / pressure).ln()
 }
 /// Calculates the expected barometric pressure at a given altitude
 ///
@@ -136,7 +145,8 @@ pub fn expected_barometric_pressure(altitude: f64, sea_level_pressure: f64) -> f
     // Barometric formula (assuming isothermal atmosphere):
     // P = P0 * exp(- (g0 * M * h) / (R * T0))
     // Here we use the same constants as in barometric_altitude
-    let exponent = - (G0 * MOLAR_MASS_DRY_AIR * altitude) / (UNIVERSAL_GAS_CONSTANT * SEA_LEVEL_TEMPERATURE);
+    let exponent =
+        -(G0 * MOLAR_MASS_DRY_AIR * altitude) / (UNIVERSAL_GAS_CONSTANT * SEA_LEVEL_TEMPERATURE);
     sea_level_pressure * exponent.exp()
 }
 /// Convert a three-element vector to a skew-symmetric matrix
@@ -305,6 +315,85 @@ pub fn ecef_to_lla(latitude: &f64, longitude: &f64) -> Matrix3<f64> {
 pub fn lla_to_ecef(latitude: &f64, longitude: &f64) -> Matrix3<f64> {
     ecef_to_lla(latitude, longitude).transpose()
 }
+/// Convert NED displacements (north/east, meters) into changes in latitude/longitude (radians).
+///
+/// Uses a simplified WGS84 ellipsoidal Earth model to compute radii of curvature
+/// in the meridian and prime vertical, then converts linear displacements to
+/// angular offsets.
+///
+/// ## Arguments
+/// - `lat_rad`: Current geodetic latitude in **radians**.
+/// - `alt_m`: Current altitude above the ellipsoid in meters.
+/// - `d_n`: Northward displacement in meters.
+/// - `d_e`: Eastward displacement in meters.
+///
+/// ## Returns
+/// A tuple `(dlat, dlon)`:
+/// - `dlat`: Change in latitude (radians).
+/// - `dlon`: Change in longitude (radians).
+///
+/// ## Notes
+/// - A small clamp is applied to `cos(lat)` to avoid division by zero at the poles.
+/// - This is an approximation sufficient for small offsets (meters to kilometers).
+///
+/// ## Example
+///
+/// ```
+/// let lat0 = 40.0_f64.to_radians();
+/// let alt = 0.0;
+/// // Move 100 m north and 50 m east
+/// let (dlat, dlon) = strapdown::earth::meters_ned_to_dlat_dlon(lat0, alt, 100.0, 50.0);
+/// println!("Δlat = {} rad, Δlon = {} rad", dlat, dlon);
+/// ```
+pub fn meters_ned_to_dlat_dlon(lat_rad: f64, alt_m: f64, d_n: f64, d_e: f64) -> (f64, f64) {
+    // WGS84 principal radii (approx)
+    let a = 6378137.0;
+    let e2 = 6.69437999014e-3;
+    let sin_lat = lat_rad.sin();
+    let rn = a / (1.0 - e2 * sin_lat * sin_lat).sqrt();
+    let re = rn * (1.0 - e2) / (1.0 - e2 * sin_lat * sin_lat);
+    let dlat = d_n / (rn + alt_m);
+    let dlon = d_e / ((re + alt_m) * lat_rad.cos().max(1e-6));
+    (dlat, dlon)
+}
+/// Compute the great-circle distance between two geodetic coordinates
+/// using the haversine formula.
+///
+/// This assumes a spherical Earth with mean radius `R = 6,371,000 m`.
+/// For higher precision you can adapt this to use ellipsoidal formulas,
+/// but haversine is usually accurate to within ~0.5% for most navigation
+/// and simulation purposes.
+///
+/// ## Arguments
+/// - `lat1_rad`: Latitude of first point (radians).
+/// - `lon1_rad`: Longitude of first point (radians).
+/// - `lat2_rad`: Latitude of second point (radians).
+/// - `lon2_rad`: Longitude of second point (radians).
+///
+/// ## Returns
+/// Great-circle distance between the two points, in meters.
+///
+/// ## Example
+/// ```
+/// let d = strapdown::earth::haversine_distance(
+///     40.0_f64.to_radians(), -75.0_f64.to_radians(),
+///     41.0_f64.to_radians(), -74.0_f64.to_radians(),
+/// );
+/// println!("Distance: {:.1} km", d / 1000.0);
+/// ```
+pub fn haversine_distance(lat1_rad: f64, lon1_rad: f64, lat2_rad: f64, lon2_rad: f64) -> f64 {
+    let dlat = lat2_rad - lat1_rad;
+    let dlon = lon2_rad - lon1_rad;
+
+    let a =
+        (dlat / 2.0).sin().powi(2) + lat1_rad.cos() * lat2_rad.cos() * (dlon / 2.0).sin().powi(2);
+
+    let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
+
+    const R: f64 = 6_371_000.0; // mean Earth radius in meters
+    R * c
+}
+
 /// Calculate principal radii of curvature
 ///
 /// The [principal radii of curvature](https://en.wikipedia.org/wiki/Earth_radius) are used to
@@ -374,7 +463,7 @@ pub fn gravity(latitude: &f64, altitude: &f64) -> f64 {
 /// differs from the gravity scalar in that it includes the centrifugal effects of the Earth's
 /// rotation.
 ///
-/// *Note:* Local level frame coordintaes are odd and mixed and can be defined as North, East,
+/// *Note:* Local level frame coordinates are odd and mixed and can be defined as North, East,
 /// Down (NED) or East, North, Up (ENU). This function uses the ENU convention, thus gravity acts
 /// along the negative Z-axis (downward) in the local-level frame.
 ///
@@ -435,7 +524,7 @@ pub fn gravity_anomaly(
     let eotvos_correction: f64 = eotvos(latitude, altitude, north_velocity, east_velocity);
     *gravity_observed - normal_gravity - eotvos_correction
 }
-/// Calculate the Eotvos correction for the local-level frame
+/// Calculate the Eötvös correction for the local-level frame
 ///
 /// The Eötvös correction accounts for the centrifugal acceleration caused by the vehicle's motion
 /// relative to the Earth's rotation. It depends on the platform's velocity, latitude, and Earth's
@@ -525,7 +614,7 @@ pub fn transport_rate(latitude: &f64, altitude: &f64, velocities: &Vector3<f64>)
 /// - `altitude` - The WGS84 altitude in meters
 ///
 /// # Returns
-/// The magnetic field vector in nanoteslas (nT) in the local-level frame (North, East, Down)
+/// The magnetic field vector in nano teslas (nT) in the local-level frame (North, East, Down)
 ///
 /// # Example
 /// ```rust
@@ -557,7 +646,7 @@ pub fn calculate_magnetic_field(latitude: &f64, longitude: &f64, altitude: &f64)
 /// - `radius` - The distance from Earth's center in meters
 ///
 /// # Returns
-/// The radial component of the magnetic field in nanoteslas (nT)
+/// The radial component of the magnetic field in nano teslas (nT)
 ///
 /// # Example
 /// ```rust
@@ -579,7 +668,7 @@ pub fn calculate_radial_magnetic_field(colatitude: f64, radius: f64) -> f64 {
 /// - `radius` - The distance from Earth's center in meters
 ///
 /// # Returns
-/// The latitudinal component of the magnetic field in nanoteslas (nT)
+/// The latitudinal component of the magnetic field in nano teslas (nT)
 ///
 /// # Example
 /// ```rust
@@ -704,20 +793,21 @@ pub fn magnetic_declination(latitude: &f64, longitude: &f64, altitude: &f64) -> 
 }
 /// Calculate the magnetic anomaly at a given location
 pub fn magnetic_anomaly(
-    latitude: f64,
-    longitude: f64,
-    altitude: f64,
+    magnetic_field: GeomagneticField,
     mag_x: f64,
     mag_y: f64,
     mag_z: f64,
 ) -> f64 {
-    f64::NAN * latitude * longitude * altitude * mag_x * mag_y * mag_z // Placeholder for magnetic anomaly calculation to squash warnings
+    // f64::NAN * latitude * longitude * altitude * mag_x * mag_y * mag_z // Placeholder for magnetic anomaly calculation to squash warnings
+    let obs = (mag_x.powi(2) + mag_y.powi(2) + mag_z.powi(2)).sqrt();
+    obs - (magnetic_field.f().value as f64)
 }
 // === Unit tests ===
 #[cfg(test)]
 mod tests {
     use super::*;
     use assert_approx_eq::assert_approx_eq;
+    const KM: f64 = 1000.0;
     #[test]
     fn vector_to_skew_symmetric() {
         let v: Vector3<f64> = Vector3::new(1.0, 2.0, 3.0);
@@ -844,5 +934,85 @@ mod tests {
         assert_approx_eq!(rot1[(2, 0)], rot2[(2, 0)], 1e-7);
         assert_approx_eq!(rot1[(2, 1)], rot2[(2, 1)], 1e-7);
         assert_approx_eq!(rot1[(2, 2)], rot2[(2, 2)], 1e-7);
+    }
+    #[test]
+    fn test_meters_ned_to_dlat_dlon() {
+        // Test the conversion from North/East meters to latitude/longitude deltas
+
+        // At the equator, 1 degree of latitude is approximately 111.32 km
+        // and 1 degree of longitude is approximately 111.32 km as well
+        let lat_rad = 0.0; // equator
+        let alt_m = 0.0; // sea level
+
+        // Test northward offset
+        let (dlat, dlon) = meters_ned_to_dlat_dlon(lat_rad, alt_m, 1852.0, 0.0);
+        assert_approx_eq!(dlat.abs(), (1.0 / 60.0 as f64).to_radians(), 0.0001); // ~1 degree latitude change
+        assert_approx_eq!(dlon.abs(), 0.0, 0.0001); // ~0 longitude change
+
+        // Test eastward offset
+        let (dlat, dlon) = meters_ned_to_dlat_dlon(lat_rad, alt_m, 0.0, 1852.0);
+        assert!(dlat.abs() < 0.0001); // ~0 latitude change
+        assert_approx_eq!(dlon.abs(), (1.0 / 60.0 as f64).to_radians(), 0.0001); // ~1 degree longitude change
+
+        // Test at 45 degrees north, where longitude degrees are shorter
+        let lat_rad = 45.0_f64.to_radians();
+
+        // At 45°N, 1 degree of longitude is about 111.32 * cos(45°) = 78.7 km
+        let (dlat, dlon) = meters_ned_to_dlat_dlon(lat_rad, alt_m, 0.0, 111.320);
+        assert_approx_eq!(dlat.abs(), 0.0, 0.0001); // ~0 latitude change
+        assert_approx_eq!(dlon.abs(), 0.0, 0.0001); // ~1 degree longitude change
+    }
+
+    #[test]
+    fn zero_distance() {
+        let lat = 40.0_f64.to_radians();
+        let lon = -75.0_f64.to_radians();
+        let d = haversine_distance(lat, lon, lat, lon);
+        assert!(d.abs() < 1e-9, "Zero distance should be ~0, got {}", d);
+    }
+
+    #[test]
+    fn quarter_circumference_equator() {
+        // From (0,0) to (0,90°E) is a quarter of Earth's circumference
+        let d = haversine_distance(0.0, 0.0, 0.0, 90_f64.to_radians());
+        let expected = std::f64::consts::FRAC_PI_2 * 6_371_000.0; // R * π/2
+        let err = (d - expected).abs();
+        assert!(
+            err < 1e-6 * expected,
+            "Error too large: got {}, expected {}",
+            d,
+            expected
+        );
+    }
+
+    #[test]
+    fn antipodal_points() {
+        // (0,0) vs (0,180°E) → half Earth's circumference
+        let d = haversine_distance(0.0, 0.0, 0.0, 180_f64.to_radians());
+        let expected = std::f64::consts::PI * 6_371_000.0; // R * π
+        let err = (d - expected).abs();
+        assert!(
+            err < 1e-6 * expected,
+            "Error too large: got {}, expected {}",
+            d,
+            expected
+        );
+    }
+
+    #[test]
+    fn known_baseline_nyc_to_london() {
+        // Approx coordinates
+        let nyc_lat = 40.7128_f64.to_radians();
+        let nyc_lon = -74.0060_f64.to_radians();
+        let lon_lat = 51.5074_f64.to_radians();
+        let lon_lon = -0.1278_f64.to_radians();
+
+        let d = haversine_distance(nyc_lat, nyc_lon, lon_lat, lon_lon);
+        // Real-world great-circle distance ~5567 km
+        assert!(
+            (d / KM - 5567.0).abs() < 50.0,
+            "NYC-LON distance off: {} km",
+            d / KM
+        );
     }
 }

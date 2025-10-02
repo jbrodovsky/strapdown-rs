@@ -14,11 +14,42 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    - name: lint
-      run: cargo clippy --fix
-    - name: format
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy rustfmt
+    - name: Install system dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y  pkg-config \
+          libhdf5-dev \
+          libhdf5-openmpi-dev \
+          libnetcdf-dev \
+          zlib1g-dev
+        pkg-config --modversion hdf5
+        pkg-config --modversion netcdf || true
+    - uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: ${{ runner.os }}-cargo-
+
+    - name: Test
+      run: cargo test --workspace --all-features --locked --verbose
+
+    - name: Lint
+      run: cargo clippy --workspace --all-features --fix
+    - name: Format
       run: cargo fmt --all
-    - name: Build
-      run: cargo build
-    - name: Run tests
-      run: cargo test
+      
+    # - name: lint
+    #   run: cargo clippy --fix
+    # - name: format
+    #   run: cargo fmt --all
+    # - name: Build
+    #   run: cargo build
+    # - name: Run tests
+    #   run: cargo test
+

@@ -1,0 +1,10 @@
+scheduler:
+  kind: passthrough
+fault:
+  kind: degraded
+  rho_pos: 0.99
+  sigma_pos_m: 3.0
+  rho_vel: 0.95
+  sigma_vel_mps: 0.3
+  r_scale: 5.0
+seed: 42

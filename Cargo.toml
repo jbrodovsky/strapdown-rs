@@ -2,11 +2,25 @@
 members = [
     "core",
     #"strapdown_c",  <-- Future C bindings
-    #"strapdown_py", <-- Future Python bindings 
+    #"strapdown_py", <-- Future Python bindings
+    "sim",
+    "geonav"
 ]
-resolver = "2"
+resolver = "3"
 
-#[package]
-#name = "strapdown-meta"
+[workspace.package]
+# name = "strapdown-rs"
+authors = ["James Brodovsky"]
+description = "A Rust library for strapdown inertial navigation systems."
+documentation = "https://docs.rs/strapdown-rs/"
+license = "MIT"
+readme = "README.md"
+homepage = "https://www.strapdown.rs"
+repository = "https://github.com/jbrodovsky/strapdown-rs"
+keywords = ["strapdown", "inertial", "navigation", "IMU", "INS"]
 
+[workspace.dependencies]
+nalgebra = "*"
+rand = "*"
+csv = "*"
 #[package.metadata.docs.rs]

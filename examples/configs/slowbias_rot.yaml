@@ -1,0 +1,9 @@
+scheduler:
+  kind: passthrough
+fault:
+  kind: slowbias
+  drift_n_mps: 0.02
+  drift_e_mps: 0.0
+  q_bias: 5e-6
+  rotate_omega_rps: 1e-3
+seed: 42
