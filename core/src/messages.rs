@@ -854,7 +854,9 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
         let dt = t1 - t0;
 
         // Build IMU event at t1 only if accel and gyro components are present
-        let imu_components = [r1.acc_x, r1.acc_y, r1.acc_z, r1.gyro_x, r1.gyro_y, r1.gyro_z];
+        let imu_components = [
+            r1.acc_x, r1.acc_y, r1.acc_z, r1.gyro_x, r1.gyro_y, r1.gyro_z,
+        ];
         let imu_present = imu_components.iter().all(|v| !v.is_nan());
         if imu_present {
             let imu = IMUData {
@@ -918,10 +920,15 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
                 } else {
                     r1.vertical_accuracy.max(1e-3)
                 };
-                let vel_std = if r1.speed_accuracy.is_nan() { 100.0 } else { r1.speed_accuracy.max(0.1) };
+                let vel_std = if r1.speed_accuracy.is_nan() {
+                    100.0
+                } else {
+                    r1.speed_accuracy.max(0.1)
+                };
 
                 let (lat_c, lon_c, alt_c, vn_c, ve_c, horiz_c, vel_c) = apply_fault(
-                    &cfg.fault, &mut st, *t1, dt, lat, lon, alt, vn, ve, horiz_std, vert_std, vel_std,
+                    &cfg.fault, &mut st, *t1, dt, lat, lon, alt, vn, ve, horiz_std, vert_std,
+                    vel_std,
                 );
 
                 let meas = GPSPositionAndVelocityMeasurement {

@@ -3,14 +3,14 @@ use std::error::Error;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use geonav::{
+    GeoMap, GeophysicalMeasurementType, GravityResolution, MagneticResolution, build_event_stream,
+    geo_closed_loop,
+};
 use strapdown::messages::GnssDegradationConfig;
 use strapdown::sim::{
-    NavigationResult, TestDataRecord, initialize_ukf,
-    SchedulerArgs, FaultArgs, build_scheduler, build_fault, DEFAULT_PROCESS_NOISE
-};
-use geonav::{
-    GeoMap, GeophysicalMeasurementType, GravityResolution, MagneticResolution, 
-    build_event_stream, geo_closed_loop
+    DEFAULT_PROCESS_NOISE, FaultArgs, NavigationResult, SchedulerArgs, TestDataRecord, build_fault,
+    build_scheduler, initialize_ukf,
 };
 
 const LONG_ABOUT: &str = "GEONAV-SIM: A geophysical navigation simulation tool for strapdown inertial navigation systems.
@@ -49,7 +49,7 @@ struct GeophysicalArgs {
     /// Type of geophysical measurement to use
     #[arg(long, value_enum, default_value_t = GeoMeasurementType::Gravity)]
     geo_type: GeoMeasurementType,
-    
+
     /// Map resolution for geophysical data
     #[arg(long, value_enum, default_value_t = GeoResolution::OneMinute)]
     geo_resolution: GeoResolution,
@@ -59,11 +59,11 @@ struct GeophysicalArgs {
     /// Standard deviation for geophysical measurement noise
     #[arg(long, default_value_t = 100.0)]
     geo_noise_std: f64,
-    
+
     /// Frequency in seconds for geophysical measurements (if not specified, uses every available measurement)
     #[arg(long)]
     geo_frequency_s: Option<f64>,
-    
+
     /// Custom map file path (optional - if not provided, auto-detects based on input directory)
     #[arg(long)]
     map_file: Option<PathBuf>,
@@ -82,7 +82,7 @@ struct GnssArgs {
     /// Fault model settings (corrupt measurement content)
     #[command(flatten)]
     fault: FaultArgs,
-    
+
     /// Path to a GNSS degradation config file (json|yaml|yml|toml)
     #[arg(long)]
     config: Option<PathBuf>,
@@ -128,7 +128,10 @@ impl From<GeoMeasurementType> for GeophysicalMeasurementType {
 }
 
 /// Convert CLI resolution to appropriate library resolution based on measurement type
-fn build_measurement_type(geo_type: GeoMeasurementType, resolution: GeoResolution) -> GeophysicalMeasurementType {
+fn build_measurement_type(
+    geo_type: GeoMeasurementType,
+    resolution: GeoResolution,
+) -> GeophysicalMeasurementType {
     match geo_type {
         GeoMeasurementType::Gravity => {
             let gravity_res = match resolution {
@@ -169,21 +172,26 @@ fn build_measurement_type(geo_type: GeoMeasurementType, resolution: GeoResolutio
 }
 
 /// Auto-detect map file based on input directory and measurement type
-fn find_map_file(input_path: &PathBuf, geo_type: GeoMeasurementType) -> Result<PathBuf, Box<dyn Error>> {
-    let input_dir = input_path.parent()
+fn find_map_file(
+    input_path: &PathBuf,
+    geo_type: GeoMeasurementType,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let input_dir = input_path
+        .parent()
         .ok_or("Cannot determine input directory")?;
-    
-    let input_stem = input_path.file_stem()
+
+    let input_stem = input_path
+        .file_stem()
         .ok_or("Cannot determine input file stem")?
         .to_string_lossy();
-    
+
     let suffix = match geo_type {
         GeoMeasurementType::Gravity => "_gravity.nc",
         GeoMeasurementType::Magnetic => "_magnetic.nc",
     };
-    
+
     let map_file = input_dir.join(format!("{}{}", input_stem, suffix));
-    
+
     if map_file.exists() {
         Ok(map_file)
     } else {
@@ -193,7 +201,7 @@ fn find_map_file(input_path: &PathBuf, geo_type: GeoMeasurementType) -> Result<P
 
 fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
-    
+
     // Validate input file
     if !cli.input.exists() {
         return Err(format!("Input file '{}' does not exist.", cli.input.display()).into());
@@ -201,36 +209,42 @@ fn main() -> Result<(), Box<dyn Error>> {
     if !cli.input.is_file() {
         return Err(format!("Input path '{}' is not a file.", cli.input.display()).into());
     }
-    
+
     // Ensure output directory exists
     if let Some(parent) = cli.output.parent() {
         if !parent.exists() {
             std::fs::create_dir_all(parent)?;
         }
     }
-    
+
     // Load sensor data records from CSV
     let records = TestDataRecord::from_csv(&cli.input)?;
-    println!("Read {} records from {}", records.len(), cli.input.display());
-    
+    println!(
+        "Read {} records from {}",
+        records.len(),
+        cli.input.display()
+    );
+
     // Determine map file path
     let map_path = match &cli.geo.map_file {
         Some(path) => path.clone(),
         None => find_map_file(&cli.input, cli.geo.geo_type)?,
     };
-    
+
     println!("Loading geophysical map from: {}", map_path.display());
-    
+
     // Build measurement type with specified resolution
     let measurement_type = build_measurement_type(cli.geo.geo_type, cli.geo.geo_resolution);
-    
+
     // Load geophysical map
     let geomap = Rc::new(GeoMap::load_geomap(map_path, measurement_type)?);
-    println!("Loaded {} map with {} x {} grid points", 
-             geomap.get_map_type(), 
-             geomap.get_lats().len(), 
-             geomap.get_lons().len());
-    
+    println!(
+        "Loaded {} map with {} x {} grid points",
+        geomap.get_map_type(),
+        geomap.get_lats().len(),
+        geomap.get_lons().len()
+    );
+
     // Build GNSS degradation configuration
     let gnss_config = if let Some(ref cfg_path) = cli.gnss.config {
         match GnssDegradationConfig::from_file(cfg_path) {
@@ -247,34 +261,49 @@ fn main() -> Result<(), Box<dyn Error>> {
             seed: cli.gnss.seed,
         }
     };
-    
+
     // Build event stream with geophysical measurements
-    let events = build_event_stream(&records, &gnss_config, geomap, Some(cli.geo.geo_noise_std), cli.geo.geo_frequency_s);
+    let events = build_event_stream(
+        &records,
+        &gnss_config,
+        geomap,
+        Some(cli.geo.geo_noise_std),
+        cli.geo.geo_frequency_s,
+    );
     println!("Built event stream with {} events", events.events.len());
-    
+
     // Initialize UKF
     let mut process_noise: Vec<f64> = DEFAULT_PROCESS_NOISE.clone().into();
     process_noise.extend([1e-9]); // Extend for geophysical state
 
-    let mut ukf = initialize_ukf(records[0].clone(), None, None, None, Some(vec![cli.geo.geo_bias; 1]), Some(vec![cli.geo.geo_noise_std; 1]), Some(process_noise));
-    println!("Initialized UKF with state dimension {}", ukf.get_mean().len());
+    let mut ukf = initialize_ukf(
+        records[0].clone(),
+        None,
+        None,
+        None,
+        Some(vec![cli.geo.geo_bias; 1]),
+        Some(vec![cli.geo.geo_noise_std; 1]),
+        Some(process_noise),
+    );
+    println!(
+        "Initialized UKF with state dimension {}",
+        ukf.get_mean().len()
+    );
     println!("Initial state: {:?}", ukf.get_mean());
     // Run closed-loop simulation
     println!("Running geophysical navigation simulation...");
     let results = geo_closed_loop(&mut ukf, events);
-    
+
     // Write results
     match results {
-        Ok(ref nav_results) => {
-            match NavigationResult::to_csv(nav_results, &cli.output) {
-                Ok(_) => println!("Results written to {}", cli.output.display()),
-                Err(e) => eprintln!("Error writing results: {}", e),
-            }
-        }
+        Ok(ref nav_results) => match NavigationResult::to_csv(nav_results, &cli.output) {
+            Ok(_) => println!("Results written to {}", cli.output.display()),
+            Err(e) => eprintln!("Error writing results: {}", e),
+        },
         Err(e) => {
             eprintln!("Error running geophysical navigation simulation: {}", e);
             return Err(e.into());
         }
-    }    
+    }
     Ok(())
 }

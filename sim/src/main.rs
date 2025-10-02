@@ -1,12 +1,10 @@
 use clap::{Args, Parser, Subcommand};
 use std::error::Error;
 use std::path::PathBuf;
-use strapdown::messages::{
-    GnssDegradationConfig, build_event_stream,
-};
+use strapdown::messages::{GnssDegradationConfig, build_event_stream};
 use strapdown::sim::{
-    NavigationResult, TestDataRecord, closed_loop, initialize_ukf,
-    SchedulerArgs, FaultArgs, build_scheduler, build_fault
+    FaultArgs, NavigationResult, SchedulerArgs, TestDataRecord, build_fault, build_scheduler,
+    closed_loop, initialize_ukf,
 };
 
 const LONG_ABOUT: &str = "STRAPDOWN: A simulation and analysis tool for strapdown inertial navigation systems.
