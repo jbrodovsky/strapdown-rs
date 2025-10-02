@@ -32,23 +32,24 @@ use crate::messages::{Event, EventStream, GnssFaultModel, GnssScheduler};
 use crate::{IMUData, StrapdownState, forward};
 use health::{HealthLimits, HealthMonitor};
 
-pub const DEFAULT_PROCESS_NOISE: [f64; 15] = [ // Default process noise if not provided
-            1e-6, // position noise 1e-6
-            1e-6, // position noise 1e-6
-            1e-6, // altitude noise
-            1e-3, // velocity north noise
-            1e-3, // velocity east noise
-            1e-3, // velocity down noise
-            1e-5, // roll noise
-            1e-5, // pitch noise
-            1e-5, // yaw noise
-            1e-6, // acc bias x noise
-            1e-6, // acc bias y noise
-            1e-6, // acc bias z noise
-            1e-8, // gyro bias x noise
-            1e-8, // gyro bias y noise
-            1e-8, // gyro bias z noise
-        ];
+pub const DEFAULT_PROCESS_NOISE: [f64; 15] = [
+    // Default process noise if not provided
+    1e-6, // position noise 1e-6
+    1e-6, // position noise 1e-6
+    1e-6, // altitude noise
+    1e-3, // velocity north noise
+    1e-3, // velocity east noise
+    1e-3, // velocity down noise
+    1e-5, // roll noise
+    1e-5, // pitch noise
+    1e-5, // yaw noise
+    1e-6, // acc bias x noise
+    1e-6, // acc bias y noise
+    1e-6, // acc bias z noise
+    1e-8, // gyro bias x noise
+    1e-8, // gyro bias y noise
+    1e-8, // gyro bias z noise
+];
 
 fn de_f64_nan<'de, D>(deserializer: D) -> Result<f64, D::Error>
 where
@@ -763,7 +764,7 @@ pub fn closed_loop(
                     // log::error!("Health fail after measurement update at {} (#{i}): {e}", ts);
                     bail!(e);
                 }
-            } 
+            }
         }
         // If timestamp changed, or it's the last event, record the previous state
         if Some(ts) != last_ts {
@@ -869,15 +870,27 @@ pub fn initialize_ukf(
         northward_velocity: initial_pose.speed * initial_pose.bearing.cos(),
         eastward_velocity: initial_pose.speed * initial_pose.bearing.sin(),
         downward_velocity: 0.0, // Assuming no initial vertical velocity for simplicity
-        roll: if initial_pose.roll.is_nan() { 0.0 } else { initial_pose.roll },
-        pitch: if initial_pose.pitch.is_nan() { 0.0 } else { initial_pose.pitch },
-        yaw: if initial_pose.yaw.is_nan() { 0.0 } else { initial_pose.yaw },
+        roll: if initial_pose.roll.is_nan() {
+            0.0
+        } else {
+            initial_pose.roll
+        },
+        pitch: if initial_pose.pitch.is_nan() {
+            0.0
+        } else {
+            initial_pose.pitch
+        },
+        yaw: if initial_pose.yaw.is_nan() {
+            0.0
+        } else {
+            initial_pose.yaw
+        },
         in_degrees: true,
     };
     let process_noise_diagonal = match process_noise_diagonal {
         Some(pn) => pn,
         None => DEFAULT_PROCESS_NOISE.to_vec(),
-    };    
+    };
     // Covariance parameters
     let position_accuracy = initial_pose.horizontal_accuracy; //.sqrt();
     let mut covariance_diagonal = vec![
@@ -896,12 +909,10 @@ pub fn initialize_ukf(
     // extend the covariance diagonal if imu biases are provided
     let imu_biases = match imu_biases {
         Some(imu_biases) => {
-            covariance_diagonal.extend(
-                match imu_biases_covariance {
-                    Some(imu_cov) => imu_cov,
-                    None => vec![1e-3; 6], // Default covariance if not provided
-                }
-            );
+            covariance_diagonal.extend(match imu_biases_covariance {
+                Some(imu_cov) => imu_cov,
+                None => vec![1e-3; 6], // Default covariance if not provided
+            });
             imu_biases
         }
         None => {
@@ -912,12 +923,10 @@ pub fn initialize_ukf(
     // extend the covariance diagonal if other states are provided
     let other_states = match other_states {
         Some(other_states) => {
-            covariance_diagonal.extend(
-                match other_states_covariance {
-                    Some(other_cov) => other_cov,
-                    None => vec![1e-3; other_states.len()], // Default covariance if not provided
-                }
-            );
+            covariance_diagonal.extend(match other_states_covariance {
+                Some(other_cov) => other_cov,
+                None => vec![1e-3; other_states.len()], // Default covariance if not provided
+            });
             Some(other_states)
         }
         None => None,
@@ -937,7 +946,8 @@ pub fn initialize_ukf(
     assert!(
         process_noise_diagonal.len() == covariance_diagonal.len(),
         "Process noise and covariance diagonal length mismatch: {} vs {}",
-        process_noise_diagonal.len(), covariance_diagonal.len()
+        process_noise_diagonal.len(),
+        covariance_diagonal.len()
     );
     let process_noise = DMatrix::from_diagonal(&DVector::from_vec(process_noise_diagonal));
     //DVector::from_vec(vec![0.0; 15]);
@@ -1201,10 +1211,10 @@ pub fn build_fault(a: &FaultArgs) -> GnssFaultModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
     use std::fs::File;
     use std::path::Path;
     use std::vec;
-    use chrono::Utc;
 
     /// Generate a test record for northward motion at constant velocity (1 knot = 1852 m/h).
     /// This helper returns a Vec<TestDataRecord> for 1 hour, sampled once per second.
@@ -1635,7 +1645,6 @@ mod tests {
         );
         assert!(!ukf2.get_mean().is_empty());
     }
-    
 
     // Helper to produce the header in the same order the struct expects
     fn test_header() -> Vec<&'static str> {
@@ -1692,7 +1701,12 @@ mod tests {
         let recs = TestDataRecord::from_csv(&temp_file).expect("from_csv should succeed");
         assert_eq!(recs.len(), 1);
         let r = &recs[0];
-        assert_eq!(r.time, chrono::DateTime::parse_from_rfc3339(time).unwrap().with_timezone(&Utc));
+        assert_eq!(
+            r.time,
+            chrono::DateTime::parse_from_rfc3339(time)
+                .unwrap()
+                .with_timezone(&Utc)
+        );
         assert!(r.speed.is_nan());
         assert!(r.latitude.is_nan());
         assert!(r.longitude.is_nan());
@@ -1717,7 +1731,12 @@ mod tests {
         let recs = TestDataRecord::from_csv(&temp_file).expect("from_csv should succeed");
         assert_eq!(recs.len(), 1);
         let rec = &recs[0];
-        assert_eq!(rec.time, chrono::DateTime::parse_from_rfc3339(time).unwrap().with_timezone(&Utc));
+        assert_eq!(
+            rec.time,
+            chrono::DateTime::parse_from_rfc3339(time)
+                .unwrap()
+                .with_timezone(&Utc)
+        );
         assert!(rec.speed.is_nan());
         assert!(rec.latitude.is_nan());
         assert!(rec.longitude.is_nan());
@@ -1748,9 +1767,14 @@ mod tests {
         let got = TestDataRecord::from_csv(&temp_file).expect("from_csv should succeed");
         assert_eq!(got.len(), 1);
         let r = &got[0];
-        assert_eq!(r.time, chrono::DateTime::parse_from_rfc3339(time).unwrap().with_timezone(&Utc));
+        assert_eq!(
+            r.time,
+            chrono::DateTime::parse_from_rfc3339(time)
+                .unwrap()
+                .with_timezone(&Utc)
+        );
         assert_eq!(r.longitude, -122.0);
         assert_eq!(r.latitude, 37.0);
         let _ = std::fs::remove_file(&temp_file);
     }
-    }
+}
