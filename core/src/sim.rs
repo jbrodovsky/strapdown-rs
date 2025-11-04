@@ -14,7 +14,7 @@
 //! or intermittent and degraded GNSS via the measurement models provided in this module. You can install
 //! the programs that execute this generic simulation by installing the binary via `cargo install strapdown-rs`.
 use core::f64;
-use std::fmt::{self, Debug, Display};
+use std::fmt::{Debug, Display};
 use std::io::{self};
 use std::path::Path;
 

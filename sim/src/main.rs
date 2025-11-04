@@ -148,11 +148,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     // Validate that all directories in the output path exist, if they don't create them
     let parents = cli.output.parent();
-    if let Some(parent) = parents {
-        if !parent.exists() {
+    if let Some(parent) = parents
+        && !parent.exists() {
             std::fs::create_dir_all(parent)?;
         }
-    }
     match cli.mode {
         SimMode::OpenLoop => println!("Running in open-loop mode"),
         SimMode::ParticleFilter(ref args) => {
