@@ -629,11 +629,11 @@ impl GeophysicalAnomalyMeasurementModel for CombinedGeoMeasurement {
         // For combined model, we return gravity anomaly in get_anomaly
         // The full vector is returned by get_vector
         gravity_anomaly(
-            self.gravity_observed,
-            self.latitude,
-            self.altitude,
-            self.north_velocity,
-            self.east_velocity,
+            &self.gravity_observed,
+            &self.latitude,
+            &self.altitude,
+            &self.north_velocity,
+            &self.east_velocity,
         )
     }
 
