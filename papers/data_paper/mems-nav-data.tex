@@ -197,7 +197,7 @@ To enable systematic evaluation under contested navigation conditions, the toolb
 
 At the scheduling level, three modes are supported. The \emph{pass-through} scheduler emits all measurements without modification and serves as a baseline for `ideal' conditions. A \emph{fixed-interval} scheduler outputs fixes at a prescribed interval (e.g., every 10~s), discarding intermediate updates to mimic reduced-rate operation caused by jamming, low-power duty cycling, or bandwidth constraints. The \emph{duty-cycle} scheduler alternates between ON and OFF windows, reproducing periodic outages similar to those encountered in tunnels or urban canyons. These mechanisms provide control over temporal availability and can be tuned to match operational conditions.  
 
-At the measurement level, the toolbox implements several distinct corruption models. The \emph{degraded} model applies autoregressive (AR(1)) noise processes to position and velocity \citep{autoregression}, combined with inflated covariance reports. This represents conditions such as multipath or low-SNR reception, where GNSS remains available but with reduced fidelity. The \emph{slow bias} model represents ``soft spoofing'': a gradual drift in position and velocity along a chosen direction, potentially with stochastic and rotational components. Such errors remain plausible to a Bayesian filter and are therefore particularly insidious. The \emph{hijack} model, in contrast, represents ``hard spoofing'': a constant offset applied abruptly during a specified time window, displacing the estimated trajectory onto a parallel but false path. Finally, a \emph{combination} model allows these effects to be chained together, such as combining a slow drift with a subsequent spoofing window, to emulate complex multi-stage attacks.
+At the measurement level, the toolbox implements several distinct corruption models. The \emph{degraded} model applies autoregressive (AR(1)) noise processes to position and velocity \citep{wang2022noise}, combined with inflated covariance reports. This represents conditions such as multipath or low-SNR reception, where GNSS remains available but with reduced fidelity. The \emph{slow bias} model represents ``soft spoofing'': a gradual drift in position and velocity along a chosen direction, potentially with stochastic and rotational components. Such errors remain plausible to a Bayesian filter and are therefore particularly insidious. The \emph{hijack} model, in contrast, represents ``hard spoofing'': a constant offset applied abruptly during a specified time window, displacing the estimated trajectory onto a parallel but false path. Finally, a \emph{combination} model allows these effects to be chained together, such as combining a slow drift with a subsequent spoofing window, to emulate complex multi-stage attacks.
 
 \begin{table*}
 \centering
@@ -208,7 +208,7 @@ At the measurement level, the toolbox implements several distinct corruption mod
 \hline
 \multirow{3}{*}{Scheduling} 
   & Pass-through   & Emit all fixes unchanged. & Baseline / truth replay \\
-  \cline{2-4}}
+  \cline{2-4}
   & Fixed-interval & Emit fixes only at specified intervals; drop others. & Jamming, low-power mode \\
   \cline{2-4}
   & Duty-cycle     & Alternate ON/OFF windows of availability. & Tunnel, urban canyon \\

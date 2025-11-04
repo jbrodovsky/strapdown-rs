@@ -1,0 +1,258 @@
+\documentclass[letterpaper,times]{IONconf}
+%
+% If IONconf.cls has not been installed into the LaTeX system files,
+% manually specify the path as follows or keep a copy in the same 
+% folder as the document itself:
+% \documentclass{../sty/IONconf}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Common packages to import
+
+% ### MATH PACKAGE
+\usepackage{amsmath}
+\usepackage{amssymb}
+% Popular packages from the American Mathematical Society that provide
+% many useful and powerful commands for dealing with mathematics.
+% If bold math operators are desired, the bm package is suggested
+\usepackage{bm}
+% its documentation can be found at http://www.ctan.org/pkg/bm
+
+
+
+% ### GRAPHICS PACKAGE
+\usepackage{graphicx}
+% to ensure centered multiline captions, the centering package should 
+% be called as well.
+\usepackage[justification=centering]{caption}
+% To use the subfigures command, the subcaption package should be 
+% called as well.
+% \usepackage{subcaption}
+% To declare the path(s) where your graphic files are use
+\graphicspath{{figures/}}
+% To declare their extensions so you won't have to specify these with
+% every instance of \includegraphics:
+% \DeclareGraphicsExtensions{.pdf,.jpeg,.png}
+% graphicx was written by David Carlisle and Sebastian Rahtz. It is
+% required if you want graphics, photos, etc. graphicx.sty is already
+% installed on most LaTeX systems. The latest version and documentation
+% can be obtained at: 
+% http://www.ctan.org/pkg/graphicx
+% A good introduction to inserting figures in a document can be found 
+% at:
+% https://www.overleaf.com/learn/latex/How_to_Write_a_Thesis_in_
+% 	LaTeX_(Part_3):_Figures,_Subfigures_and_Tables
+% Another good source of documentation is "Using Imported Graphics in
+% LaTeX2e" by Keith Reckdahl which can be found at:
+% http://www.ctan.org/pkg/epslatex
+%
+% latex, and pdflatex in dvi mode, support graphics in encapsulated
+% postscript (.eps) format. pdflatex in pdf mode supports graphics
+% in .pdf, .jpeg, .png and .mps (metapost) formats. Users should ensure
+% that all non-photo figures use a vector format (.eps, .pdf, .mps) and
+% not a bitmapped formats (.jpeg, .png).
+
+
+
+% ### ALGORITHM PACKAGE
+%\usepackage{algorithmic}
+% This package provides an algorithmic environment fo describing algorithms.
+% You can use the algorithmic environment in-text or within a figure
+% environment to provide for a floating algorithm.
+
+
+
+% ### TABLE AND ALIGNMENT PACKAGE
+%\usepackage{array}
+% Frank Mittelbach's and David Carlisle's array.sty patches and improves
+% the standard LaTeX2e array and tabular environments to provide better
+% appearance and additional user controls.
+
+
+
+% ### URL PACKAGE
+\usepackage{url}
+% url.sty was written by Donald Arseneau. It provides better support for
+% handling and breaking URLs. url.sty is already installed on most LaTeX
+% systems. The latest version and documentation can be obtained at:
+% http://www.ctan.org/pkg/url
+% Basically, \url{my_url_here}.
+
+
+
+% ### NATBIB PACKAGE
+% \usepackage{natbib}
+
+% The natbib package is a reimplementation of the LATEX \cite
+% command, to work with both author–year and numerical citations.
+% It is compatible with the standard bibliographic style files, such as
+% plain.bst, as well as with those for harvard, apalike, chicago,
+% astron, authordate, and of course natbib.
+% The natbib package enables the apalike bibliography style.
+% See http://homepage.stat.uiowa.edu/~rlenth/ALPHA/apa-tutorial.pdf
+% for an excellent explanation.
+
+
+
+% ### HYPERLINKS PACKAGE
+\usepackage[hidelinks]{hyperref}
+% This package is used to emend cross-referencing commands in LaTeX to
+% produce some sort of \special commands; there are backends for the 
+% special set defined for HyperTeX dvi processors, for embedded pdfmark 
+% commands for processing by Acrobat Distiller (dvips and dvipsone), for
+% dviwindo, for pdfTeX, for dvipdfm, for TeX4ht, and for VTEX's pdf and 
+% HTML backends.
+% Needs to be loaded AFTER other packages as it overwrites many standard 
+% commands.
+% See: https://ctan.org/pkg/hyperref?lang=en
+
+\usepackage[style=apa,natbib=true]{biblatex}
+\addbibresource{references.bib}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Document starts here
+
+\title{Navigation in GNSS-Denied Environments Using MEMS-Grade Sensors and Geophysical Anomalies: A UKF Approach}
+
+% Authors are grouped by institution. Institution names are italicized.
+% Author groups are separated by '\vspace{1mm} \\' for a line 
+% break with proper spacing.
+% This template shows an example of three authors, where author 1 and 
+% author 2 are from the same institution:
+
+\author{
+    James~Brodovsky, Philip~Dames, \textit{Temple~University}% <- this '%' removes a trailing whitespace
+    }
+
+
+\begin{document}
+
+\maketitle
+
+% biography section. The * indicates a section excluded from numbering.
+\section*{biography}
+
+% Biographies are defined as follows:
+% \biography{Author name}{author biography text}
+
+\biography{James Brodovsky}{James Brodovsky is a Ph.D. student at Temple University in the Mechanical Engineering department, specializing in autonomous navigation within GNSS-denied environments. His research focuses on developing resilient navigation techniques for robotic, unmanned, and traditional platforms. He investigates geophysical navigation by using maps of physical phenomena to provide positioning feedback through map-matching. His most recent work explores using MEMS-grade sensors to develop methods for long-duration, GPS-denied navigation. He is the author of the open-source software library strapdown-rs, which provides a foundation for high-performance INS algorithms. He is passionate about building modern, robust, and accessible software tools for the navigation industry.}
+
+\biography{Philip Dames}{Philip Dames is an Associate Professor of Mechanical Engineering at Temple University. His research enables teams of mobile robots to autonomously explore and gather information with limited prior knowledge, converting sensor data into actionable intelligence. His work addresses applications including infrastructure inspection, security, mapping, environmental monitoring, precision agriculture, and search and rescue. By developing mathematical tools and systems that explicitly reason about uncertainty in environments, sensors, and robots, as well as unknown numbers of objects and unpredictable phenomena, he aims to improve robotic team performance in real-world scenarios.}
+
+
+% The Abstract. The * indicates a section excluded from numbering.
+\section*{Abstract}
+
+This work explores the integration of open-source gravity and magnetic anomaly data into a strapdown inertial navigation system (INS) to improve navigation performance during degraded or intermittent GNSS availability. The primary objective is to demonstrate that a geophysical-aided INS, utilizing only low-cost MEMS-grade sensors and publicly available geophysical maps, could achieve lower drift rates than a standard INS without geophysical aiding.
+
+A comprehensive, long-term trajectory dataset (MEMS-Nav) was collected using a smartphone's internal MEMS-grade IMU and GPS receiver. A high-fidelity reference trajectory was generated using a loosely coupled, Unscented Kalman Filter (UKF) based INS. The GPS data was systematically degraded using the \verb|strapdown-rs| toolbox to simulate GNSS-challenged scenarios. A UKF-based INS was developed that incorporated gravity and magnetic anomaly measurements as additional aiding sources, utilizing the International Gravity Field Service (IGFS) Earth free-air anomaly map and World Digital Magnetic Anomaly Map as reference.
+
+The geophysical-aided INS demonstrated improved navigation accuracy compared to the standard INS when operating under GNSS interference, with performance gains ranging from several meters to tens of meters on certain trajectories. Even when unable to exceed standard INS performance, the geophysical approach exhibited trends toward superior accuracy. Results showed that despite inherent MEMS-grade IMU noise and limited resolution of open-source geophysical maps, this approach demonstrates feasibility of constraining INS drift.
+
+This research demonstrated that integrating gravity and magnetic anomaly measurements into a UKF-based INS represents a viable method for enhancing navigation performance in GNSS-denied environments and that this is feasible using low-cost MEMS sensors and publicly available geophysical data provided significant navigation accuracy improvements. The findings are particularly relevant for autonomous systems, robotics, and aerospace applications requiring resilience to GNSS vulnerabilities, offering a compelling non-RF based complement to GNSS for a more robust PNT ecosystem.
+
+% The introduction. Section numbering starts here.
+\section{Introduction}
+
+Modern navigation systems have become critically dependent on the Global Navigation Satellite Systems (GNSS) for position corrections in integrated inertial navigation systems (INS). While the GNSS provides accurate global positioning under ideal conditions, its reliance on radio frequency (RF) signals makes it vulnerable to denial, degradation, and spoofing in multiple scenarios\citep{humphreys2008,gnss-vulnerabilities,divis2013gps}. Urban canyons and indoor operation obstruct satellite visibility through multipath interference, while underground and underwater environments completely attenuate GNSS signals\citep{underwater_review,underwater_survey,indoor_survey}. More concerning are intentional disruptions: electronic warfare capabilities can actively jam or spoof GNSS signals, posing significant risks to commercial aviation, maritime shipping, and military operations \citep{9112619,santamaria_global_nodate}. These vulnerabilities create an urgent need for alternative positioning, navigation, and timing (PNT) solutions that do not rely on external RF signals.
+
+Geophysical navigation offers a compelling non-RF alternative by exploiting naturally occurring variations in Earth's gravity and magnetic fields. These geophysical anomalies—deviations from theoretical models of Earth's gravitational and magnetic fields—are spatially correlated and can serve as passive navigation beacons. Gravity anomaly navigation compares gravimeter measurements with reference gravity maps to estimate position \citep{jircitano1991gravity,kamgar1999vehicle,gravnav}, while magnetic anomaly navigation uses magnetometer readings matched against magnetic anomaly maps \citep{tyren1982magnetic,canciani2016absolute,canciani2017airborne,magnav}. Both approaches have been successfully demonstrated in aerospace and maritime applications, but these implementations have consistently relied on high-grade inertial measurement units (tactical or navigation-grade) and, in some cases, specialized sensors such as dedicated gravimeters or cesium vapor magnetometers.
+
+The proliferation of micro-electro-mechanical system (MEMS) sensors in smartphones, drones, and small autonomous vehicles has created a large class of low size, weight, and power (SWaP) platforms that could benefit from GNSS-independent navigation but cannot accommodate high-grade sensors due to cost, size, or power constraints. MEMS-grade IMUs are orders of magnitude less expensive than tactical-grade systems but suffer from significantly higher noise levels and bias instabilities, leading to rapid drift in dead-reckoning scenarios. Whether geophysical anomaly navigation remains viable when using such degraded inertial sensors and publicly available, lower-resolution anomaly maps (e.g., the International Gravity Field Service free-air anomaly map \citep{EGM2008} or the World Digital Magnetic Anomaly Map \citep{wdmam}) is an open question with significant practical implications.
+
+This work addresses this gap by investigating the integration of gravity and magnetic anomaly measurements into an Unscented Kalman Filter (UKF) based strapdown INS using only MEMS-grade sensors and open-source geophysical maps. We collected a comprehensive dataset (MEMS-Nav) using smartphone-grade IMUs and GPS receivers, then systematically degraded the GNSS availability using the \verb|strapdown-rs| simulation toolbox to emulate signal denial and intermittent availability. Our geophysical-aided INS augments the standard 15-state UKF (9 navigation states plus 6 IMU bias states) with gravity and magnetic anomaly measurement models, allowing the filter to estimate position corrections based on deviations from expected geophysical fields. The primary objective is to demonstrate that even with inherent MEMS sensor noise and limited map resolution, geophysical aiding can meaningfully constrain INS drift compared to unaided dead reckoning or GNSS-degraded navigation, thereby extending the viability of anomaly-based navigation from high-grade systems to the mass-market sensor domain.
+
+\section{Methodology}
+
+This section describes the development of a geophysically-aided strapdown INS and the experimental framework used to evaluate its performance under simulated GNSS degradation conditions.
+
+\subsection{Dataset and Reference Trajectory}
+
+The MEMS-Nav dataset \citep{mems-nav-dataset} was used as the foundation for this study. This dataset contains long-duration trajectories collected using smartphone-grade MEMS IMUs and GPS receivers via the Sensor Logger application \citep{awesome-sensor-logger}. Each trajectory includes synchronized measurements of specific force and angular rate from the IMU, along with GPS-derived position and velocity estimates. The trajectories were primarily collected during highway driving, providing extended periods of motion across geographically diverse regions with varying geophysical anomaly characteristics.
+
+A high-fidelity reference trajectory was generated for each dataset using a standard 15-state UKF-based loosely-coupled INS \citep{groves_ch14}. This baseline filter estimates the full navigation state (position, velocity, and attitude) plus six IMU bias states (three accelerometer biases and three gyroscope biases) using the strapdown mechanization equations \citep{groves_ch5} for state propagation and GPS position and velocity measurements for correction. The filter operates in the local-level North-East-Down (NED) frame and uses the full-rate GPS measurements (typically 1 Hz) to provide continuous position corrections. This reference trajectory represents the best achievable navigation solution given the sensor suite and serves as the ground truth for evaluating degraded navigation performance.
+
+\subsection{Geophysical Measurement Models}
+
+Geophysical anomaly measurements were derived by comparing IMU-sensed quantities with values predicted from publicly available global anomaly maps. For gravity anomalies, we used the International Gravity Field Service (IGFS) Earth Gravitational Model 2008 (EGM2008) free-air anomaly map \citep{EGM2008}, which provides gravity anomaly values at a resolution of approximately 1 arc-minute (approximately 1.8 km at the equator). For magnetic anomalies, the World Digital Magnetic Anomaly Map (WDMAM) \citep{wdmam} was used, offering anomaly data at a resolution of 3 arc-minutes (approximately 5.6 km at the equator).
+
+The measurement model for geophysical anomalies is formulated as the difference between the measured anomaly (derived from IMU or magnetometer readings) and the map-predicted anomaly at the estimated position:
+
+\begin{equation}
+z_{\text{anom}} = h_{\text{measured}}(\mathbf{x}) - h_{\text{map}}(\text{lat}, \text{lon})
+\end{equation}
+
+where $h_{\text{measured}}$ represents the anomaly derived from sensor measurements at the current state estimate $\mathbf{x}$, and $h_{\text{map}}$ is the anomaly value interpolated from the reference map at the current estimated latitude and longitude.
+
+To characterize the measurement noise statistics, the difference between measured and mapped anomalies was computed along each reference trajectory. The resulting residual distribution was analyzed and found to be approximately Gaussian. The sample mean and standard deviation of these residuals informed the measurement noise covariance matrix used in the UKF. This empirical characterization accounts for both sensor noise, map errors, and interpolation uncertainties inherent in the anomaly matching process.
+
+\subsection{Augmented UKF with Geophysical Aiding}
+
+The geophysically-aided INS extends the standard 15-state UKF by incorporating geophysical anomaly measurements as an additional aiding source. The state vector remains the same 15 elements (9 navigation states plus 6 IMU bias states), but the measurement update step is augmented to process both GPS measurements (when available) and geophysical anomaly observations.
+
+The UKF prediction step uses the strapdown mechanization equations to propagate the state estimate forward in time based on IMU measurements:
+
+\begin{equation}
+\mathbf{x}_{k|k-1} = f(\mathbf{x}_{k-1|k-1}, \mathbf{u}_k)
+\end{equation}
+
+where $f$ represents the nonlinear strapdown equations, $\mathbf{u}_k$ contains the IMU measurements (specific force and angular rate), and the predicted state $\mathbf{x}_{k|k-1}$ is propagated through the unscented transform using sigma points.
+
+The measurement update step processes available observations. When GPS measurements are available, the standard position and velocity measurement models are applied:
+
+\begin{equation}
+\mathbf{z}_{\text{GPS}} = h_{\text{GPS}}(\mathbf{x}) + \mathbf{v}_{\text{GPS}}
+\end{equation}
+
+where $h_{\text{GPS}}$ extracts the position and velocity components from the state vector and $\mathbf{v}_{\text{GPS}}$ represents GPS measurement noise.
+
+When geophysical anomaly measurements are available, the anomaly measurement model is applied:
+
+\begin{equation}
+z_{\text{anom}} = h_{\text{anom}}(\mathbf{x}) + v_{\text{anom}}
+\end{equation}
+
+where $h_{\text{anom}}$ computes the expected anomaly residual based on the current position estimate and the anomaly map, and $v_{\text{anom}}$ represents the measurement noise characterized from the empirical residual distribution.
+
+Both measurement types can be processed independently or simultaneously, allowing the filter to fuse GPS and geophysical information when both are available, or rely solely on geophysical aiding when GPS is denied.
+
+\subsection{GNSS Degradation Scenarios}
+
+To evaluate the benefit of geophysical aiding under realistic GNSS-challenged conditions, systematic degradation scenarios were applied to the GPS measurements using the \verb|strapdown-rs| simulation toolbox \citep{strapdown-rs}. The degradation framework employs an event-driven architecture that controls both measurement availability and quality through configurable schedulers and fault models.
+
+For this study, two degradation parameters were applied:
+\begin{itemize}
+    \item \textbf{Reduced update rate}: GPS position and velocity measurements were made available at 60-second intervals, compared to the baseline 1 Hz rate. This simulates intermittent GNSS availability due to signal blockage or interference.
+    \item \textbf{Degraded accuracy}: GPS measurement noise was increased by a factor of 5 relative to the nominal accuracy. This was implemented by scaling the measurement noise covariance matrix, simulating the effects of multipath, atmospheric delays, or other sources of measurement degradation.
+\end{itemize}
+
+These degradation parameters were applied uniformly to both the standard GPS-only INS and the geophysically-aided INS to ensure a fair comparison. The geophysically-aided system received anomaly measurements at the same 60-second intervals as the degraded GPS updates, representing a scenario where geophysical observations are collected periodically (e.g., during brief stops or at regular waypoints).
+
+\subsection{Performance Evaluation}
+
+Navigation performance was evaluated by comparing the estimated trajectories from each INS configuration against the high-fidelity reference trajectory. Three configurations were tested:
+
+\begin{enumerate}
+    \item \textbf{Baseline (Reference)}: Standard 15-state UKF with full-rate (1 Hz) GPS measurements at nominal accuracy. This represents the best achievable performance with the given sensor suite.
+    \item \textbf{GPS-Degraded INS}: Standard 15-state UKF with GPS updates at 60-second intervals and 5× degraded measurement accuracy. This represents a GNSS-challenged scenario without alternative aiding.
+    \item \textbf{Geophysically-Aided INS}: Augmented 15-state UKF with GPS updates at 60-second intervals and 5× degraded accuracy, plus geophysical anomaly measurements at 60-second intervals. This represents the proposed geophysical aiding approach.
+\end{enumerate}
+
+Position error was computed as the Euclidean distance between the estimated position and the reference position at each time step. Performance metrics include mean error, root-mean-square error (RMSE), and maximum error over each trajectory. The relative improvement of the geophysically-aided INS over the GPS-degraded baseline was computed to quantify the benefit of geophysical aiding under GNSS-challenged conditions.
+
+\section{Results}
+
+\section{Conclusion}
+
+
+\section*{acknowledgements}
+
+Any acknowledgements should appear just before the references section at the END of the paper.
+
+
+% the apacite bibliography style matches the ION bibliography style guidelines.
+% \bibliographystyle{apalike}
+% \bibliography{references.bib}
+\printbibliography
+
+\end{document}

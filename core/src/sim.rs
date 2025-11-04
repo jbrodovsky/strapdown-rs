@@ -14,7 +14,7 @@
 //! or intermittent and degraded GNSS via the measurement models provided in this module. You can install
 //! the programs that execute this generic simulation by installing the binary via `cargo install strapdown-rs`.
 use core::f64;
-use std::fmt::Display;
+use std::fmt::{self, Debug, Display};
 use std::io::{self};
 use std::path::Path;
 
@@ -27,10 +27,13 @@ use serde::{Deserialize, Deserializer, Serialize};
 use clap::{Args, ValueEnum};
 
 use crate::earth::METERS_TO_DEGREES;
-use crate::filter::{InitialState, UnscentedKalmanFilter};
+use crate::filter::{
+    InitialState, Particle, ParticleAveragingStrategy, ParticleFilter, UnscentedKalmanFilter,
+};
 use crate::messages::{Event, EventStream, GnssFaultModel, GnssScheduler};
 use crate::{IMUData, StrapdownState, forward};
 use health::{HealthLimits, HealthMonitor};
+use nalgebra::Rotation3;
 
 pub const DEFAULT_PROCESS_NOISE: [f64; 15] = [
     // Default process noise if not provided
@@ -637,6 +640,66 @@ impl From<(&DateTime<Utc>, &StrapdownState)> for NavigationResult {
         }
     }
 }
+
+impl NavigationResult {
+    /// Create NavigationResult from particle filter state
+    ///
+    /// Creates a navigation result from a 9-element state vector (position, velocity, attitude)
+    /// and covariance matrix produced by particle filter averaging. Since particle filters don't
+    /// estimate IMU biases, those fields are set to zero.
+    ///
+    /// # Arguments
+    /// * `timestamp` - Timestamp for this navigation solution
+    /// * `mean` - 9-element state vector [lat, lon, alt, vn, ve, vd, roll, pitch, yaw] in radians/meters
+    /// * `cov` - 9x9 covariance matrix
+    pub fn from_particle_filter(
+        timestamp: &DateTime<Utc>,
+        mean: &DVector<f64>,
+        cov: &DMatrix<f64>,
+    ) -> Self {
+        assert_eq!(mean.len(), 9, "Particle filter state must have 9 elements");
+        assert_eq!(
+            cov.shape(),
+            (9, 9),
+            "Particle filter covariance must be 9x9"
+        );
+
+        NavigationResult {
+            timestamp: *timestamp,
+            latitude: mean[0].to_degrees(),
+            longitude: mean[1].to_degrees(),
+            altitude: mean[2],
+            velocity_north: mean[3],
+            velocity_east: mean[4],
+            velocity_down: mean[5],
+            roll: mean[6],
+            pitch: mean[7],
+            yaw: mean[8],
+            acc_bias_x: 0.0, // Particle filter doesn't estimate biases
+            acc_bias_y: 0.0,
+            acc_bias_z: 0.0,
+            gyro_bias_x: 0.0,
+            gyro_bias_y: 0.0,
+            gyro_bias_z: 0.0,
+            latitude_cov: cov[(0, 0)],
+            longitude_cov: cov[(1, 1)],
+            altitude_cov: cov[(2, 2)],
+            velocity_n_cov: cov[(3, 3)],
+            velocity_e_cov: cov[(4, 4)],
+            velocity_d_cov: cov[(5, 5)],
+            roll_cov: cov[(6, 6)],
+            pitch_cov: cov[(7, 7)],
+            yaw_cov: cov[(8, 8)],
+            acc_bias_x_cov: f64::NAN,
+            acc_bias_y_cov: f64::NAN,
+            acc_bias_z_cov: f64::NAN,
+            gyro_bias_x_cov: f64::NAN,
+            gyro_bias_y_cov: f64::NAN,
+            gyro_bias_z_cov: f64::NAN,
+        }
+    }
+}
+
 /// Run dead reckoning or "open-loop" simulation using test data.
 ///
 /// This function processes a sequence of sensor records through a StrapdownState, using
@@ -781,6 +844,116 @@ pub fn closed_loop(
     println!("Done!");
     Ok(results)
 }
+
+/// Closed-loop particle filter simulation for strapdown INS
+///
+/// Similar to `closed_loop` but uses a particle filter instead of a UKF. The particle filter
+/// propagates each particle forward using IMU measurements and updates particle weights based
+/// on GNSS measurements. The navigation solution is computed using the specified averaging strategy.
+///
+/// # Arguments
+/// * `pf` - Mutable reference to the particle filter
+/// * `stream` - Event stream containing IMU and measurement events
+/// * `averaging_strategy` - Strategy for computing navigation solution from particles
+///
+/// # Returns
+/// * `Vec<NavigationResult>` - A vector of navigation results containing the state estimates and covariances at each timestamp.
+pub fn particle_filter_loop(
+    pf: &mut ParticleFilter,
+    stream: EventStream,
+    averaging_strategy: ParticleAveragingStrategy,
+) -> anyhow::Result<Vec<NavigationResult>> {
+    let start_time = stream.start_time;
+    let mut results: Vec<NavigationResult> = Vec::with_capacity(stream.events.len());
+    let total = stream.events.len();
+    let mut last_ts: Option<DateTime<Utc>> = None;
+    let mut monitor = HealthMonitor::new(HealthLimits::default());
+
+    for (i, event) in stream.events.into_iter().enumerate() {
+        // Print progress every 10 iterations
+        // if i % 10 == 0 || i == total {
+        //     print!(
+        //         "\rProcessing data {:.2}%...",
+        //         (i as f64 / total as f64) * 100.0
+        //     );
+        //     use std::io::Write;
+        //     std::io::stdout().flush().ok();
+        // }
+
+        // Compute wall-clock time for this event
+        let elapsed_s = match &event {
+            Event::Imu { elapsed_s, .. } => *elapsed_s,
+            Event::Measurement { elapsed_s, .. } => *elapsed_s,
+        };
+        let ts = start_time + Duration::milliseconds((elapsed_s * 1000.0).round() as i64);
+
+        // Apply event
+        match event {
+            Event::Imu { dt_s, imu, .. } => {
+                pf.propagate(&imu, dt_s);
+                let (mean, cov) = averaging_strategy.compute_state(pf);
+                if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
+                    // log::error!("Health fail after propagate at {} (#{i}): {e}", ts);
+                    bail!(e);
+                }
+            }
+            Event::Measurement { meas, .. } => {
+                // Build expected measurements for each particle
+                let mut state_matrix = DMatrix::<f64>::zeros(9, pf.particles.len());
+                for (i, particle) in pf.particles.iter().enumerate() {
+                    let euler = particle.nav_state.attitude.euler_angles();
+                    state_matrix[(0, i)] = particle.nav_state.latitude;
+                    state_matrix[(1, i)] = particle.nav_state.longitude;
+                    state_matrix[(2, i)] = particle.nav_state.altitude;
+                    state_matrix[(3, i)] = particle.nav_state.velocity_north;
+                    state_matrix[(4, i)] = particle.nav_state.velocity_east;
+                    state_matrix[(5, i)] = particle.nav_state.velocity_down;
+                    state_matrix[(6, i)] = euler.0;
+                    state_matrix[(7, i)] = euler.1;
+                    state_matrix[(8, i)] = euler.2;
+                }
+
+                let measurement_sigma_points = meas.get_sigma_points(&state_matrix);
+                let expected_measurements: Vec<DVector<f64>> = measurement_sigma_points
+                    .column_iter()
+                    .map(|col| col.clone_owned())
+                    .collect();
+
+                pf.update(&meas.get_vector(), &expected_measurements);
+
+                // Resample particles
+                pf.residual_resample();
+
+                let (mean, cov) = averaging_strategy.compute_state(pf);
+                if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
+                    // log::error!("Health fail after measurement update at {} (#{i}): {e}", ts);
+                    bail!(e);
+                }
+            }
+        }
+
+        // If timestamp changed, or it's the last event, record the previous state
+        if Some(ts) != last_ts {
+            if let Some(prev_ts) = last_ts {
+                let (mean, cov) = averaging_strategy.compute_state(pf);
+                results.push(NavigationResult::from_particle_filter(
+                    &prev_ts, &mean, &cov,
+                ));
+            }
+            last_ts = Some(ts);
+        }
+
+        // If this is the last event, also push
+        if i == total - 1 {
+            let (mean, cov) = averaging_strategy.compute_state(pf);
+            results.push(NavigationResult::from_particle_filter(&ts, &mean, &cov));
+        }
+    }
+
+    println!("Done!");
+    Ok(results)
+}
+
 /// Print the Unscented Kalman Filter state and covariance for debugging purposes.
 pub fn print_ukf(ukf: &UnscentedKalmanFilter, record: &TestDataRecord) {
     println!(
@@ -836,6 +1009,72 @@ pub fn print_ukf(ukf: &UnscentedKalmanFilter, record: &TestDataRecord) {
         ukf.get_covariance()[(12, 12)],
         ukf.get_covariance()[(13, 13)],
         ukf.get_covariance()[(14, 14)]
+    );
+}
+/// Print the Particle Filter state and weights for debugging purposes.
+pub fn print_pf(pf: &ParticleFilter, record: &TestDataRecord) {
+    // Compute weighted average state for comparison
+    let strategy = ParticleAveragingStrategy::WeightedAverage;
+    let (mean, cov) = strategy.compute_state(pf);
+
+    // Extract diagonal covariances
+    let pos_cov = (cov[(0, 0)], cov[(1, 1)], cov[(2, 2)]);
+    let vel_cov = (cov[(3, 3)], cov[(4, 4)], cov[(5, 5)]);
+    let att_cov = (cov[(6, 6)], cov[(7, 7)], cov[(8, 8)]);
+
+    println!(
+        "\rPF position: ({:.4}, {:.4}, {:.4})  |  Covariance: {:.4e}, {:.4e}, {:.4}  |  Error: {:.4e}, {:.4e}, {:.4}",
+        mean[0].to_degrees(),
+        mean[1].to_degrees(),
+        mean[2],
+        pos_cov.0,
+        pos_cov.1,
+        pos_cov.2,
+        mean[0].to_degrees() - record.latitude,
+        mean[1].to_degrees() - record.longitude,
+        mean[2] - record.altitude
+    );
+    println!(
+        "\rPF velocity: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4}, {:.4}, {:.4}  | Error: {:.4}, {:.4}, {:.4}",
+        mean[3],
+        mean[4],
+        mean[5],
+        vel_cov.0,
+        vel_cov.1,
+        vel_cov.2,
+        mean[3] - record.speed * record.bearing.cos(),
+        mean[4] - record.speed * record.bearing.sin(),
+        mean[5] - 0.0 // Assuming no vertical velocity
+    );
+    println!(
+        "\rPF attitude: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4}, {:.4}, {:.4}  | Error: {:.4}, {:.4}, {:.4}",
+        mean[6],
+        mean[7],
+        mean[8],
+        att_cov.0,
+        att_cov.1,
+        att_cov.2,
+        mean[6] - record.roll,
+        mean[7] - record.pitch,
+        mean[8] - record.yaw
+    );
+
+    // Print particle count and effective particle count
+    let total_particles = pf.particles.len();
+    let eff_particles = 1.0
+        / pf.particles
+            .iter()
+            .map(|p| p.weight * p.weight)
+            .sum::<f64>();
+    println!(
+        "\rPF particles: {} total, {:.1} effective  |  Weight range: [{:.4e}, {:.4e}]",
+        total_particles,
+        eff_particles,
+        pf.particles
+            .iter()
+            .map(|p| p.weight)
+            .fold(f64::INFINITY, f64::min),
+        pf.particles.iter().map(|p| p.weight).fold(0.0, f64::max)
     );
 }
 /// Helper function to initialize a UKF for closed-loop mode.
@@ -961,6 +1200,111 @@ pub fn initialize_ukf(
         2.0,
         0.0,
     )
+}
+
+/// Helper function to initialize a particle filter for closed-loop mode.
+///
+/// Creates a particle filter with particles distributed around the initial pose.
+/// Each particle represents a hypothesis about the true navigation state.
+///
+/// # Arguments
+/// * `initial_pose` - A `TestDataRecord` containing the initial pose information
+/// * `num_particles` - Number of particles to create
+/// * `position_std` - Standard deviation for position uncertainty (meters)
+/// * `velocity_std` - Standard deviation for velocity uncertainty (m/s)
+/// * `attitude_std` - Standard deviation for attitude uncertainty (radians)
+///
+/// # Returns
+/// * `ParticleFilter` - An instance of the particle filter initialized with the provided parameters
+pub fn initialize_particle_filter(
+    initial_pose: TestDataRecord,
+    num_particles: usize,
+    position_std: f64,
+    velocity_std: f64,
+    attitude_std: f64,
+) -> ParticleFilter {
+    use rand_distr::{Distribution, Normal};
+
+    let mut rng = rand::rng();
+
+    // Create distributions for sampling
+    let lat_dist = Normal::new(
+        initial_pose.latitude.to_radians(),
+        position_std * METERS_TO_DEGREES,
+    )
+    .unwrap();
+    let lon_dist = Normal::new(
+        initial_pose.longitude.to_radians(),
+        position_std * METERS_TO_DEGREES,
+    )
+    .unwrap();
+    let alt_dist = Normal::new(initial_pose.altitude, position_std).unwrap();
+
+    let vn_dist = Normal::new(
+        initial_pose.speed * initial_pose.bearing.cos(),
+        velocity_std,
+    )
+    .unwrap();
+    let ve_dist = Normal::new(
+        initial_pose.speed * initial_pose.bearing.sin(),
+        velocity_std,
+    )
+    .unwrap();
+    let vd_dist = Normal::new(0.0, velocity_std).unwrap();
+
+    let roll = if initial_pose.roll.is_nan() {
+        0.0
+    } else {
+        initial_pose.roll
+    };
+    let pitch = if initial_pose.pitch.is_nan() {
+        0.0
+    } else {
+        initial_pose.pitch
+    };
+    let yaw = if initial_pose.yaw.is_nan() {
+        0.0
+    } else {
+        initial_pose.yaw
+    };
+
+    let roll_dist = Normal::new(roll, attitude_std).unwrap();
+    let pitch_dist = Normal::new(pitch, attitude_std).unwrap();
+    let yaw_dist = Normal::new(yaw, attitude_std).unwrap();
+
+    // Create particles
+    let mut particles = Vec::with_capacity(num_particles);
+    let uniform_weight = 1.0 / num_particles as f64;
+
+    for _ in 0..num_particles {
+        let latitude = lat_dist.sample(&mut rng);
+        let longitude = lon_dist.sample(&mut rng);
+        let altitude = alt_dist.sample(&mut rng);
+        let velocity_north = vn_dist.sample(&mut rng);
+        let velocity_east = ve_dist.sample(&mut rng);
+        let velocity_down = vd_dist.sample(&mut rng);
+        let roll_sample = roll_dist.sample(&mut rng);
+        let pitch_sample = pitch_dist.sample(&mut rng);
+        let yaw_sample = yaw_dist.sample(&mut rng);
+
+        let nav_state = StrapdownState {
+            latitude,
+            longitude,
+            altitude,
+            velocity_north,
+            velocity_east,
+            velocity_down,
+            attitude: Rotation3::from_euler_angles(roll_sample, pitch_sample, yaw_sample),
+            coordinate_convention: true,
+        };
+
+        particles.push(Particle {
+            nav_state,
+            weight: uniform_weight,
+        });
+    }
+
+    ParticleFilter::new(particles)
 }
 
 pub mod health {
@@ -1776,5 +2120,142 @@ mod tests {
         assert_eq!(r.longitude, -122.0);
         assert_eq!(r.latitude, 37.0);
         let _ = std::fs::remove_file(&temp_file);
+    }
+
+    #[test]
+    fn test_initialize_particle_filter() {
+        let initial_pose = TestDataRecord {
+            time: Utc::now(),
+            bearing_accuracy: 0.0,
+            speed_accuracy: 1.0,
+            vertical_accuracy: 5.0,
+            horizontal_accuracy: 10.0,
+            speed: 5.0,
+            bearing: 0.0,
+            altitude: 100.0,
+            longitude: -122.0,
+            latitude: 37.0,
+            qz: 0.0,
+            qy: 0.0,
+            qx: 0.0,
+            qw: 1.0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            acc_z: 0.0,
+            acc_y: 0.0,
+            acc_x: 0.0,
+            gyro_z: 0.0,
+            gyro_y: 0.0,
+            gyro_x: 0.0,
+            mag_z: 0.0,
+            mag_y: 0.0,
+            mag_x: 0.0,
+            relative_altitude: 0.0,
+            pressure: 1013.25,
+            grav_z: 9.81,
+            grav_y: 0.0,
+            grav_x: 0.0,
+        };
+
+        let num_particles = 50;
+        let pf = initialize_particle_filter(initial_pose, num_particles, 10.0, 1.0, 0.1);
+
+        assert_eq!(pf.particles.len(), num_particles);
+
+        // Check that weights are initialized uniformly
+        let expected_weight = 1.0 / num_particles as f64;
+        for particle in &pf.particles {
+            assert!((particle.weight - expected_weight).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn test_particle_averaging_strategies() {
+        // Create a simple particle filter with 3 particles
+        let particles = vec![
+            Particle {
+                nav_state: StrapdownState {
+                    latitude: 0.0,
+                    longitude: 0.0,
+                    altitude: 100.0,
+                    velocity_north: 1.0,
+                    velocity_east: 0.0,
+                    velocity_down: 0.0,
+                    attitude: Rotation3::from_euler_angles(0.0, 0.0, 0.0),
+                    coordinate_convention: true,
+                },
+                weight: 0.5,
+            },
+            Particle {
+                nav_state: StrapdownState {
+                    latitude: 0.001,
+                    longitude: 0.001,
+                    altitude: 110.0,
+                    velocity_north: 2.0,
+                    velocity_east: 1.0,
+                    velocity_down: 0.0,
+                    attitude: Rotation3::from_euler_angles(0.1, 0.0, 0.0),
+                    coordinate_convention: true,
+                },
+                weight: 0.3,
+            },
+            Particle {
+                nav_state: StrapdownState {
+                    latitude: -0.001,
+                    longitude: 0.0,
+                    altitude: 90.0,
+                    velocity_north: 0.0,
+                    velocity_east: -1.0,
+                    velocity_down: 0.0,
+                    attitude: Rotation3::from_euler_angles(0.0, 0.1, 0.0),
+                    coordinate_convention: true,
+                },
+                weight: 0.2,
+            },
+        ];
+
+        let pf = ParticleFilter::new(particles);
+
+        // Test weighted average
+        let strategy = ParticleAveragingStrategy::WeightedAverage;
+        let (mean, _cov) = strategy.compute_state(&pf);
+        assert_eq!(mean.len(), 9);
+        // Weighted average: 100*0.5 + 110*0.3 + 90*0.2 = 50 + 33 + 18 = 101
+        assert!((mean[2] - 101.0).abs() < 1.0);
+
+        // Test highest weight
+        let strategy = ParticleAveragingStrategy::HighestWeight;
+        let (mean, _cov) = strategy.compute_state(&pf);
+        assert_eq!(mean.len(), 9);
+        assert_eq!(mean[2], 100.0); // Should be first particle
+    }
+
+    #[test]
+    fn test_navigation_result_from_particle_filter() {
+        let timestamp = Utc::now();
+        let mean = DVector::from_vec(vec![
+            37.0_f64.to_radians(),   // lat
+            -122.0_f64.to_radians(), // lon
+            100.0,                   // alt
+            5.0,                     // vn
+            0.0,                     // ve
+            0.0,                     // vd
+            0.0,                     // roll
+            0.0,                     // pitch
+            0.0,                     // yaw
+        ]);
+        let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 9]));
+
+        let result = NavigationResult::from_particle_filter(&timestamp, &mean, &cov);
+
+        assert_eq!(result.timestamp, timestamp);
+        assert!((result.latitude - 37.0).abs() < 1e-6);
+        assert!((result.longitude - (-122.0)).abs() < 1e-6);
+        assert_eq!(result.altitude, 100.0);
+        assert_eq!(result.velocity_north, 5.0);
+        // Biases should be zero for particle filter
+        assert_eq!(result.acc_bias_x, 0.0);
+        assert_eq!(result.gyro_bias_x, 0.0);
     }
 }

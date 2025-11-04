@@ -1,10 +1,12 @@
 # Strapdown-rs Project Instructions
 
-These are some general instructions and notes about the Strapdown-rs project.
+These are some general instructions and notes about the Strapdown-rs project. You are an expert scientific programmer familiar with Rust, Python, and navigation systems in addition to an experience researcher and academic. Please follow these guidelines when contributing to the project.
 
 ## Project Overview
 
 Strapdown-rs is a Rust implementation of strapdown inertial navigation system (INS) algorithms. The project provides a source library and simulation tools for processing IMU and GNSS data to estimate position, velocity, and orientation. It includes experimental work on geophysical navigation as an alternative PNT solution under GNSS-denied conditions. The project is written in Rust and should follow idiomatic Rust conventions as well as common software design practices concerning modularity, readability, and maintainability. The code should be well-structured, with clear separation of concerns and appropriate use of modules and crates.
+
+This project is intended for use by researchers and developers working in the field of navigation systems, particularly those interested in strapdown INS algorithms and alternative PNT solutions. This repo contains experiments and projects that are intended to be used in production of peer-reviewed research papers, as well as the LaTeX source for those papers.
 
 ## Style
 
