@@ -148,7 +148,7 @@ if __name__ == "__main__":
         "--buffer",
         type=float,
         default=0.1,
-        help="Buffer amount to inflate the bounding box by (as a percentage). Default is 0.1 (10%).",
+        help="Buffer amount to inflate the bounding box by (as a percentage). Default is 0.1 (10 percent).",
     )
     parser.add_argument(
         "--input",
