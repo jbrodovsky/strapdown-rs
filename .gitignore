@@ -37,4 +37,5 @@ batch_process.nu
 !.pixi/config.toml
 
 # Data output
-examples/geonav-sim/out
+examples/geonav-sim/ukf
+examples/geonav-sim/pf
