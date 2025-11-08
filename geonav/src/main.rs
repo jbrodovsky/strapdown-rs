@@ -4,23 +4,18 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use geonav::{
-    GeoMap, GeophysicalMeasurementType, GravityResolution, MagneticResolution,
-    build_combined_event_stream, build_event_stream, geo_closed_loop, geo_particle_filter_loop,
+    GeoMap, GeophysicalMeasurementType, GravityResolution, MagneticResolution, build_event_stream,
+    geo_closed_loop,
 };
-use strapdown::filter::ParticleAveragingStrategy;
 use strapdown::messages::GnssDegradationConfig;
 use strapdown::sim::{
     DEFAULT_PROCESS_NOISE, FaultArgs, NavigationResult, SchedulerArgs, TestDataRecord, build_fault,
-    build_scheduler, initialize_particle_filter, initialize_ukf,
+    build_scheduler, initialize_ukf,
 };
 
 const LONG_ABOUT: &str = "GEONAV-SIM: A geophysical navigation simulation tool for strapdown inertial navigation systems.
 
 This program extends the basic strapdown simulation by incorporating geophysical measurements such as gravity and magnetic anomalies for enhanced navigation accuracy. It loads geophysical maps (NetCDF format) and simulates how these measurements can aid inertial navigation systems, particularly in GNSS-denied environments.
-
-The program supports two filter modes:
-* UKF (Unscented Kalman Filter): Traditional Bayesian estimation approach
-* PF (Particle Filter): Monte Carlo-based estimation with configurable particle count and averaging strategies
 
 The program operates in closed-loop mode, incorporating both GNSS measurements (when available) and geophysical measurements from loaded maps. It can simulate various GNSS degradation scenarios while maintaining navigation accuracy through geophysical aiding.
 
@@ -41,18 +36,12 @@ struct Cli {
     /// Output CSV file path
     #[arg(short, long, value_parser)]
     output: PathBuf,
-    /// Filter mode: UKF (Unscented Kalman Filter) or PF (Particle Filter)
-    #[arg(long, value_enum, default_value_t = FilterMode::Ukf)]
-    filter_mode: FilterMode,
     /// Geophysical measurement configuration
     #[command(flatten)]
     geo: GeophysicalArgs,
     /// GNSS degradation configuration
     #[command(flatten)]
     gnss: GnssArgs,
-    /// Particle filter configuration (only used when filter_mode = pf)
-    #[command(flatten)]
-    particle: ParticleArgs,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -64,16 +53,12 @@ struct GeophysicalArgs {
     /// Map resolution for geophysical data
     #[arg(long, value_enum, default_value_t = GeoResolution::OneMinute)]
     geo_resolution: GeoResolution,
-    /// Bias for geophysical measurement noise (gravity for combined mode)
+    /// Bias for geophysical measurement noise
     #[arg(long, default_value_t = 0.0)]
     geo_bias: f64,
-    /// Standard deviation for geophysical measurement noise (gravity for combined mode)
+    /// Standard deviation for geophysical measurement noise
     #[arg(long, default_value_t = 100.0)]
     geo_noise_std: f64,
-
-    /// Standard deviation for magnetic measurement noise (only used in combined mode)
-    #[arg(long, default_value_t = 100.0)]
-    magnetic_noise_std: f64,
 
     /// Frequency in seconds for geophysical measurements (if not specified, uses every available measurement)
     #[arg(long)]
@@ -82,10 +67,6 @@ struct GeophysicalArgs {
     /// Custom map file path (optional - if not provided, auto-detects based on input directory)
     #[arg(long)]
     map_file: Option<PathBuf>,
-
-    /// Custom magnetic map file path (only used in combined mode - if not provided, auto-detects)
-    #[arg(long)]
-    magnetic_map_file: Option<PathBuf>,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -107,40 +88,10 @@ struct GnssArgs {
     config: Option<PathBuf>,
 }
 
-#[derive(Args, Clone, Debug)]
-struct ParticleArgs {
-    /// Number of particles for particle filter
-    #[arg(long, default_value_t = 1000)]
-    num_particles: usize,
-
-    /// Position uncertainty standard deviation (meters) for particle initialization
-    #[arg(long, default_value_t = 10.0)]
-    position_std: f64,
-
-    /// Velocity uncertainty standard deviation (m/s) for particle initialization
-    #[arg(long, default_value_t = 1.0)]
-    velocity_std: f64,
-
-    /// Attitude uncertainty standard deviation (radians) for particle initialization
-    #[arg(long, default_value_t = 0.1)]
-    attitude_std: f64,
-
-    /// Particle averaging strategy
-    #[arg(long, value_enum, default_value_t = ParticleAveragingStrategy::WeightedAverage)]
-    averaging_strategy: ParticleAveragingStrategy,
-}
-
-#[derive(Copy, Clone, Debug, ValueEnum)]
-pub enum FilterMode {
-    Ukf,
-    Pf,
-}
-
 #[derive(Copy, Clone, Debug, ValueEnum)]
 pub enum GeoMeasurementType {
     Gravity,
     Magnetic,
-    Combined,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -172,7 +123,6 @@ impl From<GeoMeasurementType> for GeophysicalMeasurementType {
             GeoMeasurementType::Magnetic => {
                 GeophysicalMeasurementType::Magnetic(MagneticResolution::TwoMinutes)
             }
-            GeoMeasurementType::Combined => GeophysicalMeasurementType::Combined,
         }
     }
 }
@@ -218,10 +168,6 @@ fn build_measurement_type(
             };
             GeophysicalMeasurementType::Magnetic(magnetic_res)
         }
-        GeoMeasurementType::Combined => {
-            // For combined mode, resolution is ignored as we'll use specific resolutions for each map
-            GeophysicalMeasurementType::Combined
-        }
     }
 }
 
@@ -242,7 +188,6 @@ fn find_map_file(
     let suffix = match geo_type {
         GeoMeasurementType::Gravity => "_gravity.nc",
         GeoMeasurementType::Magnetic => "_magnetic.nc",
-        GeoMeasurementType::Combined => "_gravity.nc", // Default to gravity for combined, will handle separately
     };
 
     let map_file = input_dir.join(format!("{}{}", input_stem, suffix));
@@ -252,30 +197,6 @@ fn find_map_file(
     } else {
         Err(format!("Map file not found: {}", map_file.display()).into())
     }
-}
-
-/// Auto-detect both gravity and magnetic map files for combined mode
-fn find_combined_map_files(input_path: &PathBuf) -> Result<(PathBuf, PathBuf), Box<dyn Error>> {
-    let input_dir = input_path
-        .parent()
-        .ok_or("Cannot determine input directory")?;
-
-    let input_stem = input_path
-        .file_stem()
-        .ok_or("Cannot determine input file stem")?
-        .to_string_lossy();
-
-    let gravity_file = input_dir.join(format!("{}_gravity.nc", input_stem));
-    let magnetic_file = input_dir.join(format!("{}_magnetic.nc", input_stem));
-
-    if !gravity_file.exists() {
-        return Err(format!("Gravity map file not found: {}", gravity_file.display()).into());
-    }
-    if !magnetic_file.exists() {
-        return Err(format!("Magnetic map file not found: {}", magnetic_file.display()).into());
-    }
-
-    Ok((gravity_file, magnetic_file))
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -304,6 +225,26 @@ fn main() -> Result<(), Box<dyn Error>> {
         cli.input.display()
     );
 
+    // Determine map file path
+    let map_path = match &cli.geo.map_file {
+        Some(path) => path.clone(),
+        None => find_map_file(&cli.input, cli.geo.geo_type)?,
+    };
+
+    println!("Loading geophysical map from: {}", map_path.display());
+
+    // Build measurement type with specified resolution
+    let measurement_type = build_measurement_type(cli.geo.geo_type, cli.geo.geo_resolution);
+
+    // Load geophysical map
+    let geomap = Rc::new(GeoMap::load_geomap(map_path, measurement_type)?);
+    println!(
+        "Loaded {} map with {} x {} grid points",
+        geomap.get_map_type(),
+        geomap.get_lats().len(),
+        geomap.get_lons().len()
+    );
+
     // Build GNSS degradation configuration
     let gnss_config = if let Some(ref cfg_path) = cli.gnss.config {
         match GnssDegradationConfig::from_file(cfg_path) {
@@ -321,134 +262,37 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     };
 
-    // Build event stream based on measurement type
-    let events = match cli.geo.geo_type {
-        GeoMeasurementType::Combined => {
-            // Determine map file paths for combined mode
-            let (gravity_path, magnetic_path) =
-                match (&cli.geo.map_file, &cli.geo.magnetic_map_file) {
-                    (Some(grav), Some(mag)) => (grav.clone(), mag.clone()),
-                    (Some(grav), None) => {
-                        // If only gravity map is specified, try to auto-detect magnetic
-                        let mag = find_map_file(&cli.input, GeoMeasurementType::Magnetic)?;
-                        (grav.clone(), mag)
-                    }
-                    (None, Some(mag)) => {
-                        // If only magnetic map is specified, try to auto-detect gravity
-                        let grav = find_map_file(&cli.input, GeoMeasurementType::Gravity)?;
-                        (grav, mag.clone())
-                    }
-                    (None, None) => find_combined_map_files(&cli.input)?,
-                };
-
-            println!("Loading gravity map from: {}", gravity_path.display());
-            println!("Loading magnetic map from: {}", magnetic_path.display());
-
-            // Load both maps
-            let gravity_map = Rc::new(GeoMap::load_geomap(
-                gravity_path,
-                GeophysicalMeasurementType::Gravity(GravityResolution::OneMinute),
-            )?);
-            let magnetic_map = Rc::new(GeoMap::load_geomap(
-                magnetic_path,
-                GeophysicalMeasurementType::Magnetic(MagneticResolution::TwoMinutes),
-            )?);
-
-            println!(
-                "Loaded gravity map with {} x {} grid points",
-                gravity_map.get_lats().len(),
-                gravity_map.get_lons().len()
-            );
-            println!(
-                "Loaded magnetic map with {} x {} grid points",
-                magnetic_map.get_lats().len(),
-                magnetic_map.get_lons().len()
-            );
-
-            build_combined_event_stream(
-                &records,
-                &gnss_config,
-                gravity_map,
-                magnetic_map,
-                Some(cli.geo.geo_noise_std),
-                Some(cli.geo.magnetic_noise_std),
-                cli.geo.geo_frequency_s,
-            )
-        }
-        _ => {
-            // Single measurement type mode (Gravity or Magnetic)
-            let map_path = match &cli.geo.map_file {
-                Some(path) => path.clone(),
-                None => find_map_file(&cli.input, cli.geo.geo_type)?,
-            };
-
-            println!("Loading geophysical map from: {}", map_path.display());
-
-            // Build measurement type with specified resolution
-            let measurement_type = build_measurement_type(cli.geo.geo_type, cli.geo.geo_resolution);
-
-            // Load geophysical map
-            let geomap = Rc::new(GeoMap::load_geomap(map_path, measurement_type)?);
-            println!(
-                "Loaded {} map with {} x {} grid points",
-                geomap.get_map_type(),
-                geomap.get_lats().len(),
-                geomap.get_lons().len()
-            );
-
-            build_event_stream(
-                &records,
-                &gnss_config,
-                geomap,
-                Some(cli.geo.geo_noise_std),
-                cli.geo.geo_frequency_s,
-            )
-        }
-    };
+    // Build event stream with geophysical measurements
+    let events = build_event_stream(
+        &records,
+        &gnss_config,
+        geomap,
+        Some(cli.geo.geo_noise_std),
+        cli.geo.geo_frequency_s,
+    );
     println!("Built event stream with {} events", events.events.len());
 
-    // Run simulation based on filter mode
+    // Initialize UKF
+    let mut process_noise: Vec<f64> = DEFAULT_PROCESS_NOISE.clone().into();
+    process_noise.extend([1e-9]); // Extend for geophysical state
+
+    let mut ukf = initialize_ukf(
+        records[0].clone(),
+        None,
+        None,
+        None,
+        Some(vec![cli.geo.geo_bias; 1]),
+        Some(vec![cli.geo.geo_noise_std; 1]),
+        Some(process_noise),
+    );
+    println!(
+        "Initialized UKF with state dimension {}",
+        ukf.get_mean().len()
+    );
+    println!("Initial state: {:?}", ukf.get_mean());
+    // Run closed-loop simulation
     println!("Running geophysical navigation simulation...");
-    let results = match cli.filter_mode {
-        FilterMode::Ukf => {
-            // Initialize UKF
-            let mut process_noise: Vec<f64> = DEFAULT_PROCESS_NOISE.clone().into();
-            process_noise.extend([1e-9]); // Extend for geophysical state
-
-            let mut ukf = initialize_ukf(
-                records[0].clone(),
-                None,
-                None,
-                None,
-                Some(vec![cli.geo.geo_bias; 1]),
-                Some(vec![cli.geo.geo_noise_std; 1]),
-                Some(process_noise),
-            );
-            println!(
-                "Initialized UKF with state dimension {}",
-                ukf.get_mean().len()
-            );
-            println!("Initial state: {:?}", ukf.get_mean());
-
-            geo_closed_loop(&mut ukf, events)
-        }
-        FilterMode::Pf => {
-            // Initialize Particle Filter
-            let mut pf = initialize_particle_filter(
-                records[0].clone(),
-                cli.particle.num_particles,
-                cli.particle.position_std,
-                cli.particle.velocity_std,
-                cli.particle.attitude_std,
-            );
-            println!(
-                "Initialized Particle Filter with {} particles",
-                pf.particles.len()
-            );
-
-            geo_particle_filter_loop(&mut pf, events, cli.particle.averaging_strategy)
-        }
-    };
+    let results = geo_closed_loop(&mut ukf, events);
 
     // Write results
     match results {
