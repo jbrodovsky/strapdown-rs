@@ -6,7 +6,7 @@
 //! navigation and map matching purposes.
 //!
 //! Anomaly measurement models require some degree of knowledge about the vehicle state. Due to the way the measurement
-//! event stream is constructed, this state is not known at the time of simulation inialization. As such, the measurement
+//! event stream is constructed, this state is not known at the time of simulation initialization. As such, the measurement
 //! models corresponding to geophysical anomalies are not implemented as standalone models, but rather as a specific
 //! processing configuration that must be implemented in the closed loop configuration.
 //!
@@ -31,8 +31,8 @@ use world_magnetic_model::uom::si::length::meter;
 
 use strapdown::earth::gravity_anomaly;
 use strapdown::filter::{
-    GPSPositionAndVelocityMeasurement, MeasurementModel, ParticleAveragingStrategy, ParticleFilter,
-    RelativeAltitudeMeasurement, UnscentedKalmanFilter,
+    GPSPositionAndVelocityMeasurement, MeasurementModel, RelativeAltitudeMeasurement,
+    UnscentedKalmanFilter,
 };
 use strapdown::messages::{
     Event, EventStream, FaultState, GnssDegradationConfig, GnssScheduler, apply_fault,
@@ -155,7 +155,6 @@ pub enum GeophysicalMeasurementType {
     Relief(ReliefResolution),
     Gravity(GravityResolution),
     Magnetic(MagneticResolution),
-    Combined, // Combined gravity and magnetic measurements
 }
 impl Display for GeophysicalMeasurementType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -163,7 +162,6 @@ impl Display for GeophysicalMeasurementType {
             GeophysicalMeasurementType::Relief(res) => write!(f, "Relief {}", res),
             GeophysicalMeasurementType::Gravity(res) => write!(f, "Gravity {}", res),
             GeophysicalMeasurementType::Magnetic(res) => write!(f, "Magnetic {}", res),
-            GeophysicalMeasurementType::Combined => write!(f, "Combined (Gravity + Magnetic)"),
         }
     }
 }
@@ -317,7 +315,6 @@ impl GeoMap {
             GeophysicalMeasurementType::Relief(_) => "Relief".to_string(),
             GeophysicalMeasurementType::Gravity(_) => "Gravity".to_string(),
             GeophysicalMeasurementType::Magnetic(_) => "Magnetic".to_string(),
-            GeophysicalMeasurementType::Combined => "Combined".to_string(),
         }
     }
     /// Get the map data contained at a specific point.
@@ -589,125 +586,6 @@ impl MeasurementModel for MagneticAnomalyMeasurement {
         measurement_sigma_points
     }
 }
-/// Combined gravity and magnetic anomaly measurement model
-///
-/// This model combines both gravity and magnetic anomaly measurements into a single 2-dimensional
-/// measurement vector. This allows for tighter coupling between the two measurement types and
-/// can improve navigation accuracy when both are available.
-#[derive(Clone, Debug)]
-pub struct CombinedGeoMeasurement {
-    /// Gravity map
-    pub gravity_map: Rc<GeoMap>,
-    /// Magnetic map
-    pub magnetic_map: Rc<GeoMap>,
-    /// Gravity measurement noise std
-    pub gravity_noise_std: f64,
-    /// Magnetic measurement noise std
-    pub magnetic_noise_std: f64,
-    /// Observed gravity magnitude (m/s^2)
-    pub gravity_observed: f64,
-    /// Observed magnetic field magnitude (micro teslas)
-    pub mag_obs: f64,
-    /// Year for WMM calculation
-    pub year: i32,
-    /// Day of year for WMM calculation
-    pub day: u16,
-    /// Current latitude (radians)
-    latitude: f64,
-    /// Current longitude (radians)
-    longitude: f64,
-    /// Current altitude (m)
-    altitude: f64,
-    /// Current north velocity (m/s)
-    north_velocity: f64,
-    /// Current east velocity (m/s)
-    east_velocity: f64,
-}
-
-impl GeophysicalAnomalyMeasurementModel for CombinedGeoMeasurement {
-    fn get_anomaly(&self) -> f64 {
-        // For combined model, we return gravity anomaly in get_anomaly
-        // The full vector is returned by get_vector
-        gravity_anomaly(
-            &self.gravity_observed,
-            &self.latitude,
-            &self.altitude,
-            &self.north_velocity,
-            &self.east_velocity,
-        )
-    }
-
-    fn set_state(&mut self, state: &StrapdownState) {
-        self.latitude = state.latitude;
-        self.longitude = state.longitude;
-        self.altitude = state.altitude;
-        self.north_velocity = state.velocity_north;
-        self.east_velocity = state.velocity_east;
-    }
-}
-
-impl CombinedGeoMeasurement {
-    /// Get the magnetic anomaly component
-    fn get_magnetic_anomaly(&self) -> f64 {
-        let magnetic_field = GeomagneticField::new(
-            Length::new::<meter>(self.altitude as f32),
-            Angle::new::<degree>(self.latitude.to_degrees() as f32),
-            Angle::new::<degree>(self.longitude.to_degrees() as f32),
-            Date::from_ordinal_date(self.year as i32, self.day as u16).unwrap(),
-        )
-        .expect("Failed to create GeomagneticField");
-        self.mag_obs - magnetic_field.f().value as f64
-    }
-}
-
-impl MeasurementModel for CombinedGeoMeasurement {
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn get_dimension(&self) -> usize {
-        2 // Two measurements: gravity and magnetic anomalies
-    }
-
-    fn get_vector(&self) -> DVector<f64> {
-        DVector::from_vec(vec![self.get_anomaly(), self.get_magnetic_anomaly()])
-    }
-
-    fn get_noise(&self) -> DMatrix<f64> {
-        DMatrix::from_diagonal(&DVector::from_vec(vec![
-            self.gravity_noise_std.powi(2),
-            self.magnetic_noise_std.powi(2),
-        ]))
-    }
-
-    fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
-        let num_sigma_points = state_sigma_points.ncols();
-        let mut measurement_sigma_points = DMatrix::zeros(2, num_sigma_points);
-
-        for i in 0..num_sigma_points {
-            let state = state_sigma_points.column(i);
-            let lat = state[0];
-            let lon = state[1];
-
-            // Get gravity map value
-            measurement_sigma_points[(0, i)] = self
-                .gravity_map
-                .get_point(&lat.to_degrees(), &lon.to_degrees())
-                .unwrap_or(f64::NAN);
-
-            // Get magnetic map value
-            measurement_sigma_points[(1, i)] = self
-                .magnetic_map
-                .get_point(&lat.to_degrees(), &lon.to_degrees())
-                .unwrap_or(f64::NAN);
-        }
-        measurement_sigma_points
-    }
-}
 //================= Geophysical Navigation Simulation ======================================================
 /// Builds and initializes an event stream that also contains geophysical measurements
 ///
@@ -922,220 +800,11 @@ pub fn build_event_stream(
                         });
                     }
                 }
-                GeophysicalMeasurementType::Combined => {
-                    // Combined mode should use build_combined_event_stream instead
-                    panic!("Combined measurement type requires build_combined_event_stream");
-                }
             }
         }
     }
     EventStream { start_time, events }
 }
-
-/// Builds and initializes an event stream with combined geophysical measurements
-///
-/// This function creates an event stream that includes both gravity and magnetic anomaly measurements
-/// in a single combined measurement model. This allows for tighter coupling between the two measurement
-/// types and can improve navigation accuracy when both are available.
-///
-/// # Arguments
-/// * `records` - Vector of test data records
-/// * `cfg` - GNSS degradation configuration
-/// * `gravity_map` - Gravity anomaly map for measurements
-/// * `magnetic_map` - Magnetic anomaly map for measurements
-/// * `gravity_noise_std` - Standard deviation for gravity measurement noise
-/// * `magnetic_noise_std` - Standard deviation for magnetic measurement noise
-/// * `geo_frequency_s` - Frequency in seconds for geophysical measurements (None for every available measurement)
-pub fn build_combined_event_stream(
-    records: &[TestDataRecord],
-    cfg: &GnssDegradationConfig,
-    gravity_map: Rc<GeoMap>,
-    magnetic_map: Rc<GeoMap>,
-    gravity_noise_std: Option<f64>,
-    magnetic_noise_std: Option<f64>,
-    geo_frequency_s: Option<f64>,
-) -> EventStream {
-    let start_time = records[0].time;
-    let records_with_elapsed: Vec<(f64, &TestDataRecord)> = records
-        .iter()
-        .map(|r| ((r.time - start_time).num_milliseconds() as f64 / 1000.0, r))
-        .collect();
-    let mut events = Vec::with_capacity(records_with_elapsed.len() * 2);
-    let mut st = FaultState::new(cfg.seed);
-
-    // Scheduler state
-    let mut next_emit_time = match cfg.scheduler {
-        GnssScheduler::PassThrough => 0.0,
-        GnssScheduler::FixedInterval { phase_s, .. } => phase_s,
-        GnssScheduler::DutyCycle { start_phase_s, .. } => start_phase_s,
-    };
-    let mut duty_on = true;
-
-    // Geophysical measurement scheduling state
-    let mut next_geo_time = 0.0;
-    // Through preprocessing we assert that the first record must have a NED position
-    // but it may or may not have IMU or other such measurements.
-    let reference_altitude = records[0].altitude;
-
-    for w in records_with_elapsed.windows(2) {
-        let (t0, _) = (&w[0].0, &w[0].1);
-        let (t1, r1) = (&w[1].0, &w[1].1);
-        let dt = t1 - t0;
-
-        // Build IMU event at t1 only if accel and gyro components are present
-        let imu_components = [
-            r1.acc_x, r1.acc_y, r1.acc_z, r1.gyro_x, r1.gyro_y, r1.gyro_z,
-        ];
-        let imu_present = imu_components.iter().all(|v| !v.is_nan());
-        if imu_present {
-            let imu = IMUData {
-                accel: Vector3::new(r1.acc_x, r1.acc_y, r1.acc_z),
-                gyro: Vector3::new(r1.gyro_x, r1.gyro_y, r1.gyro_z),
-            };
-            events.push(Event::Imu {
-                dt_s: dt,
-                imu,
-                elapsed_s: *t1,
-            });
-        }
-
-        // Decide if GNSS should be emitted at t1
-        let should_emit = match cfg.scheduler {
-            GnssScheduler::PassThrough => true,
-            GnssScheduler::FixedInterval { interval_s, .. } => {
-                if *t1 + 1e-9 >= next_emit_time {
-                    next_emit_time += interval_s;
-                    true
-                } else {
-                    false
-                }
-            }
-            GnssScheduler::DutyCycle { on_s, off_s, .. } => {
-                let window = if duty_on { on_s } else { off_s };
-                if *t1 + 1e-9 >= next_emit_time {
-                    duty_on = !duty_on;
-                    next_emit_time += window;
-                    duty_on // only emit when toggling into ON
-                } else {
-                    false
-                }
-            }
-        };
-
-        if should_emit {
-            // Only create GNSS event when the core GNSS values are present
-            let gnss_required = [r1.latitude, r1.longitude, r1.altitude, r1.speed, r1.bearing];
-            let gnss_present = gnss_required.iter().all(|v| !v.is_nan());
-            if gnss_present {
-                // Truth-like GNSS from r1
-                let lat = r1.latitude;
-                let lon = r1.longitude;
-                let alt = r1.altitude;
-                let bearing_rad = r1.bearing.to_radians();
-                let vn = r1.speed * bearing_rad.cos();
-                let ve = r1.speed * bearing_rad.sin();
-
-                // Use your provided accuracies (adjust if these are variances vs std).
-                // If an accuracy is missing (NaN), substitute a conservative default
-                // to avoid propagating NaN into the measurement noise.
-                let horiz_std = if r1.horizontal_accuracy.is_nan() {
-                    1000.0
-                } else {
-                    r1.horizontal_accuracy.max(1e-3)
-                };
-                let vert_std = if r1.vertical_accuracy.is_nan() {
-                    1000.0
-                } else {
-                    r1.vertical_accuracy.max(1e-3)
-                };
-                let vel_std = if r1.speed_accuracy.is_nan() {
-                    100.0
-                } else {
-                    r1.speed_accuracy.max(0.1)
-                };
-
-                let (lat_c, lon_c, alt_c, vn_c, ve_c, horiz_c, vel_c) = apply_fault(
-                    &cfg.fault, &mut st, *t1, dt, lat, lon, alt, vn, ve, horiz_std, vert_std,
-                    vel_std,
-                );
-
-                let meas = GPSPositionAndVelocityMeasurement {
-                    latitude: lat_c,
-                    longitude: lon_c,
-                    altitude: alt_c,
-                    northward_velocity: vn_c,
-                    eastward_velocity: ve_c,
-                    horizontal_noise_std: horiz_c,
-                    vertical_noise_std: vert_std,
-                    velocity_noise_std: vel_c,
-                };
-                events.push(Event::Measurement {
-                    meas: Box::new(meas),
-                    elapsed_s: *t1,
-                });
-            }
-        }
-
-        if !r1.relative_altitude.is_nan() {
-            let baro: RelativeAltitudeMeasurement = RelativeAltitudeMeasurement {
-                relative_altitude: r1.relative_altitude,
-                reference_altitude,
-            };
-            events.push(Event::Measurement {
-                meas: Box::new(baro),
-                elapsed_s: *t1,
-            });
-        }
-
-        let gravity = [r1.grav_x, r1.grav_y, r1.grav_z];
-        let magnetic = [r1.mag_x, r1.mag_y, r1.mag_z];
-        let gravity_present = gravity.iter().all(|v| !v.is_nan());
-        let magnetic_present = magnetic.iter().all(|v| !v.is_nan());
-
-        // Determine if we should emit a geophysical measurement at this time
-        let should_emit_geo = match geo_frequency_s {
-            Some(freq) => {
-                if *t1 >= next_geo_time {
-                    next_geo_time += freq;
-                    true
-                } else {
-                    false
-                }
-            }
-            None => true, // Emit for every available measurement if no frequency specified
-        };
-
-        // Create combined geophysical measurement if both types are present
-        if should_emit_geo && gravity_present && magnetic_present {
-            let observed_gravity =
-                (r1.grav_x.powi(2) + r1.grav_y.powi(2) + r1.grav_z.powi(2)).sqrt();
-            let observed_magnetic = (r1.mag_x.powi(2) + r1.mag_y.powi(2) + r1.mag_z.powi(2)).sqrt();
-            let datetime = r1.time;
-
-            let meas = CombinedGeoMeasurement {
-                gravity_map: gravity_map.clone(),
-                magnetic_map: magnetic_map.clone(),
-                gravity_noise_std: gravity_noise_std.unwrap_or(100.0),
-                magnetic_noise_std: magnetic_noise_std.unwrap_or(100.0),
-                gravity_observed: observed_gravity,
-                mag_obs: observed_magnetic,
-                year: datetime.year() as i32,
-                day: datetime.ordinal() as u16,
-                latitude: f64::NAN,       // to be set in closed-loop using state
-                longitude: f64::NAN,      // to be set in closed-loop using state
-                altitude: f64::NAN,       // to be set in closed-loop using state
-                north_velocity: f64::NAN, // to be set in closed-loop using state
-                east_velocity: f64::NAN,  // to be set in closed-loop using state
-            };
-            events.push(Event::Measurement {
-                meas: Box::new(meas),
-                elapsed_s: *t1,
-            });
-        }
-    }
-    EventStream { start_time, events }
-}
-
 /// Closed-loop GPS-aided inertial navigation simulation.
 ///
 /// This function simulates a closed-loop full-state navigation system where GPS measurements are used
@@ -1239,177 +908,6 @@ pub fn geo_closed_loop(
             results.push(NavigationResult::from((&ts, &*ukf)));
         }
     }
-    println!("Done!");
-    Ok(results)
-}
-
-/// Geophysical particle filter simulation for strapdown INS
-///
-/// Similar to `geo_closed_loop` but uses a particle filter instead of a UKF. The particle filter
-/// propagates each particle forward using IMU measurements and updates particle weights based
-/// on GNSS and geophysical measurements. The navigation solution is computed using the specified averaging strategy.
-///
-/// This function handles geophysical measurements (gravity and magnetic anomalies) by setting the current
-/// navigation state in the measurement model before computing expected measurements for each particle.
-///
-/// # Arguments
-/// * `pf` - Mutable reference to the particle filter
-/// * `stream` - Event stream containing IMU, GNSS, and geophysical measurement events
-/// * `averaging_strategy` - Strategy for computing navigation solution from particles
-///
-/// # Returns
-/// * `Vec<NavigationResult>` - A vector of navigation results containing the state estimates and covariances at each timestamp.
-pub fn geo_particle_filter_loop(
-    pf: &mut ParticleFilter,
-    stream: EventStream,
-    averaging_strategy: ParticleAveragingStrategy,
-) -> anyhow::Result<Vec<NavigationResult>> {
-    let start_time = stream.start_time;
-    let mut results: Vec<NavigationResult> = Vec::with_capacity(stream.events.len());
-    let total = stream.events.len();
-    let mut last_ts: Option<DateTime<Utc>> = None;
-
-    for (i, event) in stream.events.into_iter().enumerate() {
-        // Print progress every 10 iterations
-        if i % 10 == 0 || i == total {
-            print!(
-                "\rProcessing data {:.2}%...",
-                (i as f64 / total as f64) * 100.0
-            );
-            use std::io::Write;
-            std::io::stdout().flush().ok();
-        }
-
-        // Compute wall-clock time for this event
-        let elapsed_s = match &event {
-            Event::Imu { elapsed_s, .. } => *elapsed_s,
-            Event::Measurement { elapsed_s, .. } => *elapsed_s,
-        };
-        let ts = start_time + Duration::milliseconds((elapsed_s * 1000.0).round() as i64);
-
-        // Apply event
-        match event {
-            Event::Imu { dt_s, imu, .. } => {
-                pf.propagate(&imu, dt_s);
-            }
-            Event::Measurement { mut meas, .. } => {
-                // Handle geophysical measurements by setting state for each particle
-                if let Some(gravity) = meas.as_any_mut().downcast_mut::<GravityMeasurement>() {
-                    // Build expected measurements for each particle
-                    let mut expected_measurements = Vec::with_capacity(pf.particles.len());
-
-                    for particle in pf.particles.iter() {
-                        // Set the state for this particle and compute expected measurement
-                        gravity.set_state(&particle.nav_state);
-
-                        // Create a single column matrix for this particle's state
-                        let euler = particle.nav_state.attitude.euler_angles();
-                        let particle_state = DMatrix::from_vec(
-                            9,
-                            1,
-                            vec![
-                                particle.nav_state.latitude,
-                                particle.nav_state.longitude,
-                                particle.nav_state.altitude,
-                                particle.nav_state.velocity_north,
-                                particle.nav_state.velocity_east,
-                                particle.nav_state.velocity_down,
-                                euler.0,
-                                euler.1,
-                                euler.2,
-                            ],
-                        );
-
-                        let measurement_sigma_points = gravity.get_sigma_points(&particle_state);
-                        expected_measurements
-                            .push(measurement_sigma_points.column(0).clone_owned());
-                    }
-
-                    pf.update(&gravity.get_vector(), &expected_measurements);
-                } else if let Some(magnetic) = meas
-                    .as_any_mut()
-                    .downcast_mut::<MagneticAnomalyMeasurement>()
-                {
-                    // Build expected measurements for each particle
-                    let mut expected_measurements = Vec::with_capacity(pf.particles.len());
-
-                    for particle in pf.particles.iter() {
-                        // Set the state for this particle and compute expected measurement
-                        magnetic.set_state(&particle.nav_state);
-
-                        // Create a single column matrix for this particle's state
-                        let euler = particle.nav_state.attitude.euler_angles();
-                        let particle_state = DMatrix::from_vec(
-                            9,
-                            1,
-                            vec![
-                                particle.nav_state.latitude,
-                                particle.nav_state.longitude,
-                                particle.nav_state.altitude,
-                                particle.nav_state.velocity_north,
-                                particle.nav_state.velocity_east,
-                                particle.nav_state.velocity_down,
-                                euler.0,
-                                euler.1,
-                                euler.2,
-                            ],
-                        );
-
-                        let measurement_sigma_points = magnetic.get_sigma_points(&particle_state);
-                        expected_measurements
-                            .push(measurement_sigma_points.column(0).clone_owned());
-                    }
-
-                    pf.update(&magnetic.get_vector(), &expected_measurements);
-                } else {
-                    // Handle other built-in core measurement types (e.g., GPS, baro, etc.)
-                    // Build expected measurements for each particle
-                    let mut state_matrix = DMatrix::<f64>::zeros(9, pf.particles.len());
-                    for (i, particle) in pf.particles.iter().enumerate() {
-                        let euler = particle.nav_state.attitude.euler_angles();
-                        state_matrix[(0, i)] = particle.nav_state.latitude;
-                        state_matrix[(1, i)] = particle.nav_state.longitude;
-                        state_matrix[(2, i)] = particle.nav_state.altitude;
-                        state_matrix[(3, i)] = particle.nav_state.velocity_north;
-                        state_matrix[(4, i)] = particle.nav_state.velocity_east;
-                        state_matrix[(5, i)] = particle.nav_state.velocity_down;
-                        state_matrix[(6, i)] = euler.0;
-                        state_matrix[(7, i)] = euler.1;
-                        state_matrix[(8, i)] = euler.2;
-                    }
-
-                    let measurement_sigma_points = meas.get_sigma_points(&state_matrix);
-                    let expected_measurements: Vec<DVector<f64>> = measurement_sigma_points
-                        .column_iter()
-                        .map(|col| col.clone_owned())
-                        .collect();
-
-                    pf.update(&meas.get_vector(), &expected_measurements);
-                }
-
-                // Resample particles
-                pf.residual_resample();
-            }
-        }
-
-        // If timestamp changed, or it's the last event, record the previous state
-        if Some(ts) != last_ts {
-            if let Some(prev_ts) = last_ts {
-                let (mean, cov) = averaging_strategy.compute_state(pf);
-                results.push(NavigationResult::from_particle_filter(
-                    &prev_ts, &mean, &cov,
-                ));
-            }
-            last_ts = Some(ts);
-        }
-
-        // If this is the last event, also push
-        if i == total - 1 {
-            let (mean, cov) = averaging_strategy.compute_state(pf);
-            results.push(NavigationResult::from_particle_filter(&ts, &mean, &cov));
-        }
-    }
-
     println!("Done!");
     Ok(results)
 }
