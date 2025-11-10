@@ -6,7 +6,7 @@
 //! navigation and map matching purposes.
 //!
 //! Anomaly measurement models require some degree of knowledge about the vehicle state. Due to the way the measurement
-//! event stream is constructed, this state is not known at the time of simulation inialization. As such, the measurement
+//! event stream is constructed, this state is not known at the time of simulation initialization. As such, the measurement
 //! models corresponding to geophysical anomalies are not implemented as standalone models, but rather as a specific
 //! processing configuration that must be implemented in the closed loop configuration.
 //!
