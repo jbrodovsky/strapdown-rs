@@ -19,7 +19,7 @@ use crate::linalg::{matrix_square_root, robust_spd_solve, symmetrize};
 use crate::{IMUData, StrapdownState, forward, wrap_to_2pi};
 
 use std::any::Any;
-use std::fmt::Debug;
+use std::fmt::{self, Debug, Display};
 
 use nalgebra::{DMatrix, DVector, Rotation3};
 use rand;
@@ -60,6 +60,19 @@ pub struct GPSPositionMeasurement {
     pub horizontal_noise_std: f64,
     /// vertical noise standard deviation in meters
     pub vertical_noise_std: f64,
+}
+impl Display for GPSPositionMeasurement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "GPSPositionMeasurement(lat: {}, lon: {}, alt: {}, horiz_noise: {}, vert_noise: {})",
+            self.latitude,
+            self.longitude,
+            self.altitude,
+            self.horizontal_noise_std,
+            self.vertical_noise_std
+        )
+    }
 }
 impl MeasurementModel for GPSPositionMeasurement {
     fn as_any(&self) -> &dyn Any {
@@ -108,6 +121,19 @@ pub struct GPSVelocityMeasurement {
     pub horizontal_noise_std: f64,
     /// vertical noise standard deviation in m/s
     pub vertical_noise_std: f64,
+}
+impl Display for GPSVelocityMeasurement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "GPSVelocityMeasurement(north: {}, east: {}, down: {}, horiz_noise: {}, vert_noise: {})",
+            self.northward_velocity,
+            self.eastward_velocity,
+            self.downward_velocity,
+            self.horizontal_noise_std,
+            self.vertical_noise_std
+        )
+    }
 }
 impl MeasurementModel for GPSVelocityMeasurement {
     fn as_any(&self) -> &dyn Any {
@@ -218,6 +244,15 @@ pub struct RelativeAltitudeMeasurement {
     /// Reference pressure in Pa
     pub reference_altitude: f64,
 }
+impl Display for RelativeAltitudeMeasurement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "RelativeAltitudeMeasurement(rel_alt: {}, ref_alt: {})",
+            self.relative_altitude, self.reference_altitude
+        )
+    }
+}
 impl MeasurementModel for RelativeAltitudeMeasurement {
     fn as_any(&self) -> &dyn Any {
         self
@@ -278,6 +313,7 @@ pub struct InitialState {
 /// toggle where applicable. Generally speaking, the design of this crate is such that methods that expect
 /// a WGS84 coordinate (e.g. latitude or longitude) will expect the value in degrees, whereas trigonometric
 /// functions (e.g. sine, cosine, tangent) will expect the value in radians.
+#[derive(Clone)]
 pub struct UnscentedKalmanFilter {
     mean_state: DVector<f64>,
     covariance: DMatrix<f64>,
@@ -290,6 +326,17 @@ pub struct UnscentedKalmanFilter {
 impl Debug for UnscentedKalmanFilter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UKF")
+            .field("mean_state", &self.mean_state)
+            .field("covariance", &self.covariance)
+            .field("process_noise", &self.process_noise)
+            .field("lambda", &self.lambda)
+            .field("state_size", &self.state_size)
+            .finish()
+    }
+}
+impl Display for UnscentedKalmanFilter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UnscentedKalmanFilter")
             .field("mean_state", &self.mean_state)
             .field("covariance", &self.covariance)
             .field("process_noise", &self.process_noise)
@@ -574,7 +621,22 @@ pub struct Particle {
     /// The weight of the particle
     pub weight: f64,
 }
-
+impl Display for Particle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Particle")
+            .field("latitude", &self.nav_state.latitude.to_degrees())
+            .field("longitude", &self.nav_state.longitude.to_degrees())
+            .field("altitude", &self.nav_state.altitude)
+            .field("velocity_north", &self.nav_state.velocity_north)
+            .field("velocity_east", &self.nav_state.velocity_east)
+            .field("velocity_down", &self.nav_state.velocity_down)
+            .field("roll", &self.nav_state.attitude.euler_angles().0)
+            .field("pitch", &self.nav_state.attitude.euler_angles().1)
+            .field("yaw", &self.nav_state.attitude.euler_angles().2)
+            .field("weight", &self.weight)
+            .finish()
+    }
+}
 /// Particle filter for strapdown inertial navigation
 ///
 /// This filter uses a particle filter algorithm to estimate the state of a strapdown inertial navigation system.
@@ -584,6 +646,63 @@ pub struct Particle {
 pub struct ParticleFilter {
     /// The particles in the particle filter
     pub particles: Vec<Particle>,
+}
+impl Debug for ParticleFilter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let strategy = ParticleAveragingStrategy::WeightedAverage;
+        let (mean, cov) = strategy.compute_state(self);
+
+        // Calculate effective particle count
+        let effective_particles = 1.0
+            / self
+                .particles
+                .iter()
+                .map(|p| p.weight * p.weight)
+                .sum::<f64>();
+
+        // Find weight range
+        let min_weight = self
+            .particles
+            .iter()
+            .map(|p| p.weight)
+            .fold(f64::INFINITY, f64::min);
+        let max_weight = self.particles.iter().map(|p| p.weight).fold(0.0, f64::max);
+
+        f.debug_struct("ParticleFilter")
+            .field("num_particles", &self.particles.len())
+            .field("effective_particles", &effective_particles)
+            .field(
+                "weight_range",
+                &format_args!("[{:.4e}, {:.4e}]", min_weight, max_weight),
+            )
+            .field(
+                "mean_position",
+                &format_args!(
+                    "({:.6}°, {:.6}°, {:.2}m)",
+                    mean[0].to_degrees(),
+                    mean[1].to_degrees(),
+                    mean[2]
+                ),
+            )
+            .field(
+                "mean_velocity",
+                &format_args!("({:.3}, {:.3}, {:.3}) m/s", mean[3], mean[4], mean[5]),
+            )
+            .field(
+                "mean_attitude",
+                &format_args!("({:.3}, {:.3}, {:.3}) rad", mean[6], mean[7], mean[8]),
+            )
+            .field(
+                "position_cov_diag",
+                &format_args!(
+                    "({:.4e}, {:.4e}, {:.4e})",
+                    cov[(0, 0)],
+                    cov[(1, 1)],
+                    cov[(2, 2)]
+                ),
+            )
+            .finish()
+    }
 }
 impl ParticleFilter {
     /// Create a new particle filter with the given particles
@@ -703,6 +822,134 @@ impl ParticleFilter {
         self.particles = new_particles;
     }
 }
+
+/// Strategy for averaging particle filter states to produce navigation solution
+#[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
+pub enum ParticleAveragingStrategy {
+    /// Weighted average across all particles (default)
+    #[default]
+    WeightedAverage,
+    /// Unweighted average across all particles
+    UnweightedAverage,
+    /// State of the highest weight particle
+    HighestWeight,
+}
+
+impl ParticleAveragingStrategy {
+    /// Compute navigation state from particles using the specified strategy
+    pub fn compute_state(&self, pf: &ParticleFilter) -> (DVector<f64>, DMatrix<f64>) {
+        match self {
+            ParticleAveragingStrategy::WeightedAverage => Self::weighted_average_state(pf),
+            ParticleAveragingStrategy::UnweightedAverage => Self::unweighted_average_state(pf),
+            ParticleAveragingStrategy::HighestWeight => Self::highest_weight_state(pf),
+        }
+    }
+
+    fn weighted_average_state(pf: &ParticleFilter) -> (DVector<f64>, DMatrix<f64>) {
+        let mut mean = DVector::<f64>::zeros(9);
+
+        for particle in &pf.particles {
+            let euler = particle.nav_state.attitude.euler_angles();
+            mean[0] += particle.weight * particle.nav_state.latitude;
+            mean[1] += particle.weight * particle.nav_state.longitude;
+            mean[2] += particle.weight * particle.nav_state.altitude;
+            mean[3] += particle.weight * particle.nav_state.velocity_north;
+            mean[4] += particle.weight * particle.nav_state.velocity_east;
+            mean[5] += particle.weight * particle.nav_state.velocity_down;
+            mean[6] += particle.weight * euler.0; // roll
+            mean[7] += particle.weight * euler.1; // pitch
+            mean[8] += particle.weight * euler.2; // yaw
+        }
+
+        // Compute covariance
+        let mut cov = DMatrix::<f64>::zeros(9, 9);
+        for particle in &pf.particles {
+            let euler = particle.nav_state.attitude.euler_angles();
+            let state = DVector::from_vec(vec![
+                particle.nav_state.latitude,
+                particle.nav_state.longitude,
+                particle.nav_state.altitude,
+                particle.nav_state.velocity_north,
+                particle.nav_state.velocity_east,
+                particle.nav_state.velocity_down,
+                euler.0,
+                euler.1,
+                euler.2,
+            ]);
+            let diff = state - &mean;
+            cov += particle.weight * &diff * &diff.transpose();
+        }
+
+        (mean, cov)
+    }
+
+    fn unweighted_average_state(pf: &ParticleFilter) -> (DVector<f64>, DMatrix<f64>) {
+        let n = pf.particles.len() as f64;
+        let mut mean = DVector::<f64>::zeros(9);
+
+        for particle in &pf.particles {
+            let euler = particle.nav_state.attitude.euler_angles();
+            mean[0] += particle.nav_state.latitude / n;
+            mean[1] += particle.nav_state.longitude / n;
+            mean[2] += particle.nav_state.altitude / n;
+            mean[3] += particle.nav_state.velocity_north / n;
+            mean[4] += particle.nav_state.velocity_east / n;
+            mean[5] += particle.nav_state.velocity_down / n;
+            mean[6] += euler.0 / n; // roll
+            mean[7] += euler.1 / n; // pitch
+            mean[8] += euler.2 / n; // yaw
+        }
+
+        // Compute covariance
+        let mut cov = DMatrix::<f64>::zeros(9, 9);
+        for particle in &pf.particles {
+            let euler = particle.nav_state.attitude.euler_angles();
+            let state = DVector::from_vec(vec![
+                particle.nav_state.latitude,
+                particle.nav_state.longitude,
+                particle.nav_state.altitude,
+                particle.nav_state.velocity_north,
+                particle.nav_state.velocity_east,
+                particle.nav_state.velocity_down,
+                euler.0,
+                euler.1,
+                euler.2,
+            ]);
+            let diff = state - &mean;
+            cov += (1.0 / n) * &diff * &diff.transpose();
+        }
+
+        (mean, cov)
+    }
+
+    fn highest_weight_state(pf: &ParticleFilter) -> (DVector<f64>, DMatrix<f64>) {
+        let best_particle = pf
+            .particles
+            .iter()
+            .max_by(|a, b| a.weight.partial_cmp(&b.weight).unwrap())
+            .expect("Particle filter has no particles");
+
+        let euler = best_particle.nav_state.attitude.euler_angles();
+        let mean = DVector::from_vec(vec![
+            best_particle.nav_state.latitude,
+            best_particle.nav_state.longitude,
+            best_particle.nav_state.altitude,
+            best_particle.nav_state.velocity_north,
+            best_particle.nav_state.velocity_east,
+            best_particle.nav_state.velocity_down,
+            euler.0,
+            euler.1,
+            euler.2,
+        ]);
+
+        // For single particle, covariance is zero
+        let cov = DMatrix::<f64>::zeros(9, 9);
+
+        (mean, cov)
+    }
+}
+
 /// Tests
 #[cfg(test)]
 mod tests {

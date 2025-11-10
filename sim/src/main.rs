@@ -1,10 +1,11 @@
 use clap::{Args, Parser, Subcommand};
 use std::error::Error;
 use std::path::PathBuf;
+use strapdown::filter::ParticleAveragingStrategy;
 use strapdown::messages::{GnssDegradationConfig, build_event_stream};
 use strapdown::sim::{
     FaultArgs, NavigationResult, SchedulerArgs, TestDataRecord, build_fault, build_scheduler,
-    closed_loop, initialize_ukf,
+    closed_loop, initialize_particle_filter, initialize_ukf, particle_filter_loop,
 };
 
 const LONG_ABOUT: &str = "STRAPDOWN: A simulation and analysis tool for strapdown inertial navigation systems.
@@ -60,6 +61,11 @@ enum SimMode {
     OpenLoop,
     #[command(name = "closed-loop", about = "Run the simulation in closed-loop mode")]
     ClosedLoop(ClosedLoopArgs),
+    #[command(
+        name = "particle-filter",
+        about = "Run the simulation using a particle filter"
+    )]
+    ParticleFilter(ParticleFilterArgs),
 }
 /* -------------------- COMPARTMENTALIZED GROUPS -------------------- */
 #[derive(Args, Clone, Debug)]
@@ -75,6 +81,45 @@ struct ClosedLoopArgs {
     /// Fault model settings (corrupt measurement content)
     #[command(flatten)]
     fault: FaultArgs,
+    /// Path to a GNSS degradation config file (json|yaml|yml|toml)
+    #[arg(long)]
+    config: Option<PathBuf>,
+}
+
+#[derive(Args, Clone, Debug)]
+struct ParticleFilterArgs {
+    /// RNG seed (applies to any stochastic options)
+    #[arg(long, default_value_t = 42)]
+    seed: u64,
+
+    /// Number of particles
+    #[arg(long, default_value_t = 100)]
+    num_particles: usize,
+
+    /// Position uncertainty standard deviation (meters)
+    #[arg(long, default_value_t = 10.0)]
+    position_std: f64,
+
+    /// Velocity uncertainty standard deviation (m/s)
+    #[arg(long, default_value_t = 1.0)]
+    velocity_std: f64,
+
+    /// Attitude uncertainty standard deviation (radians)
+    #[arg(long, default_value_t = 0.1)]
+    attitude_std: f64,
+
+    /// Particle averaging strategy
+    #[arg(long, value_enum, default_value_t = ParticleAveragingStrategy::WeightedAverage)]
+    averaging_strategy: ParticleAveragingStrategy,
+
+    /// Scheduler settings (dropouts / reduced rate)
+    #[command(flatten)]
+    scheduler: SchedulerArgs,
+
+    /// Fault model settings (corrupt measurement content)
+    #[command(flatten)]
+    fault: FaultArgs,
+
     /// Path to a GNSS degradation config file (json|yaml|yml|toml)
     #[arg(long)]
     config: Option<PathBuf>,
@@ -103,13 +148,61 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     // Validate that all directories in the output path exist, if they don't create them
     let parents = cli.output.parent();
-    if let Some(parent) = parents {
-        if !parent.exists() {
+    if let Some(parent) = parents
+        && !parent.exists() {
             std::fs::create_dir_all(parent)?;
         }
-    }
     match cli.mode {
         SimMode::OpenLoop => println!("Running in open-loop mode"),
+        SimMode::ParticleFilter(ref args) => {
+            // Load sensor data records from CSV
+            let records = TestDataRecord::from_csv(&cli.input)?;
+            println!(
+                "Read {} records from {}",
+                records.len(),
+                &cli.input.display()
+            );
+
+            let cfg = if let Some(ref cfg_path) = args.config {
+                match GnssDegradationConfig::from_file(cfg_path) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("Failed to read config {}: {}", cfg_path.display(), e);
+                        return Err(Box::new(e));
+                    }
+                }
+            } else {
+                GnssDegradationConfig {
+                    scheduler: build_scheduler(&args.scheduler),
+                    fault: build_fault(&args.fault),
+                    seed: args.seed,
+                }
+            };
+
+            let events = build_event_stream(&records, &cfg);
+            let mut pf = initialize_particle_filter(
+                records[0].clone(),
+                args.num_particles,
+                args.position_std,
+                args.velocity_std,
+                args.attitude_std,
+            );
+
+            println!(
+                "Running particle filter with {} particles, strategy: {:?}",
+                args.num_particles, args.averaging_strategy
+            );
+
+            let results = particle_filter_loop(&mut pf, events, args.averaging_strategy.clone());
+
+            match results {
+                Ok(ref nav_results) => match NavigationResult::to_csv(nav_results, &cli.output) {
+                    Ok(_) => println!("Results written to {}", cli.output.display()),
+                    Err(e) => eprintln!("Error writing results: {}", e),
+                },
+                Err(e) => eprintln!("Error running particle filter simulation: {}", e),
+            };
+        }
         SimMode::ClosedLoop(ref args) => {
             // Load sensor data records from CSV, tolerant to mixed/variable-length rows and encoding issues.
             let records = TestDataRecord::from_csv(&cli.input)?;

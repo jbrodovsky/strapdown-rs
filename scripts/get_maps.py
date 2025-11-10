@@ -3,9 +3,14 @@ Helper script for downloading geophysical maps from the GMT servers.
 """
 
 import os
-from pathlib import Path
 from argparse import ArgumentParser
 from glob import glob
+from pathlib import Path
+
+from cartopy import crs as ccrs
+from cartopy.io import img_tiles as cimgt
+from matplotlib import pyplot as plt
+from matplotlib.figure import Figure
 from pandas import read_csv
 
 from pygmt.datasets import (
@@ -47,6 +52,44 @@ def inflate_bounds(
         y_min - y_range * buffer,
         y_max + y_range * buffer,
     )
+
+
+def plot_street_map(latitude: list[float], longitude: list[float], margin=0.01) -> Figure:
+    """
+    Plots a street map using OpenStreetMap tiles.
+
+    :param latitude: list of latitudes
+    :type latitude: list[float]
+    :param longitude: list of longitudes
+    :type longitude: list[float]
+    """
+    # Define the map extent
+    lat_min, lat_max = min(latitude), max(latitude)
+    lon_min, lon_max = min(longitude), max(longitude)
+
+    # Create a Stamen Terrain instance
+    osm_tiles = cimgt.OSM()
+
+    # Create a figure
+    # Create a map using cartopy with OpenStreetMap background
+    fig = plt.figure(figsize=(12, 10))
+    ax = plt.axes(projection=ccrs.PlateCarree())
+    ax.set_extent([lon_min - margin, lon_max + margin, lat_min - margin, lat_max + margin], crs=ccrs.PlateCarree())  # type: ignore
+
+    # Add the OSM tiles to the map
+    ax.add_image(osm_tiles, 12)  # type: ignore
+
+    # Plot the trajectory points
+    ax.plot(longitude, latitude, "r.", transform=ccrs.PlateCarree())
+
+    # Add gridlines with labels
+    gl = ax.gridlines(draw_labels=True, alpha=0.2)  # type: ignore
+    gl.top_labels = False
+    gl.right_labels = False
+
+    ax.set_title("Street Map with Trajectory Points", fontsize=16)
+
+    return fig
 
 
 def get_maps(
@@ -92,6 +135,11 @@ def get_maps(
         )
         magnetic.to_netcdf(os.path.join(output_directory, basename.replace(".csv", "_magnetic.nc")))
         print(f"  Downloaded magnetic map: {magnetic.data.shape}.")
+
+        fig = plot_street_map(df["latitude"].tolist(), df["longitude"].tolist())
+        fig.savefig(os.path.join(output_directory, basename.replace(".csv", "_street_map.png")))
+        plt.close(fig)
+        print(f"  Saved street map.")
 
 
 if __name__ == "__main__":

@@ -123,7 +123,7 @@ pub mod sim;
 use nalgebra::{DVector, Matrix3, Rotation3, Vector3};
 
 use std::convert::{From, Into, TryFrom};
-use std::fmt::{Debug, Display};
+use std::fmt::{self, Debug, Display};
 
 /// Basic structure for holding IMU data in the form of acceleration and angular rate vectors.
 ///
@@ -194,8 +194,38 @@ pub struct StrapdownState {
     /// Coordinate convention used for the state vector (NED or ENU; NED is true by default)
     pub coordinate_convention: bool, // true for NED, false for ENU
 }
-
 impl Debug for StrapdownState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (roll, pitch, yaw) = self.attitude.euler_angles();
+        f.debug_struct("StrapdownState")
+            .field("latitude (deg)", &self.latitude.to_degrees())
+            .field("longitude (deg)", &self.longitude.to_degrees())
+            .field("altitude (m)", &self.altitude)
+            .field("velocity_north (m/s)", &self.velocity_north)
+            .field("velocity_east (m/s)", &self.velocity_east)
+            .field("velocity_down (m/s)", &self.velocity_down)
+            .field(
+                "attitude (roll, pitch, yaw in deg)",
+                &format_args!(
+                    "[{:.2}, {:.2}, {:.2}]",
+                    roll.to_degrees(),
+                    pitch.to_degrees(),
+                    yaw.to_degrees()
+                ),
+            )
+            .field(
+                "coordinate_convention",
+                if self.coordinate_convention {
+                    &"NED"
+                } else {
+                    &"ENU"
+                },
+            )
+            .finish()
+    }
+}
+
+impl Display for StrapdownState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let (roll, pitch, yaw) = self.attitude.euler_angles();
         write!(
