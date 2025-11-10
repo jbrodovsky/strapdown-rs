@@ -35,3 +35,23 @@ The toolbox is designed for research, teaching, and development purposes and aim
 `strapdown-rs` is intended to be both a source code library included into your INS software and simulation environment as well as very light-weight INS simulator. The library provides a set of modules modeling the WGS84 Earth ellipsoid, a common 9-state strapdown forward mechanization, and a set of navigation filters for estimating position, velocity, and orientation from inertial measurement unit (IMU) data.
 
 The simulation program provides a simple command line interface for running various configurations of the INS. In can run in open-loop (dead reckoning) mode or closed-loop (full state loosely couple UKF) mode. It can simulate various scenarios such as intermittent GPS, GPS degradation, and more. The simulation is designed to be easy to use and provides a simple API for generating datsets for further navigation processing or research.
+
+## Documentation
+
+The documentation for `strapdown-rs` is available on [docs.rs](https://docs.rs/strapdown-rs). It includes detailed information about the library's modules, functions, and usage examples.
+
+## Testing
+
+`strapdown-rs` includes a comprehensive suite of unit tests to ensure the correctness and reliability of the implemented algorithms. You can run the tests using Cargo:
+
+```bash
+cargo test --workspace
+```
+
+## Example 
+
+To use the simulation binary, you can run the following command:
+
+```bash
+strapdown-sim -i <input_file.csv> -o <output_file.csv> closed-loop --sched passthrough --fault none --seed 42
+```
