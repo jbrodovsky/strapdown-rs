@@ -3074,15 +3074,20 @@
     <bcf:citekey order="5" intorder="2">canciani2016absolute</bcf:citekey>
     <bcf:citekey order="5" intorder="3">canciani2017airborne</bcf:citekey>
     <bcf:citekey order="5" intorder="4">magnav</bcf:citekey>
-    <bcf:citekey order="6" intorder="1">EGM2008</bcf:citekey>
-    <bcf:citekey order="7" intorder="1">wdmam</bcf:citekey>
-    <bcf:citekey order="8" intorder="1">mems-nav-dataset</bcf:citekey>
-    <bcf:citekey order="9" intorder="1">awesome-sensor-logger</bcf:citekey>
-    <bcf:citekey order="10" intorder="1">groves_ch14</bcf:citekey>
-    <bcf:citekey order="11" intorder="1">groves_ch5</bcf:citekey>
-    <bcf:citekey order="12" intorder="1">EGM2008</bcf:citekey>
-    <bcf:citekey order="13" intorder="1">wdmam</bcf:citekey>
+    <bcf:citekey order="6" intorder="1">mems-nav-dataset</bcf:citekey>
+    <bcf:citekey order="7" intorder="1">awesome-sensor-logger</bcf:citekey>
+    <bcf:citekey order="8" intorder="1">groves</bcf:citekey>
+    <bcf:citekey order="9" intorder="1">somigliana1929teoria</bcf:citekey>
+    <bcf:citekey order="10" intorder="1">ukf-1</bcf:citekey>
+    <bcf:citekey order="10" intorder="2">ukf-2</bcf:citekey>
+    <bcf:citekey order="10" intorder="3">ukf-4</bcf:citekey>
+    <bcf:citekey order="11" intorder="1">ukf-3</bcf:citekey>
+    <bcf:citekey order="12" intorder="1">ProbRob</bcf:citekey>
+    <bcf:citekey order="13" intorder="1">ProbRob</bcf:citekey>
     <bcf:citekey order="14" intorder="1">strapdown-rs</bcf:citekey>
+    <bcf:citekey order="15" intorder="1">EGM2008</bcf:citekey>
+    <bcf:citekey order="16" intorder="1">wdmam</bcf:citekey>
+    <bcf:citekey order="17" intorder="1">GMT</bcf:citekey>
   </bcf:section>
   <!-- SORTING TEMPLATES -->
   <bcf:sortingtemplate name="apa">
