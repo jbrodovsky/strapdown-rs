@@ -1,6 +1,6 @@
 # Contribution Guidelines
 
-Thank you for considerating contributing to this project. At time of writing this is being developed as part of a PhD dissertation. The goal is to make this a high-performance, memory-safe, and cross-platform implementation of strapdown INS algorithms that can be easily integrated into existing systems. The project is open to contributions from the community, and we welcome any feedback or suggestions for improvement.
+Thank you for considerating contributing to this project. At time of writing this is being developed as part of a PhD dissertation. The goal is to make this a high-performance, memory-safe, and cross-platform implementation of strapdown INS algorithms that can be easily integrated into existing systems. The project is open to contributions from the community, and any feedback or suggestions for improvement are welcome.
 
 If you are a developer, researcher, or enthusiast interested in contributing to this project, please first reach out to [James Brodovsky](mailto:jbrodovsky@temple.edu). Contribution are welcome, but primary authorship will remain with the original author.
 
