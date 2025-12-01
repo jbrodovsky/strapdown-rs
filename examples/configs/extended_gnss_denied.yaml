@@ -1,0 +1,19 @@
+# Extended GNSS-Denied Navigation
+#
+# This scenario simulates an extended period of GNSS denial (5 minutes)
+# to test dead reckoning performance of the INS.
+#
+# Use case: Testing navigation performance in urban canyons, tunnels,
+# or during intentional jamming.
+#
+# Expected behavior: Position error will grow during the GNSS-denied
+# period at a rate proportional to IMU quality. For smartphone-grade
+# MEMS IMUs, expect drift of ~10-50m per minute.
+scheduler:
+  kind: duty
+  on_s: 60.0      # 1 minute GNSS available
+  off_s: 300.0    # 5 minutes GNSS denied
+  phase_s: 0.0
+fault:
+  kind: none
+seed: 42

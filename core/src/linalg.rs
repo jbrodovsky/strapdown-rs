@@ -25,7 +25,7 @@ use nalgebra::linalg::{Cholesky, SymmetricEigen};
 /// the square root using eigenvalue decomposition (S = V * sqrt(D) * V^T).
 ///
 /// # Arguments
-/// * `matrix` - The DMatrix<f64> to find the square root of. It's assumed to be symmetric and square.
+/// * `matrix` - The `DMatrix<f64>` to find the square root of. It's assumed to be symmetric and square.
 ///
 /// # Returns
 /// * `Some(DMatrix<f64>)` containing a matrix square root.
