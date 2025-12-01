@@ -41,3 +41,6 @@ batch_process.nu
 # Data output
 examples/geonav-sim/ukf
 examples/geonav-sim/pf
+
+# Ignore ruff
+.ruff_cache/

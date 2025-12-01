@@ -1,4 +1,5 @@
 use clap::{Args, Parser, Subcommand};
+use log::{error, info};
 use std::error::Error;
 use std::path::PathBuf;
 use strapdown::filter::ParticleAveragingStrategy;
@@ -54,16 +55,22 @@ struct Cli {
     /// Output file path
     #[arg(short, long, value_parser)]
     output: PathBuf,
+    /// Log level (off, error, warn, info, debug, trace)
+    #[arg(long, default_value = "info")]
+    log_level: String,
+    /// Log file path (if not specified, logs to stderr)
+    #[arg(long)]
+    log_file: Option<PathBuf>,
 }
 #[derive(Subcommand, Clone)]
 enum SimMode {
-    #[command(name = "open-loop", about = "Run the simulation in open-loop mode")]
+    #[command(name = "open-loop", about = "Run the simulation in open-loop (feed-forward INS) mode")]
     OpenLoop,
-    #[command(name = "closed-loop", about = "Run the simulation in closed-loop mode")]
+    #[command(name = "closed-loop", about = "Run the simulation in closed-loop (feedback INS) mode")]
     ClosedLoop(ClosedLoopArgs),
     #[command(
         name = "particle-filter",
-        about = "Run the simulation using a particle filter"
+        about = "Run the simulation using a particle filter INS architecture"
     )]
     ParticleFilter(ParticleFilterArgs),
 }
@@ -125,8 +132,46 @@ struct ParticleFilterArgs {
     config: Option<PathBuf>,
 }
 
+/// Initialize the logger with the specified configuration
+fn init_logger(log_level: &str, log_file: Option<&PathBuf>) -> Result<(), Box<dyn Error>> {
+    use std::io::Write;
+    
+    let level = log_level.parse::<log::LevelFilter>()
+        .unwrap_or_else(|_| {
+            eprintln!("Invalid log level '{}', defaulting to 'info'", log_level);
+            log::LevelFilter::Info
+        });
+
+    let mut builder = env_logger::Builder::new();
+    builder.filter_level(level);
+    builder.format(|buf, record| {
+        writeln!(
+            buf,
+            "{} [{}] - {}",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+            record.level(),
+            record.args()
+        )
+    });
+
+    if let Some(log_path) = log_file {
+        let target = Box::new(std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)?);
+        builder.target(env_logger::Target::Pipe(target));
+    }
+
+    builder.try_init()?;
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
+    
+    // Initialize logger
+    init_logger(&cli.log_level, cli.log_file.as_ref())?;
+    
     // Validate the mode
     //if args.mode != "open-loop" && args.mode != "closed-loop" {
     //    return Err("Invalid mode specified. Use 'open-loop' or 'closed-loop'.".into());
@@ -153,11 +198,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             std::fs::create_dir_all(parent)?;
         }
     match cli.mode {
-        SimMode::OpenLoop => println!("Running in open-loop mode"),
+        SimMode::OpenLoop => info!("Running in open-loop mode"),
         SimMode::ParticleFilter(ref args) => {
             // Load sensor data records from CSV
             let records = TestDataRecord::from_csv(&cli.input)?;
-            println!(
+            info!(
                 "Read {} records from {}",
                 records.len(),
                 &cli.input.display()
@@ -167,7 +212,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 match GnssDegradationConfig::from_file(cfg_path) {
                     Ok(c) => c,
                     Err(e) => {
-                        eprintln!("Failed to read config {}: {}", cfg_path.display(), e);
+                        error!("Failed to read config {}: {}", cfg_path.display(), e);
                         return Err(Box::new(e));
                     }
                 }
@@ -188,7 +233,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 args.attitude_std,
             );
 
-            println!(
+            info!(
                 "Running particle filter with {} particles, strategy: {:?}",
                 args.num_particles, args.averaging_strategy
             );
@@ -197,16 +242,16 @@ fn main() -> Result<(), Box<dyn Error>> {
 
             match results {
                 Ok(ref nav_results) => match NavigationResult::to_csv(nav_results, &cli.output) {
-                    Ok(_) => println!("Results written to {}", cli.output.display()),
-                    Err(e) => eprintln!("Error writing results: {}", e),
+                    Ok(_) => info!("Results written to {}", cli.output.display()),
+                    Err(e) => error!("Error writing results: {}", e),
                 },
-                Err(e) => eprintln!("Error running particle filter simulation: {}", e),
+                Err(e) => error!("Error running particle filter simulation: {}", e),
             };
         }
         SimMode::ClosedLoop(ref args) => {
             // Load sensor data records from CSV, tolerant to mixed/variable-length rows and encoding issues.
             let records = TestDataRecord::from_csv(&cli.input)?;
-            println!(
+            info!(
                 "Read {} records from {}",
                 records.len(),
                 &cli.input.display()
@@ -215,7 +260,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 match GnssDegradationConfig::from_file(cfg_path) {
                     Ok(c) => c,
                     Err(e) => {
-                        eprintln!("Failed to read config {}: {}", cfg_path.display(), e);
+                        error!("Failed to read config {}: {}", cfg_path.display(), e);
                         return Err(Box::new(e));
                     }
                 }
@@ -232,10 +277,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             //sim::write_results_csv(&cli.output, &results)?;
             match results {
                 Ok(ref nav_results) => match NavigationResult::to_csv(nav_results, &cli.output) {
-                    Ok(_) => println!("Results written to {}", cli.output.display()),
-                    Err(e) => eprintln!("Error writing results: {}", e),
+                    Ok(_) => info!("Results written to {}", cli.output.display()),
+                    Err(e) => error!("Error writing results: {}", e),
                 },
-                Err(e) => eprintln!("Error running closed-loop simulation: {}", e),
+                Err(e) => error!("Error running closed-loop simulation: {}", e),
             };
         }
     }
