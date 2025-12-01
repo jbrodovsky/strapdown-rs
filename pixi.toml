@@ -2,7 +2,7 @@
 authors = ["James Brodovsky <james.brodovsky@gmail.com>"]
 channels = ["conda-forge"]
 name = "strapdown-rs"
-platforms = ["linux-64"]
+platforms = ["linux-64", "osx-64", "win-64"]
 version = "0.0.1"
 description = "A simple strapdown INS implementation in Rust with accompanying simulation and geo-location capabilities."
 license = "MIT"
@@ -37,20 +37,28 @@ args = [
 ]
 cmd = "python scripts/create_dataset.py --bin {{ bin }} --input {{ input }} --output-root {{ output_root }}"
 
+[tasks.truth]
+args = [
+    {"arg" = "input", "default" = "data/input/"},
+    {"arg" = "output", "default" = "data/baseline/"}
+]
+cmd = "python scripts/truth.py --input-dir {{ input }} --output-dir {{ output }}"
+
 [dependencies]
-python = ">=3.13.7,<3.14"
-numpy = ">=2.3.2,<3"
-pandas = ">=2.3.2,<3"
+python = ">=3.12,<3.14"
+numpy = ">=2.3.4,<3"
+pandas = ">=2.3.3,<3"
 cartopy = ">=0.25.0,<0.26"
 tqdm = ">=4.67.1,<5"
-pygmt = ">=0.16.0,<0.17"
-matplotlib = ">=3.10.6,<4"
-jupyter = ">=1.1.1,<2"
+pygmt = ">=0.17.0,<0.18"
+matplotlib = ">=3.10.7,<4"
 haversine = ">=2.9.0,<3"
-scipy = ">=1.16.1,<2"
-rust = ">=1.89.0,<1.90"
-rust-src = ">=1.89.0,<2"
+scipy = ">=1.16.3,<2"
+rust = ">=1.91.0,<1.92"
+rust-src = ">=1.91.0,<2"
 filterpy = ">=1.4.5,<2"
+notebook = ">=7.4.7,<8"
+ipykernel = ">=7.1.0,<8"
 
 [pypi-dependencies]
 anglewrapper = ">=0.1.1, <0.2"
