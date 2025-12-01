@@ -15,6 +15,7 @@ examples/strapdown-sim/out
 *.synctex.gz
 *.bbl
 *.blg
+*.bcf
 
 # pixi environments
 .pixi
