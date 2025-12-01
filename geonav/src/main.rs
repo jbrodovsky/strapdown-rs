@@ -1,4 +1,5 @@
 use clap::{Args, Parser, ValueEnum};
+use log::{error, info};
 use std::error::Error;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -42,6 +43,12 @@ struct Cli {
     /// GNSS degradation configuration
     #[command(flatten)]
     gnss: GnssArgs,
+    /// Log level (off, error, warn, info, debug, trace)
+    #[arg(long, default_value = "info")]
+    log_level: String,
+    /// Log file path (if not specified, logs to stderr)
+    #[arg(long)]
+    log_file: Option<PathBuf>,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -199,8 +206,45 @@ fn find_map_file(
     }
 }
 
+/// Initialize the logger with the specified configuration
+fn init_logger(log_level: &str, log_file: Option<&PathBuf>) -> Result<(), Box<dyn Error>> {
+    use std::io::Write;
+    
+    let level = log_level.parse::<log::LevelFilter>()
+        .unwrap_or_else(|_| {
+            eprintln!("Invalid log level '{}', defaulting to 'info'", log_level);
+            log::LevelFilter::Info
+        });
+
+    let mut builder = env_logger::Builder::new();
+    builder.filter_level(level);
+    builder.format(|buf, record| {
+        writeln!(
+            buf,
+            "{} [{}] - {}",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+            record.level(),
+            record.args()
+        )
+    });
+
+    if let Some(log_path) = log_file {
+        let target = Box::new(std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)?);
+        builder.target(env_logger::Target::Pipe(target));
+    }
+
+    builder.try_init()?;
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
+    
+    // Initialize logger
+    init_logger(&cli.log_level, cli.log_file.as_ref())?;
 
     // Validate input file
     if !cli.input.exists() {
@@ -219,7 +263,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Load sensor data records from CSV
     let records = TestDataRecord::from_csv(&cli.input)?;
-    println!(
+    info!(
         "Read {} records from {}",
         records.len(),
         cli.input.display()
@@ -231,14 +275,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         None => find_map_file(&cli.input, cli.geo.geo_type)?,
     };
 
-    println!("Loading geophysical map from: {}", map_path.display());
+    info!("Loading geophysical map from: {}", map_path.display());
 
     // Build measurement type with specified resolution
     let measurement_type = build_measurement_type(cli.geo.geo_type, cli.geo.geo_resolution);
 
     // Load geophysical map
     let geomap = Rc::new(GeoMap::load_geomap(map_path, measurement_type)?);
-    println!(
+    info!(
         "Loaded {} map with {} x {} grid points",
         geomap.get_map_type(),
         geomap.get_lats().len(),
@@ -250,7 +294,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         match GnssDegradationConfig::from_file(cfg_path) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("Failed to read config {}: {}", cfg_path.display(), e);
+                error!("Failed to read config {}: {}", cfg_path.display(), e);
                 return Err(Box::new(e));
             }
         }
@@ -270,7 +314,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         Some(cli.geo.geo_noise_std),
         cli.geo.geo_frequency_s,
     );
-    println!("Built event stream with {} events", events.events.len());
+    info!("Built event stream with {} events", events.events.len());
 
     // Initialize UKF
     let mut process_noise: Vec<f64> = DEFAULT_PROCESS_NOISE.clone().into();
@@ -285,23 +329,23 @@ fn main() -> Result<(), Box<dyn Error>> {
         Some(vec![cli.geo.geo_noise_std; 1]),
         Some(process_noise),
     );
-    println!(
+    info!(
         "Initialized UKF with state dimension {}",
         ukf.get_mean().len()
     );
-    println!("Initial state: {:?}", ukf.get_mean());
+    info!("Initial state: {:?}", ukf.get_mean());
     // Run closed-loop simulation
-    println!("Running geophysical navigation simulation...");
+    info!("Running geophysical navigation simulation...");
     let results = geo_closed_loop(&mut ukf, events);
 
     // Write results
     match results {
         Ok(ref nav_results) => match NavigationResult::to_csv(nav_results, &cli.output) {
-            Ok(_) => println!("Results written to {}", cli.output.display()),
-            Err(e) => eprintln!("Error writing results: {}", e),
+            Ok(_) => info!("Results written to {}", cli.output.display()),
+            Err(e) => error!("Error writing results: {}", e),
         },
         Err(e) => {
-            eprintln!("Error running geophysical navigation simulation: {}", e);
+            error!("Error running geophysical navigation simulation: {}", e);
             return Err(e.into());
         }
     }

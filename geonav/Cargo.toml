@@ -16,6 +16,8 @@ chrono = "0.4.42"
 clap = { version = "4.0", features = ["derive"] }
 anyhow = "1.0.100"
 assert_approx_eq = "1.1.0"
+log = "0.4"
+env_logger = "0.11"
 
 [lib]
 name = "geonav"
