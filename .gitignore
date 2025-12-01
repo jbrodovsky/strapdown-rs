@@ -16,6 +16,7 @@ examples/strapdown-sim/out
 *.bbl
 *.blg
 *.bcf
+*.zip
 
 # pixi environments
 .pixi
