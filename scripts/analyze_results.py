@@ -23,6 +23,9 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
+# Earth radius in meters (WGS84 mean radius)
+EARTH_RADIUS_M = 6371000
+
 # Optional: haversine for accurate distance calculation
 try:
     from haversine import haversine_vector, Unit
@@ -52,14 +55,13 @@ def calculate_position_error(truth: pd.DataFrame, test: pd.DataFrame) -> np.ndar
         error_m = haversine_vector(truth_coords, test_coords, Unit.METERS)
     else:
         # Equirectangular approximation (less accurate but simple)
-        R = 6371000  # Earth radius in meters
         lat1 = np.radians(truth_coords[:, 0])
         lat2 = np.radians(test_coords[:, 0])
         dlat = lat2 - lat1
         dlon = np.radians(test_coords[:, 1] - truth_coords[:, 1])
         x = dlon * np.cos((lat1 + lat2) / 2)
         y = dlat
-        error_m = R * np.sqrt(x**2 + y**2)
+        error_m = EARTH_RADIUS_M * np.sqrt(x**2 + y**2)
     
     return error_m
 
@@ -288,13 +290,12 @@ def main():
         # Covariance consistency (if available)
         if 'latitude_cov' in test.columns:
             # Convert lat covariance from radians² to meters²
-            R = 6371000
-            lat_cov_m2 = test['latitude_cov'].values * (R * np.pi / 180)**2
+            lat_cov_m2 = test['latitude_cov'].values * (EARTH_RADIUS_M * np.pi / 180)**2
             
             # Use latitude component of position error for comparison
             lat_error = np.abs(
                 test['latitude'].values - truth['latitude'].values
-            ) * R * np.pi / 180
+            ) * EARTH_RADIUS_M * np.pi / 180
             
             plot_covariance_bounds(
                 time_s, lat_error, lat_cov_m2,
