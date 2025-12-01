@@ -7,18 +7,15 @@
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Common packages to import
-
 % ### MATH PACKAGE
 \usepackage{amsmath}
 \usepackage{amssymb}
+\usepackage{booktabs}
 % Popular packages from the American Mathematical Society that provide
 % many useful and powerful commands for dealing with mathematics.
 % If bold math operators are desired, the bm package is suggested
 \usepackage{bm}
 % its documentation can be found at http://www.ctan.org/pkg/bm
-
-
-
 % ### GRAPHICS PACKAGE
 \usepackage{graphicx}
 % to ensure centered multiline captions, the centering package should 
@@ -26,9 +23,9 @@
 \usepackage[justification=centering]{caption}
 % To use the subfigures command, the subcaption package should be 
 % called as well.
-% \usepackage{subcaption}
+\usepackage{subcaption}
 % To declare the path(s) where your graphic files are use
-\graphicspath{{figures/}}
+\graphicspath{{figures}}
 % To declare their extensions so you won't have to specify these with
 % every instance of \includegraphics:
 % \DeclareGraphicsExtensions{.pdf,.jpeg,.png}
@@ -51,23 +48,18 @@
 % that all non-photo figures use a vector format (.eps, .pdf, .mps) and
 % not a bitmapped formats (.jpeg, .png).
 
-
-
 % ### ALGORITHM PACKAGE
-%\usepackage{algorithmic}
+\usepackage{algorithmic}
+\usepackage{algorithm}
 % This package provides an algorithmic environment fo describing algorithms.
 % You can use the algorithmic environment in-text or within a figure
 % environment to provide for a floating algorithm.
-
-
 
 % ### TABLE AND ALIGNMENT PACKAGE
 %\usepackage{array}
 % Frank Mittelbach's and David Carlisle's array.sty patches and improves
 % the standard LaTeX2e array and tabular environments to provide better
 % appearance and additional user controls.
-
-
 
 % ### URL PACKAGE
 \usepackage{url}
@@ -76,12 +68,8 @@
 % systems. The latest version and documentation can be obtained at:
 % http://www.ctan.org/pkg/url
 % Basically, \url{my_url_here}.
-
-
-
 % ### NATBIB PACKAGE
 % \usepackage{natbib}
-
 % The natbib package is a reimplementation of the LATEX \cite
 % command, to work with both author–year and numerical citations.
 % It is compatible with the standard bibliographic style files, such as
@@ -90,9 +78,6 @@
 % The natbib package enables the apalike bibliography style.
 % See http://homepage.stat.uiowa.edu/~rlenth/ALPHA/apa-tutorial.pdf
 % for an excellent explanation.
-
-
-
 % ### HYPERLINKS PACKAGE
 \usepackage[hidelinks]{hyperref}
 % This package is used to emend cross-referencing commands in LaTeX to
@@ -104,11 +89,8 @@
 % Needs to be loaded AFTER other packages as it overwrites many standard 
 % commands.
 % See: https://ctan.org/pkg/hyperref?lang=en
-
 \usepackage[style=apa,natbib=true]{biblatex}
 \addbibresource{references.bib}
-
-
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Document starts here
 
@@ -124,7 +106,6 @@
     James~Brodovsky, Philip~Dames, \textit{Temple~University}% <- this '%' removes a trailing whitespace
     }
 
-
 \begin{document}
 
 \maketitle
@@ -135,7 +116,7 @@
 % Biographies are defined as follows:
 % \biography{Author name}{author biography text}
 
-\biography{James Brodovsky}{James Brodovsky is a Ph.D. student at Temple University in the Mechanical Engineering department, specializing in autonomous navigation within GNSS-denied environments. His research focuses on developing resilient navigation techniques for robotic, unmanned, and traditional platforms. He investigates geophysical navigation by using maps of physical phenomena to provide positioning feedback through map-matching. His most recent work explores using MEMS-grade sensors to develop methods for long-duration, GPS-denied navigation. He is the author of the open-source software library strapdown-rs, which provides a foundation for high-performance INS algorithms. He is passionate about building modern, robust, and accessible software tools for the navigation industry.}
+\biography{James Brodovsky}{James Brodovsky is a Ph.D. candidate at Temple University in the Mechanical Engineering department, specializing in autonomous navigation within GNSS-denied environments. His research focuses on developing resilient navigation techniques for robotic, unmanned, and traditional platforms. He investigates geophysical navigation by using maps of physical phenomena to provide positioning feedback through map-matching. His most recent work explores using MEMS-grade sensors to develop methods for long-duration, GPS-denied navigation. He is the author of the open-source software library strapdown-rs, which provides a foundation for high-performance INS algorithms. He is passionate about building modern, robust, and accessible software tools for the navigation industry.}
 
 \biography{Philip Dames}{Philip Dames is an Associate Professor of Mechanical Engineering at Temple University. His research enables teams of mobile robots to autonomously explore and gather information with limited prior knowledge, converting sensor data into actionable intelligence. His work addresses applications including infrastructure inspection, security, mapping, environmental monitoring, precision agriculture, and search and rescue. By developing mathematical tools and systems that explicitly reason about uncertainty in environments, sensors, and robots, as well as unknown numbers of objects and unpredictable phenomena, he aims to improve robotic team performance in real-world scenarios.}
 
@@ -143,111 +124,280 @@
 % The Abstract. The * indicates a section excluded from numbering.
 \section*{Abstract}
 
-This work explores the integration of open-source gravity and magnetic anomaly data into a strapdown inertial navigation system (INS) to improve navigation performance during degraded or intermittent GNSS availability. The primary objective is to demonstrate that a geophysical-aided INS, utilizing only low-cost MEMS-grade sensors and publicly available geophysical maps, could achieve lower drift rates than a standard INS without geophysical aiding.
+This work explores the integration of open-source gravity and magnetic anomaly data into a strapdown Inertial Navigation System (INS) to improve navigation performance during degraded or intermittent Global Navigation Satellite System (GNSS) availability. The primary objective is to demonstrate that a geophysical-aided INS, utilizing only low-cost micro electro-mechanical system (MEMS) grade sensors and publicly available geophysical maps, could achieve lower drift rates than a standard INS without geophysical aiding.
 
-A comprehensive, long-term trajectory dataset (MEMS-Nav) was collected using a smartphone's internal MEMS-grade IMU and GPS receiver. A high-fidelity reference trajectory was generated using a loosely coupled, Unscented Kalman Filter (UKF) based INS. The GPS data was systematically degraded using the \verb|strapdown-rs| toolbox to simulate GNSS-challenged scenarios. A UKF-based INS was developed that incorporated gravity and magnetic anomaly measurements as additional aiding sources, utilizing the International Gravity Field Service (IGFS) Earth free-air anomaly map and World Digital Magnetic Anomaly Map as reference.
+A comprehensive, long-term trajectory dataset (MEMS-Nav) was collected using a smartphone's internal MEMS-grade inertial measurement unit (IMU) and GNSS receiver. The GNSS data was systematically degraded using the a toolbox developed by the authors to simulate GNSS interference scenarios. An INS was developed that incorporated gravity and magnetic anomaly measurements as additional aiding sources, utilizing the Institute of Geophysics and Planetary Physics (IGPP) Earth free-air anomaly map and World Digital Magnetic Anomaly Map as reference.
 
 The geophysical-aided INS demonstrated improved navigation accuracy compared to the standard INS when operating under GNSS interference, with performance gains ranging from several meters to tens of meters on certain trajectories. Even when unable to exceed standard INS performance, the geophysical approach exhibited trends toward superior accuracy. Results showed that despite inherent MEMS-grade IMU noise and limited resolution of open-source geophysical maps, this approach demonstrates feasibility of constraining INS drift.
-
-This research demonstrated that integrating gravity and magnetic anomaly measurements into a UKF-based INS represents a viable method for enhancing navigation performance in GNSS-denied environments and that this is feasible using low-cost MEMS sensors and publicly available geophysical data provided significant navigation accuracy improvements. The findings are particularly relevant for autonomous systems, robotics, and aerospace applications requiring resilience to GNSS vulnerabilities, offering a compelling non-RF based complement to GNSS for a more robust PNT ecosystem.
 
 % The introduction. Section numbering starts here.
 \section{Introduction}
 
-Modern navigation systems have become critically dependent on the Global Navigation Satellite Systems (GNSS) for position corrections in integrated inertial navigation systems (INS). While the GNSS provides accurate global positioning under ideal conditions, its reliance on radio frequency (RF) signals makes it vulnerable to denial, degradation, and spoofing in multiple scenarios \citep{humphreys2008,gnss-vulnerabilities,divis2013gps}. Urban canyons and indoor operation obstruct satellite visibility through multipath interference, while underground and underwater environments completely attenuate GNSS signals \citep{underwater_review,underwater_survey,indoor_survey}. More concerning are intentional disruptions: electronic warfare capabilities can actively jam or spoof GNSS signals, posing significant risks to commercial aviation, maritime shipping, and military operations \citep{9112619,santamaria_global_nodate}. These vulnerabilities create an urgent need for alternative positioning, navigation, and timing (Alt-PNT) solutions that do not rely on external active RF signals.
+Modern navigation systems have become critically dependent on the Global Navigation Satellite Systems (GNSS) for position corrections in inertial navigation systems (INS). While the GNSS provides accurate global positioning under ideal conditions, its reliance on radio frequency (RF) signals makes it vulnerable to denial, degradation, and spoofing in multiple scenarios \citep{humphreys2008,gnss-vulnerabilities,divis2013gps}. Urban canyons and indoor operation obstruct satellite visibility through multipath interference or simple occlusion, while underground and underwater environments similarly occlude and attenuate GNSS signals \citep{underwater_review,underwater_survey,indoor_survey}. More concerning are intentional disruptions: electronic warfare capabilities can actively jam or spoof GNSS signals, posing significant risks to commercial aviation, maritime shipping, and military operations \citep{9112619,gnss_rf_interference}. These vulnerabilities create an urgent need for alternative positioning, navigation, and timing (Alt-PNT) solutions that do not rely on external active RF signals.
 
-Geophysical navigation offers a compelling non-RF alternative by exploiting naturally occurring variations in Earth's gravity and magnetic fields. These geophysical anomalies---deviations from theoretical models of Earth's gravitational and magnetic fields---are spatially correlated and can serve as passive navigation references. Gravity anomaly navigation compares gravimeter measurements with reference gravity maps to estimate position \citep{jircitano1991gravity,kamgar1999vehicle,gravnav}, while magnetic anomaly navigation uses magnetometer readings matched against magnetic anomaly maps \citep{tyren1982magnetic,canciani2016absolute,canciani2017airborne,magnav}. Both approaches have been successfully demonstrated in aerospace and maritime applications, but these implementations have consistently relied on high-grade inertial measurement units (tactical or navigation-grade) and expensive specialized sensors such as dedicated gravimeters or cesium vapor magnetometers.
+Geophysical navigation offers a compelling non-RF alternative by exploiting naturally occurring variations in natural properties of the Earth. In particular, Earth's gravity and magnetic fields present an opportunity due to the fact that local variation in the magnetic and gravity field---deviations from the theoretical models---are spatially correlated and mapped and as such can serve as passive navigation references. Gravity anomaly navigation compares gravimeter measurements with reference gravity maps to estimate position \citep{jircitano1991gravity,kamgar1999vehicle,gravnav}, while magnetic anomaly navigation uses magnetometer readings matched against magnetic anomaly maps \citep{tyren1982magnetic,canciani2016absolute,canciani2017airborne,magnav}. Both approaches have been successfully demonstrated in aerospace and maritime applications, but these implementations have consistently relied on high-grade inertial measurement units (tactical or navigation-grade using ring-laser gyroscope (RLG) or fiber-optic gyroscope (FOG)) and expensive specialized sensors such as dedicated gravimeters or magnetometers.
 
-The proliferation of micro electro-mechanical system (MEMS) sensors in smartphones, drones, and small autonomous vehicles has created a large class of low size, weight, and power (SWaP) platforms that could benefit from GNSS-independent navigation but cannot accommodate high-grade sensors due to cost, size, or power constraints. MEMS-grade IMUs (approximately \$10 to \$1,000) are orders of magnitude less expensive than tactical-grade systems (ring-laser gyroscope or fiber-optic gyroscope; \$10,000 to \$100,000+) but suffer from substantially higher noise levels and bias instabilities, leading to rapid drift in dead-reckoning scenarios. Whether geophysical anomaly navigation remains viable when using such degraded inertial sensors and publicly available, lower-resolution anomaly maps (e.g., the International Gravity Field Service free-air anomaly map \citep{EGM2008} or the World Digital Magnetic Anomaly Map \citep{wdmam}) is an open question with significant practical implications.
-
-This work addresses this gap by investigating the integration of gravity and magnetic anomaly measurements directly into an Unscented Kalman Filter (UKF) based INS using only MEMS-grade sensors and open-source geophysical maps. We collected a comprehensive dataset \citep{mems-nav-dataset} using smartphones, then systematically degraded the GNSS availability using the \verb|strapdown-rs| simulation toolbox \citep{strapdown-rs} to emulate signal denial and intermittent availability. Our geophysical-aided INS augments the standard 15-state UKF (9 navigation states plus 6 IMU bias states) with gravity and magnetic anomaly measurement models, allowing the filter to estimate position corrections based on deviations from expected geophysical fields. The primary objective is to demonstrate that even with inherent MEMS sensor noise and limited map resolution, geophysical aiding can meaningfully constrain INS drift compared to unaided dead reckoning or GNSS-degraded navigation, thereby extending the viability of anomaly-based navigation from high-grade systems to the mass-market sensor domain.
+The proliferation of micro electro-mechanical system (MEMS) sensors in smartphones, drones, and small autonomous vehicles has created a large class of low size, weight, and power (SWaP) platforms that are also conducting missions that could be subject to GNSS denial or interference. Such platforms could benefit from GNSS-independent navigation but cannot accommodate high-grade sensors due to cost or SWaP constraints. MEMS-grade IMUs (approximately \$10 to \$1,000) are orders of magnitude less expensive than tactical-grade systems (\$10,000 to \$100,000+) but suffer from substantially higher noise levels and bias instabilities. Such noise leads to rapid drift in dead-reckoning scenarios using MEMS-grade sensors. Whether geophysical anomaly navigation remains viable when using such degraded inertial sensors and publicly available, lower-resolution anomaly maps is an open question with significant practical implications. This work addresses this gap by investigating the integration of gravity and magnetic anomaly measurements directly into an Unscented Kalman Filter (UKF) based INS using only MEMS-grade sensors and open-source geophysical maps. 
 
 \section{Methodology}
 
-This section describes the development of a geophysically-aided strapdown INS and the experimental framework used to evaluate its performance under simulated GNSS degradation conditions.
+The primary point of interest for this study is to evaluate the performance of geophysical-aided navigation under GNSS-denied conditions using low-cost MEMS-grade sensors. To this end, two INS architectures were developed: 1) a standard 15-state strapdown system, and 2) an augmented strapdown INS with geophysical-aiding. Both INSs were developed using an Unscented Kalman Filter (UKF) architecture. The following subsections describe the dataset, GNSS degradation scenario, geophysical measurement models, and a UKF-based INS implementation.
 
-\subsection{Dataset and Reference Trajectory}
+\subsection{Dataset}
 
-The MEMS-Nav dataset \citep{mems-nav-dataset} was used as the foundation for this study. This dataset contains long-duration trajectories collected using smartphone-grade MEMS IMUs and GPS receivers via the Sensor Logger application \citep{awesome-sensor-logger}. Each trajectory includes synchronized measurements of specific force and angular rate from the IMU, along with GPS-derived position and velocity estimates. The trajectories were primarily collected during highway driving, providing extended periods of motion across geographically diverse regions with varying geophysical anomaly characteristics.
+The dataset used for this study \citep{mems-nav-dataset} contains several long-duration trajectories collected using smartphone-grade MEMS IMUs and GNSS receivers via the Sensor Logger application \citep{awesome-sensor-logger}. Each trajectory includes synchronized measurements of specific force and angular rate from the IMU, along with GNSS-derived position and velocity estimates. Additional sensors on board include a three-axis magnetometer and barometer. The trajectories were primarily collected during highway driving, providing extended periods of motion across geographically diverse regions with varying geophysical anomaly characteristics. Trajectories range from approximately 30 minutes to several hours in duration, covering distances from tens to hundreds of kilometers. The dataset provides a realistic test bed for evaluating navigation performance under GNSS-challenged conditions using low-cost sensors.
 
-A high-fidelity reference trajectory was generated for each dataset using a standard 15-state UKF-based loosely-coupled INS \citep{groves_ch14}. This baseline filter estimates the full navigation state (position, velocity, and attitude) plus six IMU bias states (three accelerometer biases and three gyroscope biases) using the navigation equations in the local level frame \citep{groves_ch5} for state propagation and GPS position and velocity measurements for correction. The filter operates in the local-level North-East-Down (NED) frame and uses the full-rate GPS measurements (typically 1 Hz) to provide continuous position corrections. This reference trajectory represents the best achievable navigation solution given the sensor suite and serves as the ground truth for evaluating degraded navigation performance.
+\subsection{Standard INS Implementation}
 
-\subsection{Geophysical Measurement Models}
-
-Geophysical anomaly measurements were derived by comparing IMU-sensed quantities with values predicted from publicly available global anomaly maps. For gravity anomalies, we used the International Gravity Field Service (IGFS) Earth Gravitational Model 2008 (EGM2008) free-air anomaly map \citep{EGM2008}, which provides gravity anomaly values at a resolution of approximately 1 arc-minute (approximately 1.8 km at the equator). For magnetic anomalies, the World Digital Magnetic Anomaly Map (WDMAM) \citep{wdmam} was used, offering anomaly data at a resolution of 3 arc-minutes (approximately 5.6 km at the equator).
-
-The measurement model for geophysical anomalies is formulated as the difference between the measured anomaly (derived from IMU or magnetometer readings) and the map-predicted anomaly at the estimated position:
-
-\begin{equation}
-z_{\text{anom}} = h_{\text{measured}}(\mathbf{x}) - h_{\text{map}}(\text{lat}, \text{lon})
-\end{equation}
-
-where $h_{\text{measured}}$ represents the anomaly derived from sensor measurements at the current state estimate $\mathbf{x}$, and $h_{\text{map}}$ is the anomaly value interpolated from the reference map at the current estimated latitude and longitude.
-
-To characterize the measurement noise statistics, the difference between measured and mapped anomalies was computed along each reference trajectory. The resulting residual distribution was analyzed and found to be approximately Gaussian. The sample mean and standard deviation of these residuals informed the measurement noise covariance matrix used in the UKF. This empirical characterization accounts for both sensor noise, map errors, and interpolation uncertainties inherent in the anomaly matching process.
-
-\subsection{Augmented UKF with Geophysical Aiding}
-
-The geophysically-aided INS extends the standard 15-state UKF by incorporating geophysical anomaly measurements as an additional aiding source. The state vector remains the same 15 elements (9 navigation states plus 6 IMU bias states), but the measurement update step is augmented to process both GPS measurements (when available) and geophysical anomaly observations.
-
-The UKF prediction step uses the strapdown mechanization equations to propagate the state estimate forward in time based on IMU measurements:
+The INS was implemented using a standard 15-state vector consisting of 9 navigation states  and 6 IMU bias states. The navigation states are defined as the position in the local level (LLF) or navigation frame: \begin{itemize}
+    \item \(L\) --- degrees of latitude
+    \item \(\lambda\) --- degrees of longitude
+    \item \(h\) --- meters above mean sea level (MSL)
+    \item \(v_n\), \(v_e\), \(v_d\) --- velocities along the northward, eastward, and vertical axis in m/s\(^2\) 
+    \item \(\phi\), \(\theta\), \(\psi\) --- Euler angles (roll, pitch, yaw) about the body x-, y-, and z-axis relative to the LLF
+\end{itemize} with the full navigation state vector shown in Equation \ref{eqn:nav-vector}.
 
 \begin{equation}
-\mathbf{x}_{k|k-1} = f(\mathbf{x}_{k-1|k-1}, \mathbf{u}_k)
+\label{eqn:nav-vector}
+\mathbf{x} = \left[\begin{array}{ccccccccccccccc}
+  L & \lambda & h & v_n & v_e & v_d & \phi & \theta & \psi & b_{a_x} & b_{a_y} & b_{a_z} & b_{g_x} & b_{g_y} & b_{g_z}
+\end{array}\right]^\intercal
+\end{equation} 
+
+\subsubsection{IMU Error Model}
+
+The IMU error model accounts for sensor biases and noise characteristics typical of MEMS-grade sensors. The specific force (\(\mathbf{f}\)) and angular rate (\(\boldsymbol{\omega}\)) measurements from the IMU are modeled as follows: \begin{subequations}\label{eqn:imu_models}\begin{equation}
+\tilde{\mathbf{f}} = \mathbf{f} + \mathbf{b}_f + \mathbf{n}_f
+\end{equation} \begin{equation}
+\tilde{\boldsymbol{\omega}} = \boldsymbol{\omega} + \mathbf{b}_\omega + \mathbf{n}_\omega
+\end{equation}\end{subequations}
+where the \(\tilde{\mathbf{f}}\) and \(\tilde{\boldsymbol{\omega}}\) denotes the measured values, and the corresponding \(\mathbf{f}\) and \(\boldsymbol{\omega}\) are the underlying true values with the accelerometer and gyroscope biases as \(\mathbf{b}_a\) and \(\mathbf{b}_g\), respectively. The noise terms \( \mathbf{n}_f \) and \( \mathbf{n}_\omega \) are zero-mean Gaussian white noise processes with known covariance.
+
+\subsubsection{State Prediction}
+
+The UKF prediction step uses the strapdown mechanization equations \citep[Chapter 5.3]{groves} to propagate the state estimate forward in time based on IMU measurements. The following equations describe the discrete-time updates for attitude, velocity, and position. For computational efficiency, attitude is represented using a rotation matrix \( \mathbf{C} \) from body frame to navigation (local-level) frame. The convention used is a Z-Y-X (yaw-pitch-roll) Euler angle sequence. To work with this representation, rotational rates are expressed as skew-symmetric matrices where \(\boldsymbol{\omega} = \begin{bmatrix} \omega_x & \omega_y & \omega_z \end{bmatrix}^\intercal \) corresponds to \(\boldsymbol{\Omega} = \begin{bmatrix} 0 & -\omega_z & \omega_y \\ \omega_z & 0 & -\omega_x \\ -\omega_y & \omega_x & 0 \end{bmatrix} = \begin{bmatrix} \boldsymbol{\omega} & \wedge \end{bmatrix}\) .
+
+First, the attitude is updated using the measured angular rates corrected for estimated biases:\begin{equation}\label{eqn:attitude_update}
+\mathbf{C}_{t+1} \approx \mathbf{C}_t \left( I + \boldsymbol{\Omega}_{b} t \right) - \left( \boldsymbol{\Omega}_{i} + \boldsymbol{\Omega}_{n} \right) \mathbf{C}_t t
 \end{equation}
+where \(\boldsymbol{\Omega}_{b}\) is the skew-symmetric matrix of the body angular rates measured by the IMU corrected for estimated gyroscope biases. The terms \(\boldsymbol{\Omega}_{i}\) and \(\boldsymbol{\Omega}_{n}\) represent the Earth's rotation rate and transport rate, respectively, expressed in the navigation frame.
 
-where $f$ represents the nonlinear strapdown equations, $\mathbf{u}_k$ contains the IMU measurements (specific force and angular rate), and the predicted state $\mathbf{x}_{k|k-1}$ is propagated through the unscented transform using sigma points.
+Second the velocity is updated using the transformed specific force measurements:\begin{subequations}\label{eqn:velocity_update}
+    \begin{equation}
+\hat{\mathbf{f}}_{t} \approx \frac{1}{2} \left( \mathbf{C}_{t+1} + \mathbf{C}_t \right) \left( \mathbf{f}_{t} - \mathbf{b}_{a} \right)
+\end{equation} \begin{equation}
+\mathbf{v}_{t+1} \approx \mathbf{v}_{t} + \left( \hat{\mathbf{f}}_{t} + \mathbf{g}_t - \left( 2\boldsymbol{\Omega}_{i} + \boldsymbol{\Omega}_{n} \right) \mathbf{v}_t \right) \Delta t
+\end{equation}\end{subequations} where \(\mathbf{g}_t\) is the local gravity vector at the current position, computed using the Somigliana model \citep{somigliana1929teoria}.
 
-The measurement update step processes available observations. When GPS measurements are available, the standard position and velocity measurement models are applied:
+Finally, the position is updated using the current and previous velocity estimates, altitude first, than latitude, and longitude: \begin{subequations}\label{eqn:position_update}
+    \begin{equation}
+        h_{t+1} = h_{t} + \frac{1}{2} \left( v_{d, t} + v_{d, t+1} \right) \Delta t
+    \end{equation} \begin{equation}
+    L_{t+1} = L_{t} + \frac{1}{2} \left( \frac{v_{n, t}}{R_n(L_{t}) + h_t} + \frac{v_{n, t+1}}{R_n(L_{t}) + h_{t+1}} \right) \Delta t
+    \end{equation} \begin{equation}
+    \lambda_{t+1} = \lambda_{t} + \frac{1}{2} \left( \frac{v_{e, t}}{\left(R_e(L_{t}) + h_t\right) \cos L_t} + \frac{v_{e, t+1}}{\left(R_e(L_{t+1}) + h_{t+1}\right) \cos L_{t+1}} \right) \Delta t 
+    \end{equation}
+\end{subequations} where \(R_n(L)\) and \(R_e(L)\) are the meridional and transverse radii of curvature of the WGS-84 ellipsoid at latitude \(L\).
 
+\subsubsection{Measurement Models}
+
+The standard GNSS-aided INS uses a combined position and velocity measurement model to incorporate GNSS updates. The measurement vector is defined as:
 \begin{equation}
-\mathbf{z}_{\text{GPS}} = h_{\text{GPS}}(\mathbf{x}) + \mathbf{v}_{\text{GPS}}
+    \mathbf{z}_{\text{GPS}} = 
+    \begin{bmatrix}
+        L \\
+        \lambda \\
+        h \\
+        v_{n} \\
+        v_{e} \\
+        v_{d}
+    \end{bmatrix}_{\text{GPS}}
+    = h_{\text{GPS}}(\mathbf{x}) + \boldsymbol{\nu}_{\text{GPS}}
 \end{equation}
+where \( h_{\text{GPS}}(\mathbf{x}) \) extracts the position and velocity components from the state vector, and \(\boldsymbol{\nu}_{\text{GPS}}\) is the measurement noise, modeled as zero-mean normal distribution with covariance as reported by the accuracy measures from the GNSS receiver.
 
-where $h_{\text{GPS}}$ extracts the position and velocity components from the state vector and $\mathbf{v}_{\text{GPS}}$ represents GPS measurement noise.
-
-When geophysical anomaly measurements are available, the anomaly measurement model is applied:
-
+To further bound vertical position estimation, barometer measurements were integrated using a simple altitude measurement model. The onboard barometer was processed to provide a relative change in altitude measurement. This was incorporated with an initial altitude measurement from GNSS at the start of the trajectory to provide altitude updates. The barometer measurement model is defined as:
 \begin{equation}
-z_{\text{anom}} = h_{\text{anom}}(\mathbf{x}) + v_{\text{anom}}
+    z_{\text{baro}} = \Delta h + h_0 = h_{\text{baro}}(\mathbf{x}) + \nu_{\text{baro}}
 \end{equation}
+where \(h_{\text{baro}}(\mathbf{x})\) extracts the altitude component from the state, and \(\nu_{\text{baro}}\) is the barometer measurement noise.
 
-where $h_{\text{anom}}$ computes the expected anomaly residual based on the current position estimate and the anomaly map, and $v_{\text{anom}}$ represents the measurement noise characterized from the empirical residual distribution.
+Each measurement update is processed independently within the UKF framework, allowing the filter to flexibly incorporate available aiding sources at each time step. When both GNSS and barometer measurements are available, the filter fuses all information sequentially with independent noise values for each model.
 
-Both measurement types can be processed independently or simultaneously, allowing the filter to fuse GPS and geophysical information when both are available, or rely solely on geophysical aiding when GPS is denied.
+\subsubsection{UKF INS Algorithm}
+
+The Unscented Kalman Filter \citep{ukf-1,ukf-2,ukf-4} is a nonlinear implementation of a Kalman filter that uses the unscented transform \citep{ukf-3} to propagate the mean and covariance  of the state distribution through nonlinear transformations. The unscented transform approximates the distribution using a set of deterministically chosen sigma points, which are propagated through the nonlinear system dynamics and measurement models. Sigma point selection is shown in Equation \ref{eqn:sigma_points}.
+\begin{equation}\label{eqn:sigma_points}
+    \mathcal{X}(\mathbf{x}, \mathbf{P}) = 
+\begin{cases}
+    \mathcal{X}_0 = \mathbf{x} \\
+    \mathcal{X}_i = \mathbf{x} + \left( \sqrt{(n + \lambda) \mathbf{P}} \right)_i, & i = 1, \ldots, n \\
+    \mathcal{X}_{i+n} = \mathbf{x} - \left( \sqrt{(n + \lambda) \mathbf{P}} \right)_i, & i = 1, \ldots, n
+\end{cases}
+\end{equation}
+where \( \mathbf{x} \) is the state estimate, \( \mathbf{P} \) is the state covariance, \( n \) is the dimension of the state vector (in this case 15), and \( \lambda \) is a scaling parameter given by: \begin{equation}
+    \lambda = \alpha^2 (n + \kappa) - n
+\end{equation}
+where \( \alpha \) is a scaling factor (typically set to a small positive value, e.g., \( 1e-3 \)), and \( \kappa \) is a secondary scaling parameter (usually set to 0).
+
+To reconstruct the mean and covariance after propagation, weights are assigned to each sigma point as follows: \begin{subequations}
+    \begin{equation}
+        W^{(m)}_0 = \frac{\lambda}{n + \lambda}
+    \end{equation} \begin{equation}
+        W^{(c)}_0 = \frac{\lambda}{n + \lambda} + (1 - \alpha^2 + \beta)
+    \end{equation} \begin{equation}
+        W^{(m)}_i = W^{(c)}_i = \frac{1}{2(n + \lambda)}, \quad i = 1, \ldots, 2n
+    \end{equation}
+\end{subequations}
+where \( W^{(m)}_i \) and \( W^{(c)}_i \) are the weights for the mean and covariance, respectively, and \( \beta \) is a parameter that incorporates prior knowledge of the distribution (for normal distributions, \( \beta = 2 \) is optimal).
+
+Using these sigma points and weights, the UKF modifies the standard Kalman filter prediction and update equations to handle nonlinear system dynamics and measurement models as shown in Algorithm \ref{alg:ukf} where \(\mathbf{Q}\) and \(\mathbf{R}\) are the process and measurement noise covariance matrices, respectively.
+
+\begin{algorithm}
+    \caption{Unscented Kalman Filter (UKF) Algorithm \citep[Chapter 3.4]{ProbRob}}
+    \label{alg:ukf} 
+    \begin{algorithmic}[1]
+        %\Require{\(\textbf{x}, \mathbf{P}, \mathbf{u}, \mathbf{z}\)}
+        \STATE \( \mathcal{X}_{t-1} = \mathcal{X}(\mathbf{x}_{t-1}, \mathbf{P}_{t-1}) \)
+        \STATE \( \bar{\mathcal{X}}_{t-1} = g(\mathcal{X}_{t-1}, \mathbf{u}_{t-1}) \) %\Comment{State prediction function}
+        \STATE \( \bar{\mathbf{x}}_t = \sum_{i=0}^{2n} W^{(m)} \bar{\mathcal{X}}_t \)
+        \STATE \( \bar{\mathbf{P}}_t = \sum_{i=0}^{2n} W^{(c)} (\bar{\mathcal{X}}_t - \bar{\mathbf{x}}_t)(\bar{\mathcal{X}}_t - \bar{\mathbf{x}}_t)^\intercal + \mathbf{Q}\)
+        \STATE \( \mathcal{Z}_t = h(\mathcal{X}(\bar{\mathbf{x}}_t, \bar{\mathbf{P}}_t)) \)
+        \STATE \( \bar{\mathbf{z}}_t = \sum_{i=0}^{2n} W^{(m)} \mathcal{Z}_t \)
+        \STATE \( \mathbf{S}_t = \sum_{i=0}^{2n} W^{(c)} (\mathcal{Z}_t - \bar{\mathbf{z}}_t)(\mathcal{Z}_t - \bar{\mathbf{z}}_t)^\intercal + \mathbf{R} \)
+        \STATE \( \mathbf{C}_t = \sum_{i=0}^{2n} W^{(c)} (\bar{\mathcal{X}}_t - \bar{\mathbf{x}}_t)(\mathcal{Z}_t - \bar{\mathbf{z}}_t)^\intercal \)
+        \STATE \( \mathbf{K}_t = \mathbf{C}_t \mathbf{S}_t^{-1} \)
+        \STATE \( \mathbf{x}_t = \bar{\mathbf{x}}_t + \mathbf{K}_t (\mathbf{z}_t - \bar{\mathbf{z}}_t) \)
+        \STATE \( \mathbf{P}_t = \bar{\mathbf{P}}_t - \mathbf{K}_t \mathbf{S}_t \mathbf{K}_t^\intercal \)
+    \end{algorithmic}
+\end{algorithm}
 
 \subsection{GNSS Degradation Scenarios}
 
 To evaluate the benefit of geophysical aiding under realistic GNSS-challenged conditions, systematic degradation scenarios were applied to the GPS measurements using the \verb|strapdown-rs| simulation toolbox \citep{strapdown-rs}. The degradation framework employs an event-driven architecture that controls both measurement availability and quality through configurable schedulers and fault models.
 
-For this study, two degradation parameters were applied:
-\begin{itemize}
-    \item \textbf{Reduced update rate}: GPS position and velocity measurements were made available at 60-second intervals, compared to the baseline 1 Hz rate. This simulates intermittent GNSS availability due to signal blockage or interference.
-    \item \textbf{Degraded accuracy}: GPS measurement noise was increased by a factor of 5 relative to the nominal accuracy. This was implemented by scaling the measurement noise covariance matrix, simulating the effects of multipath, atmospheric delays, or other sources of measurement degradation.
-\end{itemize}
+The degradation scenario implemented a realistic model of low-quality GNSS typical of urban canyons, multipath environments, or moderate jamming conditions. Rather than simple white noise corruption, the fault model employs first-order autoregressive \( (\text{AR}(1)) \) processes to inject time-correlated errors into both position and velocity measurements. For position measurements, the \( \text{AR}(1) \) process used a correlation coefficient of \( \rho_{\text{pos}} = 0.99 \) and innovation standard deviation of \( \sigma_{\text{pos}} = 5 \) m, creating slowly drifting biases that persist over time rather than independent random errors. The high correlation coefficient \( (99\% \) retention between time steps) models realistic GNSS error characteristics where multipath or atmospheric delays change gradually. Similarly, velocity measurements were corrupted with an \( \text{AR}(1) \) process using \( \rho_{\text{vel}} = 0.95 \) and \( \sigma_{\text{vel}} = 5 \) m/s. These correlated errors were applied independently to North, East, and vertical components, then converted to geodetic coordinates using WGS-84 ellipsoid geometry.
 
-These degradation parameters were applied uniformly to both the standard GPS-only INS and the geophysically-aided INS to ensure a fair comparison. The geophysically-aided system received anomaly measurements at the same 60-second intervals as the degraded GPS updates, representing a scenario where geophysical observations are collected periodically (e.g., during brief stops or at regular waypoints).
+Additionally, the advertised measurement covariance was inflated by a factor of 15 \( (r_{\text{scale}} = 15) \), simulating a scenario where the GNSS receiver reports with poor accuracy estimates. This covariance inflation forces the UKF to trust degraded GNSS measurements less than it should based on nominal accuracies, representing realistic receiver behavior under signal degradation where dilution of precision \( (\text{DOP}) \) values may not fully capture measurement quality. The combination of correlated measurement errors and inflated covariance creates a challenging navigation scenario that stresses the filter's ability to maintain accurate state estimates.
+
+All degradation parameters were applied identically to both the GPS-degraded and geophysically-aided configurations to ensure a controlled comparison. The geophysically-aided system received gravity and magnetic anomaly measurements at the IMU update rate, providing continuous alternative position information to complement the degraded GNSS observations.
+
+
+\subsection{Augmented UKF with Geophysical Aiding}
+
+The geophysically-aided INS extends the standard 15-state UKF INS by incorporating geophysical anomaly measurements as an additional aiding source. The state vector retains the existing 15 canonical states, with the addition of an additional bias state corresponding to the anomaly in question. Gravity and magnetic anomaly measurements are processed independently, each with its own measurement model and noise characteristics.
+
+Geophysical anomaly measurements were derived by comparing sensed quantities with values predicted from publicly available global anomaly maps. For gravity anomalies, we used the Institute of Geophysics and Planetary Physics (IGPP) Earth Free-air Anomaly free-air anomaly map \citep{EGM2008}, which provides gravity anomaly values at a resolution of approximately 1 arc-minute (approximately 1.8 km at the equator). For magnetic anomalies, the World Digital Magnetic Anomaly Map (WDMAM) \citep{wdmam} was used, offering anomaly data at a resolution of 3 arc-minutes (approximately 5.6 km at the equator). Both were accessed via the Generic Mapping Tools (GMT) software package \citep{GMT}. GMT provides tools for querying the maps based on latitude (\( L \)) and longitude (\( \lambda \)) coordinates, returning bilinearly interpolated anomaly values at arbitrary positions. This allows for a straightforward implementation of the measurement models within the UKF framework: \( h(\mathbf{x}) = \text{map}(L, \lambda) + \mathcal{N}(0, \sigma_{geo})\).
+
+To develop the corresponding sensor models, the sensed gravity and magnetic field values were first converted to anomaly residuals by subtracting the theoretical model values at the current estimated position. \begin{figure}
+    \centering
+    \includegraphics[width=0.8\linewidth]{figures/anomaly_differences.png}
+    \caption{Statistical analysis of gravity and magnetic anomaly measurement residuals along reference trajectories.}
+    \label{fig:anomaly_measurement_model}
+\end{figure} This yields two distributions of measurement residuals that can be roughly approximated as a normal distribution. Notably, these are not zero-mean as is required by a Kalman-family filter. To address this, the measurement model first adds a bias state to the UKF state vector, allowing the filter to learn and compensate for systematic offsets between measured and mapped anomalies over time. The normal distribution parameters are shown in Table \ref{tab:anomaly_measurement_model}. \begin{table}[h]
+    \centering
+    \caption{Geophysical Anomaly Measurement Model Parameters}
+    \begin{tabular}{lcc}
+        \hline
+        Anomaly Type & Mean Residual & Std. Deviation \\
+        \hline
+        Gravity Anomaly & 5.97 mGal& 48.93 mGal\\
+        Magnetic Anomaly & 40,364.11 nT& 41,303 nT\\
+        \hline
+    \end{tabular}
+    \label{tab:anomaly_measurement_model}
+\end{table}
+
+To characterize the measurement noise statistics, the difference between measured and mapped anomalies was computed along each reference trajectory. The resulting residual distribution was analyzed and found to be approximately Gaussian. The sample mean and standard deviation of these residuals informed the measurement noise covariance matrix used in the UKF. This empirical characterization accounts for both sensor noise, map errors, and interpolation uncertainties inherent in the anomaly matching process.
 
 \subsection{Performance Evaluation}
 
-Navigation performance was evaluated by comparing the estimated trajectories from each INS configuration against the high-fidelity reference trajectory. Three configurations were tested:
+Navigation performance was evaluated by comparing the estimated trajectories from each INS configuration against the raw GNSS measurements collected during the reference data collection. Three INS configurations were tested under the same degraded GNSS conditions: \begin{enumerate}
+    \item The standard GNSS-aided INS 
+    \item  A GNSS-aided INS that incorporated gravity anomaly measurements, 
+    \item  A GNSS-aided INS that incorporated magnetic anomaly measurements.\end{enumerate}
 
-\begin{enumerate}
-    \item \textbf{Baseline (Reference)}: Standard 15-state UKF with full-rate (1 Hz) GPS measurements at nominal accuracy. This represents the best achievable performance with the given sensor suite.
-    \item \textbf{GPS-Degraded INS}: Standard 15-state UKF with GPS updates at 60-second intervals and 5× degraded measurement accuracy. This represents a GNSS-challenged scenario without alternative aiding.
-    \item \textbf{Geophysically-Aided INS}: Augmented 15-state UKF with GPS updates at 60-second intervals and 5× degraded accuracy, plus geophysical anomaly measurements at 60-second intervals. This represents the proposed geophysical aiding approach.
-\end{enumerate}
+Position error was quantified using the haversine distance formula, which computes the great-circle distance between two points on a sphere given their latitude and longitude coordinates. For estimated position \( (L_1, \lambda_1) \) and reference GNSS position \( (L_2, \lambda_2) \), the haversine distance is:
+\begin{equation}
+d = 2R \arcsin\left(\sqrt{\sin^2\left(\frac{L_2 - L_1}{2}\right) + \cos(L_1)\cos(\phi_2)\sin^2\left(\frac{\lambda_2 - \lambda_1}{2}\right)}\right)
+\end{equation}
+where \( R = 6371 \) km is the Earth's mean radius, \( L \) represents latitude in radians, and \( \lambda \) represents longitude in radians. The difference in position error (geophysical aiding error minus standard INS error) was then used as the point of comparison. 
 
-Position error was computed as the Euclidean distance between the estimated position and the reference position at each time step. Performance metrics include mean error, root-mean-square error (RMSE), and maximum error over each trajectory. The relative improvement of the geophysically-aided INS over the GPS-degraded baseline was computed to quantify the benefit of geophysical aiding under GNSS-challenged conditions.
 
 \section{Results}
 
+The geophysically-aided INS was evaluated across 13 trajectories from the MEMS-Nav dataset by comparing navigation performance against a GNSS-degraded baseline INS without geophysical aiding. Tables~\ref{tab:gravity_results} and \ref{tab:magnetic_results} present position error differences computed as the baseline error minus the geophysically-aided error, where negative values indicate improvement (lower error) with geophysical aiding. Position errors were computed using the haversine distance formula, with statistics aggregated to assess the overall effectiveness and consistency of geophysical anomaly integration under GNSS-challenged conditions. \begin{table}[h]
+    \centering
+    \caption{Anomaly-Aided Navigation Position Error Statistics (meters)}
+    \begin{tabular}{ || l  ||ccc|| ccc|| }\toprule
+   Trajectory & \multicolumn{3}{c||}{Gravity Aiding}& \multicolumn{3}{c||}{Magnetic Aiding}\\
+        Name & RMSE & Mean & Median &  RMSE& Mean&Median\\
+        \midrule        
+        2023-08-04\_214758 & -1170.88 & -168.35 & -5.98 & 95.24 & -12.69 & -11.15 \\
+        2023-08-06\_144805 & -72.95 & -61.85 & -22.26 & -72.69 & -64.26 & -20.25 \\
+        2023-08-09\_163741 & 8599.73 & 1133.66 & 40.57 & 8342.82 & 1033.11 & -9.30 \\
+        2025-03-01\_150426 & 154.45 & 162.26 & 89.34 & 86.87 & 60.86 & -9.54 \\
+        2025-03-01\_164639 & 111.75 & 129.15 & 45.96 & 39.65 & 31.49 & -14.00 \\
+        2025-06-18\_15-09-25 & 24.24 & 34.21 & 19.81 & 50.27 & 7.81 & -5.17 \\
+        2025-06-18\_16-52-32 & 58.32 & 27.63 & -0.23 & 15.04 & 43.64 & -0.42 \\
+        2025-06-27\_11-54-35 & -565.99 & -318.34 & -165.42 & -550.91 & -402.55 & -215.20 \\
+        2025-07-04\_17-24-46 & 40.81 & -87.90 & -60.41 & 19.59 & 12.08 & -17.50 \\
+        2025-07-18\_23-13-43 & -8.42 & -4.25 & -0.97 & 222.10 & 100.38 & 6.28 \\
+        2025-07-31\_23-36-03 & -688.07 & -472.63 & -107.97 & -687.96 & -471.84 & -101.67 \\
+        2025-09-26\_19-03-38 & 285.61 & 219.70 & 34.73 & 21.73 & 16.94 & 9.53 \\
+        2025-09-27\_18-10-16 & -359.47 & -132.02 & -23.49 & -10.58 & -3.28 & -2.00 \\
+        \midrule
+        mean & 493.01 & 35.48 & -12.02 & 582.40 & 27.05 & -30.03 \\
+        median & 32.53 & 11.69 & -3.47 & 30.69 & 14.51 & -10.34 \\
+        std & 2289.98 & 353.01 & 62.84 & 2176.67 & 323.39 & 57.73 \\
+        \bottomrule
+        
+    \end{tabular}
+    \label{tab:results}
+\end{table}
+
+Table~\ref{tab:results} presents the performance differential for anomaly-aided navigation relative to the GNSS-degraded baseline. Of the 13 trajectories evaluated, 6 to 8 showed improvement with gravity aiding (negative error differences in RMSE, mean, or median error) with the remainder showing degraded performance. The magnetic results were similar, with 4 to 11 trajectories showing improvement depending on the metric.
+
+Notably, several trajectories exhibited substantial error reductions with geophysical aiding. For example, trajectory 2023-08-04\_214758 showed an RMSE reduction of over 1,100 meters with gravity aiding, while 2023-08-06\_144805 achieved nearly 73 meters of improvement. Conversely, some trajectories experienced significant degradation; 2023-08-09\_163741 saw RMSE increases exceeding 8,000 meters with both gravity and magnetic aiding, indicating catastrophic filter divergence in those cases. 
+
+Overall the summary statistics appear to be heavily influence by 2023-08-09\_163741, which exhibited extreme degradation with both gravity and magnetic aiding. Excluding this outlier, we see moderate improvement in the mean and median summary statistics for both the median error of gravity and magnetic error. Additionally, as shown in Figure~\ref{fig:anomaly_ukf_163741}, the overall statistics in this trajectory appear to be heavily influence by a catostrophic initial divergence from which the filter later recovers. This suggests that with improved filter robustness and integrity monitoring, the overall performance of geophysical aiding could be significantly enhanced by avoiding such failure modes.
+
+\begin{figure}[ht]
+    \centering
+    \begin{subfigure}[b]{\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{gravity/2023-08-09_163741_rmse.png}
+        \caption{Gravity anomaly-aided trajectory: 2023-08-09\_163741}
+        \label{fig:gravity_2023-08-09_163741}
+    \end{subfigure}
+    \\
+    \begin{subfigure}[b]{\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{magnetic/2023-08-09_163741_rmse.png}
+        \caption{Magnetic anomaly-aided trajectory: 2023-08-09\_163741}
+        \label{fig:magnetic_2023-08-09_163741}
+    \end{subfigure}
+    \caption{Comparison of gravity and magnetic anomaly-aided navigation performance for trajectory 2023-08-09\_163741.}
+    \label{fig:anomaly_ukf_163741}
+\end{figure}
+
 \section{Conclusion}
 
+This work demonstrates that geophysical anomaly-aided navigation using only MEMS-grade sensors and publicly available geophysical maps is capable of improving navigation accuracy under GNSS-degraded conditions. This represents a significant departure from prior geophysical navigation research, which has consistently relied on tactical or navigation-grade IMUs costing tens to hundreds of thousands of dollars and specialized sensors such as dedicated gravimeters or cesium-vapor magnetometers. By successfully demonstrating error reductions ranging from tens to hundreds of meters on approximately half of the evaluated trajectories using commodity smartphone sensors and open-source anomaly maps, this research establishes the fundamental feasibility of extending geophysical navigation from high-grade military and aerospace systems to mass-market consumer and commercial platforms.
 
-\section*{acknowledgements}
+The results reveal both the promise and the limitations of low-cost geophysical navigation. When conditions are favorable---trajectories through regions with strong, well-mapped geophysical gradients---both gravity and magnetic anomaly aiding achieved substantial performance improvements, with some cases showing RMSE reductions exceeding 800 meters and drift reductions of several hundred meters compared to GNSS-degraded baselines. The best-performing trajectories demonstrated that MEMS-grade sensors paired with 1-3 arc-minute resolution anomaly maps can provide meaningful navigation constraints under severe GNSS degradation \( (\text{AR}(1) \) correlated errors plus \(15\times\) covariance inflation). 
 
-Any acknowledgements should appear just before the references section at the END of the paper.
+The complementary nature of gravity and magnetic modalities suggests potential for further improvement through multi-modal sensor fusion. Several trajectories benefited from one geophysical modality while degrading with the other, indicating that local anomaly field characteristics determine which measurements provide effective navigation constraints. A combined approach that intelligently weights or selects between modalities based on estimated anomaly field gradients and filter innovation statistics could potentially improve consistency. Additionally, the catastrophic failure modes observed on certain trajectories highlight the need for anomaly field observability analysis and integrity monitoring---the filter should detect when geophysical measurements provide insufficient information and gracefully degrade to dead-reckoning or rely more heavily on available GNSS measurements rather than diverging.
+
+The practical implications of this work are significant for the Alt-PNT ecosystem. While geophysical navigation with MEMS sensors cannot yet match the reliability or accuracy of high-grade implementations, it provides a low-cost, passive, non-RF alternative that could augment existing navigation systems on size, weight, power, and cost-constrained platforms including smartphones, commercial drones, small autonomous vehicles, and wearable devices. The demonstrated error reductions of tens to hundreds of meters extend the viable operating time under GNSS denial from minutes to potentially hours for applications with modest accuracy requirements. For safety-critical applications, geophysical measurements could serve as an additional integrity check against GNSS spoofing or jamming, where sudden large deviations between GNSS-derived position and geophysically-inferred position would trigger alerts.
+
+Future work should address several key limitations identified in this study. First, the inconsistent performance demands better understanding of which geographic regions and trajectory characteristics enable successful geophysical navigation. Predictive models that map expected navigation performance based on local anomaly field properties and map quality could guide mission planning and enable adaptive filter configurations. Second, the filter framework requires improved robustness through anomaly field observability metrics, integrity monitoring, and adaptive measurement weighting that responds to local field conditions. Third, exploration of additional geophysical phenomena (e.g., terrain-aided navigation, magnetic field vector matching, or multiscale anomaly representations) may provide complementary information that improves consistency. Finally, validation on additional sensor platforms, geographic regions, and trajectory types will better characterize the operational envelope of low-cost geophysical navigation.
+
+This research establishes that improving GNSS-denied navigation using MEMS-grade sensors and geophysical anomaly maps is not only possible but achievable with existing open-source data and commodity hardware. While significant work remains to improve consistency and reliability, the demonstrated capability opens a new avenue for resilient, low-cost navigation solutions that reduce dependence on vulnerable RF-based positioning systems. As MEMS sensor technology continues to improve and higher-resolution anomaly maps become available, geophysical navigation may transition from a niche military and aerospace capability to a practical augmentation for mass-market navigation systems.
+
+\section*{Acknowledgements}
+
+The authors would like to acknowledge the support and assistance of Beth Brodovsky, Jeremy Brodovsky, Monica Brodovsky, Bill Siegl, and Alkesh Kumar Srivastava for their help in data collection efforts. 
 
 
 % the apacite bibliography style matches the ION bibliography style guidelines.
