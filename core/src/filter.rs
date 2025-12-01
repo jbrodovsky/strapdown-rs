@@ -647,6 +647,9 @@ impl Display for Particle {
 pub struct ParticleFilter {
     /// The particles in the particle filter
     pub particles: Vec<Particle>,
+    /// Process noise standard deviations for each state component
+    /// Order: [lat, lon, alt, vn, ve, vd, roll, pitch, yaw]
+    pub process_noise_std: DVector<f64>,
 }
 impl Debug for ParticleFilter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -706,70 +709,200 @@ impl Debug for ParticleFilter {
     }
 }
 impl ParticleFilter {
-    /// Create a new particle filter with the given particles
+    /// Create a new particle filter with the given particles and default process noise
     ///
     /// # Arguments
     /// * `particles` - The particles to use for the particle filter.
     pub fn new(particles: Vec<Particle>) -> Self {
-        ParticleFilter { particles }
+        // Default process noise standard deviations
+        // These values are significantly larger than UKF to maintain particle diversity
+        // and compensate for lack of bias estimation
+        let process_noise_std = DVector::from_vec(vec![
+            1e-5,  // latitude (radians) - 100x UKF for diversity
+            1e-5,  // longitude (radians) - 100x UKF for diversity
+            0.1,   // altitude (meters) - larger for diversity
+            0.1,   // velocity_north (m/s) - larger for diversity
+            0.1,   // velocity_east (m/s) - larger for diversity
+            0.1,   // velocity_down (m/s) - larger for diversity
+            1e-4,  // roll (radians) - 10x UKF for diversity
+            1e-4,  // pitch (radians) - 10x UKF for diversity
+            1e-4,  // yaw (radians) - 10x UKF for diversity
+        ]);
+        ParticleFilter {
+            particles,
+            process_noise_std,
+        }
     }
-    /// Propagate all particles forward using the strapdown equations
+    /// Create a new particle filter with the given particles and custom process noise
+    ///
+    /// # Arguments
+    /// * `particles` - The particles to use for the particle filter.
+    /// * `process_noise_std` - Process noise standard deviations for [lat, lon, alt, vn, ve, vd, roll, pitch, yaw]
+    pub fn with_process_noise(particles: Vec<Particle>, process_noise_std: DVector<f64>) -> Self {
+        assert_eq!(
+            process_noise_std.len(),
+            9,
+            "Process noise must have 9 elements"
+        );
+        ParticleFilter {
+            particles,
+            process_noise_std,
+        }
+    }
+    /// Propagate all particles forward using the strapdown equations with process noise
     ///
     /// # Arguments
     /// * `imu_data` - The IMU measurements to propagate the particles with.
+    /// * `dt` - Time step in seconds
     pub fn propagate(&mut self, imu_data: &IMUData, dt: f64) {
+        use rand_distr::{Distribution, Normal};
+        let mut rng = rand::rng();
+        
         for particle in &mut self.particles {
-            //particle.forward(*imu_data, dt, None);
+            // Deterministic propagation
             forward(&mut particle.nav_state, *imu_data, dt);
+            
+            // Add process noise to maintain particle diversity
+            // Scale noise by sqrt(dt) for proper time scaling
+            let dt_sqrt = dt.sqrt();
+            
+            // Position noise (lat, lon, alt)
+            if self.process_noise_std[0] > 0.0 {
+                let lat_noise = Normal::new(0.0, self.process_noise_std[0] * dt_sqrt).unwrap();
+                particle.nav_state.latitude += lat_noise.sample(&mut rng);
+            }
+            if self.process_noise_std[1] > 0.0 {
+                let lon_noise = Normal::new(0.0, self.process_noise_std[1] * dt_sqrt).unwrap();
+                particle.nav_state.longitude += lon_noise.sample(&mut rng);
+            }
+            if self.process_noise_std[2] > 0.0 {
+                let alt_noise = Normal::new(0.0, self.process_noise_std[2] * dt_sqrt).unwrap();
+                particle.nav_state.altitude += alt_noise.sample(&mut rng);
+            }
+            
+            // Velocity noise (vn, ve, vd)
+            if self.process_noise_std[3] > 0.0 {
+                let vn_noise = Normal::new(0.0, self.process_noise_std[3] * dt_sqrt).unwrap();
+                particle.nav_state.velocity_north += vn_noise.sample(&mut rng);
+            }
+            if self.process_noise_std[4] > 0.0 {
+                let ve_noise = Normal::new(0.0, self.process_noise_std[4] * dt_sqrt).unwrap();
+                particle.nav_state.velocity_east += ve_noise.sample(&mut rng);
+            }
+            if self.process_noise_std[5] > 0.0 {
+                let vd_noise = Normal::new(0.0, self.process_noise_std[5] * dt_sqrt).unwrap();
+                particle.nav_state.velocity_down += vd_noise.sample(&mut rng);
+            }
+            
+            // Attitude noise (roll, pitch, yaw) - apply as small-angle perturbations
+            if self.process_noise_std[6] > 0.0 || self.process_noise_std[7] > 0.0 || self.process_noise_std[8] > 0.0 {
+                let roll_noise = if self.process_noise_std[6] > 0.0 {
+                    Normal::new(0.0, self.process_noise_std[6] * dt_sqrt).unwrap().sample(&mut rng)
+                } else {
+                    0.0
+                };
+                let pitch_noise = if self.process_noise_std[7] > 0.0 {
+                    Normal::new(0.0, self.process_noise_std[7] * dt_sqrt).unwrap().sample(&mut rng)
+                } else {
+                    0.0
+                };
+                let yaw_noise = if self.process_noise_std[8] > 0.0 {
+                    Normal::new(0.0, self.process_noise_std[8] * dt_sqrt).unwrap().sample(&mut rng)
+                } else {
+                    0.0
+                };
+                
+                // Apply small-angle rotation perturbation
+                let noise_rotation = Rotation3::from_euler_angles(roll_noise, pitch_noise, yaw_noise);
+                particle.nav_state.attitude = particle.nav_state.attitude * noise_rotation;
+            }
         }
     }
     /// Update the weights of the particles based on a measurement
     ///
-    /// Generic measurement update function for the particle filter. This function requires the user to provide
-    /// a measurement vector, a list of expected measurements for each particle, and the measurement noise covariance.
-    /// This list of expected measurements is the result of a measurement model that is specific to the filter implementation.
-    /// This model determines the shape and quantities of the measurement vector and the expected measurements sigma points.
-    /// This module contains some standard GNSS-aided measurements models (`position_measurement_model`,
-    /// `velocity_measurement_model`, and `position_and_velocity_measurement_model`) that can be used.
+    /// This method updates the particle weights based on the likelihood of the measurement
+    /// given each particle's state. The measurement model is used to compute the expected
+    /// measurement for each particle, and the particle weights are updated based on the
+    /// measurement innovation using a Gaussian likelihood function. After updating, the 
+    /// weights are normalized to sum to 1.0.
     ///
-    /// **Note**: Canonical INS implementations use a position measurement model. Typically,
-    /// position is reported in _degrees_ for latitude and longitude, and in meters for altitude.
-    /// Internally, the particle filter stores the latitude and longitude in _radians_, and the measurement models
-    /// make no assumptions about the units of the position measurements. However, the user should
-    /// ensure that the provided measurement to this function is in the same units as the
-    /// measurement model.
+    /// The likelihood is computed as p(z|x) ∝ exp(-0.5 * (z - h(x))^T * R^-1 * (z - h(x))),
+    /// where z is the measurement, h(x) is the expected measurement from the particle state,
+    /// and R is the measurement noise covariance.
     ///
     /// # Arguments
-    /// * `measurement` - The measurement vector
-    /// * `expected_measurements` - Expected measurements for each particle
-    /// * `measurement_noise` - Measurement noise covariance matrix
-    pub fn update(&mut self, measurement: &DVector<f64>, expected_measurements: &[DVector<f64>], measurement_noise: &DMatrix<f64>) {
-        assert_eq!(self.particles.len(), expected_measurements.len());
-
-        // Try to invert measurement noise covariance for Mahalanobis distance
-        // If inversion fails, fall back to identity (unit covariance)
-        let noise_inv = match measurement_noise.clone().try_inverse() {
-            Some(inv) => inv,
-            None => {
-                // Fall back to diagonal inverse if full inversion fails
-                let mut diag_inv = DMatrix::zeros(measurement_noise.nrows(), measurement_noise.ncols());
-                for i in 0..measurement_noise.nrows() {
-                    let val = measurement_noise[(i, i)];
-                    diag_inv[(i, i)] = if val > 1e-12 { 1.0 / val } else { 1e12 };
+    /// * `measurement` - The measurement to update the particle weights with.
+    pub fn update<M: MeasurementModel + ?Sized>(&mut self, measurement: &M) {
+        let z = measurement.get_vector();  // measurement vector (radians for lat/lon)
+        let r = measurement.get_noise();   // noise covariance (degrees² for lat/lon, m² for alt)
+        
+        // Compute likelihoods for each particle
+        // We work in log space for numerical stability, then use the log-sum-exp trick
+        let mut log_likelihoods = Vec::with_capacity(self.particles.len());
+        
+        for particle in &self.particles {
+            // Convert particle state to matrix format for measurement model
+            let euler = particle.nav_state.attitude.euler_angles();
+            let state_vec = DVector::from_vec(vec![
+                particle.nav_state.latitude,   // radians
+                particle.nav_state.longitude,  // radians
+                particle.nav_state.altitude,
+                particle.nav_state.velocity_north,
+                particle.nav_state.velocity_east,
+                particle.nav_state.velocity_down,
+                euler.0, // roll (radians)
+                euler.1, // pitch (radians)
+                euler.2, // yaw (radians)
+            ]);
+            
+            // Get expected measurement for this particle (in radians for lat/lon)
+            let state_matrix = DMatrix::from_column_slice(9, 1, state_vec.as_slice());
+            let z_expected = measurement.get_sigma_points(&state_matrix);
+            let z_expected_vec = z_expected.column(0);
+            
+            // Calculate innovation (measurement residual)
+            let innovation = &z - z_expected_vec;
+            
+            // Compute log-likelihood: -0.5 * innovation^T * R^-1 * innovation
+            // Note: innovation is in radians for lat/lon, but R is in degrees² for lat/lon
+            // We need to convert innovation to degrees to match R's units
+            let mut log_likelihood = 0.0;
+            for i in 0..innovation.len() {
+                let mut diff = innovation[i];
+                // For lat/lon (indices 0, 1), convert from radians to degrees
+                if i < 2 {
+                    diff = diff.to_degrees();
                 }
-                diag_inv
+                let variance = r[(i, i)];
+                if variance > 0.0 {
+                    log_likelihood += -0.5 * diff * diff / variance;
+                }
             }
-        };
-
-        let mut weights = Vec::with_capacity(self.particles.len());
-        for expected in expected_measurements.iter() {
-            // Calculate the Mahalanobis distance with measurement noise
-            let diff = measurement - expected;
-            let mahalanobis = (&diff.transpose() * &noise_inv * &diff)[(0, 0)];
-            let weight = (-0.5 * mahalanobis).exp(); //TODO: #22 modify this to use any and/or a user specified probability distribution
-            weights.push(weight);
+            
+            log_likelihoods.push(log_likelihood);
         }
-        self.set_weights(weights.as_slice());
+        
+        // Debug: check likelihood range
+        if log::log_enabled!(log::Level::Debug) {
+            let min_ll = log_likelihoods.iter().cloned().fold(f64::INFINITY, f64::min);
+            let max_ll = log_likelihoods.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            log::debug!("PF likelihoods: min={:.2e}, max={:.2e}", min_ll, max_ll);
+        }
+        
+        // Use log-sum-exp trick for numerical stability
+        // Find max log-likelihood
+        let max_log_likelihood = log_likelihoods.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        
+        // Update weights: w_new = w_old * likelihood
+        // In log space: log(w_new) = log(w_old) + log(likelihood)
+        // But we normalize anyway, so we can just use the likelihoods directly
+        for (i, particle) in self.particles.iter_mut().enumerate() {
+            // Multiply old weight by likelihood (in linear space)
+            // Using log-sum-exp trick: exp(log_lik - max) is numerically stable
+            particle.weight *= (log_likelihoods[i] - max_log_likelihood).exp();
+        }
+        
+        // Normalize weights to sum to 1.0
         self.normalize_weights();
     }
     /// Set the weights of the particles (e.g., after a measurement update)
