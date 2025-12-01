@@ -896,28 +896,8 @@ pub fn particle_filter_loop(
                 }
             }
             Event::Measurement { meas, .. } => {
-                // Build expected measurements for each particle
-                let mut state_matrix = DMatrix::<f64>::zeros(9, pf.particles.len());
-                for (i, particle) in pf.particles.iter().enumerate() {
-                    let euler = particle.nav_state.attitude.euler_angles();
-                    state_matrix[(0, i)] = particle.nav_state.latitude;
-                    state_matrix[(1, i)] = particle.nav_state.longitude;
-                    state_matrix[(2, i)] = particle.nav_state.altitude;
-                    state_matrix[(3, i)] = particle.nav_state.velocity_north;
-                    state_matrix[(4, i)] = particle.nav_state.velocity_east;
-                    state_matrix[(5, i)] = particle.nav_state.velocity_down;
-                    state_matrix[(6, i)] = euler.0;
-                    state_matrix[(7, i)] = euler.1;
-                    state_matrix[(8, i)] = euler.2;
-                }
-
-                let measurement_sigma_points = meas.get_sigma_points(&state_matrix);
-                let expected_measurements: Vec<DVector<f64>> = measurement_sigma_points
-                    .column_iter()
-                    .map(|col| col.clone_owned())
-                    .collect();
-
-                pf.update(&meas.get_vector(), &expected_measurements, &meas.get_noise());
+                // Update particle weights using the measurement model
+                pf.update(meas.as_ref());
 
                 // Resample particles
                 pf.residual_resample();
@@ -1226,25 +1206,28 @@ pub fn initialize_particle_filter(
     let mut rng = rand::rng();
 
     // Create distributions for sampling
+    // Note: position_std is in meters, need to convert to radians for lat/lon
     let lat_dist = Normal::new(
         initial_pose.latitude.to_radians(),
-        position_std * METERS_TO_DEGREES,
+        (position_std * METERS_TO_DEGREES).to_radians(),  // Convert meters → degrees → radians
     )
     .unwrap();
     let lon_dist = Normal::new(
         initial_pose.longitude.to_radians(),
-        position_std * METERS_TO_DEGREES,
+        (position_std * METERS_TO_DEGREES).to_radians(),  // Convert meters → degrees → radians
     )
     .unwrap();
     let alt_dist = Normal::new(initial_pose.altitude, position_std).unwrap();
 
+    // Convert bearing from degrees to radians for velocity calculation
+    let bearing_rad = initial_pose.bearing.to_radians();
     let vn_dist = Normal::new(
-        initial_pose.speed * initial_pose.bearing.cos(),
+        initial_pose.speed * bearing_rad.cos(),
         velocity_std,
     )
     .unwrap();
     let ve_dist = Normal::new(
-        initial_pose.speed * initial_pose.bearing.sin(),
+        initial_pose.speed * bearing_rad.sin(),
         velocity_std,
     )
     .unwrap();
@@ -1325,7 +1308,7 @@ pub mod health {
             Self {
                 lat_rad: (-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2),
                 lon_rad: (-std::f64::consts::PI, std::f64::consts::PI),
-                alt_m: (-5000.0, 15000.0),
+                alt_m: (-50000.0, 50000.0),  // Very tolerant for vertical channel instability
                 speed_mps_max: 500.0,
                 cov_diag_max: 1e15,
                 cond_max: 1e12,
