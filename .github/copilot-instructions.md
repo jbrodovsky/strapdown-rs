@@ -55,3 +55,34 @@ Additional core capabilities should be implemented as needed either as a new cre
 The project uses `pixi` as a software stack environment manager and task runner. `pixi` should be used to manage any "system" dependencies (e.g., Python, Rust toolchain, `libnetcdf`) and to run common tasks such as building, testing, linting, and formatting. See the `pixi.toml` file for details. Cargo should be used for managing Rust dependencies and building the Rust code.
 
 If you need to run commands in the terminal, please format them for `nushell` using the `nu` language.
+
+## Testing
+
+The project includes a comprehensive suite of tests to ensure the correctness and reliability of the code. Tests are organized into unit tests, integration tests, and end-to-end tests.
+
+### Running Tests
+
+To run the tests, use the following command:
+
+```bash
+cargo test
+```
+
+This will execute all tests in the project. You can also run specific tests by providing the test name:
+
+```bash
+cargo test <test_name>
+```
+
+### Writing Tests
+
+When writing tests, follow these guidelines:
+
+- Place unit tests in the same file as the code they test, within a `#[cfg(test)]` mod.
+- Use descriptive names for test functions to clearly indicate their purpose.
+- Include tests for edge cases and error conditions.
+- Use the `assert_eq!` and `assert!` macros to verify expected behavior.
+
+Refer to the Rust documentation for more information on testing: [Rust Testing Documentation](https://doc.rust-lang.org/book/ch11-00-testing.html).
+
+To check coverage please use `cargo tarpaulin`. Please ensure that new code is adequately covered (>80% coverage) by tests. Do not implement new features without corresponding tests. Tests should not be trivial and should try to ensure that both the API and function logic are correct.

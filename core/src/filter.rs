@@ -1075,4 +1075,178 @@ mod tests {
         assert_approx_eq!(ukf.mean_state[4], 0.0, 0.1);
         assert_approx_eq!(ukf.mean_state[5], 0.0, 0.1);
     }
+
+    #[test]
+    fn test_gps_position_measurement_display() {
+        let measurement = GPSPositionMeasurement {
+            latitude: 45.0,
+            longitude: -75.0,
+            altitude: 100.0,
+            horizontal_noise_std: 5.0,
+            vertical_noise_std: 10.0,
+        };
+        let display_str = format!("{}", measurement);
+        assert!(display_str.contains("45"));
+        assert!(display_str.contains("-75"));
+        assert!(display_str.contains("100"));
+    }
+
+    #[test]
+    fn test_gps_position_measurement_model() {
+        let measurement = GPSPositionMeasurement {
+            latitude: 45.0,
+            longitude: -75.0,
+            altitude: 100.0,
+            horizontal_noise_std: 5.0,
+            vertical_noise_std: 10.0,
+        };
+        
+        // Test dimension
+        assert_eq!(measurement.get_dimension(), 3);
+        
+        // Test vector conversion
+        let vec = measurement.get_vector();
+        assert_eq!(vec.len(), 3);
+        assert_approx_eq!(vec[0], 45.0_f64.to_radians(), 1e-6);
+        assert_approx_eq!(vec[1], (-75.0_f64).to_radians(), 1e-6);
+        assert_approx_eq!(vec[2], 100.0, 1e-6);
+        
+        // Test noise matrix
+        let noise = measurement.get_noise();
+        assert_eq!(noise.nrows(), 3);
+        assert_eq!(noise.ncols(), 3);
+        assert!(noise[(0, 0)] > 0.0);
+        assert!(noise[(1, 1)] > 0.0);
+        assert!(noise[(2, 2)] > 0.0);
+        
+        // Test sigma points mapping
+        let state_sigma = DMatrix::from_vec(9, 3, vec![
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0,
+            1.1, 2.1, 3.1, 4.1, 5.1, 6.1, 7.1, 8.1, 9.1,
+            1.2, 2.2, 3.2, 4.2, 5.2, 6.2, 7.2, 8.2, 9.2,
+        ]);
+        let meas_sigma = measurement.get_sigma_points(&state_sigma);
+        assert_eq!(meas_sigma.nrows(), 3);
+        assert_eq!(meas_sigma.ncols(), 3);
+        assert_approx_eq!(meas_sigma[(0, 0)], 1.0, 1e-6);
+        assert_approx_eq!(meas_sigma[(1, 0)], 2.0, 1e-6);
+        assert_approx_eq!(meas_sigma[(2, 0)], 3.0, 1e-6);
+    }
+
+    #[test]
+    fn test_gps_velocity_measurement_display() {
+        let measurement = GPSVelocityMeasurement {
+            northward_velocity: 10.0,
+            eastward_velocity: 5.0,
+            downward_velocity: -2.0,
+            horizontal_noise_std: 0.5,
+            vertical_noise_std: 1.0,
+        };
+        let display_str = format!("{}", measurement);
+        assert!(display_str.contains("10"));
+        assert!(display_str.contains("5"));
+    }
+
+    #[test]
+    fn test_gps_velocity_measurement_model() {
+        let measurement = GPSVelocityMeasurement {
+            northward_velocity: 10.0,
+            eastward_velocity: 5.0,
+            downward_velocity: -2.0,
+            horizontal_noise_std: 0.5,
+            vertical_noise_std: 1.0,
+        };
+        
+        // Test dimension
+        assert_eq!(measurement.get_dimension(), 3);
+        
+        // Test vector
+        let vec = measurement.get_vector();
+        assert_eq!(vec.len(), 3);
+        assert_approx_eq!(vec[0], 10.0, 1e-6);
+        assert_approx_eq!(vec[1], 5.0, 1e-6);
+        assert_approx_eq!(vec[2], -2.0, 1e-6);
+        
+        // Test noise matrix
+        let noise = measurement.get_noise();
+        assert_eq!(noise.nrows(), 3);
+        assert_eq!(noise.ncols(), 3);
+        
+        // Test sigma points mapping (maps to velocity components)
+        let state_sigma = DMatrix::from_vec(9, 2, vec![
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0,
+            1.1, 2.1, 3.1, 4.1, 5.1, 6.1, 7.1, 8.1, 9.1,
+        ]);
+        let meas_sigma = measurement.get_sigma_points(&state_sigma);
+        assert_eq!(meas_sigma.nrows(), 3);
+        assert_eq!(meas_sigma.ncols(), 2);
+        assert_approx_eq!(meas_sigma[(0, 0)], 4.0, 1e-6); // state[3]
+        assert_approx_eq!(meas_sigma[(1, 0)], 5.0, 1e-6); // state[4]
+        assert_approx_eq!(meas_sigma[(2, 0)], 6.0, 1e-6); // state[5]
+    }
+
+    #[test]
+    fn test_gps_position_velocity_measurement_model() {
+        let measurement = GPSPositionAndVelocityMeasurement {
+            latitude: 45.0,
+            longitude: -75.0,
+            altitude: 100.0,
+            northward_velocity: 10.0,
+            eastward_velocity: 5.0,
+            horizontal_noise_std: 5.0,
+            vertical_noise_std: 10.0,
+            velocity_noise_std: 0.5,
+        };
+        
+        // Test dimension
+        assert_eq!(measurement.get_dimension(), 5);
+        
+        // Test vector
+        let vec = measurement.get_vector();
+        assert_eq!(vec.len(), 5);
+        assert_approx_eq!(vec[0], 45.0_f64.to_radians(), 1e-6);
+        assert_approx_eq!(vec[1], (-75.0_f64).to_radians(), 1e-6);
+        assert_approx_eq!(vec[2], 100.0, 1e-6);
+        assert_approx_eq!(vec[3], 10.0, 1e-6);
+        assert_approx_eq!(vec[4], 5.0, 1e-6);
+        
+        // Test noise matrix
+        let noise = measurement.get_noise();
+        assert_eq!(noise.nrows(), 5);
+        assert_eq!(noise.ncols(), 5);
+        
+        // Test sigma points mapping
+        let state_sigma = DMatrix::from_vec(9, 2, vec![
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0,
+            1.1, 2.1, 3.1, 4.1, 5.1, 6.1, 7.1, 8.1, 9.1,
+        ]);
+        let meas_sigma = measurement.get_sigma_points(&state_sigma);
+        assert_eq!(meas_sigma.nrows(), 5);
+        assert_eq!(meas_sigma.ncols(), 2);
+        assert_approx_eq!(meas_sigma[(0, 0)], 1.0, 1e-6); // lat
+        assert_approx_eq!(meas_sigma[(1, 0)], 2.0, 1e-6); // lon
+        assert_approx_eq!(meas_sigma[(2, 0)], 3.0, 1e-6); // alt
+        assert_approx_eq!(meas_sigma[(3, 0)], 4.0, 1e-6); // v_n
+        assert_approx_eq!(meas_sigma[(4, 0)], 5.0, 1e-6); // v_e
+    }
+
+    #[test]
+    fn test_measurement_as_any() {
+        let measurement = GPSPositionMeasurement {
+            latitude: 45.0,
+            longitude: -75.0,
+            altitude: 100.0,
+            horizontal_noise_std: 5.0,
+            vertical_noise_std: 10.0,
+        };
+        
+        // Test as_any downcast
+        let any_ref = measurement.as_any();
+        assert!(any_ref.downcast_ref::<GPSPositionMeasurement>().is_some());
+        
+        // Test as_any_mut downcast
+        let mut measurement_mut = measurement.clone();
+        let any_mut = measurement_mut.as_any_mut();
+        assert!(any_mut.downcast_mut::<GPSPositionMeasurement>().is_some());
+    }
 }
