@@ -661,6 +661,9 @@ cargo doc --open -p strapdown-core
 
 Or view online at [docs.rs/strapdown-core](https://docs.rs/strapdown-core).
 
+> **Note:** The package is named `strapdown-core` but the library exports as `strapdown`. 
+> In your code, use `use strapdown::...` for imports.
+
 ### Key Types
 
 #### `StrapdownState`
