@@ -33,8 +33,11 @@ use crate::filter::{
 };
 use crate::messages::{Event, EventStream, GnssFaultModel, GnssScheduler};
 use crate::{IMUData, StrapdownState, forward};
-use health::{HealthLimits, HealthMonitor};
+use health::HealthMonitor;
 use nalgebra::Rotation3;
+
+// Re-export HealthLimits for easier access in tests and external users
+pub use health::HealthLimits;
 
 pub const DEFAULT_PROCESS_NOISE: [f64; 15] = [
     // Default process noise if not provided
@@ -848,6 +851,7 @@ pub fn closed_loop(
 /// * `pf` - Mutable reference to the particle filter
 /// * `stream` - Event stream containing IMU and measurement events
 /// * `averaging_strategy` - Strategy for computing navigation solution from particles
+/// * `health_limits` - Optional health limits for monitoring (uses default if None)
 ///
 /// # Returns
 /// * `Vec<NavigationResult>` - A vector of navigation results containing the state estimates and covariances at each timestamp.
@@ -855,12 +859,13 @@ pub fn particle_filter_loop(
     pf: &mut ParticleFilter,
     stream: EventStream,
     averaging_strategy: ParticleAveragingStrategy,
+    health_limits: Option<HealthLimits>,
 ) -> anyhow::Result<Vec<NavigationResult>> {
     let start_time = stream.start_time;
     let mut results: Vec<NavigationResult> = Vec::with_capacity(stream.events.len());
     let total = stream.events.len();
     let mut last_ts: Option<DateTime<Utc>> = None;
-    let mut monitor = HealthMonitor::new(HealthLimits::default());
+    let mut monitor = HealthMonitor::new(health_limits.unwrap_or_default());
 
     for (i, event) in stream.events.into_iter().enumerate() {
         // Print progress every 10 iterations
@@ -912,7 +917,7 @@ pub fn particle_filter_loop(
                     .map(|col| col.clone_owned())
                     .collect();
 
-                pf.update(&meas.get_vector(), &expected_measurements);
+                pf.update(&meas.get_vector(), &expected_measurements, &meas.get_noise());
 
                 // Resample particles
                 pf.residual_resample();
