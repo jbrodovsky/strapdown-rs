@@ -150,10 +150,11 @@ pub enum GnssScheduler {
 ///     GnssFaultModel::Hijack { offset_n_m: 50.0, offset_e_m: 0.0, start_s: 120.0, duration_s: 60.0 },
 /// ]);
 /// ```
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum GnssFaultModel {
     /// No corruption; GNSS fixes are passed through unchanged.
+    #[default]
     None,
 
     /// (2) Degraded accuracy: AR(1)-correlated noise on position and velocity,
@@ -206,6 +207,7 @@ pub enum GnssFaultModel {
     /// combining e.g. `SlowBias` with a `Hijack` to simulate multi-stage spoofing.
     Combo(Vec<GnssFaultModel>),
 }
+
 /// Configuration container for GNSS degradation in simulation.
 ///
 /// This ties together a [`GnssScheduler`] (which controls *when* GNSS fixes
@@ -242,21 +244,39 @@ pub enum GnssFaultModel {
 ///     seed: 42,
 /// };
 /// ```
+/// Default seed value for reproducible simulations
+fn default_seed() -> u64 {
+    42
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GnssDegradationConfig {
     /// Scheduler that determines when GNSS measurements are emitted
     /// (e.g., pass-through, fixed interval, or duty-cycled).
+    #[serde(default)]
     pub scheduler: GnssScheduler,
 
     /// Fault model that corrupts the contents of each emitted GNSS measurement
     /// (e.g., degraded wander, slow bias drift, hijack).
+    #[serde(default)]
     pub fault: GnssFaultModel,
 
     /// Random number generator seed for deterministic tests and reproducibility.
     ///
     /// Use the same seed to repeat scenarios exactly; change it to get a new
     /// realization of stochastic processes such as AR(1) degradation.
+    #[serde(default = "default_seed")]
     pub seed: u64,
+}
+
+impl Default for GnssDegradationConfig {
+    fn default() -> Self {
+        GnssDegradationConfig {
+            scheduler: GnssScheduler::default(),
+            fault: GnssFaultModel::default(),
+            seed: default_seed(),
+        }
+    }
 }
 
 impl GnssDegradationConfig {
@@ -1371,5 +1391,39 @@ mod serialization_tests {
         cfg.to_file(&path).unwrap();
         let loaded = GnssDegradationConfig::from_file(&path).unwrap();
         assert_eq!(cfg.seed, loaded.seed);
+    }
+
+    #[test]
+    fn default_config_roundtrip() {
+        // Test that default config can be serialized and read back
+        let cfg = GnssDegradationConfig::default();
+
+        // Verify default values
+        assert_eq!(cfg.seed, 42);
+        assert!(matches!(cfg.scheduler, GnssScheduler::PassThrough));
+        assert!(matches!(cfg.fault, GnssFaultModel::None));
+
+        // Test JSON roundtrip
+        let f = NamedTempFile::new().unwrap();
+        let path = f.path().with_extension("json");
+        cfg.to_file(&path).unwrap();
+        let loaded = GnssDegradationConfig::from_file(&path).unwrap();
+        assert_eq!(cfg.seed, loaded.seed);
+        assert!(matches!(loaded.scheduler, GnssScheduler::PassThrough));
+        assert!(matches!(loaded.fault, GnssFaultModel::None));
+
+        // Test YAML roundtrip
+        let f2 = NamedTempFile::new().unwrap();
+        let path2 = f2.path().with_extension("yaml");
+        cfg.to_file(&path2).unwrap();
+        let loaded2 = GnssDegradationConfig::from_file(&path2).unwrap();
+        assert_eq!(cfg.seed, loaded2.seed);
+
+        // Test TOML roundtrip
+        let f3 = NamedTempFile::new().unwrap();
+        let path3 = f3.path().with_extension("toml");
+        cfg.to_file(&path3).unwrap();
+        let loaded3 = GnssDegradationConfig::from_file(&path3).unwrap();
+        assert_eq!(cfg.seed, loaded3.seed);
     }
 }
