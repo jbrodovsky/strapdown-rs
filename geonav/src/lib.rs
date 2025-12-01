@@ -22,6 +22,7 @@ use std::rc::Rc;
 
 use anyhow::{Result, bail};
 use chrono::{DateTime, Datelike, Duration, Utc};
+use log::debug;
 use nalgebra::{DMatrix, DVector, Vector3};
 use world_magnetic_model::GeomagneticField;
 use world_magnetic_model::time::Date;
@@ -376,7 +377,7 @@ impl GeoMap {
             let lon1_index = lon_index - 1;
             let a = self.data[(lat_index, lon_index)];
             let b = self.data[(lat_index, lon1_index)];
-            println!("a: {}, b: {}", a, b);
+            debug!("Bilinear interpolation edge case - a: {}, b: {}", a, b);
             let lon_diff = self.lons[lon_index] - self.lons[lon1_index];
             let result = ((a - b) / lon_diff) * (lon - self.lons[lon1_index]) + b;
             return Some(result);
@@ -908,7 +909,7 @@ pub fn geo_closed_loop(
             results.push(NavigationResult::from((&ts, &*ukf)));
         }
     }
-    println!("Done!");
+    debug!("Geophysical navigation simulation complete");
     Ok(results)
 }
 

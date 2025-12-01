@@ -14,6 +14,7 @@
 //! or intermittent and degraded GNSS via the measurement models provided in this module. You can install
 //! the programs that execute this generic simulation by installing the binary via `cargo install strapdown-rs`.
 use core::f64;
+use log::{debug, warn};
 use std::fmt::{Debug, Display};
 use std::io::{self};
 use std::path::Path;
@@ -197,7 +198,7 @@ impl TestDataRecord {
                 Ok(r) => records.push(r),
                 Err(e) => {
                     // Skip only this row; keep going.
-                    eprintln!("Skipping row {} due to parse error: {e}", i + 1);
+                    warn!("Skipping row {} due to parse error: {e}", i + 1);
                 }
             }
         }
@@ -841,7 +842,7 @@ pub fn closed_loop(
             results.push(NavigationResult::from((&ts, &*ukf)));
         }
     }
-    println!("Done!");
+    debug!("Closed-loop simulation complete");
     Ok(results)
 }
 
@@ -950,14 +951,14 @@ pub fn particle_filter_loop(
         }
     }
 
-    println!("Done!");
+    debug!("Particle filter loop complete");
     Ok(results)
 }
 
 /// Print the Unscented Kalman Filter state and covariance for debugging purposes.
 pub fn print_ukf(ukf: &UnscentedKalmanFilter, record: &TestDataRecord) {
-    println!(
-        "\rUKF position: ({:.4}, {:.4}, {:.4})  |  Covariance: {:.4e}, {:.4e}, {:.4}  |  Error: {:.4e}, {:.4e}, {:.4}",
+    debug!(
+        "UKF position: ({:.4}, {:.4}, {:.4})  |  Covariance: {:.4e}, {:.4e}, {:.4}  |  Error: {:.4e}, {:.4e}, {:.4}",
         ukf.get_mean()[0].to_degrees(),
         ukf.get_mean()[1].to_degrees(),
         ukf.get_mean()[2],
@@ -968,8 +969,8 @@ pub fn print_ukf(ukf: &UnscentedKalmanFilter, record: &TestDataRecord) {
         ukf.get_mean()[1].to_degrees() - record.longitude,
         ukf.get_mean()[2] - record.altitude
     );
-    println!(
-        "\rUKF velocity: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4}, {:.4}, {:.4}  | Error: {:.4}, {:.4}, {:.4}",
+    debug!(
+        "UKF velocity: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4}, {:.4}, {:.4}  | Error: {:.4}, {:.4}, {:.4}",
         ukf.get_mean()[3],
         ukf.get_mean()[4],
         ukf.get_mean()[5],
@@ -980,8 +981,8 @@ pub fn print_ukf(ukf: &UnscentedKalmanFilter, record: &TestDataRecord) {
         ukf.get_mean()[4] - record.speed * record.bearing.sin(),
         ukf.get_mean()[5] - 0.0 // Assuming no vertical velocity
     );
-    println!(
-        "\rUKF attitude: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4}, {:.4}, {:.4}  | Error: {:.4}, {:.4}, {:.4}",
+    debug!(
+        "UKF attitude: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4}, {:.4}, {:.4}  | Error: {:.4}, {:.4}, {:.4}",
         ukf.get_mean()[6],
         ukf.get_mean()[7],
         ukf.get_mean()[8],
@@ -992,8 +993,8 @@ pub fn print_ukf(ukf: &UnscentedKalmanFilter, record: &TestDataRecord) {
         ukf.get_mean()[7] - record.pitch,
         ukf.get_mean()[8] - record.yaw
     );
-    println!(
-        "\rUKF accel biases: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4e}, {:.4e}, {:.4e}",
+    debug!(
+        "UKF accel biases: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4e}, {:.4e}, {:.4e}",
         ukf.get_mean()[9],
         ukf.get_mean()[10],
         ukf.get_mean()[11],
@@ -1001,8 +1002,8 @@ pub fn print_ukf(ukf: &UnscentedKalmanFilter, record: &TestDataRecord) {
         ukf.get_covariance()[(10, 10)],
         ukf.get_covariance()[(11, 11)]
     );
-    println!(
-        "\rUKF gyro biases: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4e}, {:.4e}, {:.4e}",
+    debug!(
+        "UKF gyro biases: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4e}, {:.4e}, {:.4e}",
         ukf.get_mean()[12],
         ukf.get_mean()[13],
         ukf.get_mean()[14],
@@ -1022,8 +1023,8 @@ pub fn print_pf(pf: &ParticleFilter, record: &TestDataRecord) {
     let vel_cov = (cov[(3, 3)], cov[(4, 4)], cov[(5, 5)]);
     let att_cov = (cov[(6, 6)], cov[(7, 7)], cov[(8, 8)]);
 
-    println!(
-        "\rPF position: ({:.4}, {:.4}, {:.4})  |  Covariance: {:.4e}, {:.4e}, {:.4}  |  Error: {:.4e}, {:.4e}, {:.4}",
+    debug!(
+        "PF position: ({:.4}, {:.4}, {:.4})  |  Covariance: {:.4e}, {:.4e}, {:.4}  |  Error: {:.4e}, {:.4e}, {:.4}",
         mean[0].to_degrees(),
         mean[1].to_degrees(),
         mean[2],
@@ -1034,8 +1035,8 @@ pub fn print_pf(pf: &ParticleFilter, record: &TestDataRecord) {
         mean[1].to_degrees() - record.longitude,
         mean[2] - record.altitude
     );
-    println!(
-        "\rPF velocity: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4}, {:.4}, {:.4}  | Error: {:.4}, {:.4}, {:.4}",
+    debug!(
+        "PF velocity: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4}, {:.4}, {:.4}  | Error: {:.4}, {:.4}, {:.4}",
         mean[3],
         mean[4],
         mean[5],
@@ -1046,8 +1047,8 @@ pub fn print_pf(pf: &ParticleFilter, record: &TestDataRecord) {
         mean[4] - record.speed * record.bearing.sin(),
         mean[5] - 0.0 // Assuming no vertical velocity
     );
-    println!(
-        "\rPF attitude: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4}, {:.4}, {:.4}  | Error: {:.4}, {:.4}, {:.4}",
+    debug!(
+        "PF attitude: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4}, {:.4}, {:.4}  | Error: {:.4}, {:.4}, {:.4}",
         mean[6],
         mean[7],
         mean[8],
@@ -1066,8 +1067,8 @@ pub fn print_pf(pf: &ParticleFilter, record: &TestDataRecord) {
             .iter()
             .map(|p| p.weight * p.weight)
             .sum::<f64>();
-    println!(
-        "\rPF particles: {} total, {:.1} effective  |  Weight range: [{:.4e}, {:.4e}]",
+    debug!(
+        "PF particles: {} total, {:.1} effective  |  Weight range: [{:.4e}, {:.4e}]",
         total_particles,
         eff_particles,
         pf.particles
