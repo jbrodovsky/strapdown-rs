@@ -643,6 +643,7 @@ impl Display for Particle {
 /// Similarly to the UKF, it uses thin wrappers around the StrapdownState's forward function to propagate the state.
 /// The particle filter is a little more generic in implementation than the UKF, as all it fundamentally is is a set
 /// of particles and several related functions to propagate, update, and resample the particles.
+#[derive(Clone, Default)]
 pub struct ParticleFilter {
     /// The particles in the particle filter
     pub particles: Vec<Particle>,
@@ -820,6 +821,111 @@ impl ParticleFilter {
             particle.weight = uniform_weight;
         }
         self.particles = new_particles;
+    }
+    /// Initialization function for creating the particle field according to a normal distribution
+    /// 
+    /// # Arguments
+    /// * `mean` - an `InitialState` struct defining the mean state for the particle filter navigation states
+    /// * `other_states` - a DVector<f64> defining the mean values for any additional other states to be estimated
+    /// * `navigation_covariance` - a DVector<f64> defining the diagonal covariance
+    /// * `other_covariance` - a DVector<f64> defining the diagonal covariance for any additional other states to be estimated
+    /// * `num_particles` - the number of particles to initialize
+    /// # Returns
+    /// * none
+    /// 
+    /// # Example
+    /// 
+    /// ```rust
+    /// use nalgebra::DVector;
+    /// use strapdown::filter::{ParticleFilter, InitialState};
+    /// let mut pf = ParticleFilter::default();
+    /// let mean = InitialState {
+    ///    latitude: 37.7749,
+    ///    longitude: -122.4194,
+    ///    altitude: 10.0,
+    ///    northward_velocity: 0.0,
+    ///    eastward_velocity: 0.0,
+    ///    downward_velocity: 0.0,
+    ///    roll: 0.0,
+    ///    pitch: 0.0,
+    ///    yaw: 0.0,
+    ///    in_degrees: true,
+    /// };
+    /// let other_states = DVector::from_vec(vec![0.0; 5]);
+    /// let navigation_covariance = DVector::from_vec(vec![1.0; 9]);
+    /// let other_covariance = DVector::from_vec(vec![1.0; 5]);
+    /// let num_particles = 100;
+    /// pf.initialize_about(mean, other_states, navigation_covariance, other_covariance, num_particles);
+    /// ```
+    pub fn initialize_about(&mut self, mean: InitialState, other_states: DVector<f64>, navigation_covariance: DVector<f64>, other_covariance: DVector<f64>, num_particles: usize) {
+        use rand_distr::{Distribution, Normal};
+        let mut particles = Vec::with_capacity(num_particles);
+        let position_std = (
+            navigation_covariance[0].sqrt(),
+            navigation_covariance[1].sqrt(),
+            navigation_covariance[2].sqrt(),
+        );
+        let velocity_std = (
+            navigation_covariance[3].sqrt(),
+            navigation_covariance[4].sqrt(),
+            navigation_covariance[5].sqrt(),
+        );
+        let attitude_std = (
+            navigation_covariance[6].sqrt(),
+            navigation_covariance[7].sqrt(),
+            navigation_covariance[8].sqrt(),
+        );
+        let other_std: Vec<f64> = other_covariance.iter().map(|x| x.sqrt()).collect();
+        let lat_normal = Normal::new(0.0, position_std.0).unwrap();
+        let lon_normal = Normal::new(0.0, position_std.1).unwrap();
+        let alt_normal = Normal::new(0.0, position_std.2).unwrap();
+        let vn_normal = Normal::new(0.0, velocity_std.0).unwrap();
+        let ve_normal = Normal::new(0.0, velocity_std.1).unwrap();
+        let vd_normal = Normal::new(0.0, velocity_std.2).unwrap();
+        let roll_normal = Normal::new(0.0, attitude_std.0).unwrap();
+        let pitch_normal = Normal::new(0.0, attitude_std.1).unwrap();
+        let yaw_normal = Normal::new(0.0, attitude_std.2).unwrap();
+        let mut rng = rand::rng();
+        for _ in 0..num_particles {
+            let latitude = if mean.in_degrees {
+                mean.latitude.to_radians() + lat_normal.sample(&mut rng)
+            } else {
+                mean.latitude + lat_normal.sample(&mut rng)
+            };
+            let longitude = if mean.in_degrees {
+                mean.longitude.to_radians() + lon_normal.sample(&mut rng)
+            } else {
+                mean.longitude + lon_normal.sample(&mut rng)
+            };
+            let altitude = mean.altitude + alt_normal.sample(&mut rng);
+            let velocity_north = mean.northward_velocity + vn_normal.sample(&mut rng);
+            let velocity_east = mean.eastward_velocity + ve_normal.sample(&mut rng);
+            let velocity_down = mean.downward_velocity + vd_normal.sample(&mut rng);
+            let roll = mean.roll + roll_normal.sample(&mut rng);
+            let pitch = mean.pitch + pitch_normal.sample(&mut rng);
+            let yaw = mean.yaw + yaw_normal.sample(&mut rng);
+            let attitude = Rotation3::from_euler_angles(roll, pitch, yaw);
+            let mut other_state_vec = Vec::with_capacity(other_states.len());
+            for (i, &state) in other_states.iter().enumerate() {
+                let other_normal = Normal::new(0.0, other_std[i]).unwrap();
+                other_state_vec.push(state + other_normal.sample(&mut rng));
+            }
+            let particle = Particle {
+                nav_state: StrapdownState {
+                    latitude,
+                    longitude,
+                    altitude,
+                    velocity_north,
+                    velocity_east,
+                    velocity_down,
+                    attitude,
+                    coordinate_convention: true,
+                },
+                weight: 1.0 / num_particles as f64,
+            };
+            particles.push(particle);
+        }
+        self.particles = particles;
     }
 }
 
