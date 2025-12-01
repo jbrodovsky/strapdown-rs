@@ -13,8 +13,8 @@
 #
 #   # Particle Filter
 #   strapdown-sim -i input.csv -o pf_result.csv particle-filter \
-#     --num-particles 200 \
-#     --config particle_filter_comparison.yaml
+#     --config particle_filter_comparison.yaml \
+#     --num-particles 200
 #
 # Expected behavior: Both filters should track well during GNSS
 # availability. Particle filter may show better robustness to
