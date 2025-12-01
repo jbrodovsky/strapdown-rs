@@ -1,7 +1,7 @@
 use clap::{Args, Parser, Subcommand};
 use log::{error, info};
 use std::error::Error;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use strapdown::filter::ParticleAveragingStrategy;
 use strapdown::messages::{GnssDegradationConfig, build_event_stream};
 use strapdown::sim::{
@@ -46,45 +46,68 @@ This program is designed to work with tabular comma-separated value datasets tha
 #[derive(Parser)]
 #[command(author, version, about, long_about = LONG_ABOUT)]
 struct Cli {
-    /// Mode of operation, either open-loop or closed-loop
+    /// Command to execute
     #[command(subcommand)]
-    mode: SimMode,
+    command: Command,
+    /// Log level (off, error, warn, info, debug, trace)
+    #[arg(long, default_value = "info", global = true)]
+    log_level: String,
+    /// Log file path (if not specified, logs to stderr)
+    #[arg(long, global = true)]
+    log_file: Option<PathBuf>,
+}
+
+/// Top-level commands
+#[derive(Subcommand, Clone)]
+enum Command {
+    #[command(
+        name = "open-loop",
+        about = "Run the simulation in open-loop (feed-forward INS) mode"
+    )]
+    OpenLoop(SimArgs),
+    #[command(
+        name = "closed-loop",
+        about = "Run the simulation in closed-loop (feedback INS) mode"
+    )]
+    ClosedLoop(ClosedLoopSimArgs),
+    #[command(
+        name = "particle-filter",
+        about = "Run the simulation using a particle filter INS architecture"
+    )]
+    ParticleFilter(ParticleFilterSimArgs),
+    #[command(
+        name = "generate-config",
+        about = "Generate a blank template GNSS degradation configuration file"
+    )]
+    GenerateConfig(GenerateConfigArgs),
+}
+
+/// Common simulation arguments for input/output
+#[derive(Args, Clone, Debug)]
+struct SimArgs {
     /// Input file path
     #[arg(short, long, value_parser)]
     input: PathBuf,
     /// Output file path
     #[arg(short, long, value_parser)]
     output: PathBuf,
-    /// Log level (off, error, warn, info, debug, trace)
-    #[arg(long, default_value = "info")]
-    log_level: String,
-    /// Log file path (if not specified, logs to stderr)
-    #[arg(long)]
-    log_file: Option<PathBuf>,
 }
-#[derive(Subcommand, Clone)]
-enum SimMode {
-    #[command(name = "open-loop", about = "Run the simulation in open-loop (feed-forward INS) mode")]
-    OpenLoop,
-    #[command(name = "closed-loop", about = "Run the simulation in closed-loop (feedback INS) mode")]
-    ClosedLoop(ClosedLoopArgs),
-    #[command(
-        name = "particle-filter",
-        about = "Run the simulation using a particle filter INS architecture"
-    )]
-    ParticleFilter(ParticleFilterArgs),
-}
-/* -------------------- COMPARTMENTALIZED GROUPS -------------------- */
+
+/// Closed-loop simulation arguments combining SimArgs with closed-loop specific options
 #[derive(Args, Clone, Debug)]
-struct ClosedLoopArgs {
+struct ClosedLoopSimArgs {
+    /// Input file path
+    #[arg(short, long, value_parser)]
+    input: PathBuf,
+    /// Output file path
+    #[arg(short, long, value_parser)]
+    output: PathBuf,
     /// RNG seed (applies to any stochastic options)
     #[arg(long, default_value_t = 42)]
     seed: u64,
-
     /// Scheduler settings (dropouts / reduced rate)
     #[command(flatten)]
     scheduler: SchedulerArgs,
-
     /// Fault model settings (corrupt measurement content)
     #[command(flatten)]
     fault: FaultArgs,
@@ -93,54 +116,61 @@ struct ClosedLoopArgs {
     config: Option<PathBuf>,
 }
 
+/// Particle filter simulation arguments
 #[derive(Args, Clone, Debug)]
-struct ParticleFilterArgs {
+struct ParticleFilterSimArgs {
+    /// Input file path
+    #[arg(short, long, value_parser)]
+    input: PathBuf,
+    /// Output file path
+    #[arg(short, long, value_parser)]
+    output: PathBuf,
     /// RNG seed (applies to any stochastic options)
     #[arg(long, default_value_t = 42)]
     seed: u64,
-
     /// Number of particles
     #[arg(long, default_value_t = 100)]
     num_particles: usize,
-
     /// Position uncertainty standard deviation (meters)
     #[arg(long, default_value_t = 10.0)]
     position_std: f64,
-
     /// Velocity uncertainty standard deviation (m/s)
     #[arg(long, default_value_t = 1.0)]
     velocity_std: f64,
-
     /// Attitude uncertainty standard deviation (radians)
     #[arg(long, default_value_t = 0.1)]
     attitude_std: f64,
-
     /// Particle averaging strategy
     #[arg(long, value_enum, default_value_t = ParticleAveragingStrategy::WeightedAverage)]
     averaging_strategy: ParticleAveragingStrategy,
-
     /// Scheduler settings (dropouts / reduced rate)
     #[command(flatten)]
     scheduler: SchedulerArgs,
-
     /// Fault model settings (corrupt measurement content)
     #[command(flatten)]
     fault: FaultArgs,
-
     /// Path to a GNSS degradation config file (json|yaml|yml|toml)
     #[arg(long)]
     config: Option<PathBuf>,
+}
+
+/// Arguments for the generate-config command
+#[derive(Args, Clone, Debug)]
+struct GenerateConfigArgs {
+    /// Output file path for the generated config file.
+    /// The file extension determines the format: .json, .yaml/.yml, or .toml
+    #[arg(short, long, value_parser)]
+    output: PathBuf,
 }
 
 /// Initialize the logger with the specified configuration
 fn init_logger(log_level: &str, log_file: Option<&PathBuf>) -> Result<(), Box<dyn Error>> {
     use std::io::Write;
-    
-    let level = log_level.parse::<log::LevelFilter>()
-        .unwrap_or_else(|_| {
-            eprintln!("Invalid log level '{}', defaulting to 'info'", log_level);
-            log::LevelFilter::Info
-        });
+
+    let level = log_level.parse::<log::LevelFilter>().unwrap_or_else(|_| {
+        eprintln!("Invalid log level '{}', defaulting to 'info'", log_level);
+        log::LevelFilter::Info
+    });
 
     let mut builder = env_logger::Builder::new();
     builder.filter_level(level);
@@ -155,10 +185,12 @@ fn init_logger(log_level: &str, log_file: Option<&PathBuf>) -> Result<(), Box<dy
     });
 
     if let Some(log_path) = log_file {
-        let target = Box::new(std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_path)?);
+        let target = Box::new(
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log_path)?,
+        );
         builder.target(env_logger::Target::Pipe(target));
     }
 
@@ -166,46 +198,76 @@ fn init_logger(log_level: &str, log_file: Option<&PathBuf>) -> Result<(), Box<dy
     Ok(())
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
-    let cli = Cli::parse();
-    
-    // Initialize logger
-    init_logger(&cli.log_level, cli.log_file.as_ref())?;
-    
-    // Validate the mode
-    //if args.mode != "open-loop" && args.mode != "closed-loop" {
-    //    return Err("Invalid mode specified. Use 'open-loop' or 'closed-loop'.".into());
-    //}
-    // Read the input CSV file
-    // Validate that the input file exists and is readable
-    if !cli.input.exists() {
-        return Err(format!("Input file '{}' does not exist.", cli.input.display()).into());
+/// Validate input file exists and is readable
+fn validate_input_file(input: &Path) -> Result<(), Box<dyn Error>> {
+    if !input.exists() {
+        return Err(format!("Input file '{}' does not exist.", input.display()).into());
     }
-    if !cli.input.is_file() {
-        return Err(format!("Input path '{}' is not a file.", cli.input.display()).into());
+    if !input.is_file() {
+        return Err(format!("Input path '{}' is not a file.", input.display()).into());
     }
-    // Validate that the output file is writable
-    if let Some(parent) = cli.output.parent()
+    Ok(())
+}
+
+/// Validate output path and create parent directories if needed
+fn validate_output_path(output: &Path) -> Result<(), Box<dyn Error>> {
+    if let Some(parent) = output.parent()
         && !parent.exists()
         && parent.is_dir()
     {
         return Err(format!("Output directory '{}' does not exist.", parent.display()).into());
     }
-    // Validate that all directories in the output path exist, if they don't create them
-    let parents = cli.output.parent();
-    if let Some(parent) = parents
-        && !parent.exists() {
-            std::fs::create_dir_all(parent)?;
+    if let Some(parent) = output.parent()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    Ok(())
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let cli = Cli::parse();
+
+    // Initialize logger
+    init_logger(&cli.log_level, cli.log_file.as_ref())?;
+
+    match cli.command {
+        Command::GenerateConfig(ref args) => {
+            // Validate output path
+            validate_output_path(&args.output)?;
+
+            // Create a default config with sensible baseline values
+            let cfg = GnssDegradationConfig::default();
+
+            // Write to file using the appropriate format based on extension
+            match cfg.to_file(&args.output) {
+                Ok(_) => {
+                    info!("Generated config file: {}", args.output.display());
+                    println!("Generated config file: {}", args.output.display());
+                }
+                Err(e) => {
+                    error!("Failed to write config file: {}", e);
+                    return Err(Box::new(e));
+                }
+            }
         }
-    match cli.mode {
-        SimMode::OpenLoop => info!("Running in open-loop mode"),
-        SimMode::ParticleFilter(ref args) => {
+        Command::OpenLoop(ref args) => {
+            validate_input_file(&args.input)?;
+            validate_output_path(&args.output)?;
+            info!("Running in open-loop mode");
+            // Note: Open-loop mode is currently not fully implemented
+            // This would run dead reckoning simulation
+        }
+        Command::ParticleFilter(ref args) => {
+            validate_input_file(&args.input)?;
+            validate_output_path(&args.output)?;
+
             // Load sensor data records from CSV
-            let records = TestDataRecord::from_csv(&cli.input)?;
+            let records = TestDataRecord::from_csv(&args.input)?;
             info!(
                 "Read {} records from {}",
                 records.len(),
-                &cli.input.display()
+                &args.input.display()
             );
 
             let cfg = if let Some(ref cfg_path) = args.config {
@@ -241,20 +303,23 @@ fn main() -> Result<(), Box<dyn Error>> {
             let results = particle_filter_loop(&mut pf, events, args.averaging_strategy.clone());
 
             match results {
-                Ok(ref nav_results) => match NavigationResult::to_csv(nav_results, &cli.output) {
-                    Ok(_) => info!("Results written to {}", cli.output.display()),
+                Ok(ref nav_results) => match NavigationResult::to_csv(nav_results, &args.output) {
+                    Ok(_) => info!("Results written to {}", args.output.display()),
                     Err(e) => error!("Error writing results: {}", e),
                 },
                 Err(e) => error!("Error running particle filter simulation: {}", e),
             };
         }
-        SimMode::ClosedLoop(ref args) => {
+        Command::ClosedLoop(ref args) => {
+            validate_input_file(&args.input)?;
+            validate_output_path(&args.output)?;
+
             // Load sensor data records from CSV, tolerant to mixed/variable-length rows and encoding issues.
-            let records = TestDataRecord::from_csv(&cli.input)?;
+            let records = TestDataRecord::from_csv(&args.input)?;
             info!(
                 "Read {} records from {}",
                 records.len(),
-                &cli.input.display()
+                &args.input.display()
             );
             let cfg = if let Some(ref cfg_path) = args.config {
                 match GnssDegradationConfig::from_file(cfg_path) {
@@ -274,10 +339,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             let events = build_event_stream(&records, &cfg);
             let mut ukf = initialize_ukf(records[0].clone(), None, None, None, None, None, None);
             let results = closed_loop(&mut ukf, events);
-            //sim::write_results_csv(&cli.output, &results)?;
             match results {
-                Ok(ref nav_results) => match NavigationResult::to_csv(nav_results, &cli.output) {
-                    Ok(_) => info!("Results written to {}", cli.output.display()),
+                Ok(ref nav_results) => match NavigationResult::to_csv(nav_results, &args.output) {
+                    Ok(_) => info!("Results written to {}", args.output.display()),
                     Err(e) => error!("Error writing results: {}", e),
                 },
                 Err(e) => error!("Error running closed-loop simulation: {}", e),
