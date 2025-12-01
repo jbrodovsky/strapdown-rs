@@ -1,0 +1,18 @@
+# Simple GNSS Dropout
+#
+# This scenario simulates brief GNSS dropouts (30 seconds)
+# interspersed with normal GNSS operation.
+#
+# Use case: Testing filter robustness to temporary signal loss,
+# such as passing under bridges or near tall buildings.
+#
+# Expected behavior: Position should coast accurately during
+# short outages and quickly reconverge when GNSS returns.
+scheduler:
+  kind: duty
+  on_s: 120.0     # 2 minutes GNSS available
+  off_s: 30.0     # 30 seconds GNSS denied
+  phase_s: 0.0
+fault:
+  kind: none
+seed: 42
