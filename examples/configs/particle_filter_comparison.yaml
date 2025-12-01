@@ -1,0 +1,33 @@
+# Particle Filter Comparison
+#
+# This scenario is designed for comparing UKF and Particle Filter
+# performance under degraded GNSS conditions.
+#
+# Use case: Research on filter algorithm comparison, especially
+# for non-Gaussian measurement distributions.
+#
+# To run comparison:
+#   # UKF
+#   strapdown-sim -i input.csv -o ukf_result.csv closed-loop \
+#     --config particle_filter_comparison.yaml
+#
+#   # Particle Filter
+#   strapdown-sim -i input.csv -o pf_result.csv particle-filter \
+#     --num-particles 200 \
+#     --config particle_filter_comparison.yaml
+#
+# Expected behavior: Both filters should track well during GNSS
+# availability. Particle filter may show better robustness to
+# non-Gaussian errors but with higher computational cost.
+scheduler:
+  kind: fixed_interval
+  interval_s: 5.0
+  phase_s: 0.0
+fault:
+  kind: degraded
+  rho_pos: 0.99
+  sigma_pos_m: 5.0      # Larger position errors for visible difference
+  rho_vel: 0.95
+  sigma_vel_mps: 0.5
+  r_scale: 5.0
+seed: 42
