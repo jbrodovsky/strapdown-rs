@@ -289,7 +289,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 args.num_particles, args.averaging_strategy
             );
 
-            let results = particle_filter_loop(&mut pf, events, args.averaging_strategy.clone());
+            let results = particle_filter_loop(&mut pf, events, args.averaging_strategy.clone(), None);
 
             match results {
                 Ok(ref nav_results) => {

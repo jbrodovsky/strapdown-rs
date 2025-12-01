@@ -726,10 +726,10 @@ impl ParticleFilter {
     /// Update the weights of the particles based on a measurement
     ///
     /// Generic measurement update function for the particle filter. This function requires the user to provide
-    /// a measurement vector and a list of expected measurements for each particle. This list of expected measurements
-    /// is the result of a measurement model that is specific to the filter implementation. This model determines
-    /// the shape and quantities of the measurement vector and the expected measurements sigma points. This module
-    /// contains some standard GNSS-aided measurements models (`position_measurement_model`,
+    /// a measurement vector, a list of expected measurements for each particle, and the measurement noise covariance.
+    /// This list of expected measurements is the result of a measurement model that is specific to the filter implementation.
+    /// This model determines the shape and quantities of the measurement vector and the expected measurements sigma points.
+    /// This module contains some standard GNSS-aided measurements models (`position_measurement_model`,
     /// `velocity_measurement_model`, and `position_and_velocity_measurement_model`) that can be used.
     ///
     /// **Note**: Canonical INS implementations use a position measurement model. Typically,
@@ -738,16 +738,38 @@ impl ParticleFilter {
     /// make no assumptions about the units of the position measurements. However, the user should
     /// ensure that the provided measurement to this function is in the same units as the
     /// measurement model.
-    pub fn update(&mut self, measurement: &DVector<f64>, expected_measurements: &[DVector<f64>]) {
+    ///
+    /// # Arguments
+    /// * `measurement` - The measurement vector
+    /// * `expected_measurements` - Expected measurements for each particle
+    /// * `measurement_noise` - Measurement noise covariance matrix
+    pub fn update(&mut self, measurement: &DVector<f64>, expected_measurements: &[DVector<f64>], measurement_noise: &DMatrix<f64>) {
         assert_eq!(self.particles.len(), expected_measurements.len());
+
+        // Try to invert measurement noise covariance for Mahalanobis distance
+        // If inversion fails, fall back to identity (unit covariance)
+        let noise_inv = match measurement_noise.clone().try_inverse() {
+            Some(inv) => inv,
+            None => {
+                // Fall back to diagonal inverse if full inversion fails
+                let mut diag_inv = DMatrix::zeros(measurement_noise.nrows(), measurement_noise.ncols());
+                for i in 0..measurement_noise.nrows() {
+                    let val = measurement_noise[(i, i)];
+                    diag_inv[(i, i)] = if val > 1e-12 { 1.0 / val } else { 1e12 };
+                }
+                diag_inv
+            }
+        };
+
         let mut weights = Vec::with_capacity(self.particles.len());
         for expected in expected_measurements.iter() {
-            // Calculate the Mahalanobis distance
+            // Calculate the Mahalanobis distance with measurement noise
             let diff = measurement - expected;
-            let weight = (-0.5 * diff.transpose() * diff).exp().sum(); //TODO: #22 modify this to use any and/or a user specified probability distribution
+            let mahalanobis = (&diff.transpose() * &noise_inv * &diff)[(0, 0)];
+            let weight = (-0.5 * mahalanobis).exp(); //TODO: #22 modify this to use any and/or a user specified probability distribution
             weights.push(weight);
         }
-        // self.set_weights(weights.as_slice());
+        self.set_weights(weights.as_slice());
         self.normalize_weights();
     }
     /// Set the weights of the particles (e.g., after a measurement update)
