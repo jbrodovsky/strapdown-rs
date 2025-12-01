@@ -96,12 +96,9 @@ struct SimArgs {
 /// Closed-loop simulation arguments combining SimArgs with closed-loop specific options
 #[derive(Args, Clone, Debug)]
 struct ClosedLoopSimArgs {
-    /// Input file path
-    #[arg(short, long, value_parser)]
-    input: PathBuf,
-    /// Output file path
-    #[arg(short, long, value_parser)]
-    output: PathBuf,
+    /// Common simulation input/output arguments
+    #[command(flatten)]
+    sim: SimArgs,
     /// RNG seed (applies to any stochastic options)
     #[arg(long, default_value_t = 42)]
     seed: u64,
@@ -119,12 +116,9 @@ struct ClosedLoopSimArgs {
 /// Particle filter simulation arguments
 #[derive(Args, Clone, Debug)]
 struct ParticleFilterSimArgs {
-    /// Input file path
-    #[arg(short, long, value_parser)]
-    input: PathBuf,
-    /// Output file path
-    #[arg(short, long, value_parser)]
-    output: PathBuf,
+    /// Common simulation input/output arguments
+    #[command(flatten)]
+    sim: SimArgs,
     /// RNG seed (applies to any stochastic options)
     #[arg(long, default_value_t = 42)]
     seed: u64,
@@ -212,12 +206,7 @@ fn validate_input_file(input: &Path) -> Result<(), Box<dyn Error>> {
 /// Validate output path and create parent directories if needed
 fn validate_output_path(output: &Path) -> Result<(), Box<dyn Error>> {
     if let Some(parent) = output.parent()
-        && !parent.exists()
-        && parent.is_dir()
-    {
-        return Err(format!("Output directory '{}' does not exist.", parent.display()).into());
-    }
-    if let Some(parent) = output.parent()
+        && !parent.as_os_str().is_empty()
         && !parent.exists()
     {
         std::fs::create_dir_all(parent)?;
@@ -259,15 +248,15 @@ fn main() -> Result<(), Box<dyn Error>> {
             // This would run dead reckoning simulation
         }
         Command::ParticleFilter(ref args) => {
-            validate_input_file(&args.input)?;
-            validate_output_path(&args.output)?;
+            validate_input_file(&args.sim.input)?;
+            validate_output_path(&args.sim.output)?;
 
             // Load sensor data records from CSV
-            let records = TestDataRecord::from_csv(&args.input)?;
+            let records = TestDataRecord::from_csv(&args.sim.input)?;
             info!(
                 "Read {} records from {}",
                 records.len(),
-                &args.input.display()
+                &args.sim.input.display()
             );
 
             let cfg = if let Some(ref cfg_path) = args.config {
@@ -303,23 +292,25 @@ fn main() -> Result<(), Box<dyn Error>> {
             let results = particle_filter_loop(&mut pf, events, args.averaging_strategy.clone());
 
             match results {
-                Ok(ref nav_results) => match NavigationResult::to_csv(nav_results, &args.output) {
-                    Ok(_) => info!("Results written to {}", args.output.display()),
-                    Err(e) => error!("Error writing results: {}", e),
-                },
+                Ok(ref nav_results) => {
+                    match NavigationResult::to_csv(nav_results, &args.sim.output) {
+                        Ok(_) => info!("Results written to {}", args.sim.output.display()),
+                        Err(e) => error!("Error writing results: {}", e),
+                    }
+                }
                 Err(e) => error!("Error running particle filter simulation: {}", e),
             };
         }
         Command::ClosedLoop(ref args) => {
-            validate_input_file(&args.input)?;
-            validate_output_path(&args.output)?;
+            validate_input_file(&args.sim.input)?;
+            validate_output_path(&args.sim.output)?;
 
             // Load sensor data records from CSV, tolerant to mixed/variable-length rows and encoding issues.
-            let records = TestDataRecord::from_csv(&args.input)?;
+            let records = TestDataRecord::from_csv(&args.sim.input)?;
             info!(
                 "Read {} records from {}",
                 records.len(),
-                &args.input.display()
+                &args.sim.input.display()
             );
             let cfg = if let Some(ref cfg_path) = args.config {
                 match GnssDegradationConfig::from_file(cfg_path) {
@@ -340,10 +331,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             let mut ukf = initialize_ukf(records[0].clone(), None, None, None, None, None, None);
             let results = closed_loop(&mut ukf, events);
             match results {
-                Ok(ref nav_results) => match NavigationResult::to_csv(nav_results, &args.output) {
-                    Ok(_) => info!("Results written to {}", args.output.display()),
-                    Err(e) => error!("Error writing results: {}", e),
-                },
+                Ok(ref nav_results) => {
+                    match NavigationResult::to_csv(nav_results, &args.sim.output) {
+                        Ok(_) => info!("Results written to {}", args.sim.output.display()),
+                        Err(e) => error!("Error writing results: {}", e),
+                    }
+                }
                 Err(e) => error!("Error running closed-loop simulation: {}", e),
             };
         }
