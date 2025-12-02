@@ -833,8 +833,8 @@ impl ParticleAveragingStrategy {
             euler.1,
             euler.2,
         ];
-        if let Some(ref other) = best_particle.other_states {
-            state_vec.extend(other.iter());
+        if let Some(ref other_states) = best_particle.other_states {
+            state_vec.extend(other_states.iter());
         }
         let mean = DVector::from_vec(state_vec);
 
@@ -1677,5 +1677,213 @@ mod tests {
         let mut measurement_mut = measurement.clone();
         let any_mut = measurement_mut.as_any_mut();
         assert!(any_mut.downcast_mut::<GPSPositionMeasurement>().is_some());
+    }
+
+    #[test]
+    fn test_particle_filter_new() {
+        let nav_state = StrapdownState::default();
+        let particle = Particle::new(nav_state, None, 1.0);
+        let particles = vec![particle];
+        let pf = ParticleFilter::new(particles, None, None, None);
+
+        assert_eq!(pf.particles.len(), 1);
+        assert_eq!(pf.state_size, 9);
+        // Check default process noise
+        assert_eq!(pf.process_noise.len(), 9);
+        assert!(matches!(
+            pf.averaging_strategy,
+            ParticleAveragingStrategy::WeightedAverage
+        ));
+        assert!(matches!(
+            pf.resampling_strategy,
+            ParticleResamplingStrategy::Naive
+        ));
+    }
+
+    #[test]
+    fn test_particle_filter_new_about() {
+        let mean = InitialState {
+            latitude: 0.0,
+            longitude: 0.0,
+            altitude: 100.0,
+            northward_velocity: 10.0,
+            eastward_velocity: 0.0,
+            downward_velocity: 0.0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            in_degrees: false,
+        };
+        let other_states = DVector::from_vec(vec![0.0; 2]);
+        let nav_cov = DVector::from_vec(vec![0.01; 9]); // Small variance
+        let other_cov = DVector::from_vec(vec![0.01; 2]);
+        let num_particles = 100;
+
+        let pf = ParticleFilter::new_about(
+            mean,
+            other_states,
+            nav_cov,
+            other_cov,
+            num_particles,
+            Some(DVector::from_vec(vec![0.0; 11])),
+            None,
+            None,
+        );
+
+        assert_eq!(pf.particles.len(), num_particles);
+        assert_eq!(pf.state_size, 11); // 9 nav + 2 other
+
+        // Check that mean of particles is close to initial mean
+        let estimate = pf.get_estimate();
+        assert_approx_eq!(estimate[2], 100.0, 1.0); // Altitude
+        assert_approx_eq!(estimate[3], 10.0, 1.0); // Vn
+    }
+
+    #[test]
+    fn test_particle_filter_methods() {
+        let nav_state = StrapdownState::default();
+        let p1 = Particle::new(nav_state.clone(), None, 0.2);
+        let p2 = Particle::new(nav_state, None, 0.8);
+        let mut pf = ParticleFilter::new(vec![p1, p2], None, None, None);
+
+        // Test set_weights
+        pf.set_weights(&[0.5, 0.5]);
+        assert_eq!(pf.particles[0].weight, 0.5);
+        assert_eq!(pf.particles[1].weight, 0.5);
+
+        // Test normalize_weights
+        pf.set_weights(&[2.0, 2.0]);
+        pf.normalize_weights();
+        assert_approx_eq!(pf.particles[0].weight, 0.5, 1e-6);
+        assert_approx_eq!(pf.particles[1].weight, 0.5, 1e-6);
+
+        // Test particles_to_matrix
+        let matrix = pf.particles_to_matrix();
+        assert_eq!(matrix.nrows(), 9);
+        assert_eq!(matrix.ncols(), 2);
+    }
+
+    #[test]
+    fn test_particle_averaging_strategies() {
+        let mut s1 = StrapdownState::default();
+        s1.altitude = 10.0;
+        let mut s2 = StrapdownState::default();
+        s2.altitude = 20.0;
+
+        let p1 = Particle::new(s1, None, 0.25);
+        let p2 = Particle::new(s2, None, 0.75);
+
+        let mut pf = ParticleFilter::new(vec![p1, p2], None, None, None);
+
+        // Weighted Average: 0.25 * 10 + 0.75 * 20 = 2.5 + 15 = 17.5
+        pf.averaging_strategy = ParticleAveragingStrategy::WeightedAverage;
+        let est_weighted = pf.get_estimate();
+        assert_approx_eq!(est_weighted[2], 17.5, 1e-6);
+
+        // Unweighted Average: (10 + 20) / 2 = 15
+        pf.averaging_strategy = ParticleAveragingStrategy::UnweightedAverage;
+        let est_unweighted = pf.get_estimate();
+        assert_approx_eq!(est_unweighted[2], 15.0, 1e-6);
+
+        // Highest Weight: 20.0 (since p2 has 0.75)
+        pf.averaging_strategy = ParticleAveragingStrategy::HighestWeight;
+        let est_highest = pf.get_estimate();
+        assert_approx_eq!(est_highest[2], 20.0, 1e-6);
+    }
+
+    #[test]
+    fn test_resampling_residual() {
+        let s = StrapdownState::default();
+        // 3 particles with weights 0.1, 0.1, 0.8
+        // Should result in particles roughly proportional to weights
+        let p1 = Particle::new(s.clone(), None, 0.1);
+        let p2 = Particle::new(s.clone(), None, 0.1);
+        let p3 = Particle::new(s.clone(), None, 0.8);
+
+        let strategy = ParticleResamplingStrategy::Residual;
+        let resampled = strategy.resample(vec![p1, p2, p3]);
+
+        assert_eq!(resampled.len(), 3);
+        // All weights should be reset to 1/N
+        for p in resampled {
+            assert_approx_eq!(p.weight, 1.0 / 3.0, 1e-6);
+        }
+    }
+
+    #[test]
+    fn test_particle_filter_predict_update() {
+        let mean = InitialState::default();
+        let nav_cov = DVector::from_vec(vec![1e-9; 9]);
+        let other_cov = DVector::from_vec(vec![0.0; 0]);
+        let mut pf = ParticleFilter::new_about(
+            mean,
+            DVector::zeros(0),
+            nav_cov,
+            other_cov,
+            100,
+            None,
+            None,
+            Some(ParticleResamplingStrategy::Residual),
+        );
+
+        // Predict
+        let imu_data = IMUData {
+            accel: Vector3::new(0.0, 0.0, -9.81),
+            gyro: Vector3::new(0.0, 0.0, 0.0),
+        };
+        pf.predict(imu_data, 0.1);
+
+        // Update
+        let meas = GPSPositionMeasurement {
+            latitude: 0.0,
+            longitude: 0.0,
+            altitude: 0.0,
+            horizontal_noise_std: 1.0,
+            vertical_noise_std: 1.0,
+        };
+        pf.update(&meas);
+
+        // Check that we still have particles and they are normalized
+        assert_eq!(pf.particles.len(), 100);
+        let sum_weights: f64 = pf.particles.iter().map(|p| p.weight).sum();
+        assert_approx_eq!(sum_weights, 1.0, 1e-6);
+    }
+
+    #[test]
+    fn test_relative_altitude_measurement() {
+        let meas = RelativeAltitudeMeasurement {
+            relative_altitude: 10.0,
+            reference_altitude: 100.0,
+        };
+
+        assert_eq!(meas.get_dimension(), 1);
+        let vec = meas.get_vector();
+        assert_approx_eq!(vec[0], 110.0, 1e-6);
+
+        let noise = meas.get_noise();
+        assert_eq!(noise.nrows(), 1);
+
+        let state_sigma =
+            DMatrix::from_vec(9, 1, vec![0.0, 0.0, 50.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        let meas_sigma = meas.get_sigma_points(&state_sigma);
+        assert_approx_eq!(meas_sigma[(0, 0)], 50.0, 1e-6);
+
+        let display = format!("{}", meas);
+        assert!(display.contains("10"));
+        assert!(display.contains("100"));
+    }
+
+    #[test]
+    fn test_particle_display_and_from() {
+        let s = StrapdownState::default();
+        let p = Particle::new(s, None, 0.5);
+        let display = format!("{}", p);
+        assert!(display.contains("weight"));
+        assert!(display.contains("0.5"));
+
+        let vec = DVector::from_vec(vec![0.0; 9]);
+        let p_from = Particle::from((vec, 0.1));
+        assert_eq!(p_from.state_size, 9);
+        assert_eq!(p_from.weight, 0.1);
     }
 }
