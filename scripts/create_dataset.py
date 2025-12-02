@@ -227,16 +227,29 @@ def find_binary(bin_path: Path | None) -> Path:
     if cand.exists():
         return cand
 
-    raise FileNotFoundError("strapdown-sim binary not found. Build it or pass --bin /path/to/strapdown-sim")
+    raise FileNotFoundError(
+        "strapdown-sim binary not found. Build it or pass --bin /path/to/strapdown-sim"
+    )
 
 
-def build_cmd(bin_path: Path, input_file: Path, output_file: Path, cfg_args: List[str]) -> List[str]:
+def build_cmd(
+    bin_path: Path, input_file: Path, output_file: Path, cfg_args: List[str]
+) -> List[str]:
     # Use the same invocation style as the notebook: <bin> -i <input> -o <output> closed-loop <cfg_args...>
-    cmd = [str(bin_path), "-i", str(input_file), "-o", str(output_file), "closed-loop"] + cfg_args
+    cmd = [
+        str(bin_path),
+        "-i",
+        str(input_file),
+        "-o",
+        str(output_file),
+        "closed-loop",
+    ] + cfg_args
     return cmd
 
 
-def run_job(bin_path: Path, input_path: Path, out_root: Path, cfg_name: str, cfg_args: List[str]) -> int:
+def run_job(
+    bin_path: Path, input_path: Path, out_root: Path, cfg_name: str, cfg_args: List[str]
+) -> int:
     out_dir = out_root / cfg_name
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / input_path.name
@@ -253,9 +266,21 @@ def run_job(bin_path: Path, input_path: Path, out_root: Path, cfg_name: str, cfg
 
 def main(argv: List[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--bin", type=Path, default=None, help="Path to strapdown-sim binary")
-    parser.add_argument("--input", type=Path, default=DEFAULT_INPUT, help="Directory containing input CSVs")
-    parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT, help="Root output directory")
+    parser.add_argument(
+        "--bin", type=Path, default=None, help="Path to strapdown-sim binary"
+    )
+    parser.add_argument(
+        "--input",
+        type=Path,
+        default=DEFAULT_INPUT,
+        help="Directory containing input CSVs",
+    )
+    parser.add_argument(
+        "--output-root",
+        type=Path,
+        default=DEFAULT_OUTPUT_ROOT,
+        help="Root output directory",
+    )
     parser.add_argument("--jobs", type=int, default=1, help="Number of parallel jobs")
     args = parser.parse_args(argv)
 
@@ -298,7 +323,9 @@ def main(argv: List[str] | None = None) -> int:
         failures = 0
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as ex:
             future_to_job = {
-                ex.submit(run_job, bin_path, input_path, out_root, cfg_name, cfg_args): (cfg_name, input_path)
+                ex.submit(
+                    run_job, bin_path, input_path, out_root, cfg_name, cfg_args
+                ): (cfg_name, input_path)
                 for (cfg_name, input_path, cfg_args) in jobs
             }
             for fut in concurrent.futures.as_completed(future_to_job):

@@ -29,6 +29,7 @@ EARTH_RADIUS_M = 6371000
 # Optional: haversine for accurate distance calculation
 try:
     from haversine import Unit, haversine_vector
+
     HAS_HAVERSINE = True
 except ImportError:
     HAS_HAVERSINE = False
@@ -44,13 +45,13 @@ def load_navigation_csv(path: Path) -> pd.DataFrame:
 def calculate_position_error(truth: pd.DataFrame, test: pd.DataFrame) -> np.ndarray:
     """
     Calculate 2D horizontal position error in meters.
-    
+
     Uses haversine formula if available, otherwise falls back to
     equirectangular approximation.
     """
-    truth_coords = truth[['latitude', 'longitude']].values
-    test_coords = test[['latitude', 'longitude']].values
-    
+    truth_coords = truth[["latitude", "longitude"]].values
+    test_coords = test[["latitude", "longitude"]].values
+
     if HAS_HAVERSINE:
         error_m = haversine_vector(truth_coords, test_coords, Unit.METERS)
     else:
@@ -62,37 +63,37 @@ def calculate_position_error(truth: pd.DataFrame, test: pd.DataFrame) -> np.ndar
         x = dlon * np.cos((lat1 + lat2) / 2)
         y = dlat
         error_m = EARTH_RADIUS_M * np.sqrt(x**2 + y**2)
-    
+
     return error_m
 
 
 def calculate_altitude_error(truth: pd.DataFrame, test: pd.DataFrame) -> np.ndarray:
     """Calculate altitude error in meters."""
-    return np.abs(test['altitude'].values - truth['altitude'].values)
+    return np.abs(test["altitude"].values - truth["altitude"].values)
 
 
 def calculate_velocity_error(truth: pd.DataFrame, test: pd.DataFrame) -> np.ndarray:
     """Calculate 3D velocity error magnitude in m/s."""
-    vn_err = test['velocity_north'].values - truth['velocity_north'].values
-    ve_err = test['velocity_east'].values - truth['velocity_east'].values
-    vd_err = test['velocity_down'].values - truth['velocity_down'].values
+    vn_err = test["velocity_north"].values - truth["velocity_north"].values
+    ve_err = test["velocity_east"].values - truth["velocity_east"].values
+    vd_err = test["velocity_down"].values - truth["velocity_down"].values
     return np.sqrt(vn_err**2 + ve_err**2 + vd_err**2)
 
 
 def compute_statistics(errors: np.ndarray) -> dict:
     """Compute error statistics."""
     return {
-        'mean': np.mean(errors),
-        'rms': np.sqrt(np.mean(errors**2)),
-        'max': np.max(errors),
-        'std': np.std(errors),
-        'p50': np.percentile(errors, 50),
-        'p95': np.percentile(errors, 95),
-        'p99': np.percentile(errors, 99),
+        "mean": np.mean(errors),
+        "rms": np.sqrt(np.mean(errors**2)),
+        "max": np.max(errors),
+        "std": np.std(errors),
+        "p50": np.percentile(errors, 50),
+        "p95": np.percentile(errors, 95),
+        "p99": np.percentile(errors, 99),
     }
 
 
-def print_statistics(name: str, stats: dict, unit: str = 'm'):
+def print_statistics(name: str, stats: dict, unit: str = "m"):
     """Print formatted statistics."""
     print(f"\n{name} Statistics:")
     print(f"  Mean:     {stats['mean']:.3f} {unit}")
@@ -114,13 +115,13 @@ def plot_error_time_series(
     """Plot error vs time."""
     fig, ax = plt.subplots(figsize=(12, 4))
     ax.plot(time_s, errors, linewidth=0.8)
-    ax.set_xlabel('Time (s)')
+    ax.set_xlabel("Time (s)")
     ax.set_ylabel(ylabel)
     ax.set_title(title)
     ax.grid(True, alpha=0.3)
     ax.set_xlim(left=0)
     ax.set_ylim(bottom=0)
-    
+
     plt.tight_layout()
     if output_path:
         plt.savefig(output_path, dpi=150)
@@ -135,19 +136,31 @@ def plot_trajectory_comparison(
 ):
     """Plot truth vs test trajectory on lat/lon plot."""
     fig, ax = plt.subplots(figsize=(10, 8))
-    
-    ax.plot(truth['longitude'], truth['latitude'], 
-            'g-', linewidth=2, label='Truth', alpha=0.8)
-    ax.plot(test['longitude'], test['latitude'], 
-            'r--', linewidth=1.5, label='Estimated', alpha=0.8)
-    
-    ax.set_xlabel('Longitude (degrees)')
-    ax.set_ylabel('Latitude (degrees)')
-    ax.set_title('Trajectory Comparison')
+
+    ax.plot(
+        truth["longitude"],
+        truth["latitude"],
+        "g-",
+        linewidth=2,
+        label="Truth",
+        alpha=0.8,
+    )
+    ax.plot(
+        test["longitude"],
+        test["latitude"],
+        "r--",
+        linewidth=1.5,
+        label="Estimated",
+        alpha=0.8,
+    )
+
+    ax.set_xlabel("Longitude (degrees)")
+    ax.set_ylabel("Latitude (degrees)")
+    ax.set_title("Trajectory Comparison")
     ax.legend()
     ax.grid(True, alpha=0.3)
-    ax.set_aspect('equal')
-    
+    ax.set_aspect("equal")
+
     plt.tight_layout()
     if output_path:
         plt.savefig(output_path, dpi=150)
@@ -163,19 +176,24 @@ def plot_error_histogram(
 ):
     """Plot error distribution histogram."""
     fig, ax = plt.subplots(figsize=(8, 5))
-    
-    ax.hist(errors, bins=50, edgecolor='black', alpha=0.7)
-    ax.axvline(np.mean(errors), color='r', linestyle='--', 
-               label=f'Mean: {np.mean(errors):.2f}')
-    ax.axvline(np.percentile(errors, 95), color='orange', linestyle='--',
-               label=f'95th %: {np.percentile(errors, 95):.2f}')
-    
+
+    ax.hist(errors, bins=50, edgecolor="black", alpha=0.7)
+    ax.axvline(
+        np.mean(errors), color="r", linestyle="--", label=f"Mean: {np.mean(errors):.2f}"
+    )
+    ax.axvline(
+        np.percentile(errors, 95),
+        color="orange",
+        linestyle="--",
+        label=f"95th %: {np.percentile(errors, 95):.2f}",
+    )
+
     ax.set_xlabel(xlabel)
-    ax.set_ylabel('Count')
+    ax.set_ylabel("Count")
     ax.set_title(title)
     ax.legend()
     ax.grid(True, alpha=0.3)
-    
+
     plt.tight_layout()
     if output_path:
         plt.savefig(output_path, dpi=150)
@@ -192,20 +210,20 @@ def plot_covariance_bounds(
 ):
     """Plot error with covariance bounds (±2σ)."""
     fig, ax = plt.subplots(figsize=(12, 4))
-    
+
     sigma = np.sqrt(cov_values)
-    
-    ax.fill_between(time_s, 0, 2*sigma, alpha=0.3, color='blue', label='2σ bounds')
-    ax.plot(time_s, errors, 'r-', linewidth=0.8, label='Error')
-    
-    ax.set_xlabel('Time (s)')
-    ax.set_ylabel('Error / Uncertainty (m)')
+
+    ax.fill_between(time_s, 0, 2 * sigma, alpha=0.3, color="blue", label="2σ bounds")
+    ax.plot(time_s, errors, "r-", linewidth=0.8, label="Error")
+
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Error / Uncertainty (m)")
     ax.set_title(title)
     ax.legend()
     ax.grid(True, alpha=0.3)
     ax.set_xlim(left=0)
     ax.set_ylim(bottom=0)
-    
+
     plt.tight_layout()
     if output_path:
         plt.savefig(output_path, dpi=150)
@@ -215,96 +233,108 @@ def plot_covariance_bounds(
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Analyze strapdown-rs navigation results'
+        description="Analyze strapdown-rs navigation results"
     )
-    parser.add_argument('--truth', type=Path, required=True,
-                        help='Path to truth/baseline CSV')
-    parser.add_argument('--test', type=Path, required=True,
-                        help='Path to test result CSV')
-    parser.add_argument('--output', type=Path, default=None,
-                        help='Output directory for plots (optional)')
-    parser.add_argument('--no-plots', action='store_true',
-                        help='Skip generating plots')
-    
+    parser.add_argument(
+        "--truth", type=Path, required=True, help="Path to truth/baseline CSV"
+    )
+    parser.add_argument(
+        "--test", type=Path, required=True, help="Path to test result CSV"
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="Output directory for plots (optional)",
+    )
+    parser.add_argument("--no-plots", action="store_true", help="Skip generating plots")
+
     args = parser.parse_args()
-    
+
     # Create output directory if specified
     if args.output:
         args.output.mkdir(parents=True, exist_ok=True)
-    
+
     # Load data
     print(f"Loading truth: {args.truth}")
     truth = load_navigation_csv(args.truth)
-    
+
     print(f"Loading test:  {args.test}")
     test = load_navigation_csv(args.test)
-    
+
     # Ensure same length (truncate to shorter)
     min_len = min(len(truth), len(test))
     truth = truth.iloc[:min_len]
     test = test.iloc[:min_len]
-    
+
     print(f"Analyzing {min_len} samples")
-    
+
     # Calculate errors
     pos_error = calculate_position_error(truth, test)
     alt_error = calculate_altitude_error(truth, test)
     vel_error = calculate_velocity_error(truth, test)
-    
+
     # Compute and print statistics
     pos_stats = compute_statistics(pos_error)
     alt_stats = compute_statistics(alt_error)
     vel_stats = compute_statistics(vel_error)
-    
+
     print_statistics("2D Position Error", pos_stats, "m")
     print_statistics("Altitude Error", alt_stats, "m")
     print_statistics("Velocity Error", vel_stats, "m/s")
-    
+
     # Generate plots
     if not args.no_plots:
         # Time vector
         time_s = (test.index - test.index[0]).total_seconds().values
-        
+
         # Position error vs time
         plot_error_time_series(
-            time_s, pos_error,
-            'Horizontal Position Error Over Time',
-            'Position Error (m)',
-            args.output / 'position_error.png' if args.output else None
+            time_s,
+            pos_error,
+            "Horizontal Position Error Over Time",
+            "Position Error (m)",
+            args.output / "position_error.png" if args.output else None,
         )
-        
+
         # Trajectory comparison
         plot_trajectory_comparison(
-            truth, test,
-            args.output / 'trajectory.png' if args.output else None
+            truth, test, args.output / "trajectory.png" if args.output else None
         )
-        
+
         # Error histogram
         plot_error_histogram(
             pos_error,
-            'Position Error Distribution',
-            'Position Error (m)',
-            args.output / 'error_histogram.png' if args.output else None
+            "Position Error Distribution",
+            "Position Error (m)",
+            args.output / "error_histogram.png" if args.output else None,
         )
-        
+
         # Covariance consistency (if available)
-        if 'latitude_cov' in test.columns:
+        if "latitude_cov" in test.columns:
             # Convert lat covariance from radians² to meters²
-            lat_cov_m2 = test['latitude_cov'].values * (EARTH_RADIUS_M * np.pi / 180)**2
-            
-            # Use latitude component of position error for comparison
-            lat_error = np.abs(
-                test['latitude'].values - truth['latitude'].values
-            ) * EARTH_RADIUS_M * np.pi / 180
-            
-            plot_covariance_bounds(
-                time_s, lat_error, lat_cov_m2,
-                'Latitude Error with Covariance Bounds',
-                args.output / 'covariance_bounds.png' if args.output else None
+            lat_cov_m2 = (
+                test["latitude_cov"].values * (EARTH_RADIUS_M * np.pi / 180) ** 2
             )
-    
+
+            # Use latitude component of position error for comparison
+            lat_error = (
+                np.abs(test["latitude"].values - truth["latitude"].values)
+                * EARTH_RADIUS_M
+                * np.pi
+                / 180
+            )
+
+            plot_covariance_bounds(
+                time_s,
+                lat_error,
+                lat_cov_m2,
+                "Latitude Error with Covariance Bounds",
+                args.output / "covariance_bounds.png" if args.output else None,
+            )
+
     print("\nAnalysis complete.")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

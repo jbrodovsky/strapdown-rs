@@ -1021,16 +1021,19 @@ mod tests {
         // Test barometric altitude calculation
         // Note: The current barometric_altitude function appears to have an incorrect formula
         // This test validates that it executes without error and returns a value
-        
+
         let pressure = SEA_LEVEL_PRESSURE;
         let altitude = barometric_altitude(&pressure);
         // The function should at least execute and return a finite value
         assert!(altitude.is_finite(), "Altitude should be a finite number");
-        
+
         // Test at reduced pressure
         let pressure = 89875.0;
         let altitude = barometric_altitude(&pressure);
-        assert!(altitude.is_finite(), "Altitude should be a finite number for reduced pressure");
+        assert!(
+            altitude.is_finite(),
+            "Altitude should be a finite number for reduced pressure"
+        );
     }
 
     #[test]
@@ -1040,17 +1043,27 @@ mod tests {
         let initial_pressure = 101325.0;
         let rel_alt = relative_barometric_altitude(pressure, initial_pressure, None);
         assert_approx_eq!(rel_alt, 0.0, 0.1);
-        
+
         // Test with lower pressure (higher altitude)
         let pressure = 89875.0;
         let initial_pressure = 101325.0;
         let rel_alt = relative_barometric_altitude(pressure, initial_pressure, None);
-        assert!(rel_alt > 0.0, "Relative altitude should be positive when pressure drops");
-        assert!(rel_alt > 900.0 && rel_alt < 1200.0, "Relative altitude should be around 1000m, got {}", rel_alt);
-        
+        assert!(
+            rel_alt > 0.0,
+            "Relative altitude should be positive when pressure drops"
+        );
+        assert!(
+            rel_alt > 900.0 && rel_alt < 1200.0,
+            "Relative altitude should be around 1000m, got {}",
+            rel_alt
+        );
+
         // Test with custom temperature
         let rel_alt_custom = relative_barometric_altitude(pressure, initial_pressure, Some(273.15));
-        assert!(rel_alt_custom > 0.0, "Relative altitude with custom temp should be positive");
+        assert!(
+            rel_alt_custom > 0.0,
+            "Relative altitude with custom temp should be positive"
+        );
     }
 
     #[test]
@@ -1059,17 +1072,27 @@ mod tests {
         let altitude = 0.0;
         let pressure = expected_barometric_pressure(altitude, SEA_LEVEL_PRESSURE);
         assert_approx_eq!(pressure, SEA_LEVEL_PRESSURE, 1.0);
-        
+
         // Test at 1000m altitude
         let altitude = 1000.0;
         let pressure = expected_barometric_pressure(altitude, SEA_LEVEL_PRESSURE);
-        assert!(pressure < SEA_LEVEL_PRESSURE, "Pressure should decrease with altitude");
-        assert!(pressure > 88000.0 && pressure < 91000.0, "Pressure at 1000m should be around 89875 Pa, got {}", pressure);
-        
+        assert!(
+            pressure < SEA_LEVEL_PRESSURE,
+            "Pressure should decrease with altitude"
+        );
+        assert!(
+            pressure > 88000.0 && pressure < 91000.0,
+            "Pressure at 1000m should be around 89875 Pa, got {}",
+            pressure
+        );
+
         // Test at 5000m altitude
         let altitude = 5000.0;
         let pressure = expected_barometric_pressure(altitude, SEA_LEVEL_PRESSURE);
-        assert!(pressure < 60000.0, "Pressure at 5000m should be significantly lower");
+        assert!(
+            pressure < 60000.0,
+            "Pressure at 5000m should be significantly lower"
+        );
     }
 
     #[test]
@@ -1079,18 +1102,24 @@ mod tests {
         let longitude = -75.0;
         let altitude = MEAN_RADIUS;
         let b_field = calculate_magnetic_field(&latitude, &longitude, &altitude);
-        
+
         // Check that we get a non-zero vector (at least one component)
         let magnitude = (b_field[0].powi(2) + b_field[1].powi(2) + b_field[2].powi(2)).sqrt();
-        assert!(magnitude > 0.0, "Magnetic field magnitude should be non-zero");
-        
+        assert!(
+            magnitude > 0.0,
+            "Magnetic field magnitude should be non-zero"
+        );
+
         // Test at a different location
         let latitude = 30.0;
         let longitude = 100.0;
         let altitude = MEAN_RADIUS;
         let b_field = calculate_magnetic_field(&latitude, &longitude, &altitude);
         let magnitude = (b_field[0].powi(2) + b_field[1].powi(2) + b_field[2].powi(2)).sqrt();
-        assert!(magnitude > 0.0, "Magnetic field magnitude should be non-zero");
+        assert!(
+            magnitude > 0.0,
+            "Magnetic field magnitude should be non-zero"
+        );
     }
 
     #[test]
@@ -1100,7 +1129,7 @@ mod tests {
         let radius = MEAN_RADIUS;
         let b_lat = calculate_latitudinal_magnetic_field(colatitude, radius);
         assert_approx_eq!(b_lat, -MAGNETIC_FIELD_STRENGTH, 1e-7);
-        
+
         // Test at magnetic poles (colatitude = 0 or 180 degrees)
         let colatitude = 0.0;
         let b_lat = calculate_latitudinal_magnetic_field(colatitude, radius);
@@ -1115,16 +1144,23 @@ mod tests {
         let longitude = -75.0;
         let altitude = MEAN_RADIUS;
         let inclination = magnetic_inclination(&latitude, &longitude, &altitude);
-        
+
         // Inclination should be a finite number
-        assert!(inclination.is_finite(), "Inclination should be finite, got {}", inclination);
-        
+        assert!(
+            inclination.is_finite(),
+            "Inclination should be finite, got {}",
+            inclination
+        );
+
         // Test at equator - inclination should be relatively small
         let latitude = 0.0;
         let longitude = 0.0;
         let altitude = MEAN_RADIUS;
         let inclination = magnetic_inclination(&latitude, &longitude, &altitude);
-        assert!(inclination.is_finite(), "Inclination at equator should be finite");
+        assert!(
+            inclination.is_finite(),
+            "Inclination at equator should be finite"
+        );
     }
 
     #[test]
@@ -1134,10 +1170,14 @@ mod tests {
         let longitude = -75.0;
         let altitude = MEAN_RADIUS; // Use Earth's radius to test the function
         let declination = magnetic_declination(&latitude, &longitude, &altitude);
-        
+
         // Declination should be a finite number
-        assert!(declination.is_finite(), "Declination should be finite, got {}", declination);
-        
+        assert!(
+            declination.is_finite(),
+            "Declination should be finite, got {}",
+            declination
+        );
+
         // Test at different location with non-zero altitude
         let latitude = 30.0;
         let longitude = 100.0;
@@ -1152,20 +1192,20 @@ mod tests {
         // We'll create a mock GeomagneticField result for testing
         // Since we can't easily construct GeomagneticField in core crate tests,
         // we'll test the calculation logic directly
-        
+
         // For now, we can test that the function compiles and handles basic inputs
         // A full integration test would be better suited for the geonav crate
         // where world_magnetic_model is more fully integrated
-        
+
         // This is a placeholder test that ensures the function signature is correct
         // and exercises the anomaly calculation logic
         let mag_x: f64 = 20000.0;
-        let mag_y: f64 = 5000.0; 
+        let mag_y: f64 = 5000.0;
         let mag_z: f64 = 40000.0;
-        
+
         // Calculate observed magnitude
         let obs_mag = (mag_x.powi(2) + mag_y.powi(2) + mag_z.powi(2)).sqrt();
-        
+
         // The anomaly should be obs - expected
         // We can't easily test this without proper GeomagneticField construction
         // which requires the uom and time crates not available in core
@@ -1180,13 +1220,22 @@ mod tests {
         let north_velocity = 10.0;
         let east_velocity = 5.0;
         let gravity_observed = 9.81;
-        
-        let anomaly = gravity_anomaly(&latitude, &altitude, &north_velocity, &east_velocity, &gravity_observed);
+
+        let anomaly = gravity_anomaly(
+            &latitude,
+            &altitude,
+            &north_velocity,
+            &east_velocity,
+            &gravity_observed,
+        );
         assert!(anomaly.is_finite(), "Gravity anomaly should be finite");
-        
+
         // Test with zero velocities
         let anomaly_zero = gravity_anomaly(&latitude, &altitude, &0.0, &0.0, &gravity_observed);
-        assert!(anomaly_zero.is_finite(), "Gravity anomaly with zero velocity should be finite");
+        assert!(
+            anomaly_zero.is_finite(),
+            "Gravity anomaly with zero velocity should be finite"
+        );
     }
 
     #[test]
@@ -1196,19 +1245,28 @@ mod tests {
         let altitude = 1000.0;
         let north_velocity = 100.0;
         let east_velocity = 50.0;
-        
+
         let correction = eotvos(&latitude, &altitude, &north_velocity, &east_velocity);
         assert!(correction.is_finite(), "Eötvös correction should be finite");
-        assert!(correction != 0.0, "Eötvös correction should be non-zero with velocity");
-        
+        assert!(
+            correction != 0.0,
+            "Eötvös correction should be non-zero with velocity"
+        );
+
         // Test with zero velocities - should be very small
         let correction_zero = eotvos(&latitude, &altitude, &0.0, &0.0);
         assert_approx_eq!(correction_zero, 0.0, 1e-6);
-        
+
         // Test that eastward velocity has a larger effect than northward velocity
         let correction_east = eotvos(&latitude, &altitude, &0.0, &100.0);
         let correction_north = eotvos(&latitude, &altitude, &100.0, &0.0);
-        assert!(correction_east.abs() > 0.0, "East velocity should produce correction");
-        assert!(correction_north.abs() > 0.0, "North velocity should produce correction");
+        assert!(
+            correction_east.abs() > 0.0,
+            "East velocity should produce correction"
+        );
+        assert!(
+            correction_north.abs() > 0.0,
+            "North velocity should produce correction"
+        );
     }
 }

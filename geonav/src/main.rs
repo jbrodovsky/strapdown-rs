@@ -210,12 +210,11 @@ fn find_map_file(
 /// Initialize the logger with the specified configuration
 fn init_logger(log_level: &str, log_file: Option<&PathBuf>) -> Result<(), Box<dyn Error>> {
     use std::io::Write;
-    
-    let level = log_level.parse::<log::LevelFilter>()
-        .unwrap_or_else(|_| {
-            eprintln!("Invalid log level '{}', defaulting to 'info'", log_level);
-            log::LevelFilter::Info
-        });
+
+    let level = log_level.parse::<log::LevelFilter>().unwrap_or_else(|_| {
+        eprintln!("Invalid log level '{}', defaulting to 'info'", log_level);
+        log::LevelFilter::Info
+    });
 
     let mut builder = env_logger::Builder::new();
     builder.filter_level(level);
@@ -230,10 +229,12 @@ fn init_logger(log_level: &str, log_file: Option<&PathBuf>) -> Result<(), Box<dy
     });
 
     if let Some(log_path) = log_file {
-        let target = Box::new(std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_path)?);
+        let target = Box::new(
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log_path)?,
+        );
         builder.target(env_logger::Target::Pipe(target));
     }
 
@@ -243,7 +244,7 @@ fn init_logger(log_level: &str, log_file: Option<&PathBuf>) -> Result<(), Box<dy
 
 fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
-    
+
     // Initialize logger
     init_logger(&cli.log_level, cli.log_file.as_ref())?;
 
