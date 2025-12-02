@@ -2,9 +2,9 @@ import os
 from argparse import ArgumentParser
 from pathlib import Path
 
-import pandas as pd
 import matplotlib.pyplot as plt
-from haversine import haversine_vector, Unit
+import pandas as pd
+from haversine import Unit, haversine_vector
 
 
 def plot_performance(nav: pd.DataFrame, gps: pd.DataFrame, output_path: Path | str):

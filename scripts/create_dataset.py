@@ -8,12 +8,13 @@ Usage:
 """
 
 from __future__ import annotations
+
 import argparse
-import subprocess
-from pathlib import Path
-import shutil
-import sys
 import concurrent.futures
+import shutil
+import subprocess
+import sys
+from pathlib import Path
 from typing import List, Tuple
 
 DEFAULT_BIN = Path("target/release/strapdown-sim")
