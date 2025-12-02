@@ -19,16 +19,16 @@ import argparse
 from pathlib import Path
 from typing import Optional
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 
 # Earth radius in meters (WGS84 mean radius)
 EARTH_RADIUS_M = 6371000
 
 # Optional: haversine for accurate distance calculation
 try:
-    from haversine import haversine_vector, Unit
+    from haversine import Unit, haversine_vector
     HAS_HAVERSINE = True
 except ImportError:
     HAS_HAVERSINE = False

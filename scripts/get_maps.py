@@ -12,11 +12,10 @@ from cartopy.io import img_tiles as cimgt
 from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
 from pandas import read_csv
-
 from pygmt.datasets import (
-    load_earth_relief,
     load_earth_free_air_anomaly,
     load_earth_magnetic_anomaly,
+    load_earth_relief,
 )
 
 
