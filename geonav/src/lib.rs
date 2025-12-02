@@ -540,7 +540,7 @@ impl GeophysicalAnomalyMeasurementModel for MagneticAnomalyMeasurement {
             Length::new::<meter>(self.altitude as f32),
             Angle::new::<degree>(self.latitude as f32),
             Angle::new::<degree>(self.longitude as f32),
-            Date::from_ordinal_date(self.year as i32, self.day as u16).unwrap(),
+            Date::from_ordinal_date(self.year, self.day).unwrap(),
         )
         .expect("Failed to create GeomagneticField");
         self.mag_obs - magnetic_field.f().value as f64
@@ -792,7 +792,7 @@ pub fn build_event_stream(
                             latitude: f64::NAN, // to be set in closed-loop using state
                             longitude: f64::NAN, // to be set in closed-loop using state
                             altitude: f64::NAN, // to be set in closed-loop using state
-                            year: datetime.year() as i32,
+                            year: datetime.year(),
                             day: datetime.ordinal() as u16,
                         };
                         events.push(Event::Measurement {

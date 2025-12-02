@@ -1317,7 +1317,7 @@ impl NavigationFilter for ParticleFilter {
         // Update weights based on measurement likelihood
         for (i, particle) in self.particles.iter_mut().enumerate() {
             let z_hat = z_hats.column(i);
-            let innovation = measurement.get_vector() - &z_hat;
+            let innovation = measurement.get_vector() - z_hat;
             let sigmas = measurement.get_noise();
             // Compute likelihood using Gaussian probability density function
             let sigma_inv = sigmas.clone().try_inverse().unwrap();
@@ -1325,7 +1325,7 @@ impl NavigationFilter for ParticleFilter {
             let exponent = -0.5 * innovation.transpose() * sigma_inv * innovation;
             let likelihood = (1.0
                 / ((2.0 * std::f64::consts::PI).powf(measurement.get_dimension() as f64 / 2.0)
-                    * &sigma_det.sqrt()))
+                    * sigma_det.sqrt()))
                 * exponent[(0, 0)].exp();
             // Update particle weight for now we are resampling every cycle
             // TODO: #117 Add in enums for different frequency of resampling
@@ -1338,15 +1338,15 @@ impl NavigationFilter for ParticleFilter {
     fn get_estimate(&self) -> DVector<f64> {
         match self.averaging_strategy {
             ParticleAveragingStrategy::WeightedAverage => {
-                let (mean, _cov) = ParticleAveragingStrategy::weighted_average_state(&self);
+                let (mean, _cov) = ParticleAveragingStrategy::weighted_average_state(self);
                 mean
             }
             ParticleAveragingStrategy::UnweightedAverage => {
-                let (mean, _cov) = ParticleAveragingStrategy::unweighted_average_state(&self);
+                let (mean, _cov) = ParticleAveragingStrategy::unweighted_average_state(self);
                 mean
             }
             ParticleAveragingStrategy::HighestWeight => {
-                let (mean, _cov) = ParticleAveragingStrategy::highest_weight_state(&self);
+                let (mean, _cov) = ParticleAveragingStrategy::highest_weight_state(self);
                 mean
             }
         }
@@ -1354,15 +1354,15 @@ impl NavigationFilter for ParticleFilter {
     fn get_certainty(&self) -> DMatrix<f64> {
         match self.averaging_strategy {
             ParticleAveragingStrategy::WeightedAverage => {
-                let (_mean, cov) = ParticleAveragingStrategy::weighted_average_state(&self);
+                let (_mean, cov) = ParticleAveragingStrategy::weighted_average_state(self);
                 cov
             }
             ParticleAveragingStrategy::UnweightedAverage => {
-                let (_mean, cov) = ParticleAveragingStrategy::unweighted_average_state(&self);
+                let (_mean, cov) = ParticleAveragingStrategy::unweighted_average_state(self);
                 cov
             }
             ParticleAveragingStrategy::HighestWeight => {
-                let (_mean, cov) = ParticleAveragingStrategy::highest_weight_state(&self);
+                let (_mean, cov) = ParticleAveragingStrategy::highest_weight_state(self);
                 cov
             }
         }
