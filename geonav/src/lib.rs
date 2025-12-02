@@ -32,7 +32,7 @@ use world_magnetic_model::uom::si::length::meter;
 
 use strapdown::earth::gravity_anomaly;
 use strapdown::filter::{
-    GPSPositionAndVelocityMeasurement, MeasurementModel, RelativeAltitudeMeasurement,
+    GPSPositionAndVelocityMeasurement, MeasurementModel, NavigationFilter, RelativeAltitudeMeasurement,
     UnscentedKalmanFilter,
 };
 use strapdown::messages::{
@@ -848,7 +848,7 @@ pub fn geo_closed_loop(
             Event::Imu { dt_s, imu, .. } => {
                 ukf.predict(imu, dt_s);
                 if let Err(e) =
-                    monitor.check(ukf.get_mean().as_slice(), &ukf.get_covariance(), None)
+                    monitor.check(ukf.get_estimate().as_slice(), &ukf.get_certainty(), None)
                 {
                     // log::error!("Health fail after predict at {} (#{i}): {e}", ts);
                     bail!(e);
@@ -862,7 +862,7 @@ pub fn geo_closed_loop(
                 if let Some(gravity) = meas.as_any_mut().downcast_mut::<GravityMeasurement>() {
                     // Handle GravityMeasurement-specific logic here if needed
                     // dbg!("Processing GravityMeasurement at time {}", ts);
-                    let mean_vec = ukf.get_mean();
+                    let mean_vec = ukf.get_estimate();
                     // dbg!("Current State: {:?}", mean_vec.as_slice());
                     let mean = mean_vec.as_slice();
                     let strapdown: StrapdownState = (&mean[..9]).try_into().unwrap();
@@ -874,7 +874,7 @@ pub fn geo_closed_loop(
                 {
                     // Handle MagneticAnomalyMeasurement-specific logic here if needed
                     //let mean: StrapdownState = ukf.get_mean().as_slice().try_into().unwrap();
-                    let mean_vec = ukf.get_mean();
+                    let mean_vec = ukf.get_estimate();
                     let mean = mean_vec.as_slice();
                     let strapdown: StrapdownState = (&mean[..9]).try_into().unwrap();
                     magnetic.set_state(&strapdown);
@@ -884,13 +884,13 @@ pub fn geo_closed_loop(
                     ukf.update(meas.as_ref());
                 }
                 if let Err(e) =
-                    monitor.check(ukf.get_mean().as_slice(), &ukf.get_covariance(), None)
+                    monitor.check(ukf.get_estimate().as_slice(), &ukf.get_certainty(), None)
                 {
                     bail!(e);
                 }
                 // Health check after measurement update
                 if let Err(e) =
-                    monitor.check(ukf.get_mean().as_slice(), &ukf.get_covariance(), None)
+                    monitor.check(ukf.get_estimate().as_slice(), &ukf.get_certainty(), None)
                 {
                     // log::error!("Health fail after measurement update at {} (#{i}): {e}", ts);
                     bail!(e);

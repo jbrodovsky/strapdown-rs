@@ -8,6 +8,7 @@ use geonav::{
     GeoMap, GeophysicalMeasurementType, GravityResolution, MagneticResolution, build_event_stream,
     geo_closed_loop,
 };
+use strapdown::filter::NavigationFilter;
 use strapdown::messages::GnssDegradationConfig;
 use strapdown::sim::{
     DEFAULT_PROCESS_NOISE, FaultArgs, NavigationResult, SchedulerArgs, TestDataRecord, build_fault,
@@ -331,9 +332,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
     info!(
         "Initialized UKF with state dimension {}",
-        ukf.get_mean().len()
+        ukf.get_estimate().len()
     );
-    info!("Initial state: {:?}", ukf.get_mean());
+    info!("Initial state: {:?}", ukf.get_estimate());
     // Run closed-loop simulation
     info!("Running geophysical navigation simulation...");
     let results = geo_closed_loop(&mut ukf, events);

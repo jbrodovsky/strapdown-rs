@@ -1,3 +1,4 @@
+
 //! Inertial Navigation Filters
 //!
 //! This module contains implementations of various inertial navigation filters, including
@@ -19,10 +20,12 @@ use crate::linalg::{matrix_square_root, robust_spd_solve, symmetrize};
 use crate::{IMUData, StrapdownState, forward, wrap_to_2pi};
 
 use std::any::Any;
+use std::convert::From;
 use std::fmt::{self, Debug, Display};
 
 use nalgebra::{DMatrix, DVector, Rotation3};
 use rand;
+use rand_distr::{Distribution};
 // ==== Measurement Models ========================================================
 // Below is a set of generic measurement models for the UKF and particle filter.
 // These models provide a vec of "expected measurements" based on the sigma points
@@ -292,6 +295,32 @@ pub struct InitialState {
     pub yaw: f64,
     pub in_degrees: bool,
 }
+/// Navigation filter trait for common functions across all navigation filters
+pub trait NavigationFilter {
+    /// Predicts the state using the strapdown equations and IMU measurements.
+    ///
+    /// The IMU measurements are used to update the strapdown state in the local level frame.
+    /// The IMU measurements are assumed to be in the body frame.
+    ///
+    /// # Arguments
+    /// * `imu_data` - The IMU measurements to propagate the state with (e.g. relative accelerations (m/s^2) and angular rates (rad/s)).
+    /// * `dt` - The time step for the propagation.
+    fn predict(&mut self, imu_data: IMUData, dt: f64);
+    /// Perform the measurement update step.
+    ///
+    /// This method updates the navigation filter based on the measurement provided. The 
+    /// measurement model is specific to a given implementation of a Bayesian filter and
+    /// must be provided by the user as the model determines the shape and quantities of
+    /// the measurement vector, measurement covariance matrix, and where applicable and 
+    /// the measurement sigma points. Measurement models are implemented as traits to 
+    /// allow for the filter to consume them generically.
+    fn update<M: MeasurementModel + ?Sized>(&mut self, measurement: &M);
+    /// Get the current state estimate as determined by the underlying logic of the filter.
+    fn get_estimate(&self) -> DVector<f64>;
+    /// Get the state estimate's certainty  as determined by the underlying logic of the 
+    /// filter.
+    fn get_certainty(&self) -> DMatrix<f64>;
+}
 /// Strapdown Unscented Kalman Filter Inertial Navigation Filter
 ///
 /// This filter uses the Unscented Kalman Filter (UKF) algorithm to estimate the state of a
@@ -450,19 +479,32 @@ impl UnscentedKalmanFilter {
             weights_mean,
             weights_cov,
         }
+    }    
+    pub fn get_sigma_points(&self) -> DMatrix<f64> {
+        let p = (self.state_size as f64 + self.lambda) * self.covariance.clone();
+        let sqrt_p = matrix_square_root(&p);
+        let mu = self.mean_state.clone();
+        let mut pts = DMatrix::<f64>::zeros(self.state_size, 2 * self.state_size + 1);
+        pts.column_mut(0).copy_from(&mu);
+        for i in 0..sqrt_p.ncols() {
+            pts.column_mut(i + 1).copy_from(&(&mu + sqrt_p.column(i)));
+            pts.column_mut(i + 1 + self.state_size)
+                .copy_from(&(&mu - sqrt_p.column(i)));
+        }
+        pts
+    }    
+    fn robust_kalman_gain(
+        &mut self,
+        cross_covariance: &DMatrix<f64>,
+        s: &DMatrix<f64>,
+    ) -> DMatrix<f64> {
+        // Solve S Kᵀ = P_xzᵀ  => K = (S^{-1} P_xz)ᵀ
+        let kt = robust_spd_solve(&symmetrize(s), &cross_covariance.transpose());
+        kt.transpose()
     }
-    /// Predicts the state using the strapdown equations and IMU measurements.
-    ///
-    /// The IMU measurements are used to update the strapdown state in the local level frame.
-    /// The IMU measurements are assumed to be in the body frame.
-    ///
-    /// # Arguments
-    /// * `imu_data` - The IMU measurements to propagate the state with (e.g. relative accelerations (m/s^2) and angular rates (rad/s)).
-    /// * `dt` - The time step for the propagation.
-    ///
-    /// # Returns
-    /// * none
-    pub fn predict(&mut self, imu_data: IMUData, dt: f64) {
+}
+impl NavigationFilter for UnscentedKalmanFilter { 
+    fn predict(&mut self, imu_data: IMUData, dt: f64) {
         // Propagate the strapdown state using the strapdown equations
         let mut sigma_points = self.get_sigma_points();
         for i in 0..sigma_points.ncols() {
@@ -512,52 +554,7 @@ impl UnscentedKalmanFilter {
         self.mean_state = mu_bar;
         self.covariance = symmetrize(&p_bar);
     }
-    /// Get the UnscentedKalmanFilter mean state.
-    pub fn get_mean(&self) -> DVector<f64> {
-        self.mean_state.clone()
-    }
-    /// Get the UnscentedKalmanFilter covariance.
-    pub fn get_covariance(&self) -> DMatrix<f64> {
-        self.covariance.clone()
-    }
-    /// Convert a Vec<SigmaPoint> to a DMatrix<f64>
-    pub fn get_sigma_points(&self) -> DMatrix<f64> {
-        let p = (self.state_size as f64 + self.lambda) * self.covariance.clone();
-        let sqrt_p = matrix_square_root(&p);
-        let mu = self.mean_state.clone();
-        let mut pts = DMatrix::<f64>::zeros(self.state_size, 2 * self.state_size + 1);
-        pts.column_mut(0).copy_from(&mu);
-        for i in 0..sqrt_p.ncols() {
-            pts.column_mut(i + 1).copy_from(&(&mu + sqrt_p.column(i)));
-            pts.column_mut(i + 1 + self.state_size)
-                .copy_from(&(&mu - sqrt_p.column(i)));
-        }
-        pts
-    }
-    /// Perform the Kalman measurement update step.
-    ///
-    /// This method updates the state and covariance based on the measurement and measurement
-    /// sigma points. The measurement model is specific to a given implementation of the UKF
-    /// and must be provided by the user as the model determines the shape and quantities of
-    /// the measurement vector and the measurement sigma points. Measurement models should be
-    /// implemented as traits and applied to the UnscentedKalmanFilter as needed.
-    ///
-    /// This module contains some standard GNSS-aided measurements models (`position_measurement_model`,
-    /// `velocity_measurement_model`, and `position_and_velocity_measurement_model`) that can be
-    /// used. See the `sim` module for a canonical example of a GPS-aided INS implementation
-    /// that uses these models.
-    ///
-    /// **Note**: Canonical INS implementations use a position measurement model. Typically,
-    /// position is reported in _degrees_ for latitude and longitude, and in meters for altitude.
-    /// Internally, the UnscentedKalmanFilter stores the latitude and longitude in _radians_, and the measurement models make no
-    /// assumptions about the units of the position measurements. However, the user should
-    /// ensure that the provided measurement to this function is in the same units as the
-    /// measurement model.
-    ///
-    /// # Arguments
-    /// * `measurement` - The measurement vector to update the state with.
-    /// * `measurement_sigma_points` - The measurement sigma points to use for the update.
-    pub fn update<M: MeasurementModel + ?Sized>(&mut self, measurement: &M) {
+    fn update<M: MeasurementModel + ?Sized>(&mut self, measurement: &M) {
         let measurement_sigma_points = measurement.get_sigma_points(&self.get_sigma_points());
         // Calculate expected measurement
         let mut z_hat = DVector::<f64>::zeros(measurement.get_dimension());
@@ -604,20 +601,23 @@ impl UnscentedKalmanFilter {
         // Re-symmetrize to fight round-off
         self.covariance = 0.5 * (&self.covariance + self.covariance.transpose());
     }
-    fn robust_kalman_gain(
-        &mut self,
-        cross_covariance: &DMatrix<f64>,
-        s: &DMatrix<f64>,
-    ) -> DMatrix<f64> {
-        // Solve S Kᵀ = P_xzᵀ  => K = (S^{-1} P_xz)ᵀ
-        let kt = robust_spd_solve(&symmetrize(s), &cross_covariance.transpose());
-        kt.transpose()
+    fn get_estimate(&self) -> DVector<f64> {
+        self.mean_state.clone()
+    }
+    fn get_certainty(&self) -> DMatrix<f64> {
+        self.covariance.clone()
     }
 }
+
 #[derive(Clone, Debug, Default)]
+
 pub struct Particle {
     /// The strapdown state of the particle
     pub nav_state: StrapdownState,
+    /// Any additional other states
+    pub other_states: Option<DVector<f64>>,
+    /// State length dimension
+    pub state_size: usize,
     /// The weight of the particle
     pub weight: f64,
 }
@@ -637,6 +637,307 @@ impl Display for Particle {
             .finish()
     }
 }
+impl Particle {
+    /// Create a new particle with the given strapdown state, other states, and weight.
+    pub fn new(
+        nav_state: StrapdownState,
+        other_states: Option<DVector<f64>>,
+        weight: f64,
+    ) -> Particle {
+        let state_size = 9 + match &other_states {
+            Some(states) => states.len(),
+            None => 0,
+        };
+        Particle {
+            nav_state,
+            other_states,
+            state_size,
+            weight,
+        }
+    }
+}
+impl From<(DVector<f64>, f64)> for Particle {
+    fn from(tuple: (DVector<f64>, f64)) -> Self {
+        let (state_vector, weight) = tuple;
+        assert!(
+            state_vector.len() >= 9,
+            "State vector must be at least 9 elements long"
+        );
+        let nav_state = StrapdownState {
+            latitude: state_vector[0],
+            longitude: state_vector[1],
+            altitude: state_vector[2],
+            velocity_north: state_vector[3],
+            velocity_east: state_vector[4],
+            velocity_down: state_vector[5],
+            attitude: Rotation3::from_euler_angles(
+                state_vector[6],
+                state_vector[7],
+                state_vector[8],
+            ),
+            coordinate_convention: true,
+        };
+        let other_states = if state_vector.len() > 9 {
+            Some(state_vector.rows(9, state_vector.len() - 9).clone_owned())
+        } else {
+            None
+        };
+        Particle::new(nav_state, other_states, weight)
+    }
+}
+
+/// ParticleAveragingStrategy defines the method used to compute the navigation solution
+/// from the set of particles in a particle filter. This strategy determines how the
+/// filter aggregates individual particle states into a single state estimate and covariance.
+#[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
+pub enum ParticleAveragingStrategy {
+    /// Computes the weighted mean and covariance across all particles, using each particle's weight 
+    /// as its contribution. This is the default and most statistically consistent approach for particle filters.
+    #[default]
+    WeightedAverage,
+    /// Computes the arithmetic mean and covariance across all particles, ignoring particle weights. 
+    /// This can be useful for diagnostic purposes or when all particles have equal weights.
+    UnweightedAverage,
+    /// Selects the state of the particle with the highest weight as the navigation solution, with 
+    /// zero covariance. This approach is sometimes used in multi-modal or highly non-Gaussian scenarios.
+    HighestWeight,
+}
+impl ParticleAveragingStrategy {
+    /// Get the weighted averaged state and covariance
+    fn weighted_average_state(pf: &ParticleFilter) -> (DVector<f64>, DMatrix<f64>) {
+        let state_size = pf.state_size;
+        let mut mean = DVector::<f64>::zeros(state_size);
+
+        for particle in &pf.particles {
+            let euler = particle.nav_state.attitude.euler_angles();
+            mean[0] += particle.weight * particle.nav_state.latitude;
+            mean[1] += particle.weight * particle.nav_state.longitude;
+            mean[2] += particle.weight * particle.nav_state.altitude;
+            mean[3] += particle.weight * particle.nav_state.velocity_north;
+            mean[4] += particle.weight * particle.nav_state.velocity_east;
+            mean[5] += particle.weight * particle.nav_state.velocity_down;
+            mean[6] += particle.weight * euler.0; // roll
+            mean[7] += particle.weight * euler.1; // pitch
+            mean[8] += particle.weight * euler.2; // yaw
+
+            if let Some(ref other) = particle.other_states {
+                for (i, val) in other.iter().enumerate() {
+                    if 9 + i < state_size {
+                        mean[9 + i] += particle.weight * val;
+                    }
+                }
+            }
+        }
+
+        // Compute covariance
+        let mut cov = DMatrix::<f64>::zeros(state_size, state_size);
+        for particle in &pf.particles {
+            let euler = particle.nav_state.attitude.euler_angles();
+            let mut state_vec = vec![
+                particle.nav_state.latitude,
+                particle.nav_state.longitude,
+                particle.nav_state.altitude,
+                particle.nav_state.velocity_north,
+                particle.nav_state.velocity_east,
+                particle.nav_state.velocity_down,
+                euler.0,
+                euler.1,
+                euler.2,
+            ];
+            if let Some(ref other) = particle.other_states {
+                state_vec.extend(other.iter());
+            }
+            // Ensure state vector matches state_size
+            if state_vec.len() != state_size {
+                // This might happen if particles have inconsistent sizes or pf.state_size is wrong
+                // For safety, resize or panic. Here we assume consistency but handle potential mismatch if needed.
+                // Ideally, particle construction enforces this.
+            }
+            
+            let state = DVector::from_vec(state_vec);
+            let diff = state - &mean;
+            cov += particle.weight * &diff * &diff.transpose();
+        }
+
+        (mean, cov)
+    }
+    // Get the unweighted averaged state and covariance
+    fn unweighted_average_state(pf: &ParticleFilter) -> (DVector<f64>, DMatrix<f64>) {
+        let n = pf.particles.len() as f64;
+        let state_size = pf.state_size;
+        let mut mean = DVector::<f64>::zeros(state_size);
+
+        for particle in &pf.particles {
+            let euler = particle.nav_state.attitude.euler_angles();
+            mean[0] += particle.nav_state.latitude / n;
+            mean[1] += particle.nav_state.longitude / n;
+            mean[2] += particle.nav_state.altitude / n;
+            mean[3] += particle.nav_state.velocity_north / n;
+            mean[4] += particle.nav_state.velocity_east / n;
+            mean[5] += particle.nav_state.velocity_down / n;
+            mean[6] += euler.0 / n; // roll
+            mean[7] += euler.1 / n; // pitch
+            mean[8] += euler.2 / n; // yaw
+
+            if let Some(ref other) = particle.other_states {
+                for (i, val) in other.iter().enumerate() {
+                    if 9 + i < state_size {
+                        mean[9 + i] += val / n;
+                    }
+                }
+            }
+        }
+
+        // Compute covariance
+        let mut cov = DMatrix::<f64>::zeros(state_size, state_size);
+        for particle in &pf.particles {
+            let euler = particle.nav_state.attitude.euler_angles();
+            let mut state_vec = vec![
+                particle.nav_state.latitude,
+                particle.nav_state.longitude,
+                particle.nav_state.altitude,
+                particle.nav_state.velocity_north,
+                particle.nav_state.velocity_east,
+                particle.nav_state.velocity_down,
+                euler.0,
+                euler.1,
+                euler.2,
+            ];
+            if let Some(ref other) = particle.other_states {
+                state_vec.extend(other.iter());
+            }
+            let state = DVector::from_vec(state_vec);
+            let diff = state - &mean;
+            cov += (1.0 / n) * &diff * &diff.transpose();
+        }
+
+        (mean, cov)
+    }
+    // Get the highest weight particle's state and zero covariance
+    fn highest_weight_state(pf: &ParticleFilter) -> (DVector<f64>, DMatrix<f64>) {
+        let best_particle = pf
+            .particles
+            .iter()
+            .max_by(|a, b| a.weight.partial_cmp(&b.weight).unwrap())
+            .expect("Particle filter has no particles");
+
+        let euler = best_particle.nav_state.attitude.euler_angles();
+        let mut state_vec = vec![
+            best_particle.nav_state.latitude,
+            best_particle.nav_state.longitude,
+            best_particle.nav_state.altitude,
+            best_particle.nav_state.velocity_north,
+            best_particle.nav_state.velocity_east,
+            best_particle.nav_state.velocity_down,
+            euler.0,
+            euler.1,
+            euler.2,
+        ];
+        if let Some(ref other) = best_particle.other_states {
+            state_vec.extend(other.iter());
+        }
+        let mean = DVector::from_vec(state_vec);
+
+        // For single particle, covariance is zero
+        let cov = DMatrix::<f64>::zeros(pf.state_size, pf.state_size);
+
+        (mean, cov)
+    }
+}
+/// Strategy for resampling particles in the particle filter
+#[derive(Clone, Debug, Default)]
+pub enum ParticleResamplingStrategy {
+    #[default]
+    Naive,
+    Systematic,
+    Multinomial,
+    Residual,
+    Stratified,
+    Adaptive,
+}
+
+impl ParticleResamplingStrategy {
+    // Resample particles based on the selected strategy
+    fn resample(&self, particles: Vec<Particle>) -> Vec<Particle> {
+        match self {
+            ParticleResamplingStrategy::Naive => {
+                // Naive resampling implementation (to be filled in)
+                particles
+            }
+            ParticleResamplingStrategy::Systematic => {
+                // Systematic resampling implementation (to be filled in)
+                particles
+            }
+            ParticleResamplingStrategy::Multinomial => {
+                // Multinomial resampling implementation (to be filled in)
+                particles
+            }
+            ParticleResamplingStrategy::Residual => {
+                Self::residual_resample(particles)
+            }
+            ParticleResamplingStrategy::Stratified => {
+                // Stratified resampling implementation (to be filled in)
+                particles
+            }
+            ParticleResamplingStrategy::Adaptive => {
+                // Adaptive resampling implementation (to be filled in)
+                particles
+            }
+        }
+    }
+    fn residual_resample(particles: Vec<Particle>) -> Vec<Particle> {
+        let n = particles.len();
+        let mut new_particles = Vec::<Particle>::with_capacity(n);
+        let weights: Vec<f64> = particles.iter().map(|p| p.weight).collect();
+        let mut num_copies = vec![0usize; n];
+        let mut residual: Vec<f64> = vec![0.0; n];
+        //let mut total_residual: f64 = 0.0;
+        // Integer part
+        for (i, &w) in weights.iter().enumerate() {
+            let copies = (w * n as f64).floor() as usize;
+            num_copies[i] = copies;
+            residual[i] = w * n as f64 - copies as f64;
+            //total_residual += residual[i];
+        }
+        // Copy integer part
+        for (i, &copies) in num_copies.iter().enumerate() {
+            for _ in 0..copies {
+                let mut new_particle = particles[i].clone();
+                new_particle.weight = 1.0 / n as f64;
+                new_particles.push(new_particle);
+            }
+        }
+        // Residual part
+        let residual_particles = n - new_particles.len();
+        if residual_particles > 0 {
+            // Normalize residuals
+            let sum_residual: f64 = residual.iter().sum();
+            let mut positions = Vec::with_capacity(residual_particles);
+            let step = sum_residual / residual_particles as f64;
+            let mut u = rand::random::<f64>() * step;
+            for _ in 0..residual_particles {
+                positions.push(u);
+                u += step;
+            }
+            let mut i = 0;
+            let mut j = 0;
+            let mut cumsum = residual[0];
+            while j < residual_particles {
+                while positions[j] > cumsum {
+                    i += 1;
+                    cumsum += residual[i];
+                }
+                let mut new_particle = particles[i].clone();
+                new_particle.weight = 1.0 / n as f64;
+                new_particles.push(new_particle);
+                j += 1;
+            }
+        }
+        new_particles
+    }
+}
+
 /// Particle filter for strapdown inertial navigation
 ///
 /// This filter uses a particle filter algorithm to estimate the state of a strapdown inertial navigation system.
@@ -649,12 +950,19 @@ pub struct ParticleFilter {
     pub particles: Vec<Particle>,
     /// Process noise standard deviations for each state component
     /// Order: [lat, lon, alt, vn, ve, vd, roll, pitch, yaw]
-    pub process_noise_std: DVector<f64>,
+    pub process_noise: DVector<f64>,
+    /// Strategy for determining navigation solution
+    pub averaging_strategy: ParticleAveragingStrategy,
+    /// Stategy for resampling
+    pub resampling_strategy: ParticleResamplingStrategy,
+    /// State vector dimension
+    pub state_size: usize,
 }
 impl Debug for ParticleFilter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let strategy = ParticleAveragingStrategy::WeightedAverage;
-        let (mean, cov) = strategy.compute_state(self);
+        // let strategy = ParticleAveragingStrategy::WeightedAverage;
+        let mean = self.get_estimate();
+        let cov = self.get_certainty();
 
         // Calculate effective particle count
         let effective_particles = 1.0
@@ -713,270 +1021,40 @@ impl ParticleFilter {
     ///
     /// # Arguments
     /// * `particles` - The particles to use for the particle filter.
-    pub fn new(particles: Vec<Particle>) -> Self {
+    pub fn new(particles: Vec<Particle>, process_noise_std: Option<DVector<f64>>, estimation_strategy: Option<ParticleAveragingStrategy>, 
+        resampling_method: Option<ParticleResamplingStrategy>) -> Self {
         // Default process noise standard deviations
         // These values are significantly larger than UKF to maintain particle diversity
         // and compensate for lack of bias estimation
-        let process_noise_std = DVector::from_vec(vec![
-            1e-5,  // latitude (radians) - 100x UKF for diversity
-            1e-5,  // longitude (radians) - 100x UKF for diversity
-            0.1,   // altitude (meters) - larger for diversity
-            0.1,   // velocity_north (m/s) - larger for diversity
-            0.1,   // velocity_east (m/s) - larger for diversity
-            0.1,   // velocity_down (m/s) - larger for diversity
-            1e-4,  // roll (radians) - 10x UKF for diversity
-            1e-4,  // pitch (radians) - 10x UKF for diversity
-            1e-4,  // yaw (radians) - 10x UKF for diversity
-        ]);
-        ParticleFilter {
-            particles,
-            process_noise_std,
-        }
-    }
-    /// Create a new particle filter with the given particles and custom process noise
-    ///
-    /// # Arguments
-    /// * `particles` - The particles to use for the particle filter.
-    /// * `process_noise_std` - Process noise standard deviations for [lat, lon, alt, vn, ve, vd, roll, pitch, yaw]
-    pub fn with_process_noise(particles: Vec<Particle>, process_noise_std: DVector<f64>) -> Self {
+        let process_noise: DVector<f64> = match process_noise_std {
+            Some(pn) => pn,
+            None => DVector::from_vec(vec![
+                0.0,  // lat (radians)
+                0.0,  // lon (radians)
+                0.0,  // alt (meters)
+                0.0,   // vn (m/s)
+                0.0,   // ve (m/s)
+                0.0,   // vd (m/s)
+                0.0,  // roll (radians)
+                0.0,  // pitch (radians)
+                0.0,  // yaw (radians)
+            ]),
+        };
         assert_eq!(
-            process_noise_std.len(),
-            9,
-            "Process noise must have 9 elements"
+            process_noise.len(),
+            particles[0].state_size,
+            "Process noise must have {} elements",
+            particles[0].state_size
         );
+        let state_size = particles[0].state_size;
         ParticleFilter {
             particles,
-            process_noise_std,
+            process_noise,
+            averaging_strategy: estimation_strategy.unwrap_or(ParticleAveragingStrategy::WeightedAverage),
+            resampling_strategy: resampling_method.unwrap_or(ParticleResamplingStrategy::Naive),
+            state_size,
         }
-    }
-    /// Propagate all particles forward using the strapdown equations with process noise
-    ///
-    /// # Arguments
-    /// * `imu_data` - The IMU measurements to propagate the particles with.
-    /// * `dt` - Time step in seconds
-    pub fn propagate(&mut self, imu_data: &IMUData, dt: f64) {
-        use rand_distr::{Distribution, Normal};
-        let mut rng = rand::rng();
-        
-        for particle in &mut self.particles {
-            // Deterministic propagation
-            forward(&mut particle.nav_state, *imu_data, dt);
-            
-            // Add process noise to maintain particle diversity
-            // Scale noise by sqrt(dt) for proper time scaling
-            let dt_sqrt = dt.sqrt();
-            
-            // Position noise (lat, lon, alt)
-            if self.process_noise_std[0] > 0.0 {
-                let lat_noise = Normal::new(0.0, self.process_noise_std[0] * dt_sqrt).unwrap();
-                particle.nav_state.latitude += lat_noise.sample(&mut rng);
-            }
-            if self.process_noise_std[1] > 0.0 {
-                let lon_noise = Normal::new(0.0, self.process_noise_std[1] * dt_sqrt).unwrap();
-                particle.nav_state.longitude += lon_noise.sample(&mut rng);
-            }
-            if self.process_noise_std[2] > 0.0 {
-                let alt_noise = Normal::new(0.0, self.process_noise_std[2] * dt_sqrt).unwrap();
-                particle.nav_state.altitude += alt_noise.sample(&mut rng);
-            }
-            
-            // Velocity noise (vn, ve, vd)
-            if self.process_noise_std[3] > 0.0 {
-                let vn_noise = Normal::new(0.0, self.process_noise_std[3] * dt_sqrt).unwrap();
-                particle.nav_state.velocity_north += vn_noise.sample(&mut rng);
-            }
-            if self.process_noise_std[4] > 0.0 {
-                let ve_noise = Normal::new(0.0, self.process_noise_std[4] * dt_sqrt).unwrap();
-                particle.nav_state.velocity_east += ve_noise.sample(&mut rng);
-            }
-            if self.process_noise_std[5] > 0.0 {
-                let vd_noise = Normal::new(0.0, self.process_noise_std[5] * dt_sqrt).unwrap();
-                particle.nav_state.velocity_down += vd_noise.sample(&mut rng);
-            }
-            
-            // Attitude noise (roll, pitch, yaw) - apply as small-angle perturbations
-            if self.process_noise_std[6] > 0.0 || self.process_noise_std[7] > 0.0 || self.process_noise_std[8] > 0.0 {
-                let roll_noise = if self.process_noise_std[6] > 0.0 {
-                    Normal::new(0.0, self.process_noise_std[6] * dt_sqrt).unwrap().sample(&mut rng)
-                } else {
-                    0.0
-                };
-                let pitch_noise = if self.process_noise_std[7] > 0.0 {
-                    Normal::new(0.0, self.process_noise_std[7] * dt_sqrt).unwrap().sample(&mut rng)
-                } else {
-                    0.0
-                };
-                let yaw_noise = if self.process_noise_std[8] > 0.0 {
-                    Normal::new(0.0, self.process_noise_std[8] * dt_sqrt).unwrap().sample(&mut rng)
-                } else {
-                    0.0
-                };
-                
-                // Apply small-angle rotation perturbation
-                let noise_rotation = Rotation3::from_euler_angles(roll_noise, pitch_noise, yaw_noise);
-                particle.nav_state.attitude = particle.nav_state.attitude * noise_rotation;
-            }
-        }
-    }
-    /// Update the weights of the particles based on a measurement
-    ///
-    /// This method updates the particle weights based on the likelihood of the measurement
-    /// given each particle's state. The measurement model is used to compute the expected
-    /// measurement for each particle, and the particle weights are updated based on the
-    /// measurement innovation using a Gaussian likelihood function. After updating, the 
-    /// weights are normalized to sum to 1.0.
-    ///
-    /// The likelihood is computed as p(z|x) ∝ exp(-0.5 * (z - h(x))^T * R^-1 * (z - h(x))),
-    /// where z is the measurement, h(x) is the expected measurement from the particle state,
-    /// and R is the measurement noise covariance.
-    ///
-    /// # Arguments
-    /// * `measurement` - The measurement to update the particle weights with.
-    pub fn update<M: MeasurementModel + ?Sized>(&mut self, measurement: &M) {
-        let z = measurement.get_vector();  // measurement vector (radians for lat/lon)
-        let r = measurement.get_noise();   // noise covariance (degrees² for lat/lon, m² for alt)
-        
-        // Compute likelihoods for each particle
-        // We work in log space for numerical stability, then use the log-sum-exp trick
-        let mut log_likelihoods = Vec::with_capacity(self.particles.len());
-        
-        for particle in &self.particles {
-            // Convert particle state to matrix format for measurement model
-            let euler = particle.nav_state.attitude.euler_angles();
-            let state_vec = DVector::from_vec(vec![
-                particle.nav_state.latitude,   // radians
-                particle.nav_state.longitude,  // radians
-                particle.nav_state.altitude,
-                particle.nav_state.velocity_north,
-                particle.nav_state.velocity_east,
-                particle.nav_state.velocity_down,
-                euler.0, // roll (radians)
-                euler.1, // pitch (radians)
-                euler.2, // yaw (radians)
-            ]);
-            
-            // Get expected measurement for this particle (in radians for lat/lon)
-            let state_matrix = DMatrix::from_column_slice(9, 1, state_vec.as_slice());
-            let z_expected = measurement.get_sigma_points(&state_matrix);
-            let z_expected_vec = z_expected.column(0);
-            
-            // Calculate innovation (measurement residual)
-            let innovation = &z - z_expected_vec;
-            
-            // Compute log-likelihood: -0.5 * innovation^T * R^-1 * innovation
-            // Note: innovation is in radians for lat/lon, but R is in degrees² for lat/lon
-            // We need to convert innovation to degrees to match R's units
-            let mut log_likelihood = 0.0;
-            for i in 0..innovation.len() {
-                let mut diff = innovation[i];
-                // For lat/lon (indices 0, 1), convert from radians to degrees
-                if i < 2 {
-                    diff = diff.to_degrees();
-                }
-                let variance = r[(i, i)];
-                if variance > 0.0 {
-                    log_likelihood += -0.5 * diff * diff / variance;
-                }
-            }
-            
-            log_likelihoods.push(log_likelihood);
-        }
-        
-        // Debug: check likelihood range
-        if log::log_enabled!(log::Level::Debug) {
-            let min_ll = log_likelihoods.iter().cloned().fold(f64::INFINITY, f64::min);
-            let max_ll = log_likelihoods.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-            log::debug!("PF likelihoods: min={:.2e}, max={:.2e}", min_ll, max_ll);
-        }
-        
-        // Use log-sum-exp trick for numerical stability
-        // Find max log-likelihood
-        let max_log_likelihood = log_likelihoods.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        
-        // Update weights: w_new = w_old * likelihood
-        // In log space: log(w_new) = log(w_old) + log(likelihood)
-        // But we normalize anyway, so we can just use the likelihoods directly
-        for (i, particle) in self.particles.iter_mut().enumerate() {
-            // Multiply old weight by likelihood (in linear space)
-            // Using log-sum-exp trick: exp(log_lik - max) is numerically stable
-            particle.weight *= (log_likelihoods[i] - max_log_likelihood).exp();
-        }
-        
-        // Normalize weights to sum to 1.0
-        self.normalize_weights();
-    }
-    /// Set the weights of the particles (e.g., after a measurement update)
-    ///
-    /// # Arguments
-    /// * `weights` - The weights to set for the particles.
-    pub fn set_weights(&mut self, weights: &[f64]) {
-        assert_eq!(weights.len(), self.particles.len());
-        for (particle, &w) in self.particles.iter_mut().zip(weights.iter()) {
-            particle.weight = w;
-        }
-    }
-    /// Normalize the weights of the particles. This is typically done after a measurement update
-    /// to ensure that the weights sum to 1.0 and can be treated like a probability distribution.
-    pub fn normalize_weights(&mut self) {
-        let sum: f64 = self.particles.iter().map(|p| p.weight).sum();
-        if sum > 0.0 {
-            for particle in &mut self.particles {
-                particle.weight /= sum;
-            }
-        }
-    }
-    /// Residual resampling (systematic resampling)
-    pub fn residual_resample(&mut self) {
-        let n = self.particles.len();
-        let mut new_particles = Vec::with_capacity(n);
-        let weights: Vec<f64> = self.particles.iter().map(|p| p.weight).collect();
-        let mut num_copies = vec![0usize; n];
-        let mut residual: Vec<f64> = vec![0.0; n];
-        //let mut total_residual: f64 = 0.0;
-        // Integer part
-        for (i, &w) in weights.iter().enumerate() {
-            let copies = (w * n as f64).floor() as usize;
-            num_copies[i] = copies;
-            residual[i] = w * n as f64 - copies as f64;
-            //total_residual += residual[i];
-        }
-        // Copy integer part
-        for (i, &copies) in num_copies.iter().enumerate() {
-            for _ in 0..copies {
-                new_particles.push(self.particles[i].clone());
-            }
-        }
-        // Residual part
-        let residual_particles = n - new_particles.len();
-        if residual_particles > 0 {
-            // Normalize residuals
-            let sum_residual: f64 = residual.iter().sum();
-            let mut positions = Vec::with_capacity(residual_particles);
-            let step = sum_residual / residual_particles as f64;
-            let mut u = rand::random::<f64>() * step;
-            for _ in 0..residual_particles {
-                positions.push(u);
-                u += step;
-            }
-            let mut i = 0;
-            let mut j = 0;
-            let mut cumsum = residual[0];
-            while j < residual_particles {
-                while positions[j] > cumsum {
-                    i += 1;
-                    cumsum += residual[i];
-                }
-                new_particles.push(self.particles[i].clone());
-                j += 1;
-            }
-        }
-        // Reset weights
-        let uniform_weight = 1.0 / n as f64;
-        for particle in &mut new_particles {
-            particle.weight = uniform_weight;
-        }
-        self.particles = new_particles;
-    }
+    }   
     /// Initialization function for creating the particle field according to a normal distribution
     /// 
     /// # Arguments
@@ -1010,9 +1088,18 @@ impl ParticleFilter {
     /// let navigation_covariance = DVector::from_vec(vec![1.0; 9]);
     /// let other_covariance = DVector::from_vec(vec![1.0; 5]);
     /// let num_particles = 100;
-    /// pf.initialize_about(mean, other_states, navigation_covariance, other_covariance, num_particles);
+    /// pf.new_about(mean, other_states, navigation_covariance, other_covariance, num_particles);
     /// ```
-    pub fn initialize_about(&mut self, mean: InitialState, other_states: DVector<f64>, navigation_covariance: DVector<f64>, other_covariance: DVector<f64>, num_particles: usize) {
+    pub fn new_about(
+        mean: InitialState, 
+        other_states: DVector<f64>, 
+        navigation_covariance: DVector<f64>, 
+        other_covariance: DVector<f64>, 
+        num_particles: usize, 
+        process_noise_std: Option<DVector<f64>>, 
+        estimation_strategy: Option<ParticleAveragingStrategy>, 
+        resampling_method: Option<ParticleResamplingStrategy>
+    ) -> ParticleFilter {
         use rand_distr::{Distribution, Normal};
         let mut particles = Vec::with_capacity(num_particles);
         let position_std = (
@@ -1065,8 +1152,8 @@ impl ParticleFilter {
                 let other_normal = Normal::new(0.0, other_std[i]).unwrap();
                 other_state_vec.push(state + other_normal.sample(&mut rng));
             }
-            let particle = Particle {
-                nav_state: StrapdownState {
+            let particle = Particle::new(
+                StrapdownState {
                     latitude,
                     longitude,
                     altitude,
@@ -1076,141 +1163,171 @@ impl ParticleFilter {
                     attitude,
                     coordinate_convention: true,
                 },
-                weight: 1.0 / num_particles as f64,
-            };
+                Some(DVector::from_vec(other_state_vec)),
+                1.0 / num_particles as f64,
+            );
             particles.push(particle);
         }
-        self.particles = particles;
+        ParticleFilter::new(particles, process_noise_std, estimation_strategy, resampling_method)
+    }
+    /// Helper function that converts the particles' state vector to a matrix
+    pub fn particles_to_matrix(&self) -> DMatrix<f64> {
+        let n_particles = self.particles.len();
+        let state_size = self.state_size;
+        let mut data = Vec::with_capacity(n_particles * state_size);
+        for particle in &self.particles {
+            let euler = particle.nav_state.attitude.euler_angles();
+            data.push(particle.nav_state.latitude);
+            data.push(particle.nav_state.longitude);
+            data.push(particle.nav_state.altitude);
+            data.push(particle.nav_state.velocity_north);
+            data.push(particle.nav_state.velocity_east);
+            data.push(particle.nav_state.velocity_down);
+            data.push(euler.0); // roll
+            data.push(euler.1); // pitch
+            data.push(euler.2); // yaw
+            if let Some(ref other_states) = particle.other_states {
+                for val in other_states.iter() {
+                    data.push(*val);
+                }
+            }
+        }
+        DMatrix::from_vec(state_size, n_particles, data)
+    }
+    /// Set the weights of the particles (e.g., after a measurement update)
+    ///
+    /// # Arguments
+    /// * `weights` - The weights to set for the particles.
+    pub fn set_weights(&mut self, weights: &[f64]) {
+        assert_eq!(weights.len(), self.particles.len());
+        for (particle, &w) in self.particles.iter_mut().zip(weights.iter()) {
+            particle.weight = w;
+        }
+    }
+    /// Normalize the weights of the particles. This is typically done after a measurement update
+    /// to ensure that the weights sum to 1.0 and can be treated like a probability distribution.
+    pub fn normalize_weights(&mut self) {
+        let sum: f64 = self.particles.iter().map(|p| p.weight).sum();
+        if sum > 0.0 {
+            for particle in &mut self.particles {
+                particle.weight /= sum;
+            }
+        }
+    } 
+}
+impl NavigationFilter for ParticleFilter { 
+    /// Propagate all particles forward using the strapdown equations with process noise
+    ///
+    /// # Arguments
+    /// * `imu_data` - The IMU measurements to propagate the particles with.
+    /// * `dt` - Time step in seconds
+    fn predict(&mut self, imu_data: IMUData, dt: f64) { 
+        
+        let mut rng = rand::rng();
+        
+        for particle in &mut self.particles {
+            // Deterministic propagation
+            forward(&mut particle.nav_state, imu_data, dt);
+            // Add process noise to maintain particle diversity
+            // Scale noise by sqrt(dt) for proper time scaling
+            let dt_sqrt = dt.sqrt();
+            particle.nav_state.latitude += rand_distr::Normal::new(0.0, self.process_noise[0]).unwrap().sample(&mut rng) * dt_sqrt;
+            particle.nav_state.longitude += rand_distr::Normal::new(0.0, self.process_noise[1]).unwrap().sample(&mut rng) * dt_sqrt;
+            particle.nav_state.altitude += rand_distr::Normal::new(0.0, self.process_noise[2]).unwrap().sample(&mut rng) * dt_sqrt;
+            particle.nav_state.velocity_north += rand_distr::Normal::new(0.0, self.process_noise[3]).unwrap().sample(&mut rng) * dt_sqrt;
+            particle.nav_state.velocity_east += rand_distr::Normal::new(0.0, self.process_noise[4]).unwrap().sample(&mut rng) * dt_sqrt;
+            particle.nav_state.velocity_down += rand_distr::Normal::new(0.0, self.process_noise[5]).unwrap().sample(&mut rng) * dt_sqrt;
+            let roll_noise = rand_distr::Normal::new(0.0, self.process_noise[6]).unwrap().sample(&mut rng) * dt_sqrt;
+            let pitch_noise = rand_distr::Normal::new(0.0, self.process_noise[7]).unwrap().sample(&mut rng) * dt_sqrt;
+            let yaw_noise = rand_distr::Normal::new(0.0, self.process_noise[8]).unwrap().sample(&mut rng) * dt_sqrt;
+            let (roll, pitch, yaw) = particle.nav_state.attitude.euler_angles();
+            particle.nav_state.attitude = Rotation3::from_euler_angles(
+                roll + roll_noise,
+                pitch + pitch_noise,
+                yaw + yaw_noise,
+            );
+            // Add process noise to other states if they exist
+            if let Some(ref mut other_states) = particle.other_states {
+                for i in 0..other_states.len() {
+                    let noise = rand_distr::Normal::new(0.0, self.process_noise[9 + i]).unwrap().sample(&mut rng) * dt_sqrt;
+                    other_states[i] += noise;
+                }   
+            }
+        }
+    }
+    /// Update the weights of the particles based on a measurement
+    ///
+    /// This method updates the particle weights based on the likelihood of the measurement
+    /// given each particle's state. The measurement model is used to compute the expected
+    /// measurement for each particle, and the particle weights are updated based on the
+    /// measurement innovation using a Gaussian likelihood function. After updating, the 
+    /// weights are normalized to sum to 1.0.
+    ///
+    /// The likelihood is computed as p(z|x) ∝ exp(-0.5 * (z - h(x))^T * R^-1 * (z - h(x))),
+    /// where z is the measurement, h(x) is the expected measurement from the particle state,
+    /// and R is the measurement noise covariance.
+    ///
+    /// # Arguments
+    /// * `measurement` - The measurement to update the particle weights with.
+    fn update<M: MeasurementModel + ?Sized>(&mut self, measurement: &M) {
+        let particle_matrix = self.particles_to_matrix();
+        let measurement_sigma_points = measurement.get_sigma_points(&particle_matrix);
+        // Compute expected measurement for each particle
+        let mut z_hats = DMatrix::<f64>::zeros(measurement.get_dimension(), self.particles.len());
+        for (i, measurement_sigma_point) in measurement_sigma_points.column_iter().enumerate() {
+            z_hats.set_column(i, &measurement_sigma_point);
+        }
+        // Update weights based on measurement likelihood
+        for (i, particle) in self.particles.iter_mut().enumerate() {
+            let z_hat = z_hats.column(i);
+            let innovation = measurement.get_vector() - &z_hat;
+            let sigmas = measurement.get_noise();
+            // Compute likelihood using Gaussian probability density function
+            let sigma_inv = sigmas.clone().try_inverse().unwrap();
+            let sigma_det = sigmas.determinant();
+            let exponent = -0.5 * innovation.transpose() * sigma_inv * innovation;
+            let likelihood = (1.0 / ((2.0 * std::f64::consts::PI).powf(measurement.get_dimension() as f64 / 2.0) * &sigma_det.sqrt())) * exponent[(0, 0)].exp();
+            // Update particle weight for now we are resampling every cycle
+            // TODO: #117 Add in enums for different frequency of resampling
+            particle.weight = likelihood;
+        }
+        // Normalize weights to sum to 1.0
+        self.normalize_weights();
+        self.particles = self.resampling_strategy.resample(self.particles.clone());
+    }
+    fn get_estimate(&self) -> DVector<f64> {
+        match self.averaging_strategy {
+            ParticleAveragingStrategy::WeightedAverage => {
+                let (mean, _cov) = ParticleAveragingStrategy::weighted_average_state(&self);
+                mean
+            }
+            ParticleAveragingStrategy::UnweightedAverage => {
+                let (mean, _cov) = ParticleAveragingStrategy::unweighted_average_state(&self);
+                mean
+            }
+            ParticleAveragingStrategy::HighestWeight => {
+                let (mean, _cov) = ParticleAveragingStrategy::highest_weight_state(&self);
+                mean
+            }
+        }
+    }
+    fn get_certainty(&self) -> DMatrix<f64> {
+        match self.averaging_strategy {
+            ParticleAveragingStrategy::WeightedAverage => {
+                let (_mean, cov) = ParticleAveragingStrategy::weighted_average_state(&self);
+                cov
+            }
+            ParticleAveragingStrategy::UnweightedAverage => {
+                let (_mean, cov) = ParticleAveragingStrategy::unweighted_average_state(&self);
+                cov
+            }
+            ParticleAveragingStrategy::HighestWeight => {
+                let (_mean, cov) = ParticleAveragingStrategy::highest_weight_state(&self);
+                cov
+            }
+        }
     }
 }
-
-/// Strategy for averaging particle filter states to produce navigation solution
-#[derive(Clone, Debug, Default)]
-#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
-pub enum ParticleAveragingStrategy {
-    /// Weighted average across all particles (default)
-    #[default]
-    WeightedAverage,
-    /// Unweighted average across all particles
-    UnweightedAverage,
-    /// State of the highest weight particle
-    HighestWeight,
-}
-
-impl ParticleAveragingStrategy {
-    /// Compute navigation state from particles using the specified strategy
-    pub fn compute_state(&self, pf: &ParticleFilter) -> (DVector<f64>, DMatrix<f64>) {
-        match self {
-            ParticleAveragingStrategy::WeightedAverage => Self::weighted_average_state(pf),
-            ParticleAveragingStrategy::UnweightedAverage => Self::unweighted_average_state(pf),
-            ParticleAveragingStrategy::HighestWeight => Self::highest_weight_state(pf),
-        }
-    }
-
-    fn weighted_average_state(pf: &ParticleFilter) -> (DVector<f64>, DMatrix<f64>) {
-        let mut mean = DVector::<f64>::zeros(9);
-
-        for particle in &pf.particles {
-            let euler = particle.nav_state.attitude.euler_angles();
-            mean[0] += particle.weight * particle.nav_state.latitude;
-            mean[1] += particle.weight * particle.nav_state.longitude;
-            mean[2] += particle.weight * particle.nav_state.altitude;
-            mean[3] += particle.weight * particle.nav_state.velocity_north;
-            mean[4] += particle.weight * particle.nav_state.velocity_east;
-            mean[5] += particle.weight * particle.nav_state.velocity_down;
-            mean[6] += particle.weight * euler.0; // roll
-            mean[7] += particle.weight * euler.1; // pitch
-            mean[8] += particle.weight * euler.2; // yaw
-        }
-
-        // Compute covariance
-        let mut cov = DMatrix::<f64>::zeros(9, 9);
-        for particle in &pf.particles {
-            let euler = particle.nav_state.attitude.euler_angles();
-            let state = DVector::from_vec(vec![
-                particle.nav_state.latitude,
-                particle.nav_state.longitude,
-                particle.nav_state.altitude,
-                particle.nav_state.velocity_north,
-                particle.nav_state.velocity_east,
-                particle.nav_state.velocity_down,
-                euler.0,
-                euler.1,
-                euler.2,
-            ]);
-            let diff = state - &mean;
-            cov += particle.weight * &diff * &diff.transpose();
-        }
-
-        (mean, cov)
-    }
-
-    fn unweighted_average_state(pf: &ParticleFilter) -> (DVector<f64>, DMatrix<f64>) {
-        let n = pf.particles.len() as f64;
-        let mut mean = DVector::<f64>::zeros(9);
-
-        for particle in &pf.particles {
-            let euler = particle.nav_state.attitude.euler_angles();
-            mean[0] += particle.nav_state.latitude / n;
-            mean[1] += particle.nav_state.longitude / n;
-            mean[2] += particle.nav_state.altitude / n;
-            mean[3] += particle.nav_state.velocity_north / n;
-            mean[4] += particle.nav_state.velocity_east / n;
-            mean[5] += particle.nav_state.velocity_down / n;
-            mean[6] += euler.0 / n; // roll
-            mean[7] += euler.1 / n; // pitch
-            mean[8] += euler.2 / n; // yaw
-        }
-
-        // Compute covariance
-        let mut cov = DMatrix::<f64>::zeros(9, 9);
-        for particle in &pf.particles {
-            let euler = particle.nav_state.attitude.euler_angles();
-            let state = DVector::from_vec(vec![
-                particle.nav_state.latitude,
-                particle.nav_state.longitude,
-                particle.nav_state.altitude,
-                particle.nav_state.velocity_north,
-                particle.nav_state.velocity_east,
-                particle.nav_state.velocity_down,
-                euler.0,
-                euler.1,
-                euler.2,
-            ]);
-            let diff = state - &mean;
-            cov += (1.0 / n) * &diff * &diff.transpose();
-        }
-
-        (mean, cov)
-    }
-
-    fn highest_weight_state(pf: &ParticleFilter) -> (DVector<f64>, DMatrix<f64>) {
-        let best_particle = pf
-            .particles
-            .iter()
-            .max_by(|a, b| a.weight.partial_cmp(&b.weight).unwrap())
-            .expect("Particle filter has no particles");
-
-        let euler = best_particle.nav_state.attitude.euler_angles();
-        let mean = DVector::from_vec(vec![
-            best_particle.nav_state.latitude,
-            best_particle.nav_state.longitude,
-            best_particle.nav_state.altitude,
-            best_particle.nav_state.velocity_north,
-            best_particle.nav_state.velocity_east,
-            best_particle.nav_state.velocity_down,
-            euler.0,
-            euler.1,
-            euler.2,
-        ]);
-
-        // For single particle, covariance is zero
-        let cov = DMatrix::<f64>::zeros(9, 9);
-
-        (mean, cov)
-    }
-}
-
 /// Tests
 #[cfg(test)]
 mod tests {

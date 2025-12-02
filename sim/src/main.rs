@@ -2,11 +2,11 @@ use clap::{Args, Parser, Subcommand};
 use log::{error, info};
 use std::error::Error;
 use std::path::{Path, PathBuf};
-use strapdown::filter::ParticleAveragingStrategy;
+use strapdown::filter::{NavigationFilter, ParticleAveragingStrategy};
 use strapdown::messages::{GnssDegradationConfig, build_event_stream};
 use strapdown::sim::{
     FaultArgs, NavigationResult, SchedulerArgs, TestDataRecord, build_fault, build_scheduler,
-    closed_loop, initialize_particle_filter, initialize_ukf, particle_filter_loop,
+    initialize_particle_filter, initialize_ukf, run_closed_loop,
 };
 
 const LONG_ABOUT: &str = "STRAPDOWN: A simulation and analysis tool for strapdown inertial navigation systems.
@@ -279,17 +279,19 @@ fn main() -> Result<(), Box<dyn Error>> {
             let mut pf = initialize_particle_filter(
                 records[0].clone(),
                 args.num_particles,
-                args.position_std,
-                args.velocity_std,
-                args.attitude_std,
+                0.0, //args.position_std,
+                0.0, //args.velocity_std,
+                0.0, //args.attitude_std,
             );
-
+            info!("Initialized particle filter with {} particles", args.num_particles);
+            info!("Initial state mean: {:?}", pf.get_estimate());
+            
             info!(
                 "Running particle filter with {} particles, strategy: {:?}",
                 args.num_particles, args.averaging_strategy
             );
 
-            let results = particle_filter_loop(&mut pf, events, args.averaging_strategy.clone(), None);
+            let results = run_closed_loop(&mut pf, events, None);
 
             match results {
                 Ok(ref nav_results) => {
@@ -304,7 +306,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         Command::ClosedLoop(ref args) => {
             validate_input_file(&args.sim.input)?;
             validate_output_path(&args.sim.output)?;
-
+            info!("Running in closed-loop mode");
             // Load sensor data records from CSV, tolerant to mixed/variable-length rows and encoding issues.
             let records = TestDataRecord::from_csv(&args.sim.input)?;
             info!(
@@ -327,9 +329,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                     seed: args.seed,
                 }
             };
-            let events = build_event_stream(&records, &cfg);
+            info!("Using GNSS degradation config: {:?}", cfg);
+            let event_stream = build_event_stream(&records, &cfg);
+            info!("Initialized event stream with {} events", event_stream.events.len());
             let mut ukf = initialize_ukf(records[0].clone(), None, None, None, None, None, None);
-            let results = closed_loop(&mut ukf, events);
+            info!("Initialized UKF with state: {:?}", ukf);
+            let results = run_closed_loop(&mut ukf, event_stream, None);
             match results {
                 Ok(ref nav_results) => {
                     match NavigationResult::to_csv(nav_results, &args.sim.output) {
