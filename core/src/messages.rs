@@ -930,8 +930,11 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
                 // Use your provided accuracies (adjust if these are variances vs std).
                 // If an accuracy is missing (NaN), substitute a conservative default
                 // to avoid propagating NaN into the measurement noise.
-                // Fixed at 15 meters for particle filter tuning
-                let horiz_std = 15.0;
+                let horiz_std = if r1.horizontal_accuracy.is_nan() {
+                    15.0
+                } else {
+                    r1.horizontal_accuracy.max(1e-3)
+                };
                 let vert_std = if r1.vertical_accuracy.is_nan() {
                     1000.0
                 } else {
