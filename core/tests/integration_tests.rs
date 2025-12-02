@@ -26,8 +26,12 @@ use std::path::Path;
 
 use strapdown::earth::haversine_distance;
 use strapdown::filter::{InitialState, ParticleAveragingStrategy, UnscentedKalmanFilter};
-use strapdown::messages::{GnssDegradationConfig, GnssFaultModel, GnssScheduler, build_event_stream};
-use strapdown::sim::{closed_loop, dead_reckoning, run_closed_loop, NavigationResult, TestDataRecord, HealthLimits};
+use strapdown::messages::{
+    GnssDegradationConfig, GnssFaultModel, GnssScheduler, build_event_stream,
+};
+use strapdown::sim::{
+    HealthLimits, NavigationResult, TestDataRecord, closed_loop, dead_reckoning, run_closed_loop,
+};
 
 use nalgebra::{DMatrix, DVector};
 
@@ -104,10 +108,7 @@ impl ErrorStats {
 ///
 /// # Returns
 /// ErrorStats containing mean, max, and RMS errors for various quantities
-fn compute_error_metrics(
-    results: &[NavigationResult],
-    records: &[TestDataRecord],
-) -> ErrorStats {
+fn compute_error_metrics(results: &[NavigationResult], records: &[TestDataRecord]) -> ErrorStats {
     let mut horizontal_errors = Vec::new();
     let mut altitude_errors = Vec::new();
     let mut velocity_north_errors = Vec::new();
@@ -147,19 +148,22 @@ fn compute_error_metrics(
                 record.latitude.to_radians(),
                 record.longitude.to_radians(),
             );
-            
+
             if i < 3 {
                 println!("Record {}: horizontal_error={:.2}m", i, horizontal_error);
             }
-            
+
             // Skip invalid errors (NaN or Inf)
             if !horizontal_error.is_finite() {
                 if i < 10 || horizontal_errors.len() < 10 {
-                    println!("WARNING: Skipping non-finite horizontal_error at index {}", i);
+                    println!(
+                        "WARNING: Skipping non-finite horizontal_error at index {}",
+                        i
+                    );
                 }
                 continue;
             }
-            
+
             horizontal_errors.push(horizontal_error);
 
             // Compute altitude error
@@ -176,7 +180,7 @@ fn compute_error_metrics(
             let vn_err = (result.velocity_north - gnss_vel_north).abs();
             let ve_err = (result.velocity_east - gnss_vel_east).abs();
             let vd_err = result.velocity_down.abs();
-            
+
             if vn_err.is_finite() {
                 velocity_north_errors.push(vn_err);
             }
@@ -194,7 +198,10 @@ fn compute_error_metrics(
 
     println!("Collected {} horizontal errors", horizontal_errors.len());
     if horizontal_errors.len() > 10 {
-        println!("Last 10 horizontal errors: {:?}", &horizontal_errors[horizontal_errors.len()-10..]);
+        println!(
+            "Last 10 horizontal errors: {:?}",
+            &horizontal_errors[horizontal_errors.len() - 10..]
+        );
     }
 
     if !horizontal_errors.is_empty() {
@@ -204,10 +211,7 @@ fn compute_error_metrics(
             .iter()
             .cloned()
             .fold(f64::NEG_INFINITY, f64::max);
-        stats.rms_horizontal_error = (horizontal_errors
-            .iter()
-            .map(|e| e.powi(2))
-            .sum::<f64>()
+        stats.rms_horizontal_error = (horizontal_errors.iter().map(|e| e.powi(2)).sum::<f64>()
             / horizontal_errors.len() as f64)
             .sqrt();
     }
@@ -244,7 +248,10 @@ fn compute_error_metrics(
 /// # Returns
 /// Vector of TestDataRecord instances
 fn load_test_data(path: &Path) -> Vec<TestDataRecord> {
-    TestDataRecord::from_csv(path).expect(&format!("Failed to load test data from CSV: {}", path.display()))
+    TestDataRecord::from_csv(path).expect(&format!(
+        "Failed to load test data from CSV: {}",
+        path.display()
+    ))
 }
 
 /// Create an initial state from the first test data record
@@ -530,8 +537,8 @@ fn test_ukf_with_degraded_gnss() {
     let stream = build_event_stream(&records, &cfg);
 
     // Run closed-loop filter
-    let results =
-        closed_loop(&mut ukf, stream).expect("Closed-loop filter with degraded GNSS should complete");
+    let results = closed_loop(&mut ukf, stream)
+        .expect("Closed-loop filter with degraded GNSS should complete");
 
     // Compute error metrics
     let stats = compute_error_metrics(&results, &records);

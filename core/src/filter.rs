@@ -1,4 +1,3 @@
-
 //! Inertial Navigation Filters
 //!
 //! This module contains implementations of various inertial navigation filters, including
@@ -25,7 +24,7 @@ use std::fmt::{self, Debug, Display};
 
 use nalgebra::{DMatrix, DVector, Rotation3};
 use rand;
-use rand_distr::{Distribution};
+use rand_distr::Distribution;
 // ==== Measurement Models ========================================================
 // Below is a set of generic measurement models for the UKF and particle filter.
 // These models provide a vec of "expected measurements" based on the sigma points
@@ -308,16 +307,16 @@ pub trait NavigationFilter {
     fn predict(&mut self, imu_data: IMUData, dt: f64);
     /// Perform the measurement update step.
     ///
-    /// This method updates the navigation filter based on the measurement provided. The 
+    /// This method updates the navigation filter based on the measurement provided. The
     /// measurement model is specific to a given implementation of a Bayesian filter and
     /// must be provided by the user as the model determines the shape and quantities of
-    /// the measurement vector, measurement covariance matrix, and where applicable and 
-    /// the measurement sigma points. Measurement models are implemented as traits to 
+    /// the measurement vector, measurement covariance matrix, and where applicable and
+    /// the measurement sigma points. Measurement models are implemented as traits to
     /// allow for the filter to consume them generically.
     fn update<M: MeasurementModel + ?Sized>(&mut self, measurement: &M);
     /// Get the current state estimate as determined by the underlying logic of the filter.
     fn get_estimate(&self) -> DVector<f64>;
-    /// Get the state estimate's certainty  as determined by the underlying logic of the 
+    /// Get the state estimate's certainty  as determined by the underlying logic of the
     /// filter.
     fn get_certainty(&self) -> DMatrix<f64>;
 }
@@ -479,7 +478,7 @@ impl UnscentedKalmanFilter {
             weights_mean,
             weights_cov,
         }
-    }    
+    }
     pub fn get_sigma_points(&self) -> DMatrix<f64> {
         let p = (self.state_size as f64 + self.lambda) * self.covariance.clone();
         let sqrt_p = matrix_square_root(&p);
@@ -492,7 +491,7 @@ impl UnscentedKalmanFilter {
                 .copy_from(&(&mu - sqrt_p.column(i)));
         }
         pts
-    }    
+    }
     fn robust_kalman_gain(
         &mut self,
         cross_covariance: &DMatrix<f64>,
@@ -503,7 +502,7 @@ impl UnscentedKalmanFilter {
         kt.transpose()
     }
 }
-impl NavigationFilter for UnscentedKalmanFilter { 
+impl NavigationFilter for UnscentedKalmanFilter {
     fn predict(&mut self, imu_data: IMUData, dt: f64) {
         // Propagate the strapdown state using the strapdown equations
         let mut sigma_points = self.get_sigma_points();
@@ -692,14 +691,14 @@ impl From<(DVector<f64>, f64)> for Particle {
 #[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 pub enum ParticleAveragingStrategy {
-    /// Computes the weighted mean and covariance across all particles, using each particle's weight 
+    /// Computes the weighted mean and covariance across all particles, using each particle's weight
     /// as its contribution. This is the default and most statistically consistent approach for particle filters.
     #[default]
     WeightedAverage,
-    /// Computes the arithmetic mean and covariance across all particles, ignoring particle weights. 
+    /// Computes the arithmetic mean and covariance across all particles, ignoring particle weights.
     /// This can be useful for diagnostic purposes or when all particles have equal weights.
     UnweightedAverage,
-    /// Selects the state of the particle with the highest weight as the navigation solution, with 
+    /// Selects the state of the particle with the highest weight as the navigation solution, with
     /// zero covariance. This approach is sometimes used in multi-modal or highly non-Gaussian scenarios.
     HighestWeight,
 }
@@ -754,7 +753,7 @@ impl ParticleAveragingStrategy {
                 // For safety, resize or panic. Here we assume consistency but handle potential mismatch if needed.
                 // Ideally, particle construction enforces this.
             }
-            
+
             let state = DVector::from_vec(state_vec);
             let diff = state - &mean;
             cov += particle.weight * &diff * &diff.transpose();
@@ -873,9 +872,7 @@ impl ParticleResamplingStrategy {
                 // Multinomial resampling implementation (to be filled in)
                 particles
             }
-            ParticleResamplingStrategy::Residual => {
-                Self::residual_resample(particles)
-            }
+            ParticleResamplingStrategy::Residual => Self::residual_resample(particles),
             ParticleResamplingStrategy::Stratified => {
                 // Stratified resampling implementation (to be filled in)
                 particles
@@ -1021,23 +1018,27 @@ impl ParticleFilter {
     ///
     /// # Arguments
     /// * `particles` - The particles to use for the particle filter.
-    pub fn new(particles: Vec<Particle>, process_noise_std: Option<DVector<f64>>, estimation_strategy: Option<ParticleAveragingStrategy>, 
-        resampling_method: Option<ParticleResamplingStrategy>) -> Self {
+    pub fn new(
+        particles: Vec<Particle>,
+        process_noise_std: Option<DVector<f64>>,
+        estimation_strategy: Option<ParticleAveragingStrategy>,
+        resampling_method: Option<ParticleResamplingStrategy>,
+    ) -> Self {
         // Default process noise standard deviations
         // These values are significantly larger than UKF to maintain particle diversity
         // and compensate for lack of bias estimation
         let process_noise: DVector<f64> = match process_noise_std {
             Some(pn) => pn,
             None => DVector::from_vec(vec![
-                0.0,  // lat (radians)
-                0.0,  // lon (radians)
-                0.0,  // alt (meters)
-                0.0,   // vn (m/s)
-                0.0,   // ve (m/s)
-                0.0,   // vd (m/s)
-                0.0,  // roll (radians)
-                0.0,  // pitch (radians)
-                0.0,  // yaw (radians)
+                0.0, // lat (radians)
+                0.0, // lon (radians)
+                0.0, // alt (meters)
+                0.0, // vn (m/s)
+                0.0, // ve (m/s)
+                0.0, // vd (m/s)
+                0.0, // roll (radians)
+                0.0, // pitch (radians)
+                0.0, // yaw (radians)
             ]),
         };
         assert_eq!(
@@ -1050,13 +1051,14 @@ impl ParticleFilter {
         ParticleFilter {
             particles,
             process_noise,
-            averaging_strategy: estimation_strategy.unwrap_or(ParticleAveragingStrategy::WeightedAverage),
+            averaging_strategy: estimation_strategy
+                .unwrap_or(ParticleAveragingStrategy::WeightedAverage),
             resampling_strategy: resampling_method.unwrap_or(ParticleResamplingStrategy::Naive),
             state_size,
         }
-    }   
+    }
     /// Initialization function for creating the particle field according to a normal distribution
-    /// 
+    ///
     /// # Arguments
     /// * `mean` - an `InitialState` struct defining the mean state for the particle filter navigation states
     /// * `other_states` - a DVector<f64> defining the mean values for any additional other states to be estimated
@@ -1065,9 +1067,9 @@ impl ParticleFilter {
     /// * `num_particles` - the number of particles to initialize
     /// # Returns
     /// * none
-    /// 
+    ///
     /// # Example
-    /// 
+    ///
     /// ```rust
     /// use nalgebra::DVector;
     /// use strapdown::filter::{ParticleFilter, InitialState};
@@ -1091,14 +1093,14 @@ impl ParticleFilter {
     /// pf.new_about(mean, other_states, navigation_covariance, other_covariance, num_particles);
     /// ```
     pub fn new_about(
-        mean: InitialState, 
-        other_states: DVector<f64>, 
-        navigation_covariance: DVector<f64>, 
-        other_covariance: DVector<f64>, 
-        num_particles: usize, 
-        process_noise_std: Option<DVector<f64>>, 
-        estimation_strategy: Option<ParticleAveragingStrategy>, 
-        resampling_method: Option<ParticleResamplingStrategy>
+        mean: InitialState,
+        other_states: DVector<f64>,
+        navigation_covariance: DVector<f64>,
+        other_covariance: DVector<f64>,
+        num_particles: usize,
+        process_noise_std: Option<DVector<f64>>,
+        estimation_strategy: Option<ParticleAveragingStrategy>,
+        resampling_method: Option<ParticleResamplingStrategy>,
     ) -> ParticleFilter {
         use rand_distr::{Distribution, Normal};
         let mut particles = Vec::with_capacity(num_particles);
@@ -1168,7 +1170,12 @@ impl ParticleFilter {
             );
             particles.push(particle);
         }
-        ParticleFilter::new(particles, process_noise_std, estimation_strategy, resampling_method)
+        ParticleFilter::new(
+            particles,
+            process_noise_std,
+            estimation_strategy,
+            resampling_method,
+        )
     }
     /// Helper function that converts the particles' state vector to a matrix
     pub fn particles_to_matrix(&self) -> DMatrix<f64> {
@@ -1213,33 +1220,60 @@ impl ParticleFilter {
                 particle.weight /= sum;
             }
         }
-    } 
+    }
 }
-impl NavigationFilter for ParticleFilter { 
+impl NavigationFilter for ParticleFilter {
     /// Propagate all particles forward using the strapdown equations with process noise
     ///
     /// # Arguments
     /// * `imu_data` - The IMU measurements to propagate the particles with.
     /// * `dt` - Time step in seconds
-    fn predict(&mut self, imu_data: IMUData, dt: f64) { 
-        
+    fn predict(&mut self, imu_data: IMUData, dt: f64) {
         let mut rng = rand::rng();
-        
+
         for particle in &mut self.particles {
             // Deterministic propagation
             forward(&mut particle.nav_state, imu_data, dt);
             // Add process noise to maintain particle diversity
             // Scale noise by sqrt(dt) for proper time scaling
             let dt_sqrt = dt.sqrt();
-            particle.nav_state.latitude += rand_distr::Normal::new(0.0, self.process_noise[0]).unwrap().sample(&mut rng) * dt_sqrt;
-            particle.nav_state.longitude += rand_distr::Normal::new(0.0, self.process_noise[1]).unwrap().sample(&mut rng) * dt_sqrt;
-            particle.nav_state.altitude += rand_distr::Normal::new(0.0, self.process_noise[2]).unwrap().sample(&mut rng) * dt_sqrt;
-            particle.nav_state.velocity_north += rand_distr::Normal::new(0.0, self.process_noise[3]).unwrap().sample(&mut rng) * dt_sqrt;
-            particle.nav_state.velocity_east += rand_distr::Normal::new(0.0, self.process_noise[4]).unwrap().sample(&mut rng) * dt_sqrt;
-            particle.nav_state.velocity_down += rand_distr::Normal::new(0.0, self.process_noise[5]).unwrap().sample(&mut rng) * dt_sqrt;
-            let roll_noise = rand_distr::Normal::new(0.0, self.process_noise[6]).unwrap().sample(&mut rng) * dt_sqrt;
-            let pitch_noise = rand_distr::Normal::new(0.0, self.process_noise[7]).unwrap().sample(&mut rng) * dt_sqrt;
-            let yaw_noise = rand_distr::Normal::new(0.0, self.process_noise[8]).unwrap().sample(&mut rng) * dt_sqrt;
+            particle.nav_state.latitude += rand_distr::Normal::new(0.0, self.process_noise[0])
+                .unwrap()
+                .sample(&mut rng)
+                * dt_sqrt;
+            particle.nav_state.longitude += rand_distr::Normal::new(0.0, self.process_noise[1])
+                .unwrap()
+                .sample(&mut rng)
+                * dt_sqrt;
+            particle.nav_state.altitude += rand_distr::Normal::new(0.0, self.process_noise[2])
+                .unwrap()
+                .sample(&mut rng)
+                * dt_sqrt;
+            particle.nav_state.velocity_north +=
+                rand_distr::Normal::new(0.0, self.process_noise[3])
+                    .unwrap()
+                    .sample(&mut rng)
+                    * dt_sqrt;
+            particle.nav_state.velocity_east += rand_distr::Normal::new(0.0, self.process_noise[4])
+                .unwrap()
+                .sample(&mut rng)
+                * dt_sqrt;
+            particle.nav_state.velocity_down += rand_distr::Normal::new(0.0, self.process_noise[5])
+                .unwrap()
+                .sample(&mut rng)
+                * dt_sqrt;
+            let roll_noise = rand_distr::Normal::new(0.0, self.process_noise[6])
+                .unwrap()
+                .sample(&mut rng)
+                * dt_sqrt;
+            let pitch_noise = rand_distr::Normal::new(0.0, self.process_noise[7])
+                .unwrap()
+                .sample(&mut rng)
+                * dt_sqrt;
+            let yaw_noise = rand_distr::Normal::new(0.0, self.process_noise[8])
+                .unwrap()
+                .sample(&mut rng)
+                * dt_sqrt;
             let (roll, pitch, yaw) = particle.nav_state.attitude.euler_angles();
             particle.nav_state.attitude = Rotation3::from_euler_angles(
                 roll + roll_noise,
@@ -1249,9 +1283,12 @@ impl NavigationFilter for ParticleFilter {
             // Add process noise to other states if they exist
             if let Some(ref mut other_states) = particle.other_states {
                 for i in 0..other_states.len() {
-                    let noise = rand_distr::Normal::new(0.0, self.process_noise[9 + i]).unwrap().sample(&mut rng) * dt_sqrt;
+                    let noise = rand_distr::Normal::new(0.0, self.process_noise[9 + i])
+                        .unwrap()
+                        .sample(&mut rng)
+                        * dt_sqrt;
                     other_states[i] += noise;
-                }   
+                }
             }
         }
     }
@@ -1260,7 +1297,7 @@ impl NavigationFilter for ParticleFilter {
     /// This method updates the particle weights based on the likelihood of the measurement
     /// given each particle's state. The measurement model is used to compute the expected
     /// measurement for each particle, and the particle weights are updated based on the
-    /// measurement innovation using a Gaussian likelihood function. After updating, the 
+    /// measurement innovation using a Gaussian likelihood function. After updating, the
     /// weights are normalized to sum to 1.0.
     ///
     /// The likelihood is computed as p(z|x) ∝ exp(-0.5 * (z - h(x))^T * R^-1 * (z - h(x))),
@@ -1286,7 +1323,10 @@ impl NavigationFilter for ParticleFilter {
             let sigma_inv = sigmas.clone().try_inverse().unwrap();
             let sigma_det = sigmas.determinant();
             let exponent = -0.5 * innovation.transpose() * sigma_inv * innovation;
-            let likelihood = (1.0 / ((2.0 * std::f64::consts::PI).powf(measurement.get_dimension() as f64 / 2.0) * &sigma_det.sqrt())) * exponent[(0, 0)].exp();
+            let likelihood = (1.0
+                / ((2.0 * std::f64::consts::PI).powf(measurement.get_dimension() as f64 / 2.0)
+                    * &sigma_det.sqrt()))
+                * exponent[(0, 0)].exp();
             // Update particle weight for now we are resampling every cycle
             // TODO: #117 Add in enums for different frequency of resampling
             particle.weight = likelihood;
@@ -1478,17 +1518,17 @@ mod tests {
             horizontal_noise_std: 5.0,
             vertical_noise_std: 10.0,
         };
-        
+
         // Test dimension
         assert_eq!(measurement.get_dimension(), 3);
-        
+
         // Test vector conversion
         let vec = measurement.get_vector();
         assert_eq!(vec.len(), 3);
         assert_approx_eq!(vec[0], 45.0_f64.to_radians(), 1e-6);
         assert_approx_eq!(vec[1], (-75.0_f64).to_radians(), 1e-6);
         assert_approx_eq!(vec[2], 100.0, 1e-6);
-        
+
         // Test noise matrix
         let noise = measurement.get_noise();
         assert_eq!(noise.nrows(), 3);
@@ -1496,13 +1536,16 @@ mod tests {
         assert!(noise[(0, 0)] > 0.0);
         assert!(noise[(1, 1)] > 0.0);
         assert!(noise[(2, 2)] > 0.0);
-        
+
         // Test sigma points mapping
-        let state_sigma = DMatrix::from_vec(9, 3, vec![
-            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0,
-            1.1, 2.1, 3.1, 4.1, 5.1, 6.1, 7.1, 8.1, 9.1,
-            1.2, 2.2, 3.2, 4.2, 5.2, 6.2, 7.2, 8.2, 9.2,
-        ]);
+        let state_sigma = DMatrix::from_vec(
+            9,
+            3,
+            vec![
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 1.1, 2.1, 3.1, 4.1, 5.1, 6.1, 7.1,
+                8.1, 9.1, 1.2, 2.2, 3.2, 4.2, 5.2, 6.2, 7.2, 8.2, 9.2,
+            ],
+        );
         let meas_sigma = measurement.get_sigma_points(&state_sigma);
         assert_eq!(meas_sigma.nrows(), 3);
         assert_eq!(meas_sigma.ncols(), 3);
@@ -1534,27 +1577,31 @@ mod tests {
             horizontal_noise_std: 0.5,
             vertical_noise_std: 1.0,
         };
-        
+
         // Test dimension
         assert_eq!(measurement.get_dimension(), 3);
-        
+
         // Test vector
         let vec = measurement.get_vector();
         assert_eq!(vec.len(), 3);
         assert_approx_eq!(vec[0], 10.0, 1e-6);
         assert_approx_eq!(vec[1], 5.0, 1e-6);
         assert_approx_eq!(vec[2], -2.0, 1e-6);
-        
+
         // Test noise matrix
         let noise = measurement.get_noise();
         assert_eq!(noise.nrows(), 3);
         assert_eq!(noise.ncols(), 3);
-        
+
         // Test sigma points mapping (maps to velocity components)
-        let state_sigma = DMatrix::from_vec(9, 2, vec![
-            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0,
-            1.1, 2.1, 3.1, 4.1, 5.1, 6.1, 7.1, 8.1, 9.1,
-        ]);
+        let state_sigma = DMatrix::from_vec(
+            9,
+            2,
+            vec![
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 1.1, 2.1, 3.1, 4.1, 5.1, 6.1, 7.1,
+                8.1, 9.1,
+            ],
+        );
         let meas_sigma = measurement.get_sigma_points(&state_sigma);
         assert_eq!(meas_sigma.nrows(), 3);
         assert_eq!(meas_sigma.ncols(), 2);
@@ -1575,10 +1622,10 @@ mod tests {
             vertical_noise_std: 10.0,
             velocity_noise_std: 0.5,
         };
-        
+
         // Test dimension
         assert_eq!(measurement.get_dimension(), 5);
-        
+
         // Test vector
         let vec = measurement.get_vector();
         assert_eq!(vec.len(), 5);
@@ -1587,17 +1634,21 @@ mod tests {
         assert_approx_eq!(vec[2], 100.0, 1e-6);
         assert_approx_eq!(vec[3], 10.0, 1e-6);
         assert_approx_eq!(vec[4], 5.0, 1e-6);
-        
+
         // Test noise matrix
         let noise = measurement.get_noise();
         assert_eq!(noise.nrows(), 5);
         assert_eq!(noise.ncols(), 5);
-        
+
         // Test sigma points mapping
-        let state_sigma = DMatrix::from_vec(9, 2, vec![
-            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0,
-            1.1, 2.1, 3.1, 4.1, 5.1, 6.1, 7.1, 8.1, 9.1,
-        ]);
+        let state_sigma = DMatrix::from_vec(
+            9,
+            2,
+            vec![
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 1.1, 2.1, 3.1, 4.1, 5.1, 6.1, 7.1,
+                8.1, 9.1,
+            ],
+        );
         let meas_sigma = measurement.get_sigma_points(&state_sigma);
         assert_eq!(meas_sigma.nrows(), 5);
         assert_eq!(meas_sigma.ncols(), 2);
@@ -1617,11 +1668,11 @@ mod tests {
             horizontal_noise_std: 5.0,
             vertical_noise_std: 10.0,
         };
-        
+
         // Test as_any downcast
         let any_ref = measurement.as_any();
         assert!(any_ref.downcast_ref::<GPSPositionMeasurement>().is_some());
-        
+
         // Test as_any_mut downcast
         let mut measurement_mut = measurement.clone();
         let any_mut = measurement_mut.as_any_mut();

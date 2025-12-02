@@ -888,7 +888,7 @@ pub fn closed_loop(
 /// * `Vec<NavigationResult>` - A vector of navigation results containing the state estimates and covariances at each timestamp.
 // pub fn particle_filter_loop(
 //     pf: &mut ParticleFilter,
-//     stream: EventStream,    
+//     stream: EventStream,
 //     health_limits: Option<HealthLimits>,
 // ) -> anyhow::Result<Vec<NavigationResult>> {
 //     let start_time = stream.start_time;
@@ -896,7 +896,7 @@ pub fn closed_loop(
 //     let total = stream.events.len();
 //     let mut last_ts: Option<DateTime<Utc>> = None;
 //     let mut monitor = HealthMonitor::new(health_limits.unwrap_or_default());
-// 
+//
 //     for (i, event) in stream.events.into_iter().enumerate() {
 //         // Print progress every 10 iterations
 //         if i % 10 == 0 || i == total {
@@ -907,14 +907,14 @@ pub fn closed_loop(
 //             use std::io::Write;
 //             std::io::stdout().flush().ok();
 //         }
-// 
+//
 //         // Compute wall-clock time for this event
 //         let elapsed_s = match &event {
 //             Event::Imu { elapsed_s, .. } => *elapsed_s,
 //             Event::Measurement { elapsed_s, .. } => *elapsed_s,
 //         };
 //         let ts = start_time + Duration::milliseconds((elapsed_s * 1000.0).round() as i64);
-// 
+//
 //         // Apply event
 //         match event {
 //             Event::Imu { dt_s, imu, .. } => {
@@ -928,10 +928,10 @@ pub fn closed_loop(
 //             Event::Measurement { meas, .. } => {
 //                 // Update particle weights using the measurement model
 //                 pf.update(meas.as_ref());
-// 
+//
 //                 // Resample particles
 //                 // pf.residual_resample();
-// 
+//
 //                 let (mean, cov) = pf.compute_state();
 //                 // if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
 //                 //     log::error!("Health fail after measurement update at {} (#{i}): {e}", ts);
@@ -939,7 +939,7 @@ pub fn closed_loop(
 //                 // }
 //             }
 //         }
-// 
+//
 //         // If timestamp changed, or it's the last event, record the previous state
 //         if Some(ts) != last_ts {
 //             if let Some(prev_ts) = last_ts {
@@ -952,14 +952,14 @@ pub fn closed_loop(
 //             }
 //             last_ts = Some(ts);
 //         }
-// 
+//
 //         // If this is the last event, also push
 //         if i == total - 1 {
 //             let mean = pf.get_estimate();
 //             let cov = pf.get_certainty();
 //             info!("Particle filter state at {}: {:?}", ts, mean);
 //             results.push(NavigationResult::from_particle_filter(&ts, &mean, &cov));
-//         }        
+//         }
 //     }
 //     debug!("Particle filter loop complete");
 //     Ok(results)
@@ -1243,28 +1243,20 @@ pub fn initialize_particle_filter(
     // Note: position_std is in meters, need to convert to radians for lat/lon
     let lat_dist = Normal::new(
         initial_pose.latitude.to_radians(),
-        (position_std * METERS_TO_DEGREES).to_radians(),  // Convert meters → degrees → radians
+        (position_std * METERS_TO_DEGREES).to_radians(), // Convert meters → degrees → radians
     )
     .unwrap();
     let lon_dist = Normal::new(
         initial_pose.longitude.to_radians(),
-        (position_std * METERS_TO_DEGREES).to_radians(),  // Convert meters → degrees → radians
+        (position_std * METERS_TO_DEGREES).to_radians(), // Convert meters → degrees → radians
     )
     .unwrap();
     let alt_dist = Normal::new(initial_pose.altitude, position_std).unwrap();
 
     // Convert bearing from degrees to radians for velocity calculation
     let bearing_rad = initial_pose.bearing.to_radians();
-    let vn_dist = Normal::new(
-        initial_pose.speed * bearing_rad.cos(),
-        velocity_std,
-    )
-    .unwrap();
-    let ve_dist = Normal::new(
-        initial_pose.speed * bearing_rad.sin(),
-        velocity_std,
-    )
-    .unwrap();
+    let vn_dist = Normal::new(initial_pose.speed * bearing_rad.cos(), velocity_std).unwrap();
+    let ve_dist = Normal::new(initial_pose.speed * bearing_rad.sin(), velocity_std).unwrap();
     let vd_dist = Normal::new(0.0, velocity_std).unwrap();
 
     let roll = if initial_pose.roll.is_nan() {
@@ -1358,7 +1350,7 @@ pub mod health {
             Self {
                 lat_rad: (-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2),
                 lon_rad: (-std::f64::consts::PI, std::f64::consts::PI),
-                alt_m: (-50000.0, 50000.0),  // Very tolerant for vertical channel instability
+                alt_m: (-50000.0, 50000.0), // Very tolerant for vertical channel instability
                 speed_mps_max: 500.0,
                 cov_diag_max: 1e15,
                 cond_max: 1e12,
@@ -2262,7 +2254,7 @@ mod tests {
         assert!((mean[2] - 101.0).abs() < 1.0);
 
         // Test highest weight
-        let pf = ParticleFilter{
+        let pf = ParticleFilter {
             particles: particles.clone(),
             process_noise: DVector::from_vec(vec![0.0; 9]),
             averaging_strategy: ParticleAveragingStrategy::HighestWeight,

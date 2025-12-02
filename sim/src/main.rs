@@ -283,9 +283,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                 0.0, //args.velocity_std,
                 0.0, //args.attitude_std,
             );
-            info!("Initialized particle filter with {} particles", args.num_particles);
+            info!(
+                "Initialized particle filter with {} particles",
+                args.num_particles
+            );
             info!("Initial state mean: {:?}", pf.get_estimate());
-            
+
             info!(
                 "Running particle filter with {} particles, strategy: {:?}",
                 args.num_particles, args.averaging_strategy
@@ -331,7 +334,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             };
             info!("Using GNSS degradation config: {:?}", cfg);
             let event_stream = build_event_stream(&records, &cfg);
-            info!("Initialized event stream with {} events", event_stream.events.len());
+            info!(
+                "Initialized event stream with {} events",
+                event_stream.events.len()
+            );
             let mut ukf = initialize_ukf(records[0].clone(), None, None, None, None, None, None);
             info!("Initialized UKF with state: {:?}", ukf);
             let results = run_closed_loop(&mut ukf, event_stream, None);

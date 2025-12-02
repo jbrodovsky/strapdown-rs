@@ -32,8 +32,8 @@ use world_magnetic_model::uom::si::length::meter;
 
 use strapdown::earth::gravity_anomaly;
 use strapdown::filter::{
-    GPSPositionAndVelocityMeasurement, MeasurementModel, NavigationFilter, RelativeAltitudeMeasurement,
-    UnscentedKalmanFilter,
+    GPSPositionAndVelocityMeasurement, MeasurementModel, NavigationFilter,
+    RelativeAltitudeMeasurement, UnscentedKalmanFilter,
 };
 use strapdown::messages::{
     Event, EventStream, FaultState, GnssDegradationConfig, GnssScheduler, apply_fault,
