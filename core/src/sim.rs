@@ -14,7 +14,7 @@
 //! or intermittent and degraded GNSS via the measurement models provided in this module. You can install
 //! the programs that execute this generic simulation by installing the binary via `cargo install strapdown-rs`.
 use core::f64;
-use log::{debug, warn};
+use log::{debug, info, warn};
 use std::fmt::{Debug, Display};
 use std::io::{self};
 use std::path::Path;
@@ -29,7 +29,7 @@ use clap::{Args, ValueEnum};
 
 use crate::earth::METERS_TO_DEGREES;
 use crate::filter::{
-    InitialState, Particle, ParticleAveragingStrategy, ParticleFilter, UnscentedKalmanFilter,
+    InitialState, NavigationFilter, Particle, ParticleFilter, UnscentedKalmanFilter,
 };
 use crate::messages::{Event, EventStream, GnssFaultModel, GnssScheduler};
 use crate::{IMUData, StrapdownState, forward};
@@ -547,8 +547,8 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>)> for NavigationResult {
 /// A NavigationResult struct containing the navigation solution.
 impl From<(&DateTime<Utc>, &UnscentedKalmanFilter)> for NavigationResult {
     fn from((timestamp, ukf): (&DateTime<Utc>, &UnscentedKalmanFilter)) -> Self {
-        let state = &ukf.get_mean();
-        let covariance = ukf.get_covariance();
+        let state = &ukf.get_estimate();
+        let covariance = ukf.get_certainty();
         NavigationResult {
             timestamp: *timestamp,
             latitude: state[0].to_degrees(),
@@ -749,6 +749,7 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
         coordinate_convention: true,
     };
     // Store the initial state and metadata
+    info!("Initializing dead reckoning simulation at {}", state);
     results.push(NavigationResult::from((&first_record.time, &state)));
     let mut previous_time = records[0].time;
     // Process each subsequent record
@@ -763,10 +764,98 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
         };
         forward(&mut state, imu_data, dt);
         results.push(NavigationResult::from((&current_time, &state)));
+        info!("Updated state at {}: {:?}", current_time, state);
         previous_time = record.time;
     }
     results
 }
+/// Generic closed-loop simulation runner for any NavigationFilter
+///
+/// This function implements the core simulation loop for both UKF and Particle Filter architectures.
+/// It iterates through the event stream, performs prediction and update steps, checks health limits,
+/// and records navigation results.
+///
+/// # Arguments
+/// * `filter` - Mutable reference to a type implementing NavigationFilter
+/// * `stream` - Event stream containing IMU and measurement events
+/// * `health_limits` - Optional health limits for monitoring
+///
+/// # Returns
+/// * `Vec<NavigationResult>` - A vector of navigation results
+pub fn run_closed_loop<F: NavigationFilter>(
+    filter: &mut F,
+    stream: EventStream,
+    health_limits: Option<HealthLimits>,
+) -> anyhow::Result<Vec<NavigationResult>> {
+    let start_time = stream.start_time;
+    let mut results: Vec<NavigationResult> = Vec::with_capacity(stream.events.len());
+    let total = stream.events.len();
+    let mut last_ts: Option<DateTime<Utc>> = None;
+    let mut monitor = HealthMonitor::new(health_limits.unwrap_or_default());
+
+    for (i, event) in stream.events.into_iter().enumerate() {
+        // Print progress every 10 iterations
+        if i % 10 == 0 || i == total {
+            print!(
+                "\rProcessing data {:.2}%...",
+                (i as f64 / total as f64) * 100.0
+            );
+            use std::io::Write;
+            std::io::stdout().flush().ok();
+        }
+
+        // Compute wall-clock time for this event
+        let elapsed_s = match &event {
+            Event::Imu { elapsed_s, .. } => *elapsed_s,
+            Event::Measurement { elapsed_s, .. } => *elapsed_s,
+        };
+        let ts = start_time + Duration::milliseconds((elapsed_s * 1000.0).round() as i64);
+
+        // Apply event
+        match event {
+            Event::Imu { dt_s, imu, .. } => {
+                filter.predict(imu, dt_s);
+                let mean = filter.get_estimate();
+                let cov = filter.get_certainty();
+                if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
+                    log::error!("Health fail after propagate at {} (#{i}): {e}", ts);
+                    bail!(e);
+                }
+            }
+            Event::Measurement { meas, .. } => {
+                filter.update(meas.as_ref());
+                let mean = filter.get_estimate();
+                let cov = filter.get_certainty();
+                if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
+                    log::error!("Health fail after measurement update at {} (#{i}): {e}", ts);
+                    bail!(e);
+                }
+            }
+        }
+
+        // If timestamp changed, or it's the last event, record the previous state
+        if Some(ts) != last_ts {
+            if let Some(prev_ts) = last_ts {
+                let mean = filter.get_estimate();
+                let cov = filter.get_certainty();
+                results.push(NavigationResult::from((&prev_ts, &mean, &cov)));
+                debug!("Filter state at {}: {:?}", ts, mean);
+            }
+            last_ts = Some(ts);
+        }
+
+        // If this is the last event, also push
+        if i == total - 1 {
+            let mean = filter.get_estimate();
+            let cov = filter.get_certainty();
+            debug!("Filter state at {}: {:?}", ts, mean);
+            results.push(NavigationResult::from((&ts, &mean, &cov)));
+        }
+    }
+    debug!("Closed-loop simulation complete");
+    Ok(results)
+}
+
 /// Closed-loop GPS-aided inertial navigation simulation.
 ///
 /// This function simulates a closed-loop full-state navigation system where GPS measurements are used
@@ -781,64 +870,7 @@ pub fn closed_loop(
     ukf: &mut UnscentedKalmanFilter,
     stream: EventStream,
 ) -> anyhow::Result<Vec<NavigationResult>> {
-    let start_time = stream.start_time;
-    let mut results: Vec<NavigationResult> = Vec::with_capacity(stream.events.len());
-    let total = stream.events.len();
-    let mut last_ts: Option<DateTime<Utc>> = None;
-    let mut monitor = HealthMonitor::new(HealthLimits::default());
-
-    for (i, event) in stream.events.into_iter().enumerate() {
-        // Print progress every 10 iterations
-        if i % 10 == 0 || i == total {
-            print!(
-                "\rProcessing data {:.2}%...",
-                (i as f64 / total as f64) * 100.0
-            );
-            //print_ukf(&ukf, record);
-            use std::io::Write;
-            std::io::stdout().flush().ok();
-        }
-        // Compute wall-clock time for this event
-        let elapsed_s = match &event {
-            Event::Imu { elapsed_s, .. } => *elapsed_s,
-            Event::Measurement { elapsed_s, .. } => *elapsed_s,
-        };
-        let ts = start_time + Duration::milliseconds((elapsed_s * 1000.0).round() as i64);
-        // Apply event
-        match event {
-            Event::Imu { dt_s, imu, .. } => {
-                ukf.predict(imu, dt_s);
-                if let Err(e) =
-                    monitor.check(ukf.get_mean().as_slice(), &ukf.get_covariance(), None)
-                {
-                    // log::error!("Health fail after predict at {} (#{i}): {e}", ts);
-                    bail!(e);
-                }
-            }
-            Event::Measurement { meas, .. } => {
-                ukf.update(meas.as_ref());
-                if let Err(e) =
-                    monitor.check(ukf.get_mean().as_slice(), &ukf.get_covariance(), None)
-                {
-                    // log::error!("Health fail after measurement update at {} (#{i}): {e}", ts);
-                    bail!(e);
-                }
-            }
-        }
-        // If timestamp changed, or it's the last event, record the previous state
-        if Some(ts) != last_ts {
-            if let Some(prev_ts) = last_ts {
-                results.push(NavigationResult::from((&prev_ts, &*ukf)));
-            }
-            last_ts = Some(ts);
-        }
-        // If this is the last event, also push
-        if i == total - 1 {
-            results.push(NavigationResult::from((&ts, &*ukf)));
-        }
-    }
-    debug!("Closed-loop simulation complete");
-    Ok(results)
+    run_closed_loop(ukf, stream, None)
 }
 
 /// Closed-loop particle filter simulation for strapdown INS
@@ -850,150 +882,152 @@ pub fn closed_loop(
 /// # Arguments
 /// * `pf` - Mutable reference to the particle filter
 /// * `stream` - Event stream containing IMU and measurement events
-/// * `averaging_strategy` - Strategy for computing navigation solution from particles
 /// * `health_limits` - Optional health limits for monitoring (uses default if None)
 ///
 /// # Returns
 /// * `Vec<NavigationResult>` - A vector of navigation results containing the state estimates and covariances at each timestamp.
-pub fn particle_filter_loop(
-    pf: &mut ParticleFilter,
-    stream: EventStream,
-    averaging_strategy: ParticleAveragingStrategy,
-    health_limits: Option<HealthLimits>,
-) -> anyhow::Result<Vec<NavigationResult>> {
-    let start_time = stream.start_time;
-    let mut results: Vec<NavigationResult> = Vec::with_capacity(stream.events.len());
-    let total = stream.events.len();
-    let mut last_ts: Option<DateTime<Utc>> = None;
-    let mut monitor = HealthMonitor::new(health_limits.unwrap_or_default());
-
-    for (i, event) in stream.events.into_iter().enumerate() {
-        // Print progress every 10 iterations
-        // if i % 10 == 0 || i == total {
-        //     print!(
-        //         "\rProcessing data {:.2}%...",
-        //         (i as f64 / total as f64) * 100.0
-        //     );
-        //     use std::io::Write;
-        //     std::io::stdout().flush().ok();
-        // }
-
-        // Compute wall-clock time for this event
-        let elapsed_s = match &event {
-            Event::Imu { elapsed_s, .. } => *elapsed_s,
-            Event::Measurement { elapsed_s, .. } => *elapsed_s,
-        };
-        let ts = start_time + Duration::milliseconds((elapsed_s * 1000.0).round() as i64);
-
-        // Apply event
-        match event {
-            Event::Imu { dt_s, imu, .. } => {
-                pf.propagate(&imu, dt_s);
-                let (mean, cov) = averaging_strategy.compute_state(pf);
-                if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
-                    // log::error!("Health fail after propagate at {} (#{i}): {e}", ts);
-                    bail!(e);
-                }
-            }
-            Event::Measurement { meas, .. } => {
-                // Update particle weights using the measurement model
-                pf.update(meas.as_ref());
-
-                // Resample particles
-                pf.residual_resample();
-
-                let (mean, cov) = averaging_strategy.compute_state(pf);
-                if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
-                    // log::error!("Health fail after measurement update at {} (#{i}): {e}", ts);
-                    bail!(e);
-                }
-            }
-        }
-
-        // If timestamp changed, or it's the last event, record the previous state
-        if Some(ts) != last_ts {
-            if let Some(prev_ts) = last_ts {
-                let (mean, cov) = averaging_strategy.compute_state(pf);
-                results.push(NavigationResult::from_particle_filter(
-                    &prev_ts, &mean, &cov,
-                ));
-            }
-            last_ts = Some(ts);
-        }
-
-        // If this is the last event, also push
-        if i == total - 1 {
-            let (mean, cov) = averaging_strategy.compute_state(pf);
-            results.push(NavigationResult::from_particle_filter(&ts, &mean, &cov));
-        }
-    }
-
-    debug!("Particle filter loop complete");
-    Ok(results)
-}
+// pub fn particle_filter_loop(
+//     pf: &mut ParticleFilter,
+//     stream: EventStream,    
+//     health_limits: Option<HealthLimits>,
+// ) -> anyhow::Result<Vec<NavigationResult>> {
+//     let start_time = stream.start_time;
+//     let mut results: Vec<NavigationResult> = Vec::with_capacity(stream.events.len());
+//     let total = stream.events.len();
+//     let mut last_ts: Option<DateTime<Utc>> = None;
+//     let mut monitor = HealthMonitor::new(health_limits.unwrap_or_default());
+// 
+//     for (i, event) in stream.events.into_iter().enumerate() {
+//         // Print progress every 10 iterations
+//         if i % 10 == 0 || i == total {
+//             print!(
+//                 "\rProcessing data {:.2}%...",
+//                 (i as f64 / total as f64) * 100.0
+//             );
+//             use std::io::Write;
+//             std::io::stdout().flush().ok();
+//         }
+// 
+//         // Compute wall-clock time for this event
+//         let elapsed_s = match &event {
+//             Event::Imu { elapsed_s, .. } => *elapsed_s,
+//             Event::Measurement { elapsed_s, .. } => *elapsed_s,
+//         };
+//         let ts = start_time + Duration::milliseconds((elapsed_s * 1000.0).round() as i64);
+// 
+//         // Apply event
+//         match event {
+//             Event::Imu { dt_s, imu, .. } => {
+//                 pf.predict(&imu, dt_s);
+//                 let (mean, cov) = pf.compute_state();
+//                 if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
+//                     log::error!("Health fail after propagate at {} (#{i}): {e}", ts);
+//                     bail!(e);
+//                 }
+//             }
+//             Event::Measurement { meas, .. } => {
+//                 // Update particle weights using the measurement model
+//                 pf.update(meas.as_ref());
+// 
+//                 // Resample particles
+//                 // pf.residual_resample();
+// 
+//                 let (mean, cov) = pf.compute_state();
+//                 // if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
+//                 //     log::error!("Health fail after measurement update at {} (#{i}): {e}", ts);
+//                 //     bail!(e);
+//                 // }
+//             }
+//         }
+// 
+//         // If timestamp changed, or it's the last event, record the previous state
+//         if Some(ts) != last_ts {
+//             if let Some(prev_ts) = last_ts {
+//                 let mean = pf.get_estimate();
+//                 let cov = pf.get_certainty();
+//                 results.push(NavigationResult::from_particle_filter(
+//                     &prev_ts, &mean, &cov,
+//                 ));
+//                 info!("Particle filter state at {}: {:?}", ts, mean);
+//             }
+//             last_ts = Some(ts);
+//         }
+// 
+//         // If this is the last event, also push
+//         if i == total - 1 {
+//             let mean = pf.get_estimate();
+//             let cov = pf.get_certainty();
+//             info!("Particle filter state at {}: {:?}", ts, mean);
+//             results.push(NavigationResult::from_particle_filter(&ts, &mean, &cov));
+//         }        
+//     }
+//     debug!("Particle filter loop complete");
+//     Ok(results)
+// }
 
 /// Print the Unscented Kalman Filter state and covariance for debugging purposes.
 pub fn print_ukf(ukf: &UnscentedKalmanFilter, record: &TestDataRecord) {
     debug!(
         "UKF position: ({:.4}, {:.4}, {:.4})  |  Covariance: {:.4e}, {:.4e}, {:.4}  |  Error: {:.4e}, {:.4e}, {:.4}",
-        ukf.get_mean()[0].to_degrees(),
-        ukf.get_mean()[1].to_degrees(),
-        ukf.get_mean()[2],
-        ukf.get_covariance()[(0, 0)],
-        ukf.get_covariance()[(1, 1)],
-        ukf.get_covariance()[(2, 2)],
-        ukf.get_mean()[0].to_degrees() - record.latitude,
-        ukf.get_mean()[1].to_degrees() - record.longitude,
-        ukf.get_mean()[2] - record.altitude
+        ukf.get_estimate()[0].to_degrees(),
+        ukf.get_estimate()[1].to_degrees(),
+        ukf.get_estimate()[2],
+        ukf.get_certainty()[(0, 0)],
+        ukf.get_certainty()[(1, 1)],
+        ukf.get_certainty()[(2, 2)],
+        ukf.get_estimate()[0].to_degrees() - record.latitude,
+        ukf.get_estimate()[1].to_degrees() - record.longitude,
+        ukf.get_estimate()[2] - record.altitude
     );
     debug!(
         "UKF velocity: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4}, {:.4}, {:.4}  | Error: {:.4}, {:.4}, {:.4}",
-        ukf.get_mean()[3],
-        ukf.get_mean()[4],
-        ukf.get_mean()[5],
-        ukf.get_covariance()[(3, 3)],
-        ukf.get_covariance()[(4, 4)],
-        ukf.get_covariance()[(5, 5)],
-        ukf.get_mean()[3] - record.speed * record.bearing.cos(),
-        ukf.get_mean()[4] - record.speed * record.bearing.sin(),
-        ukf.get_mean()[5] - 0.0 // Assuming no vertical velocity
+        ukf.get_estimate()[3],
+        ukf.get_estimate()[4],
+        ukf.get_estimate()[5],
+        ukf.get_certainty()[(3, 3)],
+        ukf.get_certainty()[(4, 4)],
+        ukf.get_certainty()[(5, 5)],
+        ukf.get_estimate()[3] - record.speed * record.bearing.cos(),
+        ukf.get_estimate()[4] - record.speed * record.bearing.sin(),
+        ukf.get_estimate()[5] - 0.0 // Assuming no vertical velocity
     );
     debug!(
         "UKF attitude: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4}, {:.4}, {:.4}  | Error: {:.4}, {:.4}, {:.4}",
-        ukf.get_mean()[6],
-        ukf.get_mean()[7],
-        ukf.get_mean()[8],
-        ukf.get_covariance()[(6, 6)],
-        ukf.get_covariance()[(7, 7)],
-        ukf.get_covariance()[(8, 8)],
-        ukf.get_mean()[6] - record.roll,
-        ukf.get_mean()[7] - record.pitch,
-        ukf.get_mean()[8] - record.yaw
+        ukf.get_estimate()[6],
+        ukf.get_estimate()[7],
+        ukf.get_estimate()[8],
+        ukf.get_certainty()[(6, 6)],
+        ukf.get_certainty()[(7, 7)],
+        ukf.get_certainty()[(8, 8)],
+        ukf.get_estimate()[6] - record.roll,
+        ukf.get_estimate()[7] - record.pitch,
+        ukf.get_estimate()[8] - record.yaw
     );
     debug!(
         "UKF accel biases: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4e}, {:.4e}, {:.4e}",
-        ukf.get_mean()[9],
-        ukf.get_mean()[10],
-        ukf.get_mean()[11],
-        ukf.get_covariance()[(9, 9)],
-        ukf.get_covariance()[(10, 10)],
-        ukf.get_covariance()[(11, 11)]
+        ukf.get_estimate()[9],
+        ukf.get_estimate()[10],
+        ukf.get_estimate()[11],
+        ukf.get_certainty()[(9, 9)],
+        ukf.get_certainty()[(10, 10)],
+        ukf.get_certainty()[(11, 11)]
     );
     debug!(
         "UKF gyro biases: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4e}, {:.4e}, {:.4e}",
-        ukf.get_mean()[12],
-        ukf.get_mean()[13],
-        ukf.get_mean()[14],
-        ukf.get_covariance()[(12, 12)],
-        ukf.get_covariance()[(13, 13)],
-        ukf.get_covariance()[(14, 14)]
+        ukf.get_estimate()[12],
+        ukf.get_estimate()[13],
+        ukf.get_estimate()[14],
+        ukf.get_certainty()[(12, 12)],
+        ukf.get_certainty()[(13, 13)],
+        ukf.get_certainty()[(14, 14)]
     );
 }
 /// Print the Particle Filter state and weights for debugging purposes.
 pub fn print_pf(pf: &ParticleFilter, record: &TestDataRecord) {
     // Compute weighted average state for comparison
-    let strategy = ParticleAveragingStrategy::WeightedAverage;
-    let (mean, cov) = strategy.compute_state(pf);
+    //let (mean, cov) = pf.compute_state();
+    let mean = pf.get_estimate();
+    let cov = pf.get_certainty();
 
     // Extract diagonal covariances
     let pos_cov = (cov[(0, 0)], cov[(1, 1)], cov[(2, 2)]);
@@ -1281,11 +1315,27 @@ pub fn initialize_particle_filter(
 
         particles.push(Particle {
             nav_state,
+            other_states: Some(DVector::zeros(6)), // Add 6 dummy states for biases
+            state_size: 15,
             weight: uniform_weight,
         });
     }
 
-    ParticleFilter::new(particles)
+    // Create process noise vector of size 15
+    let mut process_noise = DVector::zeros(15);
+    // Default values from ParticleFilter::new
+    process_noise[0] = 1e-6; // lat
+    process_noise[1] = 1e-6; // lon
+    process_noise[2] = 1e-6; // alt
+    process_noise[3] = 1e-3; // vn
+    process_noise[4] = 1e-3; // ve
+    process_noise[5] = 1e-3; // vd
+    process_noise[6] = 1e-5; // roll
+    process_noise[7] = 1e-5; // pitch
+    process_noise[8] = 1e-5; // yaw
+    // Biases (indices 9-14) are 0.0
+
+    ParticleFilter::new(particles, Some(process_noise), None, None)
 }
 
 pub mod health {
@@ -1536,6 +1586,7 @@ pub fn build_fault(a: &FaultArgs) -> GnssFaultModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::filter::{ParticleAveragingStrategy, ParticleResamplingStrategy};
     use chrono::Utc;
     use std::fs::File;
     use std::path::Path;
@@ -1958,7 +2009,7 @@ mod tests {
             grav_x: 0.0,
         };
         let ukf = initialize_ukf(rec.clone(), None, None, None, None, None, None);
-        assert!(!ukf.get_mean().is_empty());
+        assert!(!ukf.get_estimate().is_empty());
         let ukf2 = initialize_ukf(
             rec,
             Some(vec![0.1, 0.2, 0.3]),
@@ -1968,7 +2019,7 @@ mod tests {
             None,
             None,
         );
-        assert!(!ukf2.get_mean().is_empty());
+        assert!(!ukf2.get_estimate().is_empty());
     }
 
     // Helper to produce the header in the same order the struct expects
@@ -2166,6 +2217,8 @@ mod tests {
                     attitude: Rotation3::from_euler_angles(0.0, 0.0, 0.0),
                     coordinate_convention: true,
                 },
+                other_states: None,
+                state_size: 9,
                 weight: 0.5,
             },
             Particle {
@@ -2179,6 +2232,8 @@ mod tests {
                     attitude: Rotation3::from_euler_angles(0.1, 0.0, 0.0),
                     coordinate_convention: true,
                 },
+                other_states: None,
+                state_size: 9,
                 weight: 0.3,
             },
             Particle {
@@ -2192,22 +2247,29 @@ mod tests {
                     attitude: Rotation3::from_euler_angles(0.0, 0.1, 0.0),
                     coordinate_convention: true,
                 },
+                other_states: None,
+                state_size: 9,
                 weight: 0.2,
             },
         ];
 
-        let pf = ParticleFilter::new(particles);
+        let pf = ParticleFilter::new(particles.clone(), None, None, None);
 
         // Test weighted average
-        let strategy = ParticleAveragingStrategy::WeightedAverage;
-        let (mean, _cov) = strategy.compute_state(&pf);
+        let mean = pf.get_estimate();
         assert_eq!(mean.len(), 9);
         // Weighted average: 100*0.5 + 110*0.3 + 90*0.2 = 50 + 33 + 18 = 101
         assert!((mean[2] - 101.0).abs() < 1.0);
 
         // Test highest weight
-        let strategy = ParticleAveragingStrategy::HighestWeight;
-        let (mean, _cov) = strategy.compute_state(&pf);
+        let pf = ParticleFilter{
+            particles: particles.clone(),
+            process_noise: DVector::from_vec(vec![0.0; 9]),
+            averaging_strategy: ParticleAveragingStrategy::HighestWeight,
+            resampling_strategy: ParticleResamplingStrategy::Naive,
+            state_size: 9,
+        };
+        let mean = pf.get_estimate();
         assert_eq!(mean.len(), 9);
         assert_eq!(mean[2], 100.0); // Should be first particle
     }

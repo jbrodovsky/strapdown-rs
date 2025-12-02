@@ -27,7 +27,7 @@ use std::path::Path;
 use strapdown::earth::haversine_distance;
 use strapdown::filter::{InitialState, ParticleAveragingStrategy, UnscentedKalmanFilter};
 use strapdown::messages::{GnssDegradationConfig, GnssFaultModel, GnssScheduler, build_event_stream};
-use strapdown::sim::{closed_loop, dead_reckoning, particle_filter_loop, NavigationResult, TestDataRecord, HealthLimits};
+use strapdown::sim::{closed_loop, dead_reckoning, run_closed_loop, NavigationResult, TestDataRecord, HealthLimits};
 
 use nalgebra::{DMatrix, DVector};
 
@@ -696,8 +696,7 @@ fn test_particle_filter_closed_loop_on_real_data() {
 
     // Run particle filter closed-loop with weighted average strategy
     let health_limits = HealthLimits::default();
-    let averaging_strategy = ParticleAveragingStrategy::WeightedAverage;
-    let results = particle_filter_loop(&mut pf, stream, averaging_strategy, Some(health_limits))
+    let results = run_closed_loop(&mut pf, stream, Some(health_limits))
         .expect("Particle filter closed-loop should complete");
 
     // Verify results
@@ -823,8 +822,7 @@ fn test_particle_filter_with_degraded_gnss() {
 
     // Run particle filter closed-loop
     let health_limits = HealthLimits::default();
-    let averaging_strategy = ParticleAveragingStrategy::WeightedAverage;
-    let results = particle_filter_loop(&mut pf, stream, averaging_strategy, Some(health_limits))
+    let results = run_closed_loop(&mut pf, stream, Some(health_limits))
         .expect("Particle filter with degraded GNSS should complete");
 
     // Compute error metrics
@@ -932,8 +930,7 @@ fn test_particle_filter_performance_comparable_to_ukf() {
     let stream = build_event_stream(&records, &cfg);
 
     let health_limits = HealthLimits::default();
-    let averaging_strategy = ParticleAveragingStrategy::WeightedAverage;
-    let pf_results = particle_filter_loop(&mut pf, stream, averaging_strategy, Some(health_limits))
+    let pf_results = run_closed_loop(&mut pf, stream, Some(health_limits))
         .expect("Particle filter should complete");
     let pf_stats = compute_error_metrics(&pf_results, &records);
 
