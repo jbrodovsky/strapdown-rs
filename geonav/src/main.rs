@@ -257,11 +257,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Ensure output directory exists
-    if let Some(parent) = cli.output.parent() {
-        if !parent.exists() {
+    if let Some(parent) = cli.output.parent()
+        && !parent.exists() {
             std::fs::create_dir_all(parent)?;
         }
-    }
 
     // Load sensor data records from CSV
     let records = TestDataRecord::from_csv(&cli.input)?;
@@ -319,7 +318,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     info!("Built event stream with {} events", events.events.len());
 
     // Initialize UKF
-    let mut process_noise: Vec<f64> = DEFAULT_PROCESS_NOISE.clone().into();
+    let mut process_noise: Vec<f64> = DEFAULT_PROCESS_NOISE.into();
     process_noise.extend([1e-9]); // Extend for geophysical state
 
     let mut ukf = initialize_ukf(

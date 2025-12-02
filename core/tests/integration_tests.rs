@@ -25,12 +25,12 @@
 use std::path::Path;
 
 use strapdown::earth::haversine_distance;
-use strapdown::filter::{InitialState, ParticleAveragingStrategy, UnscentedKalmanFilter};
+use strapdown::filter::{InitialState, UnscentedKalmanFilter};
 use strapdown::messages::{
     GnssDegradationConfig, GnssFaultModel, GnssScheduler, build_event_stream,
 };
 use strapdown::sim::{
-    HealthLimits, NavigationResult, TestDataRecord, closed_loop, dead_reckoning, run_closed_loop,
+    NavigationResult, TestDataRecord, closed_loop, dead_reckoning,
 };
 
 use nalgebra::{DMatrix, DVector};
@@ -248,10 +248,8 @@ fn compute_error_metrics(results: &[NavigationResult], records: &[TestDataRecord
 /// # Returns
 /// Vector of TestDataRecord instances
 fn load_test_data(path: &Path) -> Vec<TestDataRecord> {
-    TestDataRecord::from_csv(path).expect(&format!(
-        "Failed to load test data from CSV: {}",
-        path.display()
-    ))
+    TestDataRecord::from_csv(path).unwrap_or_else(|_| panic!("Failed to load test data from CSV: {}",
+        path.display()))
 }
 
 /// Create an initial state from the first test data record
