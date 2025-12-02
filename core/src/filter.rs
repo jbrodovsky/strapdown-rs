@@ -1073,7 +1073,6 @@ impl ParticleFilter {
     /// ```rust
     /// use nalgebra::DVector;
     /// use strapdown::filter::{ParticleFilter, InitialState};
-    /// let mut pf = ParticleFilter::default();
     /// let mean = InitialState {
     ///    latitude: 37.7749,
     ///    longitude: -122.4194,
@@ -1090,7 +1089,8 @@ impl ParticleFilter {
     /// let navigation_covariance = DVector::from_vec(vec![1.0; 9]);
     /// let other_covariance = DVector::from_vec(vec![1.0; 5]);
     /// let num_particles = 100;
-    /// pf.new_about(mean, other_states, navigation_covariance, other_covariance, num_particles);
+    /// let process_noise = DVector::from_vec(vec![0.1; 14]);
+    /// let pf = ParticleFilter::new_about(mean, other_states, navigation_covariance, other_covariance, num_particles, Some(process_noise), None, None);
     /// ```
     pub fn new_about(
         mean: InitialState,
