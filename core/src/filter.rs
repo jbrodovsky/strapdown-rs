@@ -16,7 +16,7 @@
 //! measurements in the local level frame (i.e. a GPS fix).
 use crate::earth::METERS_TO_DEGREES;
 use crate::linalg::{matrix_square_root, robust_spd_solve, symmetrize};
-use crate::{IMUData, StrapdownState, forward, wrap_to_2pi};
+use crate::{IMUData, StrapdownState, forward, wrap_to_2pi, wrap_to_pi, wrap_to_180, wrap_to_360};
 
 use std::any::Any;
 use std::convert::From;
@@ -293,7 +293,103 @@ pub struct InitialState {
     pub pitch: f64,
     pub yaw: f64,
     pub in_degrees: bool,
+    pub is_enu: bool,
 }
+impl InitialState {
+    /// Creates a new InitialState struct and checks the validity of the input parameters.
+    /// 
+    /// # Arguments
+    /// * `latitude` - The initial latitude of the strapdown state.
+    /// * `longitude` - The initial longitude of the strapdown state.
+    /// * `altitude` - The initial altitude of the strapdown state [-10,000, +30,000] meter above MSL.
+    /// * `northward_velocity` - The initial northward velocity of the strapdown state.
+    /// * `eastward_velocity` - The initial eastward velocity of the strapdown state.
+    /// * `downward_velocity` - The initial downward velocity of the strapdown state.
+    /// * `roll` - The initial roll of the strapdown state.
+    /// * `pitch` - The initial pitch of the strapdown state.
+    /// * `yaw` - The initial yaw of the strapdown state.
+    /// * `in_degrees` - Whether the input angles are in degrees or radians.
+    /// * `is_enu` - Whether the local level frame is East-North-Up (ENU) or North-East-Down (NED). If None, defaults to ENU.
+    pub fn new(
+        latitude: f64,
+        longitude: f64,
+        altitude: f64,
+        northward_velocity: f64,
+        eastward_velocity: f64,
+        downward_velocity: f64,
+        mut roll: f64,
+        mut pitch: f64,
+        mut yaw: f64,
+        in_degrees: bool,
+        is_enu: Option<bool>,
+    ) -> Self {
+        let latitude = if in_degrees {
+            assert!(
+                latitude >= -90.0 && latitude <= 90.0,
+                "Latitude must be between -90 and +90 degrees"
+            );
+            latitude
+        } else {
+            let lat_deg = latitude.to_degrees();
+            assert!(
+                lat_deg >= -90.0 && lat_deg <= 90.0,
+                "Latitude must be between -90 and +90 degrees"
+            );
+            latitude
+        };
+        let longitude = if in_degrees {
+            assert!(
+                wrap_to_180(longitude) >= -180.0 && wrap_to_180(longitude) <= 180.0,
+                "Longitude must be between -180 and +180 degrees"
+            );
+            wrap_to_180(longitude)
+        } else {
+            let lon_deg = longitude.to_degrees();
+            assert!(
+                lon_deg >= -180.0 && lon_deg <= 180.0,
+                "Longitude must be between -180 and +180 degrees"
+            );
+            longitude
+        };
+        let is_enu = is_enu.unwrap_or(true);
+        let altitude = if is_enu {
+            assert !(
+                altitude >= -10000.0 && altitude <= 30000.0,
+                "Altitude must be between -10,000 and +30,000 meters in ENU"
+            );
+            altitude
+        } else {
+            assert!(
+                altitude >= -30000.0 && altitude <= 10000.0,
+                "Altitude must be between 10,000 and -30,000 meters in NED"
+            );
+            altitude
+        };
+        if in_degrees {
+            roll = wrap_to_360(roll).to_radians();
+            pitch = wrap_to_360(pitch).to_radians();
+            yaw = wrap_to_360(yaw).to_radians();
+        } else {
+            roll = wrap_to_2pi(roll);
+            pitch = wrap_to_2pi(pitch);
+            yaw = wrap_to_2pi(yaw);
+        }
+        InitialState {
+            latitude,
+            longitude,
+            altitude,
+            northward_velocity,
+            eastward_velocity,
+            downward_velocity,
+            roll,
+            pitch,
+            yaw,
+            in_degrees,
+            is_enu,
+        }
+    }
+}
+
 /// Navigation filter trait for common functions across all navigation filters
 pub trait NavigationFilter {
     /// Predicts the state using the strapdown equations and IMU measurements.
@@ -350,6 +446,7 @@ pub struct UnscentedKalmanFilter {
     state_size: usize,
     weights_mean: DVector<f64>,
     weights_cov: DVector<f64>,
+    is_enu: bool,
 }
 impl Debug for UnscentedKalmanFilter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -477,6 +574,7 @@ impl UnscentedKalmanFilter {
             state_size,
             weights_mean,
             weights_cov,
+            is_enu: initial_state.is_enu,
         }
     }
     pub fn get_sigma_points(&self) -> DMatrix<f64> {
@@ -520,7 +618,30 @@ impl NavigationFilter for UnscentedKalmanFilter {
                     sigma_point_vec[7],
                     sigma_point_vec[8],
                 ),
-                coordinate_convention: true,
+                is_enu: self.is_enu,
+                
+            };
+            let accel_biases = if self.state_size >= 15 {
+                DVector::from_vec(vec![
+                    sigma_point_vec[9],
+                    sigma_point_vec[10],
+                    sigma_point_vec[11],
+                ])
+            } else {
+                DVector::from_vec(vec![0.0, 0.0, 0.0])
+            };
+            let gyro_biases = if self.state_size >= 15 {
+                DVector::from_vec(vec![
+                    sigma_point_vec[12],
+                    sigma_point_vec[13],
+                    sigma_point_vec[14],
+                ])
+            } else {
+                DVector::from_vec(vec![0.0, 0.0, 0.0])
+            };
+            let imu_data = IMUData {
+                accel: imu_data.accel - &accel_biases,
+                gyro: imu_data.gyro - &gyro_biases,
             };
             // println!("propagating: lat {}  lon {}", state.latitude.to_degrees(), state.longitude.to_degrees());
             forward(&mut state, imu_data, dt);
@@ -609,7 +730,6 @@ impl NavigationFilter for UnscentedKalmanFilter {
 }
 
 #[derive(Clone, Debug, Default)]
-
 pub struct Particle {
     /// The strapdown state of the particle
     pub nav_state: StrapdownState,
@@ -674,7 +794,7 @@ impl From<(DVector<f64>, f64)> for Particle {
                 state_vector[7],
                 state_vector[8],
             ),
-            coordinate_convention: true,
+            is_enu: true,
         };
         let other_states = if state_vector.len() > 9 {
             Some(state_vector.rows(9, state_vector.len() - 9).clone_owned())
@@ -684,7 +804,6 @@ impl From<(DVector<f64>, f64)> for Particle {
         Particle::new(nav_state, other_states, weight)
     }
 }
-
 /// ParticleAveragingStrategy defines the method used to compute the navigation solution
 /// from the set of particles in a particle filter. This strategy determines how the
 /// filter aggregates individual particle states into a single state estimate and covariance.
@@ -855,7 +974,6 @@ pub enum ParticleResamplingStrategy {
     Stratified,
     Adaptive,
 }
-
 impl ParticleResamplingStrategy {
     // Resample particles based on the selected strategy
     fn resample(&self, particles: Vec<Particle>) -> Vec<Particle> {
@@ -934,7 +1052,6 @@ impl ParticleResamplingStrategy {
         new_particles
     }
 }
-
 /// Particle filter for strapdown inertial navigation
 ///
 /// This filter uses a particle filter algorithm to estimate the state of a strapdown inertial navigation system.
@@ -1053,7 +1170,7 @@ impl ParticleFilter {
             process_noise,
             averaging_strategy: estimation_strategy
                 .unwrap_or(ParticleAveragingStrategy::WeightedAverage),
-            resampling_strategy: resampling_method.unwrap_or(ParticleResamplingStrategy::Naive),
+            resampling_strategy: resampling_method.unwrap_or(ParticleResamplingStrategy::Residual),
             state_size,
         }
     }
@@ -1084,6 +1201,7 @@ impl ParticleFilter {
     ///    pitch: 0.0,
     ///    yaw: 0.0,
     ///    in_degrees: true,
+    ///    is_enu: true,
     /// };
     /// let other_states = DVector::from_vec(vec![0.0; 5]);
     /// let navigation_covariance = DVector::from_vec(vec![1.0; 9]);
@@ -1163,7 +1281,7 @@ impl ParticleFilter {
                     velocity_east,
                     velocity_down,
                     attitude,
-                    coordinate_convention: true,
+                    is_enu: true,
                 },
                 Some(DVector::from_vec(other_state_vec)),
                 1.0 / num_particles as f64,
@@ -1215,9 +1333,16 @@ impl ParticleFilter {
     /// to ensure that the weights sum to 1.0 and can be treated like a probability distribution.
     pub fn normalize_weights(&mut self) {
         let sum: f64 = self.particles.iter().map(|p| p.weight).sum();
-        if sum > 0.0 {
+        if sum > 0.0 && sum.is_finite() {
             for particle in &mut self.particles {
                 particle.weight /= sum;
+            }
+        } else {
+            // If weights sum to zero or are invalid, reset to uniform
+            log::warn!("Particle weights sum to {} (invalid), resetting to uniform distribution", sum);
+            let uniform_weight = 1.0 / self.particles.len() as f64;
+            for particle in &mut self.particles {
+                particle.weight = uniform_weight;
             }
         }
     }
@@ -1232,6 +1357,30 @@ impl NavigationFilter for ParticleFilter {
         let mut rng = rand::rng();
 
         for particle in &mut self.particles {
+            let accel_biases = if particle.other_states.is_some() 
+                && particle.other_states.as_ref().unwrap().len() >= 6 {
+                DVector::from_vec(vec![
+                    particle.other_states.as_ref().unwrap()[0],
+                    particle.other_states.as_ref().unwrap()[1],
+                    particle.other_states.as_ref().unwrap()[2],
+                ])
+            } else {
+                DVector::from_vec(vec![0.0, 0.0, 0.0])
+            };
+            let gyro_biases = if particle.other_states.is_some() 
+                && particle.other_states.as_ref().unwrap().len() >= 6 {
+                DVector::from_vec(vec![
+                    particle.other_states.as_ref().unwrap()[3],
+                    particle.other_states.as_ref().unwrap()[4],
+                    particle.other_states.as_ref().unwrap()[5],
+                ])
+            } else {
+                DVector::from_vec(vec![0.0, 0.0, 0.0])
+            };
+            let imu_data = IMUData {
+                accel: imu_data.accel - accel_biases,
+                gyro: imu_data.gyro - gyro_biases
+            };
             // Deterministic propagation
             forward(&mut particle.nav_state, imu_data, dt);
             // Add process noise to maintain particle diversity
@@ -1314,27 +1463,57 @@ impl NavigationFilter for ParticleFilter {
         for (i, measurement_sigma_point) in measurement_sigma_points.column_iter().enumerate() {
             z_hats.set_column(i, &measurement_sigma_point);
         }
+        
+        // Compute log-likelihoods to avoid numerical underflow
+        let mut log_likelihoods = Vec::with_capacity(self.particles.len());
+        
         // Update weights based on measurement likelihood
         for (i, particle) in self.particles.iter_mut().enumerate() {
             let z_hat = z_hats.column(i);
             let innovation = measurement.get_vector() - z_hat;
             let sigmas = measurement.get_noise();
-            // Compute likelihood using Gaussian probability density function
-            let sigma_inv = sigmas.clone().try_inverse().unwrap();
+            
+            // Compute log-likelihood to avoid numerical underflow
+            let sigma_inv = match sigmas.clone().try_inverse() {
+                Some(inv) => inv,
+                None => {
+                    log::warn!("Measurement covariance matrix is singular, using very small likelihood");
+                    particle.weight = 1e-300;
+                    log_likelihoods.push(-690.0); // log(1e-300)
+                    continue;
+                }
+            };
+            
             let sigma_det = sigmas.determinant();
-            let exponent = -0.5 * innovation.transpose() * sigma_inv * innovation;
-            let likelihood = (1.0
-                / ((2.0 * std::f64::consts::PI).powf(measurement.get_dimension() as f64 / 2.0)
-                    * sigma_det.sqrt()))
-                * exponent[(0, 0)].exp();
-            // Update particle weight for now we are resampling every cycle
-            // TODO: #117 Add in enums for different frequency of resampling
-            particle.weight = likelihood;
+            if sigma_det <= 0.0 {
+                log::warn!("Measurement covariance determinant is non-positive: {}", sigma_det);
+                particle.weight = 1e-300;
+                log_likelihoods.push(-690.0);
+                continue;
+            }
+            
+            let mahalanobis = innovation.transpose() * sigma_inv * innovation;
+            let log_likelihood = -0.5 * (measurement.get_dimension() as f64 * (2.0 * std::f64::consts::PI).ln()
+                + sigma_det.ln()
+                + mahalanobis[(0, 0)]);
+            
+            log_likelihoods.push(log_likelihood);
         }
+        
+        // Convert log-likelihoods to weights using the log-sum-exp trick
+        let max_log_likelihood = log_likelihoods.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        
+        for (i, particle) in self.particles.iter_mut().enumerate() {
+            // Subtract max to avoid overflow, then exponentiate
+            particle.weight = (log_likelihoods[i] - max_log_likelihood).exp();
+        }
+        
         // Normalize weights to sum to 1.0
         self.normalize_weights();
-        self.particles = self.resampling_strategy.resample(self.particles.clone());
+        // Note: Resampling is done separately via the resample() method
+        // This allows getting the estimate with updated weights before resampling
     }
+    
     fn get_estimate(&self) -> DVector<f64> {
         match self.averaging_strategy {
             ParticleAveragingStrategy::WeightedAverage => {
@@ -1368,6 +1547,35 @@ impl NavigationFilter for ParticleFilter {
         }
     }
 }
+
+impl ParticleFilter {
+    /// Resample particles based on their weights
+    ///
+    /// This method resamples the particles according to the configured resampling strategy.
+    /// After resampling, all particles have equal weights (1/N). Resampling should typically
+    /// be done after update() and get_estimate() to prevent weight degeneracy.
+    ///
+    /// The effective sample size (N_eff = 1 / sum(w_i^2)) can be used to determine when
+    /// resampling is needed. A common threshold is N_eff < N/2.
+    pub fn resample(&mut self) {
+        self.particles = self.resampling_strategy.resample(self.particles.clone());
+    }
+    
+    /// Calculate the effective sample size (ESS)
+    ///
+    /// ESS = 1 / sum(w_i^2) where w_i are the normalized weights.
+    /// A low ESS indicates weight degeneracy and that resampling may be beneficial.
+    /// Common threshold is to resample when ESS < N/2.
+    pub fn effective_sample_size(&self) -> f64 {
+        let sum_of_squares: f64 = self.particles.iter().map(|p| p.weight * p.weight).sum();
+        if sum_of_squares > 0.0 {
+            1.0 / sum_of_squares
+        } else {
+            0.0
+        }
+    }
+}
+
 /// Tests
 #[cfg(test)]
 mod tests {
@@ -1395,6 +1603,7 @@ mod tests {
         pitch: 0.0,
         yaw: 0.0,
         in_degrees: false,
+        is_enu: true,
     };
 
     #[test]
@@ -1493,7 +1702,6 @@ mod tests {
         assert_approx_eq!(ukf.mean_state[4], 0.0, 0.1);
         assert_approx_eq!(ukf.mean_state[5], 0.0, 0.1);
     }
-
     #[test]
     fn test_gps_position_measurement_display() {
         let measurement = GPSPositionMeasurement {
@@ -1508,7 +1716,6 @@ mod tests {
         assert!(display_str.contains("-75"));
         assert!(display_str.contains("100"));
     }
-
     #[test]
     fn test_gps_position_measurement_model() {
         let measurement = GPSPositionMeasurement {
@@ -1553,7 +1760,6 @@ mod tests {
         assert_approx_eq!(meas_sigma[(1, 0)], 2.0, 1e-6);
         assert_approx_eq!(meas_sigma[(2, 0)], 3.0, 1e-6);
     }
-
     #[test]
     fn test_gps_velocity_measurement_display() {
         let measurement = GPSVelocityMeasurement {
@@ -1567,7 +1773,6 @@ mod tests {
         assert!(display_str.contains("10"));
         assert!(display_str.contains("5"));
     }
-
     #[test]
     fn test_gps_velocity_measurement_model() {
         let measurement = GPSVelocityMeasurement {
@@ -1609,7 +1814,6 @@ mod tests {
         assert_approx_eq!(meas_sigma[(1, 0)], 5.0, 1e-6); // state[4]
         assert_approx_eq!(meas_sigma[(2, 0)], 6.0, 1e-6); // state[5]
     }
-
     #[test]
     fn test_gps_position_velocity_measurement_model() {
         let measurement = GPSPositionAndVelocityMeasurement {
@@ -1658,7 +1862,6 @@ mod tests {
         assert_approx_eq!(meas_sigma[(3, 0)], 4.0, 1e-6); // v_n
         assert_approx_eq!(meas_sigma[(4, 0)], 5.0, 1e-6); // v_e
     }
-
     #[test]
     fn test_measurement_as_any() {
         let measurement = GPSPositionMeasurement {
@@ -1678,7 +1881,6 @@ mod tests {
         let any_mut = measurement_mut.as_any_mut();
         assert!(any_mut.downcast_mut::<GPSPositionMeasurement>().is_some());
     }
-
     #[test]
     fn test_particle_filter_new() {
         let nav_state = StrapdownState::default();
@@ -1696,10 +1898,9 @@ mod tests {
         ));
         assert!(matches!(
             pf.resampling_strategy,
-            ParticleResamplingStrategy::Naive
+            ParticleResamplingStrategy::Residual
         ));
     }
-
     #[test]
     fn test_particle_filter_new_about() {
         let mean = InitialState {
@@ -1713,6 +1914,7 @@ mod tests {
             pitch: 0.0,
             yaw: 0.0,
             in_degrees: false,
+            is_enu: true,
         };
         let other_states = DVector::from_vec(vec![0.0; 2]);
         let nav_cov = DVector::from_vec(vec![0.01; 9]); // Small variance
@@ -1738,7 +1940,6 @@ mod tests {
         assert_approx_eq!(estimate[2], 100.0, 1.0); // Altitude
         assert_approx_eq!(estimate[3], 10.0, 1.0); // Vn
     }
-
     #[test]
     fn test_particle_filter_methods() {
         let nav_state = StrapdownState::default();
@@ -1762,7 +1963,6 @@ mod tests {
         assert_eq!(matrix.nrows(), 9);
         assert_eq!(matrix.ncols(), 2);
     }
-
     #[test]
     fn test_particle_averaging_strategies() {
         let mut s1 = StrapdownState::default();
@@ -1790,7 +1990,6 @@ mod tests {
         let est_highest = pf.get_estimate();
         assert_approx_eq!(est_highest[2], 20.0, 1e-6);
     }
-
     #[test]
     fn test_resampling_residual() {
         let s = StrapdownState::default();
@@ -1809,19 +2008,20 @@ mod tests {
             assert_approx_eq!(p.weight, 1.0 / 3.0, 1e-6);
         }
     }
-
     #[test]
     fn test_particle_filter_predict_update() {
         let mean = InitialState::default();
         let nav_cov = DVector::from_vec(vec![1e-9; 9]);
-        let other_cov = DVector::from_vec(vec![0.0; 0]);
+        // Include 6 bias states: 3 accel biases + 3 gyro biases
+        let other_states = DVector::from_vec(vec![0.0; 6]);
+        let other_cov = DVector::from_vec(vec![1e-6; 6]);
         let mut pf = ParticleFilter::new_about(
             mean,
-            DVector::zeros(0),
+            other_states,
             nav_cov,
             other_cov,
             100,
-            None,
+            Some(DVector::from_vec(vec![1e-9; 15])),
             None,
             Some(ParticleResamplingStrategy::Residual),
         );
@@ -1848,7 +2048,393 @@ mod tests {
         let sum_weights: f64 = pf.particles.iter().map(|p| p.weight).sum();
         assert_approx_eq!(sum_weights, 1.0, 1e-6);
     }
+    #[test]
+    fn test_particle_filter_altitude_measurement_correction() {
+        // Test that altitude measurements properly correct altitude drift
+        let mean = InitialState {
+            latitude: 0.0,
+            longitude: 0.0,
+            altitude: 100.0,
+            northward_velocity: 0.0,
+            eastward_velocity: 0.0,
+            downward_velocity: 0.0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            in_degrees: false,
+            is_enu: true,
+        };
+        
+        let nav_cov = DVector::from_vec(vec![1e-6, 1e-6, 10.0, 1e-3, 1e-3, 1e-3, 1e-4, 1e-4, 1e-4]);
+        // Include 6 bias states: 3 accel biases + 3 gyro biases
+        let other_states = DVector::from_vec(vec![0.0; 6]);
+        let other_cov = DVector::from_vec(vec![1e-6; 6]);
+        let mut pf = ParticleFilter::new_about(
+            mean,
+            other_states,
+            nav_cov,
+            other_cov,
+            200,
+            Some(DVector::from_vec(vec![1e-9, 1e-9, 1e-3, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-6, 1e-6, 1e-6, 1e-6, 1e-6, 1e-6])),
+            None,
+            Some(ParticleResamplingStrategy::Residual),
+        );
 
+        // Run several prediction steps to allow some drift
+        // Use slightly incorrect gravity compensation to induce altitude drift
+        let imu_data = IMUData {
+            accel: Vector3::new(0.0, 0.0, 9.5), // Slightly off from 9.81 to cause drift
+            gyro: Vector3::new(0.0, 0.0, 0.0),
+        };
+        
+        for _ in 0..10 {
+            pf.predict(imu_data, 0.1);
+        }
+        
+        // Apply GPS position measurement with correct altitude
+        let meas = GPSPositionMeasurement {
+            latitude: 0.0,
+            longitude: 0.0,
+            altitude: 100.0,
+            horizontal_noise_std: 5.0,
+            vertical_noise_std: 2.0,
+        };
+        
+        // Check particle altitudes and weights before update
+        let mut pre_altitudes: Vec<_> = pf.particles.iter().map(|p| (p.nav_state.altitude, p.weight)).collect();
+        pre_altitudes.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        println!("Before update - first 5 particles (alt, weight): {:?}", &pre_altitudes[..5.min(pre_altitudes.len())]);
+        println!("Before update - last 5 particles (alt, weight): {:?}", &pre_altitudes[pre_altitudes.len().saturating_sub(5)..]);
+        
+        pf.update(&meas);
+        
+        // Check particle altitudes and weights after update
+        let mut post_altitudes: Vec<_> = pf.particles.iter().map(|p| (p.nav_state.altitude, p.weight)).collect();
+        post_altitudes.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap()); // Sort by weight descending
+        println!("After update - top 10 by weight (alt, weight):");
+        for (i, (alt, wt)) in post_altitudes.iter().take(10).enumerate() {
+            println!("  {}: alt={:.2}m, weight={:.6e}", i+1, alt, wt);
+        }
+        
+        let post_update_estimate = pf.get_estimate();
+        let post_update_altitude = post_update_estimate[2];
+        
+        // Now resample for the next iteration
+        pf.resample();
+        
+        // The update should pull the estimate toward the measurement,
+        // though it may not always reduce error in a single step due to 
+        // the stochastic nature of particle filters
+        // Just verify that the altitude remains within reasonable bounds
+        assert!(post_update_altitude > 90.0 && post_update_altitude < 110.0,
+            "Altitude {} is outside reasonable bounds after correction", post_update_altitude);
+        
+        // Verify the estimate is closer to 100m than to the extremes
+        let dist_to_true = (post_update_altitude - 100.0).abs();
+        assert!(dist_to_true < 5.0,
+            "Altitude {} is too far from true value 100.0 (error: {:.2}m)", 
+            post_update_altitude, dist_to_true);
+    }
+
+    #[test]
+    fn test_particle_filter_weight_degeneracy() {
+        // Test that weights degenerate without resampling but are maintained with resampling
+        let mean = InitialState::default();
+        let nav_cov = DVector::from_vec(vec![1e-6; 9]);
+        
+        // First test: without resampling, effective sample size should decrease
+        // Include 6 bias states: 3 accel biases + 3 gyro biases
+        let other_states = DVector::from_vec(vec![0.0; 6]);
+        let other_cov = DVector::from_vec(vec![1e-6; 6]);
+        let mut pf_no_resample = ParticleFilter::new_about(
+            mean.clone(),
+            other_states.clone(),
+            nav_cov.clone(),
+            other_cov.clone(),
+            100,
+            Some(DVector::from_vec(vec![1e-9; 15])),
+            None,
+            Some(ParticleResamplingStrategy::Residual),
+        );
+
+        let imu_data = IMUData {
+            accel: Vector3::new(0.0, 0.0, -9.81),
+            gyro: Vector3::new(0.0, 0.0, 0.0),
+        };
+        
+        let initial_ess = pf_no_resample.effective_sample_size();
+        
+        for _ in 0..5 {
+            pf_no_resample.predict(imu_data, 0.1);
+            
+            let meas = GPSPositionMeasurement {
+                latitude: 0.0,
+                longitude: 0.0,
+                altitude: 0.0,
+                horizontal_noise_std: 5.0,
+                vertical_noise_std: 2.0,
+            };
+            
+            pf_no_resample.update(&meas);
+            // Note: no resample() call
+        }
+        
+        let final_ess_no_resample = pf_no_resample.effective_sample_size();
+        
+        // Without resampling, ESS should decrease significantly
+        assert!(final_ess_no_resample < initial_ess * 0.5, 
+            "ESS should decrease without resampling: initial={:.1}, final={:.1}", 
+            initial_ess, final_ess_no_resample);
+        
+        // Second test: with resampling, effective sample size should stay high
+        let mut pf_with_resample = ParticleFilter::new_about(
+            mean,
+            other_states,
+            nav_cov,
+            other_cov,
+            100,
+            Some(DVector::from_vec(vec![1e-9; 15])),
+            None,
+            Some(ParticleResamplingStrategy::Residual),
+        );
+        
+        for _ in 0..5 {
+            pf_with_resample.predict(imu_data, 0.1);
+            
+            let meas = GPSPositionMeasurement {
+                latitude: 0.0,
+                longitude: 0.0,
+                altitude: 0.0,
+                horizontal_noise_std: 5.0,
+                vertical_noise_std: 2.0,
+            };
+            
+            pf_with_resample.update(&meas);
+            pf_with_resample.resample(); // Resample after each update
+        }
+        
+        let final_ess_with_resample = pf_with_resample.effective_sample_size();
+        
+        // With resampling, ESS should remain high (close to N)
+        assert!(final_ess_with_resample > 50.0, 
+            "ESS should remain high with resampling: {:.1}", 
+            final_ess_with_resample);
+        
+        // Weights should be normalized in both cases
+        let sum_no_resample: f64 = pf_no_resample.particles.iter().map(|p| p.weight).sum();
+        let sum_with_resample: f64 = pf_with_resample.particles.iter().map(|p| p.weight).sum();
+        assert_approx_eq!(sum_no_resample, 1.0, 1e-6);
+        assert_approx_eq!(sum_with_resample, 1.0, 1e-6);
+    }
+
+    #[test]
+    fn test_particle_filter_measurement_rejection() {
+        // Test that outlier measurements don't completely destroy the filter
+        let mean = InitialState {
+            latitude: 45.0,
+            longitude: -75.0,
+            altitude: 100.0,
+            northward_velocity: 0.0,
+            eastward_velocity: 0.0,
+            downward_velocity: 0.0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            in_degrees: true,
+            is_enu: true,
+        };
+        
+        let nav_cov = DVector::from_vec(vec![1e-6, 1e-6, 1.0, 1e-3, 1e-3, 1e-3, 1e-4, 1e-4, 1e-4]);
+        // Include 6 bias states: 3 accel biases + 3 gyro biases
+        let other_states = DVector::from_vec(vec![0.0; 6]);
+        let other_cov = DVector::from_vec(vec![1e-6; 6]);
+        let mut pf = ParticleFilter::new_about(
+            mean,
+            other_states,
+            nav_cov,
+            other_cov,
+            200,
+            Some(DVector::from_vec(vec![1e-9; 15])),
+            None,
+            Some(ParticleResamplingStrategy::Residual),
+        );
+
+        let initial_estimate = pf.get_estimate();
+        
+        // Apply a severely corrupted measurement (1000m altitude error)
+        let bad_meas = GPSPositionMeasurement {
+            latitude: 45.0,
+            longitude: -75.0,
+            altitude: 1100.0, // 1000m error
+            horizontal_noise_std: 5.0,
+            vertical_noise_std: 2.0,
+        };
+        
+        pf.update(&bad_meas);
+        
+        let post_bad_estimate = pf.get_estimate();
+        
+        // Estimate should not jump all the way to the bad measurement
+        let altitude_change = (post_bad_estimate[2] - initial_estimate[2]).abs();
+        assert!(altitude_change < 500.0,
+            "Filter jumped {} meters toward bad measurement, should be more conservative",
+            altitude_change);
+        
+        // Now apply several good measurements to recover
+        let imu_data = IMUData {
+            accel: Vector3::new(0.0, 0.0, -9.81),
+            gyro: Vector3::new(0.0, 0.0, 0.0),
+        };
+        
+        for _ in 0..10 {
+            pf.predict(imu_data, 0.1);
+            
+            let good_meas = GPSPositionMeasurement {
+                latitude: 45.0,
+                longitude: -75.0,
+                altitude: 100.0,
+                horizontal_noise_std: 5.0,
+                vertical_noise_std: 2.0,
+            };
+            
+            pf.update(&good_meas);
+        }
+        
+        let recovered_estimate = pf.get_estimate();
+        
+        // Should recover toward true altitude
+        assert!((recovered_estimate[2] - 100.0).abs() < 50.0,
+            "Filter failed to recover, altitude = {} (expected ~100)",
+            recovered_estimate[2]);
+    }
+
+    #[test]
+    fn test_particle_filter_process_noise_scaling() {
+        // Test that process noise scales properly with time step
+        let mean = InitialState::default();
+        let nav_cov = DVector::from_vec(vec![1e-9; 9]);
+        
+        // Create two filters with same initial conditions
+        // Include 6 bias states: 3 accel biases + 3 gyro biases
+        let other_states = DVector::from_vec(vec![0.0; 6]);
+        let other_cov = DVector::from_vec(vec![1e-6; 6]);
+        let mut pf_small_dt = ParticleFilter::new_about(
+            mean.clone(),
+            other_states.clone(),
+            nav_cov.clone(),
+            other_cov.clone(),
+            100,
+            Some(DVector::from_vec(vec![1e-6; 15])),
+            None,
+            None,
+        );
+        
+        let mut pf_large_dt = ParticleFilter::new_about(
+            mean,
+            other_states,
+            nav_cov,
+            other_cov,
+            100,
+            Some(DVector::from_vec(vec![1e-6; 15])),
+            None,
+            None,
+        );
+
+        let imu_data = IMUData {
+            accel: Vector3::new(0.0, 0.0, -9.81),
+            gyro: Vector3::new(0.0, 0.0, 0.0),
+        };
+        
+        // Run same total time with different step sizes
+        for _ in 0..10 {
+            pf_small_dt.predict(imu_data, 0.01);
+        }
+        
+        pf_large_dt.predict(imu_data, 0.1);
+        
+        let cov_small_dt = pf_small_dt.get_certainty();
+        let cov_large_dt = pf_large_dt.get_certainty();
+        
+        // Covariances should be similar in magnitude
+        // (process noise is scaled by sqrt(dt) in predict)
+        let ratio = cov_large_dt[(2, 2)] / cov_small_dt[(2, 2)];
+        assert!(ratio > 0.1 && ratio < 10.0,
+            "Covariance ratio {} indicates improper time scaling", ratio);
+    }
+
+    #[test]
+    fn test_particle_filter_consistency_with_ukf() {
+        // Compare particle filter and UKF on same scenario
+        let initial_state = InitialState {
+            latitude: 0.0,
+            longitude: 0.0,
+            altitude: 100.0,
+            northward_velocity: 0.0,
+            eastward_velocity: 0.0,
+            downward_velocity: 0.0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            in_degrees: false,
+            is_enu: true,
+        };
+        
+        // Create UKF
+        let mut ukf = UnscentedKalmanFilter::new(
+            initial_state.clone(),
+            vec![0.0; 6],
+            None,
+            vec![1e-6, 1e-6, 1.0, 1e-3, 1e-3, 1e-3, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8, 1e-8],
+            DMatrix::from_diagonal(&DVector::from_vec(vec![1e-9; 15])),
+            1e-3,
+            2.0,
+            0.0,
+        );
+        
+        // Create PF with similar initial conditions
+        let mut pf = ParticleFilter::new_about(
+            initial_state,
+            DVector::from_vec(vec![0.0; 6]), // IMU biases
+            DVector::from_vec(vec![1e-6, 1e-6, 1.0, 1e-3, 1e-3, 1e-3, 1e-4, 1e-4, 1e-4]),
+            DVector::from_vec(vec![1e-6; 6]),
+            500, // More particles for better comparison
+            Some(DVector::from_vec(vec![1e-9; 15])),
+            None,
+            Some(ParticleResamplingStrategy::Residual),
+        );
+
+        let imu_data = IMUData {
+            accel: Vector3::new(0.0, 0.0, -9.81),
+            gyro: Vector3::new(0.0, 0.0, 0.0),
+        };
+        
+        // Run both filters
+        for _ in 0..5 {
+            ukf.predict(imu_data, 0.1);
+            pf.predict(imu_data, 0.1);
+            
+            let meas = GPSPositionMeasurement {
+                latitude: 0.0,
+                longitude: 0.0,
+                altitude: 100.0,
+                horizontal_noise_std: 5.0,
+                vertical_noise_std: 2.0,
+            };
+            
+            ukf.update(&meas);
+            pf.update(&meas);
+        }
+        
+        let ukf_estimate = ukf.get_estimate();
+        let pf_estimate = pf.get_estimate();
+        
+        // Estimates should be reasonably close
+        let altitude_diff = (ukf_estimate[2] - pf_estimate[2]).abs();
+        assert!(altitude_diff < 10.0,
+            "UKF and PF altitude estimates differ by {} (UKF: {}, PF: {})",
+            altitude_diff, ukf_estimate[2], pf_estimate[2]);
+    }
+    
     #[test]
     fn test_relative_altitude_measurement() {
         let meas = RelativeAltitudeMeasurement {

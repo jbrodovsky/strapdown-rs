@@ -282,6 +282,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 0.0, //args.position_std,
                 0.0, //args.velocity_std,
                 0.0, //args.attitude_std,
+                None,
             );
             info!(
                 "Initialized particle filter with {} particles",
