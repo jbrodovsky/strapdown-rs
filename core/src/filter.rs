@@ -16,7 +16,7 @@
 //! measurements in the local level frame (i.e. a GPS fix).
 use crate::earth::METERS_TO_DEGREES;
 use crate::linalg::{matrix_square_root, robust_spd_solve, symmetrize};
-use crate::{IMUData, StrapdownState, forward, wrap_to_2pi, wrap_to_pi, wrap_to_180, wrap_to_360};
+use crate::{IMUData, StrapdownState, forward, wrap_to_2pi, wrap_to_180, wrap_to_360};
 
 use std::any::Any;
 use std::convert::From;
@@ -2471,5 +2471,879 @@ mod tests {
         let p_from = Particle::from((vec, 0.1));
         assert_eq!(p_from.state_size, 9);
         assert_eq!(p_from.weight, 0.1);
+    }
+
+    // ========== NEW TESTS FOR IMPROVED COVERAGE ==========
+
+    #[test]
+    fn test_gps_velocity_as_any_mut() {
+        let mut measurement = GPSVelocityMeasurement {
+            northward_velocity: 10.0,
+            eastward_velocity: 5.0,
+            downward_velocity: -2.0,
+            horizontal_noise_std: 0.5,
+            vertical_noise_std: 1.0,
+        };
+
+        // Test as_any_mut downcast (line 144)
+        let any_mut = measurement.as_any_mut();
+        assert!(any_mut.downcast_mut::<GPSVelocityMeasurement>().is_some());
+    }
+
+    #[test]
+    fn test_gps_position_velocity_as_any_mut() {
+        let mut measurement = GPSPositionAndVelocityMeasurement {
+            latitude: 45.0,
+            longitude: -75.0,
+            altitude: 100.0,
+            northward_velocity: 10.0,
+            eastward_velocity: 5.0,
+            horizontal_noise_std: 5.0,
+            vertical_noise_std: 10.0,
+            velocity_noise_std: 0.5,
+        };
+
+        // Test as_any_mut downcast (line 201)
+        let any_mut = measurement.as_any_mut();
+        assert!(any_mut.downcast_mut::<GPSPositionAndVelocityMeasurement>().is_some());
+    }
+
+    #[test]
+    fn test_relative_altitude_as_any_mut() {
+        let mut measurement = RelativeAltitudeMeasurement {
+            relative_altitude: 10.0,
+            reference_altitude: 100.0,
+        };
+
+        // Test as_any_mut downcast (line 262)
+        let any_mut = measurement.as_any_mut();
+        assert!(any_mut.downcast_mut::<RelativeAltitudeMeasurement>().is_some());
+    }
+
+    #[test]
+    fn test_initial_state_new_degrees() {
+        // Test InitialState::new with degrees
+        let state = InitialState::new(
+            45.0,     // latitude in degrees
+            -75.0,    // longitude in degrees
+            100.0,    // altitude
+            10.0,     // northward_velocity
+            5.0,      // eastward_velocity
+            0.0,      // downward_velocity
+            90.0,     // roll in degrees
+            45.0,     // pitch in degrees
+            180.0,    // yaw in degrees
+            true,     // in_degrees
+            Some(true), // is_enu
+        );
+
+        assert_eq!(state.latitude, 45.0);
+        assert_eq!(state.longitude, -75.0);
+        assert_eq!(state.altitude, 100.0);
+        assert!(state.in_degrees);
+        assert!(state.is_enu);
+        // Angles should be converted to radians
+        assert_approx_eq!(state.roll, 90.0_f64.to_radians(), 1e-6);
+        assert_approx_eq!(state.pitch, 45.0_f64.to_radians(), 1e-6);
+        assert_approx_eq!(state.yaw, 180.0_f64.to_radians(), 1e-6);
+    }
+
+    #[test]
+    fn test_initial_state_new_radians() {
+        // Test InitialState::new with radians
+        let state = InitialState::new(
+            0.785398, // ~45 degrees in radians
+            -1.308997, // ~-75 degrees in radians
+            100.0,
+            10.0,
+            5.0,
+            0.0,
+            1.5708,   // ~90 degrees in radians
+            0.7854,   // ~45 degrees in radians
+            3.1416,   // ~180 degrees in radians
+            false,    // in_degrees
+            Some(true),
+        );
+
+        assert!(!state.in_degrees);
+        assert!(state.is_enu);
+        // Angles should be wrapped to 2pi
+        assert!(state.roll >= 0.0 && state.roll < 2.0 * std::f64::consts::PI);
+        assert!(state.pitch >= 0.0 && state.pitch < 2.0 * std::f64::consts::PI);
+        assert!(state.yaw >= 0.0 && state.yaw < 2.0 * std::f64::consts::PI);
+    }
+
+    #[test]
+    fn test_initial_state_new_ned() {
+        // Test InitialState::new with NED frame
+        let state = InitialState::new(
+            45.0,
+            -75.0,
+            -100.0,   // negative altitude for NED
+            10.0,
+            5.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            true,
+            Some(false), // is_enu = false
+        );
+
+        assert!(!state.is_enu);
+        assert_eq!(state.altitude, -100.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Latitude must be between -90 and +90 degrees")]
+    fn test_initial_state_new_invalid_latitude_degrees() {
+        // Test latitude validation in degrees
+        InitialState::new(
+            95.0,  // invalid latitude
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            true,
+            Some(true),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Latitude must be between -90 and +90 degrees")]
+    fn test_initial_state_new_invalid_latitude_radians() {
+        // Test latitude validation in radians
+        InitialState::new(
+            2.0, // > 90 degrees in radians
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            false,
+            Some(true),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Altitude must be between -10,000 and +30,000 meters in ENU")]
+    fn test_initial_state_new_invalid_altitude_enu() {
+        // Test altitude validation in ENU
+        InitialState::new(
+            0.0,
+            0.0,
+            35000.0, // too high for ENU
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            true,
+            Some(true),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Altitude must be between 10,000 and -30,000 meters in NED")]
+    fn test_initial_state_new_invalid_altitude_ned() {
+        // Test altitude validation in NED
+        InitialState::new(
+            0.0,
+            0.0,
+            15000.0, // too high for NED (should be negative)
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            true,
+            Some(false),
+        );
+    }
+
+    #[test]
+    fn test_ukf_debug_display() {
+        // Test Debug and Display implementations for UKF
+        let ukf = UnscentedKalmanFilter::new(
+            UKF_PARAMS,
+            IMU_BIASES.to_vec(),
+            None,
+            COVARIANCE_DIAGONAL.to_vec(),
+            DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
+            ALPHA,
+            BETA,
+            KAPPA,
+        );
+
+        // Test Debug
+        let debug_str = format!("{:?}", ukf);
+        assert!(debug_str.contains("UKF"));
+        assert!(debug_str.contains("mean_state"));
+
+        // Test Display
+        let display_str = format!("{}", ukf);
+        assert!(display_str.contains("UnscentedKalmanFilter"));
+        assert!(display_str.contains("covariance"));
+    }
+
+    #[test]
+    fn test_ukf_predict_with_biases() {
+        // Test UKF predict with non-zero biases
+        let mut ukf = UnscentedKalmanFilter::new(
+            UKF_PARAMS,
+            vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6], // non-zero biases
+            None,
+            COVARIANCE_DIAGONAL.to_vec(),
+            DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
+            ALPHA,
+            BETA,
+            KAPPA,
+        );
+
+        let imu_data = IMUData {
+            accel: Vector3::new(0.0, 0.0, -9.81),
+            gyro: Vector3::new(0.0, 0.0, 0.0),
+        };
+
+        ukf.predict(imu_data, 0.1);
+
+        // Just verify prediction completed without panic
+        assert_eq!(ukf.mean_state.len(), 15);
+    }
+
+    #[test]
+    fn test_ukf_update_with_cross_covariance() {
+        // Test UKF update to cover cross-covariance calculation
+        let mut ukf = UnscentedKalmanFilter::new(
+            UKF_PARAMS,
+            IMU_BIASES.to_vec(),
+            None,
+            COVARIANCE_DIAGONAL.to_vec(),
+            DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
+            ALPHA,
+            BETA,
+            KAPPA,
+        );
+
+        // First predict to move state
+        let imu_data = IMUData {
+            accel: Vector3::new(0.0, 0.0, -9.81),
+            gyro: Vector3::new(0.0, 0.0, 0.0),
+        };
+        ukf.predict(imu_data, 0.1);
+
+        // Update with GPS position measurement
+        let measurement = GPSPositionMeasurement {
+            latitude: 0.001,
+            longitude: 0.001,
+            altitude: 10.0,
+            horizontal_noise_std: 5.0,
+            vertical_noise_std: 2.0,
+        };
+
+        ukf.update(&measurement);
+
+        // Verify update completed
+        assert!(ukf.mean_state.len() > 0);
+    }
+
+    #[test]
+    fn test_particle_from_with_other_states() {
+        // Test Particle::from with state vector > 9
+        let state_vec = DVector::from_vec(vec![
+            0.1, 0.2, 0.3, // position
+            1.0, 2.0, 3.0, // velocity
+            0.0, 0.0, 0.0, // attitude
+            10.0, 11.0,    // other states
+        ]);
+
+        let particle = Particle::from((state_vec, 0.5));
+
+        assert_eq!(particle.state_size, 11);
+        assert_eq!(particle.weight, 0.5);
+        assert!(particle.other_states.is_some());
+        assert_eq!(particle.other_states.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_particle_averaging_unweighted_with_other_states() {
+        // Test unweighted averaging with other_states
+        let mut s1 = StrapdownState::default();
+        s1.altitude = 10.0;
+        let mut s2 = StrapdownState::default();
+        s2.altitude = 20.0;
+
+        let p1 = Particle::new(s1, Some(DVector::from_vec(vec![1.0, 2.0])), 0.5);
+        let p2 = Particle::new(s2, Some(DVector::from_vec(vec![3.0, 4.0])), 0.5);
+
+        let mut pf = ParticleFilter::new(
+            vec![p1, p2],
+            Some(DVector::from_vec(vec![0.0; 11])),
+            None,
+            None,
+        );
+
+        pf.averaging_strategy = ParticleAveragingStrategy::UnweightedAverage;
+        let estimate = pf.get_estimate();
+
+        // Average altitude: (10 + 20) / 2 = 15
+        assert_approx_eq!(estimate[2], 15.0, 1e-6);
+        // Average other states: (1 + 3) / 2 = 2, (2 + 4) / 2 = 3
+        assert_approx_eq!(estimate[9], 2.0, 1e-6);
+        assert_approx_eq!(estimate[10], 3.0, 1e-6);
+    }
+
+    #[test]
+    fn test_particle_averaging_highest_weight_with_other_states() {
+        // Test highest weight averaging with other_states
+        let mut s1 = StrapdownState::default();
+        s1.altitude = 10.0;
+        let mut s2 = StrapdownState::default();
+        s2.altitude = 20.0;
+
+        let p1 = Particle::new(s1, Some(DVector::from_vec(vec![1.0, 2.0])), 0.3);
+        let p2 = Particle::new(s2, Some(DVector::from_vec(vec![3.0, 4.0])), 0.7);
+
+        let mut pf = ParticleFilter::new(
+            vec![p1, p2],
+            Some(DVector::from_vec(vec![0.0; 11])),
+            None,
+            None,
+        );
+
+        pf.averaging_strategy = ParticleAveragingStrategy::HighestWeight;
+        let estimate = pf.get_estimate();
+
+        // Should get p2's state (highest weight)
+        assert_approx_eq!(estimate[2], 20.0, 1e-6);
+        assert_approx_eq!(estimate[9], 3.0, 1e-6);
+        assert_approx_eq!(estimate[10], 4.0, 1e-6);
+    }
+
+    #[test]
+    fn test_particle_resampling_strategies() {
+        // Test various resampling strategies
+        let s = StrapdownState::default();
+        let p1 = Particle::new(s.clone(), None, 0.3);
+        let p2 = Particle::new(s.clone(), None, 0.3);
+        let p3 = Particle::new(s.clone(), None, 0.4);
+        let particles = vec![p1, p2, p3];
+
+        // Test Naive
+        let strategy = ParticleResamplingStrategy::Naive;
+        let resampled = strategy.resample(particles.clone());
+        assert_eq!(resampled.len(), 3);
+
+        // Test Systematic
+        let strategy = ParticleResamplingStrategy::Systematic;
+        let resampled = strategy.resample(particles.clone());
+        assert_eq!(resampled.len(), 3);
+
+        // Test Multinomial
+        let strategy = ParticleResamplingStrategy::Multinomial;
+        let resampled = strategy.resample(particles.clone());
+        assert_eq!(resampled.len(), 3);
+
+        // Test Stratified
+        let strategy = ParticleResamplingStrategy::Stratified;
+        let resampled = strategy.resample(particles.clone());
+        assert_eq!(resampled.len(), 3);
+
+        // Test Adaptive
+        let strategy = ParticleResamplingStrategy::Adaptive;
+        let resampled = strategy.resample(particles.clone());
+        assert_eq!(resampled.len(), 3);
+    }
+
+    #[test]
+    fn test_particle_filter_debug() {
+        // Test ParticleFilter Debug implementation
+        let mean = InitialState::default();
+        let nav_cov = DVector::from_vec(vec![1e-6; 9]);
+        let other_states = DVector::from_vec(vec![0.0; 6]);
+        let other_cov = DVector::from_vec(vec![1e-6; 6]);
+
+        let pf = ParticleFilter::new_about(
+            mean,
+            other_states,
+            nav_cov,
+            other_cov,
+            100,
+            Some(DVector::from_vec(vec![1e-9; 15])),
+            None,
+            None,
+        );
+
+        let debug_str = format!("{:?}", pf);
+        assert!(debug_str.contains("ParticleFilter"));
+        assert!(debug_str.contains("num_particles"));
+        assert!(debug_str.contains("effective_particles"));
+        assert!(debug_str.contains("weight_range"));
+        assert!(debug_str.contains("mean_position"));
+    }
+
+    #[test]
+    fn test_particle_filter_normalize_weights_invalid() {
+        // Test normalize_weights with invalid sum
+        let s = StrapdownState::default();
+        let p1 = Particle::new(s.clone(), None, 0.0);
+        let p2 = Particle::new(s.clone(), None, 0.0);
+
+        let mut pf = ParticleFilter::new(
+            vec![p1, p2],
+            None,
+            None,
+            None,
+        );
+
+        pf.normalize_weights();
+
+        // Weights should be reset to uniform
+        assert_approx_eq!(pf.particles[0].weight, 0.5, 1e-6);
+        assert_approx_eq!(pf.particles[1].weight, 0.5, 1e-6);
+    }
+
+    #[test]
+    fn test_particle_filter_predict_without_biases() {
+        // Test particle filter predict when other_states is None or < 6
+        let s = StrapdownState::default();
+        let p = Particle::new(s, None, 1.0);
+
+        let mut pf = ParticleFilter::new(
+            vec![p],
+            Some(DVector::from_vec(vec![0.0; 9])),
+            None,
+            None,
+        );
+
+        let imu_data = IMUData {
+            accel: Vector3::new(0.0, 0.0, -9.81),
+            gyro: Vector3::new(0.0, 0.0, 0.0),
+        };
+
+        pf.predict(imu_data, 0.1);
+
+        assert_eq!(pf.particles.len(), 1);
+    }
+
+    #[test]
+    fn test_particle_filter_update_singular_covariance() {
+        // Test particle filter update with singular measurement covariance
+        let mean = InitialState::default();
+        let nav_cov = DVector::from_vec(vec![1e-9; 9]);
+        let other_states = DVector::from_vec(vec![0.0; 6]);
+        let other_cov = DVector::from_vec(vec![1e-6; 6]);
+
+        let mut pf = ParticleFilter::new_about(
+            mean,
+            other_states,
+            nav_cov,
+            other_cov,
+            10,
+            Some(DVector::from_vec(vec![1e-9; 15])),
+            None,
+            None,
+        );
+
+        // Create a measurement model with zero noise (singular covariance)
+        let measurement = GPSPositionMeasurement {
+            latitude: 0.0,
+            longitude: 0.0,
+            altitude: 0.0,
+            horizontal_noise_std: 0.0,
+            vertical_noise_std: 0.0,
+        };
+
+        pf.update(&measurement);
+
+        // Should handle singular matrix gracefully
+        assert_eq!(pf.particles.len(), 10);
+    }
+
+    #[test]
+    fn test_particle_filter_update_negative_determinant() {
+        // Test handling of non-positive determinant
+        let mean = InitialState::default();
+        let nav_cov = DVector::from_vec(vec![1e-9; 9]);
+        let other_states = DVector::from_vec(vec![0.0; 6]);
+        let other_cov = DVector::from_vec(vec![1e-6; 6]);
+
+        let mut pf = ParticleFilter::new_about(
+            mean,
+            other_states,
+            nav_cov,
+            other_cov,
+            10,
+            Some(DVector::from_vec(vec![1e-9; 15])),
+            None,
+            None,
+        );
+
+        // Use a very small noise that might cause numerical issues
+        let measurement = GPSPositionMeasurement {
+            latitude: 0.0,
+            longitude: 0.0,
+            altitude: 0.0,
+            horizontal_noise_std: 1e-100,
+            vertical_noise_std: 1e-100,
+        };
+
+        pf.update(&measurement);
+
+        // Should handle gracefully
+        assert_eq!(pf.particles.len(), 10);
+    }
+
+    #[test]
+    fn test_particle_filter_get_certainty_strategies() {
+        // Test get_certainty with different averaging strategies
+        let mean = InitialState::default();
+        let nav_cov = DVector::from_vec(vec![1e-6; 9]);
+        let other_states = DVector::from_vec(vec![0.0; 6]);
+        let other_cov = DVector::from_vec(vec![1e-6; 6]);
+
+        let mut pf = ParticleFilter::new_about(
+            mean,
+            other_states,
+            nav_cov,
+            other_cov,
+            50,
+            Some(DVector::from_vec(vec![1e-9; 15])),
+            None,
+            None,
+        );
+
+        // Test UnweightedAverage certainty
+        pf.averaging_strategy = ParticleAveragingStrategy::UnweightedAverage;
+        let cov_unweighted = pf.get_certainty();
+        assert_eq!(cov_unweighted.nrows(), 15);
+        assert_eq!(cov_unweighted.ncols(), 15);
+
+        // Test HighestWeight certainty
+        pf.averaging_strategy = ParticleAveragingStrategy::HighestWeight;
+        let cov_highest = pf.get_certainty();
+        assert_eq!(cov_highest.nrows(), 15);
+        assert_eq!(cov_highest.ncols(), 15);
+        // For single particle, covariance should be zero
+        assert_approx_eq!(cov_highest[(0, 0)], 0.0, 1e-6);
+    }
+
+    #[test]
+    fn test_particle_filter_effective_sample_size_zero() {
+        // Test effective_sample_size when sum_of_squares is 0
+        let s = StrapdownState::default();
+        let p1 = Particle::new(s.clone(), None, 0.0);
+        let p2 = Particle::new(s.clone(), None, 0.0);
+
+        let pf = ParticleFilter::new(
+            vec![p1, p2],
+            None,
+            None,
+            None,
+        );
+
+        let ess = pf.effective_sample_size();
+        assert_eq!(ess, 0.0);
+    }
+
+    #[test]
+    fn test_initial_state_default_is_enu() {
+        // Test InitialState::new with None for is_enu (should default to true)
+        let state = InitialState::new(
+            0.0,
+            0.0,
+            100.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            true,
+            None, // Should default to true
+        );
+
+        assert!(state.is_enu);
+    }
+
+    #[test]
+    fn test_ukf_with_additional_states() {
+        // Test UKF construction with additional states beyond 15
+        let measurement_bias = vec![1.0, 2.0, 3.0];
+        let total_states = 15 + measurement_bias.len();
+
+        let ukf = UnscentedKalmanFilter::new(
+            UKF_PARAMS,
+            IMU_BIASES.to_vec(),
+            Some(measurement_bias),
+            vec![1e-6; total_states],
+            DMatrix::from_diagonal(&DVector::from_vec(vec![1e-9; total_states])),
+            ALPHA,
+            BETA,
+            KAPPA,
+        );
+
+        assert_eq!(ukf.state_size, total_states);
+        assert_eq!(ukf.mean_state.len(), total_states);
+    }
+
+    #[test]
+    fn test_particle_filter_with_velocity_measurement() {
+        // Test particle filter with velocity measurement
+        let mean = InitialState::default();
+        let nav_cov = DVector::from_vec(vec![1e-6; 9]);
+        let other_states = DVector::from_vec(vec![0.0; 6]);
+        let other_cov = DVector::from_vec(vec![1e-6; 6]);
+
+        let mut pf = ParticleFilter::new_about(
+            mean,
+            other_states,
+            nav_cov,
+            other_cov,
+            50,
+            Some(DVector::from_vec(vec![1e-9; 15])),
+            None,
+            None,
+        );
+
+        // Update with velocity measurement
+        let vel_meas = GPSVelocityMeasurement {
+            northward_velocity: 1.0,
+            eastward_velocity: 0.5,
+            downward_velocity: 0.0,
+            horizontal_noise_std: 0.5,
+            vertical_noise_std: 0.5,
+        };
+
+        pf.update(&vel_meas);
+
+        // Verify update completed
+        let sum_weights: f64 = pf.particles.iter().map(|p| p.weight).sum();
+        assert_approx_eq!(sum_weights, 1.0, 1e-6);
+    }
+
+    #[test]
+    fn test_ukf_with_velocity_measurement() {
+        // Test UKF with velocity measurement
+        let mut ukf = UnscentedKalmanFilter::new(
+            UKF_PARAMS,
+            IMU_BIASES.to_vec(),
+            None,
+            COVARIANCE_DIAGONAL.to_vec(),
+            DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
+            ALPHA,
+            BETA,
+            KAPPA,
+        );
+
+        let vel_meas = GPSVelocityMeasurement {
+            northward_velocity: 0.0,
+            eastward_velocity: 0.0,
+            downward_velocity: 0.0,
+            horizontal_noise_std: 0.5,
+            vertical_noise_std: 0.5,
+        };
+
+        ukf.update(&vel_meas);
+
+        // Verify update completed
+        assert_eq!(ukf.mean_state.len(), 15);
+    }
+
+    #[test]
+    fn test_ukf_with_position_velocity_measurement() {
+        // Test UKF with combined position and velocity measurement
+        let mut ukf = UnscentedKalmanFilter::new(
+            UKF_PARAMS,
+            IMU_BIASES.to_vec(),
+            None,
+            COVARIANCE_DIAGONAL.to_vec(),
+            DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
+            ALPHA,
+            BETA,
+            KAPPA,
+        );
+
+        let meas = GPSPositionAndVelocityMeasurement {
+            latitude: 0.0,
+            longitude: 0.0,
+            altitude: 0.0,
+            northward_velocity: 0.0,
+            eastward_velocity: 0.0,
+            horizontal_noise_std: 5.0,
+            vertical_noise_std: 2.0,
+            velocity_noise_std: 0.5,
+        };
+
+        ukf.update(&meas);
+
+        // Verify update completed
+        assert_eq!(ukf.mean_state.len(), 15);
+    }
+
+    #[test]
+    fn test_particle_filter_with_altitude_measurement() {
+        // Test particle filter with relative altitude measurement
+        let mean = InitialState {
+            latitude: 0.0,
+            longitude: 0.0,
+            altitude: 100.0,
+            northward_velocity: 0.0,
+            eastward_velocity: 0.0,
+            downward_velocity: 0.0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            in_degrees: false,
+            is_enu: true,
+        };
+
+        let nav_cov = DVector::from_vec(vec![1e-6, 1e-6, 1.0, 1e-3, 1e-3, 1e-3, 1e-4, 1e-4, 1e-4]);
+        let other_states = DVector::from_vec(vec![0.0; 6]);
+        let other_cov = DVector::from_vec(vec![1e-6; 6]);
+
+        let mut pf = ParticleFilter::new_about(
+            mean,
+            other_states,
+            nav_cov,
+            other_cov,
+            50,
+            Some(DVector::from_vec(vec![1e-9; 15])),
+            None,
+            None,
+        );
+
+        let alt_meas = RelativeAltitudeMeasurement {
+            relative_altitude: 5.0,
+            reference_altitude: 95.0,
+        };
+
+        pf.update(&alt_meas);
+
+        let sum_weights: f64 = pf.particles.iter().map(|p| p.weight).sum();
+        assert_approx_eq!(sum_weights, 1.0, 1e-6);
+    }
+
+    #[test]
+    fn test_ukf_with_altitude_measurement() {
+        // Test UKF with relative altitude measurement
+        let initial_state = InitialState {
+            latitude: 0.0,
+            longitude: 0.0,
+            altitude: 100.0,
+            northward_velocity: 0.0,
+            eastward_velocity: 0.0,
+            downward_velocity: 0.0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            in_degrees: false,
+            is_enu: true,
+        };
+
+        let mut ukf = UnscentedKalmanFilter::new(
+            initial_state,
+            IMU_BIASES.to_vec(),
+            None,
+            COVARIANCE_DIAGONAL.to_vec(),
+            DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
+            ALPHA,
+            BETA,
+            KAPPA,
+        );
+
+        let alt_meas = RelativeAltitudeMeasurement {
+            relative_altitude: 5.0,
+            reference_altitude: 95.0,
+        };
+
+        ukf.update(&alt_meas);
+
+        // Should pull altitude toward 100m
+        assert!(ukf.mean_state[2] > 90.0 && ukf.mean_state[2] < 110.0);
+    }
+
+    #[test]
+    fn test_particle_new_with_other_states() {
+        // Test Particle::new with other_states to verify state_size calculation
+        let nav_state = StrapdownState::default();
+        let other = DVector::from_vec(vec![1.0, 2.0, 3.0]);
+
+        let particle = Particle::new(nav_state, Some(other.clone()), 0.5);
+
+        assert_eq!(particle.state_size, 12); // 9 nav + 3 other
+        assert!(particle.other_states.is_some());
+        assert_eq!(particle.other_states.unwrap().len(), 3);
+    }
+
+    #[test]
+    fn test_initial_state_longitude_wrapping() {
+        // Test longitude wrapping in degrees
+        let state = InitialState::new(
+            0.0,
+            370.0, // Should wrap to 10.0
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            true,
+            Some(true),
+        );
+
+        // Longitude should be wrapped
+        assert!(state.longitude >= -180.0 && state.longitude <= 180.0);
+    }
+
+    #[test]
+    fn test_particle_filter_new_about_with_degrees() {
+        // Test new_about with in_degrees = true
+        let mean = InitialState {
+            latitude: 45.0,
+            longitude: -75.0,
+            altitude: 100.0,
+            northward_velocity: 0.0,
+            eastward_velocity: 0.0,
+            downward_velocity: 0.0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            in_degrees: true, // degrees
+            is_enu: true,
+        };
+
+        let other_states = DVector::from_vec(vec![0.0; 6]);
+        let nav_cov = DVector::from_vec(vec![1e-6; 9]);
+        let other_cov = DVector::from_vec(vec![1e-6; 6]);
+
+        let pf = ParticleFilter::new_about(
+            mean,
+            other_states,
+            nav_cov,
+            other_cov,
+            50,
+            Some(DVector::from_vec(vec![1e-9; 15])),
+            None,
+            None,
+        );
+
+        assert_eq!(pf.particles.len(), 50);
+
+        // Particles should be initialized around the mean
+        let estimate = pf.get_estimate();
+        // Estimate should be in radians internally
+        assert!(estimate[0].abs() < 2.0); // latitude in radians
+        assert!(estimate[1].abs() < 3.0); // longitude in radians
     }
 }

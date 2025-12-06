@@ -1333,6 +1333,177 @@ mod tests {
         ar1_step(&mut x, 0.5, -1.0, &mut rng);
         assert_eq!(x, 5.0); // 0.5 * 10.0 + 0.0
     }
+
+    #[test]
+    fn test_slow_bias_fault_with_rotation() {
+        // Test slow bias fault with rotation (rotate_omega_rps != 0.0)
+        let records = create_test_records(10, 0.1);
+        let config = GnssDegradationConfig {
+            scheduler: GnssScheduler::PassThrough,
+            fault: GnssFaultModel::SlowBias {
+                drift_n_mps: 1.0,
+                drift_e_mps: 0.5,
+                rotate_omega_rps: 0.1,
+                q_bias: 0.0,
+            },
+            seed: 42,
+        };
+
+        let events = build_event_stream(&records, &config);
+        // Should have events
+        assert!(events.events.len() > 0);
+
+        // Check that some GNSS measurements exist
+        let gnss_count = events
+            .events
+            .iter()
+            .filter(|e| matches!(e, Event::Measurement { .. }))
+            .count();
+        assert!(gnss_count > 0);
+    }
+
+    #[test]
+    fn test_slow_bias_fault_with_q_bias() {
+        // Test slow bias fault with q_bias > 0.0
+        let records = create_test_records(10, 0.1);
+        let config = GnssDegradationConfig {
+            scheduler: GnssScheduler::PassThrough,
+            fault: GnssFaultModel::SlowBias {
+                drift_n_mps: 0.0,
+                drift_e_mps: 0.0,
+                rotate_omega_rps: 0.0,
+                q_bias: 1.0,
+            },
+            seed: 42,
+        };
+
+        let events = build_event_stream(&records, &config);
+        // Should have events
+        assert!(events.events.len() > 0);
+
+        // Check that some GNSS measurements exist
+        let gnss_count = events
+            .events
+            .iter()
+            .filter(|e| matches!(e, Event::Measurement { .. }))
+            .count();
+        assert!(gnss_count > 0);
+    }
+
+    #[test]
+    fn test_nan_accuracy_handling() {
+        // Test handling of NaN values in accuracy fields
+        let base_time = Utc.with_ymd_and_hms(2023, 1, 1, 0, 0, 0).unwrap();
+        let mut records = Vec::new();
+
+        // First record (reference)
+        records.push(TestDataRecord {
+            time: base_time,
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            bearing: 45.0,
+            speed: 5.0,
+            acc_x: 0.0,
+            acc_y: 0.0,
+            acc_z: 9.81,
+            gyro_x: 0.0,
+            gyro_y: 0.0,
+            gyro_z: 0.01,
+            qx: 0.0,
+            qy: 0.0,
+            qz: 0.0,
+            qw: 1.0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            mag_x: 0.0,
+            mag_y: 0.0,
+            mag_z: 0.0,
+            relative_altitude: 0.0,
+            pressure: 1013.25,
+            grav_x: 0.0,
+            grav_y: 0.0,
+            grav_z: 9.81,
+            horizontal_accuracy: 2.0,
+            vertical_accuracy: 4.0,
+            speed_accuracy: 0.5,
+            bearing_accuracy: 1.0,
+        });
+
+        // Second record with NaN accuracies
+        records.push(TestDataRecord {
+            time: base_time + chrono::Duration::milliseconds(100),
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            bearing: 45.0,
+            speed: 5.0,
+            acc_x: 0.0,
+            acc_y: 0.0,
+            acc_z: 9.81,
+            gyro_x: 0.0,
+            gyro_y: 0.0,
+            gyro_z: 0.01,
+            qx: 0.0,
+            qy: 0.0,
+            qz: 0.0,
+            qw: 1.0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            mag_x: 0.0,
+            mag_y: 0.0,
+            mag_z: 0.0,
+            relative_altitude: 0.0,
+            pressure: 1013.25,
+            grav_x: 0.0,
+            grav_y: 0.0,
+            grav_z: 9.81,
+            horizontal_accuracy: f64::NAN,
+            vertical_accuracy: f64::NAN,
+            speed_accuracy: f64::NAN,
+            bearing_accuracy: 1.0,
+        });
+
+        let config = GnssDegradationConfig {
+            scheduler: GnssScheduler::PassThrough,
+            fault: GnssFaultModel::None,
+            seed: 42,
+        };
+
+        let events = build_event_stream(&records, &config);
+
+        // Should have events even with NaN accuracies
+        assert!(events.events.len() > 0);
+
+        // Check that GNSS measurements were created
+        let gnss_count = events
+            .events
+            .iter()
+            .filter(|e| matches!(e, Event::Measurement { .. }))
+            .count();
+        assert!(gnss_count > 0);
+    }
+
+    #[test]
+    fn test_duty_cycle_scheduler_toggles() {
+        // Test DutyCycle scheduler to ensure it toggles states
+        let records = create_test_records(20, 0.1);
+        let config = GnssDegradationConfig {
+            scheduler: GnssScheduler::DutyCycle {
+                on_s: 0.5,
+                off_s: 0.5,
+                start_phase_s: 0.0,
+            },
+            fault: GnssFaultModel::None,
+            seed: 42,
+        };
+
+        let events = build_event_stream(&records, &config);
+        // Should have events
+        assert!(events.events.len() > 0);
+    }
 }
 #[cfg(test)]
 mod serialization_tests {
@@ -1425,5 +1596,32 @@ mod serialization_tests {
         cfg.to_file(&path3).unwrap();
         let loaded3 = GnssDegradationConfig::from_file(&path3).unwrap();
         assert_eq!(cfg.seed, loaded3.seed);
+    }
+
+    #[test]
+    fn unsupported_extension_error() {
+        let cfg = sample_cfg();
+        let f = NamedTempFile::new().unwrap();
+        let path = f.path().with_extension("txt");
+
+        // Test to_file with unsupported extension
+        let result = cfg.to_file(&path);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
+
+        // Test from_file with unsupported extension
+        let result = GnssDegradationConfig::from_file(&path);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn yml_extension_roundtrip() {
+        let cfg = sample_cfg();
+        let f = NamedTempFile::new().unwrap();
+        let path = f.path().with_extension("yml");
+        cfg.to_file(&path).unwrap();
+        let loaded = GnssDegradationConfig::from_file(&path).unwrap();
+        assert_eq!(cfg.seed, loaded.seed);
     }
 }

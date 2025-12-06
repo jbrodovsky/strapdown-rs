@@ -1029,4 +1029,168 @@ mod tests {
         let (_, pitch, _) = state.attitude.euler_angles();
         assert_approx_eq!(pitch, 0.1, 1e-3); // 0.1 rad initial + 0.1 rad
     }
+
+    // --- API tests for Display and Debug traits ---
+    #[test]
+    fn test_imudata_display() {
+        let imu = IMUData {
+            accel: Vector3::new(1.0, 2.0, 3.0),
+            gyro: Vector3::new(0.1, 0.2, 0.3),
+        };
+        let display_str = format!("{}", imu);
+        assert!(display_str.contains("1.0000"));
+        assert!(display_str.contains("2.0000"));
+        assert!(display_str.contains("3.0000"));
+        assert!(display_str.contains("0.1000"));
+    }
+
+    #[test]
+    fn test_imudata_from_vec() {
+        let vec = vec![1.0, 2.0, 3.0, 0.1, 0.2, 0.3];
+        let imu: IMUData = vec.into();
+        assert_eq!(imu.accel[0], 1.0);
+        assert_eq!(imu.accel[1], 2.0);
+        assert_eq!(imu.accel[2], 3.0);
+        assert_eq!(imu.gyro[0], 0.1);
+        assert_eq!(imu.gyro[1], 0.2);
+        assert_eq!(imu.gyro[2], 0.3);
+    }
+
+    #[test]
+    #[should_panic(expected = "IMUData must be initialized with a vector of length 6")]
+    fn test_imudata_from_vec_wrong_length() {
+        let vec = vec![1.0, 2.0, 3.0];
+        let _imu: IMUData = vec.into();
+    }
+
+    #[test]
+    fn test_imudata_to_vec() {
+        let imu = IMUData {
+            accel: Vector3::new(1.0, 2.0, 3.0),
+            gyro: Vector3::new(0.1, 0.2, 0.3),
+        };
+        let vec: Vec<f64> = imu.into();
+        assert_eq!(vec, vec![1.0, 2.0, 3.0, 0.1, 0.2, 0.3]);
+    }
+
+    #[test]
+    fn test_strapdown_state_debug() {
+        let attitude = Rotation3::from_euler_angles(0.1, 0.2, 0.3);
+        let state = StrapdownState::new(
+            45.0, -122.0, 100.0, 1.0, 2.0, 3.0, attitude, true, None
+        );
+        let debug_str = format!("{:?}", state);
+        assert!(debug_str.contains("StrapdownState"));
+        assert!(debug_str.contains("latitude"));
+        assert!(debug_str.contains("45"));
+    }
+
+    #[test]
+    fn test_strapdown_state_display() {
+        let attitude = Rotation3::from_euler_angles(0.1, 0.2, 0.3);
+        let state = StrapdownState::new(
+            45.0, -122.0, 100.0, 1.0, 2.0, 3.0, attitude, true, None
+        );
+        let display_str = format!("{}", state);
+        assert!(display_str.contains("StrapdownState"));
+        assert!(display_str.contains("45"));
+        assert!(display_str.contains("lat"));
+    }
+
+    #[test]
+    #[should_panic(expected = "Latitude must be in the range")]
+    fn test_strapdown_state_new_invalid_latitude() {
+        let attitude = Rotation3::identity();
+        let _state = StrapdownState::new(
+            200.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, true, None
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Longitude must be in the range")]
+    fn test_strapdown_state_new_invalid_longitude() {
+        let attitude = Rotation3::identity();
+        let _state = StrapdownState::new(
+            0.0, 200.0, 0.0, 0.0, 0.0, 0.0, attitude, true, None
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Strapdown equations and the local level frame are only valid")]
+    fn test_strapdown_state_new_invalid_altitude() {
+        let attitude = Rotation3::identity();
+        let _state = StrapdownState::new(
+            0.0, 0.0, 50000.0, 0.0, 0.0, 0.0, attitude, true, None
+        );
+    }
+
+    #[test]
+    fn test_strapdown_state_new_with_degrees() {
+        let attitude = Rotation3::identity();
+        let state = StrapdownState::new(
+            45.0, -122.0, 100.0, 0.0, 0.0, 0.0, attitude, true, None
+        );
+        assert_approx_eq!(state.latitude, 45.0_f64.to_radians(), 1e-6);
+        assert_approx_eq!(state.longitude, -122.0_f64.to_radians(), 1e-6);
+    }
+
+    #[test]
+    fn test_strapdown_state_new_with_radians() {
+        let attitude = Rotation3::identity();
+        let state = StrapdownState::new(
+            1.0, -2.0, 100.0, 0.0, 0.0, 0.0, attitude, false, None
+        );
+        assert_eq!(state.latitude, 1.0);
+        assert_eq!(state.longitude, -2.0);
+    }
+
+    #[test]
+    fn test_strapdown_state_try_from_slice() {
+        let data = vec![0.1, 0.2, 100.0, 1.0, 2.0, 3.0, 0.1, 0.2, 0.3];
+        let slice: &[f64] = &data;
+        let state = StrapdownState::try_from(slice).unwrap();
+        assert_eq!(state.latitude, 0.1);
+        assert_eq!(state.longitude, 0.2);
+        assert_eq!(state.altitude, 100.0);
+    }
+
+    #[test]
+    fn test_strapdown_state_try_from_slice_wrong_length() {
+        let data = vec![0.1, 0.2, 100.0];
+        let slice: &[f64] = &data;
+        let result = StrapdownState::try_from(slice);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_strapdown_state_to_dvector() {
+        let state = StrapdownState::default();
+        let dvec: DVector<f64> = (&state).into();
+        assert_eq!(dvec.len(), 9);
+    }
+
+    #[test]
+    fn test_strapdown_state_to_dvector_owned() {
+        let state = StrapdownState::default();
+        let dvec: DVector<f64> = state.into();
+        assert_eq!(dvec.len(), 9);
+    }
+
+    #[test]
+    fn test_velocity_update_enu_vs_ned() {
+        // Test that ENU and NED frames handle gravity signs differently
+        let state_enu = StrapdownState::default(); // is_enu = true by default
+        let mut state_ned = StrapdownState::default();
+        state_ned.is_enu = false;
+
+        // Apply gravity-compensating specific force
+        let f = Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0));
+        let dt = 1.0;
+
+        let v_enu = velocity_update(&state_enu, f, dt);
+        let v_ned = velocity_update(&state_ned, f, dt);
+
+        // The two frames should produce different results due to gravity sign
+        assert!(v_enu[2] != v_ned[2], "ENU and NED should handle gravity differently");
+    }
 }
