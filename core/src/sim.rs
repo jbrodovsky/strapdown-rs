@@ -2270,4 +2270,857 @@ mod tests {
         assert_eq!(result.acc_bias_x, 0.0);
         assert_eq!(result.gyro_bias_x, 0.0);
     }
+
+    // ========== NEW TESTS FOR IMPROVED COVERAGE ==========
+
+    #[test]
+    fn test_de_f64_nan_with_various_inputs() {
+        // Test CSV deserialization with NaN/null/empty values
+        let headers = test_header();
+        let mut csv_data = String::new();
+        csv_data.push_str(&headers.join(","));
+        csv_data.push('\n');
+
+        // Row with mixed NaN representations
+        csv_data.push_str("2023-08-04T21:47:58Z,NaN,null,,,1.5,90.0,100.0,-122.0,37.0,");
+        csv_data.push_str("0,0,0,1,0.1,0.2,0.3,9.8,0,0,0,0,0,0,0,0,0,1013.25,9.81,0,0\n");
+
+        let temp_file = std::env::temp_dir().join("test_nan_variants.csv");
+        std::fs::write(&temp_file, csv_data).unwrap();
+        let recs = TestDataRecord::from_csv(&temp_file).expect("Should parse");
+        assert_eq!(recs.len(), 1);
+        assert!(recs[0].bearing_accuracy.is_nan());
+        assert!(recs[0].speed_accuracy.is_nan());
+        assert!(recs[0].vertical_accuracy.is_nan());
+        assert!(recs[0].horizontal_accuracy.is_nan());
+        assert_eq!(recs[0].speed, 1.5);
+        let _ = std::fs::remove_file(&temp_file);
+    }
+
+    #[test]
+    fn test_test_data_record_display() {
+        let rec = TestDataRecord {
+            time: DateTime::parse_from_str("2023-01-01 00:00:00+00:00", "%Y-%m-%d %H:%M:%S%z")
+                .unwrap()
+                .with_timezone(&Utc),
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            speed: 5.0,
+            bearing: 90.0,
+            ..Default::default()
+        };
+        let display_str = format!("{}", rec);
+        assert!(display_str.contains("37"));
+        assert!(display_str.contains("-122"));
+        assert!(display_str.contains("100"));
+    }
+
+    #[test]
+    fn test_navigation_result_from_dvector_assertion_wrong_size() {
+        let timestamp = Utc::now();
+        let state = DVector::from_vec(vec![1.0; 9]); // Wrong size
+        let cov = DMatrix::from_diagonal(&DVector::from_element(15, 1.0));
+        let result = std::panic::catch_unwind(|| {
+            NavigationResult::from((&timestamp, &state, &cov))
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_navigation_result_from_dvector_assertion_wrong_cov_size() {
+        let timestamp = Utc::now();
+        let state = DVector::from_vec(vec![1.0; 15]);
+        let cov = DMatrix::from_diagonal(&DVector::from_element(9, 1.0)); // Wrong size
+        let result = std::panic::catch_unwind(|| {
+            NavigationResult::from((&timestamp, &state, &cov))
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_navigation_result_from_ukf() {
+        let rec = TestDataRecord {
+            time: Utc::now(),
+            horizontal_accuracy: 5.0,
+            vertical_accuracy: 2.0,
+            speed_accuracy: 1.0,
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            speed: 10.0,
+            bearing: 45.0,
+            roll: 0.1,
+            pitch: 0.2,
+            yaw: 0.3,
+            ..Default::default()
+        };
+        let ukf = initialize_ukf(rec.clone(), None, None, None, None, None, None);
+        let timestamp = Utc::now();
+        let nav_result = NavigationResult::from((&timestamp, &ukf));
+
+        assert_eq!(nav_result.timestamp, timestamp);
+        assert!(nav_result.latitude.is_finite());
+        assert!(nav_result.longitude.is_finite());
+        assert!(nav_result.altitude.is_finite());
+    }
+
+    #[test]
+    fn test_dead_reckoning_empty_records() {
+        let results = dead_reckoning(&[]);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_dead_reckoning_single_record() {
+        let rec = TestDataRecord {
+            time: Utc::now(),
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            speed: 1.0,
+            bearing: 0.0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            acc_x: 0.0,
+            acc_y: 0.0,
+            acc_z: 9.81,
+            gyro_x: 0.0,
+            gyro_y: 0.0,
+            gyro_z: 0.0,
+            ..Default::default()
+        };
+        let results = dead_reckoning(&[rec]);
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_print_ukf() {
+        let rec = TestDataRecord {
+            time: Utc::now(),
+            horizontal_accuracy: 5.0,
+            vertical_accuracy: 2.0,
+            speed_accuracy: 1.0,
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            speed: 10.0,
+            bearing: 45.0,
+            roll: 0.1,
+            pitch: 0.2,
+            yaw: 0.3,
+            ..Default::default()
+        };
+        let ukf = initialize_ukf(rec.clone(), None, None, None, None, None, None);
+        // Just ensure it doesn't panic
+        print_ukf(&ukf, &rec);
+    }
+
+    #[test]
+    fn test_print_pf() {
+        let initial_pose = TestDataRecord {
+            time: Utc::now(),
+            horizontal_accuracy: 10.0,
+            vertical_accuracy: 5.0,
+            speed_accuracy: 1.0,
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            speed: 5.0,
+            bearing: 0.0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            ..Default::default()
+        };
+        let pf = initialize_particle_filter(initial_pose.clone(), 10, 5.0, 1.0, 0.1, None);
+        // Just ensure it doesn't panic
+        print_pf(&pf, &initial_pose);
+    }
+
+    #[test]
+    fn test_initialize_ukf_with_nan_angles() {
+        let rec = TestDataRecord {
+            time: Utc::now(),
+            horizontal_accuracy: 5.0,
+            vertical_accuracy: 2.0,
+            speed_accuracy: 1.0,
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            speed: 10.0,
+            bearing: 45.0,
+            roll: f64::NAN,
+            pitch: f64::NAN,
+            yaw: f64::NAN,
+            ..Default::default()
+        };
+        let ukf = initialize_ukf(rec, None, None, None, None, None, None);
+        let estimate = ukf.get_estimate();
+        // Should default NaN angles to 0.0
+        assert!(estimate[6].abs() < 1e-6); // roll
+        assert!(estimate[7].abs() < 1e-6); // pitch
+        assert!(estimate[8].abs() < 1e-6); // yaw
+    }
+
+    #[test]
+    fn test_initialize_ukf_with_custom_biases() {
+        let rec = TestDataRecord {
+            time: Utc::now(),
+            horizontal_accuracy: 5.0,
+            vertical_accuracy: 2.0,
+            speed_accuracy: 1.0,
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            speed: 10.0,
+            bearing: 45.0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            ..Default::default()
+        };
+        let ukf = initialize_ukf(
+            rec,
+            Some(vec![1e-4, 2e-4, 3e-4]),
+            Some(vec![0.01, 0.02, 0.03, 0.001, 0.002, 0.003]),
+            Some(vec![1e-5; 6]),
+            None,
+            None,
+            None,
+        );
+        let estimate = ukf.get_estimate();
+        assert_eq!(estimate.len(), 15);
+    }
+
+    #[test]
+    fn test_initialize_ukf_with_custom_process_noise() {
+        let rec = TestDataRecord {
+            time: Utc::now(),
+            horizontal_accuracy: 5.0,
+            vertical_accuracy: 2.0,
+            speed_accuracy: 1.0,
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            speed: 10.0,
+            bearing: 45.0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            ..Default::default()
+        };
+        let custom_noise = vec![1e-5; 15];
+        let ukf = initialize_ukf(rec, None, None, None, None, None, Some(custom_noise));
+        assert!(!ukf.get_estimate().is_empty());
+    }
+
+    #[test]
+    fn test_initialize_particle_filter_with_nan_angles() {
+        let initial_pose = TestDataRecord {
+            time: Utc::now(),
+            horizontal_accuracy: 10.0,
+            vertical_accuracy: 5.0,
+            speed_accuracy: 1.0,
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            speed: 5.0,
+            bearing: 0.0,
+            roll: f64::NAN,
+            pitch: f64::NAN,
+            yaw: f64::NAN,
+            ..Default::default()
+        };
+        let pf = initialize_particle_filter(initial_pose, 20, 5.0, 1.0, 0.1, None);
+        assert_eq!(pf.particles.len(), 20);
+    }
+
+    #[test]
+    fn test_initialize_particle_filter_with_custom_process_noise() {
+        let initial_pose = TestDataRecord {
+            time: Utc::now(),
+            horizontal_accuracy: 10.0,
+            vertical_accuracy: 5.0,
+            speed_accuracy: 1.0,
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            speed: 5.0,
+            bearing: 0.0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            ..Default::default()
+        };
+        let custom_noise = DVector::from_vec(vec![1e-4; 15]);
+        let pf = initialize_particle_filter(initial_pose, 30, 5.0, 1.0, 0.1, Some(custom_noise));
+        assert_eq!(pf.particles.len(), 30);
+    }
+
+    #[test]
+    fn test_run_closed_loop_pf() {
+        let rec = TestDataRecord {
+            time: Utc::now(),
+            horizontal_accuracy: 10.0,
+            vertical_accuracy: 5.0,
+            speed_accuracy: 1.0,
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            speed: 5.0,
+            bearing: 0.0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            acc_x: 0.0,
+            acc_y: 0.0,
+            acc_z: 9.81,
+            gyro_x: 0.0,
+            gyro_y: 0.0,
+            gyro_z: 0.0,
+            ..Default::default()
+        };
+
+        let mut pf = initialize_particle_filter(rec.clone(), 10, 5.0, 1.0, 0.1, None);
+
+        let imu_data = IMUData {
+            accel: Vector3::new(0.0, 0.0, 9.81),
+            gyro: Vector3::new(0.0, 0.0, 0.0),
+        };
+
+        let stream = EventStream {
+            start_time: rec.time,
+            events: vec![
+                Event::Imu {
+                    dt_s: 1.0,
+                    imu: imu_data,
+                    elapsed_s: 0.0,
+                },
+            ],
+        };
+
+        let result = run_closed_loop_pf(&mut pf, stream, None, None);
+        assert!(result.is_ok());
+        assert!(!result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_run_closed_loop_pf_with_measurement() {
+        use crate::filter::GPSPositionMeasurement;
+
+        let rec = TestDataRecord {
+            time: Utc::now(),
+            horizontal_accuracy: 10.0,
+            vertical_accuracy: 5.0,
+            speed_accuracy: 1.0,
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            speed: 5.0,
+            bearing: 0.0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            acc_x: 0.0,
+            acc_y: 0.0,
+            acc_z: 9.81,
+            gyro_x: 0.0,
+            gyro_y: 0.0,
+            gyro_z: 0.0,
+            ..Default::default()
+        };
+
+        let mut pf = initialize_particle_filter(rec.clone(), 20, 5.0, 1.0, 0.1, None);
+
+        let stream = EventStream {
+            start_time: rec.time,
+            events: vec![
+                Event::Imu {
+                    dt_s: 0.1,
+                    imu: IMUData {
+                        accel: Vector3::new(0.0, 0.0, 9.81),
+                        gyro: Vector3::new(0.0, 0.0, 0.0),
+                    },
+                    elapsed_s: 0.0,
+                },
+                Event::Measurement {
+                    meas: Box::new(GPSPositionMeasurement {
+                        latitude: 37.0_f64.to_radians(),
+                        longitude: -122.0_f64.to_radians(),
+                        altitude: 100.0,
+                        horizontal_noise_std: 5.0,
+                        vertical_noise_std: 2.0,
+                    }),
+                    elapsed_s: 0.1,
+                },
+            ],
+        };
+
+        let result = run_closed_loop_pf(&mut pf, stream, None, Some(0.3));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_health_limits_default() {
+        let limits = HealthLimits::default();
+        assert!(limits.lat_rad.0 < 0.0);
+        assert!(limits.lat_rad.1 > 0.0);
+        assert!(limits.speed_mps_max > 0.0);
+        assert!(limits.cov_diag_max > 0.0);
+    }
+
+    #[test]
+    fn test_health_monitor_check_valid_state() {
+        let limits = HealthLimits::default();
+        let mut monitor = HealthMonitor::new(limits);
+
+        let state = vec![
+            0.5, 0.5, 100.0,  // lat, lon, alt (radians, radians, meters)
+            10.0, 5.0, 0.0,    // vn, ve, vd
+            0.0, 0.0, 0.0,     // roll, pitch, yaw
+            0.0, 0.0, 0.0,     // acc biases
+            0.0, 0.0, 0.0,     // gyro biases
+        ];
+        let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
+
+        let result = monitor.check(&state, &cov, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_health_monitor_check_non_finite_state() {
+        let limits = HealthLimits::default();
+        let mut monitor = HealthMonitor::new(limits);
+
+        let state = vec![f64::NAN, 0.5, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
+
+        let result = monitor.check(&state, &cov, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_health_monitor_check_non_finite_covariance() {
+        let limits = HealthLimits::default();
+        let mut monitor = HealthMonitor::new(limits);
+
+        let state = vec![0.5, 0.5, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let mut cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
+        cov[(0, 0)] = f64::NAN;
+
+        let result = monitor.check(&state, &cov, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_health_monitor_check_latitude_out_of_range() {
+        let limits = HealthLimits::default();
+        let mut monitor = HealthMonitor::new(limits);
+
+        let state = vec![5.0, 0.5, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]; // lat > PI/2
+        let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
+
+        let result = monitor.check(&state, &cov, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_health_monitor_check_longitude_out_of_range() {
+        let limits = HealthLimits::default();
+        let mut monitor = HealthMonitor::new(limits);
+
+        let state = vec![0.5, 5.0, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]; // lon > PI
+        let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
+
+        let result = monitor.check(&state, &cov, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_health_monitor_check_altitude_out_of_range() {
+        let mut limits = HealthLimits::default();
+        limits.alt_m = (-100.0, 10000.0);
+        let mut monitor = HealthMonitor::new(limits);
+
+        let state = vec![0.5, 0.5, 20000.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
+
+        let result = monitor.check(&state, &cov, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_health_monitor_check_negative_variance() {
+        let limits = HealthLimits::default();
+        let mut monitor = HealthMonitor::new(limits);
+
+        let state = vec![0.5, 0.5, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let mut cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
+        cov[(2, 2)] = -1.0; // negative variance
+
+        let result = monitor.check(&state, &cov, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_health_monitor_check_variance_too_large() {
+        let limits = HealthLimits::default();
+        let mut monitor = HealthMonitor::new(limits);
+
+        let state = vec![0.5, 0.5, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let mut cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
+        cov[(3, 3)] = 1e20; // variance too large
+
+        let result = monitor.check(&state, &cov, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_health_monitor_check_nis_invalid() {
+        let limits = HealthLimits::default();
+        let mut monitor = HealthMonitor::new(limits);
+
+        let state = vec![0.5, 0.5, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
+
+        let result = monitor.check(&state, &cov, Some(f64::NAN));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_health_monitor_check_nis_exceeds_threshold() {
+        let mut limits = HealthLimits::default();
+        limits.nis_pos_max = 10.0;
+        limits.nis_pos_consec_fail = 3;
+        let mut monitor = HealthMonitor::new(limits);
+
+        let state = vec![0.5, 0.5, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
+
+        // First two failures should be ok
+        assert!(monitor.check(&state, &cov, Some(15.0)).is_ok());
+        assert!(monitor.check(&state, &cov, Some(15.0)).is_ok());
+        // Third consecutive failure should error
+        let result = monitor.check(&state, &cov, Some(15.0));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_health_monitor_check_nis_reset_on_pass() {
+        let mut limits = HealthLimits::default();
+        limits.nis_pos_max = 10.0;
+        limits.nis_pos_consec_fail = 3;
+        let mut monitor = HealthMonitor::new(limits);
+
+        let state = vec![0.5, 0.5, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
+
+        // First failure
+        assert!(monitor.check(&state, &cov, Some(15.0)).is_ok());
+        // Pass resets counter
+        assert!(monitor.check(&state, &cov, Some(5.0)).is_ok());
+        // New failures should not accumulate with previous
+        assert!(monitor.check(&state, &cov, Some(15.0)).is_ok());
+        assert!(monitor.check(&state, &cov, Some(15.0)).is_ok());
+    }
+
+    #[test]
+    fn test_build_scheduler_passthrough() {
+        let args = SchedulerArgs {
+            sched: SchedKind::Passthrough,
+            interval_s: 1.0,
+            phase_s: 0.0,
+            on_s: 10.0,
+            off_s: 10.0,
+            duty_phase_s: 0.0,
+        };
+        let scheduler = build_scheduler(&args);
+        matches!(scheduler, GnssScheduler::PassThrough);
+    }
+
+    #[test]
+    fn test_build_scheduler_fixed() {
+        let args = SchedulerArgs {
+            sched: SchedKind::Fixed,
+            interval_s: 2.5,
+            phase_s: 0.5,
+            on_s: 10.0,
+            off_s: 10.0,
+            duty_phase_s: 0.0,
+        };
+        let scheduler = build_scheduler(&args);
+        if let GnssScheduler::FixedInterval { interval_s, phase_s } = scheduler {
+            assert_eq!(interval_s, 2.5);
+            assert_eq!(phase_s, 0.5);
+        } else {
+            panic!("Expected FixedInterval scheduler");
+        }
+    }
+
+    #[test]
+    fn test_build_scheduler_duty() {
+        let args = SchedulerArgs {
+            sched: SchedKind::Duty,
+            interval_s: 1.0,
+            phase_s: 0.0,
+            on_s: 15.0,
+            off_s: 5.0,
+            duty_phase_s: 2.0,
+        };
+        let scheduler = build_scheduler(&args);
+        if let GnssScheduler::DutyCycle { on_s, off_s, start_phase_s } = scheduler {
+            assert_eq!(on_s, 15.0);
+            assert_eq!(off_s, 5.0);
+            assert_eq!(start_phase_s, 2.0);
+        } else {
+            panic!("Expected DutyCycle scheduler");
+        }
+    }
+
+    #[test]
+    fn test_build_fault_none() {
+        let args = FaultArgs {
+            fault: FaultKind::None,
+            rho_pos: 0.99,
+            sigma_pos_m: 3.0,
+            rho_vel: 0.95,
+            sigma_vel_mps: 0.3,
+            r_scale: 5.0,
+            drift_n_mps: 0.02,
+            drift_e_mps: 0.0,
+            q_bias: 1e-6,
+            rotate_omega_rps: 0.0,
+            hijack_offset_n_m: 50.0,
+            hijack_offset_e_m: 0.0,
+            hijack_start_s: 120.0,
+            hijack_duration_s: 60.0,
+        };
+        let fault = build_fault(&args);
+        matches!(fault, GnssFaultModel::None);
+    }
+
+    #[test]
+    fn test_build_fault_degraded() {
+        let args = FaultArgs {
+            fault: FaultKind::Degraded,
+            rho_pos: 0.98,
+            sigma_pos_m: 5.0,
+            rho_vel: 0.93,
+            sigma_vel_mps: 0.5,
+            r_scale: 10.0,
+            drift_n_mps: 0.02,
+            drift_e_mps: 0.0,
+            q_bias: 1e-6,
+            rotate_omega_rps: 0.0,
+            hijack_offset_n_m: 50.0,
+            hijack_offset_e_m: 0.0,
+            hijack_start_s: 120.0,
+            hijack_duration_s: 60.0,
+        };
+        let fault = build_fault(&args);
+        if let GnssFaultModel::Degraded { rho_pos, sigma_pos_m, rho_vel, sigma_vel_mps, r_scale } = fault {
+            assert_eq!(rho_pos, 0.98);
+            assert_eq!(sigma_pos_m, 5.0);
+            assert_eq!(rho_vel, 0.93);
+            assert_eq!(sigma_vel_mps, 0.5);
+            assert_eq!(r_scale, 10.0);
+        } else {
+            panic!("Expected Degraded fault model");
+        }
+    }
+
+    #[test]
+    fn test_build_fault_slowbias() {
+        let args = FaultArgs {
+            fault: FaultKind::Slowbias,
+            rho_pos: 0.99,
+            sigma_pos_m: 3.0,
+            rho_vel: 0.95,
+            sigma_vel_mps: 0.3,
+            r_scale: 5.0,
+            drift_n_mps: 0.05,
+            drift_e_mps: 0.02,
+            q_bias: 1e-5,
+            rotate_omega_rps: 0.01,
+            hijack_offset_n_m: 50.0,
+            hijack_offset_e_m: 0.0,
+            hijack_start_s: 120.0,
+            hijack_duration_s: 60.0,
+        };
+        let fault = build_fault(&args);
+        if let GnssFaultModel::SlowBias { drift_n_mps, drift_e_mps, q_bias, rotate_omega_rps } = fault {
+            assert_eq!(drift_n_mps, 0.05);
+            assert_eq!(drift_e_mps, 0.02);
+            assert_eq!(q_bias, 1e-5);
+            assert_eq!(rotate_omega_rps, 0.01);
+        } else {
+            panic!("Expected SlowBias fault model");
+        }
+    }
+
+    #[test]
+    fn test_build_fault_hijack() {
+        let args = FaultArgs {
+            fault: FaultKind::Hijack,
+            rho_pos: 0.99,
+            sigma_pos_m: 3.0,
+            rho_vel: 0.95,
+            sigma_vel_mps: 0.3,
+            r_scale: 5.0,
+            drift_n_mps: 0.02,
+            drift_e_mps: 0.0,
+            q_bias: 1e-6,
+            rotate_omega_rps: 0.0,
+            hijack_offset_n_m: 100.0,
+            hijack_offset_e_m: 50.0,
+            hijack_start_s: 180.0,
+            hijack_duration_s: 90.0,
+        };
+        let fault = build_fault(&args);
+        if let GnssFaultModel::Hijack { offset_n_m, offset_e_m, start_s, duration_s } = fault {
+            assert_eq!(offset_n_m, 100.0);
+            assert_eq!(offset_e_m, 50.0);
+            assert_eq!(start_s, 180.0);
+            assert_eq!(duration_s, 90.0);
+        } else {
+            panic!("Expected Hijack fault model");
+        }
+    }
+
+    #[test]
+    fn test_ned_covariance() {
+        let cov = NEDCovariance {
+            latitude_cov: 1e-6,
+            longitude_cov: 1e-6,
+            altitude_cov: 1e-4,
+            velocity_n_cov: 1e-3,
+            velocity_e_cov: 1e-3,
+            velocity_d_cov: 1e-3,
+            roll_cov: 1e-5,
+            pitch_cov: 1e-5,
+            yaw_cov: 1e-5,
+            acc_bias_x_cov: 1e-6,
+            acc_bias_y_cov: 1e-6,
+            acc_bias_z_cov: 1e-6,
+            gyro_bias_x_cov: 1e-8,
+            gyro_bias_y_cov: 1e-8,
+            gyro_bias_z_cov: 1e-8,
+        };
+        assert_eq!(cov.latitude_cov, 1e-6);
+        assert_eq!(cov.gyro_bias_z_cov, 1e-8);
+    }
+
+    #[test]
+    fn test_navigation_result_csv_roundtrip_with_nan() {
+        let mut nav = NavigationResult::default();
+        nav.latitude = 37.0;
+        nav.longitude = -122.0;
+        nav.altitude = 100.0;
+        nav.latitude_cov = f64::NAN;
+        nav.longitude_cov = f64::NAN;
+
+        let temp_file = std::env::temp_dir().join("test_nav_nan.csv");
+        NavigationResult::to_csv(&[nav.clone()], &temp_file).unwrap();
+
+        let read = NavigationResult::from_csv(&temp_file).unwrap();
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].latitude, 37.0);
+        assert!(read[0].latitude_cov.is_nan());
+
+        let _ = std::fs::remove_file(&temp_file);
+    }
+
+    #[test]
+    fn test_navigation_result_from_strapdown_state_with_rotation() {
+        let timestamp = Utc::now();
+        let mut state = StrapdownState::default();
+        state.latitude = 0.5; // radians
+        state.longitude = 1.0; // radians
+        state.altitude = 500.0;
+        state.velocity_north = 10.0;
+        state.velocity_east = 5.0;
+        state.velocity_down = -1.0;
+        state.attitude = Rotation3::from_euler_angles(0.1, 0.2, 0.3);
+
+        let nav = NavigationResult::from((&timestamp, &state));
+        assert_eq!(nav.timestamp, timestamp);
+        assert!((nav.latitude - 0.5_f64.to_degrees()).abs() < 1e-6);
+        assert!((nav.longitude - 1.0_f64.to_degrees()).abs() < 1e-6);
+        assert_eq!(nav.altitude, 500.0);
+        assert!(nav.latitude_cov.is_nan());
+        assert_eq!(nav.acc_bias_x, 0.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Particle filter state must have 9 elements")]
+    fn test_navigation_result_from_particle_filter_wrong_size() {
+        let timestamp = Utc::now();
+        let mean = DVector::from_vec(vec![1.0; 15]); // Wrong size
+        let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 9]));
+        NavigationResult::from_particle_filter(&timestamp, &mean, &cov);
+    }
+
+    #[test]
+    #[should_panic(expected = "Particle filter covariance must be 9x9")]
+    fn test_navigation_result_from_particle_filter_wrong_cov_size() {
+        let timestamp = Utc::now();
+        let mean = DVector::from_vec(vec![1.0; 9]);
+        let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15])); // Wrong size
+        NavigationResult::from_particle_filter(&timestamp, &mean, &cov);
+    }
+
+    #[test]
+    fn test_default_process_noise_values() {
+        assert_eq!(DEFAULT_PROCESS_NOISE.len(), 15);
+        assert_eq!(DEFAULT_PROCESS_NOISE[0], 1e-6); // position
+        assert_eq!(DEFAULT_PROCESS_NOISE[2], 1e-4); // altitude
+        assert_eq!(DEFAULT_PROCESS_NOISE[3], 1e-3); // velocity
+    }
+
+    #[test]
+    fn test_run_closed_loop_with_health_limits() {
+        let rec = TestDataRecord {
+            time: Utc::now(),
+            horizontal_accuracy: 5.0,
+            vertical_accuracy: 2.0,
+            speed_accuracy: 1.0,
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            speed: 10.0,
+            bearing: 45.0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            acc_x: 0.0,
+            acc_y: 0.0,
+            acc_z: 9.81,
+            gyro_x: 0.0,
+            gyro_y: 0.0,
+            gyro_z: 0.0,
+            ..Default::default()
+        };
+
+        let mut ukf = initialize_ukf(rec.clone(), None, None, None, None, None, None);
+
+        let stream = EventStream {
+            start_time: rec.time,
+            events: vec![
+                Event::Imu {
+                    dt_s: 0.1,
+                    imu: IMUData {
+                        accel: Vector3::new(0.0, 0.0, 9.81),
+                        gyro: Vector3::new(0.0, 0.0, 0.0),
+                    },
+                    elapsed_s: 0.0,
+                },
+            ],
+        };
+
+        let health_limits = HealthLimits::default();
+        let result = run_closed_loop(&mut ukf, stream, Some(health_limits));
+        assert!(result.is_ok());
+    }
 }

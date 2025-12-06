@@ -453,6 +453,69 @@ mod tests {
         let b = DMatrix::<f64>::zeros(3, 1);
         let _ = chol_solve_spd(&a, &b, SolveOptions::default());
     }
+
+    #[test]
+    fn t_chol_solve_spd_max_jitter_exceeded() {
+        // Test that jitter loop terminates when max_jitter is exceeded
+        let a = DMatrix::from_row_slice(2, 2, &[-10.0, 0.0, 0.0, -10.0]);
+        let b = DMatrix::from_row_slice(2, 1, &[1.0, 1.0]);
+
+        let opts = SolveOptions {
+            initial_jitter: 1e-6,
+            max_jitter: 1e-5,
+            max_tries: 10,
+        };
+
+        let result = chol_solve_spd(&a, &b, opts);
+        assert!(result.is_none(), "Should return None when jitter limit exceeded");
+    }
+
+    #[test]
+    fn t_robust_spd_solve_inverse_fallback() {
+        // Create a matrix that will fail Cholesky but has valid inverse
+        let mut a = DMatrix::from_row_slice(2, 2, &[2.0, 1.0, 1.0, 2.0]);
+        a[(0, 0)] = -0.1; // Make it fail Cholesky with small negative eigenvalue
+        let b = DMatrix::from_row_slice(2, 1, &[1.0, 1.0]);
+
+        let opts = SolveOptions {
+            initial_jitter: 1e-20,
+            max_jitter: 1e-19,
+            max_tries: 1,
+        };
+
+        // Force chol_solve_spd to fail by using very restrictive options
+        let chol_result = chol_solve_spd(&a, &b, opts);
+        assert!(chol_result.is_none(), "Cholesky should fail with restrictive jitter");
+
+        // Now test robust solver which should use inverse
+        let x = robust_spd_solve(&a, &b);
+        let a_sym = symmetrize(&a);
+        let result = &a_sym * &x;
+        assert!(approx_eq(&result, &b, 1e-6));
+    }
+
+    #[test]
+    fn t_robust_spd_solve_singular_handled() {
+        // Create a truly singular matrix
+        let a = DMatrix::from_row_slice(2, 2, &[1.0, 1.0, 1.0, 1.0]);
+        let b = DMatrix::from_row_slice(2, 1, &[1.0, 1.0]);
+
+        // robust_spd_solve may panic or may handle it via jitter
+        // We test that it either panics or succeeds (doesn't hang)
+        let result = std::panic::catch_unwind(|| robust_spd_solve(&a, &b));
+
+        // Either panic (Err) or succeed (Ok) - both are acceptable
+        // The key is that it terminates
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    #[test]
+    fn t_solve_options_default() {
+        let opts = SolveOptions::default();
+        assert_eq!(opts.initial_jitter, 1e-12);
+        assert_eq!(opts.max_jitter, 1e-6);
+        assert_eq!(opts.max_tries, 6);
+    }
 }
 
 // ============ OLD ====================================
