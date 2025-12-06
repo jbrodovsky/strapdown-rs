@@ -432,6 +432,10 @@ pub fn principal_radii(latitude: &f64, altitude: &f64) -> (f64, f64, f64) {
 /// method](https://en.wikipedia.org/wiki/Theoretical_gravity#Somigliana_equation), which models
 /// the Earth's gravity as a function of the latitude and altitude. The gravity model is used to
 /// calculate the gravitational force scalar in the local-level frame. Free-air correction is applied.
+/// 
+/// *Note:* This function returns only the gravity scalar and does not include centrifugal effects
+/// nor does it assuming a vector form or make any assumptions about the direction of the gravitional
+/// force!
 ///
 /// # Arguments
 /// - `latitude` - The WGS84 latitude in degrees
@@ -463,9 +467,8 @@ pub fn gravity(latitude: &f64, altitude: &f64) -> f64 {
 /// differs from the gravity scalar in that it includes the centrifugal effects of the Earth's
 /// rotation.
 ///
-/// *Note:* Local level frame coordinates are odd and mixed and can be defined as North, East,
-/// Down (NED) or East, North, Up (ENU). This function uses the ENU convention, thus gravity acts
-/// along the negative Z-axis (downward) in the local-level frame.
+/// *Note:* This function uses the ENU convention, thus gravity acts along the negative Z-axis 
+/// (downward) in the local-level frame.
 ///
 /// # Arguments
 /// - `latitude` - The WGS84 latitude in degrees
