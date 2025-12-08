@@ -29,8 +29,8 @@ use clap::{Args, ValueEnum};
 
 use crate::earth::METERS_TO_DEGREES;
 use crate::kalman::{InitialState, NavigationFilter, UnscentedKalmanFilter};
-use crate::particle::{Particle, ParticleFilter};
 use crate::messages::{Event, EventStream, GnssFaultModel, GnssScheduler};
+use crate::particle::{Particle, ParticleFilter};
 use crate::{IMUData, StrapdownState, forward};
 use health::HealthMonitor;
 use nalgebra::Rotation3;
@@ -792,27 +792,30 @@ pub fn run_closed_loop<F: NavigationFilter>(
     let mut last_ts: Option<DateTime<Utc>> = None;
     let mut monitor = HealthMonitor::new(health_limits.unwrap_or_default());
 
-    info!("Starting closed-loop navigation filter with {} events", total);
+    info!(
+        "Starting closed-loop navigation filter with {} events",
+        total
+    );
 
     for (i, event) in stream.events.into_iter().enumerate() {
         // Print detailed progress every 100 iterations or at key milestones
         if i % 10 == 0 || i == total {
             let mean = filter.get_estimate();
             let cov = filter.get_certainty();
-            
+
             // Extract position and covariance diagonal
             let lat = mean[0].to_degrees();
             let lon = mean[1].to_degrees();
             let alt = mean[2];
-            
+
             // Get position uncertainty (diagonal elements)
             let pos_std_lat = cov[(0, 0)].sqrt().to_degrees();
             let pos_std_lon = cov[(1, 1)].sqrt().to_degrees();
             let pos_std_alt = cov[(2, 2)].sqrt();
-            
+
             // Compute RMS of position covariance
             let pos_rms = (pos_std_lat.powi(2) + pos_std_lon.powi(2) + pos_std_alt.powi(2)).sqrt();
-            
+
             print!(
                 "\r[{:.1}%] Event {}/{} | Pos: ({:.6}°, {:.6}°, {:.1}m) | σ: ({:.2e}°, {:.2e}°, {:.2}m) | RMS: {:.2e}",
                 (i as f64 / total as f64) * 100.0,
@@ -1279,18 +1282,18 @@ pub fn run_closed_loop_pf(
         if i % 10 == 0 || i == total {
             let mean = filter.get_estimate();
             let cov = filter.get_certainty();
-            
+
             let lat = mean[0].to_degrees();
             let lon = mean[1].to_degrees();
             let alt = mean[2];
-            
+
             let pos_std_lat = cov[(0, 0)].sqrt().to_degrees();
             let pos_std_lon = cov[(1, 1)].sqrt().to_degrees();
             let pos_std_alt = cov[(2, 2)].sqrt();
-            
+
             let pos_rms = (pos_std_lat.powi(2) + pos_std_lon.powi(2) + pos_std_alt.powi(2)).sqrt();
             let ess = filter.effective_sample_size();
-            
+
             print!(
                 "\r[{:.1}%] Event {}/{} | Pos: ({:.6}°, {:.6}°, {:.1}m) | σ: ({:.2e}°, {:.2e}°, {:.2}m) | ESS: {:.1}/{:.0}",
                 (i as f64 / total as f64) * 100.0,
@@ -2320,9 +2323,8 @@ mod tests {
         let timestamp = Utc::now();
         let state = DVector::from_vec(vec![1.0; 9]); // Wrong size
         let cov = DMatrix::from_diagonal(&DVector::from_element(15, 1.0));
-        let result = std::panic::catch_unwind(|| {
-            NavigationResult::from((&timestamp, &state, &cov))
-        });
+        let result =
+            std::panic::catch_unwind(|| NavigationResult::from((&timestamp, &state, &cov)));
         assert!(result.is_err());
     }
 
@@ -2331,9 +2333,8 @@ mod tests {
         let timestamp = Utc::now();
         let state = DVector::from_vec(vec![1.0; 15]);
         let cov = DMatrix::from_diagonal(&DVector::from_element(9, 1.0)); // Wrong size
-        let result = std::panic::catch_unwind(|| {
-            NavigationResult::from((&timestamp, &state, &cov))
-        });
+        let result =
+            std::panic::catch_unwind(|| NavigationResult::from((&timestamp, &state, &cov)));
         assert!(result.is_err());
     }
 
@@ -2591,13 +2592,11 @@ mod tests {
 
         let stream = EventStream {
             start_time: rec.time,
-            events: vec![
-                Event::Imu {
-                    dt_s: 1.0,
-                    imu: imu_data,
-                    elapsed_s: 0.0,
-                },
-            ],
+            events: vec![Event::Imu {
+                dt_s: 1.0,
+                imu: imu_data,
+                elapsed_s: 0.0,
+            }],
         };
 
         let result = run_closed_loop_pf(&mut pf, stream, None, None);
@@ -2607,7 +2606,7 @@ mod tests {
 
     #[test]
     fn test_run_closed_loop_pf_with_measurement() {
-            use crate::measurements::GPSPositionMeasurement;
+        use crate::measurements::GPSPositionMeasurement;
 
         let rec = TestDataRecord {
             time: Utc::now(),
@@ -2676,11 +2675,11 @@ mod tests {
         let mut monitor = HealthMonitor::new(limits);
 
         let state = vec![
-            0.5, 0.5, 100.0,  // lat, lon, alt (radians, radians, meters)
-            10.0, 5.0, 0.0,    // vn, ve, vd
-            0.0, 0.0, 0.0,     // roll, pitch, yaw
-            0.0, 0.0, 0.0,     // acc biases
-            0.0, 0.0, 0.0,     // gyro biases
+            0.5, 0.5, 100.0, // lat, lon, alt (radians, radians, meters)
+            10.0, 5.0, 0.0, // vn, ve, vd
+            0.0, 0.0, 0.0, // roll, pitch, yaw
+            0.0, 0.0, 0.0, // acc biases
+            0.0, 0.0, 0.0, // gyro biases
         ];
         let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
 
@@ -2693,7 +2692,23 @@ mod tests {
         let limits = HealthLimits::default();
         let mut monitor = HealthMonitor::new(limits);
 
-        let state = vec![f64::NAN, 0.5, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let state = vec![
+            f64::NAN,
+            0.5,
+            100.0,
+            10.0,
+            5.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        ];
         let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
 
         let result = monitor.check(&state, &cov, None);
@@ -2705,7 +2720,9 @@ mod tests {
         let limits = HealthLimits::default();
         let mut monitor = HealthMonitor::new(limits);
 
-        let state = vec![0.5, 0.5, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let state = vec![
+            0.5, 0.5, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ];
         let mut cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
         cov[(0, 0)] = f64::NAN;
 
@@ -2718,7 +2735,9 @@ mod tests {
         let limits = HealthLimits::default();
         let mut monitor = HealthMonitor::new(limits);
 
-        let state = vec![5.0, 0.5, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]; // lat > PI/2
+        let state = vec![
+            5.0, 0.5, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ]; // lat > PI/2
         let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
 
         let result = monitor.check(&state, &cov, None);
@@ -2730,7 +2749,9 @@ mod tests {
         let limits = HealthLimits::default();
         let mut monitor = HealthMonitor::new(limits);
 
-        let state = vec![0.5, 5.0, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]; // lon > PI
+        let state = vec![
+            0.5, 5.0, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ]; // lon > PI
         let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
 
         let result = monitor.check(&state, &cov, None);
@@ -2743,7 +2764,9 @@ mod tests {
         limits.alt_m = (-100.0, 10000.0);
         let mut monitor = HealthMonitor::new(limits);
 
-        let state = vec![0.5, 0.5, 20000.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let state = vec![
+            0.5, 0.5, 20000.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ];
         let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
 
         let result = monitor.check(&state, &cov, None);
@@ -2755,7 +2778,9 @@ mod tests {
         let limits = HealthLimits::default();
         let mut monitor = HealthMonitor::new(limits);
 
-        let state = vec![0.5, 0.5, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let state = vec![
+            0.5, 0.5, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ];
         let mut cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
         cov[(2, 2)] = -1.0; // negative variance
 
@@ -2768,7 +2793,9 @@ mod tests {
         let limits = HealthLimits::default();
         let mut monitor = HealthMonitor::new(limits);
 
-        let state = vec![0.5, 0.5, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let state = vec![
+            0.5, 0.5, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ];
         let mut cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
         cov[(3, 3)] = 1e20; // variance too large
 
@@ -2781,7 +2808,9 @@ mod tests {
         let limits = HealthLimits::default();
         let mut monitor = HealthMonitor::new(limits);
 
-        let state = vec![0.5, 0.5, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let state = vec![
+            0.5, 0.5, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ];
         let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
 
         let result = monitor.check(&state, &cov, Some(f64::NAN));
@@ -2795,7 +2824,9 @@ mod tests {
         limits.nis_pos_consec_fail = 3;
         let mut monitor = HealthMonitor::new(limits);
 
-        let state = vec![0.5, 0.5, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let state = vec![
+            0.5, 0.5, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ];
         let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
 
         // First two failures should be ok
@@ -2813,7 +2844,9 @@ mod tests {
         limits.nis_pos_consec_fail = 3;
         let mut monitor = HealthMonitor::new(limits);
 
-        let state = vec![0.5, 0.5, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let state = vec![
+            0.5, 0.5, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ];
         let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
 
         // First failure
@@ -2850,7 +2883,11 @@ mod tests {
             duty_phase_s: 0.0,
         };
         let scheduler = build_scheduler(&args);
-        if let GnssScheduler::FixedInterval { interval_s, phase_s } = scheduler {
+        if let GnssScheduler::FixedInterval {
+            interval_s,
+            phase_s,
+        } = scheduler
+        {
             assert_eq!(interval_s, 2.5);
             assert_eq!(phase_s, 0.5);
         } else {
@@ -2869,7 +2906,12 @@ mod tests {
             duty_phase_s: 2.0,
         };
         let scheduler = build_scheduler(&args);
-        if let GnssScheduler::DutyCycle { on_s, off_s, start_phase_s } = scheduler {
+        if let GnssScheduler::DutyCycle {
+            on_s,
+            off_s,
+            start_phase_s,
+        } = scheduler
+        {
             assert_eq!(on_s, 15.0);
             assert_eq!(off_s, 5.0);
             assert_eq!(start_phase_s, 2.0);
@@ -2919,7 +2961,14 @@ mod tests {
             hijack_duration_s: 60.0,
         };
         let fault = build_fault(&args);
-        if let GnssFaultModel::Degraded { rho_pos, sigma_pos_m, rho_vel, sigma_vel_mps, r_scale } = fault {
+        if let GnssFaultModel::Degraded {
+            rho_pos,
+            sigma_pos_m,
+            rho_vel,
+            sigma_vel_mps,
+            r_scale,
+        } = fault
+        {
             assert_eq!(rho_pos, 0.98);
             assert_eq!(sigma_pos_m, 5.0);
             assert_eq!(rho_vel, 0.93);
@@ -2949,7 +2998,13 @@ mod tests {
             hijack_duration_s: 60.0,
         };
         let fault = build_fault(&args);
-        if let GnssFaultModel::SlowBias { drift_n_mps, drift_e_mps, q_bias, rotate_omega_rps } = fault {
+        if let GnssFaultModel::SlowBias {
+            drift_n_mps,
+            drift_e_mps,
+            q_bias,
+            rotate_omega_rps,
+        } = fault
+        {
             assert_eq!(drift_n_mps, 0.05);
             assert_eq!(drift_e_mps, 0.02);
             assert_eq!(q_bias, 1e-5);
@@ -2978,7 +3033,13 @@ mod tests {
             hijack_duration_s: 90.0,
         };
         let fault = build_fault(&args);
-        if let GnssFaultModel::Hijack { offset_n_m, offset_e_m, start_s, duration_s } = fault {
+        if let GnssFaultModel::Hijack {
+            offset_n_m,
+            offset_e_m,
+            start_s,
+            duration_s,
+        } = fault
+        {
             assert_eq!(offset_n_m, 100.0);
             assert_eq!(offset_e_m, 50.0);
             assert_eq!(start_s, 180.0);
@@ -3106,16 +3167,14 @@ mod tests {
 
         let stream = EventStream {
             start_time: rec.time,
-            events: vec![
-                Event::Imu {
-                    dt_s: 0.1,
-                    imu: IMUData {
-                        accel: Vector3::new(0.0, 0.0, 9.81),
-                        gyro: Vector3::new(0.0, 0.0, 0.0),
-                    },
-                    elapsed_s: 0.0,
+            events: vec![Event::Imu {
+                dt_s: 0.1,
+                imu: IMUData {
+                    accel: Vector3::new(0.0, 0.0, 9.81),
+                    gyro: Vector3::new(0.0, 0.0, 0.0),
                 },
-            ],
+                elapsed_s: 0.0,
+            }],
         };
 
         let health_limits = HealthLimits::default();

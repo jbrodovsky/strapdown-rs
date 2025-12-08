@@ -21,9 +21,9 @@
 //! used in the book. For example, the Earth's equatorial radius is named `EQUATORIAL_RADIUS` instead of `a`.
 //! This style is sometimes relaxed within the body of a given function, but the general rule is to use descriptive
 //! names for variables and not mathematical symbols.
-//! 
+//!
 //! ## Crate overview
-//! 
+//!
 //! This crate is organized into several modules:
 //! - [earth]: Contains functions and constants related to Earth models, coordinate transformations, and geodetic calculations.
 //! - [kalman]: Contains the implementation of Kalman-style navigation filters (including nonlinear variants)
@@ -41,7 +41,7 @@
 //! and constants should generally been named for the quantity they represent rather than the symbol used in the book.
 //!
 //! ## Coordinate and state definitions
-//! The typical nine-state NED/ENU Local Level Frame navigation state vector is used in this implementation. The state 
+//! The typical nine-state NED/ENU Local Level Frame navigation state vector is used in this implementation. The state
 //! vector is defined as:
 //!
 //! $$
@@ -59,14 +59,14 @@
 //! In free-fall, (no relative acceleration in the body frame), the vertical velocity should increase negatively (down is negative), and
 //! thus the altitude should decrease. Users must be consistent in their use of coordinate conventions throughout the codebase, primarily
 //! in their definition of positive and negative accelerations and forces.
-//! 
+//!
 //! This mechanization and coordinate frame is only valid for positions relatively close to the Earth's surface (within 30 km above mean sea level).
 //! Above that it is more common to use the Earth-Centered Earth-Fixed (ECEF) frame for navigation. Additionally, the deepest ocean trenches
 //! are approximately 11 km below mean sea level. Thus, this mechanization is not valid for positions deeper than that. [sim::health]
 //! implements general sanity checks to ensure that the position states remain within valid bounds, given a specific coordinate frame:
 //! - Latitude: [-90 deg, 90 deg]
 //! - Longitude: [-180 deg, 180 deg]
-//! - Altitude: 
+//! - Altitude:
 //!   - [-11,000 m, 30,000 m] for East-North-Up
 //!   - [11,000 m, -30,000 m] for North-East-Down
 //!
@@ -79,8 +79,8 @@
 //! in their mathematics.
 //!
 //! The equations are based on the book _Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems, Second Edition_
-//! by Paul D. Groves. Below is a summary of the equations implemented in Chapter 5.4 implemented by this module. To reiterate, 
-//! navigation equations use specific force and angular rate measurements in the body frame of the vehicle to propagate the state 
+//! by Paul D. Groves. Below is a summary of the equations implemented in Chapter 5.4 implemented by this module. To reiterate,
+//! navigation equations use specific force and angular rate measurements in the body frame of the vehicle to propagate the state
 //! of the vehicle through time. While roughly analogous to acceleration and angular velocity, these measurements are not the same.
 //! IMU's uncompensated will detect and report the overall acceleration forces acting on the body. In other words, raw IMU output
 //! includes gravitational acceleration. Depending on the processing, the IMU may filter out gravity by also sensing orientation with
@@ -114,7 +114,7 @@
 //! $$
 //! f_{ib}^n \approx \frac{1}{2} \left( C_b^n(+) + C_b^n(-) \right) f_{ib}^b
 //! $$
-//! 
+//!
 //! #### Velocity Update
 //!
 //! The velocity update equation is given by:
@@ -148,10 +148,10 @@
 pub mod earth;
 pub mod filter;
 pub mod kalman;
-pub mod particle;
 pub mod linalg;
 pub mod measurements;
 pub mod messages;
+pub mod particle;
 pub mod sim;
 
 use nalgebra::{DVector, Matrix3, Rotation3, Vector3};
@@ -161,15 +161,15 @@ use std::fmt::{self, Debug, Display};
 
 /// Basic structure for holding raw IMU data in the form of sensed acceleration and angular rate vectors.
 ///
-/// The vectors are in the body frame of the vehicle and perceived by the IMU (i.e. not compensating for gravity). 
-/// This structure and library is not intended to be a hardware driver for an IMU, thus the data is assumed to be 
+/// The vectors are in the body frame of the vehicle and perceived by the IMU (i.e. not compensating for gravity).
+/// This structure and library is not intended to be a hardware driver for an IMU, thus the data is assumed to be
 /// raw.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct IMUData {
     /// Acceleration in m/s^2, body frame x, y, z axis
-    pub accel: Vector3<f64>, 
+    pub accel: Vector3<f64>,
     /// Angular rate in rad/s, body frame x, y, z axis
-    pub gyro: Vector3<f64>,  
+    pub gyro: Vector3<f64>,
 }
 impl Display for IMUData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -208,8 +208,8 @@ impl From<IMUData> for Vec<f64> {
     }
 }
 /// Basic structure for holding the strapdown mechanization state in the form of position, velocity, and attitude.
-/// Attitude is stored in matrix form (rotation or direction cosine matrix, users choice and only impacts filter 
-/// implementation) and position and velocity are stored as vectors. For computational simplicity, latitude and 
+/// Attitude is stored in matrix form (rotation or direction cosine matrix, users choice and only impacts filter
+/// implementation) and position and velocity are stored as vectors. For computational simplicity, latitude and
 /// longitude are stored as radians.
 #[derive(Clone, Copy)]
 pub struct StrapdownState {
@@ -524,14 +524,10 @@ fn velocity_update(state: &StrapdownState, specific_force: Vector3<f64>, dt: f64
     // This is the tricky bit. Remember: FORCES! A body at rest on the surface of the Earth experiences
     // a specific force equal and opposite to gravity. Thus, in free-fall (no relative acceleration),
     // the specific force measured by the IMU is zero, and the velocity should increase downward due to gravity.
-    // The primary concern is the sign convention for gravity in the coordinate frame. In NED, gravity is positive 
+    // The primary concern is the sign convention for gravity in the coordinate frame. In NED, gravity is positive
     // in the down direction, while in ENU, gravity is negative in the up direction. Thus we need to adjust the
     //  sign of gravity based on the coordinate frame being used.
-    let gravity = if state.is_enu {
-        -gravity
-    } else {
-        gravity
-    };
+    let gravity = if state.is_enu { -gravity } else { gravity };
     velocity
         + (specific_force + gravity - r * (transport_rate + 2.0 * rotation_rate) * velocity) * dt
 }
@@ -829,9 +825,7 @@ mod tests {
     fn rest() {
         // Test the forward mechanization with a state at rest
         let attitude = Rotation3::identity();
-        let mut state = StrapdownState::new(
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, None
-        );
+        let mut state = StrapdownState::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, None);
         assert_eq!(state.velocity_north, 0.0);
         assert_eq!(state.velocity_east, 0.0);
         assert_eq!(state.velocity_down, 0.0);
@@ -866,7 +860,7 @@ mod tests {
         // Testing the forward mechanization with a state that is yawing
         let attitude = Rotation3::from_euler_angles(0.0, 0.0, 0.1); // 0.1 rad yaw
         let state = StrapdownState::new(
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, None // angles provided in radians
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, None, // angles provided in radians
         );
         assert_approx_eq!(state.attitude.euler_angles().2, 0.1, 1e-6); // Check initial yaw
         let gyros = Vector3::new(0.0, 0.0, 0.1); // Gyro data for yawing
@@ -881,7 +875,7 @@ mod tests {
         // Testing the forward mechanization with a state that is yawing
         let attitude = Rotation3::from_euler_angles(0.1, 0.0, 0.0); // 0.1 rad yaw
         let state = StrapdownState::new(
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, None // angles provided in radians
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, None, // angles provided in radians
         );
         assert_approx_eq!(state.attitude.euler_angles().0, 0.1, 1e-6); // Check initial roll
         let gyros = Vector3::new(0.10, 0.0, 0.0); // Gyro data for yawing
@@ -896,7 +890,7 @@ mod tests {
         // Testing the forward mechanization with a state that is yawing
         let attitude = Rotation3::from_euler_angles(0.0, 0.1, 0.0); // 0.1 rad yaw
         let state = StrapdownState::new(
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, None// angles provided in radians
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, None, // angles provided in radians
         );
         assert_approx_eq!(state.attitude.euler_angles().1, 0.1, 1e-6); // Check initial yaw
         let gyros = Vector3::new(0.0, 0.1, 0.0); // Gyro data for yawing
@@ -950,9 +944,7 @@ mod tests {
     #[test]
     fn test_freefall() {
         let attitude = Rotation3::identity();
-        let state = StrapdownState::new(
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, None
-        );
+        let state = StrapdownState::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, None);
         // This is a stub: actual forward propagation logic should be tested in integration with the mechanization equations.
         assert_eq!(state.latitude, 0.0);
         assert_eq!(state.longitude, 0.0);
@@ -971,7 +963,6 @@ mod tests {
         assert_approx_eq!(p_new.0, 0.0, 1e-3);
         assert_approx_eq!(p_new.1, 0.0, 1e-3);
         assert_approx_eq!(p_new.2, -0.5 * earth::gravity(&0.0, &0.0), 1e-3); // Altitude should decrease
-
     }
     #[test]
     fn vertical_acceleration() {
@@ -1080,9 +1071,7 @@ mod tests {
     #[test]
     fn test_strapdown_state_debug() {
         let attitude = Rotation3::from_euler_angles(0.1, 0.2, 0.3);
-        let state = StrapdownState::new(
-            45.0, -122.0, 100.0, 1.0, 2.0, 3.0, attitude, true, None
-        );
+        let state = StrapdownState::new(45.0, -122.0, 100.0, 1.0, 2.0, 3.0, attitude, true, None);
         let debug_str = format!("{:?}", state);
         assert!(debug_str.contains("StrapdownState"));
         assert!(debug_str.contains("latitude"));
@@ -1092,9 +1081,7 @@ mod tests {
     #[test]
     fn test_strapdown_state_display() {
         let attitude = Rotation3::from_euler_angles(0.1, 0.2, 0.3);
-        let state = StrapdownState::new(
-            45.0, -122.0, 100.0, 1.0, 2.0, 3.0, attitude, true, None
-        );
+        let state = StrapdownState::new(45.0, -122.0, 100.0, 1.0, 2.0, 3.0, attitude, true, None);
         let display_str = format!("{}", state);
         assert!(display_str.contains("StrapdownState"));
         assert!(display_str.contains("45"));
@@ -1105,35 +1092,27 @@ mod tests {
     #[should_panic(expected = "Latitude must be in the range")]
     fn test_strapdown_state_new_invalid_latitude() {
         let attitude = Rotation3::identity();
-        let _state = StrapdownState::new(
-            200.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, true, None
-        );
+        let _state = StrapdownState::new(200.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, true, None);
     }
 
     #[test]
     #[should_panic(expected = "Longitude must be in the range")]
     fn test_strapdown_state_new_invalid_longitude() {
         let attitude = Rotation3::identity();
-        let _state = StrapdownState::new(
-            0.0, 200.0, 0.0, 0.0, 0.0, 0.0, attitude, true, None
-        );
+        let _state = StrapdownState::new(0.0, 200.0, 0.0, 0.0, 0.0, 0.0, attitude, true, None);
     }
 
     #[test]
     #[should_panic(expected = "Strapdown equations and the local level frame are only valid")]
     fn test_strapdown_state_new_invalid_altitude() {
         let attitude = Rotation3::identity();
-        let _state = StrapdownState::new(
-            0.0, 0.0, 50000.0, 0.0, 0.0, 0.0, attitude, true, None
-        );
+        let _state = StrapdownState::new(0.0, 0.0, 50000.0, 0.0, 0.0, 0.0, attitude, true, None);
     }
 
     #[test]
     fn test_strapdown_state_new_with_degrees() {
         let attitude = Rotation3::identity();
-        let state = StrapdownState::new(
-            45.0, -122.0, 100.0, 0.0, 0.0, 0.0, attitude, true, None
-        );
+        let state = StrapdownState::new(45.0, -122.0, 100.0, 0.0, 0.0, 0.0, attitude, true, None);
         assert_approx_eq!(state.latitude, 45.0_f64.to_radians(), 1e-6);
         assert_approx_eq!(state.longitude, -122.0_f64.to_radians(), 1e-6);
     }
@@ -1141,9 +1120,7 @@ mod tests {
     #[test]
     fn test_strapdown_state_new_with_radians() {
         let attitude = Rotation3::identity();
-        let state = StrapdownState::new(
-            1.0, -2.0, 100.0, 0.0, 0.0, 0.0, attitude, false, None
-        );
+        let state = StrapdownState::new(1.0, -2.0, 100.0, 0.0, 0.0, 0.0, attitude, false, None);
         assert_eq!(state.latitude, 1.0);
         assert_eq!(state.longitude, -2.0);
     }
@@ -1195,6 +1172,9 @@ mod tests {
         let v_ned = velocity_update(&state_ned, f, dt);
 
         // The two frames should produce different results due to gravity sign
-        assert!(v_enu[2] != v_ned[2], "ENU and NED should handle gravity differently");
+        assert!(
+            v_enu[2] != v_ned[2],
+            "ENU and NED should handle gravity differently"
+        );
     }
 }

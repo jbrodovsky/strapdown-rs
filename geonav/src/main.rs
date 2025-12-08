@@ -258,9 +258,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Ensure output directory exists
     if let Some(parent) = cli.output.parent()
-        && !parent.exists() {
-            std::fs::create_dir_all(parent)?;
-        }
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
 
     // Load sensor data records from CSV
     let records = TestDataRecord::from_csv(&cli.input)?;

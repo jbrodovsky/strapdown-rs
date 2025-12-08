@@ -1,8 +1,8 @@
 //! Measurement-related code for the strapdown navigation system.
-//! 
+//!
 //! This module defines generic measurement models and specific implementations
-//! for GPS position, GPS velocity, combined GPS position and velocity, and relative 
-//! altitude measurements. These models are used in inertial navigation systems to 
+//! for GPS position, GPS velocity, combined GPS position and velocity, and relative
+//! altitude measurements. These models are used in inertial navigation systems to
 //! process sensor data.
 
 use crate::earth::METERS_TO_DEGREES;
@@ -24,7 +24,7 @@ pub trait MeasurementModel: Any {
     fn get_vector(&self) -> DVector<f64>;
     /// Get the measurement noise characteristics in a matrix format
     fn get_noise(&self) -> DMatrix<f64>;
-    //fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> 
+    //fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64>
     /// Get the expected measurements from the state. Measurement model function
     /// that maps the state values to measurement space.
     fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64>;
@@ -53,9 +53,15 @@ impl Display for GPSPositionMeasurement {
     }
 }
 impl MeasurementModel for GPSPositionMeasurement {
-    fn as_any(&self) -> &dyn Any { self }
-    fn as_any_mut(&mut self) -> &mut dyn Any { self }
-    fn get_dimension(&self) -> usize { 3 }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+    fn get_dimension(&self) -> usize {
+        3
+    }
     fn get_vector(&self) -> DVector<f64> {
         DVector::from_vec(vec![
             self.latitude.to_radians(),
@@ -80,11 +86,7 @@ impl MeasurementModel for GPSPositionMeasurement {
     //     measurement_sigma_points
     // }
     fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
-        DVector::from_vec(vec![
-            state[0],
-            state[1],
-            state[2],
-        ])
+        DVector::from_vec(vec![state[0], state[1], state[2]])
     }
 }
 
@@ -111,9 +113,15 @@ impl Display for GPSVelocityMeasurement {
     }
 }
 impl MeasurementModel for GPSVelocityMeasurement {
-    fn as_any(&self) -> &dyn Any { self }
-    fn as_any_mut(&mut self) -> &mut dyn Any { self }
-    fn get_dimension(&self) -> usize { 3 }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+    fn get_dimension(&self) -> usize {
+        3
+    }
     fn get_vector(&self) -> DVector<f64> {
         DVector::from_vec(vec![
             self.northward_velocity,
@@ -129,11 +137,7 @@ impl MeasurementModel for GPSVelocityMeasurement {
         ]))
     }
     fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
-        DVector::from_vec(vec![
-            state[3],
-            state[4],
-            state[5],
-        ])
+        DVector::from_vec(vec![state[3], state[4], state[5]])
     }
     // fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
     //     let mut measurement_sigma_points = DMatrix::<f64>::zeros(3, state_sigma_points.ncols());
@@ -159,9 +163,15 @@ pub struct GPSPositionAndVelocityMeasurement {
     pub velocity_noise_std: f64,
 }
 impl MeasurementModel for GPSPositionAndVelocityMeasurement {
-    fn as_any(&self) -> &dyn Any { self }
-    fn as_any_mut(&mut self) -> &mut dyn Any { self }
-    fn get_dimension(&self) -> usize { 5 }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+    fn get_dimension(&self) -> usize {
+        5
+    }
     fn get_vector(&self) -> DVector<f64> {
         DVector::from_vec(vec![
             self.latitude.to_radians(),
@@ -183,13 +193,7 @@ impl MeasurementModel for GPSPositionAndVelocityMeasurement {
     fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
         // Measurement includes latitude, longitude, altitude, north and east velocities
         // (five elements). Do not include downward velocity here.
-        DVector::from_vec(vec![
-            state[0],
-            state[1],
-            state[2],
-            state[3],
-            state[4],
-        ])
+        DVector::from_vec(vec![state[0], state[1], state[2], state[3], state[4]])
     }
     //fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
     //    let mut measurement_sigma_points = DMatrix::<f64>::zeros(5, state_sigma_points.ncols());
@@ -212,16 +216,32 @@ pub struct RelativeAltitudeMeasurement {
 }
 impl Display for RelativeAltitudeMeasurement {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "RelativeAltitudeMeasurement(rel_alt: {}, ref_alt: {})", self.relative_altitude, self.reference_altitude)
+        write!(
+            f,
+            "RelativeAltitudeMeasurement(rel_alt: {}, ref_alt: {})",
+            self.relative_altitude, self.reference_altitude
+        )
     }
 }
 impl MeasurementModel for RelativeAltitudeMeasurement {
-    fn as_any(&self) -> &dyn Any { self }
-    fn as_any_mut(&mut self) -> &mut dyn Any { self }
-    fn get_dimension(&self) -> usize { 1 }
-    fn get_vector(&self) -> DVector<f64> { DVector::from_vec(vec![self.relative_altitude + self.reference_altitude]) }
-    fn get_noise(&self) -> DMatrix<f64> { DMatrix::from_diagonal(&DVector::from_vec(vec![5.0])) }
-    fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64> { DVector::from_vec(vec![state[2]]) }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+    fn get_dimension(&self) -> usize {
+        1
+    }
+    fn get_vector(&self) -> DVector<f64> {
+        DVector::from_vec(vec![self.relative_altitude + self.reference_altitude])
+    }
+    fn get_noise(&self) -> DMatrix<f64> {
+        DMatrix::from_diagonal(&DVector::from_vec(vec![5.0]))
+    }
+    fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
+        DVector::from_vec(vec![state[2]])
+    }
     // fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
     //     let mut measurement_sigma_points = DMatrix::<f64>::zeros(self.get_dimension(), state_sigma_points.ncols());
     //     for (i, sigma_point) in state_sigma_points.column_iter().enumerate() {
@@ -263,7 +283,7 @@ mod tests {
         assert!((noise[(0, 0)] - expected_h).abs() < EPS);
         assert!((noise[(1, 1)] - expected_h).abs() < EPS);
         assert!((noise[(2, 2)] - expected_v).abs() < EPS);
-        
+
         let state_sigma: DVector<f64> = DVector::from_vec(vec![
             0.1, // lat
             1.1, // lon
@@ -274,9 +294,9 @@ mod tests {
         ]);
         let z = meas.get_expected_measurement(&state_sigma);
         assert_eq!(z.len(), 3);
-        assert_approx_eq!(z[0], 0.1,  EPS);
-        assert_approx_eq!(z[1], 1.1,  EPS);
-        assert_approx_eq!(z[2], 2.1,  EPS);
+        assert_approx_eq!(z[0], 0.1, EPS);
+        assert_approx_eq!(z[1], 1.1, EPS);
+        assert_approx_eq!(z[2], 2.1, EPS);
     }
 
     #[test]
@@ -298,7 +318,7 @@ mod tests {
         let noise = meas.get_noise();
         assert!((noise[(0, 0)] - 0.2_f64.powi(2)).abs() < EPS);
         assert!((noise[(2, 2)] - 0.1_f64.powi(2)).abs() < EPS);
-        
+
         let state_sigma: DVector<f64> = DVector::from_vec(vec![
             0.1, // lat
             1.1, // lon
@@ -309,9 +329,9 @@ mod tests {
         ]);
         let z = meas.get_expected_measurement(&state_sigma);
         assert_eq!(z.len(), 3);
-        assert_approx_eq!(z[0], 3.0,  EPS);
-        assert_approx_eq!(z[1], 4.0,  EPS);
-        assert_approx_eq!(z[2], 5.0,  EPS);
+        assert_approx_eq!(z[0], 3.0, EPS);
+        assert_approx_eq!(z[1], 4.0, EPS);
+        assert_approx_eq!(z[2], 5.0, EPS);
     }
 
     #[test]
@@ -333,7 +353,7 @@ mod tests {
 
         let noise = meas.get_noise();
         assert_eq!(noise.nrows(), 5);
-        
+
         let state_sigma: DVector<f64> = DVector::from_vec(vec![
             0.1, // lat
             1.1, // lon
@@ -344,11 +364,11 @@ mod tests {
         ]);
         let z = meas.get_expected_measurement(&state_sigma);
         assert_eq!(z.len(), 5);
-        assert_approx_eq!(z[0], 0.1,  EPS);
-        assert_approx_eq!(z[1], 1.1,  EPS);
-        assert_approx_eq!(z[2], 2.1,  EPS);
-        assert_approx_eq!(z[3], 3.0,  EPS);
-        assert_approx_eq!(z[4], 4.0,  EPS);
+        assert_approx_eq!(z[0], 0.1, EPS);
+        assert_approx_eq!(z[1], 1.1, EPS);
+        assert_approx_eq!(z[2], 2.1, EPS);
+        assert_approx_eq!(z[3], 3.0, EPS);
+        assert_approx_eq!(z[4], 4.0, EPS);
     }
 
     #[test]
@@ -367,16 +387,16 @@ mod tests {
 
         // sigma points should extract altitude (index 2)
         let state_sigma: DVector<f64> = DVector::from_vec(vec![
-            0.1, // lat
-            1.1, // lon
+            0.1,  // lat
+            1.1,  // lon
             50.0, // alt
-            3.0, // v_n
-            4.0, // v_e
-            5.0, // v_d
+            3.0,  // v_n
+            4.0,  // v_e
+            5.0,  // v_d
         ]);
         let z = meas.get_expected_measurement(&state_sigma);
         assert_eq!(z.len(), 1);
-        assert_approx_eq!(z[0], 50.0,  EPS);
+        assert_approx_eq!(z[0], 50.0, EPS);
 
         // Display string
         let s = format!("{}", meas);
@@ -386,11 +406,15 @@ mod tests {
     #[test]
     fn downcast_trait_object_and_display() {
         let mut pos = GPSPositionMeasurement::default();
-        pos.latitude = 1.0; pos.longitude = 2.0; pos.altitude = 3.0;
+        pos.latitude = 1.0;
+        pos.longitude = 2.0;
+        pos.altitude = 3.0;
         let boxed: Box<dyn MeasurementModel> = Box::new(pos.clone());
         // downcast via as_any
         let any = boxed.as_any();
-        let down = any.downcast_ref::<GPSPositionMeasurement>().expect("downcast failed");
+        let down = any
+            .downcast_ref::<GPSPositionMeasurement>()
+            .expect("downcast failed");
         assert!((down.latitude - 1.0).abs() < EPS);
 
         // Display formatting
