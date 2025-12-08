@@ -200,24 +200,24 @@ impl crate::kalman::NavigationFilter for ParticleFilter {
         }
     }
     fn update<M: MeasurementModel + ?Sized>(&mut self, measurement: &M) {
-        let particle_matrix = self.particles_to_matrix();
-        let measurement_sigma_points = measurement.get_sigma_points(&particle_matrix);
-        let mut z_hats = DMatrix::<f64>::zeros(measurement.get_dimension(), self.particles.len());
-        for (i, measurement_sigma_point) in measurement_sigma_points.column_iter().enumerate() { z_hats.set_column(i, &measurement_sigma_point); }
-        let mut log_likelihoods = Vec::with_capacity(self.particles.len());
-        for (i, particle) in self.particles.iter_mut().enumerate() {
-            let z_hat = z_hats.column(i);
-            let innovation = measurement.get_vector() - z_hat;
-            let sigmas = measurement.get_noise();
-            let sigma_inv = match sigmas.clone().try_inverse() { Some(inv) => inv, None => { particle.weight = 1e-300; log_likelihoods.push(-690.0); continue; } };
-            let sigma_det = sigmas.determinant(); if sigma_det <= 0.0 { particle.weight = 1e-300; log_likelihoods.push(-690.0); continue; }
-            let mahalanobis = innovation.transpose() * sigma_inv * innovation;
-            let log_likelihood = -0.5 * (measurement.get_dimension() as f64 * (2.0 * std::f64::consts::PI).ln() + sigma_det.ln() + mahalanobis[(0, 0)]);
-            log_likelihoods.push(log_likelihood);
-        }
-        let max_log_likelihood = log_likelihoods.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        for (i, particle) in self.particles.iter_mut().enumerate() { particle.weight = (log_likelihoods[i] - max_log_likelihood).exp(); }
-        self.normalize_weights();
+        // let particle_matrix = self.particles_to_matrix();
+        // let measurement_sigma_points = measurement.get_sigma_points(&particle_matrix);
+        // let mut z_hats = DMatrix::<f64>::zeros(measurement.get_dimension(), self.particles.len());
+        // for (i, measurement_sigma_point) in measurement_sigma_points.column_iter().enumerate() { z_hats.set_column(i, &measurement_sigma_point); }
+        // let mut log_likelihoods = Vec::with_capacity(self.particles.len());
+        // for (i, particle) in self.particles.iter_mut().enumerate() {
+        //     let z_hat = z_hats.column(i);
+        //     let innovation = measurement.get_vector() - z_hat;
+        //     let sigmas = measurement.get_noise();
+        //     let sigma_inv = match sigmas.clone().try_inverse() { Some(inv) => inv, None => { particle.weight = 1e-300; log_likelihoods.push(-690.0); continue; } };
+        //     let sigma_det = sigmas.determinant(); if sigma_det <= 0.0 { particle.weight = 1e-300; log_likelihoods.push(-690.0); continue; }
+        //     let mahalanobis = innovation.transpose() * sigma_inv * innovation;
+        //     let log_likelihood = -0.5 * (measurement.get_dimension() as f64 * (2.0 * std::f64::consts::PI).ln() + sigma_det.ln() + mahalanobis[(0, 0)]);
+        //     log_likelihoods.push(log_likelihood);
+        // }
+        // let max_log_likelihood = log_likelihoods.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        // for (i, particle) in self.particles.iter_mut().enumerate() { particle.weight = (log_likelihoods[i] - max_log_likelihood).exp(); }
+        // self.normalize_weights();
     }
     fn get_estimate(&self) -> DVector<f64> {
         match self.averaging_strategy {

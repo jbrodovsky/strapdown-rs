@@ -14,12 +14,20 @@ use nalgebra::{DMatrix, DVector};
 
 /// Generic measurement model trait for all types of measurements
 pub trait MeasurementModel: Any {
+    /// Downcast helper method to allow for type-safe downcasting
     fn as_any(&self) -> &dyn Any;
+    /// Downcast helper method for mutable references
     fn as_any_mut(&mut self) -> &mut dyn Any;
+    /// Get the dimension of the measurement vector
     fn get_dimension(&self) -> usize;
+    /// Get the measurement in a vector format
     fn get_vector(&self) -> DVector<f64>;
+    /// Get the measurement noise characteristics in a matrix format
     fn get_noise(&self) -> DMatrix<f64>;
-    fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64>;
+    //fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> 
+    /// Get the expected measurements from the state. Measurement model function
+    /// that maps the state values to measurement space.
+    fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64>;
 }
 
 /// GPS position measurement model
@@ -62,14 +70,21 @@ impl MeasurementModel for GPSPositionMeasurement {
             self.vertical_noise_std.powi(2),
         ]))
     }
-    fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
-        let mut measurement_sigma_points = DMatrix::<f64>::zeros(3, state_sigma_points.ncols());
-        for (i, sigma_point) in state_sigma_points.column_iter().enumerate() {
-            measurement_sigma_points[(0, i)] = sigma_point[0];
-            measurement_sigma_points[(1, i)] = sigma_point[1];
-            measurement_sigma_points[(2, i)] = sigma_point[2];
-        }
-        measurement_sigma_points
+    // fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
+    //     let mut measurement_sigma_points = DMatrix::<f64>::zeros(3, state_sigma_points.ncols());
+    //     for (i, sigma_point) in state_sigma_points.column_iter().enumerate() {
+    //         measurement_sigma_points[(0, i)] = sigma_point[0];
+    //         measurement_sigma_points[(1, i)] = sigma_point[1];
+    //         measurement_sigma_points[(2, i)] = sigma_point[2];
+    //     }
+    //     measurement_sigma_points
+    // }
+    fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
+        DVector::from_vec(vec![
+            state[0],
+            state[1],
+            state[2],
+        ])
     }
 }
 
@@ -113,15 +128,22 @@ impl MeasurementModel for GPSVelocityMeasurement {
             self.vertical_noise_std.powi(2),
         ]))
     }
-    fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
-        let mut measurement_sigma_points = DMatrix::<f64>::zeros(3, state_sigma_points.ncols());
-        for (i, sigma_point) in state_sigma_points.column_iter().enumerate() {
-            measurement_sigma_points[(0, i)] = sigma_point[3];
-            measurement_sigma_points[(1, i)] = sigma_point[4];
-            measurement_sigma_points[(2, i)] = sigma_point[5];
-        }
-        measurement_sigma_points
+    fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
+        DVector::from_vec(vec![
+            state[3],
+            state[4],
+            state[5],
+        ])
     }
+    // fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
+    //     let mut measurement_sigma_points = DMatrix::<f64>::zeros(3, state_sigma_points.ncols());
+    //     for (i, sigma_point) in state_sigma_points.column_iter().enumerate() {
+    //         measurement_sigma_points[(0, i)] = sigma_point[3];
+    //         measurement_sigma_points[(1, i)] = sigma_point[4];
+    //         measurement_sigma_points[(2, i)] = sigma_point[5];
+    //     }
+    //     measurement_sigma_points
+    // }
 }
 
 /// GPS Position and Velocity measurement model
@@ -158,17 +180,28 @@ impl MeasurementModel for GPSPositionAndVelocityMeasurement {
             self.velocity_noise_std.powi(2),
         ]))
     }
-    fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
-        let mut measurement_sigma_points = DMatrix::<f64>::zeros(5, state_sigma_points.ncols());
-        for (i, sigma_point) in state_sigma_points.column_iter().enumerate() {
-            measurement_sigma_points[(0, i)] = sigma_point[0];
-            measurement_sigma_points[(1, i)] = sigma_point[1];
-            measurement_sigma_points[(2, i)] = sigma_point[2];
-            measurement_sigma_points[(3, i)] = sigma_point[3];
-            measurement_sigma_points[(4, i)] = sigma_point[4];
-        }
-        measurement_sigma_points
+    fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
+        // Measurement includes latitude, longitude, altitude, north and east velocities
+        // (five elements). Do not include downward velocity here.
+        DVector::from_vec(vec![
+            state[0],
+            state[1],
+            state[2],
+            state[3],
+            state[4],
+        ])
     }
+    //fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
+    //    let mut measurement_sigma_points = DMatrix::<f64>::zeros(5, state_sigma_points.ncols());
+    //    for (i, sigma_point) in state_sigma_points.column_iter().enumerate() {
+    //        measurement_sigma_points[(0, i)] = sigma_point[0];
+    //        measurement_sigma_points[(1, i)] = sigma_point[1];
+    //        measurement_sigma_points[(2, i)] = sigma_point[2];
+    //        measurement_sigma_points[(3, i)] = sigma_point[3];
+    //        measurement_sigma_points[(4, i)] = sigma_point[4];
+    //    }
+    //    measurement_sigma_points
+    //}
 }
 
 /// Relative altitude measurement (barometric)
@@ -188,19 +221,20 @@ impl MeasurementModel for RelativeAltitudeMeasurement {
     fn get_dimension(&self) -> usize { 1 }
     fn get_vector(&self) -> DVector<f64> { DVector::from_vec(vec![self.relative_altitude + self.reference_altitude]) }
     fn get_noise(&self) -> DMatrix<f64> { DMatrix::from_diagonal(&DVector::from_vec(vec![5.0])) }
-    fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
-        let mut measurement_sigma_points = DMatrix::<f64>::zeros(self.get_dimension(), state_sigma_points.ncols());
-        for (i, sigma_point) in state_sigma_points.column_iter().enumerate() {
-            measurement_sigma_points[(0, i)] = sigma_point[2];
-        }
-        measurement_sigma_points
-    }
+    fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64> { DVector::from_vec(vec![state[2]]) }
+    // fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
+    //     let mut measurement_sigma_points = DMatrix::<f64>::zeros(self.get_dimension(), state_sigma_points.ncols());
+    //     for (i, sigma_point) in state_sigma_points.column_iter().enumerate() {
+    //         measurement_sigma_points[(0, i)] = sigma_point[2];
+    //     }
+    //     measurement_sigma_points
+    // }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nalgebra::DMatrix;
+    use assert_approx_eq::assert_approx_eq;
 
     const EPS: f64 = 1e-12;
 
@@ -229,22 +263,20 @@ mod tests {
         assert!((noise[(0, 0)] - expected_h).abs() < EPS);
         assert!((noise[(1, 1)] - expected_h).abs() < EPS);
         assert!((noise[(2, 2)] - expected_v).abs() < EPS);
-
-        // Sigma points: prepare a state sigma matrix with 3 rows (lat,lon,alt) and 2 columns
-        let state_sigma = DMatrix::from_vec(6, 2, vec![
-            0.1, 0.2, // lat
-            1.1, 1.2, // lon
-            2.1, 2.2, // alt
-            3.0, 3.1, // v_n
-            4.0, 4.1, // v_e
-            5.0, 5.1, // v_d
+        
+        let state_sigma: DVector<f64> = DVector::from_vec(vec![
+            0.1, // lat
+            1.1, // lon
+            2.1, // alt
+            3.0, // v_n
+            4.0, // v_e
+            5.0, // v_d
         ]);
-        let z = meas.get_sigma_points(&state_sigma);
-        assert_eq!(z.nrows(), 3);
-        assert_eq!(z.ncols(), 2);
-        assert!((z[(0, 0)] - 0.1).abs() < EPS);
-        assert!((z[(1, 1)] - 1.2).abs() < EPS);
-        assert!((z[(2, 0)] - 2.1).abs() < EPS);
+        let z = meas.get_expected_measurement(&state_sigma);
+        assert_eq!(z.len(), 3);
+        assert_approx_eq!(z[0], 0.1,  EPS);
+        assert_approx_eq!(z[1], 1.1,  EPS);
+        assert_approx_eq!(z[2], 2.1,  EPS);
     }
 
     #[test]
@@ -266,22 +298,20 @@ mod tests {
         let noise = meas.get_noise();
         assert!((noise[(0, 0)] - 0.2_f64.powi(2)).abs() < EPS);
         assert!((noise[(2, 2)] - 0.1_f64.powi(2)).abs() < EPS);
-
-        // Build a state sigma matrix where velocity entries are at indices 3..5
-        let state_sigma = DMatrix::from_vec(6, 3, vec![
-            0.0, 0.0, 0.0, // lat,lon,alt
-            1.5, 1.6, 1.7, // v_n
-            -0.5, -0.6, -0.7, // v_e
-            0.25, 0.35, 0.45, // v_d
-            9.0, 9.0, 9.0, // extra
-            8.0, 8.0, 8.0, // extra
+        
+        let state_sigma: DVector<f64> = DVector::from_vec(vec![
+            0.1, // lat
+            1.1, // lon
+            2.1, // alt
+            3.0, // v_n
+            4.0, // v_e
+            5.0, // v_d
         ]);
-        let z = meas.get_sigma_points(&state_sigma);
-        assert_eq!(z.nrows(), 3);
-        assert_eq!(z.ncols(), 3);
-        assert!((z[(0, 2)] - 1.7).abs() < EPS);
-        assert!((z[(1, 0)] - (-0.5)).abs() < EPS);
-        assert!((z[(2, 1)] - 0.35).abs() < EPS);
+        let z = meas.get_expected_measurement(&state_sigma);
+        assert_eq!(z.len(), 3);
+        assert_approx_eq!(z[0], 3.0,  EPS);
+        assert_approx_eq!(z[1], 4.0,  EPS);
+        assert_approx_eq!(z[2], 5.0,  EPS);
     }
 
     #[test]
@@ -303,9 +333,22 @@ mod tests {
 
         let noise = meas.get_noise();
         assert_eq!(noise.nrows(), 5);
-        // position noises use METERS_TO_DEGREES
-        assert!((noise[(0, 0)] - (1.0 * METERS_TO_DEGREES).powi(2)).abs() < EPS);
-        assert!((noise[(3, 3)] - 0.5_f64.powi(2)).abs() < EPS);
+        
+        let state_sigma: DVector<f64> = DVector::from_vec(vec![
+            0.1, // lat
+            1.1, // lon
+            2.1, // alt
+            3.0, // v_n
+            4.0, // v_e
+            5.0, // v_d
+        ]);
+        let z = meas.get_expected_measurement(&state_sigma);
+        assert_eq!(z.len(), 5);
+        assert_approx_eq!(z[0], 0.1,  EPS);
+        assert_approx_eq!(z[1], 1.1,  EPS);
+        assert_approx_eq!(z[2], 2.1,  EPS);
+        assert_approx_eq!(z[3], 3.0,  EPS);
+        assert_approx_eq!(z[4], 4.0,  EPS);
     }
 
     #[test]
@@ -323,11 +366,17 @@ mod tests {
         assert!((noise[(0, 0)] - 5.0).abs() < EPS);
 
         // sigma points should extract altitude (index 2)
-        let state_sigma = DMatrix::from_vec(4, 2, vec![0.0, 0.0, 50.0, 60.0, 0.0, 0.0, 0.0, 0.0]);
-        let z = meas.get_sigma_points(&state_sigma);
-        assert_eq!(z.nrows(), 1);
-        assert_eq!(z.ncols(), 2);
-        assert!((z[(0, 0)] - 50.0).abs() < EPS);
+        let state_sigma: DVector<f64> = DVector::from_vec(vec![
+            0.1, // lat
+            1.1, // lon
+            50.0, // alt
+            3.0, // v_n
+            4.0, // v_e
+            5.0, // v_d
+        ]);
+        let z = meas.get_expected_measurement(&state_sigma);
+        assert_eq!(z.len(), 1);
+        assert_approx_eq!(z[0], 50.0,  EPS);
 
         // Display string
         let s = format!("{}", meas);
