@@ -385,7 +385,7 @@ impl GnssDegradationConfig {
 /// ```
 /// use strapdown::messages::Event;
 /// use strapdown::IMUData;
-/// use strapdown::filter::GPSPositionAndVelocityMeasurement;
+/// use strapdown::measurements::GPSPositionAndVelocityMeasurement;
 /// use nalgebra::Vector3;
 /// // An IMU event with 0.01 s timestep
 /// let imu_event = Event::Imu {

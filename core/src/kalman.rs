@@ -250,9 +250,16 @@ impl NavigationFilter for UnscentedKalmanFilter {
         self.covariance = symmetrize(&p_bar);
     }
     fn update<M: MeasurementModel + ?Sized>(&mut self, measurement: &M) {
-        let measurement_sigma_points = measurement.get_sigma_points(&self.get_sigma_points());
+        //let measurement_sigma_points = measurement.get_sigma_points(&self.get_sigma_points());
+        let mut measurement_sigma_points = DMatrix::<f64>::zeros(
+            measurement.get_dimension(),
+            2 * self.state_size + 1
+        );
         let mut z_hat = DVector::<f64>::zeros(measurement.get_dimension());
-        for (i, sigma_point) in measurement_sigma_points.column_iter().enumerate() {
+        for (i, sigma_point) in self.get_sigma_points().column_iter().enumerate() {
+            //let sigma_point_vec = sigma_point.clone_owned();
+            let sigma_point = measurement.get_expected_measurement(&sigma_point.clone_owned());
+            measurement_sigma_points.set_column(i, &sigma_point);
             z_hat += self.weights_mean[i] * sigma_point;
         }
         let mut s = DMatrix::<f64>::zeros(measurement.get_dimension(), measurement.get_dimension());

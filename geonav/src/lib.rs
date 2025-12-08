@@ -495,22 +495,31 @@ impl MeasurementModel for GravityMeasurement {
             self.noise_std.powi(2),
         ))
     }
-    fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
-        let num_sigma_points = state_sigma_points.ncols();
-        let mut measurement_sigma_points = DMatrix::zeros(1, num_sigma_points);
-
-        for i in 0..num_sigma_points {
-            let state = state_sigma_points.column(i);
-            let lat = state[0];
-            let lon = state[1];
-
-            measurement_sigma_points[(0, i)] = self
-                .map
-                .get_point(&lat.to_degrees(), &lon.to_degrees())
-                .unwrap_or(f64::NAN);
-        }
-        measurement_sigma_points
+    fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
+        let lat = state[0];
+        let lon = state[1];
+        let map_value = self
+            .map
+            .get_point(&lat.to_degrees(), &lon.to_degrees())
+            .unwrap_or(f64::NAN);
+        DVector::from_vec(vec![map_value])
     }
+    // fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
+    //     let num_sigma_points = state_sigma_points.ncols();
+    //     let mut measurement_sigma_points = DMatrix::zeros(1, num_sigma_points);
+    // 
+    //     for i in 0..num_sigma_points {
+    //         let state = state_sigma_points.column(i);
+    //         let lat = state[0];
+    //         let lon = state[1];
+    // 
+    //         measurement_sigma_points[(0, i)] = self
+    //             .map
+    //             .get_point(&lat.to_degrees(), &lon.to_degrees())
+    //             .unwrap_or(f64::NAN);
+    //     }
+    //     measurement_sigma_points
+    // }
 }
 /// Magnetic anomaly measurement model
 #[derive(Clone, Debug)]
@@ -568,22 +577,31 @@ impl MeasurementModel for MagneticAnomalyMeasurement {
             self.noise_std.powi(2),
         ))
     }
-    fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
-        let num_sigma_points = state_sigma_points.ncols();
-        let mut measurement_sigma_points = DMatrix::zeros(1, num_sigma_points);
-
-        for i in 0..num_sigma_points {
-            let state = state_sigma_points.column(i);
-            let lat = state[0];
-            let lon = state[1];
-
-            measurement_sigma_points[(0, i)] = self
-                .map
-                .get_point(&lat.to_degrees(), &lon.to_degrees())
-                .unwrap_or(f64::NAN);
-        }
-        measurement_sigma_points
+    fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
+        let lat = state[0];
+        let lon = state[1];
+        let map_value = self
+            .map
+            .get_point(&lat.to_degrees(), &lon.to_degrees())
+            .unwrap_or(f64::NAN);
+        DVector::from_vec(vec![map_value])
     }
+    // fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
+    //     let num_sigma_points = state_sigma_points.ncols();
+    //     let mut measurement_sigma_points = DMatrix::zeros(1, num_sigma_points);
+    // 
+    //     for i in 0..num_sigma_points {
+    //         let state = state_sigma_points.column(i);
+    //         let lat = state[0];
+    //         let lon = state[1];
+    // 
+    //         measurement_sigma_points[(0, i)] = self
+    //             .map
+    //             .get_point(&lat.to_degrees(), &lon.to_degrees())
+    //             .unwrap_or(f64::NAN);
+    //     }
+    //     measurement_sigma_points
+    // }
 }
 //================= Geophysical Navigation Simulation ======================================================
 /// Builds and initializes an event stream that also contains geophysical measurements
@@ -1125,7 +1143,14 @@ mod tests {
             sigma_points[(5, i)] = 0.0; // vd
         }
 
-        let measurement_sigma_points = measurement.get_sigma_points(&sigma_points);
+        // let measurement_sigma_points = measurement.get_sigma_points(&sigma_points);
+        let num_sigma_points = sigma_points.ncols();
+        let mut measurement_sigma_points = DMatrix::zeros(1, num_sigma_points);
+
+        for i in 0..num_sigma_points {
+            let state = sigma_points.column(i).into_owned();
+            measurement_sigma_points[(0, i)] = measurement.get_expected_measurement(&state)[0];
+        }
 
         assert_eq!(measurement_sigma_points.nrows(), 1);
         assert_eq!(measurement_sigma_points.ncols(), 5);
