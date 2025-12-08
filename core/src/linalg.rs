@@ -467,7 +467,10 @@ mod tests {
         };
 
         let result = chol_solve_spd(&a, &b, opts);
-        assert!(result.is_none(), "Should return None when jitter limit exceeded");
+        assert!(
+            result.is_none(),
+            "Should return None when jitter limit exceeded"
+        );
     }
 
     #[test]
@@ -485,7 +488,10 @@ mod tests {
 
         // Force chol_solve_spd to fail by using very restrictive options
         let chol_result = chol_solve_spd(&a, &b, opts);
-        assert!(chol_result.is_none(), "Cholesky should fail with restrictive jitter");
+        assert!(
+            chol_result.is_none(),
+            "Cholesky should fail with restrictive jitter"
+        );
 
         // Now test robust solver which should use inverse
         let x = robust_spd_solve(&a, &b);

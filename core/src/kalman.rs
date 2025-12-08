@@ -1,12 +1,12 @@
-//! Kalman-style navigation filters (UKF/EKF) 
+//! Kalman-style navigation filters (UKF/EKF)
 //!
 //! This module contains the traditional Kalman filter style implementation of strapdown
-//! inertial navigation systems. These filter build on the dead-reckoning functions 
+//! inertial navigation systems. These filter build on the dead-reckoning functions
 //! provided in the top-level [lib] module.
 
 use crate::linalg::{matrix_square_root, robust_spd_solve, symmetrize};
-use crate::{IMUData, StrapdownState, forward, wrap_to_2pi, wrap_to_180, wrap_to_360};
 use crate::measurements::MeasurementModel;
+use crate::{IMUData, StrapdownState, forward, wrap_to_2pi, wrap_to_180, wrap_to_360};
 
 use std::fmt::{self, Debug, Display};
 
@@ -42,7 +42,11 @@ impl InitialState {
         is_enu: Option<bool>,
     ) -> Self {
         let latitude = if in_degrees { latitude } else { latitude };
-        let longitude = if in_degrees { wrap_to_180(longitude) } else { longitude };
+        let longitude = if in_degrees {
+            wrap_to_180(longitude)
+        } else {
+            longitude
+        };
         let is_enu = is_enu.unwrap_or(true);
         let altitude = altitude;
         if in_degrees {
@@ -189,7 +193,11 @@ impl UnscentedKalmanFilter {
         }
         pts
     }
-    fn robust_kalman_gain(&mut self, cross_covariance: &DMatrix<f64>, s: &DMatrix<f64>) -> DMatrix<f64> {
+    fn robust_kalman_gain(
+        &mut self,
+        cross_covariance: &DMatrix<f64>,
+        s: &DMatrix<f64>,
+    ) -> DMatrix<f64> {
         let kt = robust_spd_solve(&symmetrize(s), &cross_covariance.transpose());
         kt.transpose()
     }
@@ -214,16 +222,27 @@ impl NavigationFilter for UnscentedKalmanFilter {
                 is_enu: self.is_enu,
             };
             let accel_biases = if self.state_size >= 15 {
-                DVector::from_vec(vec![sigma_point_vec[9], sigma_point_vec[10], sigma_point_vec[11]])
+                DVector::from_vec(vec![
+                    sigma_point_vec[9],
+                    sigma_point_vec[10],
+                    sigma_point_vec[11],
+                ])
             } else {
                 DVector::from_vec(vec![0.0, 0.0, 0.0])
             };
             let gyro_biases = if self.state_size >= 15 {
-                DVector::from_vec(vec![sigma_point_vec[12], sigma_point_vec[13], sigma_point_vec[14]])
+                DVector::from_vec(vec![
+                    sigma_point_vec[12],
+                    sigma_point_vec[13],
+                    sigma_point_vec[14],
+                ])
             } else {
                 DVector::from_vec(vec![0.0, 0.0, 0.0])
             };
-            let imu_data = IMUData { accel: imu_data.accel - &accel_biases, gyro: imu_data.gyro - &gyro_biases };
+            let imu_data = IMUData {
+                accel: imu_data.accel - &accel_biases,
+                gyro: imu_data.gyro - &gyro_biases,
+            };
             forward(&mut state, imu_data, dt);
             sigma_point_vec[0] = state.latitude;
             sigma_point_vec[1] = state.longitude;
@@ -251,10 +270,8 @@ impl NavigationFilter for UnscentedKalmanFilter {
     }
     fn update<M: MeasurementModel + ?Sized>(&mut self, measurement: &M) {
         //let measurement_sigma_points = measurement.get_sigma_points(&self.get_sigma_points());
-        let mut measurement_sigma_points = DMatrix::<f64>::zeros(
-            measurement.get_dimension(),
-            2 * self.state_size + 1
-        );
+        let mut measurement_sigma_points =
+            DMatrix::<f64>::zeros(measurement.get_dimension(), 2 * self.state_size + 1);
         let mut z_hat = DVector::<f64>::zeros(measurement.get_dimension());
         for (i, sigma_point) in self.get_sigma_points().column_iter().enumerate() {
             //let sigma_point_vec = sigma_point.clone_owned();
@@ -269,7 +286,8 @@ impl NavigationFilter for UnscentedKalmanFilter {
         }
         s += measurement.get_noise();
         let sigma_points = self.get_sigma_points();
-        let mut cross_covariance = DMatrix::<f64>::zeros(self.state_size, measurement.get_dimension());
+        let mut cross_covariance =
+            DMatrix::<f64>::zeros(self.state_size, measurement.get_dimension());
         for (i, measurement_sigma_point) in measurement_sigma_points.column_iter().enumerate() {
             let measurement_diff = measurement_sigma_point - &z_hat;
             let state_diff = sigma_points.column(i) - &self.mean_state;
@@ -283,6 +301,10 @@ impl NavigationFilter for UnscentedKalmanFilter {
         self.covariance -= &k * &s * &k.transpose();
         self.covariance = 0.5 * (&self.covariance + self.covariance.transpose());
     }
-    fn get_estimate(&self) -> DVector<f64> { self.mean_state.clone() }
-    fn get_certainty(&self) -> DMatrix<f64> { self.covariance.clone() }
+    fn get_estimate(&self) -> DVector<f64> {
+        self.mean_state.clone()
+    }
+    fn get_certainty(&self) -> DMatrix<f64> {
+        self.covariance.clone()
+    }
 }

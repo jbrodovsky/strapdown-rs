@@ -30,7 +30,7 @@ use strapdown::messages::{
     GnssDegradationConfig, GnssFaultModel, GnssScheduler, build_event_stream,
 };
 use strapdown::sim::{
-    NavigationResult, TestDataRecord, run_closed_loop, dead_reckoning, initialize_particle_filter,
+    NavigationResult, TestDataRecord, dead_reckoning, initialize_particle_filter, run_closed_loop,
     run_closed_loop_pf,
 };
 
@@ -58,21 +58,21 @@ const DEFAULT_PROCESS_NOISE: [f64; 15] = [
 /// Process noise for particle filter - primarily applied to bias states with minimal navigation noise
 /// Navigation states receive very small process noise to maintain particle diversity and prevent collapse
 const PARTICLE_FILTER_PROCESS_NOISE: [f64; 15] = [
-    0.0, // 1e-12, // latitude: minimal noise to prevent collapse
-    0.0, // 1e-12, // longitude: minimal noise to prevent collapse
-    0.0, // 1e-9,  // altitude: small noise for vertical channel
-    0.0, // 1e-9,  // velocity north: minimal noise
-    0.0, // 1e-9,  // velocity east: minimal noise
-    0.0, // 1e-9,  // velocity down: minimal noise
-    0.0, // 1e-12, // roll: minimal noise
-    0.0, // 1e-12, // pitch: minimal noise
-    0.0, // 1e-12, // yaw: minimal noise
-    1e-7,  // acc bias x: random walk noise ~1e-7 m/s²
-    1e-7,  // acc bias y: random walk noise
-    1e-7,  // acc bias z: random walk noise
-    1e-9,  // gyro bias x: random walk noise ~1e-9 rad/s
-    1e-9,  // gyro bias y: random walk noise
-    1e-9,  // gyro bias z: random walk noise
+    0.0,  // 1e-12, // latitude: minimal noise to prevent collapse
+    0.0,  // 1e-12, // longitude: minimal noise to prevent collapse
+    0.0,  // 1e-9,  // altitude: small noise for vertical channel
+    0.0,  // 1e-9,  // velocity north: minimal noise
+    0.0,  // 1e-9,  // velocity east: minimal noise
+    0.0,  // 1e-9,  // velocity down: minimal noise
+    0.0,  // 1e-12, // roll: minimal noise
+    0.0,  // 1e-12, // pitch: minimal noise
+    0.0,  // 1e-12, // yaw: minimal noise
+    1e-7, // acc bias x: random walk noise ~1e-7 m/s²
+    1e-7, // acc bias y: random walk noise
+    1e-7, // acc bias z: random walk noise
+    1e-9, // gyro bias x: random walk noise ~1e-9 rad/s
+    1e-9, // gyro bias y: random walk noise
+    1e-9, // gyro bias z: random walk noise
 ];
 
 /// Error statistics for a navigation solution
@@ -269,8 +269,8 @@ fn compute_error_metrics(results: &[NavigationResult], records: &[TestDataRecord
 /// # Returns
 /// Vector of TestDataRecord instances
 fn load_test_data(path: &Path) -> Vec<TestDataRecord> {
-    TestDataRecord::from_csv(path).unwrap_or_else(|_| panic!("Failed to load test data from CSV: {}",
-        path.display()))
+    TestDataRecord::from_csv(path)
+        .unwrap_or_else(|_| panic!("Failed to load test data from CSV: {}", path.display()))
 }
 
 /// Create an initial state from the first test data record
@@ -417,7 +417,8 @@ fn test_ukf_closed_loop_on_real_data() {
     let stream = build_event_stream(&records, &cfg);
 
     // Run closed-loop filter
-    let results = run_closed_loop(&mut ukf, stream, None).expect("Closed-loop filter should complete");
+    let results =
+        run_closed_loop(&mut ukf, stream, None).expect("Closed-loop filter should complete");
 
     // Verify results
     assert!(

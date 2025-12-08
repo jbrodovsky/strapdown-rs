@@ -31,8 +31,11 @@ use world_magnetic_model::uom::si::f32::{Angle, Length};
 use world_magnetic_model::uom::si::length::meter;
 
 use strapdown::earth::gravity_anomaly;
-use strapdown::kalman::{NavigationFilter, UnscentedKalmanFilter,};
-use strapdown::measurements::{GPSPositionMeasurement, GPSPositionAndVelocityMeasurement, GPSVelocityMeasurement, MeasurementModel, RelativeAltitudeMeasurement};
+use strapdown::kalman::{NavigationFilter, UnscentedKalmanFilter};
+use strapdown::measurements::{
+    GPSPositionAndVelocityMeasurement, GPSPositionMeasurement, GPSVelocityMeasurement,
+    MeasurementModel, RelativeAltitudeMeasurement,
+};
 use strapdown::messages::{
     Event, EventStream, FaultState, GnssDegradationConfig, GnssScheduler, apply_fault,
 };
@@ -507,12 +510,12 @@ impl MeasurementModel for GravityMeasurement {
     // fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
     //     let num_sigma_points = state_sigma_points.ncols();
     //     let mut measurement_sigma_points = DMatrix::zeros(1, num_sigma_points);
-    // 
+    //
     //     for i in 0..num_sigma_points {
     //         let state = state_sigma_points.column(i);
     //         let lat = state[0];
     //         let lon = state[1];
-    // 
+    //
     //         measurement_sigma_points[(0, i)] = self
     //             .map
     //             .get_point(&lat.to_degrees(), &lon.to_degrees())
@@ -589,12 +592,12 @@ impl MeasurementModel for MagneticAnomalyMeasurement {
     // fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
     //     let num_sigma_points = state_sigma_points.ncols();
     //     let mut measurement_sigma_points = DMatrix::zeros(1, num_sigma_points);
-    // 
+    //
     //     for i in 0..num_sigma_points {
     //         let state = state_sigma_points.column(i);
     //         let lat = state[0];
     //         let lon = state[1];
-    // 
+    //
     //         measurement_sigma_points[(0, i)] = self
     //             .map
     //             .get_point(&lat.to_degrees(), &lon.to_degrees())

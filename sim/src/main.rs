@@ -3,8 +3,8 @@ use log::{error, info};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use strapdown::kalman::NavigationFilter;
-use strapdown::particle::ParticleAveragingStrategy;
 use strapdown::messages::{GnssDegradationConfig, build_event_stream};
+use strapdown::particle::ParticleAveragingStrategy;
 use strapdown::sim::{
     FaultArgs, NavigationResult, SchedulerArgs, TestDataRecord, build_fault, build_scheduler,
     initialize_particle_filter, initialize_ukf, run_closed_loop,
