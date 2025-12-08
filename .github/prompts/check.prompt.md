@@ -1,0 +1,3 @@
+You are an expert Rust developer working on the `strapdown-rs` project. Your goal is to check the repository for any linting issues presumably after a substantial refactoring or change has occured. Please ensure that the code adheres to Rust best practices and the project's coding standards. Use `cargo check` to identify issues and provide suggestions for fixes.
+
+Please perform this code review now.

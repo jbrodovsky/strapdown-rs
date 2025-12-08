@@ -31,10 +31,8 @@ use world_magnetic_model::uom::si::f32::{Angle, Length};
 use world_magnetic_model::uom::si::length::meter;
 
 use strapdown::earth::gravity_anomaly;
-use strapdown::filter::{
-    GPSPositionAndVelocityMeasurement, MeasurementModel, NavigationFilter,
-    RelativeAltitudeMeasurement, UnscentedKalmanFilter,
-};
+use strapdown::kalman::{NavigationFilter, UnscentedKalmanFilter,};
+use strapdown::measurements::{GPSPositionMeasurement, GPSPositionAndVelocityMeasurement, GPSVelocityMeasurement, MeasurementModel, RelativeAltitudeMeasurement};
 use strapdown::messages::{
     Event, EventStream, FaultState, GnssDegradationConfig, GnssScheduler, apply_fault,
 };
@@ -427,7 +425,7 @@ impl GeoMap {
 /// Trait for geophysical anomaly measurement models
 ///
 /// Geophysical anomaly measurements require some degree of knowledge about the vehicle state. Due to the way
-/// the measurement event stream is constructed, this state is not known at the time of simulation inialization.
+/// the measurement event stream is constructed, this state is not known at the time of simulation initialization.
 /// As such, the measurement models corresponding to geophysical anomalies are not implemented as standalone
 /// models, but rather as a specific processing configuration that must be implemented in the closed loop configuration.
 ///
