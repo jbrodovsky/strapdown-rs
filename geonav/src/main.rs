@@ -8,7 +8,7 @@ use geonav::{
     GeoMap, GeophysicalMeasurementType, GravityResolution, MagneticResolution, build_event_stream,
     geo_closed_loop,
 };
-use strapdown::filter::NavigationFilter;
+use strapdown::kalman::NavigationFilter;
 use strapdown::messages::GnssDegradationConfig;
 use strapdown::sim::{
     DEFAULT_PROCESS_NOISE, FaultArgs, NavigationResult, SchedulerArgs, TestDataRecord, build_fault,

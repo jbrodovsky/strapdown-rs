@@ -28,9 +28,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 use clap::{Args, ValueEnum};
 
 use crate::earth::METERS_TO_DEGREES;
-use crate::filter::{
-    InitialState, NavigationFilter, Particle, ParticleFilter, UnscentedKalmanFilter,
-};
+use crate::kalman::{InitialState, NavigationFilter, UnscentedKalmanFilter};
+use crate::particle::{Particle, ParticleFilter};
 use crate::messages::{Event, EventStream, GnssFaultModel, GnssScheduler};
 use crate::{IMUData, StrapdownState, forward};
 use health::HealthMonitor;
@@ -1260,12 +1259,12 @@ pub fn initialize_particle_filter(
 /// Similar to run_closed_loop but specifically for ParticleFilter, automatically
 /// resampling after each measurement update based on effective sample size.
 pub fn run_closed_loop_pf(
-    filter: &mut crate::filter::ParticleFilter,
+    filter: &mut crate::particle::ParticleFilter,
     stream: EventStream,
     health_limits: Option<HealthLimits>,
     resample_threshold: Option<f64>,
 ) -> anyhow::Result<Vec<NavigationResult>> {
-    use crate::filter::NavigationFilter;
+    use crate::kalman::NavigationFilter;
     let threshold = resample_threshold.unwrap_or(0.5);
     let n_particles = filter.particles.len() as f64;
     let start_time = stream.start_time;
@@ -1328,13 +1327,13 @@ pub fn run_closed_loop_pf(
             }
             Event::Measurement { meas, .. } => {
                 filter.update(meas.as_ref());
-                
+
                 // Resample if effective sample size is too low
-                // let ess = filter.effective_sample_size();
-                // if ess < n_particles * threshold {
-                //     filter.resample();
-                // }
-                
+                let ess = filter.effective_sample_size();
+                if ess < n_particles * threshold {
+                    filter.resample();
+                }
+
                 let mean = filter.get_estimate();
                 let cov = filter.get_certainty();
                 if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
@@ -1616,7 +1615,7 @@ pub fn build_fault(a: &FaultArgs) -> GnssFaultModel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::filter::{ParticleAveragingStrategy, ParticleResamplingStrategy};
+    use crate::particle::{ParticleAveragingStrategy, ParticleResamplingStrategy};
     use chrono::Utc;
     use std::fs::File;
     use std::path::Path;
@@ -2608,7 +2607,7 @@ mod tests {
 
     #[test]
     fn test_run_closed_loop_pf_with_measurement() {
-        use crate::filter::GPSPositionMeasurement;
+            use crate::measurements::GPSPositionMeasurement;
 
         let rec = TestDataRecord {
             time: Utc::now(),

@@ -1058,12 +1058,19 @@ impl ParticleResamplingStrategy {
 /// Similarly to the UKF, it uses thin wrappers around the StrapdownState's forward function to propagate the state.
 /// The particle filter is a little more generic in implementation than the UKF, as all it fundamentally is is a set
 /// of particles and several related functions to propagate, update, and resample the particles.
+///
+/// Process noise is primarily applied to bias states (accelerometer and gyroscope biases) to model random walk
+/// characteristics. Navigation states receive minimal process noise (typically 3-4 orders of magnitude smaller)
+/// to maintain particle diversity and prevent filter collapse, while allowing uncertainty to propagate naturally
+/// through the nonlinear strapdown dynamics.
 #[derive(Clone, Default)]
 pub struct ParticleFilter {
     /// The particles in the particle filter
     pub particles: Vec<Particle>,
-    /// Process noise standard deviations for each state component
-    /// Order: [lat, lon, alt, vn, ve, vd, roll, pitch, yaw]
+    /// Process noise standard deviations for all states
+    /// Bias states (indices 9-14) should have typical IMU random walk values (~1e-7 for accel, ~1e-9 for gyro).
+    /// Navigation states (indices 0-8) should have minimal values (~1e-12 for angles, ~1e-9 for velocities/altitude)
+    /// to maintain particle diversity without introducing excessive drift.
     pub process_noise: DVector<f64>,
     /// Strategy for determining navigation solution
     pub averaging_strategy: ParticleAveragingStrategy,
@@ -1142,21 +1149,41 @@ impl ParticleFilter {
         resampling_method: Option<ParticleResamplingStrategy>,
     ) -> Self {
         // Default process noise standard deviations
-        // These values are significantly larger than UKF to maintain particle diversity
-        // and compensate for lack of bias estimation
+        // Bias process noise models IMU random walk; navigation noise maintains particle diversity
+        let state_size = particles[0].state_size;
         let process_noise: DVector<f64> = match process_noise_std {
             Some(pn) => pn,
-            None => DVector::from_vec(vec![
-                0.0, // lat (radians)
-                0.0, // lon (radians)
-                0.0, // alt (meters)
-                0.0, // vn (m/s)
-                0.0, // ve (m/s)
-                0.0, // vd (m/s)
-                0.0, // roll (radians)
-                0.0, // pitch (radians)
-                0.0, // yaw (radians)
-            ]),
+            None => {
+                let mut noise = vec![
+                    1e-12, // lat: minimal noise to prevent particle collapse
+                    1e-12, // lon: minimal noise
+                    1e-9,  // alt: small noise for vertical channel
+                    1e-9,  // vn: minimal noise
+                    1e-9,  // ve: minimal noise
+                    1e-9,  // vd: minimal noise
+                    1e-12, // roll: minimal noise
+                    1e-12, // pitch: minimal noise
+                    1e-12, // yaw: minimal noise
+                ];
+                // Set bias process noise if biases are estimated (state_size > 9)
+                if state_size > 9 {
+                    // Accelerometer biases: typical random walk ~1e-7 m/s²
+                    noise.push(1e-7);  // X axis
+                    noise.push(1e-7);  // Y axis
+                    noise.push(1e-7);  // Z axis
+                    if state_size > 12 {
+                        // Gyroscope biases: typical random walk ~1e-9 rad/s
+                        noise.push(1e-9); // X axis
+                        noise.push(1e-9); // Y axis
+                        noise.push(1e-9); // Z axis
+                    }
+                }
+                // Pad with zeros for any additional states beyond biases
+                while noise.len() < state_size {
+                    noise.push(0.0);
+                }
+                DVector::from_vec(noise)
+            },
         };
         assert_eq!(
             process_noise.len(),
@@ -1179,11 +1206,16 @@ impl ParticleFilter {
     /// # Arguments
     /// * `mean` - an `InitialState` struct defining the mean state for the particle filter navigation states
     /// * `other_states` - a DVector<f64> defining the mean values for any additional other states to be estimated
-    /// * `navigation_covariance` - a DVector<f64> defining the diagonal covariance
-    /// * `other_covariance` - a DVector<f64> defining the diagonal covariance for any additional other states to be estimated
+    /// * `navigation_covariance` - a DVector<f64> defining the diagonal covariance for initial particle sampling
+    /// * `other_covariance` - a DVector<f64> defining the diagonal covariance for bias state initial sampling
     /// * `num_particles` - the number of particles to initialize
+    /// * `process_noise` - Optional process noise for all states (15 elements). Bias states (9-14) should have
+    ///   typical IMU random walk values. Navigation states (0-8) should be minimal to maintain diversity without
+    ///   excessive drift. If None, defaults to appropriate values.
+    /// * `averaging_strategy` - Optional strategy for computing navigation solution from particles
+    /// * `resampling_method` - Optional strategy for resampling particles
     /// # Returns
-    /// * none
+    /// * A new ParticleFilter instance
     ///
     /// # Example
     ///
@@ -1383,9 +1415,13 @@ impl NavigationFilter for ParticleFilter {
             };
             // Deterministic propagation
             forward(&mut particle.nav_state, imu_data, dt);
-            // Add process noise to maintain particle diversity
+            // Add process noise to maintain particle diversity and model bias random walk
+            // Navigation noise is minimal (<<< bias noise) to prevent collapse
+            // while allowing uncertainty propagation through strapdown dynamics
             // Scale noise by sqrt(dt) for proper time scaling
             let dt_sqrt = dt.sqrt();
+            
+            // Add minimal noise to navigation states to prevent particle collapse
             particle.nav_state.latitude += rand_distr::Normal::new(0.0, self.process_noise[0])
                 .unwrap()
                 .sample(&mut rng)
@@ -1429,9 +1465,11 @@ impl NavigationFilter for ParticleFilter {
                 pitch + pitch_noise,
                 yaw + yaw_noise,
             );
-            // Add process noise to other states if they exist
+            
+            // Add process noise to bias states to model IMU random walk
             if let Some(ref mut other_states) = particle.other_states {
-                for i in 0..other_states.len() {
+                // Bias states: accelerometer (indices 0-2) and gyroscope (indices 3-5)
+                for i in 0..other_states.len().min(6) {
                     let noise = rand_distr::Normal::new(0.0, self.process_noise[9 + i])
                         .unwrap()
                         .sample(&mut rng)
@@ -2021,7 +2059,7 @@ mod tests {
             nav_cov,
             other_cov,
             100,
-            Some(DVector::from_vec(vec![1e-9; 15])),
+            Some(DVector::from_vec(vec![1e-12, 1e-12, 1e-9, 1e-9, 1e-9, 1e-9, 1e-12, 1e-12, 1e-12, 1e-7, 1e-7, 1e-7, 1e-9, 1e-9, 1e-9])),
             None,
             Some(ParticleResamplingStrategy::Residual),
         );
@@ -2075,7 +2113,7 @@ mod tests {
             nav_cov,
             other_cov,
             200,
-            Some(DVector::from_vec(vec![1e-9, 1e-9, 1e-3, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-6, 1e-6, 1e-6, 1e-6, 1e-6, 1e-6])),
+            Some(DVector::from_vec(vec![1e-12, 1e-12, 1e-9, 1e-9, 1e-9, 1e-9, 1e-12, 1e-12, 1e-12, 1e-7, 1e-7, 1e-7, 1e-9, 1e-9, 1e-9])),
             None,
             Some(ParticleResamplingStrategy::Residual),
         );
@@ -2152,7 +2190,7 @@ mod tests {
             nav_cov.clone(),
             other_cov.clone(),
             100,
-            Some(DVector::from_vec(vec![1e-9; 15])),
+            Some(DVector::from_vec(vec![1e-12, 1e-12, 1e-9, 1e-9, 1e-9, 1e-9, 1e-12, 1e-12, 1e-12, 1e-7, 1e-7, 1e-7, 1e-9, 1e-9, 1e-9])),
             None,
             Some(ParticleResamplingStrategy::Residual),
         );
@@ -2193,7 +2231,7 @@ mod tests {
             nav_cov,
             other_cov,
             100,
-            Some(DVector::from_vec(vec![1e-9; 15])),
+            Some(DVector::from_vec(vec![1e-12, 1e-12, 1e-9, 1e-9, 1e-9, 1e-9, 1e-12, 1e-12, 1e-12, 1e-7, 1e-7, 1e-7, 1e-9, 1e-9, 1e-9])),
             None,
             Some(ParticleResamplingStrategy::Residual),
         );
@@ -2324,7 +2362,7 @@ mod tests {
             nav_cov.clone(),
             other_cov.clone(),
             100,
-            Some(DVector::from_vec(vec![1e-6; 15])),
+            Some(DVector::from_vec(vec![1e-12, 1e-12, 1e-9, 1e-9, 1e-9, 1e-9, 1e-12, 1e-12, 1e-12, 1e-6, 1e-6, 1e-6, 1e-6, 1e-6, 1e-6])),
             None,
             None,
         );
@@ -2335,7 +2373,7 @@ mod tests {
             nav_cov,
             other_cov,
             100,
-            Some(DVector::from_vec(vec![1e-6; 15])),
+            Some(DVector::from_vec(vec![1e-12, 1e-12, 1e-9, 1e-9, 1e-9, 1e-9, 1e-12, 1e-12, 1e-12, 1e-6, 1e-6, 1e-6, 1e-6, 1e-6, 1e-6])),
             None,
             None,
         );
@@ -2398,7 +2436,7 @@ mod tests {
             DVector::from_vec(vec![1e-6, 1e-6, 1.0, 1e-3, 1e-3, 1e-3, 1e-4, 1e-4, 1e-4]),
             DVector::from_vec(vec![1e-6; 6]),
             500, // More particles for better comparison
-            Some(DVector::from_vec(vec![1e-9; 15])),
+            Some(DVector::from_vec(vec![1e-12, 1e-12, 1e-9, 1e-9, 1e-9, 1e-9, 1e-12, 1e-12, 1e-12, 1e-7, 1e-7, 1e-7, 1e-9, 1e-9, 1e-9])),
             None,
             Some(ParticleResamplingStrategy::Residual),
         );

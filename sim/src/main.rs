@@ -2,7 +2,8 @@ use clap::{Args, Parser, Subcommand};
 use log::{error, info};
 use std::error::Error;
 use std::path::{Path, PathBuf};
-use strapdown::filter::{NavigationFilter, ParticleAveragingStrategy};
+use strapdown::kalman::NavigationFilter;
+use strapdown::particle::ParticleAveragingStrategy;
 use strapdown::messages::{GnssDegradationConfig, build_event_stream};
 use strapdown::sim::{
     FaultArgs, NavigationResult, SchedulerArgs, TestDataRecord, build_fault, build_scheduler,

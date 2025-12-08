@@ -10,7 +10,7 @@ use std::path::Path;
 
 use crate::IMUData;
 use crate::earth::meters_ned_to_dlat_dlon;
-use crate::filter::{
+use crate::measurements::{
     GPSPositionAndVelocityMeasurement, MeasurementModel, RelativeAltitudeMeasurement,
 };
 use crate::sim::TestDataRecord;

@@ -26,8 +26,9 @@
 //! 
 //! This crate is organized into several modules:
 //! - [earth]: Contains functions and constants related to Earth models, coordinate transformations, and geodetic calculations.
-//! - [filter]: Contains the implementation of various navigation filters, including Kalman filters and particle filters.
+//! - [kalman]: Contains the implementation of Kalman-style navigation filters (including nonlinear variants)
 //! - [linalg]: Contains linear algebra utilities and helper functions.
+//! - [measurements]: Contains measurement models and utilities for processing sensor data in the context of navigation filters.
 //! - [messages]: Contains message definitions for sensor data and filter outputs used in constructing simulations.
 //! - [sim]: Contains simulation utilities for running and testing filters.
 //!
@@ -146,7 +147,10 @@
 //! easily pass data in and out.
 pub mod earth;
 pub mod filter;
+pub mod kalman;
+pub mod particle;
 pub mod linalg;
+pub mod measurements;
 pub mod messages;
 pub mod sim;
 
