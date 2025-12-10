@@ -30,10 +30,9 @@ use clap::{Args, ValueEnum};
 use crate::earth::METERS_TO_DEGREES;
 use crate::kalman::{InitialState, NavigationFilter, UnscentedKalmanFilter};
 use crate::messages::{Event, EventStream, GnssFaultModel, GnssScheduler};
-use crate::particle::{Particle, ParticleFilter};
+use crate::particle::ParticleFilter;
 use crate::{IMUData, StrapdownState, forward};
 use health::HealthMonitor;
-use nalgebra::Rotation3;
 
 // Re-export HealthLimits for easier access in tests and external users
 pub use health::HealthLimits;
