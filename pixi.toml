@@ -15,7 +15,7 @@ PATH = "${PIXI_PROJECT_ROOT}/target/release:${PATH}"
 
 [tasks]
 build = "cargo build --workspace --release"
-lint = "ruff check --select I --fix && cargo clippy --all-targets --all-features --fix -- -D warnings"
+lint = "ruff check --select I --fix && cargo clippy --all-targets --all-features --fix --allow-dirty -- -D warnings"
 fmt = "ruff format . && cargo fmt"
 preprocess = "python scripts/preprocess.py --input_dir data/raw/ --output_dir data/input/"
 code = "code ."
