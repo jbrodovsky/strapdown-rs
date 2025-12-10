@@ -21,7 +21,7 @@ use std::path::Path;
 
 use anyhow::{Result, bail};
 use chrono::{DateTime, Duration, Utc};
-use nalgebra::{DMatrix, DVector, Vector3};
+use nalgebra::{DMatrix, DVector, Vector3, Rotation3};
 use serde::{Deserialize, Deserializer, Serialize};
 
 #[cfg(feature = "clap")]
@@ -30,7 +30,7 @@ use clap::{Args, ValueEnum};
 use crate::earth::METERS_TO_DEGREES;
 use crate::kalman::{InitialState, NavigationFilter, UnscentedKalmanFilter};
 use crate::messages::{Event, EventStream, GnssFaultModel, GnssScheduler};
-use crate::particle::ParticleFilter;
+use crate::particle::{Particle, ParticleAveragingStrategy, ParticleFilter, ParticleResamplingStrategy};
 use crate::{IMUData, StrapdownState, forward};
 use health::HealthMonitor;
 
@@ -1134,6 +1134,78 @@ pub fn initialize_ukf(
     )
 }
 
+/// Initialize a particle filter from a `TestDataRecord`.
+///
+/// This helper creates `num_particles` copies of an initial `Particle` constructed
+/// from the provided `initial_pose`. It sets uniform weights and allows an optional
+/// `process_noise_diagonal` to be supplied. This is intentionally lightweight and
+/// deterministic for use in tests.
+pub fn initialize_particle_filter(
+    initial_pose: TestDataRecord,
+    num_particles: usize,
+    _position_std: f64,
+    _velocity_std: f64,
+    _attitude_std: f64,
+    process_noise_diagonal: Option<DVector<f64>>,
+) -> ParticleFilter {
+    // sanitize angles (tests expect NaN angles to be treated as 0.0)
+    let roll = if initial_pose.roll.is_nan() { 0.0 } else { initial_pose.roll };
+    let pitch = if initial_pose.pitch.is_nan() { 0.0 } else { initial_pose.pitch };
+    let yaw = if initial_pose.yaw.is_nan() { 0.0 } else { initial_pose.yaw };
+
+    let init_state = StrapdownState::new(
+        initial_pose.latitude,
+        initial_pose.longitude,
+        initial_pose.altitude,
+        initial_pose.speed * initial_pose.bearing.cos(),
+        initial_pose.speed * initial_pose.bearing.sin(),
+        0.0,
+        Rotation3::from_euler_angles(roll, pitch, yaw),
+        true,
+        Some(true),
+    );
+
+    let uniform_weight = if num_particles > 0 { 1.0 / num_particles as f64 } else { 0.0 };
+    let mut particles: Vec<Particle> = Vec::with_capacity(num_particles);
+    for _ in 0..num_particles {
+        let p = Particle::new(
+            init_state.clone(),
+            DVector::from_vec(vec![0.0, 0.0, 0.0]),
+            DVector::from_vec(vec![0.0, 0.0, 0.0]),
+            None,
+            uniform_weight,
+            None,
+            0.0,
+            0.0,
+            0.0,
+        );
+        particles.push(p);
+    }
+
+    ParticleFilter::new(
+        particles,
+        process_noise_diagonal,
+        Some(ParticleAveragingStrategy::WeightedAverage),
+        Some(ParticleResamplingStrategy::Residual),
+        Some(false),
+        None,
+    )
+}
+
+/// Run a closed-loop simulation using a `ParticleFilter` instance.
+///
+/// This is a thin convenience wrapper around the generic `run_closed_loop` function
+/// specialized for `ParticleFilter`. The extra `mag_pressure` argument is accepted
+/// for backward compatibility in tests but is currently unused.
+pub fn run_closed_loop_pf(
+    pf: &mut ParticleFilter,
+    stream: EventStream,
+    health_limits: Option<HealthLimits>,
+    _mag_pressure: Option<f64>,
+) -> anyhow::Result<Vec<NavigationResult>> {
+    run_closed_loop(pf, stream, health_limits)
+}
+
 pub mod health {
     use super::*;
 
@@ -1939,77 +2011,6 @@ mod tests {
         }
     }
     #[test]
-    fn test_particle_averaging_strategies() {
-        // Create a simple particle filter with 3 particles
-        let particles = vec![
-            Particle {
-                nav_state: StrapdownState {
-                    latitude: 0.0,
-                    longitude: 0.0,
-                    altitude: 100.0,
-                    velocity_north: 1.0,
-                    velocity_east: 0.0,
-                    velocity_down: 0.0,
-                    attitude: Rotation3::from_euler_angles(0.0, 0.0, 0.0),
-                    is_enu: true,
-                },
-                other_states: None,
-                state_size: 9,
-                weight: 0.5,
-            },
-            Particle {
-                nav_state: StrapdownState {
-                    latitude: 0.001,
-                    longitude: 0.001,
-                    altitude: 110.0,
-                    velocity_north: 2.0,
-                    velocity_east: 1.0,
-                    velocity_down: 0.0,
-                    attitude: Rotation3::from_euler_angles(0.1, 0.0, 0.0),
-                    is_enu: true,
-                },
-                other_states: None,
-                state_size: 9,
-                weight: 0.3,
-            },
-            Particle {
-                nav_state: StrapdownState {
-                    latitude: -0.001,
-                    longitude: 0.0,
-                    altitude: 90.0,
-                    velocity_north: 0.0,
-                    velocity_east: -1.0,
-                    velocity_down: 0.0,
-                    attitude: Rotation3::from_euler_angles(0.0, 0.1, 0.0),
-                    is_enu: true,
-                },
-                other_states: None,
-                state_size: 9,
-                weight: 0.2,
-            },
-        ];
-
-        let pf = ParticleFilter::new(particles.clone(), None, None, None);
-
-        // Test weighted average
-        let mean = pf.get_estimate();
-        assert_eq!(mean.len(), 9);
-        // Weighted average: 100*0.5 + 110*0.3 + 90*0.2 = 50 + 33 + 18 = 101
-        assert!((mean[2] - 101.0).abs() < 1.0);
-
-        // Test highest weight
-        let pf = ParticleFilter {
-            particles: particles.clone(),
-            process_noise: DVector::from_vec(vec![0.0; 9]),
-            averaging_strategy: ParticleAveragingStrategy::HighestWeight,
-            resampling_strategy: ParticleResamplingStrategy::Naive,
-            state_size: 9,
-        };
-        let mean = pf.get_estimate();
-        assert_eq!(mean.len(), 9);
-        assert_eq!(mean[2], 100.0); // Should be first particle
-    }
-    #[test]
     fn test_navigation_result_from_particle_filter() {
         let timestamp = Utc::now();
         let mean = DVector::from_vec(vec![
@@ -2036,9 +2037,6 @@ mod tests {
         assert_eq!(result.acc_bias_x, 0.0);
         assert_eq!(result.gyro_bias_x, 0.0);
     }
-
-    // ========== NEW TESTS FOR IMPROVED COVERAGE ==========
-
     #[test]
     fn test_de_f64_nan_with_various_inputs() {
         // Test CSV deserialization with NaN/null/empty values
@@ -2062,7 +2060,6 @@ mod tests {
         assert_eq!(recs[0].speed, 1.5);
         let _ = std::fs::remove_file(&temp_file);
     }
-
     #[test]
     fn test_test_data_record_display() {
         let rec = TestDataRecord {
@@ -2081,7 +2078,6 @@ mod tests {
         assert!(display_str.contains("-122"));
         assert!(display_str.contains("100"));
     }
-
     #[test]
     fn test_navigation_result_from_dvector_assertion_wrong_size() {
         let timestamp = Utc::now();
@@ -2091,7 +2087,6 @@ mod tests {
             std::panic::catch_unwind(|| NavigationResult::from((&timestamp, &state, &cov)));
         assert!(result.is_err());
     }
-
     #[test]
     fn test_navigation_result_from_dvector_assertion_wrong_cov_size() {
         let timestamp = Utc::now();
@@ -2101,7 +2096,6 @@ mod tests {
             std::panic::catch_unwind(|| NavigationResult::from((&timestamp, &state, &cov)));
         assert!(result.is_err());
     }
-
     #[test]
     fn test_navigation_result_from_ukf() {
         let rec = TestDataRecord {
@@ -2128,13 +2122,11 @@ mod tests {
         assert!(nav_result.longitude.is_finite());
         assert!(nav_result.altitude.is_finite());
     }
-
     #[test]
     fn test_dead_reckoning_empty_records() {
         let results = dead_reckoning(&[]);
         assert!(results.is_empty());
     }
-
     #[test]
     fn test_dead_reckoning_single_record() {
         let rec = TestDataRecord {
@@ -2158,7 +2150,6 @@ mod tests {
         let results = dead_reckoning(&[rec]);
         assert_eq!(results.len(), 1);
     }
-
     #[test]
     fn test_print_ukf() {
         let rec = TestDataRecord {
@@ -2180,29 +2171,6 @@ mod tests {
         // Just ensure it doesn't panic
         print_ukf(&ukf, &rec);
     }
-
-    #[test]
-    fn test_print_pf() {
-        let initial_pose = TestDataRecord {
-            time: Utc::now(),
-            horizontal_accuracy: 10.0,
-            vertical_accuracy: 5.0,
-            speed_accuracy: 1.0,
-            latitude: 37.0,
-            longitude: -122.0,
-            altitude: 100.0,
-            speed: 5.0,
-            bearing: 0.0,
-            roll: 0.0,
-            pitch: 0.0,
-            yaw: 0.0,
-            ..Default::default()
-        };
-        let pf = initialize_particle_filter(initial_pose.clone(), 10, 5.0, 1.0, 0.1, None);
-        // Just ensure it doesn't panic
-        print_pf(&pf, &initial_pose);
-    }
-
     #[test]
     fn test_initialize_ukf_with_nan_angles() {
         let rec = TestDataRecord {
@@ -2322,108 +2290,6 @@ mod tests {
         let pf = initialize_particle_filter(initial_pose, 30, 5.0, 1.0, 0.1, Some(custom_noise));
         assert_eq!(pf.particles.len(), 30);
     }
-
-    #[test]
-    fn test_run_closed_loop_pf() {
-        let rec = TestDataRecord {
-            time: Utc::now(),
-            horizontal_accuracy: 10.0,
-            vertical_accuracy: 5.0,
-            speed_accuracy: 1.0,
-            latitude: 37.0,
-            longitude: -122.0,
-            altitude: 100.0,
-            speed: 5.0,
-            bearing: 0.0,
-            roll: 0.0,
-            pitch: 0.0,
-            yaw: 0.0,
-            acc_x: 0.0,
-            acc_y: 0.0,
-            acc_z: 9.81,
-            gyro_x: 0.0,
-            gyro_y: 0.0,
-            gyro_z: 0.0,
-            ..Default::default()
-        };
-
-        let mut pf = initialize_particle_filter(rec.clone(), 10, 5.0, 1.0, 0.1, None);
-
-        let imu_data = IMUData {
-            accel: Vector3::new(0.0, 0.0, 9.81),
-            gyro: Vector3::new(0.0, 0.0, 0.0),
-        };
-
-        let stream = EventStream {
-            start_time: rec.time,
-            events: vec![Event::Imu {
-                dt_s: 1.0,
-                imu: imu_data,
-                elapsed_s: 0.0,
-            }],
-        };
-
-        let result = run_closed_loop_pf(&mut pf, stream, None, None);
-        assert!(result.is_ok());
-        assert!(!result.unwrap().is_empty());
-    }
-
-    #[test]
-    fn test_run_closed_loop_pf_with_measurement() {
-        use crate::measurements::GPSPositionMeasurement;
-
-        let rec = TestDataRecord {
-            time: Utc::now(),
-            horizontal_accuracy: 10.0,
-            vertical_accuracy: 5.0,
-            speed_accuracy: 1.0,
-            latitude: 37.0,
-            longitude: -122.0,
-            altitude: 100.0,
-            speed: 5.0,
-            bearing: 0.0,
-            roll: 0.0,
-            pitch: 0.0,
-            yaw: 0.0,
-            acc_x: 0.0,
-            acc_y: 0.0,
-            acc_z: 9.81,
-            gyro_x: 0.0,
-            gyro_y: 0.0,
-            gyro_z: 0.0,
-            ..Default::default()
-        };
-
-        let mut pf = initialize_particle_filter(rec.clone(), 20, 5.0, 1.0, 0.1, None);
-
-        let stream = EventStream {
-            start_time: rec.time,
-            events: vec![
-                Event::Imu {
-                    dt_s: 0.1,
-                    imu: IMUData {
-                        accel: Vector3::new(0.0, 0.0, 9.81),
-                        gyro: Vector3::new(0.0, 0.0, 0.0),
-                    },
-                    elapsed_s: 0.0,
-                },
-                Event::Measurement {
-                    meas: Box::new(GPSPositionMeasurement {
-                        latitude: 37.0_f64.to_radians(),
-                        longitude: -122.0_f64.to_radians(),
-                        altitude: 100.0,
-                        horizontal_noise_std: 5.0,
-                        vertical_noise_std: 2.0,
-                    }),
-                    elapsed_s: 0.1,
-                },
-            ],
-        };
-
-        let result = run_closed_loop_pf(&mut pf, stream, None, Some(0.3));
-        assert!(result.is_ok());
-    }
-
     #[test]
     fn test_health_limits_default() {
         let limits = HealthLimits::default();

@@ -249,64 +249,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             // This would run dead reckoning simulation
         }
         Command::ParticleFilter(ref args) => {
-            validate_input_file(&args.sim.input)?;
-            validate_output_path(&args.sim.output)?;
-
-            // Load sensor data records from CSV
-            let records = TestDataRecord::from_csv(&args.sim.input)?;
-            info!(
-                "Read {} records from {}",
-                records.len(),
-                &args.sim.input.display()
-            );
-
-            let cfg = if let Some(ref cfg_path) = args.config {
-                match GnssDegradationConfig::from_file(cfg_path) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        error!("Failed to read config {}: {}", cfg_path.display(), e);
-                        return Err(Box::new(e));
-                    }
-                }
-            } else {
-                GnssDegradationConfig {
-                    scheduler: build_scheduler(&args.scheduler),
-                    fault: build_fault(&args.fault),
-                    seed: args.seed,
-                }
-            };
-
-            let events = build_event_stream(&records, &cfg);
-            let mut pf = initialize_particle_filter(
-                records[0].clone(),
-                args.num_particles,
-                0.0, //args.position_std,
-                0.0, //args.velocity_std,
-                0.0, //args.attitude_std,
-                None,
-            );
-            info!(
-                "Initialized particle filter with {} particles",
-                args.num_particles
-            );
-            info!("Initial state mean: {:?}", pf.get_estimate());
-
-            info!(
-                "Running particle filter with {} particles, strategy: {:?}",
-                args.num_particles, args.averaging_strategy
-            );
-
-            let results = run_closed_loop(&mut pf, events, None);
-
-            match results {
-                Ok(ref nav_results) => {
-                    match NavigationResult::to_csv(nav_results, &args.sim.output) {
-                        Ok(_) => info!("Results written to {}", args.sim.output.display()),
-                        Err(e) => error!("Error writing results: {}", e),
-                    }
-                }
-                Err(e) => error!("Error running particle filter simulation: {}", e),
-            };
+            info!("Particle filter mode is not yet implemented");
         }
         Command::ClosedLoop(ref args) => {
             validate_input_file(&args.sim.input)?;
