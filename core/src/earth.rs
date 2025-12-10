@@ -457,7 +457,7 @@ pub fn gravity(latitude: &f64, altitude: &f64) -> f64 {
         / (1.0 - ECCENTRICITY_SQUARED * sin_lat * sin_lat).sqrt();
     g0 - 3.08e-6 * altitude
 }
-/// Calculate the gravitational force vector in the local-level frame
+/// Calculate the gravitational force vector in the local-level frame including rotational effects.
 ///
 /// The [gravity model](https://en.wikipedia.org/wiki/Gravity_of_Earth) is based on the [Somigliana
 /// method](https://en.wikipedia.org/wiki/Theoretical_gravity#Somigliana_equation), which models
