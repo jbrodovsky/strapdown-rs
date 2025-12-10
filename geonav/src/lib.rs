@@ -33,7 +33,7 @@ use world_magnetic_model::uom::si::length::meter;
 use strapdown::earth::gravity_anomaly;
 use strapdown::kalman::{NavigationFilter, UnscentedKalmanFilter};
 use strapdown::measurements::{
-    GPSPositionAndVelocityMeasurement, GPSPositionMeasurement, GPSVelocityMeasurement,
+    GPSPositionAndVelocityMeasurement,
     MeasurementModel, RelativeAltitudeMeasurement,
 };
 use strapdown::messages::{

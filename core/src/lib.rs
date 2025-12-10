@@ -325,7 +325,7 @@ impl StrapdownState {
             "Longitude must be in the range [-π, π]"
         );
         assert!(
-            altitude >= -30_000.0 && altitude <= 30_000.0,
+            (-30_000.0..=30_000.0).contains(&altitude),
             "Strapdown equations and the local level frame are only valid within 30 km above mean sea level and maximum ocean depth is ~11 km. Given altitude: {} m, please check your input and sign conventions.",
             altitude
         );
