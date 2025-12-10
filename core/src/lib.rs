@@ -146,7 +146,6 @@
 //! This top-level module provides a public API for each step of the forward mechanization equations, allowing users to
 //! easily pass data in and out.
 pub mod earth;
-pub mod filter;
 pub mod kalman;
 pub mod linalg;
 pub mod measurements;

@@ -7,7 +7,7 @@ use strapdown::messages::{GnssDegradationConfig, build_event_stream};
 use strapdown::particle::ParticleAveragingStrategy;
 use strapdown::sim::{
     FaultArgs, NavigationResult, SchedulerArgs, TestDataRecord, build_fault, build_scheduler,
-    initialize_particle_filter, initialize_ukf, run_closed_loop,
+    initialize_ukf, run_closed_loop,
 };
 
 const LONG_ABOUT: &str = "STRAPDOWN: A simulation and analysis tool for strapdown inertial navigation systems.
