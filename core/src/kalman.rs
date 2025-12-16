@@ -28,6 +28,7 @@ pub struct InitialState {
     pub is_enu: bool,
 }
 impl InitialState {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         latitude: f64,
         longitude: f64,
@@ -41,14 +42,13 @@ impl InitialState {
         in_degrees: bool,
         is_enu: Option<bool>,
     ) -> Self {
-        let latitude = if in_degrees { latitude } else { latitude };
+        let latitude = if in_degrees { latitude } else { latitude.to_degrees() };
         let longitude = if in_degrees {
             wrap_to_180(longitude)
         } else {
             longitude
         };
         let is_enu = is_enu.unwrap_or(true);
-        let altitude = altitude;
         if in_degrees {
             roll = wrap_to_360(roll).to_radians();
             pitch = wrap_to_360(pitch).to_radians();
@@ -117,6 +117,7 @@ impl Display for UnscentedKalmanFilter {
     }
 }
 impl UnscentedKalmanFilter {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         initial_state: InitialState,
         imu_biases: Vec<f64>,
@@ -306,5 +307,707 @@ impl NavigationFilter for UnscentedKalmanFilter {
     }
     fn get_certainty(&self) -> DMatrix<f64> {
         self.covariance.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::earth;
+    use crate::measurements::{
+        GPSPositionMeasurement, GPSVelocityMeasurement, GPSPositionAndVelocityMeasurement,
+        RelativeAltitudeMeasurement,
+    };
+    use assert_approx_eq::assert_approx_eq;
+    use nalgebra::Vector3;
+
+    const IMU_BIASES: [f64; 6] = [0.0; 6];
+    const N: usize = 15;
+    const COVARIANCE_DIAGONAL: [f64; N] = [1e-9; N];
+    const PROCESS_NOISE_DIAGONAL: [f64; N] = [1e-9; N];
+
+    const ALPHA: f64 = 1e-3;
+    const BETA: f64 = 2.0;
+    const KAPPA: f64 = 0.0;
+    const UKF_PARAMS: InitialState = InitialState {
+        latitude: 0.0,
+        longitude: 0.0,
+        altitude: 0.0,
+        northward_velocity: 0.0,
+        eastward_velocity: 0.0,
+        downward_velocity: 0.0,
+        roll: 0.0,
+        pitch: 0.0,
+        yaw: 0.0,
+        in_degrees: false,
+        is_enu: true,
+    };
+
+    #[test]
+    fn ukf_construction() {
+        let measurement_bias = vec![0.0; 3]; // Example measurement bias
+        let ukf = UnscentedKalmanFilter::new(
+            UKF_PARAMS,
+            IMU_BIASES.to_vec(),
+            Some(measurement_bias.clone()),
+            vec![1e-3; 18],
+            DMatrix::from_diagonal(&DVector::from_vec(vec![1e-3; 18])),
+            ALPHA,
+            BETA,
+            KAPPA,
+        );
+        assert_eq!(ukf.mean_state.len(), 18);
+        let wms = ukf.weights_mean;
+        let wcs = ukf.weights_cov;
+        assert_eq!(wms.len(), (2 * ukf.state_size) + 1);
+        assert_eq!(wcs.len(), (2 * ukf.state_size) + 1);
+        // Check that the weights are correct
+        let lambda = ALPHA.powi(2) * (18.0 + KAPPA) - 18.0;
+        assert_eq!(lambda, ukf.lambda);
+        let wm_0 = lambda / (18.0 + lambda);
+        let wc_0 = wm_0 + (1.0 - ALPHA.powi(2)) + BETA;
+        let w_i = 1.0 / (2.0 * (18.0 + lambda));
+        assert_approx_eq!(wms[0], wm_0, 1e-6);
+        assert_approx_eq!(wcs[0], wc_0, 1e-6);
+        for i in 1..wms.len() {
+            assert_approx_eq!(wms[i], w_i, 1e-6);
+            assert_approx_eq!(wcs[i], w_i, 1e-6);
+        }
+    }
+
+    #[test]
+    fn ukf_get_sigma_points() {
+        let ukf = UnscentedKalmanFilter::new(
+            UKF_PARAMS,
+            IMU_BIASES.to_vec(),
+            None,
+            COVARIANCE_DIAGONAL.to_vec(),
+            DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
+            ALPHA,
+            BETA,
+            KAPPA,
+        );
+        let sigma_points = ukf.get_sigma_points();
+        assert_eq!(sigma_points.ncols(), (2 * ukf.state_size) + 1);
+
+        let mu = ukf.get_sigma_points() * ukf.weights_mean;
+        assert_eq!(mu.nrows(), ukf.state_size);
+        assert_eq!(mu.ncols(), 1);
+        assert_approx_eq!(mu[0], 0.0, 1e-6);
+        assert_approx_eq!(mu[1], 0.0, 1e-6);
+        assert_approx_eq!(mu[2], 0.0, 1e-6);
+        assert_approx_eq!(mu[3], 0.0, 1e-6);
+        assert_approx_eq!(mu[4], 0.0, 1e-6);
+        assert_approx_eq!(mu[5], 0.0, 1e-6);
+        assert_approx_eq!(mu[6], 0.0, 1e-6);
+        assert_approx_eq!(mu[7], 0.0, 1e-6);
+        assert_approx_eq!(mu[8], 0.0, 1e-6);
+    }
+
+    #[test]
+    fn ukf_propagate() {
+        let mut ukf = UnscentedKalmanFilter::new(
+            UKF_PARAMS,
+            vec![0.0; 6],
+            None,         //Some(measurement_bias.clone()),
+            vec![0.0; N], // Absolute certainty use for testing the process
+            DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
+            1e-3,
+            2.0,
+            0.0,
+        );
+        let dt = 1.0;
+        let imu_data = IMUData {
+            accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
+            gyro: Vector3::new(0.0, 0.0, 0.0), // No rotation
+        };
+        ukf.predict(imu_data, dt);
+        assert!(
+            ukf.mean_state.len() == 15 //+ measurement_bias.len()
+        );
+        let measurement = GPSPositionMeasurement {
+            latitude: 0.0,
+            longitude: 0.0,
+            altitude: 0.0,
+            horizontal_noise_std: 1e-3,
+            vertical_noise_std: 1e-3,
+        };
+        ukf.update(&measurement);
+        // Check that the state has not changed
+        assert_approx_eq!(ukf.mean_state[0], 0.0, 1e-3);
+        assert_approx_eq!(ukf.mean_state[1], 0.0, 1e-3);
+        assert_approx_eq!(ukf.mean_state[2], 0.0, 0.1);
+        assert_approx_eq!(ukf.mean_state[3], 0.0, 0.1);
+        assert_approx_eq!(ukf.mean_state[4], 0.0, 0.1);
+        assert_approx_eq!(ukf.mean_state[5], 0.0, 0.1);
+    }
+
+    #[test]
+    fn ukf_debug_display() {
+        // Test Debug and Display implementations for UKF
+        let ukf = UnscentedKalmanFilter::new(
+            UKF_PARAMS,
+            IMU_BIASES.to_vec(),
+            None,
+            COVARIANCE_DIAGONAL.to_vec(),
+            DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
+            ALPHA,
+            BETA,
+            KAPPA,
+        );
+
+        // Test Debug
+        let debug_str = format!("{:?}", ukf);
+        assert!(debug_str.contains("UKF"));
+        assert!(debug_str.contains("mean_state"));
+
+        // Test Display
+        let display_str = format!("{}", ukf);
+        assert!(display_str.contains("UnscentedKalmanFilter"));
+        assert!(display_str.contains("covariance"));
+    }
+
+    #[test]
+    fn ukf_predict_with_biases() {
+        // Test UKF predict with non-zero biases
+        let mut ukf = UnscentedKalmanFilter::new(
+            UKF_PARAMS,
+            vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6], // non-zero biases
+            None,
+            COVARIANCE_DIAGONAL.to_vec(),
+            DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
+            ALPHA,
+            BETA,
+            KAPPA,
+        );
+
+        let imu_data = IMUData {
+            accel: Vector3::new(0.0, 0.0, -9.81),
+            gyro: Vector3::new(0.0, 0.0, 0.0),
+        };
+
+        ukf.predict(imu_data, 0.1);
+
+        // Just verify prediction completed without panic
+        assert_eq!(ukf.mean_state.len(), 15);
+    }
+
+    #[test]
+    fn ukf_update_with_cross_covariance() {
+        // Test UKF update to cover cross-covariance calculation
+        let mut ukf = UnscentedKalmanFilter::new(
+            UKF_PARAMS,
+            IMU_BIASES.to_vec(),
+            None,
+            COVARIANCE_DIAGONAL.to_vec(),
+            DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
+            ALPHA,
+            BETA,
+            KAPPA,
+        );
+
+        // First predict to move state
+        let imu_data = IMUData {
+            accel: Vector3::new(0.0, 0.0, -9.81),
+            gyro: Vector3::new(0.0, 0.0, 0.0),
+        };
+        ukf.predict(imu_data, 0.1);
+
+        // Update with GPS position measurement
+        let measurement = GPSPositionMeasurement {
+            latitude: 0.001,
+            longitude: 0.001,
+            altitude: 10.0,
+            horizontal_noise_std: 5.0,
+            vertical_noise_std: 2.0,
+        };
+
+        ukf.update(&measurement);
+
+        // Verify update completed
+        assert!(!ukf.mean_state.is_empty());
+    }
+
+    #[test]
+    fn ukf_with_additional_states() {
+        // Test UKF construction with additional states beyond 15
+        let measurement_bias = vec![1.0, 2.0, 3.0];
+        let total_states = 15 + measurement_bias.len();
+
+        let ukf = UnscentedKalmanFilter::new(
+            UKF_PARAMS,
+            IMU_BIASES.to_vec(),
+            Some(measurement_bias),
+            vec![1e-6; total_states],
+            DMatrix::from_diagonal(&DVector::from_vec(vec![1e-9; total_states])),
+            ALPHA,
+            BETA,
+            KAPPA,
+        );
+
+        assert_eq!(ukf.state_size, total_states);
+        assert_eq!(ukf.mean_state.len(), total_states);
+    }
+
+    #[test]
+    fn ukf_with_velocity_measurement() {
+        // Test UKF with velocity measurement
+        let mut ukf = UnscentedKalmanFilter::new(
+            UKF_PARAMS,
+            IMU_BIASES.to_vec(),
+            None,
+            COVARIANCE_DIAGONAL.to_vec(),
+            DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
+            ALPHA,
+            BETA,
+            KAPPA,
+        );
+
+        let vel_meas = GPSVelocityMeasurement {
+            northward_velocity: 0.0,
+            eastward_velocity: 0.0,
+            downward_velocity: 0.0,
+            horizontal_noise_std: 0.5,
+            vertical_noise_std: 0.5,
+        };
+
+        ukf.update(&vel_meas);
+
+        // Verify update completed
+        assert_eq!(ukf.mean_state.len(), 15);
+    }
+
+    #[test]
+    fn ukf_with_position_velocity_measurement() {
+        // Test UKF with combined position and velocity measurement
+        let mut ukf = UnscentedKalmanFilter::new(
+            UKF_PARAMS,
+            IMU_BIASES.to_vec(),
+            None,
+            COVARIANCE_DIAGONAL.to_vec(),
+            DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
+            ALPHA,
+            BETA,
+            KAPPA,
+        );
+
+        let meas = GPSPositionAndVelocityMeasurement {
+            latitude: 0.0,
+            longitude: 0.0,
+            altitude: 0.0,
+            northward_velocity: 0.0,
+            eastward_velocity: 0.0,
+            horizontal_noise_std: 5.0,
+            vertical_noise_std: 2.0,
+            velocity_noise_std: 0.5,
+        };
+
+        ukf.update(&meas);
+
+        // Verify update completed
+        assert_eq!(ukf.mean_state.len(), 15);
+    }
+
+    #[test]
+    fn ukf_with_altitude_measurement() {
+        // Test UKF with relative altitude measurement
+        let initial_state = InitialState {
+            latitude: 0.0,
+            longitude: 0.0,
+            altitude: 100.0,
+            northward_velocity: 0.0,
+            eastward_velocity: 0.0,
+            downward_velocity: 0.0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            in_degrees: false,
+            is_enu: true,
+        };
+
+        let mut ukf = UnscentedKalmanFilter::new(
+            initial_state,
+            IMU_BIASES.to_vec(),
+            None,
+            COVARIANCE_DIAGONAL.to_vec(),
+            DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
+            ALPHA,
+            BETA,
+            KAPPA,
+        );
+
+        let alt_meas = RelativeAltitudeMeasurement {
+            relative_altitude: 5.0,
+            reference_altitude: 95.0,
+        };
+
+        ukf.update(&alt_meas);
+
+        // Should pull altitude toward 100m
+        assert!(ukf.mean_state[2] > 90.0 && ukf.mean_state[2] < 110.0);
+    }
+
+    #[test]
+    fn ukf_free_fall_motion() {
+        // Test UKF with free fall motion profile
+        let initial_state = InitialState {
+            latitude: 0.0,
+            longitude: 0.0,
+            altitude: 100.0,
+            northward_velocity: 0.0,
+            eastward_velocity: 0.0,
+            downward_velocity: 0.0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            in_degrees: false,
+            is_enu: true,
+        };
+
+        let mut ukf = UnscentedKalmanFilter::new(
+            initial_state,
+            IMU_BIASES.to_vec(),
+            None,
+            vec![1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8, 1e-8],
+            DMatrix::from_diagonal(&DVector::from_vec(vec![1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9])),
+            ALPHA,
+            BETA,
+            KAPPA,
+        );
+
+        let dt = 0.1;
+        let num_steps = 10;
+        
+        // Simulate free fall with only gravity (no vertical acceleration resistance)
+        for _ in 0..num_steps {
+            let imu_data = IMUData {
+                accel: Vector3::new(0.0, 0.0, 0.0), // Free fall - no measured acceleration
+                gyro: Vector3::new(0.0, 0.0, 0.0),
+            };
+            ukf.predict(imu_data, dt);
+        }
+
+        // After 1 second of free fall, should have accumulated downward velocity
+        // v = g*t = 9.81 * 1.0 = 9.81 m/s (downward is negative in ENU)
+        let final_vd = ukf.mean_state[5];
+        assert!(final_vd < -5.0, "Expected significant downward velocity, got {}", final_vd);
+
+        // Altitude should have decreased
+        let final_altitude = ukf.mean_state[2];
+        assert!(final_altitude < 100.0, "Expected altitude decrease, got {}", final_altitude);
+
+        // Apply measurement update with GPS position
+        let measurement = GPSPositionMeasurement {
+            latitude: 0.0,
+            longitude: 0.0,
+            altitude: final_altitude,
+            horizontal_noise_std: 5.0,
+            vertical_noise_std: 2.0,
+        };
+        ukf.update(&measurement);
+
+        // After measurement update, estimate should remain close to measurement
+        assert_approx_eq!(ukf.mean_state[2], final_altitude, 5.0);
+    }
+
+    #[test]
+    fn ukf_hover_motion() {
+        // Test UKF with hover (stationary vertical) motion profile
+        let initial_state = InitialState {
+            latitude: 0.0,
+            longitude: 0.0,
+            altitude: 100.0,
+            northward_velocity: 0.0,
+            eastward_velocity: 0.0,
+            downward_velocity: 0.0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            in_degrees: false,
+            is_enu: true,
+        };
+
+        let mut ukf = UnscentedKalmanFilter::new(
+            initial_state,
+            IMU_BIASES.to_vec(),
+            None,
+            vec![1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8, 1e-8],
+            DMatrix::from_diagonal(&DVector::from_vec(vec![1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9])),
+            ALPHA,
+            BETA,
+            KAPPA,
+        );
+
+        let dt = 0.1;
+        let num_steps = 10;
+        
+        // Simulate hover with upward acceleration exactly canceling gravity
+        for _ in 0..num_steps {
+            let imu_data = IMUData {
+                accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
+                gyro: Vector3::new(0.0, 0.0, 0.0),
+            };
+            ukf.predict(imu_data, dt);
+        }
+
+        // Velocity should remain near zero
+        let final_vn = ukf.mean_state[3];
+        let final_ve = ukf.mean_state[4];
+        let final_vd = ukf.mean_state[5];
+        assert_approx_eq!(final_vn, 0.0, 0.5);
+        assert_approx_eq!(final_ve, 0.0, 0.5);
+        assert_approx_eq!(final_vd, 0.0, 0.5);
+
+        // Altitude should remain approximately constant
+        let final_altitude = ukf.mean_state[2];
+        assert_approx_eq!(final_altitude, 100.0, 1.0);
+
+        // Apply GPS velocity measurement to verify zero velocity state
+        let vel_measurement = GPSVelocityMeasurement {
+            northward_velocity: 0.0,
+            eastward_velocity: 0.0,
+            downward_velocity: 0.0,
+            horizontal_noise_std: 0.5,
+            vertical_noise_std: 0.5,
+        };
+        ukf.update(&vel_measurement);
+
+        // After update, velocities should remain near zero
+        assert_approx_eq!(ukf.mean_state[3], 0.0, 0.5);
+        assert_approx_eq!(ukf.mean_state[4], 0.0, 0.5);
+        assert_approx_eq!(ukf.mean_state[5], 0.0, 0.5);
+    }
+
+    #[test]
+    fn ukf_northward_motion() {
+        // Test UKF with constant northward velocity motion profile
+        let initial_state = InitialState {
+            latitude: 0.0,
+            longitude: 0.0,
+            altitude: 100.0,
+            northward_velocity: 10.0, // 10 m/s northward
+            eastward_velocity: 0.0,
+            downward_velocity: 0.0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            in_degrees: false,
+            is_enu: true,
+        };
+
+        let mut ukf = UnscentedKalmanFilter::new(
+            initial_state,
+            IMU_BIASES.to_vec(),
+            None,
+            vec![1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8, 1e-8],
+            DMatrix::from_diagonal(&DVector::from_vec(vec![1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9])),
+            ALPHA,
+            BETA,
+            KAPPA,
+        );
+
+        let dt = 0.1;
+        let num_steps = 10;
+        let initial_lat = ukf.mean_state[0];
+        
+        // Simulate constant northward motion with gravity compensation
+        for _ in 0..num_steps {
+            let imu_data = IMUData {
+                accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
+                gyro: Vector3::new(0.0, 0.0, 0.0),
+            };
+            ukf.predict(imu_data, dt);
+        }
+
+        // Latitude should have increased (moving north)
+        let final_lat = ukf.mean_state[0];
+        assert!(final_lat > initial_lat, 
+                "Expected latitude increase, got initial: {} final: {}", 
+                initial_lat, final_lat);
+
+        // Northward velocity should remain approximately constant
+        let final_vn = ukf.mean_state[3];
+        assert_approx_eq!(final_vn, 10.0, 2.0);
+
+        // Eastward velocity should remain near zero
+        let final_ve = ukf.mean_state[4];
+        assert_approx_eq!(final_ve, 0.0, 0.5);
+
+        // Apply GPS position and velocity measurement
+        let meas = GPSPositionAndVelocityMeasurement {
+            latitude: final_lat.to_degrees(),
+            longitude: 0.0,
+            altitude: 100.0,
+            northward_velocity: 10.0,
+            eastward_velocity: 0.0,
+            horizontal_noise_std: 5.0,
+            vertical_noise_std: 2.0,
+            velocity_noise_std: 0.5,
+        };
+        ukf.update(&meas);
+
+        // After measurement, velocities should be close to measured values
+        assert_approx_eq!(ukf.mean_state[3], 10.0, 1.0);
+        assert_approx_eq!(ukf.mean_state[4], 0.0, 0.5);
+    }
+
+    #[test]
+    fn ukf_eastward_motion() {
+        // Test UKF with constant eastward velocity motion profile
+        let initial_state = InitialState {
+            latitude: 0.0,
+            longitude: 0.0,
+            altitude: 100.0,
+            northward_velocity: 0.0,
+            eastward_velocity: 15.0, // 15 m/s eastward
+            downward_velocity: 0.0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            in_degrees: false,
+            is_enu: true,
+        };
+
+        let mut ukf = UnscentedKalmanFilter::new(
+            initial_state,
+            IMU_BIASES.to_vec(),
+            None,
+            vec![1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8, 1e-8],
+            DMatrix::from_diagonal(&DVector::from_vec(vec![1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9])),
+            ALPHA,
+            BETA,
+            KAPPA,
+        );
+
+        let dt = 0.1;
+        let num_steps = 10;
+        let initial_lon = ukf.mean_state[1];
+        
+        // Simulate constant eastward motion with gravity compensation
+        for _ in 0..num_steps {
+            let imu_data = IMUData {
+                accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
+                gyro: Vector3::new(0.0, 0.0, 0.0),
+            };
+            ukf.predict(imu_data, dt);
+        }
+
+        // Longitude should have increased (moving east)
+        let final_lon = ukf.mean_state[1];
+        assert!(final_lon > initial_lon,
+                "Expected longitude increase, got initial: {} final: {}",
+                initial_lon, final_lon);
+
+        // Eastward velocity should remain approximately constant
+        let final_ve = ukf.mean_state[4];
+        assert_approx_eq!(final_ve, 15.0, 2.0);
+
+        // Northward velocity should remain near zero
+        let final_vn = ukf.mean_state[3];
+        assert_approx_eq!(final_vn, 0.0, 0.5);
+
+        // Downward velocity should remain near zero
+        let final_vd = ukf.mean_state[5];
+        assert_approx_eq!(final_vd, 0.0, 0.5);
+
+        // Apply GPS position measurement
+        let pos_meas = GPSPositionMeasurement {
+            latitude: 0.0,
+            longitude: final_lon.to_degrees(),
+            altitude: 100.0,
+            horizontal_noise_std: 5.0,
+            vertical_noise_std: 2.0,
+        };
+        ukf.update(&pos_meas);
+
+        // Position should remain close to measurement
+        assert_approx_eq!(ukf.mean_state[1], final_lon, 0.01);
+        assert_approx_eq!(ukf.mean_state[2], 100.0, 5.0);
+
+        // Apply velocity measurement
+        let vel_meas = GPSVelocityMeasurement {
+            northward_velocity: 0.0,
+            eastward_velocity: 15.0,
+            downward_velocity: 0.0,
+            horizontal_noise_std: 0.5,
+            vertical_noise_std: 0.5,
+        };
+        ukf.update(&vel_meas);
+
+        // After measurement, velocities should be close to measured values
+        assert_approx_eq!(ukf.mean_state[3], 0.0, 0.5);
+        assert_approx_eq!(ukf.mean_state[4], 15.0, 1.0);
+        assert_approx_eq!(ukf.mean_state[5], 0.0, 0.5);
+    }
+
+    #[test]
+    fn ukf_combined_horizontal_motion() {
+        // Test UKF with combined northward and eastward motion
+        let initial_state = InitialState {
+            latitude: 0.0,
+            longitude: 0.0,
+            altitude: 100.0,
+            northward_velocity: 10.0,
+            eastward_velocity: 10.0,
+            downward_velocity: 0.0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            in_degrees: false,
+            is_enu: true,
+        };
+
+        let mut ukf = UnscentedKalmanFilter::new(
+            initial_state,
+            IMU_BIASES.to_vec(),
+            None,
+            vec![1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8, 1e-8],
+            DMatrix::from_diagonal(&DVector::from_vec(vec![1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9])),
+            ALPHA,
+            BETA,
+            KAPPA,
+        );
+
+        let dt = 0.1;
+        let num_steps = 10;
+        let initial_lat = ukf.mean_state[0];
+        let initial_lon = ukf.mean_state[1];
+        
+        // Simulate combined motion
+        for _ in 0..num_steps {
+            let imu_data = IMUData {
+                accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
+                gyro: Vector3::new(0.0, 0.0, 0.0),
+            };
+            ukf.predict(imu_data, dt);
+        }
+
+        // Both latitude and longitude should have increased
+        let final_lat = ukf.mean_state[0];
+        let final_lon = ukf.mean_state[1];
+        assert!(final_lat > initial_lat, "Expected latitude increase");
+        assert!(final_lon > initial_lon, "Expected longitude increase");
+
+        // Both velocities should remain approximately constant
+        assert_approx_eq!(ukf.mean_state[3], 10.0, 2.0);
+        assert_approx_eq!(ukf.mean_state[4], 10.0, 2.0);
+
+        // Apply combined position and velocity measurement
+        let meas = GPSPositionAndVelocityMeasurement {
+            latitude: final_lat.to_degrees(),
+            longitude: final_lon.to_degrees(),
+            altitude: 100.0,
+            northward_velocity: 10.0,
+            eastward_velocity: 10.0,
+            horizontal_noise_std: 5.0,
+            vertical_noise_std: 2.0,
+            velocity_noise_std: 0.5,
+        };
+        ukf.update(&meas);
+
+        // After measurement, state should be well-constrained
+        assert_approx_eq!(ukf.mean_state[3], 10.0, 1.0);
+        assert_approx_eq!(ukf.mean_state[4], 10.0, 1.0);
+        assert_approx_eq!(ukf.mean_state[2], 100.0, 5.0);
     }
 }

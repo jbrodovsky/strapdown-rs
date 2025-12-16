@@ -633,6 +633,7 @@ fn ar1_step(x: &mut f64, rho: f64, sigma: f64, rng: &mut rand::rngs::StdRng) {
 ///     horiz_std_m, vert_std_m, vel_std_mps,
 /// );
 /// ```
+#[allow(clippy::too_many_arguments)]
 pub fn apply_fault(
     fault: &GnssFaultModel,
     st: &mut FaultState,
@@ -1056,7 +1057,6 @@ mod tests {
             .events
             .iter()
             .filter(|e| matches!(e, Event::Measurement { .. }))
-            .into_iter()
             .filter(|e| {
                 if let Event::Measurement { meas, .. } = e {
                     meas.as_any().is::<GPSPositionAndVelocityMeasurement>()
@@ -1204,10 +1204,8 @@ mod tests {
                 assert_approx_eq!(meas.longitude, original_lon, 1e-3);
 
                 // Check if positions vary between measurements
-                if let Some(prev_lat) = prev_lat {
-                    if (meas.latitude - prev_lat as f64).abs() > 1e-10 {
-                        all_same = false;
-                    }
+                if let Some(prev_lat) = prev_lat && (meas.latitude - prev_lat as f64).abs() > 1e-10 {
+                    all_same = false;
                 }
                 prev_lat = Some(meas.latitude);
 

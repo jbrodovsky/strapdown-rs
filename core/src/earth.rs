@@ -949,13 +949,13 @@ mod tests {
 
         // Test northward offset
         let (dlat, dlon) = meters_ned_to_dlat_dlon(lat_rad, alt_m, 1852.0, 0.0);
-        assert_approx_eq!(dlat.abs(), (1.0 / 60.0 as f64).to_radians(), 0.0001); // ~1 degree latitude change
+        assert_approx_eq!(dlat.abs(), (1.0 / 60.0_f64).to_radians(), 0.0001); // ~1 degree latitude change
         assert_approx_eq!(dlon.abs(), 0.0, 0.0001); // ~0 longitude change
 
         // Test eastward offset
         let (dlat, dlon) = meters_ned_to_dlat_dlon(lat_rad, alt_m, 0.0, 1852.0);
         assert!(dlat.abs() < 0.0001); // ~0 latitude change
-        assert_approx_eq!(dlon.abs(), (1.0 / 60.0 as f64).to_radians(), 0.0001); // ~1 degree longitude change
+        assert_approx_eq!(dlon.abs(), (1.0 / 60.0_f64).to_radians(), 0.0001); // ~1 degree longitude change
 
         // Test at 45 degrees north, where longitude degrees are shorter
         let lat_rad = 45.0_f64.to_radians();
