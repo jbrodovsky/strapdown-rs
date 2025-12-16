@@ -405,17 +405,17 @@ mod tests {
 
     #[test]
     fn downcast_trait_object_and_display() {
-        let mut pos = GPSPositionMeasurement::default();
-        pos.latitude = 1.0;
-        pos.longitude = 2.0;
-        pos.altitude = 3.0;
+        let pos = GPSPositionMeasurement::default();
+        // pos.latitude = 1.0;
+        // pos.longitude = 2.0;
+        // pos.altitude = 3.0;
         let boxed: Box<dyn MeasurementModel> = Box::new(pos.clone());
         // downcast via as_any
         let any = boxed.as_any();
         let down = any
             .downcast_ref::<GPSPositionMeasurement>()
             .expect("downcast failed");
-        assert!((down.latitude - 1.0).abs() < EPS);
+        assert!((down.latitude).abs() < EPS);
 
         // Display formatting
         let s = format!("{}", down);

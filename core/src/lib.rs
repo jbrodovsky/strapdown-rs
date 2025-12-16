@@ -295,6 +295,7 @@ impl StrapdownState {
     /// * `velocity_down` - Down velocity in m/s.
     /// * `attitude` - `Rotation3<f64>` attitude matrix.
     /// * `in_degrees` - If true, angles are provided in degrees and will be converted to radians.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         latitude: f64,
         longitude: f64,

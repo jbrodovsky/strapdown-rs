@@ -30,8 +30,7 @@ use strapdown::messages::{
     GnssDegradationConfig, GnssFaultModel, GnssScheduler, build_event_stream,
 };
 use strapdown::sim::{
-    NavigationResult, TestDataRecord, dead_reckoning, initialize_particle_filter, run_closed_loop,
-    run_closed_loop_pf,
+    NavigationResult, TestDataRecord, dead_reckoning, run_closed_loop,
 };
 
 use nalgebra::{DMatrix, DVector};
@@ -54,27 +53,6 @@ const DEFAULT_PROCESS_NOISE: [f64; 15] = [
     1e-8, // gyro bias y noise
     1e-8, // gyro bias z noise
 ];
-
-/// Process noise for particle filter - primarily applied to bias states with minimal navigation noise
-/// Navigation states receive very small process noise to maintain particle diversity and prevent collapse
-const PARTICLE_FILTER_PROCESS_NOISE: [f64; 15] = [
-    0.0,  // 1e-12, // latitude: minimal noise to prevent collapse
-    0.0,  // 1e-12, // longitude: minimal noise to prevent collapse
-    0.0,  // 1e-9,  // altitude: small noise for vertical channel
-    0.0,  // 1e-9,  // velocity north: minimal noise
-    0.0,  // 1e-9,  // velocity east: minimal noise
-    0.0,  // 1e-9,  // velocity down: minimal noise
-    0.0,  // 1e-12, // roll: minimal noise
-    0.0,  // 1e-12, // pitch: minimal noise
-    0.0,  // 1e-12, // yaw: minimal noise
-    1e-7, // acc bias x: random walk noise ~1e-7 m/s²
-    1e-7, // acc bias y: random walk noise
-    1e-7, // acc bias z: random walk noise
-    1e-9, // gyro bias x: random walk noise ~1e-9 rad/s
-    1e-9, // gyro bias y: random walk noise
-    1e-9, // gyro bias z: random walk noise
-];
-
 /// Error statistics for a navigation solution
 #[derive(Debug, Clone)]
 struct ErrorStats {

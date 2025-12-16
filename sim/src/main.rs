@@ -2,7 +2,6 @@ use clap::{Args, Parser, Subcommand};
 use log::{error, info};
 use std::error::Error;
 use std::path::{Path, PathBuf};
-use strapdown::kalman::NavigationFilter;
 use strapdown::messages::{GnssDegradationConfig, build_event_stream};
 use strapdown::particle::ParticleAveragingStrategy;
 use strapdown::sim::{
@@ -244,7 +243,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         Command::OpenLoop(ref args) => {
             validate_input_file(&args.input)?;
             validate_output_path(&args.output)?;
-            info!("Running in open-loop mode");
+            info!("Open-loop mode is not yet fully implemented");
             // Note: Open-loop mode is currently not fully implemented
             // This would run dead reckoning simulation
         }

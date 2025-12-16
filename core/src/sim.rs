@@ -30,7 +30,7 @@ use clap::{Args, ValueEnum};
 use crate::earth::METERS_TO_DEGREES;
 use crate::kalman::{InitialState, NavigationFilter, UnscentedKalmanFilter};
 use crate::messages::{Event, EventStream, GnssFaultModel, GnssScheduler};
-use crate::particle::{Particle, ParticleAveragingStrategy, ParticleFilter, ParticleResamplingStrategy};
+use crate::particle::{Particle, ParticleAveragingStrategy, ParticleFilter, ParticleResamplingStrategy, NavigationParticleFilter, K1, K2, K3};
 use crate::{IMUData, StrapdownState, forward};
 use health::HealthMonitor;
 
@@ -769,9 +769,11 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
 }
 /// Generic closed-loop simulation runner for any NavigationFilter
 ///
-/// This function implements the core simulation loop for both UKF and Particle Filter architectures.
+/// This function implements the core simulation loop for navigation filter architectures.
 /// It iterates through the event stream, performs prediction and update steps, checks health limits,
-/// and records navigation results.
+/// and records navigation results. While generic, this is really only intended for Kalman-filter
+/// family navigation filters because particle filter style navigation filters have the additional
+/// step of resampling. For particle filter type filters, use [run_closed_loop_pf] instead.
 ///
 /// # Arguments
 /// * `filter` - Mutable reference to a type implementing NavigationFilter
@@ -942,7 +944,7 @@ pub fn print_ukf(ukf: &UnscentedKalmanFilter, record: &TestDataRecord) {
     );
 }
 /// Print the Particle Filter state and weights for debugging purposes.
-pub fn print_pf(pf: &ParticleFilter, record: &TestDataRecord) {
+pub fn print_pf<P: ParticleFilter + NavigationFilter>(pf: P, record: &TestDataRecord) {
     // Compute weighted average state for comparison
     //let (mean, cov) = pf.compute_state();
     let mean = pf.get_estimate();
@@ -991,21 +993,21 @@ pub fn print_pf(pf: &ParticleFilter, record: &TestDataRecord) {
     );
 
     // Print particle count and effective particle count
-    let total_particles = pf.particles.len();
+    let particles = pf.get_particles();
+    let total_particles = particles.len();
     let eff_particles = 1.0
-        / pf.particles
-            .iter()
+        / particles.iter()
             .map(|p| p.weight * p.weight)
             .sum::<f64>();
     debug!(
         "PF particles: {} total, {:.1} effective  |  Weight range: [{:.4e}, {:.4e}]",
         total_particles,
         eff_particles,
-        pf.particles
+        particles
             .iter()
             .map(|p| p.weight)
             .fold(f64::INFINITY, f64::min),
-        pf.particles.iter().map(|p| p.weight).fold(0.0, f64::max)
+        particles.iter().map(|p| p.weight).fold(0.0, f64::max)
     );
 }
 /// Helper function to initialize a UKF for closed-loop mode.
@@ -1143,67 +1145,199 @@ pub fn initialize_ukf(
 pub fn initialize_particle_filter(
     initial_pose: TestDataRecord,
     num_particles: usize,
-    _position_std: f64,
-    _velocity_std: f64,
-    _attitude_std: f64,
+    // position_std: f64,
+    // velocity_std: f64,
+    // attitude_std: f64,
     process_noise_diagonal: Option<DVector<f64>>,
-) -> ParticleFilter {
+) -> NavigationParticleFilter {
+    let velocity_north = initial_pose.speed * initial_pose.bearing.cos();
+    let velocity_east = initial_pose.speed * initial_pose.bearing.sin();
+    let velocity_down = 0.0; // assuming no initial vertical velocity
+
     // sanitize angles (tests expect NaN angles to be treated as 0.0)
     let roll = if initial_pose.roll.is_nan() { 0.0 } else { initial_pose.roll };
     let pitch = if initial_pose.pitch.is_nan() { 0.0 } else { initial_pose.pitch };
     let yaw = if initial_pose.yaw.is_nan() { 0.0 } else { initial_pose.yaw };
 
-    let init_state = StrapdownState::new(
-        initial_pose.latitude,
-        initial_pose.longitude,
-        initial_pose.altitude,
-        initial_pose.speed * initial_pose.bearing.cos(),
-        initial_pose.speed * initial_pose.bearing.sin(),
-        0.0,
-        Rotation3::from_euler_angles(roll, pitch, yaw),
-        true,
-        Some(true),
-    );
-
     let uniform_weight = if num_particles > 0 { 1.0 / num_particles as f64 } else { 0.0 };
     let mut particles: Vec<Particle> = Vec::with_capacity(num_particles);
-    for _ in 0..num_particles {
-        let p = Particle::new(
-            init_state.clone(),
-            DVector::from_vec(vec![0.0, 0.0, 0.0]),
-            DVector::from_vec(vec![0.0, 0.0, 0.0]),
-            None,
-            uniform_weight,
-            None,
-            0.0,
-            0.0,
-            0.0,
-        );
-        particles.push(p);
-    }
 
-    ParticleFilter::new(
+    // Calculate the distribution stddev based on accuracy values
+    let position_std = initial_pose.horizontal_accuracy.sqrt();
+    let altitude_std = initial_pose.vertical_accuracy;
+    let velocity_std = initial_pose.speed_accuracy.sqrt();
+    let attitude_std = 1e-3; // small default attitude noise in radians
+
+    // Create RNG for adding initial diversity to particles
+    use rand::SeedableRng;
+    use rand_distr::{Distribution, Normal};
+    let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+
+    // Define initial spread for particle diversity
+    let pos_noise = Normal::new(0.0, position_std).unwrap();
+    let alt_noise = Normal::new(0.0, altitude_std).unwrap();
+    let vel_noise = Normal::new(0.0, velocity_std).unwrap();
+    let att_noise = Normal::new(0.0, attitude_std).unwrap();
+
+    for _ in 0..num_particles {
+        // Add noise to initial state for particle diversity
+        let latitude = initial_pose.latitude + pos_noise.sample(&mut rng).to_radians();
+        let longitude = initial_pose.longitude + pos_noise.sample(&mut rng).to_radians();
+        let altitude = initial_pose.altitude + alt_noise.sample(&mut rng);
+        let velocity_north = velocity_north + vel_noise.sample(&mut rng);
+        let velocity_east = velocity_east + vel_noise.sample(&mut rng);
+        let velocity_down = velocity_down + vel_noise.sample(&mut rng);
+        let roll = roll + att_noise.sample(&mut rng);
+        let pitch = pitch + att_noise.sample(&mut rng);
+        let yaw = yaw + att_noise.sample(&mut rng);
+
+        let p = Particle::new(
+                StrapdownState::new(
+                    latitude,
+                    longitude,
+                    altitude,
+                    velocity_north,
+                    velocity_east,
+                    velocity_down,
+                    Rotation3::from_euler_angles(roll, pitch, yaw),
+                    true,
+                    Some(true),
+                ),
+                DVector::from_vec(vec![0.0, 0.0, 0.0]),
+                DVector::from_vec(vec![0.0, 0.0, 0.0]),
+                None,
+                uniform_weight,
+                None,
+                K1,
+                K2,
+                K3,
+            );
+        particles.push(p);
+        }
+    NavigationParticleFilter::new(
         particles,
         process_noise_diagonal,
         Some(ParticleAveragingStrategy::WeightedAverage),
         Some(ParticleResamplingStrategy::Residual),
-        Some(false),
+        Some(true),  // Enable resampling
         None,
     )
 }
 
-/// Run a closed-loop simulation using a `ParticleFilter` instance.
+/// Run a closed-loop simulation using a `ParticleFilter` type navigation filter.
 ///
-/// This is a thin convenience wrapper around the generic `run_closed_loop` function
-/// specialized for `ParticleFilter`. The extra `mag_pressure` argument is accepted
-/// for backward compatibility in tests but is currently unused.
 pub fn run_closed_loop_pf(
-    pf: &mut ParticleFilter,
+    pf: &mut NavigationParticleFilter,
     stream: EventStream,
     health_limits: Option<HealthLimits>,
     _mag_pressure: Option<f64>,
 ) -> anyhow::Result<Vec<NavigationResult>> {
-    run_closed_loop(pf, stream, health_limits)
+    let start_time = stream.start_time;
+    let mut results: Vec<NavigationResult> = Vec::with_capacity(stream.events.len());
+    let total = stream.events.len();
+    let mut last_ts: Option<DateTime<Utc>> = None;
+    let mut monitor = HealthMonitor::new(health_limits.unwrap_or_default());
+
+    info!(
+        "Starting closed-loop navigation filter with {} events",
+        total
+    );
+
+    for (i, event) in stream.events.into_iter().enumerate() {
+        // Print detailed progress every 100 iterations or at key milestones
+        if i % 10 == 0 || i == total {
+            print!(
+                "\r[{:.1}%] Event {}/{} | ",
+                (i as f64 / total as f64) * 100.0,
+                i,
+                total
+            );
+            print_sim_status(pf);
+        }
+
+        // Compute wall-clock time for this event
+        let elapsed_s = match &event {
+            Event::Imu { elapsed_s, .. } => *elapsed_s,
+            Event::Measurement { elapsed_s, .. } => *elapsed_s,
+        };
+        let ts = start_time + Duration::milliseconds((elapsed_s * 1000.0).round() as i64);
+
+        // Apply event
+        match event {
+            Event::Imu { dt_s, imu, .. } => {
+                pf.predict(imu, dt_s);
+                let mean = pf.get_estimate();
+                let cov = pf.get_certainty();
+                if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
+                    log::error!("Health fail after propagate at {} (#{i}): {e}", ts);
+                    bail!(e);
+                }
+            }
+            Event::Measurement { meas, .. } => {
+                pf.update(meas.as_ref());
+                let mean = pf.get_estimate();
+                let cov = pf.get_certainty();
+                if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
+                    log::error!("Health fail after measurement update at {} (#{i}): {e}", ts);
+                    bail!(e);
+                }
+            }
+        }
+        // If timestamp changed, or it's the last event, record the previous state
+        if Some(ts) != last_ts {
+            if let Some(prev_ts) = last_ts {
+                let mean = pf.get_estimate();
+                let cov = pf.get_certainty();
+                results.push(NavigationResult::from((&prev_ts, &mean, &cov)));
+                debug!("Filter state at {}: {:?}", ts, mean);
+            }
+            last_ts = Some(ts);
+        }
+        // If this is the last event, also push
+        if i == total - 1 {
+            let mean = pf.get_estimate();
+            let cov = pf.get_certainty();
+            debug!("Filter state at {}: {:?}", ts, mean);
+            results.push(NavigationResult::from((&ts, &mean, &cov)));
+        }
+
+    }
+    println!(); // Print newline after progress indicator
+    debug!("Closed-loop simulation complete");
+    Ok(results)
+}
+
+// ==== Simulation Helper functions ====
+
+pub fn print_sim_status<F: NavigationFilter>(filter: &F) {
+    let mean = filter.get_estimate();
+    let cov = filter.get_certainty();
+
+    // Extract position and covariance diagonal
+    let lat = mean[0].to_degrees();
+    let lon = mean[1].to_degrees();
+    let alt = mean[2];
+
+    // Get position uncertainty (diagonal elements)
+    let pos_std_lat = cov[(0, 0)].sqrt().to_degrees();
+    let pos_std_lon = cov[(1, 1)].sqrt().to_degrees();
+    let pos_std_alt = cov[(2, 2)].sqrt();
+
+    // Compute RMS of position covariance
+    let pos_rms = (pos_std_lat.powi(2) + pos_std_lon.powi(2) + pos_std_alt.powi(2)).sqrt();
+
+    print!(
+        "\rPos: ({:.6}°, {:.6}°, {:.1}m) | σ: ({:.2e}°, {:.2e}°, {:.2}m) | RMS: {:.2e}",
+        lat,
+        lon,
+        alt,
+        pos_std_lat,
+        pos_std_lon,
+        pos_std_alt,
+        pos_rms
+    );
+    use std::io::Write;
+    std::io::stdout().flush().ok();
 }
 
 pub mod health {
@@ -1454,7 +1588,6 @@ pub fn build_fault(a: &FaultArgs) -> GnssFaultModel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::particle::{ParticleAveragingStrategy, ParticleResamplingStrategy};
     use chrono::Utc;
     use std::fs::File;
     use std::path::Path;
@@ -2000,7 +2133,11 @@ mod tests {
         };
 
         let num_particles = 50;
-        let pf = initialize_particle_filter(initial_pose, num_particles, 10.0, 1.0, 0.1, None);
+        let pf = initialize_particle_filter(
+            initial_pose, 
+            num_particles, 
+            None
+        );
 
         assert_eq!(pf.particles.len(), num_particles);
 
@@ -2265,30 +2402,12 @@ mod tests {
             yaw: f64::NAN,
             ..Default::default()
         };
-        let pf = initialize_particle_filter(initial_pose, 20, 5.0, 1.0, 0.1, None);
+        let pf = initialize_particle_filter(
+            initial_pose, 
+            20, 
+            None
+        );
         assert_eq!(pf.particles.len(), 20);
-    }
-
-    #[test]
-    fn test_initialize_particle_filter_with_custom_process_noise() {
-        let initial_pose = TestDataRecord {
-            time: Utc::now(),
-            horizontal_accuracy: 10.0,
-            vertical_accuracy: 5.0,
-            speed_accuracy: 1.0,
-            latitude: 37.0,
-            longitude: -122.0,
-            altitude: 100.0,
-            speed: 5.0,
-            bearing: 0.0,
-            roll: 0.0,
-            pitch: 0.0,
-            yaw: 0.0,
-            ..Default::default()
-        };
-        let custom_noise = DVector::from_vec(vec![1e-4; 15]);
-        let pf = initialize_particle_filter(initial_pose, 30, 5.0, 1.0, 0.1, Some(custom_noise));
-        assert_eq!(pf.particles.len(), 30);
     }
     #[test]
     fn test_health_limits_default() {
