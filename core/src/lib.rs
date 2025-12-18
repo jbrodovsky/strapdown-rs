@@ -45,20 +45,21 @@
 //! vector is defined as:
 //!
 //! $$
-//! x = [p_n, p_e, p_d, v_n, v_e, v_d, \phi, \theta, \psi]
+//! x = [p_n, p_e, p_d, v_n, v_e, v_v, \phi, \theta, \psi]
 //! $$
 //!
 //! Where:
 //! - $p_n$, $p_e$, and $p_d$ are the WGS84 geodetic positions (degrees latitude, degrees longitude, meters relative to the ellipsoid).
-//! - $v_n$, $v_e$, and $v_d$ are the local level frame (NED/ENU) velocities (m/s) along the north axis, east axis, and vertical axis.
+//! - $v_n$, $v_e$, and $v_v$ are the local level frame (NED/ENU) velocities (m/s) along the north axis, east axis, and vertical axis.
 //! - $\phi$, $\theta$, and $\psi$ are the Euler angles (radians) representing the orientation of the body frame relative to the local level frame (XYZ Euler rotation).
 //!
-//! The coordinate convention is in East-North-Up. However this is somewhat loosely controlled by the codebase largely by
+//! The default coordinate convention is in East-North-Up. However this is somewhat loosely controlled by the codebase largely by
 //! user defined positive/negative sign conventions. For example, the tests in this main module that test the forward
-//! propagation of the strapdown equations assume an ENU frame (thus gravitational acceleration is negative in the down direction).
+//! propagation of the strapdown equations assume an ENU frame (thus gravitational acceleration is negative in along the vertical axis).
 //! In free-fall, (no relative acceleration in the body frame), the vertical velocity should increase negatively (down is negative), and
 //! thus the altitude should decrease. Users must be consistent in their use of coordinate conventions throughout the codebase, primarily
-//! in their definition of positive and negative accelerations and forces.
+//! in their definition of positive and negative accelerations and forces with respect to the vertical axis. This crate will not attempt
+//! to correct, sanitize, or assume a given convention. Users must dictate it by various `is_enu` boolean flags and strict sign conventions.
 //!
 //! This mechanization and coordinate frame is only valid for positions relatively close to the Earth's surface (within 30 km above mean sea level).
 //! Above that it is more common to use the Earth-Centered Earth-Fixed (ECEF) frame for navigation. Additionally, the deepest ocean trenches
@@ -222,8 +223,8 @@ pub struct StrapdownState {
     pub velocity_north: f64,
     /// Velocity east in m/s (NED frame)
     pub velocity_east: f64,
-    /// Velocity down in m/s (NED frame)
-    pub velocity_down: f64,
+    /// Vertical velocity in m/s (positive up in ENU, positive down in NED)
+    pub velocity_vertical: f64,
     /// Attitude as a rotation matrix
     pub attitude: Rotation3<f64>,
     /// Flag for ENU (true) or NED (false) frame, default is ENU (true)
@@ -238,7 +239,7 @@ impl Debug for StrapdownState {
             .field("altitude (m)", &self.altitude)
             .field("velocity_north (m/s)", &self.velocity_north)
             .field("velocity_east (m/s)", &self.velocity_east)
-            .field("velocity_down (m/s)", &self.velocity_down)
+            .field("velocity_vertical (m/s)", &self.velocity_vertical)
             .field(
                 "attitude (roll, pitch, yaw in deg)",
                 &format_args!(
@@ -262,7 +263,7 @@ impl Display for StrapdownState {
             self.altitude,
             self.velocity_north,
             self.velocity_east,
-            self.velocity_down,
+            self.velocity_vertical,
             roll.to_degrees(),
             pitch.to_degrees(),
             yaw.to_degrees()
@@ -277,7 +278,7 @@ impl Default for StrapdownState {
             altitude: 0.0,
             velocity_north: 0.0,
             velocity_east: 0.0,
-            velocity_down: 0.0,
+            velocity_vertical: 0.0,
             attitude: Rotation3::identity(),
             is_enu: true,
         }
@@ -292,7 +293,7 @@ impl StrapdownState {
     /// * `altitude` - Altitude in meters.
     /// * `velocity_north` - North velocity in m/s.
     /// * `velocity_east` - East velocity in m/s.
-    /// * `velocity_down` - Down velocity in m/s.
+    /// * `velocity_vertical` - Vertical velocity in m/s (positive up in ENU, positive down in NED).
     /// * `attitude` - `Rotation3<f64>` attitude matrix.
     /// * `in_degrees` - If true, angles are provided in degrees and will be converted to radians.
     #[allow(clippy::too_many_arguments)]
@@ -302,7 +303,7 @@ impl StrapdownState {
         altitude: f64,
         velocity_north: f64,
         velocity_east: f64,
-        velocity_down: f64,
+        velocity_vertical: f64,
         attitude: Rotation3<f64>,
         in_degrees: bool,
         is_enu: Option<bool>,
@@ -337,7 +338,7 @@ impl StrapdownState {
             altitude,
             velocity_north,
             velocity_east,
-            velocity_down,
+            velocity_vertical,
             attitude,
             is_enu: is_enu.unwrap_or(true),
         }
@@ -354,7 +355,7 @@ impl From<StrapdownState> for Vec<f64> {
             state.altitude,
             state.velocity_north,
             state.velocity_east,
-            state.velocity_down,
+            state.velocity_vertical,
             roll,
             pitch,
             yaw,
@@ -371,7 +372,7 @@ impl From<&StrapdownState> for Vec<f64> {
             state.altitude,
             state.velocity_north,
             state.velocity_east,
-            state.velocity_down,
+            state.velocity_vertical,
             roll,
             pitch,
             yaw,
@@ -451,7 +452,7 @@ pub fn forward(state: &mut StrapdownState, imu_data: IMUData, dt: f64) {
     // Save update velocity
     state.velocity_north = velocity[0];
     state.velocity_east = velocity[1];
-    state.velocity_down = velocity[2];
+    state.velocity_vertical = velocity[2];
     // Save updated position
     state.latitude = lat_1;
     state.longitude = lon_1;
@@ -476,7 +477,7 @@ fn attitude_update(state: &StrapdownState, gyros: Vector3<f64>, dt: f64) -> Matr
         &Vector3::from_vec(vec![
             state.velocity_north,
             state.velocity_east,
-            state.velocity_down,
+            state.velocity_vertical,
         ]),
     ));
     let rotation_rate: Matrix3<f64> =
@@ -505,7 +506,7 @@ fn velocity_update(state: &StrapdownState, specific_force: Vector3<f64>, dt: f64
         &Vector3::from_vec(vec![
             state.velocity_north,
             state.velocity_east,
-            state.velocity_down,
+            state.velocity_vertical,
         ]),
     ));
     let rotation_rate: Matrix3<f64> =
@@ -514,7 +515,7 @@ fn velocity_update(state: &StrapdownState, specific_force: Vector3<f64>, dt: f64
     let velocity: Vector3<f64> = Vector3::new(
         state.velocity_north,
         state.velocity_east,
-        state.velocity_down,
+        state.velocity_vertical,
     );
     let gravity = Vector3::new(
         0.0,
@@ -548,7 +549,7 @@ pub fn position_update(state: &StrapdownState, velocity: Vector3<f64>, dt: f64) 
     let lat_0 = state.latitude;
     let alt_0 = state.altitude;
     // Altitude update
-    let alt_1 = alt_0 + 0.5 * (state.velocity_down + velocity[2]) * dt;
+    let alt_1 = alt_0 + 0.5 * (state.velocity_vertical + velocity[2]) * dt;
     // Latitude update
     let lat_1: f64 = state.latitude
         + 0.5 * (state.velocity_north / (r_n + state.altitude) + velocity[0] / (r_n + alt_1)) * dt;
@@ -783,7 +784,7 @@ mod tests {
         assert_eq!(state.altitude, 0.0);
         assert_eq!(state.velocity_north, 0.0);
         assert_eq!(state.velocity_east, 0.0);
-        assert_eq!(state.velocity_down, 0.0);
+        assert_eq!(state.velocity_vertical, 0.0);
         assert_eq!(state.attitude, Rotation3::identity());
     }
     #[test]
@@ -828,7 +829,7 @@ mod tests {
         let mut state = StrapdownState::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, None);
         assert_eq!(state.velocity_north, 0.0);
         assert_eq!(state.velocity_east, 0.0);
-        assert_eq!(state.velocity_down, 0.0);
+        assert_eq!(state.velocity_vertical, 0.0);
         let imu_data = IMUData {
             accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
             gyro: Vector3::new(0.0, 0.0, 0.0), // No rotation
@@ -842,7 +843,7 @@ mod tests {
         assert_approx_eq!(state.altitude, 0.0, 0.1);
         assert_approx_eq!(state.velocity_north, 0.0, 1e-3);
         assert_approx_eq!(state.velocity_east, 0.0, 1e-3);
-        assert_approx_eq!(state.velocity_down, 0.0, 0.1);
+        assert_approx_eq!(state.velocity_vertical, 0.0, 0.1);
         //assert_approx_eq!(state.attitude, Rotation3::identity(), 1e-3);
         let attitude = state.attitude.matrix() - Rotation3::identity().matrix();
         assert_approx_eq!(attitude[(0, 0)], 0.0, 1e-3);
@@ -933,7 +934,7 @@ mod tests {
         let mut state = StrapdownState::default();
         state.velocity_north = 5.0;
         state.velocity_east = -3.0;
-        state.velocity_down = 2.0;
+        state.velocity_vertical = 2.0;
         let f = Vector3::from_vec(vec![0.0, 0.0, earth::gravity(&0.0, &0.0)]);
         let dt = 1.0;
         let v_new = velocity_update(&state, f, dt);
@@ -951,7 +952,7 @@ mod tests {
         assert_eq!(state.altitude, 0.0);
         assert_eq!(state.velocity_north, 0.0);
         assert_eq!(state.velocity_east, 0.0);
-        assert_eq!(state.velocity_down, 0.0);
+        assert_eq!(state.velocity_vertical, 0.0);
         assert_eq!(state.attitude, Rotation3::identity());
         let f = Vector3::from_vec(vec![0.0, 0.0, 0.0]); // Free fall (no acceleration)
         let dt = 1.0;
@@ -970,7 +971,7 @@ mod tests {
         let mut state = StrapdownState::default();
         state.velocity_north = 0.0;
         state.velocity_east = 0.0;
-        state.velocity_down = 0.0;
+        state.velocity_vertical = 0.0;
         let f = Vector3::from_vec(vec![0.0, 0.0, 2.0 * earth::gravity(&0.0, &0.0)]); // Upward acceleration
         let dt = 1.0;
         let v_new = velocity_update(&state, f, dt);
