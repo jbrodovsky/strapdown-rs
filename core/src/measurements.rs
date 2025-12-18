@@ -95,7 +95,7 @@ impl MeasurementModel for GPSPositionMeasurement {
 pub struct GPSVelocityMeasurement {
     pub northward_velocity: f64,
     pub eastward_velocity: f64,
-    pub downward_velocity: f64,
+    pub vertical_velocity: f64,
     pub horizontal_noise_std: f64,
     pub vertical_noise_std: f64,
 }
@@ -106,7 +106,7 @@ impl Display for GPSVelocityMeasurement {
             "GPSVelocityMeasurement(north: {}, east: {}, down: {}, horiz_noise: {}, vert_noise: {})",
             self.northward_velocity,
             self.eastward_velocity,
-            self.downward_velocity,
+            self.vertical_velocity,
             self.horizontal_noise_std,
             self.vertical_noise_std
         )
@@ -126,7 +126,7 @@ impl MeasurementModel for GPSVelocityMeasurement {
         DVector::from_vec(vec![
             self.northward_velocity,
             self.eastward_velocity,
-            self.downward_velocity,
+            self.vertical_velocity,
         ])
     }
     fn get_noise(&self) -> DMatrix<f64> {
@@ -192,7 +192,7 @@ impl MeasurementModel for GPSPositionAndVelocityMeasurement {
     }
     fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
         // Measurement includes latitude, longitude, altitude, north and east velocities
-        // (five elements). Do not include downward velocity here.
+        // (five elements). Do not include vertical velocity here.
         DVector::from_vec(vec![state[0], state[1], state[2], state[3], state[4]])
     }
     //fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
@@ -304,7 +304,7 @@ mod tests {
         let meas = GPSVelocityMeasurement {
             northward_velocity: 1.5,
             eastward_velocity: -0.5,
-            downward_velocity: 0.25,
+            vertical_velocity: 0.25,
             horizontal_noise_std: 0.2,
             vertical_noise_std: 0.1,
         };
@@ -427,7 +427,7 @@ mod tests {
         let meas = GPSVelocityMeasurement {
             northward_velocity: 0.0,
             eastward_velocity: 0.0,
-            downward_velocity: 0.0,
+            vertical_velocity: 0.0,
             horizontal_noise_std: -2.0,
             vertical_noise_std: 0.0,
         };

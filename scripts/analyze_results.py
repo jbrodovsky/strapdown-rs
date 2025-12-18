@@ -76,7 +76,7 @@ def calculate_velocity_error(truth: pd.DataFrame, test: pd.DataFrame) -> np.ndar
     """Calculate 3D velocity error magnitude in m/s."""
     vn_err = test["velocity_north"].values - truth["velocity_north"].values
     ve_err = test["velocity_east"].values - truth["velocity_east"].values
-    vd_err = test["velocity_down"].values - truth["velocity_down"].values
+    vd_err = test["velocity_vertical"].values - truth["velocity_vertical"].values
     return np.sqrt(vn_err**2 + ve_err**2 + vd_err**2)
 
 

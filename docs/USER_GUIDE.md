@@ -430,7 +430,7 @@ The navigation solution CSV contains:
 | `altitude` | meters | Estimated altitude |
 | `velocity_north` | m/s | Northward velocity |
 | `velocity_east` | m/s | Eastward velocity |
-| `velocity_down` | m/s | Downward velocity |
+| `velocity_vertical` | m/s | Vertical velocity |
 | `roll`, `pitch`, `yaw` | radians | Estimated attitude |
 | `*_cov` | varies | Covariance diagonals |
 

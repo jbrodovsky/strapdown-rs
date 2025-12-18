@@ -20,7 +20,7 @@ pub struct InitialState {
     pub altitude: f64,
     pub northward_velocity: f64,
     pub eastward_velocity: f64,
-    pub downward_velocity: f64,
+    pub vertical_velocity: f64,
     pub roll: f64,
     pub pitch: f64,
     pub yaw: f64,
@@ -35,7 +35,7 @@ impl InitialState {
         altitude: f64,
         northward_velocity: f64,
         eastward_velocity: f64,
-        downward_velocity: f64,
+        vertical_velocity: f64,
         mut roll: f64,
         mut pitch: f64,
         mut yaw: f64,
@@ -64,7 +64,7 @@ impl InitialState {
             altitude,
             northward_velocity,
             eastward_velocity,
-            downward_velocity,
+            vertical_velocity,
             roll,
             pitch,
             yaw,
@@ -135,7 +135,7 @@ impl UnscentedKalmanFilter {
                 initial_state.altitude,
                 initial_state.northward_velocity,
                 initial_state.eastward_velocity,
-                initial_state.downward_velocity,
+                initial_state.vertical_velocity,
                 initial_state.roll,
                 initial_state.pitch,
                 initial_state.yaw,
@@ -147,7 +147,7 @@ impl UnscentedKalmanFilter {
                 initial_state.altitude,
                 initial_state.northward_velocity,
                 initial_state.eastward_velocity,
-                initial_state.downward_velocity,
+                initial_state.vertical_velocity,
                 initial_state.roll,
                 initial_state.pitch,
                 initial_state.yaw,
@@ -214,7 +214,7 @@ impl NavigationFilter for UnscentedKalmanFilter {
                 altitude: sigma_point_vec[2],
                 velocity_north: sigma_point_vec[3],
                 velocity_east: sigma_point_vec[4],
-                velocity_down: sigma_point_vec[5],
+                velocity_vertical: sigma_point_vec[5],
                 attitude: Rotation3::from_euler_angles(
                     sigma_point_vec[6],
                     sigma_point_vec[7],
@@ -250,7 +250,7 @@ impl NavigationFilter for UnscentedKalmanFilter {
             sigma_point_vec[2] = state.altitude;
             sigma_point_vec[3] = state.velocity_north;
             sigma_point_vec[4] = state.velocity_east;
-            sigma_point_vec[5] = state.velocity_down;
+            sigma_point_vec[5] = state.velocity_vertical;
             sigma_point_vec[6] = state.attitude.euler_angles().0;
             sigma_point_vec[7] = state.attitude.euler_angles().1;
             sigma_point_vec[8] = state.attitude.euler_angles().2;
@@ -335,7 +335,7 @@ mod tests {
         altitude: 0.0,
         northward_velocity: 0.0,
         eastward_velocity: 0.0,
-        downward_velocity: 0.0,
+        vertical_velocity: 0.0,
         roll: 0.0,
         pitch: 0.0,
         yaw: 0.0,
@@ -566,7 +566,7 @@ mod tests {
         let vel_meas = GPSVelocityMeasurement {
             northward_velocity: 0.0,
             eastward_velocity: 0.0,
-            downward_velocity: 0.0,
+            vertical_velocity: 0.0,
             horizontal_noise_std: 0.5,
             vertical_noise_std: 0.5,
         };
@@ -617,7 +617,7 @@ mod tests {
             altitude: 100.0,
             northward_velocity: 0.0,
             eastward_velocity: 0.0,
-            downward_velocity: 0.0,
+            vertical_velocity: 0.0,
             roll: 0.0,
             pitch: 0.0,
             yaw: 0.0,
@@ -656,7 +656,7 @@ mod tests {
             altitude: 100.0,
             northward_velocity: 0.0,
             eastward_velocity: 0.0,
-            downward_velocity: 0.0,
+            vertical_velocity: 0.0,
             roll: 0.0,
             pitch: 0.0,
             yaw: 0.0,
@@ -687,10 +687,10 @@ mod tests {
             ukf.predict(imu_data, dt);
         }
 
-        // After 1 second of free fall, should have accumulated downward velocity
+        // After 1 second of free fall, should have accumulated vertical velocity
         // v = g*t = 9.81 * 1.0 = 9.81 m/s (downward is negative in ENU)
         let final_vd = ukf.mean_state[5];
-        assert!(final_vd < -5.0, "Expected significant downward velocity, got {}", final_vd);
+        assert!(final_vd < -5.0, "Expected significant vertical velocity, got {}", final_vd);
 
         // Altitude should have decreased
         let final_altitude = ukf.mean_state[2];
@@ -719,7 +719,7 @@ mod tests {
             altitude: 100.0,
             northward_velocity: 0.0,
             eastward_velocity: 0.0,
-            downward_velocity: 0.0,
+            vertical_velocity: 0.0,
             roll: 0.0,
             pitch: 0.0,
             yaw: 0.0,
@@ -766,7 +766,7 @@ mod tests {
         let vel_measurement = GPSVelocityMeasurement {
             northward_velocity: 0.0,
             eastward_velocity: 0.0,
-            downward_velocity: 0.0,
+            vertical_velocity: 0.0,
             horizontal_noise_std: 0.5,
             vertical_noise_std: 0.5,
         };
@@ -787,7 +787,7 @@ mod tests {
             altitude: 100.0,
             northward_velocity: 10.0, // 10 m/s northward
             eastward_velocity: 0.0,
-            downward_velocity: 0.0,
+            vertical_velocity: 0.0,
             roll: 0.0,
             pitch: 0.0,
             yaw: 0.0,
@@ -860,7 +860,7 @@ mod tests {
             altitude: 100.0,
             northward_velocity: 0.0,
             eastward_velocity: 15.0, // 15 m/s eastward
-            downward_velocity: 0.0,
+            vertical_velocity: 0.0,
             roll: 0.0,
             pitch: 0.0,
             yaw: 0.0,
@@ -906,7 +906,7 @@ mod tests {
         let final_vn = ukf.mean_state[3];
         assert_approx_eq!(final_vn, 0.0, 0.5);
 
-        // Downward velocity should remain near zero
+        // Vertical velocity should remain near zero
         let final_vd = ukf.mean_state[5];
         assert_approx_eq!(final_vd, 0.0, 0.5);
 
@@ -928,7 +928,7 @@ mod tests {
         let vel_meas = GPSVelocityMeasurement {
             northward_velocity: 0.0,
             eastward_velocity: 15.0,
-            downward_velocity: 0.0,
+            vertical_velocity: 0.0,
             horizontal_noise_std: 0.5,
             vertical_noise_std: 0.5,
         };
@@ -949,7 +949,7 @@ mod tests {
             altitude: 100.0,
             northward_velocity: 10.0,
             eastward_velocity: 10.0,
-            downward_velocity: 0.0,
+            vertical_velocity: 0.0,
             roll: 0.0,
             pitch: 0.0,
             yaw: 0.0,
