@@ -8,6 +8,7 @@ use geonav::{
     GeoMap, GeophysicalMeasurementType, GravityResolution, MagneticResolution, build_event_stream,
     geo_closed_loop,
 };
+use strapdown::kalman::NavigationFilter;
 use strapdown::messages::GnssDegradationConfig;
 use strapdown::sim::{
     DEFAULT_PROCESS_NOISE, FaultArgs, NavigationResult, SchedulerArgs, TestDataRecord, build_fault,
@@ -209,12 +210,11 @@ fn find_map_file(
 /// Initialize the logger with the specified configuration
 fn init_logger(log_level: &str, log_file: Option<&PathBuf>) -> Result<(), Box<dyn Error>> {
     use std::io::Write;
-    
-    let level = log_level.parse::<log::LevelFilter>()
-        .unwrap_or_else(|_| {
-            eprintln!("Invalid log level '{}', defaulting to 'info'", log_level);
-            log::LevelFilter::Info
-        });
+
+    let level = log_level.parse::<log::LevelFilter>().unwrap_or_else(|_| {
+        eprintln!("Invalid log level '{}', defaulting to 'info'", log_level);
+        log::LevelFilter::Info
+    });
 
     let mut builder = env_logger::Builder::new();
     builder.filter_level(level);
@@ -229,10 +229,12 @@ fn init_logger(log_level: &str, log_file: Option<&PathBuf>) -> Result<(), Box<dy
     });
 
     if let Some(log_path) = log_file {
-        let target = Box::new(std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_path)?);
+        let target = Box::new(
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log_path)?,
+        );
         builder.target(env_logger::Target::Pipe(target));
     }
 
@@ -242,7 +244,7 @@ fn init_logger(log_level: &str, log_file: Option<&PathBuf>) -> Result<(), Box<dy
 
 fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
-    
+
     // Initialize logger
     init_logger(&cli.log_level, cli.log_file.as_ref())?;
 
@@ -255,10 +257,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Ensure output directory exists
-    if let Some(parent) = cli.output.parent() {
-        if !parent.exists() {
-            std::fs::create_dir_all(parent)?;
-        }
+    if let Some(parent) = cli.output.parent()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent)?;
     }
 
     // Load sensor data records from CSV
@@ -317,7 +319,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     info!("Built event stream with {} events", events.events.len());
 
     // Initialize UKF
-    let mut process_noise: Vec<f64> = DEFAULT_PROCESS_NOISE.clone().into();
+    let mut process_noise: Vec<f64> = DEFAULT_PROCESS_NOISE.into();
     process_noise.extend([1e-9]); // Extend for geophysical state
 
     let mut ukf = initialize_ukf(
@@ -331,9 +333,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
     info!(
         "Initialized UKF with state dimension {}",
-        ukf.get_mean().len()
+        ukf.get_estimate().len()
     );
-    info!("Initial state: {:?}", ukf.get_mean());
+    info!("Initial state: {:?}", ukf.get_estimate());
     // Run closed-loop simulation
     info!("Running geophysical navigation simulation...");
     let results = geo_closed_loop(&mut ukf, events);

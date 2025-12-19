@@ -2,9 +2,9 @@ import os
 from argparse import ArgumentParser
 from pathlib import Path
 
-import pandas as pd
 import matplotlib.pyplot as plt
-from haversine import haversine_vector, Unit
+import pandas as pd
+from haversine import Unit, haversine_vector
 
 
 def plot_performance(nav: pd.DataFrame, gps: pd.DataFrame, output_path: Path | str):
@@ -15,9 +15,15 @@ def plot_performance(nav: pd.DataFrame, gps: pd.DataFrame, output_path: Path | s
     # output_path.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(1, 1, figsize=(12, 4))
     two_d_error = haversine_vector(
-        gps[["latitude", "longitude"]].to_numpy()[1:, :], nav[["latitude", "longitude"]].to_numpy(), Unit.METERS
+        gps[["latitude", "longitude"]].to_numpy()[1:, :],
+        nav[["latitude", "longitude"]].to_numpy(),
+        Unit.METERS,
     )
-    ax.plot((nav.index - nav.index[0]).total_seconds(), two_d_error, label="2D Haversine Error")
+    ax.plot(
+        (nav.index - nav.index[0]).total_seconds(),
+        two_d_error,
+        label="2D Haversine Error",
+    )
     ax.plot(
         (nav.index - nav.index[0]).total_seconds(),
         abs(nav["altitude"].to_numpy() - gps["altitude"].to_numpy()[1:]),
@@ -39,7 +45,9 @@ def plot_performance(nav: pd.DataFrame, gps: pd.DataFrame, output_path: Path | s
     ax.set_ylim((0, 50))
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("2D Haversine Error (m)")
-    ax.set_title("Strapdown INS Simulation Performance with GPS Comparison", fontsize=16)
+    ax.set_title(
+        "Strapdown INS Simulation Performance with GPS Comparison", fontsize=16
+    )
     ax.grid()
     ax.legend()
     fig.savefig(output_path, dpi=300)

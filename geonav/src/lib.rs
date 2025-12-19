@@ -31,9 +31,10 @@ use world_magnetic_model::uom::si::f32::{Angle, Length};
 use world_magnetic_model::uom::si::length::meter;
 
 use strapdown::earth::gravity_anomaly;
-use strapdown::filter::{
-    GPSPositionAndVelocityMeasurement, MeasurementModel, RelativeAltitudeMeasurement,
-    UnscentedKalmanFilter,
+use strapdown::kalman::{NavigationFilter, UnscentedKalmanFilter};
+use strapdown::measurements::{
+    GPSPositionAndVelocityMeasurement,
+    MeasurementModel, RelativeAltitudeMeasurement,
 };
 use strapdown::messages::{
     Event, EventStream, FaultState, GnssDegradationConfig, GnssScheduler, apply_fault,
@@ -427,7 +428,7 @@ impl GeoMap {
 /// Trait for geophysical anomaly measurement models
 ///
 /// Geophysical anomaly measurements require some degree of knowledge about the vehicle state. Due to the way
-/// the measurement event stream is constructed, this state is not known at the time of simulation inialization.
+/// the measurement event stream is constructed, this state is not known at the time of simulation initialization.
 /// As such, the measurement models corresponding to geophysical anomalies are not implemented as standalone
 /// models, but rather as a specific processing configuration that must be implemented in the closed loop configuration.
 ///
@@ -497,22 +498,31 @@ impl MeasurementModel for GravityMeasurement {
             self.noise_std.powi(2),
         ))
     }
-    fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
-        let num_sigma_points = state_sigma_points.ncols();
-        let mut measurement_sigma_points = DMatrix::zeros(1, num_sigma_points);
-
-        for i in 0..num_sigma_points {
-            let state = state_sigma_points.column(i);
-            let lat = state[0];
-            let lon = state[1];
-
-            measurement_sigma_points[(0, i)] = self
-                .map
-                .get_point(&lat.to_degrees(), &lon.to_degrees())
-                .unwrap_or(f64::NAN);
-        }
-        measurement_sigma_points
+    fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
+        let lat = state[0];
+        let lon = state[1];
+        let map_value = self
+            .map
+            .get_point(&lat.to_degrees(), &lon.to_degrees())
+            .unwrap_or(f64::NAN);
+        DVector::from_vec(vec![map_value])
     }
+    // fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
+    //     let num_sigma_points = state_sigma_points.ncols();
+    //     let mut measurement_sigma_points = DMatrix::zeros(1, num_sigma_points);
+    //
+    //     for i in 0..num_sigma_points {
+    //         let state = state_sigma_points.column(i);
+    //         let lat = state[0];
+    //         let lon = state[1];
+    //
+    //         measurement_sigma_points[(0, i)] = self
+    //             .map
+    //             .get_point(&lat.to_degrees(), &lon.to_degrees())
+    //             .unwrap_or(f64::NAN);
+    //     }
+    //     measurement_sigma_points
+    // }
 }
 /// Magnetic anomaly measurement model
 #[derive(Clone, Debug)]
@@ -540,7 +550,7 @@ impl GeophysicalAnomalyMeasurementModel for MagneticAnomalyMeasurement {
             Length::new::<meter>(self.altitude as f32),
             Angle::new::<degree>(self.latitude as f32),
             Angle::new::<degree>(self.longitude as f32),
-            Date::from_ordinal_date(self.year as i32, self.day as u16).unwrap(),
+            Date::from_ordinal_date(self.year, self.day).unwrap(),
         )
         .expect("Failed to create GeomagneticField");
         self.mag_obs - magnetic_field.f().value as f64
@@ -570,22 +580,31 @@ impl MeasurementModel for MagneticAnomalyMeasurement {
             self.noise_std.powi(2),
         ))
     }
-    fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
-        let num_sigma_points = state_sigma_points.ncols();
-        let mut measurement_sigma_points = DMatrix::zeros(1, num_sigma_points);
-
-        for i in 0..num_sigma_points {
-            let state = state_sigma_points.column(i);
-            let lat = state[0];
-            let lon = state[1];
-
-            measurement_sigma_points[(0, i)] = self
-                .map
-                .get_point(&lat.to_degrees(), &lon.to_degrees())
-                .unwrap_or(f64::NAN);
-        }
-        measurement_sigma_points
+    fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
+        let lat = state[0];
+        let lon = state[1];
+        let map_value = self
+            .map
+            .get_point(&lat.to_degrees(), &lon.to_degrees())
+            .unwrap_or(f64::NAN);
+        DVector::from_vec(vec![map_value])
     }
+    // fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
+    //     let num_sigma_points = state_sigma_points.ncols();
+    //     let mut measurement_sigma_points = DMatrix::zeros(1, num_sigma_points);
+    //
+    //     for i in 0..num_sigma_points {
+    //         let state = state_sigma_points.column(i);
+    //         let lat = state[0];
+    //         let lon = state[1];
+    //
+    //         measurement_sigma_points[(0, i)] = self
+    //             .map
+    //             .get_point(&lat.to_degrees(), &lon.to_degrees())
+    //             .unwrap_or(f64::NAN);
+    //     }
+    //     measurement_sigma_points
+    // }
 }
 //================= Geophysical Navigation Simulation ======================================================
 /// Builds and initializes an event stream that also contains geophysical measurements
@@ -792,7 +811,7 @@ pub fn build_event_stream(
                             latitude: f64::NAN, // to be set in closed-loop using state
                             longitude: f64::NAN, // to be set in closed-loop using state
                             altitude: f64::NAN, // to be set in closed-loop using state
-                            year: datetime.year() as i32,
+                            year: datetime.year(),
                             day: datetime.ordinal() as u16,
                         };
                         events.push(Event::Measurement {
@@ -848,7 +867,7 @@ pub fn geo_closed_loop(
             Event::Imu { dt_s, imu, .. } => {
                 ukf.predict(imu, dt_s);
                 if let Err(e) =
-                    monitor.check(ukf.get_mean().as_slice(), &ukf.get_covariance(), None)
+                    monitor.check(ukf.get_estimate().as_slice(), &ukf.get_certainty(), None)
                 {
                     // log::error!("Health fail after predict at {} (#{i}): {e}", ts);
                     bail!(e);
@@ -862,7 +881,7 @@ pub fn geo_closed_loop(
                 if let Some(gravity) = meas.as_any_mut().downcast_mut::<GravityMeasurement>() {
                     // Handle GravityMeasurement-specific logic here if needed
                     // dbg!("Processing GravityMeasurement at time {}", ts);
-                    let mean_vec = ukf.get_mean();
+                    let mean_vec = ukf.get_estimate();
                     // dbg!("Current State: {:?}", mean_vec.as_slice());
                     let mean = mean_vec.as_slice();
                     let strapdown: StrapdownState = (&mean[..9]).try_into().unwrap();
@@ -874,7 +893,7 @@ pub fn geo_closed_loop(
                 {
                     // Handle MagneticAnomalyMeasurement-specific logic here if needed
                     //let mean: StrapdownState = ukf.get_mean().as_slice().try_into().unwrap();
-                    let mean_vec = ukf.get_mean();
+                    let mean_vec = ukf.get_estimate();
                     let mean = mean_vec.as_slice();
                     let strapdown: StrapdownState = (&mean[..9]).try_into().unwrap();
                     magnetic.set_state(&strapdown);
@@ -884,13 +903,13 @@ pub fn geo_closed_loop(
                     ukf.update(meas.as_ref());
                 }
                 if let Err(e) =
-                    monitor.check(ukf.get_mean().as_slice(), &ukf.get_covariance(), None)
+                    monitor.check(ukf.get_estimate().as_slice(), &ukf.get_certainty(), None)
                 {
                     bail!(e);
                 }
                 // Health check after measurement update
                 if let Err(e) =
-                    monitor.check(ukf.get_mean().as_slice(), &ukf.get_covariance(), None)
+                    monitor.check(ukf.get_estimate().as_slice(), &ukf.get_certainty(), None)
                 {
                     // log::error!("Health fail after measurement update at {} (#{i}): {e}", ts);
                     bail!(e);
@@ -1127,7 +1146,14 @@ mod tests {
             sigma_points[(5, i)] = 0.0; // vd
         }
 
-        let measurement_sigma_points = measurement.get_sigma_points(&sigma_points);
+        // let measurement_sigma_points = measurement.get_sigma_points(&sigma_points);
+        let num_sigma_points = sigma_points.ncols();
+        let mut measurement_sigma_points = DMatrix::zeros(1, num_sigma_points);
+
+        for i in 0..num_sigma_points {
+            let state = sigma_points.column(i).into_owned();
+            measurement_sigma_points[(0, i)] = measurement.get_expected_measurement(&state)[0];
+        }
 
         assert_eq!(measurement_sigma_points.nrows(), 1);
         assert_eq!(measurement_sigma_points.ncols(), 5);
