@@ -47,18 +47,35 @@ This program is designed to work with tabular comma-separated value datasets tha
 #[command(author, version, about, long_about = LONG_ABOUT)]
 struct Cli {
     /// Command to execute
+    /// Command to execute
     #[command(subcommand)]
+    command: Command,
     command: Command,
     /// Log level (off, error, warn, info, debug, trace)
     #[arg(long, default_value = "info", global = true)]
+    #[arg(long, default_value = "info", global = true)]
     log_level: String,
     /// Log file path (if not specified, logs to stderr)
+    #[arg(long, global = true)]
     #[arg(long, global = true)]
     log_file: Option<PathBuf>,
 }
 
 /// Top-level commands
+
+/// Top-level commands
 #[derive(Subcommand, Clone)]
+enum Command {
+    #[command(
+        name = "open-loop",
+        about = "Run the simulation in open-loop (feed-forward INS) mode"
+    )]
+    OpenLoop(SimArgs),
+    #[command(
+        name = "closed-loop",
+        about = "Run the simulation in closed-loop (feedback INS) mode"
+    )]
+    ClosedLoop(ClosedLoopSimArgs),
 enum Command {
     #[command(
         name = "open-loop",
@@ -94,7 +111,31 @@ struct SimArgs {
 }
 
 /// Closed-loop simulation arguments combining SimArgs with closed-loop specific options
+    ParticleFilter(ParticleFilterSimArgs),
+    #[command(
+        name = "generate-config",
+        about = "Generate a blank template GNSS degradation configuration file"
+    )]
+    GenerateConfig(GenerateConfigArgs),
+}
+
+/// Common simulation arguments for input/output
 #[derive(Args, Clone, Debug)]
+struct SimArgs {
+    /// Input file path
+    #[arg(short, long, value_parser)]
+    input: PathBuf,
+    /// Output file path
+    #[arg(short, long, value_parser)]
+    output: PathBuf,
+}
+
+/// Closed-loop simulation arguments combining SimArgs with closed-loop specific options
+#[derive(Args, Clone, Debug)]
+struct ClosedLoopSimArgs {
+    /// Common simulation input/output arguments
+    #[command(flatten)]
+    sim: SimArgs,
 struct ClosedLoopSimArgs {
     /// Common simulation input/output arguments
     #[command(flatten)]
@@ -114,7 +155,12 @@ struct ClosedLoopSimArgs {
 }
 
 /// Particle filter simulation arguments
+/// Particle filter simulation arguments
 #[derive(Args, Clone, Debug)]
+struct ParticleFilterSimArgs {
+    /// Common simulation input/output arguments
+    #[command(flatten)]
+    sim: SimArgs,
 struct ParticleFilterSimArgs {
     /// Common simulation input/output arguments
     #[command(flatten)]
@@ -157,9 +203,23 @@ struct GenerateConfigArgs {
     output: PathBuf,
 }
 
+/// Arguments for the generate-config command
+#[derive(Args, Clone, Debug)]
+struct GenerateConfigArgs {
+    /// Output file path for the generated config file.
+    /// The file extension determines the format: .json, .yaml/.yml, or .toml
+    #[arg(short, long, value_parser)]
+    output: PathBuf,
+}
+
 /// Initialize the logger with the specified configuration
 fn init_logger(log_level: &str, log_file: Option<&PathBuf>) -> Result<(), Box<dyn Error>> {
     use std::io::Write;
+
+    let level = log_level.parse::<log::LevelFilter>().unwrap_or_else(|_| {
+        eprintln!("Invalid log level '{}', defaulting to 'info'", log_level);
+        log::LevelFilter::Info
+    });
 
     let level = log_level.parse::<log::LevelFilter>().unwrap_or_else(|_| {
         eprintln!("Invalid log level '{}', defaulting to 'info'", log_level);
@@ -179,6 +239,12 @@ fn init_logger(log_level: &str, log_file: Option<&PathBuf>) -> Result<(), Box<dy
     });
 
     if let Some(log_path) = log_file {
+        let target = Box::new(
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log_path)?,
+        );
         let target = Box::new(
             std::fs::OpenOptions::new()
                 .create(true)
@@ -214,8 +280,31 @@ fn validate_output_path(output: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Validate input file exists and is readable
+fn validate_input_file(input: &Path) -> Result<(), Box<dyn Error>> {
+    if !input.exists() {
+        return Err(format!("Input file '{}' does not exist.", input.display()).into());
+    }
+    if !input.is_file() {
+        return Err(format!("Input path '{}' is not a file.", input.display()).into());
+    }
+    Ok(())
+}
+
+/// Validate output path and create parent directories if needed
+fn validate_output_path(output: &Path) -> Result<(), Box<dyn Error>> {
+    if let Some(parent) = output.parent()
+        && !parent.as_os_str().is_empty()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
+
 
     // Initialize logger
     init_logger(&cli.log_level, cli.log_file.as_ref())?;
@@ -256,9 +345,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             info!("Running in closed-loop mode");
             // Load sensor data records from CSV, tolerant to mixed/variable-length rows and encoding issues.
             let records = TestDataRecord::from_csv(&args.sim.input)?;
+            let records = TestDataRecord::from_csv(&args.sim.input)?;
             info!(
                 "Read {} records from {}",
                 records.len(),
+                &args.sim.input.display()
                 &args.sim.input.display()
             );
             let cfg = if let Some(ref cfg_path) = args.config {
@@ -286,6 +377,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             info!("Initialized UKF with state: {:?}", ukf);
             let results = run_closed_loop(&mut ukf, event_stream, None);
             match results {
+                Ok(ref nav_results) => {
+                    match NavigationResult::to_csv(nav_results, &args.sim.output) {
+                        Ok(_) => info!("Results written to {}", args.sim.output.display()),
+                        Err(e) => error!("Error writing results: {}", e),
+                    }
+                }
                 Ok(ref nav_results) => {
                     match NavigationResult::to_csv(nav_results, &args.sim.output) {
                         Ok(_) => info!("Results written to {}", args.sim.output.display()),

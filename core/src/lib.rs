@@ -293,8 +293,8 @@ impl StrapdownState {
     /// * `altitude` - Altitude in meters.
     /// * `velocity_north` - North velocity in m/s.
     /// * `velocity_east` - East velocity in m/s.
-    /// * `velocity_vertical` - Vertical velocity in m/s (positive up in ENU, positive down in NED).
-    /// * `attitude` - `Rotation3<f64>` attitude matrix.
+    /// * `velocity_down` - Down velocity in m/s.
+    /// * `attitude` - Rotation3<f64> attitude matrix.
     /// * `in_degrees` - If true, angles are provided in degrees and will be converted to radians.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -346,7 +346,7 @@ impl StrapdownState {
     // --- From/Into trait implementations for StrapdownState <-> Vec<f64> and &[f64] ---
 }
 impl From<StrapdownState> for Vec<f64> {
-    /// Converts a StrapdownState to a `Vec<f64>` in order assuming angles are in radians.
+    /// Converts a StrapdownState to a Vec<f64> in NED order, angles in radians.
     fn from(state: StrapdownState) -> Self {
         let (roll, pitch, yaw) = state.attitude.euler_angles();
         vec![
@@ -363,7 +363,7 @@ impl From<StrapdownState> for Vec<f64> {
     }
 }
 impl From<&StrapdownState> for Vec<f64> {
-    /// Converts a reference to StrapdownState to a `Vec<f64>` in NED order assuming angles are in radians.
+    /// Converts a reference to StrapdownState to a Vec<f64> in NED order, angles in radians.
     fn from(state: &StrapdownState) -> Self {
         let (roll, pitch, yaw) = state.attitude.euler_angles();
         vec![
@@ -396,19 +396,19 @@ impl TryFrom<&[f64]> for StrapdownState {
 }
 impl TryFrom<Vec<f64>> for StrapdownState {
     type Error = &'static str;
-    /// Attempts to create a StrapdownState from a `Vec<f64>` of length 9 assuming angles in radians.
+    /// Attempts to create a StrapdownState from a Vec<f64> of length 9 (NED order, radians).
     fn try_from(vec: Vec<f64>) -> Result<Self, Self::Error> {
         Self::try_from(vec.as_slice())
     }
 }
 impl From<StrapdownState> for DVector<f64> {
-    /// Converts a StrapdownState to a `DVector<f64>` in NED order assuming angles are in radians.
+    /// Converts a StrapdownState to a DVector<f64> in NED order, angles in radians.
     fn from(state: StrapdownState) -> Self {
         DVector::from_vec(state.into())
     }
 }
 impl From<&StrapdownState> for DVector<f64> {
-    /// Converts a reference to StrapdownState to a `DVector<f64>` in NED order assuming angles are in radians.
+    /// Converts a reference to StrapdownState to a DVector<f64> in NED order, angles in radians.
     fn from(state: &StrapdownState) -> Self {
         DVector::from_vec(state.into())
     }
