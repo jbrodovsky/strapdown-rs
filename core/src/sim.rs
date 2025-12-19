@@ -802,8 +802,11 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
         is_enu: true,
     };
     // Store the initial state and metadata
-    info!("Initializing dead reckoning simulation at {}", state);
-    results.push(NavigationResult::from((&first_record.time, &state)));
+    results.push(NavigationResult::from((
+        &first_record.time,
+        &state.into(),
+        &DMatrix::from_diagonal(&DVector::from_element(15, 0.0)),
+    )));
     let mut previous_time = records[0].time;
     // Process each subsequent record
     for record in records.iter().skip(1) {
@@ -816,8 +819,11 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
             gyro: Vector3::new(record.gyro_x, record.gyro_y, record.gyro_z),
         };
         forward(&mut state, imu_data, dt);
-        results.push(NavigationResult::from((&current_time, &state)));
-        info!("Updated state at {}: {:?}", current_time, state);
+        results.push(NavigationResult::from((
+            &current_time,
+            &state.into(),
+            &DMatrix::from_diagonal(&DVector::from_element(15, 0.0)),
+        )));
         previous_time = record.time;
     }
     results
