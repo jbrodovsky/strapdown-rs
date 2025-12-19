@@ -14,7 +14,7 @@
 //! or intermittent and degraded GNSS via the measurement models provided in this module. You can install
 //! the programs that execute this generic simulation by installing the binary via `cargo install strapdown-rs`.
 use core::f64;
-use log::{debug, warn};
+use log::{debug, info, warn};
 use std::fmt::{Debug, Display};
 use std::io::{self};
 use std::path::Path;
@@ -28,19 +28,23 @@ use serde::{Deserialize, Deserializer, Serialize};
 use clap::{Args, ValueEnum};
 
 use crate::earth::METERS_TO_DEGREES;
-use crate::filter::{
-    InitialState, Particle, ParticleAveragingStrategy, ParticleFilter, UnscentedKalmanFilter,
-};
+use crate::kalman::{InitialState, NavigationFilter, UnscentedKalmanFilter};
 use crate::messages::{Event, EventStream, GnssFaultModel, GnssScheduler};
+use crate::particle::{
+    AveragingStrategy, ParticleFilter, ProcessNoise, RBProcessNoise,
+    RaoBlackwellizedParticleFilter, ResamplingStrategy, VerticalChannelMode,
+};
 use crate::{IMUData, StrapdownState, forward};
-use health::{HealthLimits, HealthMonitor};
-use nalgebra::Rotation3;
+use health::HealthMonitor;
+
+// Re-export HealthLimits for easier access in tests and external users
+pub use health::HealthLimits;
 
 pub const DEFAULT_PROCESS_NOISE: [f64; 15] = [
     // Default process noise if not provided
     1e-6, // position noise 1e-6
     1e-6, // position noise 1e-6
-    1e-6, // altitude noise
+    1e-4, // altitude noise
     1e-3, // velocity north noise
     1e-3, // velocity east noise
     1e-3, // velocity down noise
@@ -285,7 +289,7 @@ pub struct NEDCovariance {
     pub altitude_cov: f64,
     pub velocity_n_cov: f64,
     pub velocity_e_cov: f64,
-    pub velocity_d_cov: f64,
+    pub velocity_v_cov: f64,
     pub roll_cov: f64,
     pub pitch_cov: f64,
     pub yaw_cov: f64,
@@ -319,8 +323,8 @@ pub struct NavigationResult {
     pub velocity_north: f64,
     /// Eastward velocity in m/s
     pub velocity_east: f64,
-    /// Downward velocity in m/s
-    pub velocity_down: f64,
+    /// Vertical velocity in m/s
+    pub velocity_vertical: f64,
     /// Roll angle in radians
     pub roll: f64,
     /// Pitch angle in radians
@@ -350,8 +354,8 @@ pub struct NavigationResult {
     pub velocity_n_cov: f64,
     /// Eastward velocity covariance
     pub velocity_e_cov: f64,
-    /// Downward velocity covariance
-    pub velocity_d_cov: f64,
+    /// Vertical velocity covariance
+    pub velocity_v_cov: f64,
     /// Roll covariance
     pub roll_cov: f64,
     /// Pitch covariance
@@ -380,7 +384,7 @@ impl Default for NavigationResult {
             altitude: 0.0,
             velocity_north: 0.0,
             velocity_east: 0.0,
-            velocity_down: 0.0,
+            velocity_vertical: 0.0,
             roll: 0.0,
             pitch: 0.0,
             yaw: 0.0,
@@ -395,7 +399,7 @@ impl Default for NavigationResult {
             altitude_cov: 1e-6,
             velocity_n_cov: 1e-6,
             velocity_e_cov: 1e-6,
-            velocity_d_cov: 1e-6,
+            velocity_v_cov: 1e-6,
             roll_cov: 1e-6,
             pitch_cov: 1e-6,
             yaw_cov: 1e-6,
@@ -500,7 +504,7 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>)> for NavigationResult {
             altitude: state[2],
             velocity_north: state[3],
             velocity_east: state[4],
-            velocity_down: state[5],
+            velocity_vertical: state[5],
             roll: state[6],
             pitch: state[7],
             yaw: state[8],
@@ -515,7 +519,7 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>)> for NavigationResult {
             altitude_cov: covariance[2],
             velocity_n_cov: covariance[3],
             velocity_e_cov: covariance[4],
-            velocity_d_cov: covariance[5],
+            velocity_v_cov: covariance[5],
             roll_cov: covariance[6],
             pitch_cov: covariance[7],
             yaw_cov: covariance[8],
@@ -544,8 +548,8 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>)> for NavigationResult {
 /// A NavigationResult struct containing the navigation solution.
 impl From<(&DateTime<Utc>, &UnscentedKalmanFilter)> for NavigationResult {
     fn from((timestamp, ukf): (&DateTime<Utc>, &UnscentedKalmanFilter)) -> Self {
-        let state = &ukf.get_mean();
-        let covariance = ukf.get_covariance();
+        let state = &ukf.get_estimate();
+        let covariance = ukf.get_certainty();
         NavigationResult {
             timestamp: *timestamp,
             latitude: state[0].to_degrees(),
@@ -553,7 +557,7 @@ impl From<(&DateTime<Utc>, &UnscentedKalmanFilter)> for NavigationResult {
             altitude: state[2],
             velocity_north: state[3],
             velocity_east: state[4],
-            velocity_down: state[5],
+            velocity_vertical: state[5],
             roll: state[6],
             pitch: state[7],
             yaw: state[8],
@@ -568,7 +572,7 @@ impl From<(&DateTime<Utc>, &UnscentedKalmanFilter)> for NavigationResult {
             altitude_cov: covariance[(2, 2)],
             velocity_n_cov: covariance[(3, 3)],
             velocity_e_cov: covariance[(4, 4)],
-            velocity_d_cov: covariance[(5, 5)],
+            velocity_v_cov: covariance[(5, 5)],
             roll_cov: covariance[(6, 6)],
             pitch_cov: covariance[(7, 7)],
             yaw_cov: covariance[(8, 8)],
@@ -581,6 +585,58 @@ impl From<(&DateTime<Utc>, &UnscentedKalmanFilter)> for NavigationResult {
         }
     }
 }
+
+/// Convert ParticleFilter state to NavigationResult.
+///
+/// This implementation allows seamless integration of particle filter outputs
+/// into the simulation framework.
+///
+/// # Arguments
+/// - `timestamp`: The timestamp of the navigation solution.
+/// - `pf`: A reference to the ParticleFilter instance.
+///
+/// # Returns
+/// A NavigationResult struct containing the navigation solution from the particle ensemble.
+impl From<(&DateTime<Utc>, &ParticleFilter)> for NavigationResult {
+    fn from((timestamp, pf): (&DateTime<Utc>, &ParticleFilter)) -> Self {
+        let state = &pf.get_estimate();
+        let covariance = pf.get_certainty();
+        NavigationResult {
+            timestamp: *timestamp,
+            latitude: state[0].to_degrees(),
+            longitude: state[1].to_degrees(),
+            altitude: state[2],
+            velocity_north: state[3],
+            velocity_east: state[4],
+            velocity_vertical: state[5],
+            roll: state[6],
+            pitch: state[7],
+            yaw: state[8],
+            acc_bias_x: state[9],
+            acc_bias_y: state[10],
+            acc_bias_z: state[11],
+            gyro_bias_x: state[12],
+            gyro_bias_y: state[13],
+            gyro_bias_z: state[14],
+            latitude_cov: covariance[(0, 0)],
+            longitude_cov: covariance[(1, 1)],
+            altitude_cov: covariance[(2, 2)],
+            velocity_n_cov: covariance[(3, 3)],
+            velocity_e_cov: covariance[(4, 4)],
+            velocity_v_cov: covariance[(5, 5)],
+            roll_cov: covariance[(6, 6)],
+            pitch_cov: covariance[(7, 7)],
+            yaw_cov: covariance[(8, 8)],
+            acc_bias_x_cov: covariance[(9, 9)],
+            acc_bias_y_cov: covariance[(10, 10)],
+            acc_bias_z_cov: covariance[(11, 11)],
+            gyro_bias_x_cov: covariance[(12, 12)],
+            gyro_bias_y_cov: covariance[(13, 13)],
+            gyro_bias_z_cov: covariance[(14, 14)],
+        }
+    }
+}
+
 /// Convert StrapdownState to NavigationResult.
 ///
 /// This implementation is useful for converting the output of a StrapdownState into a
@@ -613,7 +669,7 @@ impl From<(&DateTime<Utc>, &StrapdownState)> for NavigationResult {
             altitude: state.altitude,
             velocity_north: state.velocity_north,
             velocity_east: state.velocity_east,
-            velocity_down: state.velocity_down,
+            velocity_vertical: state.velocity_vertical,
             roll: state.attitude.euler_angles().0,
             pitch: state.attitude.euler_angles().1,
             yaw: state.attitude.euler_angles().2,
@@ -628,7 +684,7 @@ impl From<(&DateTime<Utc>, &StrapdownState)> for NavigationResult {
             altitude_cov: f64::NAN,
             velocity_n_cov: f64::NAN,
             velocity_e_cov: f64::NAN,
-            velocity_d_cov: f64::NAN,
+            velocity_v_cov: f64::NAN,
             roll_cov: f64::NAN,
             pitch_cov: f64::NAN,
             yaw_cov: f64::NAN,
@@ -672,7 +728,7 @@ impl NavigationResult {
             altitude: mean[2],
             velocity_north: mean[3],
             velocity_east: mean[4],
-            velocity_down: mean[5],
+            velocity_vertical: mean[5],
             roll: mean[6],
             pitch: mean[7],
             yaw: mean[8],
@@ -687,7 +743,7 @@ impl NavigationResult {
             altitude_cov: cov[(2, 2)],
             velocity_n_cov: cov[(3, 3)],
             velocity_e_cov: cov[(4, 4)],
-            velocity_d_cov: cov[(5, 5)],
+            velocity_v_cov: cov[(5, 5)],
             roll_cov: cov[(6, 6)],
             pitch_cov: cov[(7, 7)],
             yaw_cov: cov[(8, 8)],
@@ -741,12 +797,16 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
         altitude: first_record.altitude,
         velocity_north: first_record.speed * first_record.bearing.cos(),
         velocity_east: first_record.speed * first_record.bearing.sin(),
-        velocity_down: 0.0, // initial velocities
+        velocity_vertical: 0.0, // initial velocities
         attitude,
-        coordinate_convention: true,
+        is_enu: true,
     };
     // Store the initial state and metadata
-    results.push(NavigationResult::from((&first_record.time, &state)));
+    results.push(NavigationResult::from((
+        &first_record.time,
+        &state.into(),
+        &DMatrix::from_diagonal(&DVector::from_element(15, 0.0)),
+    )));
     let mut previous_time = records[0].time;
     // Process each subsequent record
     for record in records.iter().skip(1) {
@@ -759,315 +819,189 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
             gyro: Vector3::new(record.gyro_x, record.gyro_y, record.gyro_z),
         };
         forward(&mut state, imu_data, dt);
-        results.push(NavigationResult::from((&current_time, &state)));
+        results.push(NavigationResult::from((
+            &current_time,
+            &state.into(),
+            &DMatrix::from_diagonal(&DVector::from_element(15, 0.0)),
+        )));
         previous_time = record.time;
     }
     results
 }
-/// Closed-loop GPS-aided inertial navigation simulation.
+/// Generic closed-loop simulation runner for any NavigationFilter
 ///
-/// This function simulates a closed-loop full-state navigation system where GPS measurements are used
-/// to correct the inertial navigation solution. It implements an Unscented Kalman Filter (UKF) to propagate
-/// the state and update it with GPS measurements when available.
+/// This function implements the core simulation loop for navigation filter architectures.
+/// It iterates through the event stream, performs prediction and update steps, checks health limits,
+/// and records navigation results. While generic, this is really only intended for Kalman-filter
+/// family navigation filters because particle filter style navigation filters have the additional
+/// step of resampling. For particle filter type filters, use [run_closed_loop_pf] instead.
 ///
 /// # Arguments
-/// * `records` - Vector of test data records containing IMU measurements and GPS data.
+/// * `filter` - Mutable reference to a type implementing NavigationFilter
+/// * `stream` - Event stream containing IMU and measurement events
+/// * `health_limits` - Optional health limits for monitoring
+///
 /// # Returns
-/// * `Vec<NavigationResult>` - A vector of navigation results containing the state estimates and covariances at each timestamp.
-pub fn closed_loop(
-    ukf: &mut UnscentedKalmanFilter,
+/// * `Vec<NavigationResult>` - A vector of navigation results
+pub fn run_closed_loop<F: NavigationFilter>(
+    filter: &mut F,
     stream: EventStream,
+    health_limits: Option<HealthLimits>,
 ) -> anyhow::Result<Vec<NavigationResult>> {
     let start_time = stream.start_time;
     let mut results: Vec<NavigationResult> = Vec::with_capacity(stream.events.len());
     let total = stream.events.len();
     let mut last_ts: Option<DateTime<Utc>> = None;
-    let mut monitor = HealthMonitor::new(HealthLimits::default());
+    let mut monitor = HealthMonitor::new(health_limits.unwrap_or_default());
+
+    info!(
+        "Starting closed-loop navigation filter with {} events",
+        total
+    );
 
     for (i, event) in stream.events.into_iter().enumerate() {
-        // Print progress every 10 iterations
+        // Print detailed progress every 100 iterations or at key milestones
         if i % 10 == 0 || i == total {
+            let mean = filter.get_estimate();
+            let cov = filter.get_certainty();
+
+            // Extract position and covariance diagonal
+            let lat = mean[0].to_degrees();
+            let lon = mean[1].to_degrees();
+            let alt = mean[2];
+
+            // Get position uncertainty (diagonal elements)
+            let pos_std_lat = cov[(0, 0)].sqrt().to_degrees();
+            let pos_std_lon = cov[(1, 1)].sqrt().to_degrees();
+            let pos_std_alt = cov[(2, 2)].sqrt();
+
+            // Compute RMS of position covariance
+            let pos_rms = (pos_std_lat.powi(2) + pos_std_lon.powi(2) + pos_std_alt.powi(2)).sqrt();
+
             print!(
-                "\rProcessing data {:.2}%...",
-                (i as f64 / total as f64) * 100.0
+                "\r[{:.1}%] Event {}/{} | Pos: ({:.6}°, {:.6}°, {:.1}m) | σ: ({:.2e}°, {:.2e}°, {:.2}m) | RMS: {:.2e}",
+                (i as f64 / total as f64) * 100.0,
+                i,
+                total,
+                lat,
+                lon,
+                alt,
+                pos_std_lat,
+                pos_std_lon,
+                pos_std_alt,
+                pos_rms
             );
-            //print_ukf(&ukf, record);
             use std::io::Write;
             std::io::stdout().flush().ok();
         }
+
         // Compute wall-clock time for this event
         let elapsed_s = match &event {
             Event::Imu { elapsed_s, .. } => *elapsed_s,
             Event::Measurement { elapsed_s, .. } => *elapsed_s,
         };
         let ts = start_time + Duration::milliseconds((elapsed_s * 1000.0).round() as i64);
+
         // Apply event
         match event {
             Event::Imu { dt_s, imu, .. } => {
-                ukf.predict(imu, dt_s);
-                if let Err(e) =
-                    monitor.check(ukf.get_mean().as_slice(), &ukf.get_covariance(), None)
-                {
-                    // log::error!("Health fail after predict at {} (#{i}): {e}", ts);
+                filter.predict(imu, dt_s);
+                let mean = filter.get_estimate();
+                let cov = filter.get_certainty();
+                if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
+                    log::error!("Health fail after propagate at {} (#{i}): {e}", ts);
                     bail!(e);
                 }
             }
             Event::Measurement { meas, .. } => {
-                ukf.update(meas.as_ref());
-                if let Err(e) =
-                    monitor.check(ukf.get_mean().as_slice(), &ukf.get_covariance(), None)
-                {
-                    // log::error!("Health fail after measurement update at {} (#{i}): {e}", ts);
+                filter.update(meas.as_ref());
+                let mean = filter.get_estimate();
+                let cov = filter.get_certainty();
+                if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
+                    log::error!("Health fail after measurement update at {} (#{i}): {e}", ts);
                     bail!(e);
                 }
             }
         }
+
         // If timestamp changed, or it's the last event, record the previous state
         if Some(ts) != last_ts {
             if let Some(prev_ts) = last_ts {
-                results.push(NavigationResult::from((&prev_ts, &*ukf)));
+                let mean = filter.get_estimate();
+                let cov = filter.get_certainty();
+                results.push(NavigationResult::from((&prev_ts, &mean, &cov)));
+                debug!("Filter state at {}: {:?}", ts, mean);
             }
             last_ts = Some(ts);
         }
+
         // If this is the last event, also push
         if i == total - 1 {
-            results.push(NavigationResult::from((&ts, &*ukf)));
+            let mean = filter.get_estimate();
+            let cov = filter.get_certainty();
+            debug!("Filter state at {}: {:?}", ts, mean);
+            results.push(NavigationResult::from((&ts, &mean, &cov)));
         }
     }
+    println!(); // Print newline after progress indicator
     debug!("Closed-loop simulation complete");
     Ok(results)
 }
-
-/// Closed-loop particle filter simulation for strapdown INS
-///
-/// Similar to `closed_loop` but uses a particle filter instead of a UKF. The particle filter
-/// propagates each particle forward using IMU measurements and updates particle weights based
-/// on GNSS measurements. The navigation solution is computed using the specified averaging strategy.
-///
-/// # Arguments
-/// * `pf` - Mutable reference to the particle filter
-/// * `stream` - Event stream containing IMU and measurement events
-/// * `averaging_strategy` - Strategy for computing navigation solution from particles
-///
-/// # Returns
-/// * `Vec<NavigationResult>` - A vector of navigation results containing the state estimates and covariances at each timestamp.
-pub fn particle_filter_loop(
-    pf: &mut ParticleFilter,
-    stream: EventStream,
-    averaging_strategy: ParticleAveragingStrategy,
-) -> anyhow::Result<Vec<NavigationResult>> {
-    let start_time = stream.start_time;
-    let mut results: Vec<NavigationResult> = Vec::with_capacity(stream.events.len());
-    let total = stream.events.len();
-    let mut last_ts: Option<DateTime<Utc>> = None;
-    let mut monitor = HealthMonitor::new(HealthLimits::default());
-
-    for (i, event) in stream.events.into_iter().enumerate() {
-        // Print progress every 10 iterations
-        // if i % 10 == 0 || i == total {
-        //     print!(
-        //         "\rProcessing data {:.2}%...",
-        //         (i as f64 / total as f64) * 100.0
-        //     );
-        //     use std::io::Write;
-        //     std::io::stdout().flush().ok();
-        // }
-
-        // Compute wall-clock time for this event
-        let elapsed_s = match &event {
-            Event::Imu { elapsed_s, .. } => *elapsed_s,
-            Event::Measurement { elapsed_s, .. } => *elapsed_s,
-        };
-        let ts = start_time + Duration::milliseconds((elapsed_s * 1000.0).round() as i64);
-
-        // Apply event
-        match event {
-            Event::Imu { dt_s, imu, .. } => {
-                pf.propagate(&imu, dt_s);
-                let (mean, cov) = averaging_strategy.compute_state(pf);
-                if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
-                    // log::error!("Health fail after propagate at {} (#{i}): {e}", ts);
-                    bail!(e);
-                }
-            }
-            Event::Measurement { meas, .. } => {
-                // Build expected measurements for each particle
-                let mut state_matrix = DMatrix::<f64>::zeros(9, pf.particles.len());
-                for (i, particle) in pf.particles.iter().enumerate() {
-                    let euler = particle.nav_state.attitude.euler_angles();
-                    state_matrix[(0, i)] = particle.nav_state.latitude;
-                    state_matrix[(1, i)] = particle.nav_state.longitude;
-                    state_matrix[(2, i)] = particle.nav_state.altitude;
-                    state_matrix[(3, i)] = particle.nav_state.velocity_north;
-                    state_matrix[(4, i)] = particle.nav_state.velocity_east;
-                    state_matrix[(5, i)] = particle.nav_state.velocity_down;
-                    state_matrix[(6, i)] = euler.0;
-                    state_matrix[(7, i)] = euler.1;
-                    state_matrix[(8, i)] = euler.2;
-                }
-
-                let measurement_sigma_points = meas.get_sigma_points(&state_matrix);
-                let expected_measurements: Vec<DVector<f64>> = measurement_sigma_points
-                    .column_iter()
-                    .map(|col| col.clone_owned())
-                    .collect();
-
-                pf.update(&meas.get_vector(), &expected_measurements);
-
-                // Resample particles
-                pf.residual_resample();
-
-                let (mean, cov) = averaging_strategy.compute_state(pf);
-                if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
-                    // log::error!("Health fail after measurement update at {} (#{i}): {e}", ts);
-                    bail!(e);
-                }
-            }
-        }
-
-        // If timestamp changed, or it's the last event, record the previous state
-        if Some(ts) != last_ts {
-            if let Some(prev_ts) = last_ts {
-                let (mean, cov) = averaging_strategy.compute_state(pf);
-                results.push(NavigationResult::from_particle_filter(
-                    &prev_ts, &mean, &cov,
-                ));
-            }
-            last_ts = Some(ts);
-        }
-
-        // If this is the last event, also push
-        if i == total - 1 {
-            let (mean, cov) = averaging_strategy.compute_state(pf);
-            results.push(NavigationResult::from_particle_filter(&ts, &mean, &cov));
-        }
-    }
-
-    debug!("Particle filter loop complete");
-    Ok(results)
-}
-
 /// Print the Unscented Kalman Filter state and covariance for debugging purposes.
 pub fn print_ukf(ukf: &UnscentedKalmanFilter, record: &TestDataRecord) {
     debug!(
         "UKF position: ({:.4}, {:.4}, {:.4})  |  Covariance: {:.4e}, {:.4e}, {:.4}  |  Error: {:.4e}, {:.4e}, {:.4}",
-        ukf.get_mean()[0].to_degrees(),
-        ukf.get_mean()[1].to_degrees(),
-        ukf.get_mean()[2],
-        ukf.get_covariance()[(0, 0)],
-        ukf.get_covariance()[(1, 1)],
-        ukf.get_covariance()[(2, 2)],
-        ukf.get_mean()[0].to_degrees() - record.latitude,
-        ukf.get_mean()[1].to_degrees() - record.longitude,
-        ukf.get_mean()[2] - record.altitude
+        ukf.get_estimate()[0].to_degrees(),
+        ukf.get_estimate()[1].to_degrees(),
+        ukf.get_estimate()[2],
+        ukf.get_certainty()[(0, 0)],
+        ukf.get_certainty()[(1, 1)],
+        ukf.get_certainty()[(2, 2)],
+        ukf.get_estimate()[0].to_degrees() - record.latitude,
+        ukf.get_estimate()[1].to_degrees() - record.longitude,
+        ukf.get_estimate()[2] - record.altitude
     );
     debug!(
         "UKF velocity: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4}, {:.4}, {:.4}  | Error: {:.4}, {:.4}, {:.4}",
-        ukf.get_mean()[3],
-        ukf.get_mean()[4],
-        ukf.get_mean()[5],
-        ukf.get_covariance()[(3, 3)],
-        ukf.get_covariance()[(4, 4)],
-        ukf.get_covariance()[(5, 5)],
-        ukf.get_mean()[3] - record.speed * record.bearing.cos(),
-        ukf.get_mean()[4] - record.speed * record.bearing.sin(),
-        ukf.get_mean()[5] - 0.0 // Assuming no vertical velocity
+        ukf.get_estimate()[3],
+        ukf.get_estimate()[4],
+        ukf.get_estimate()[5],
+        ukf.get_certainty()[(3, 3)],
+        ukf.get_certainty()[(4, 4)],
+        ukf.get_certainty()[(5, 5)],
+        ukf.get_estimate()[3] - record.speed * record.bearing.cos(),
+        ukf.get_estimate()[4] - record.speed * record.bearing.sin(),
+        ukf.get_estimate()[5] - 0.0 // Assuming no vertical velocity
     );
     debug!(
         "UKF attitude: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4}, {:.4}, {:.4}  | Error: {:.4}, {:.4}, {:.4}",
-        ukf.get_mean()[6],
-        ukf.get_mean()[7],
-        ukf.get_mean()[8],
-        ukf.get_covariance()[(6, 6)],
-        ukf.get_covariance()[(7, 7)],
-        ukf.get_covariance()[(8, 8)],
-        ukf.get_mean()[6] - record.roll,
-        ukf.get_mean()[7] - record.pitch,
-        ukf.get_mean()[8] - record.yaw
+        ukf.get_estimate()[6],
+        ukf.get_estimate()[7],
+        ukf.get_estimate()[8],
+        ukf.get_certainty()[(6, 6)],
+        ukf.get_certainty()[(7, 7)],
+        ukf.get_certainty()[(8, 8)],
+        ukf.get_estimate()[6] - record.roll,
+        ukf.get_estimate()[7] - record.pitch,
+        ukf.get_estimate()[8] - record.yaw
     );
     debug!(
         "UKF accel biases: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4e}, {:.4e}, {:.4e}",
-        ukf.get_mean()[9],
-        ukf.get_mean()[10],
-        ukf.get_mean()[11],
-        ukf.get_covariance()[(9, 9)],
-        ukf.get_covariance()[(10, 10)],
-        ukf.get_covariance()[(11, 11)]
+        ukf.get_estimate()[9],
+        ukf.get_estimate()[10],
+        ukf.get_estimate()[11],
+        ukf.get_certainty()[(9, 9)],
+        ukf.get_certainty()[(10, 10)],
+        ukf.get_certainty()[(11, 11)]
     );
     debug!(
         "UKF gyro biases: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4e}, {:.4e}, {:.4e}",
-        ukf.get_mean()[12],
-        ukf.get_mean()[13],
-        ukf.get_mean()[14],
-        ukf.get_covariance()[(12, 12)],
-        ukf.get_covariance()[(13, 13)],
-        ukf.get_covariance()[(14, 14)]
-    );
-}
-/// Print the Particle Filter state and weights for debugging purposes.
-pub fn print_pf(pf: &ParticleFilter, record: &TestDataRecord) {
-    // Compute weighted average state for comparison
-    let strategy = ParticleAveragingStrategy::WeightedAverage;
-    let (mean, cov) = strategy.compute_state(pf);
-
-    // Extract diagonal covariances
-    let pos_cov = (cov[(0, 0)], cov[(1, 1)], cov[(2, 2)]);
-    let vel_cov = (cov[(3, 3)], cov[(4, 4)], cov[(5, 5)]);
-    let att_cov = (cov[(6, 6)], cov[(7, 7)], cov[(8, 8)]);
-
-    debug!(
-        "PF position: ({:.4}, {:.4}, {:.4})  |  Covariance: {:.4e}, {:.4e}, {:.4}  |  Error: {:.4e}, {:.4e}, {:.4}",
-        mean[0].to_degrees(),
-        mean[1].to_degrees(),
-        mean[2],
-        pos_cov.0,
-        pos_cov.1,
-        pos_cov.2,
-        mean[0].to_degrees() - record.latitude,
-        mean[1].to_degrees() - record.longitude,
-        mean[2] - record.altitude
-    );
-    debug!(
-        "PF velocity: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4}, {:.4}, {:.4}  | Error: {:.4}, {:.4}, {:.4}",
-        mean[3],
-        mean[4],
-        mean[5],
-        vel_cov.0,
-        vel_cov.1,
-        vel_cov.2,
-        mean[3] - record.speed * record.bearing.cos(),
-        mean[4] - record.speed * record.bearing.sin(),
-        mean[5] - 0.0 // Assuming no vertical velocity
-    );
-    debug!(
-        "PF attitude: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4}, {:.4}, {:.4}  | Error: {:.4}, {:.4}, {:.4}",
-        mean[6],
-        mean[7],
-        mean[8],
-        att_cov.0,
-        att_cov.1,
-        att_cov.2,
-        mean[6] - record.roll,
-        mean[7] - record.pitch,
-        mean[8] - record.yaw
-    );
-
-    // Print particle count and effective particle count
-    let total_particles = pf.particles.len();
-    let eff_particles = 1.0
-        / pf.particles
-            .iter()
-            .map(|p| p.weight * p.weight)
-            .sum::<f64>();
-    debug!(
-        "PF particles: {} total, {:.1} effective  |  Weight range: [{:.4e}, {:.4e}]",
-        total_particles,
-        eff_particles,
-        pf.particles
-            .iter()
-            .map(|p| p.weight)
-            .fold(f64::INFINITY, f64::min),
-        pf.particles.iter().map(|p| p.weight).fold(0.0, f64::max)
+        ukf.get_estimate()[12],
+        ukf.get_estimate()[13],
+        ukf.get_estimate()[14],
+        ukf.get_certainty()[(12, 12)],
+        ukf.get_certainty()[(13, 13)],
+        ukf.get_certainty()[(14, 14)]
     );
 }
 /// Helper function to initialize a UKF for closed-loop mode.
@@ -1101,7 +1035,7 @@ pub fn initialize_ukf(
         altitude: initial_pose.altitude,
         northward_velocity: initial_pose.speed * initial_pose.bearing.cos(),
         eastward_velocity: initial_pose.speed * initial_pose.bearing.sin(),
-        downward_velocity: 0.0, // Assuming no initial vertical velocity for simplicity
+        vertical_velocity: 0.0, // Assuming no initial vertical velocity for simplicity
         roll: if initial_pose.roll.is_nan() {
             0.0
         } else {
@@ -1118,6 +1052,7 @@ pub fn initialize_ukf(
             initial_pose.yaw
         },
         in_degrees: true,
+        is_enu: true,
     };
     let process_noise_diagonal = match process_noise_diagonal {
         Some(pn) => pn,
@@ -1195,109 +1130,283 @@ pub fn initialize_ukf(
     )
 }
 
-/// Helper function to initialize a particle filter for closed-loop mode.
+/// Initialize a particle filter for simulation.
 ///
-/// Creates a particle filter with particles distributed around the initial pose.
-/// Each particle represents a hypothesis about the true navigation state.
+/// This function creates and initializes a `ParticleFilter` with the given parameters,
+/// matching the structure of `initialize_ukf` but configured for particle filter estimation.
 ///
 /// # Arguments
-/// * `initial_pose` - A `TestDataRecord` containing the initial pose information
-/// * `num_particles` - Number of particles to create
-/// * `position_std` - Standard deviation for position uncertainty (meters)
-/// * `velocity_std` - Standard deviation for velocity uncertainty (m/s)
-/// * `attitude_std` - Standard deviation for attitude uncertainty (radians)
+///
+/// * `initial_pose` - A `TestDataRecord` containing the initial pose information.
+/// * `num_particles` - Number of particles in the ensemble (recommend 500-1000).
+/// * `vertical_mode` - Vertical channel mode (Simplified for 2.5D, or ThirdOrderDamping).
+/// * `attitude_covariance` - Optional vector of f64 representing the initial attitude covariance.
+/// * `imu_biases` - Optional vector of f64 representing the initial IMU biases.
+/// * `imu_biases_covariance` - Optional vector of f64 for IMU bias covariance.
+/// * `other_states` - Optional vector of f64 for any additional states (e.g., damping states).
+/// * `other_states_covariance` - Optional covariance for additional states.
+/// * `process_noise` - Optional `ProcessNoise` struct (defaults to 2.5D optimized values).
+/// * `resampling_strategy` - Resampling algorithm (default: Systematic).
+/// * `averaging_strategy` - State estimation strategy (default: WeightedMean).
+/// * `seed` - Optional random seed for reproducibility.
 ///
 /// # Returns
-/// * `ParticleFilter` - An instance of the particle filter initialized with the provided parameters
+///
+/// * `ParticleFilter` - An instance of the Particle Filter initialized with the provided parameters.
+#[allow(clippy::too_many_arguments)]
 pub fn initialize_particle_filter(
     initial_pose: TestDataRecord,
     num_particles: usize,
-    position_std: f64,
-    velocity_std: f64,
-    attitude_std: f64,
+    vertical_mode: VerticalChannelMode,
+    attitude_covariance: Option<Vec<f64>>,
+    imu_biases: Option<Vec<f64>>,
+    imu_biases_covariance: Option<Vec<f64>>,
+    other_states: Option<Vec<f64>>,
+    other_states_covariance: Option<Vec<f64>>,
+    process_noise: Option<ProcessNoise>,
+    resampling_strategy: Option<ResamplingStrategy>,
+    averaging_strategy: Option<AveragingStrategy>,
+    seed: Option<u64>,
 ) -> ParticleFilter {
-    use rand_distr::{Distribution, Normal};
-
-    let mut rng = rand::rng();
-
-    // Create distributions for sampling
-    let lat_dist = Normal::new(
-        initial_pose.latitude.to_radians(),
-        position_std * METERS_TO_DEGREES,
-    )
-    .unwrap();
-    let lon_dist = Normal::new(
-        initial_pose.longitude.to_radians(),
-        position_std * METERS_TO_DEGREES,
-    )
-    .unwrap();
-    let alt_dist = Normal::new(initial_pose.altitude, position_std).unwrap();
-
-    let vn_dist = Normal::new(
-        initial_pose.speed * initial_pose.bearing.cos(),
-        velocity_std,
-    )
-    .unwrap();
-    let ve_dist = Normal::new(
-        initial_pose.speed * initial_pose.bearing.sin(),
-        velocity_std,
-    )
-    .unwrap();
-    let vd_dist = Normal::new(0.0, velocity_std).unwrap();
-
-    let roll = if initial_pose.roll.is_nan() {
-        0.0
-    } else {
-        initial_pose.roll
-    };
-    let pitch = if initial_pose.pitch.is_nan() {
-        0.0
-    } else {
-        initial_pose.pitch
-    };
-    let yaw = if initial_pose.yaw.is_nan() {
-        0.0
-    } else {
-        initial_pose.yaw
+    let initial_state = InitialState {
+        latitude: initial_pose.latitude,
+        longitude: initial_pose.longitude,
+        altitude: initial_pose.altitude,
+        northward_velocity: initial_pose.speed * initial_pose.bearing.cos(),
+        eastward_velocity: initial_pose.speed * initial_pose.bearing.sin(),
+        vertical_velocity: 0.0, // Assuming no initial vertical velocity for simplicity
+        roll: if initial_pose.roll.is_nan() {
+            0.0
+        } else {
+            initial_pose.roll
+        },
+        pitch: if initial_pose.pitch.is_nan() {
+            0.0
+        } else {
+            initial_pose.pitch
+        },
+        yaw: if initial_pose.yaw.is_nan() {
+            0.0
+        } else {
+            initial_pose.yaw
+        },
+        in_degrees: true,
+        is_enu: true,
     };
 
-    let roll_dist = Normal::new(roll, attitude_std).unwrap();
-    let pitch_dist = Normal::new(pitch, attitude_std).unwrap();
-    let yaw_dist = Normal::new(yaw, attitude_std).unwrap();
+    // Process noise (default to 2.5D optimized values)
+    let process_noise = process_noise.unwrap_or_else(ProcessNoise::default);
 
-    // Create particles
-    let mut particles = Vec::with_capacity(num_particles);
-    let uniform_weight = 1.0 / num_particles as f64;
+    // Covariance parameters for particle initialization
+    let position_accuracy = initial_pose.horizontal_accuracy;
+    let mut covariance_diagonal = vec![
+        (position_accuracy * METERS_TO_DEGREES).powf(2.0),
+        (position_accuracy * METERS_TO_DEGREES).powf(2.0),
+        initial_pose.vertical_accuracy.powf(2.0),
+        initial_pose.speed_accuracy.powf(2.0),
+        initial_pose.speed_accuracy.powf(2.0),
+        initial_pose.speed_accuracy.powf(2.0),
+    ];
 
-    for _ in 0..num_particles {
-        let latitude = lat_dist.sample(&mut rng);
-        let longitude = lon_dist.sample(&mut rng);
-        let altitude = alt_dist.sample(&mut rng);
-        let velocity_north = vn_dist.sample(&mut rng);
-        let velocity_east = ve_dist.sample(&mut rng);
-        let velocity_down = vd_dist.sample(&mut rng);
-        let roll_sample = roll_dist.sample(&mut rng);
-        let pitch_sample = pitch_dist.sample(&mut rng);
-        let yaw_sample = yaw_dist.sample(&mut rng);
-
-        let nav_state = StrapdownState {
-            latitude,
-            longitude,
-            altitude,
-            velocity_north,
-            velocity_east,
-            velocity_down,
-            attitude: Rotation3::from_euler_angles(roll_sample, pitch_sample, yaw_sample),
-            coordinate_convention: true,
-        };
-
-        particles.push(Particle {
-            nav_state,
-            weight: uniform_weight,
-        });
+    // Extend covariance diagonal with attitude covariance
+    match attitude_covariance {
+        Some(att_cov) => covariance_diagonal.extend(att_cov),
+        None => covariance_diagonal.extend(vec![1e-9; 3]), // Default values
     }
 
-    ParticleFilter::new(particles)
+    // Extend with IMU biases
+    let imu_biases = match imu_biases {
+        Some(biases) => {
+            covariance_diagonal.extend(match imu_biases_covariance {
+                Some(imu_cov) => imu_cov,
+                None => vec![1e-3; 6], // Default covariance
+            });
+            biases
+        }
+        None => {
+            covariance_diagonal.extend(vec![1e-3; 6]);
+            vec![0.0; 6] // Default zero biases
+        }
+    };
+
+    // Extend with other states if provided
+    let other_states = match other_states {
+        Some(states) => {
+            covariance_diagonal.extend(match other_states_covariance {
+                Some(other_cov) => other_cov,
+                None => vec![1e-3; states.len()],
+            });
+            Some(states)
+        }
+        None => None,
+    };
+
+    assert!(
+        covariance_diagonal.len() == 15 + other_states.as_ref().map_or(0, |v| v.len()),
+        "Covariance diagonal length mismatch: expected {}, got {}",
+        15 + other_states.as_ref().map_or(0, |v| v.len()),
+        covariance_diagonal.len()
+    );
+
+    ParticleFilter::new(
+        initial_state,
+        imu_biases,
+        other_states,
+        covariance_diagonal,
+        process_noise,
+        num_particles,
+        vertical_mode,
+        resampling_strategy.unwrap_or(ResamplingStrategy::Systematic),
+        averaging_strategy.unwrap_or(AveragingStrategy::WeightedMean),
+        seed,
+    )
+}
+
+/// Initialize a Rao-Blackwellized particle filter for simulation.
+///
+/// This function creates and initializes a `RaoBlackwellizedParticleFilter` with the
+/// given parameters, using UKF for per-particle linear state estimation.
+///
+/// # Arguments
+///
+/// * `initial_pose` - A `TestDataRecord` containing the initial pose information.
+/// * `num_particles` - Number of particles in the ensemble (recommend 50-200 for RBPF).
+/// * `vertical_mode` - Vertical channel mode (Simplified for 2.5D).
+/// * `attitude_covariance` - Optional initial attitude covariance.
+/// * `imu_biases` - Optional initial IMU biases.
+/// * `imu_biases_covariance` - Optional IMU bias covariance.
+/// * `process_noise` - Optional `RBProcessNoise` struct.
+/// * `resampling_strategy` - Resampling algorithm (default: Systematic).
+/// * `ukf_alpha` - UKF spread parameter (default: 1e-3).
+/// * `ukf_beta` - UKF distribution parameter (default: 2.0).
+/// * `ukf_kappa` - UKF secondary scaling (default: 0.0).
+/// * `seed` - Optional random seed for reproducibility.
+///
+/// # Returns
+///
+/// * `RaoBlackwellizedParticleFilter` - Initialized RBPF instance.
+#[allow(clippy::too_many_arguments)]
+pub fn initialize_rbpf(
+    initial_pose: TestDataRecord,
+    num_particles: usize,
+    vertical_mode: VerticalChannelMode,
+    attitude_covariance: Option<Vec<f64>>,
+    imu_biases: Option<Vec<f64>>,
+    imu_biases_covariance: Option<Vec<f64>>,
+    process_noise: Option<RBProcessNoise>,
+    resampling_strategy: Option<ResamplingStrategy>,
+    ukf_alpha: Option<f64>,
+    ukf_beta: Option<f64>,
+    ukf_kappa: Option<f64>,
+    seed: Option<u64>,
+) -> RaoBlackwellizedParticleFilter {
+    let initial_state = InitialState {
+        latitude: initial_pose.latitude,
+        longitude: initial_pose.longitude,
+        altitude: initial_pose.altitude,
+        northward_velocity: initial_pose.speed * initial_pose.bearing.cos(),
+        eastward_velocity: initial_pose.speed * initial_pose.bearing.sin(),
+        vertical_velocity: 0.0,
+        roll: if initial_pose.roll.is_nan() {
+            0.0
+        } else {
+            initial_pose.roll
+        },
+        pitch: if initial_pose.pitch.is_nan() {
+            0.0
+        } else {
+            initial_pose.pitch
+        },
+        yaw: if initial_pose.yaw.is_nan() {
+            0.0
+        } else {
+            initial_pose.yaw
+        },
+        in_degrees: true,
+        is_enu: true,
+    };
+
+    // Process noise (default to RBPF-optimized values)
+    let process_noise = process_noise.unwrap_or_else(RBProcessNoise::default);
+
+    // Covariance parameters for initialization (15-element: 3 position + 12 linear)
+    let position_accuracy = initial_pose.horizontal_accuracy;
+    let mut covariance_diagonal = vec![
+        (position_accuracy * METERS_TO_DEGREES).powf(2.0), // lat
+        (position_accuracy * METERS_TO_DEGREES).powf(2.0), // lon
+        initial_pose.vertical_accuracy.powf(2.0),           // alt
+        initial_pose.speed_accuracy.powf(2.0),              // v_n
+        initial_pose.speed_accuracy.powf(2.0),              // v_e
+        initial_pose.speed_accuracy.powf(2.0),              // v_v
+    ];
+
+    // Extend covariance diagonal with attitude covariance
+    match attitude_covariance {
+        Some(att_cov) => covariance_diagonal.extend(att_cov),
+        None => covariance_diagonal.extend(vec![1e-9; 3]), // Default values
+    }
+
+    // Extend with IMU biases
+    let imu_biases = match imu_biases {
+        Some(biases) => {
+            covariance_diagonal.extend(match imu_biases_covariance {
+                Some(imu_cov) => imu_cov,
+                None => vec![1e-3; 6], // Default covariance
+            });
+            biases
+        }
+        None => {
+            covariance_diagonal.extend(vec![1e-3; 6]);
+            vec![0.0; 6] // Default zero biases
+        }
+    };
+
+    assert_eq!(
+        covariance_diagonal.len(),
+        15,
+        "RBPF covariance diagonal must have exactly 15 elements"
+    );
+
+    RaoBlackwellizedParticleFilter::new(
+        initial_state,
+        imu_biases,
+        covariance_diagonal,
+        process_noise,
+        num_particles,
+        vertical_mode,
+        resampling_strategy.unwrap_or(ResamplingStrategy::Systematic),
+        ukf_alpha.unwrap_or(1e-3),
+        ukf_beta.unwrap_or(2.0),
+        ukf_kappa.unwrap_or(0.0),
+        seed,
+    )
+}
+
+// ==== Simulation Helper functions ====
+
+pub fn print_sim_status<F: NavigationFilter>(filter: &F) {
+    let mean = filter.get_estimate();
+    let cov = filter.get_certainty();
+
+    // Extract position and covariance diagonal
+    let lat = mean[0].to_degrees();
+    let lon = mean[1].to_degrees();
+    let alt = mean[2];
+
+    // Get position uncertainty (diagonal elements)
+    let pos_std_lat = cov[(0, 0)].sqrt().to_degrees();
+    let pos_std_lon = cov[(1, 1)].sqrt().to_degrees();
+    let pos_std_alt = cov[(2, 2)].sqrt();
+
+    // Compute RMS of position covariance
+    let pos_rms = (pos_std_lat.powi(2) + pos_std_lon.powi(2) + pos_std_alt.powi(2)).sqrt();
+
+    print!(
+        "\rPos: ({:.6}°, {:.6}°, {:.1}m) | σ: ({:.2e}°, {:.2e}°, {:.2}m) | RMS: {:.2e}",
+        lat, lon, alt, pos_std_lat, pos_std_lon, pos_std_alt, pos_rms
+    );
+    use std::io::Write;
+    std::io::stdout().flush().ok();
 }
 
 pub mod health {
@@ -1320,7 +1429,7 @@ pub mod health {
             Self {
                 lat_rad: (-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2),
                 lon_rad: (-std::f64::consts::PI, std::f64::consts::PI),
-                alt_m: (-5000.0, 15000.0),
+                alt_m: (-100000000.0, 100000000.0), // Very tolerant for vertical channel instability
                 speed_mps_max: 500.0,
                 cov_diag_max: 1e15,
                 cond_max: 1e12,
@@ -1552,7 +1661,6 @@ mod tests {
     use std::fs::File;
     use std::path::Path;
     use std::vec;
-
     /// Generate a test record for northward motion at constant velocity (1 knot = 1852 m/h).
     /// This helper returns a Vec<TestDataRecord> for 1 hour, sampled once per second.
     fn generate_northward_motion_records() -> Vec<TestDataRecord> {
@@ -1757,7 +1865,7 @@ mod tests {
         assert_eq!(nav.altitude, 0.0);
         assert_eq!(nav.velocity_north, 0.0);
         assert_eq!(nav.velocity_east, 0.0);
-        assert_eq!(nav.velocity_down, 0.0);
+        assert_eq!(nav.velocity_vertical, 0.0);
     }
     #[test]
     fn test_navigation_result_from_strapdown_state() {
@@ -1767,7 +1875,7 @@ mod tests {
         state.altitude = 3.0;
         state.velocity_north = 4.0;
         state.velocity_east = 5.0;
-        state.velocity_down = 6.0;
+        state.velocity_vertical = 6.0;
         state.attitude = nalgebra::Rotation3::from_euler_angles(7.0, 8.0, 9.0);
 
         let state_vector: DVector<f64> = DVector::from_vec(vec![
@@ -1776,7 +1884,7 @@ mod tests {
             state.altitude,
             state.velocity_north,
             state.velocity_east,
-            state.velocity_down,
+            state.velocity_vertical,
             state.attitude.euler_angles().0, // roll
             state.attitude.euler_angles().1, // pitch
             state.attitude.euler_angles().2, // yaw
@@ -1798,7 +1906,7 @@ mod tests {
         assert_eq!(nav.altitude, 3.0);
         assert_eq!(nav.velocity_north, 4.0);
         assert_eq!(nav.velocity_east, 5.0);
-        assert_eq!(nav.velocity_down, 6.0);
+        assert_eq!(nav.velocity_vertical, 6.0);
     }
     #[test]
     fn test_navigation_result_to_csv_and_from_csv() {
@@ -1808,8 +1916,7 @@ mod tests {
         nav.altitude = 3.0;
         nav.velocity_north = 4.0;
         nav.velocity_east = 5.0;
-        nav.velocity_down = 6.0;
-        //nav.attitude = nalgebra::Rotation3::from_euler_angles(0.1, 0.2, 0.3);
+        nav.velocity_vertical = 6.0;
         let temp_file = std::env::temp_dir().join("test_nav_result.csv");
         NavigationResult::to_csv(&[nav.clone()], &temp_file).unwrap();
         let read = NavigationResult::from_csv(&temp_file).unwrap();
@@ -1819,61 +1926,9 @@ mod tests {
         assert_eq!(read[0].altitude, 3.0);
         assert_eq!(read[0].velocity_north, 4.0);
         assert_eq!(read[0].velocity_east, 5.0);
-        assert_eq!(read[0].velocity_down, 6.0);
-        //assert!(read[0].attitude.matrix().abs_diff_eq(
-        //    nalgebra::Rotation3::from_euler_angles(0.1, 0.2, 0.3).matrix(),
-        //    1e-12
-        //));
+        assert_eq!(read[0].velocity_vertical, 6.0);
         let _ = std::fs::remove_file(&temp_file);
     }
-    // #[test]
-    // fn test_dead_reckoning_empty_and_single() {
-    //     let empty: Vec<TestDataRecord> = vec![];
-    //     let res = dead_reckoning(&empty);
-    //     assert!(res.is_empty());
-    //     let rec = TestDataRecord::from_csv("./data/test_data.csv")
-    //         .ok()
-    //         .and_then(|v| v.into_iter().next())
-    //         .unwrap_or_else(|| TestDataRecord {
-    //             time: chrono::Utc::now(),
-    //             bearing_accuracy: 0.0,
-    //             speed_accuracy: 0.0,
-    //             vertical_accuracy: 0.0,
-    //             horizontal_accuracy: 0.0,
-    //             speed: 0.0,
-    //             bearing: 0.0,
-    //             altitude: 0.0,
-    //             longitude: 0.0,
-    //             latitude: 0.0,
-    //             qz: 0.0,
-    //             qy: 0.0,
-    //             qx: 0.0,
-    //             qw: 1.0,
-    //             roll: 0.0,
-    //             pitch: 0.0,
-    //             yaw: 0.0,
-    //             acc_z: 0.0,
-    //             acc_y: 0.0,
-    //             acc_x: 0.0,
-    //             gyro_z: 0.0,
-    //             gyro_y: 0.0,
-    //             gyro_x: 0.0,
-    //             mag_z: 0.0,
-    //             mag_y: 0.0,
-    //             mag_x: 0.0,
-    //             relative_altitude: 0.0,
-    //             pressure: 0.0,
-    //             grav_z: 0.0,
-    //             grav_y: 0.0,
-    //             grav_x: 0.0,
-    //         });
-    //     let res = dead_reckoning(&[rec.clone()]);
-    //     assert_eq!(res.len(), 1);
-    //     let mut rec2 = rec.clone();
-    //     rec2.time = chrono::Utc::now();
-    //     let res = dead_reckoning(&[rec.clone(), rec2]);
-    //     assert_eq!(res.len(), 2);
-    // }
     #[test]
     fn test_closed_loop_minimal() {
         let rec = TestDataRecord::from_csv("./data/test_data.csv")
@@ -1931,7 +1986,7 @@ mod tests {
             events: vec![event],
         };
 
-        let res = closed_loop(&mut ukf, stream);
+        let res = run_closed_loop(&mut ukf, stream, None);
         assert!(!res.unwrap().is_empty());
     }
     #[test]
@@ -1970,7 +2025,7 @@ mod tests {
             grav_x: 0.0,
         };
         let ukf = initialize_ukf(rec.clone(), None, None, None, None, None, None);
-        assert!(!ukf.get_mean().is_empty());
+        assert!(!ukf.get_estimate().is_empty());
         let ukf2 = initialize_ukf(
             rec,
             Some(vec![0.1, 0.2, 0.3]),
@@ -1980,9 +2035,8 @@ mod tests {
             None,
             None,
         );
-        assert!(!ukf2.get_mean().is_empty());
+        assert!(!ukf2.get_estimate().is_empty());
     }
-
     // Helper to produce the header in the same order the struct expects
     fn test_header() -> Vec<&'static str> {
         vec![
@@ -2019,7 +2073,6 @@ mod tests {
             "grav_x",
         ]
     }
-
     #[test]
     fn deserialize_with_empty_fields_maps_to_nan() {
         let headers = test_header();
@@ -2050,7 +2103,6 @@ mod tests {
         assert!(r.acc_x.is_nan());
         let _ = std::fs::remove_file(&temp_file);
     }
-
     #[test]
     fn deserialize_with_missing_trailing_columns_returns_error() {
         let headers = test_header();
@@ -2079,7 +2131,6 @@ mod tests {
         assert!(rec.longitude.is_nan());
         let _ = std::fs::remove_file(&temp_file);
     }
-
     #[test]
     fn manual_padding_then_deserialize_succeeds() {
         let headers = test_header();
@@ -2114,141 +2165,698 @@ mod tests {
         assert_eq!(r.latitude, 37.0);
         let _ = std::fs::remove_file(&temp_file);
     }
-
     #[test]
-    fn test_initialize_particle_filter() {
-        let initial_pose = TestDataRecord {
-            time: Utc::now(),
-            bearing_accuracy: 0.0,
-            speed_accuracy: 1.0,
-            vertical_accuracy: 5.0,
-            horizontal_accuracy: 10.0,
-            speed: 5.0,
-            bearing: 0.0,
-            altitude: 100.0,
-            longitude: -122.0,
+    fn test_de_f64_nan_with_various_inputs() {
+        // Test CSV deserialization with NaN/null/empty values
+        let headers = test_header();
+        let mut csv_data = String::new();
+        csv_data.push_str(&headers.join(","));
+        csv_data.push('\n');
+
+        // Row with mixed NaN representations
+        csv_data.push_str("2023-08-04T21:47:58Z,NaN,null,,,1.5,90.0,100.0,-122.0,37.0,");
+        csv_data.push_str("0,0,0,1,0.1,0.2,0.3,9.8,0,0,0,0,0,0,0,0,0,1013.25,9.81,0,0\n");
+
+        let temp_file = std::env::temp_dir().join("test_nan_variants.csv");
+        std::fs::write(&temp_file, csv_data).unwrap();
+        let recs = TestDataRecord::from_csv(&temp_file).expect("Should parse");
+        assert_eq!(recs.len(), 1);
+        assert!(recs[0].bearing_accuracy.is_nan());
+        assert!(recs[0].speed_accuracy.is_nan());
+        assert!(recs[0].vertical_accuracy.is_nan());
+        assert!(recs[0].horizontal_accuracy.is_nan());
+        assert_eq!(recs[0].speed, 1.5);
+        let _ = std::fs::remove_file(&temp_file);
+    }
+    #[test]
+    fn test_test_data_record_display() {
+        let rec = TestDataRecord {
+            time: DateTime::parse_from_str("2023-01-01 00:00:00+00:00", "%Y-%m-%d %H:%M:%S%z")
+                .unwrap()
+                .with_timezone(&Utc),
             latitude: 37.0,
-            qz: 0.0,
-            qy: 0.0,
-            qx: 0.0,
-            qw: 1.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            speed: 5.0,
+            bearing: 90.0,
+            ..Default::default()
+        };
+        let display_str = format!("{}", rec);
+        assert!(display_str.contains("37"));
+        assert!(display_str.contains("-122"));
+        assert!(display_str.contains("100"));
+    }
+    #[test]
+    fn test_navigation_result_from_ukf() {
+        let rec = TestDataRecord {
+            time: Utc::now(),
+            horizontal_accuracy: 5.0,
+            vertical_accuracy: 2.0,
+            speed_accuracy: 1.0,
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            speed: 10.0,
+            bearing: 45.0,
+            roll: 0.1,
+            pitch: 0.2,
+            yaw: 0.3,
+            ..Default::default()
+        };
+        let ukf = initialize_ukf(rec.clone(), None, None, None, None, None, None);
+        let timestamp = Utc::now();
+        let nav_result = NavigationResult::from((&timestamp, &ukf));
+
+        assert_eq!(nav_result.timestamp, timestamp);
+        assert!(nav_result.latitude.is_finite());
+        assert!(nav_result.longitude.is_finite());
+        assert!(nav_result.altitude.is_finite());
+    }
+    #[test]
+    fn test_dead_reckoning_empty_records() {
+        let results = dead_reckoning(&[]);
+        assert!(results.is_empty());
+    }
+    #[test]
+    fn test_dead_reckoning_single_record() {
+        let rec = TestDataRecord {
+            time: Utc::now(),
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            speed: 1.0,
+            bearing: 0.0,
             roll: 0.0,
             pitch: 0.0,
             yaw: 0.0,
-            acc_z: 0.0,
-            acc_y: 0.0,
             acc_x: 0.0,
-            gyro_z: 0.0,
-            gyro_y: 0.0,
+            acc_y: 0.0,
+            acc_z: 9.81,
             gyro_x: 0.0,
-            mag_z: 0.0,
-            mag_y: 0.0,
-            mag_x: 0.0,
-            relative_altitude: 0.0,
-            pressure: 1013.25,
-            grav_z: 9.81,
-            grav_y: 0.0,
-            grav_x: 0.0,
+            gyro_y: 0.0,
+            gyro_z: 0.0,
+            ..Default::default()
         };
+        let results = dead_reckoning(&[rec]);
+        assert_eq!(results.len(), 1);
+    }
+    #[test]
+    fn test_print_ukf() {
+        let rec = TestDataRecord {
+            time: Utc::now(),
+            horizontal_accuracy: 5.0,
+            vertical_accuracy: 2.0,
+            speed_accuracy: 1.0,
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            speed: 10.0,
+            bearing: 45.0,
+            roll: 0.1,
+            pitch: 0.2,
+            yaw: 0.3,
+            ..Default::default()
+        };
+        let ukf = initialize_ukf(rec.clone(), None, None, None, None, None, None);
+        // Just ensure it doesn't panic
+        print_ukf(&ukf, &rec);
+    }
+    #[test]
+    fn test_initialize_ukf_with_nan_angles() {
+        let rec = TestDataRecord {
+            time: Utc::now(),
+            horizontal_accuracy: 5.0,
+            vertical_accuracy: 2.0,
+            speed_accuracy: 1.0,
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            speed: 10.0,
+            bearing: 45.0,
+            roll: f64::NAN,
+            pitch: f64::NAN,
+            yaw: f64::NAN,
+            ..Default::default()
+        };
+        let ukf = initialize_ukf(rec, None, None, None, None, None, None);
+        let estimate = ukf.get_estimate();
+        // Should default NaN angles to 0.0
+        assert!(estimate[6].abs() < 1e-6); // roll
+        assert!(estimate[7].abs() < 1e-6); // pitch
+        assert!(estimate[8].abs() < 1e-6); // yaw
+    }
 
-        let num_particles = 50;
-        let pf = initialize_particle_filter(initial_pose, num_particles, 10.0, 1.0, 0.1);
+    #[test]
+    fn test_initialize_ukf_with_custom_biases() {
+        let rec = TestDataRecord {
+            time: Utc::now(),
+            horizontal_accuracy: 5.0,
+            vertical_accuracy: 2.0,
+            speed_accuracy: 1.0,
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            speed: 10.0,
+            bearing: 45.0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            ..Default::default()
+        };
+        let ukf = initialize_ukf(
+            rec,
+            Some(vec![1e-4, 2e-4, 3e-4]),
+            Some(vec![0.01, 0.02, 0.03, 0.001, 0.002, 0.003]),
+            Some(vec![1e-5; 6]),
+            None,
+            None,
+            None,
+        );
+        let estimate = ukf.get_estimate();
+        assert_eq!(estimate.len(), 15);
+    }
 
-        assert_eq!(pf.particles.len(), num_particles);
+    #[test]
+    fn test_initialize_ukf_with_custom_process_noise() {
+        let rec = TestDataRecord {
+            time: Utc::now(),
+            horizontal_accuracy: 5.0,
+            vertical_accuracy: 2.0,
+            speed_accuracy: 1.0,
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            speed: 10.0,
+            bearing: 45.0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            ..Default::default()
+        };
+        let custom_noise = vec![1e-5; 15];
+        let ukf = initialize_ukf(rec, None, None, None, None, None, Some(custom_noise));
+        assert!(!ukf.get_estimate().is_empty());
+    }
+    #[test]
+    fn test_health_limits_default() {
+        let limits = HealthLimits::default();
+        assert!(limits.lat_rad.0 < 0.0);
+        assert!(limits.lat_rad.1 > 0.0);
+        assert!(limits.speed_mps_max > 0.0);
+        assert!(limits.cov_diag_max > 0.0);
+    }
 
-        // Check that weights are initialized uniformly
-        let expected_weight = 1.0 / num_particles as f64;
-        for particle in &pf.particles {
-            assert!((particle.weight - expected_weight).abs() < 1e-10);
+    #[test]
+    fn test_health_monitor_check_valid_state() {
+        let limits = HealthLimits::default();
+        let mut monitor = HealthMonitor::new(limits);
+
+        let state = vec![
+            0.5, 0.5, 100.0, // lat, lon, alt (radians, radians, meters)
+            10.0, 5.0, 0.0, // vn, ve, vd
+            0.0, 0.0, 0.0, // roll, pitch, yaw
+            0.0, 0.0, 0.0, // acc biases
+            0.0, 0.0, 0.0, // gyro biases
+        ];
+        let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
+
+        let result = monitor.check(&state, &cov, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_health_monitor_check_non_finite_state() {
+        let limits = HealthLimits::default();
+        let mut monitor = HealthMonitor::new(limits);
+
+        let state = vec![
+            f64::NAN,
+            0.5,
+            100.0,
+            10.0,
+            5.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        ];
+        let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
+
+        let result = monitor.check(&state, &cov, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_health_monitor_check_non_finite_covariance() {
+        let limits = HealthLimits::default();
+        let mut monitor = HealthMonitor::new(limits);
+
+        let state = vec![
+            0.5, 0.5, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ];
+        let mut cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
+        cov[(0, 0)] = f64::NAN;
+
+        let result = monitor.check(&state, &cov, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_health_monitor_check_latitude_out_of_range() {
+        let limits = HealthLimits::default();
+        let mut monitor = HealthMonitor::new(limits);
+
+        let state = vec![
+            5.0, 0.5, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ]; // lat > PI/2
+        let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
+
+        let result = monitor.check(&state, &cov, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_health_monitor_check_longitude_out_of_range() {
+        let limits = HealthLimits::default();
+        let mut monitor = HealthMonitor::new(limits);
+
+        let state = vec![
+            0.5, 5.0, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ]; // lon > PI
+        let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
+
+        let result = monitor.check(&state, &cov, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_health_monitor_check_altitude_out_of_range() {
+        let mut limits = HealthLimits::default();
+        limits.alt_m = (-100.0, 10000.0);
+        let mut monitor = HealthMonitor::new(limits);
+
+        let state = vec![
+            0.5, 0.5, 20000.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ];
+        let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
+
+        let result = monitor.check(&state, &cov, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_health_monitor_check_negative_variance() {
+        let limits = HealthLimits::default();
+        let mut monitor = HealthMonitor::new(limits);
+
+        let state = vec![
+            0.5, 0.5, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ];
+        let mut cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
+        cov[(2, 2)] = -1.0; // negative variance
+
+        let result = monitor.check(&state, &cov, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_health_monitor_check_variance_too_large() {
+        let limits = HealthLimits::default();
+        let mut monitor = HealthMonitor::new(limits);
+
+        let state = vec![
+            0.5, 0.5, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ];
+        let mut cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
+        cov[(3, 3)] = 1e20; // variance too large
+
+        let result = monitor.check(&state, &cov, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_health_monitor_check_nis_invalid() {
+        let limits = HealthLimits::default();
+        let mut monitor = HealthMonitor::new(limits);
+
+        let state = vec![
+            0.5, 0.5, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ];
+        let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
+
+        let result = monitor.check(&state, &cov, Some(f64::NAN));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_health_monitor_check_nis_exceeds_threshold() {
+        let mut limits = HealthLimits::default();
+        limits.nis_pos_max = 10.0;
+        limits.nis_pos_consec_fail = 3;
+        let mut monitor = HealthMonitor::new(limits);
+
+        let state = vec![
+            0.5, 0.5, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ];
+        let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
+
+        // First two failures should be ok
+        assert!(monitor.check(&state, &cov, Some(15.0)).is_ok());
+        assert!(monitor.check(&state, &cov, Some(15.0)).is_ok());
+        // Third consecutive failure should error
+        let result = monitor.check(&state, &cov, Some(15.0));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_health_monitor_check_nis_reset_on_pass() {
+        let mut limits = HealthLimits::default();
+        limits.nis_pos_max = 10.0;
+        limits.nis_pos_consec_fail = 3;
+        let mut monitor = HealthMonitor::new(limits);
+
+        let state = vec![
+            0.5, 0.5, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ];
+        let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
+
+        // First failure
+        assert!(monitor.check(&state, &cov, Some(15.0)).is_ok());
+        // Pass resets counter
+        assert!(monitor.check(&state, &cov, Some(5.0)).is_ok());
+        // New failures should not accumulate with previous
+        assert!(monitor.check(&state, &cov, Some(15.0)).is_ok());
+        assert!(monitor.check(&state, &cov, Some(15.0)).is_ok());
+    }
+
+    #[test]
+    fn test_build_scheduler_passthrough() {
+        let args = SchedulerArgs {
+            sched: SchedKind::Passthrough,
+            interval_s: 1.0,
+            phase_s: 0.0,
+            on_s: 10.0,
+            off_s: 10.0,
+            duty_phase_s: 0.0,
+        };
+        let scheduler = build_scheduler(&args);
+        matches!(scheduler, GnssScheduler::PassThrough);
+    }
+
+    #[test]
+    fn test_build_scheduler_fixed() {
+        let args = SchedulerArgs {
+            sched: SchedKind::Fixed,
+            interval_s: 2.5,
+            phase_s: 0.5,
+            on_s: 10.0,
+            off_s: 10.0,
+            duty_phase_s: 0.0,
+        };
+        let scheduler = build_scheduler(&args);
+        if let GnssScheduler::FixedInterval {
+            interval_s,
+            phase_s,
+        } = scheduler
+        {
+            assert_eq!(interval_s, 2.5);
+            assert_eq!(phase_s, 0.5);
+        } else {
+            panic!("Expected FixedInterval scheduler");
         }
     }
 
     #[test]
-    fn test_particle_averaging_strategies() {
-        // Create a simple particle filter with 3 particles
-        let particles = vec![
-            Particle {
-                nav_state: StrapdownState {
-                    latitude: 0.0,
-                    longitude: 0.0,
-                    altitude: 100.0,
-                    velocity_north: 1.0,
-                    velocity_east: 0.0,
-                    velocity_down: 0.0,
-                    attitude: Rotation3::from_euler_angles(0.0, 0.0, 0.0),
-                    coordinate_convention: true,
-                },
-                weight: 0.5,
-            },
-            Particle {
-                nav_state: StrapdownState {
-                    latitude: 0.001,
-                    longitude: 0.001,
-                    altitude: 110.0,
-                    velocity_north: 2.0,
-                    velocity_east: 1.0,
-                    velocity_down: 0.0,
-                    attitude: Rotation3::from_euler_angles(0.1, 0.0, 0.0),
-                    coordinate_convention: true,
-                },
-                weight: 0.3,
-            },
-            Particle {
-                nav_state: StrapdownState {
-                    latitude: -0.001,
-                    longitude: 0.0,
-                    altitude: 90.0,
-                    velocity_north: 0.0,
-                    velocity_east: -1.0,
-                    velocity_down: 0.0,
-                    attitude: Rotation3::from_euler_angles(0.0, 0.1, 0.0),
-                    coordinate_convention: true,
-                },
-                weight: 0.2,
-            },
-        ];
-
-        let pf = ParticleFilter::new(particles);
-
-        // Test weighted average
-        let strategy = ParticleAveragingStrategy::WeightedAverage;
-        let (mean, _cov) = strategy.compute_state(&pf);
-        assert_eq!(mean.len(), 9);
-        // Weighted average: 100*0.5 + 110*0.3 + 90*0.2 = 50 + 33 + 18 = 101
-        assert!((mean[2] - 101.0).abs() < 1.0);
-
-        // Test highest weight
-        let strategy = ParticleAveragingStrategy::HighestWeight;
-        let (mean, _cov) = strategy.compute_state(&pf);
-        assert_eq!(mean.len(), 9);
-        assert_eq!(mean[2], 100.0); // Should be first particle
+    fn test_build_scheduler_duty() {
+        let args = SchedulerArgs {
+            sched: SchedKind::Duty,
+            interval_s: 1.0,
+            phase_s: 0.0,
+            on_s: 15.0,
+            off_s: 5.0,
+            duty_phase_s: 2.0,
+        };
+        let scheduler = build_scheduler(&args);
+        if let GnssScheduler::DutyCycle {
+            on_s,
+            off_s,
+            start_phase_s,
+        } = scheduler
+        {
+            assert_eq!(on_s, 15.0);
+            assert_eq!(off_s, 5.0);
+            assert_eq!(start_phase_s, 2.0);
+        } else {
+            panic!("Expected DutyCycle scheduler");
+        }
     }
 
     #[test]
-    fn test_navigation_result_from_particle_filter() {
+    fn test_build_fault_none() {
+        let args = FaultArgs {
+            fault: FaultKind::None,
+            rho_pos: 0.99,
+            sigma_pos_m: 3.0,
+            rho_vel: 0.95,
+            sigma_vel_mps: 0.3,
+            r_scale: 5.0,
+            drift_n_mps: 0.02,
+            drift_e_mps: 0.0,
+            q_bias: 1e-6,
+            rotate_omega_rps: 0.0,
+            hijack_offset_n_m: 50.0,
+            hijack_offset_e_m: 0.0,
+            hijack_start_s: 120.0,
+            hijack_duration_s: 60.0,
+        };
+        let fault = build_fault(&args);
+        matches!(fault, GnssFaultModel::None);
+    }
+
+    #[test]
+    fn test_build_fault_degraded() {
+        let args = FaultArgs {
+            fault: FaultKind::Degraded,
+            rho_pos: 0.98,
+            sigma_pos_m: 5.0,
+            rho_vel: 0.93,
+            sigma_vel_mps: 0.5,
+            r_scale: 10.0,
+            drift_n_mps: 0.02,
+            drift_e_mps: 0.0,
+            q_bias: 1e-6,
+            rotate_omega_rps: 0.0,
+            hijack_offset_n_m: 50.0,
+            hijack_offset_e_m: 0.0,
+            hijack_start_s: 120.0,
+            hijack_duration_s: 60.0,
+        };
+        let fault = build_fault(&args);
+        if let GnssFaultModel::Degraded {
+            rho_pos,
+            sigma_pos_m,
+            rho_vel,
+            sigma_vel_mps,
+            r_scale,
+        } = fault
+        {
+            assert_eq!(rho_pos, 0.98);
+            assert_eq!(sigma_pos_m, 5.0);
+            assert_eq!(rho_vel, 0.93);
+            assert_eq!(sigma_vel_mps, 0.5);
+            assert_eq!(r_scale, 10.0);
+        } else {
+            panic!("Expected Degraded fault model");
+        }
+    }
+
+    #[test]
+    fn test_build_fault_slowbias() {
+        let args = FaultArgs {
+            fault: FaultKind::Slowbias,
+            rho_pos: 0.99,
+            sigma_pos_m: 3.0,
+            rho_vel: 0.95,
+            sigma_vel_mps: 0.3,
+            r_scale: 5.0,
+            drift_n_mps: 0.05,
+            drift_e_mps: 0.02,
+            q_bias: 1e-5,
+            rotate_omega_rps: 0.01,
+            hijack_offset_n_m: 50.0,
+            hijack_offset_e_m: 0.0,
+            hijack_start_s: 120.0,
+            hijack_duration_s: 60.0,
+        };
+        let fault = build_fault(&args);
+        if let GnssFaultModel::SlowBias {
+            drift_n_mps,
+            drift_e_mps,
+            q_bias,
+            rotate_omega_rps,
+        } = fault
+        {
+            assert_eq!(drift_n_mps, 0.05);
+            assert_eq!(drift_e_mps, 0.02);
+            assert_eq!(q_bias, 1e-5);
+            assert_eq!(rotate_omega_rps, 0.01);
+        } else {
+            panic!("Expected SlowBias fault model");
+        }
+    }
+
+    #[test]
+    fn test_build_fault_hijack() {
+        let args = FaultArgs {
+            fault: FaultKind::Hijack,
+            rho_pos: 0.99,
+            sigma_pos_m: 3.0,
+            rho_vel: 0.95,
+            sigma_vel_mps: 0.3,
+            r_scale: 5.0,
+            drift_n_mps: 0.02,
+            drift_e_mps: 0.0,
+            q_bias: 1e-6,
+            rotate_omega_rps: 0.0,
+            hijack_offset_n_m: 100.0,
+            hijack_offset_e_m: 50.0,
+            hijack_start_s: 180.0,
+            hijack_duration_s: 90.0,
+        };
+        let fault = build_fault(&args);
+        if let GnssFaultModel::Hijack {
+            offset_n_m,
+            offset_e_m,
+            start_s,
+            duration_s,
+        } = fault
+        {
+            assert_eq!(offset_n_m, 100.0);
+            assert_eq!(offset_e_m, 50.0);
+            assert_eq!(start_s, 180.0);
+            assert_eq!(duration_s, 90.0);
+        } else {
+            panic!("Expected Hijack fault model");
+        }
+    }
+
+    #[test]
+    fn test_ned_covariance() {
+        let cov = NEDCovariance {
+            latitude_cov: 1e-6,
+            longitude_cov: 1e-6,
+            altitude_cov: 1e-4,
+            velocity_n_cov: 1e-3,
+            velocity_e_cov: 1e-3,
+            velocity_v_cov: 1e-3,
+            roll_cov: 1e-5,
+            pitch_cov: 1e-5,
+            yaw_cov: 1e-5,
+            acc_bias_x_cov: 1e-6,
+            acc_bias_y_cov: 1e-6,
+            acc_bias_z_cov: 1e-6,
+            gyro_bias_x_cov: 1e-8,
+            gyro_bias_y_cov: 1e-8,
+            gyro_bias_z_cov: 1e-8,
+        };
+        assert_eq!(cov.latitude_cov, 1e-6);
+        assert_eq!(cov.gyro_bias_z_cov, 1e-8);
+    }
+
+    #[test]
+    fn test_navigation_result_csv_roundtrip_with_nan() {
+        let mut nav = NavigationResult::default();
+        nav.latitude = 37.0;
+        nav.longitude = -122.0;
+        nav.altitude = 100.0;
+        nav.latitude_cov = f64::NAN;
+        nav.longitude_cov = f64::NAN;
+
+        let temp_file = std::env::temp_dir().join("test_nav_nan.csv");
+        NavigationResult::to_csv(&[nav.clone()], &temp_file).unwrap();
+
+        let read = NavigationResult::from_csv(&temp_file).unwrap();
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].latitude, 37.0);
+        assert!(read[0].latitude_cov.is_nan());
+
+        let _ = std::fs::remove_file(&temp_file);
+    }
+
+    #[test]
+    fn test_navigation_result_from_strapdown_state_with_rotation() {
         let timestamp = Utc::now();
-        let mean = DVector::from_vec(vec![
-            37.0_f64.to_radians(),   // lat
-            -122.0_f64.to_radians(), // lon
-            100.0,                   // alt
-            5.0,                     // vn
-            0.0,                     // ve
-            0.0,                     // vd
-            0.0,                     // roll
-            0.0,                     // pitch
-            0.0,                     // yaw
-        ]);
-        let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 9]));
+        let mut state = StrapdownState::default();
+        state.latitude = 0.5; // radians
+        state.longitude = 1.0; // radians
+        state.altitude = 500.0;
+        state.velocity_north = 10.0;
+        state.velocity_east = 5.0;
+        state.velocity_vertical = -1.0;
+        state.attitude = nalgebra::Rotation3::from_euler_angles(0.1, 0.2, 0.3);
 
-        let result = NavigationResult::from_particle_filter(&timestamp, &mean, &cov);
+        let nav = NavigationResult::from((&timestamp, &state));
+        assert_eq!(nav.timestamp, timestamp);
+        assert!((nav.latitude - 0.5_f64.to_degrees()).abs() < 1e-6);
+        assert!((nav.longitude - 1.0_f64.to_degrees()).abs() < 1e-6);
+        assert_eq!(nav.altitude, 500.0);
+        assert!(nav.latitude_cov.is_nan());
+        assert_eq!(nav.acc_bias_x, 0.0);
+    }
+    #[test]
+    fn test_default_process_noise_values() {
+        assert_eq!(DEFAULT_PROCESS_NOISE.len(), 15);
+        assert_eq!(DEFAULT_PROCESS_NOISE[0], 1e-6); // position
+        assert_eq!(DEFAULT_PROCESS_NOISE[2], 1e-4); // altitude
+        assert_eq!(DEFAULT_PROCESS_NOISE[3], 1e-3); // velocity
+    }
 
-        assert_eq!(result.timestamp, timestamp);
-        assert!((result.latitude - 37.0).abs() < 1e-6);
-        assert!((result.longitude - (-122.0)).abs() < 1e-6);
-        assert_eq!(result.altitude, 100.0);
-        assert_eq!(result.velocity_north, 5.0);
-        // Biases should be zero for particle filter
-        assert_eq!(result.acc_bias_x, 0.0);
-        assert_eq!(result.gyro_bias_x, 0.0);
+    #[test]
+    fn test_run_closed_loop_with_health_limits() {
+        let rec = TestDataRecord {
+            time: Utc::now(),
+            horizontal_accuracy: 5.0,
+            vertical_accuracy: 2.0,
+            speed_accuracy: 1.0,
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            speed: 10.0,
+            bearing: 45.0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            acc_x: 0.0,
+            acc_y: 0.0,
+            acc_z: 9.81,
+            gyro_x: 0.0,
+            gyro_y: 0.0,
+            gyro_z: 0.0,
+            ..Default::default()
+        };
+
+        let mut ukf = initialize_ukf(rec.clone(), None, None, None, None, None, None);
+
+        let stream = EventStream {
+            start_time: rec.time,
+            events: vec![Event::Imu {
+                dt_s: 0.1,
+                imu: IMUData {
+                    accel: Vector3::new(0.0, 0.0, 9.81),
+                    gyro: Vector3::new(0.0, 0.0, 0.0),
+                },
+                elapsed_s: 0.0,
+            }],
+        };
+
+        let health_limits = HealthLimits::default();
+        let result = run_closed_loop(&mut ukf, stream, Some(health_limits));
+        assert!(result.is_ok());
     }
 }

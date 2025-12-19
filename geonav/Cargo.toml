@@ -5,9 +5,9 @@ edition = "2024"
 
 
 [dependencies]
-nalgebra = { workspace = true }
-rand = { workspace = true }
-csv = { workspace = true }
+nalgebra = "*" #{ workspace = true }
+rand = "*" #{ workspace = true }
+csv = "*" # { workspace = true }
 strapdown-core = { path = "../core", features = ["clap"] }
 statrs = "0.18.0"
 netcdf = "0.11.0"
