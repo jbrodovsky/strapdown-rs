@@ -465,12 +465,13 @@ pub fn forward(state: &mut StrapdownState, imu_data: IMUData, dt: f64) {
 /// on the book _Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems, Second Edition_ by Paul D. Groves.
 ///
 /// # Arguments
+/// * `state` - A reference to the current StrapdownState.
 /// * `gyros` - A Vector3 representing the gyroscope data in rad/s in the body frame x, y, z axis.
 /// * `dt` - A f64 representing the time step in seconds.
 ///
 /// # Returns
 /// * A Matrix3 representing the updated attitude matrix in the NED frame.
-fn attitude_update(state: &StrapdownState, gyros: Vector3<f64>, dt: f64) -> Matrix3<f64> {
+pub fn attitude_update(state: &StrapdownState, gyros: Vector3<f64>, dt: f64) -> Matrix3<f64> {
     let transport_rate: Matrix3<f64> = earth::vector_to_skew_symmetric(&earth::transport_rate(
         &state.latitude.to_degrees(),
         &state.altitude,

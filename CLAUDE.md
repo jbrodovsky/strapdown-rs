@@ -17,11 +17,13 @@ This is a Cargo workspace with three main crates:
 
 ### 1. `strapdown-core` (/core)
 The core library implementing strapdown INS algorithms and simulation framework:
+- **lib.rs**: Library entry point and 9-state strapdown mechanization in local-level frame (NED). Implements forward propagation equations from Groves textbook (Chapter 5.4-5.5)
 - **earth.rs**: WGS84 Earth ellipsoid model and geodetic calculations
-- **strapdown.rs**: 9-state strapdown mechanization in local-level frame (NED). Implements forward propagation equations from Groves textbook (Chapter 5.4-5.5)
-- **filter.rs**: Navigation filters (Unscented Kalman Filter, Particle Filter) with measurement models (GPS position, velocity)
-- **sim.rs**: Simulation utilities, CSV data loading (multiple dataset formats), dead reckoning and closed-loop functions
-- **messages.rs**: Event stream handling for GNSS scheduling and fault injection
+- **kalman.rs**: Kalman-style navigation filters including Unscented Kalman Filter (UKF) for nonlinear state estimation
+- **particle.rs**: Particle filter (Sequential Monte Carlo) implementation for non-Gaussian estimation with resampling strategies
+- **measurements.rs**: Measurement models (GPS position/velocity, barometric altitude, pseudorange, carrier phase) implementing the `MeasurementModel` trait
+- **messages.rs**: Event stream handling for GNSS scheduling and fault injection scenarios
+- **sim.rs**: Simulation utilities, CSV data loading (Sensor Logger format), dead reckoning and closed-loop functions
 - **linalg.rs**: Linear algebra utilities for matrix operations
 
 **Key state representation**: 9-state vector [lat, lon, alt, v_n, v_e, v_d, roll, pitch, yaw] in NED frame
@@ -34,11 +36,12 @@ The core library implementing strapdown INS algorithms and simulation framework:
 
 ### 2. `strapdown-sim` (/sim)
 Command-line tool for running INS simulations with GNSS degradation:
-- Modes: open-loop (dead reckoning) or closed-loop (loosely-coupled UKF/PF)
+- Modes: open-loop (dead reckoning), closed-loop with UKF, or particle filter
 - GNSS fault simulation: dropouts, reduced update rates, measurement corruption, bias injection
-- Input: CSV files with IMU and GNSS measurements (supports multiple dataset formats)
+- Input: CSV files with IMU and GNSS measurements (Sensor Logger format)
 - Output: Navigation solutions as CSV/Parquet
 - Configuration: YAML/JSON scenario files or command-line arguments
+- Built-in logging: Use `--log-level` and `--log-file` flags (see LOGGING.md for details)
 
 **Free Core scope**: Basic GNSS degradation (outages, noise, reduced availability)
 **Future Pro scope**: Advanced faults (spoofing, jamming, multipath, terrain masking)
@@ -46,9 +49,10 @@ Command-line tool for running INS simulations with GNSS degradation:
 ### 3. `strapdown-geonav` (/geonav)
 **Experimental** geophysical navigation module (research-grade):
 - Loads NetCDF geophysical maps (gravity/magnetic anomaly grids)
-- Integrates geophysical measurements with INS/GNSS
+- Integrates geophysical measurements with INS/GNSS filters
 - Provides alternative PNT in GNSS-denied environments
-- Status: Experimental feature for research, may be commercialized in future roadmap (Phase 2)
+- Built-in logging: Use `--log-level` and `--log-file` flags (see LOGGING.md for details)
+- Status: Experimental feature for research, may be commercialized in future roadmap
 
 ## Common Commands
 
@@ -67,6 +71,10 @@ cargo test --package strapdown-sim
 
 # Run specific test
 cargo test --package strapdown-core test_name
+
+# Run with code coverage
+pixi run coverage
+# Or: cargo tarpaulin --workspace --timeout 600
 ```
 
 ### Lint & Format
@@ -140,6 +148,26 @@ The Free Core implementation must achieve the following capabilities:
 
 ## Development Notes
 
+### Code Style and Conventions
+- **Naming conventions**:
+  - Variables and functions: `snake_case`
+  - Types (structs, enums, traits): `CamelCase`
+  - Constants: `SCREAMING_SNAKE_CASE`
+  - Names should be descriptive (avoid abbreviations and mathematical symbols)
+- **Function design**:
+  - Keep functions focused on a single task
+  - Break up long functions (>25 statements) into smaller private helper functions
+  - Each function should have a clear purpose reflected in its name
+- **Documentation**:
+  - Use Rust doc comments extensively (`///` and `//!`)
+  - Include examples in documentation
+  - Reference Groves textbook equations by section/equation number where applicable
+- **Testing**:
+  - Write unit tests for each module
+  - Include integration tests for full system behavior
+  - Test edge cases and error handling
+  - Use `assert_approx_eq` for floating-point comparisons
+
 ### Reference Material
 - Primary reference: "Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems, 2nd Edition" by Paul D. Groves
 - Equations reference Groves by section/equation number
@@ -147,16 +175,35 @@ The Free Core implementation must achieve the following capabilities:
 
 ### Coordinate Conventions
 - **Navigation frame**: NED (North-East-Down) local-level frame
+  - Default convention is East-North-Up (ENU) but NED is also supported
+  - Users control via `is_enu` boolean flags and sign conventions
+  - Vertical velocity: positive up in ENU, positive down in NED
+  - Valid altitude range: [-11,000m, 30,000m] for ENU; [11,000m, -30,000m] for NED
 - **Attitude representation**: Direction cosine matrices (DCM), Euler angles (XYZ rotation)
 - **Position**: WGS84 geodetic (lat/lon in degrees, altitude in meters)
 - **Velocities**: Local-level frame (m/s)
+- **IMU data**: Specific force (m/s²) and angular rate (rad/s) in body frame, NOT preprocessed
+  - Raw IMU output includes gravitational acceleration
+  - Strapdown equations handle gravity removal during propagation
 
 ### Filter Architecture
-- Forward propagation uses `StrapdownState::propagate()` with strapdown equations
-- Filters implement `MeasurementModel` trait for update step
-- UKF uses sigma points for nonlinear state estimation
-- Particle filters for non-Gaussian estimation
-- Default process noise defined in `sim::DEFAULT_PROCESS_NOISE`
+- **Common interface**: All filters implement the `NavigationFilter` trait defined in `kalman.rs`
+  - Required methods: `predict()` and `update()`
+  - Unified state representation via `StrapdownState`
+- **Forward propagation**: Uses `StrapdownState::propagate()` with strapdown equations (Chapter 5.4-5.5)
+- **Measurement models**: Implement the `MeasurementModel` trait for update step
+  - Trait provides `predict_measurement()` and `innovation_covariance()` methods
+  - Implemented models: GPS position, GPS velocity, barometric altitude, pseudorange, carrier phase
+- **UKF implementation**:
+  - Uses unscented transform with sigma points for nonlinear state estimation
+  - Handles full 9-state navigation solution
+- **Particle filter implementation** (`particle.rs`):
+  - Extended state: 15+ states (9 nav states + 3 accel bias + 3 gyro bias + optional)
+  - Resampling strategies: systematic, stratified, residual
+  - Averaging strategies: mean, weighted mean, maximum weight
+  - Includes vertical channel damping with altitude error feedback
+  - Each particle propagates independently through strapdown equations
+- **Process noise**: Default values defined in `sim::DEFAULT_PROCESS_NOISE`
 - **Design for extensibility**: Core algorithms separate from simulation framework to enable future professional features
 
 ### Data Format
@@ -166,21 +213,23 @@ Input CSV must contain timestamped sensor measurements:
 - GNSS: latitude, longitude, altitude, speed, bearing
 - Orientation: roll, pitch, yaw (degrees) or quaternions
 
-**Supported dataset formats**:
-- Sensor Logger app format (current)
-- KITTI, nuScenes, Carla, MEMS-Nav (via converters - in progress)
+**Current dataset format**: Sensor Logger app format
+
+**Future dataset support** (via converters): KITTI, nuScenes, Carla, MEMS-Nav
 
 ### Testing
-- 84+ unit tests across core modules
-- Tests use `assert_approx_eq` for floating-point comparisons
-- Integration tests verify full simulation pipeline
+- Extensive unit tests across core modules (use `cargo test --workspace` to run all)
+- Tests use `assert_approx_eq` macro for floating-point comparisons
+- Integration tests in `core/tests/integration_tests.rs` verify full simulation pipeline
 - Deterministic tests verify reproducibility with seeded RNG
+- Coverage reports generated with `cargo tarpaulin`
 
 ### Environment Setup
 Project uses Pixi for dependency management (Python + Rust):
-- Environment variables set in `pixi.toml` activation
+- Environment variables set in `pixi.toml` activation section
 - HDF5 required for NetCDF support (geonav experimental features)
-- Python ≥3.13, Rust ≥1.89
+- Python ≥3.12, Rust ≥1.91
+- Release binaries automatically added to PATH via pixi activation
 
 ## Extensibility for Professional Versions
 
@@ -200,7 +249,7 @@ When developing Free Core features, consider extensibility for future profession
 - Clean separation between algorithms (strapdown-core) and application logic (strapdown-sim)
 - Plugin architecture for adding new sensors/measurement models in pro versions
 
-## Current Development
-- Active branch: jbrodovsky/issue7
-- Main branch for PRs: main
+## Workflow Notes
+- Main branch for PRs: `main`
+- Create feature branches for development
 - Current focus: Implementing Free Core specification features for reproducible research simulations
