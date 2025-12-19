@@ -22,6 +22,8 @@
 //! 3. Velocity and orientation estimates are stable
 //! 4. The closed-loop filter outperforms dead reckoning
 
+// updated for deconflict
+
 use std::path::Path;
 
 use strapdown::earth::haversine_distance;
