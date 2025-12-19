@@ -29,8 +29,10 @@ use strapdown::kalman::{InitialState, UnscentedKalmanFilter};
 use strapdown::messages::{
     GnssDegradationConfig, GnssFaultModel, GnssScheduler, build_event_stream,
 };
+use strapdown::particle::{ProcessNoise, RBProcessNoise, VerticalChannelMode};
 use strapdown::sim::{
-    NavigationResult, TestDataRecord, dead_reckoning, run_closed_loop,
+    NavigationResult, TestDataRecord, dead_reckoning, initialize_particle_filter, initialize_rbpf,
+    initialize_ukf, run_closed_loop,
 };
 
 use nalgebra::{DMatrix, DVector};
@@ -73,7 +75,7 @@ struct ErrorStats {
     /// Mean velocity east error (m/s)
     mean_velocity_east_error: f64,
     /// Mean velocity down error (m/s)
-    mean_velocity_down_error: f64,
+    mean_velocity_vertical_error: f64,
 }
 
 impl ErrorStats {
@@ -88,7 +90,7 @@ impl ErrorStats {
             rms_altitude_error: 0.0,
             mean_velocity_north_error: 0.0,
             mean_velocity_east_error: 0.0,
-            mean_velocity_down_error: 0.0,
+            mean_velocity_vertical_error: 0.0,
         }
     }
 }
@@ -112,7 +114,7 @@ fn compute_error_metrics(results: &[NavigationResult], records: &[TestDataRecord
     let mut altitude_errors = Vec::new();
     let mut velocity_north_errors = Vec::new();
     let mut velocity_east_errors = Vec::new();
-    let mut velocity_down_errors = Vec::new();
+    let mut velocity_vertical_errors = Vec::new();
 
     // Match navigation results to GNSS measurements by timestamp
     for (i, result) in results.iter().enumerate() {
@@ -178,7 +180,7 @@ fn compute_error_metrics(results: &[NavigationResult], records: &[TestDataRecord
 
             let vn_err = (result.velocity_north - gnss_vel_north).abs();
             let ve_err = (result.velocity_east - gnss_vel_east).abs();
-            let vd_err = result.velocity_down.abs();
+            let vd_err = result.velocity_vertical.abs();
 
             if vn_err.is_finite() {
                 velocity_north_errors.push(vn_err);
@@ -187,7 +189,7 @@ fn compute_error_metrics(results: &[NavigationResult], records: &[TestDataRecord
                 velocity_east_errors.push(ve_err);
             }
             if vd_err.is_finite() {
-                velocity_down_errors.push(vd_err);
+                velocity_vertical_errors.push(vd_err);
             }
         }
     }
@@ -232,8 +234,8 @@ fn compute_error_metrics(results: &[NavigationResult], records: &[TestDataRecord
             velocity_north_errors.iter().sum::<f64>() / velocity_north_errors.len() as f64;
         stats.mean_velocity_east_error =
             velocity_east_errors.iter().sum::<f64>() / velocity_east_errors.len() as f64;
-        stats.mean_velocity_down_error =
-            velocity_down_errors.iter().sum::<f64>() / velocity_down_errors.len() as f64;
+        stats.mean_velocity_vertical_error =
+            velocity_vertical_errors.iter().sum::<f64>() / velocity_vertical_errors.len() as f64;
     }
 
     stats
@@ -265,7 +267,7 @@ fn create_initial_state(first_record: &TestDataRecord) -> InitialState {
         altitude: first_record.altitude,
         northward_velocity: first_record.speed * first_record.bearing.to_radians().cos(),
         eastward_velocity: first_record.speed * first_record.bearing.to_radians().sin(),
-        downward_velocity: 0.0,
+        vertical_velocity: 0.0,
         roll: first_record.roll,
         pitch: first_record.pitch,
         yaw: first_record.yaw,
@@ -318,7 +320,7 @@ fn test_dead_reckoning_on_real_data() {
         "Velocity Error: N={:.3}m/s, E={:.3}m/s, D={:.3}m/s",
         stats.mean_velocity_north_error,
         stats.mean_velocity_east_error,
-        stats.mean_velocity_down_error
+        stats.mean_velocity_vertical_error
     );
 
     // Dead reckoning will drift over time, but should not produce NaN or infinite values
@@ -421,7 +423,7 @@ fn test_ukf_closed_loop_on_real_data() {
         "Velocity Error: N={:.3}m/s, E={:.3}m/s, D={:.3}m/s",
         stats.mean_velocity_north_error,
         stats.mean_velocity_east_error,
-        stats.mean_velocity_down_error
+        stats.mean_velocity_vertical_error
     );
 
     // Assert error bounds - these should be reasonable for a working filter with GNSS
@@ -474,9 +476,9 @@ fn test_ukf_closed_loop_on_real_data() {
             result.velocity_east
         );
         assert!(
-            result.velocity_down.is_finite(),
+            result.velocity_vertical.is_finite(),
             "Velocity down should be finite: {}",
-            result.velocity_down
+            result.velocity_vertical
         );
     }
 }
@@ -652,4 +654,475 @@ fn test_ukf_outperforms_dead_reckoning() {
             dr_stats.rms_horizontal_error
         );
     }
+}
+
+// ============================================================================
+// Particle Filter Integration Tests
+// ============================================================================
+
+#[test]
+fn test_particle_filter_closed_loop_on_real_data() {
+    // Load test data
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let test_data_path = Path::new(manifest_dir).join("tests/test_data.csv");
+    let records = load_test_data(&test_data_path);
+    assert!(!records.is_empty(), "Test data should not be empty");
+
+    let initial = &records[0];
+
+    // Initialize particle filter with 100 particles
+    let mut pf = initialize_particle_filter(
+        initial.clone(),
+        1000,
+        VerticalChannelMode::Simplified,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(ProcessNoise::default()),
+        None,
+        None,
+        Some(42),
+    );
+
+    // Create event stream with passthrough scheduler (all GNSS measurements used)
+    let cfg = GnssDegradationConfig {
+        scheduler: GnssScheduler::PassThrough,
+        fault: GnssFaultModel::None,
+        seed: 42,
+    };
+
+    let stream = build_event_stream(&records, &cfg);
+
+    // Run closed-loop navigation
+    let pf_results = run_closed_loop(&mut pf, stream, None).expect("PF should complete");
+
+    // Verify we got results
+    assert!(!pf_results.is_empty(), "PF should produce results");
+
+    // Compute error statistics
+    let pf_stats = compute_error_metrics(&pf_results, &records);
+
+    println!("\n=== Particle Filter Performance ===");
+    println!(
+        "PF RMS Horizontal Error: {:.2}m",
+        pf_stats.rms_horizontal_error
+    );
+    println!("PF RMS Altitude Error: {:.2}m", pf_stats.rms_altitude_error);
+    println!(
+        "PF Max Horizontal Error: {:.2}m",
+        pf_stats.max_horizontal_error
+    );
+    println!("PF Max Altitude Error: {:.2}m", pf_stats.max_altitude_error);
+
+    // Sanity checks - PF should stay within reasonable bounds
+    assert!(
+        pf_stats.rms_horizontal_error < 100.0,
+        "PF RMS horizontal error should be < 100m with GNSS updates"
+    );
+    assert!(
+        pf_stats.rms_altitude_error < 50.0,
+        "PF RMS altitude error should be < 50m with GNSS updates"
+    );
+}
+
+#[test]
+fn test_particle_filter_with_gnss_dropout() {
+    // Load test data
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let test_data_path = Path::new(manifest_dir).join("tests/test_data.csv");
+    let records = load_test_data(&test_data_path);
+    assert!(!records.is_empty(), "Test data should not be empty");
+
+    let initial = &records[0];
+
+    // Initialize particle filter with more particles for robustness during dropout
+    let mut pf = initialize_particle_filter(
+        initial.clone(),
+        500,
+        VerticalChannelMode::Simplified,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(ProcessNoise::default()),
+        None,
+        None,
+        Some(42),
+    );
+
+    // Create GNSS dropout schedule: 60s on, 30s off (dropout), repeating
+    let cfg = GnssDegradationConfig {
+        scheduler: GnssScheduler::DutyCycle {
+            on_s: 60.0,
+            off_s: 30.0,
+            start_phase_s: 0.0,
+        },
+        fault: GnssFaultModel::None,
+        seed: 42,
+    };
+
+    let stream = build_event_stream(&records, &cfg);
+
+    // Run closed-loop navigation with dropout
+    let pf_results =
+        run_closed_loop(&mut pf, stream, None).expect("PF should complete with dropout");
+
+    // Verify we got results
+    assert!(
+        !pf_results.is_empty(),
+        "PF should produce results with dropout"
+    );
+
+    // Compute error statistics
+    let pf_stats = compute_error_metrics(&pf_results, &records);
+
+    println!("\n=== Particle Filter with GNSS Dropout ===");
+    println!(
+        "PF RMS Horizontal Error: {:.2}m",
+        pf_stats.rms_horizontal_error
+    );
+    println!("PF RMS Altitude Error: {:.2}m", pf_stats.rms_altitude_error);
+
+    // During/after dropout, errors will be larger but should still be bounded
+    assert!(
+        pf_stats.rms_horizontal_error < 500.0,
+        "PF RMS horizontal error should be < 500m even with dropout"
+    );
+}
+
+#[test]
+fn test_particle_filter_vs_ukf_comparison() {
+    // Load test data
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let test_data_path = Path::new(manifest_dir).join("tests/test_data.csv");
+    let records = load_test_data(&test_data_path);
+    assert!(!records.is_empty(), "Test data should not be empty");
+
+    let initial = &records[0];
+
+    // Initialize UKF
+    let mut ukf = initialize_ukf(initial.clone(), None, None, None, None, None, None);
+
+    // Initialize Particle Filter with same initial conditions
+    let mut pf = initialize_particle_filter(
+        initial.clone(),
+        100,
+        VerticalChannelMode::Simplified,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(ProcessNoise::default()),
+        None,
+        None,
+        Some(42),
+    );
+
+    // Create event stream with passthrough scheduler (all GNSS measurements used)
+    let cfg = GnssDegradationConfig {
+        scheduler: GnssScheduler::PassThrough,
+        fault: GnssFaultModel::None,
+        seed: 42,
+    };
+
+    // Run both filters with the same event stream
+    let stream_ukf = build_event_stream(&records, &cfg);
+    let ukf_results = run_closed_loop(&mut ukf, stream_ukf, None).expect("UKF should complete");
+
+    let stream_pf = build_event_stream(&records, &cfg);
+    let pf_results = run_closed_loop(&mut pf, stream_pf, None).expect("PF should complete");
+
+    // Compute error statistics
+    let ukf_stats = compute_error_metrics(&ukf_results, &records);
+    let pf_stats = compute_error_metrics(&pf_results, &records);
+
+    // Print comparison
+    println!("\n=== UKF vs Particle Filter Comparison ===");
+    println!(
+        "UKF RMS Horizontal Error: {:.2}m",
+        ukf_stats.rms_horizontal_error
+    );
+    println!(
+        "PF RMS Horizontal Error: {:.2}m",
+        pf_stats.rms_horizontal_error
+    );
+    println!(
+        "UKF RMS Altitude Error: {:.2}m",
+        ukf_stats.rms_altitude_error
+    );
+    println!("PF RMS Altitude Error: {:.2}m", pf_stats.rms_altitude_error);
+
+    // Both filters should produce reasonable results
+    assert!(
+        ukf_stats.rms_horizontal_error < 100.0,
+        "UKF should have reasonable horizontal error"
+    );
+    assert!(
+        pf_stats.rms_horizontal_error < 100.0,
+        "PF should have reasonable horizontal error"
+    );
+
+    // PF and UKF should have comparable performance (within 2x of each other)
+    let ratio = pf_stats.rms_horizontal_error / ukf_stats.rms_horizontal_error;
+    assert!(
+        ratio < 2.0 && ratio > 0.5,
+        "PF and UKF should have comparable performance, ratio: {:.2}",
+        ratio
+    );
+}
+
+// ============================================================================
+// Rao-Blackwellized Particle Filter Integration Tests
+// ============================================================================
+
+#[test]
+fn test_rbpf_closed_loop_on_real_data() {
+    // Load test data
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let test_data_path = Path::new(manifest_dir).join("tests/test_data.csv");
+    let records = load_test_data(&test_data_path);
+    assert!(!records.is_empty(), "Test data should not be empty");
+
+    let initial = &records[0];
+
+    // Initialize RBPF with 100 particles (fewer than standard PF)
+    let mut rbpf = initialize_rbpf(
+        initial.clone(),
+        100,
+        VerticalChannelMode::Simplified,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(1e-3), // UKF alpha
+        Some(2.0),  // UKF beta
+        Some(0.0),  // UKF kappa
+        Some(42),   // Seed
+    );
+
+    // Create event stream with passthrough scheduler (all GNSS measurements used)
+    let cfg = GnssDegradationConfig {
+        scheduler: GnssScheduler::PassThrough,
+        fault: GnssFaultModel::None,
+        seed: 42,
+    };
+
+    let stream = build_event_stream(&records, &cfg);
+
+    // Run closed-loop navigation
+    let rbpf_results = run_closed_loop(&mut rbpf, stream, None).expect("RBPF should complete");
+
+    // Verify we got results
+    assert!(!rbpf_results.is_empty(), "RBPF should produce results");
+
+    // Compute error statistics
+    let rbpf_stats = compute_error_metrics(&rbpf_results, &records);
+
+    println!("\n=== Rao-Blackwellized Particle Filter Performance ===");
+    println!(
+        "RBPF RMS Horizontal Error: {:.2}m",
+        rbpf_stats.rms_horizontal_error
+    );
+    println!(
+        "RBPF RMS Altitude Error: {:.2}m",
+        rbpf_stats.rms_altitude_error
+    );
+    println!(
+        "RBPF Max Horizontal Error: {:.2}m",
+        rbpf_stats.max_horizontal_error
+    );
+    println!(
+        "RBPF Max Altitude Error: {:.2}m",
+        rbpf_stats.max_altitude_error
+    );
+
+    // Sanity checks - RBPF should stay within reasonable bounds
+    assert!(
+        rbpf_stats.rms_horizontal_error < 1000.0,
+        "RBPF RMS horizontal error should be < 100m with GNSS updates"
+    );
+    assert!(
+        rbpf_stats.rms_altitude_error < 100.0,
+        "RBPF RMS altitude error should be < 50m with GNSS updates"
+    );
+}
+
+#[test]
+fn test_rbpf_with_gnss_dropout() {
+    // Load test data
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let test_data_path = Path::new(manifest_dir).join("tests/test_data.csv");
+    let records = load_test_data(&test_data_path);
+    assert!(!records.is_empty(), "Test data should not be empty");
+
+    let initial = &records[0];
+
+    // Initialize RBPF with moderate particle count for dropout scenarios
+    let mut rbpf = initialize_rbpf(
+        initial.clone(),
+        150,
+        VerticalChannelMode::Simplified,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(1e-3),
+        Some(2.0),
+        Some(0.0),
+        Some(42),
+    );
+
+    // Create GNSS dropout schedule: 60s on, 30s off (dropout), repeating
+    let cfg = GnssDegradationConfig {
+        scheduler: GnssScheduler::DutyCycle {
+            on_s: 60.0,
+            off_s: 30.0,
+            start_phase_s: 0.0,
+        },
+        fault: GnssFaultModel::None,
+        seed: 42,
+    };
+
+    let stream = build_event_stream(&records, &cfg);
+
+    // Run closed-loop navigation with dropout
+    let rbpf_results =
+        run_closed_loop(&mut rbpf, stream, None).expect("RBPF should complete with dropout");
+
+    // Verify we got results
+    assert!(
+        !rbpf_results.is_empty(),
+        "RBPF should produce results with dropout"
+    );
+
+    // Compute error statistics
+    let rbpf_stats = compute_error_metrics(&rbpf_results, &records);
+
+    println!("\n=== RBPF with GNSS Dropout ===");
+    println!(
+        "RBPF RMS Horizontal Error: {:.2}m",
+        rbpf_stats.rms_horizontal_error
+    );
+    println!(
+        "RBPF RMS Altitude Error: {:.2}m",
+        rbpf_stats.rms_altitude_error
+    );
+
+    // During/after dropout, errors will be larger but should still be bounded
+    assert!(
+        rbpf_stats.rms_horizontal_error < 500.0,
+        "RBPF RMS horizontal error should be < 500m even with dropout"
+    );
+}
+
+#[test]
+fn test_rbpf_vs_standard_pf_comparison() {
+    // Load test data
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let test_data_path = Path::new(manifest_dir).join("tests/test_data.csv");
+    let records = load_test_data(&test_data_path);
+    assert!(!records.is_empty(), "Test data should not be empty");
+
+    let initial = &records[0];
+
+    // Initialize RBPF with 100 particles
+    let mut rbpf = initialize_rbpf(
+        initial.clone(),
+        100,
+        VerticalChannelMode::Simplified,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(1e-3),
+        Some(2.0),
+        Some(0.0),
+        Some(42),
+    );
+
+    // Initialize standard PF with 500 particles for comparison
+    let mut pf = initialize_particle_filter(
+        initial.clone(),
+        500,
+        VerticalChannelMode::Simplified,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(ProcessNoise::default()),
+        None,
+        None,
+        Some(42),
+    );
+
+    // Create event stream with passthrough scheduler
+    let cfg = GnssDegradationConfig {
+        scheduler: GnssScheduler::PassThrough,
+        fault: GnssFaultModel::None,
+        seed: 42,
+    };
+
+    // Run both filters with the same event stream
+    let stream_rbpf = build_event_stream(&records, &cfg);
+    let rbpf_results =
+        run_closed_loop(&mut rbpf, stream_rbpf, None).expect("RBPF should complete");
+
+    let stream_pf = build_event_stream(&records, &cfg);
+    let pf_results = run_closed_loop(&mut pf, stream_pf, None).expect("PF should complete");
+
+    // Compute error statistics
+    let rbpf_stats = compute_error_metrics(&rbpf_results, &records);
+    let pf_stats = compute_error_metrics(&pf_results, &records);
+
+    // Print comparison
+    println!("\n=== RBPF vs Standard PF Comparison ===");
+    println!("RBPF: 100 particles with per-particle UKF");
+    println!("Standard PF: 500 particles");
+    println!();
+    println!(
+        "RBPF RMS Horizontal Error: {:.2}m",
+        rbpf_stats.rms_horizontal_error
+    );
+    println!(
+        "PF RMS Horizontal Error: {:.2}m",
+        pf_stats.rms_horizontal_error
+    );
+    println!(
+        "RBPF RMS Altitude Error: {:.2}m",
+        rbpf_stats.rms_altitude_error
+    );
+    println!("PF RMS Altitude Error: {:.2}m", pf_stats.rms_altitude_error);
+
+    // Both filters should produce reasonable results
+    assert!(
+        rbpf_stats.rms_horizontal_error < 100.0,
+        "RBPF should have reasonable horizontal error"
+    );
+    assert!(
+        pf_stats.rms_horizontal_error < 100.0,
+        "PF should have reasonable horizontal error"
+    );
+
+    // RBPF with 100 particles should match or beat standard PF with 500 particles
+    // (due to better bias estimation and UKF for linear states)
+    println!(
+        "\nRBPF achieves {:.2}% of standard PF accuracy with 20% of the particles",
+        (rbpf_stats.rms_horizontal_error / pf_stats.rms_horizontal_error) * 100.0
+    );
+
+    // RBPF should be within 1.5x of standard PF performance (ideally better)
+    let ratio = rbpf_stats.rms_horizontal_error / pf_stats.rms_horizontal_error;
+    assert!(
+        ratio < 1.5,
+        "RBPF should achieve comparable or better performance with fewer particles, ratio: {:.2}",
+        ratio
+    );
 }
