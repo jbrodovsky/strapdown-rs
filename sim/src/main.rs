@@ -1,13 +1,16 @@
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use log::{error, info};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use strapdown::messages::{GnssDegradationConfig, build_event_stream};
-use strapdown::particle::ParticleAveragingStrategy;
+use strapdown::particle::{AveragingStrategy, ProcessNoise, RBProcessNoise, ResamplingStrategy, VerticalChannelMode};
 use strapdown::sim::{
     FaultArgs, NavigationResult, SchedulerArgs, TestDataRecord, build_fault, build_scheduler,
-    initialize_ukf, run_closed_loop,
+    initialize_particle_filter, initialize_rbpf, initialize_ukf, run_closed_loop,
 };
+
+// Import nalgebra types needed for process noise construction
+use nalgebra::{DMatrix, DVector, Vector3};
 
 const LONG_ABOUT: &str = "STRAPDOWN: A simulation and analysis tool for strapdown inertial navigation systems.
 
@@ -47,35 +50,18 @@ This program is designed to work with tabular comma-separated value datasets tha
 #[command(author, version, about, long_about = LONG_ABOUT)]
 struct Cli {
     /// Command to execute
-    /// Command to execute
     #[command(subcommand)]
-    command: Command,
     command: Command,
     /// Log level (off, error, warn, info, debug, trace)
     #[arg(long, default_value = "info", global = true)]
-    #[arg(long, default_value = "info", global = true)]
     log_level: String,
     /// Log file path (if not specified, logs to stderr)
-    #[arg(long, global = true)]
     #[arg(long, global = true)]
     log_file: Option<PathBuf>,
 }
 
 /// Top-level commands
-
-/// Top-level commands
 #[derive(Subcommand, Clone)]
-enum Command {
-    #[command(
-        name = "open-loop",
-        about = "Run the simulation in open-loop (feed-forward INS) mode"
-    )]
-    OpenLoop(SimArgs),
-    #[command(
-        name = "closed-loop",
-        about = "Run the simulation in closed-loop (feedback INS) mode"
-    )]
-    ClosedLoop(ClosedLoopSimArgs),
 enum Command {
     #[command(
         name = "open-loop",
@@ -111,31 +97,7 @@ struct SimArgs {
 }
 
 /// Closed-loop simulation arguments combining SimArgs with closed-loop specific options
-    ParticleFilter(ParticleFilterSimArgs),
-    #[command(
-        name = "generate-config",
-        about = "Generate a blank template GNSS degradation configuration file"
-    )]
-    GenerateConfig(GenerateConfigArgs),
-}
-
-/// Common simulation arguments for input/output
 #[derive(Args, Clone, Debug)]
-struct SimArgs {
-    /// Input file path
-    #[arg(short, long, value_parser)]
-    input: PathBuf,
-    /// Output file path
-    #[arg(short, long, value_parser)]
-    output: PathBuf,
-}
-
-/// Closed-loop simulation arguments combining SimArgs with closed-loop specific options
-#[derive(Args, Clone, Debug)]
-struct ClosedLoopSimArgs {
-    /// Common simulation input/output arguments
-    #[command(flatten)]
-    sim: SimArgs,
 struct ClosedLoopSimArgs {
     /// Common simulation input/output arguments
     #[command(flatten)]
@@ -154,21 +116,28 @@ struct ClosedLoopSimArgs {
     config: Option<PathBuf>,
 }
 
-/// Particle filter simulation arguments
+/// Particle filter type selection
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ParticleFilterType {
+    /// Standard particle filter (all states as particles)
+    Standard,
+    /// Rao-Blackwellized particle filter (position as particles, velocity/attitude/biases as per-particle UKF)
+    RaoBlackwellized,
+}
+
 /// Particle filter simulation arguments
 #[derive(Args, Clone, Debug)]
 struct ParticleFilterSimArgs {
     /// Common simulation input/output arguments
     #[command(flatten)]
     sim: SimArgs,
-struct ParticleFilterSimArgs {
-    /// Common simulation input/output arguments
-    #[command(flatten)]
-    sim: SimArgs,
+    /// Particle filter type
+    #[arg(long, value_enum, default_value_t = ParticleFilterType::Standard)]
+    filter_type: ParticleFilterType,
     /// RNG seed (applies to any stochastic options)
     #[arg(long, default_value_t = 42)]
     seed: u64,
-    /// Number of particles
+    /// Number of particles (RBPF typically needs fewer: 50-200 vs Standard: 500-1000)
     #[arg(long, default_value_t = 100)]
     num_particles: usize,
     /// Position uncertainty standard deviation (meters)
@@ -180,9 +149,21 @@ struct ParticleFilterSimArgs {
     /// Attitude uncertainty standard deviation (radians)
     #[arg(long, default_value_t = 0.1)]
     attitude_std: f64,
-    /// Particle averaging strategy
-    #[arg(long, value_enum, default_value_t = ParticleAveragingStrategy::WeightedAverage)]
-    averaging_strategy: ParticleAveragingStrategy,
+    /// Accelerometer bias uncertainty standard deviation (m/s²)
+    #[arg(long, default_value_t = 0.1)]
+    accel_bias_std: f64,
+    /// Gyroscope bias uncertainty standard deviation (rad/s)
+    #[arg(long, default_value_t = 0.01)]
+    gyro_bias_std: f64,
+    /// UKF alpha parameter (only for RBPF, controls spread of sigma points)
+    #[arg(long, default_value_t = 1e-3)]
+    ukf_alpha: f64,
+    /// UKF beta parameter (only for RBPF, incorporates prior knowledge of distribution)
+    #[arg(long, default_value_t = 2.0)]
+    ukf_beta: f64,
+    /// UKF kappa parameter (only for RBPF, secondary scaling parameter)
+    #[arg(long, default_value_t = 0.0)]
+    ukf_kappa: f64,
     /// Scheduler settings (dropouts / reduced rate)
     #[command(flatten)]
     scheduler: SchedulerArgs,
@@ -192,15 +173,6 @@ struct ParticleFilterSimArgs {
     /// Path to a GNSS degradation config file (json|yaml|yml|toml)
     #[arg(long)]
     config: Option<PathBuf>,
-}
-
-/// Arguments for the generate-config command
-#[derive(Args, Clone, Debug)]
-struct GenerateConfigArgs {
-    /// Output file path for the generated config file.
-    /// The file extension determines the format: .json, .yaml/.yml, or .toml
-    #[arg(short, long, value_parser)]
-    output: PathBuf,
 }
 
 /// Arguments for the generate-config command
@@ -221,11 +193,6 @@ fn init_logger(log_level: &str, log_file: Option<&PathBuf>) -> Result<(), Box<dy
         log::LevelFilter::Info
     });
 
-    let level = log_level.parse::<log::LevelFilter>().unwrap_or_else(|_| {
-        eprintln!("Invalid log level '{}', defaulting to 'info'", log_level);
-        log::LevelFilter::Info
-    });
-
     let mut builder = env_logger::Builder::new();
     builder.filter_level(level);
     builder.format(|buf, record| {
@@ -239,12 +206,6 @@ fn init_logger(log_level: &str, log_file: Option<&PathBuf>) -> Result<(), Box<dy
     });
 
     if let Some(log_path) = log_file {
-        let target = Box::new(
-            std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(log_path)?,
-        );
         let target = Box::new(
             std::fs::OpenOptions::new()
                 .create(true)
@@ -280,37 +241,169 @@ fn validate_output_path(output: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Validate input file exists and is readable
-fn validate_input_file(input: &Path) -> Result<(), Box<dyn Error>> {
-    if !input.exists() {
-        return Err(format!("Input file '{}' does not exist.", input.display()).into());
-    }
-    if !input.is_file() {
-        return Err(format!("Input path '{}' is not a file.", input.display()).into());
-    }
-    Ok(())
-}
+/// Run particle filter simulation with either standard PF or RBPF
+fn run_particle_filter_sim(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error>> {
+    validate_input_file(&args.sim.input)?;
+    validate_output_path(&args.sim.output)?;
 
-/// Validate output path and create parent directories if needed
-fn validate_output_path(output: &Path) -> Result<(), Box<dyn Error>> {
-    if let Some(parent) = output.parent()
-        && !parent.as_os_str().is_empty()
-        && !parent.exists()
-    {
-        std::fs::create_dir_all(parent)?;
+    info!("Loading test data from {:?}", args.sim.input);
+    let records = TestDataRecord::from_csv(&args.sim.input)
+        .map_err(|e| format!("Failed to load test data: {}", e))?;
+
+    if records.is_empty() {
+        return Err("No data records found in input file".into());
     }
+
+    info!("Loaded {} data records", records.len());
+
+    // Build GNSS degradation configuration
+    let cfg = if let Some(config_path) = &args.config {
+        info!("Loading GNSS degradation config from {:?}", config_path);
+        GnssDegradationConfig::from_file(config_path)
+            .map_err(|e| format!("Failed to load config: {}", e))?
+    } else {
+        GnssDegradationConfig {
+            scheduler: build_scheduler(&args.scheduler),
+            fault: build_fault(&args.fault),
+            seed: args.seed,
+        }
+    };
+
+    info!("Building event stream with GNSS degradation");
+    let stream = build_event_stream(&records, &cfg);
+
+    let results = match args.filter_type {
+        ParticleFilterType::Standard => {
+            info!(
+                "Initializing standard particle filter with {} particles",
+                args.num_particles
+            );
+
+            // Create process noise for standard PF
+            let process_noise = ProcessNoise {
+                position_std: Vector3::new(
+                    args.position_std * 1e-3,
+                    args.position_std * 1e-3,
+                    args.position_std * 5e-2,
+                ),
+                velocity_std: Vector3::new(
+                    args.velocity_std * 1e-2,
+                    args.velocity_std * 1e-2,
+                    args.velocity_std * 1e-1,
+                ),
+                attitude_std: Vector3::new(
+                    args.attitude_std * 1e-3,
+                    args.attitude_std * 1e-3,
+                    args.attitude_std * 1e-3,
+                ),
+                accel_bias_std: Vector3::new(
+                    args.accel_bias_std * 1e-3,
+                    args.accel_bias_std * 1e-3,
+                    args.accel_bias_std * 1e-3,
+                ),
+                gyro_bias_std: Vector3::new(
+                    args.gyro_bias_std * 1e-4,
+                    args.gyro_bias_std * 1e-4,
+                    args.gyro_bias_std * 1e-4,
+                ),
+                damping_states_std: None,
+            };
+
+            let mut filter = initialize_particle_filter(
+                records[0].clone(),
+                args.num_particles,
+                VerticalChannelMode::Simplified,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(process_noise),
+                Some(ResamplingStrategy::Systematic),
+                Some(AveragingStrategy::WeightedMean),
+                Some(args.seed),
+            );
+
+            info!("Running standard particle filter simulation");
+            run_closed_loop(&mut filter, stream, None)
+                .map_err(|e| format!("Particle filter simulation failed: {}", e))?
+        }
+        ParticleFilterType::RaoBlackwellized => {
+            info!(
+                "Initializing Rao-Blackwellized particle filter with {} particles",
+                args.num_particles
+            );
+
+            // Create process noise for RBPF
+            let process_noise = RBProcessNoise {
+                position_std: Vector3::new(
+                    args.position_std * 1e-3,
+                    args.position_std * 1e-3,
+                    args.position_std * 5e-2,
+                ),
+                linear_states_covariance: DMatrix::from_diagonal(
+                    &DVector::from_vec(vec![
+                        args.velocity_std.powi(2) * 1e-2,
+                        args.velocity_std.powi(2) * 1e-2,
+                        args.velocity_std.powi(2) * 1e-1,
+                        args.attitude_std.powi(2) * 1e-3,
+                        args.attitude_std.powi(2) * 1e-3,
+                        args.attitude_std.powi(2) * 1e-3,
+                        args.accel_bias_std.powi(2) * 1e-3,
+                        args.accel_bias_std.powi(2) * 1e-3,
+                        args.accel_bias_std.powi(2) * 1e-3,
+                        args.gyro_bias_std.powi(2) * 1e-4,
+                        args.gyro_bias_std.powi(2) * 1e-4,
+                        args.gyro_bias_std.powi(2) * 1e-4,
+                    ]),
+                ),
+            };
+
+            let mut filter = initialize_rbpf(
+                records[0].clone(),
+                args.num_particles,
+                VerticalChannelMode::Simplified,
+                None,
+                None,
+                None,
+                Some(process_noise),
+                Some(ResamplingStrategy::Systematic),
+                Some(args.ukf_alpha),
+                Some(args.ukf_beta),
+                Some(args.ukf_kappa),
+                Some(args.seed),
+            );
+
+            info!("Running Rao-Blackwellized particle filter simulation");
+            run_closed_loop(&mut filter, stream, None)
+                .map_err(|e| format!("RBPF simulation failed: {}", e))?
+        }
+    };
+
+    info!(
+        "Simulation complete. Generated {} navigation results",
+        results.len()
+    );
+
+    info!("Writing results to {:?}", args.sim.output);
+    NavigationResult::to_csv(&results, &args.sim.output)
+        .map_err(|e| format!("Failed to write results: {}", e))?;
+
+    info!("Done!");
     Ok(())
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
 
-
     // Initialize logger
     init_logger(&cli.log_level, cli.log_file.as_ref())?;
 
     match cli.command {
-        Command::GenerateConfig(ref args) => {
+        Command::ParticleFilter(args) => {
+            run_particle_filter_sim(&args)?;
+        }
+        Command::GenerateConfig(args) => {
             // Validate output path
             validate_output_path(&args.output)?;
 
@@ -329,29 +422,26 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
             }
         }
-        Command::OpenLoop(ref args) => {
+        Command::OpenLoop(args) => {
             validate_input_file(&args.input)?;
             validate_output_path(&args.output)?;
             info!("Open-loop mode is not yet fully implemented");
             // Note: Open-loop mode is currently not fully implemented
             // This would run dead reckoning simulation
         }
-        Command::ParticleFilter(ref args) => {
-            info!("Particle filter mode is not yet implemented");
-        }
-        Command::ClosedLoop(ref args) => {
+        Command::ClosedLoop(args) => {
             validate_input_file(&args.sim.input)?;
             validate_output_path(&args.sim.output)?;
             info!("Running in closed-loop mode");
-            // Load sensor data records from CSV, tolerant to mixed/variable-length rows and encoding issues.
-            let records = TestDataRecord::from_csv(&args.sim.input)?;
+            
+            // Load sensor data records from CSV
             let records = TestDataRecord::from_csv(&args.sim.input)?;
             info!(
                 "Read {} records from {}",
                 records.len(),
                 &args.sim.input.display()
-                &args.sim.input.display()
             );
+            
             let cfg = if let Some(ref cfg_path) = args.config {
                 match GnssDegradationConfig::from_file(cfg_path) {
                     Ok(c) => c,
@@ -367,22 +457,19 @@ fn main() -> Result<(), Box<dyn Error>> {
                     seed: args.seed,
                 }
             };
+            
             info!("Using GNSS degradation config: {:?}", cfg);
             let event_stream = build_event_stream(&records, &cfg);
             info!(
                 "Initialized event stream with {} events",
                 event_stream.events.len()
             );
+            
             let mut ukf = initialize_ukf(records[0].clone(), None, None, None, None, None, None);
             info!("Initialized UKF with state: {:?}", ukf);
+            
             let results = run_closed_loop(&mut ukf, event_stream, None);
             match results {
-                Ok(ref nav_results) => {
-                    match NavigationResult::to_csv(nav_results, &args.sim.output) {
-                        Ok(_) => info!("Results written to {}", args.sim.output.display()),
-                        Err(e) => error!("Error writing results: {}", e),
-                    }
-                }
                 Ok(ref nav_results) => {
                     match NavigationResult::to_csv(nav_results, &args.sim.output) {
                         Ok(_) => info!("Results written to {}", args.sim.output.display()),

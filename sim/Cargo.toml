@@ -10,6 +10,7 @@ strapdown-core = { path = "../core", features = ["clap"] }
 log = "0.4"
 env_logger = "0.11"
 chrono = "0.4"
+nalgebra = "0.34.1"
 
 [[bin]]
 name = "strapdown-sim"

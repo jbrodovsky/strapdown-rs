@@ -1276,6 +1276,7 @@ dependencies = [
  "clap",
  "env_logger",
  "log",
+ "nalgebra 0.34.1",
  "strapdown-core",
 ]
 
