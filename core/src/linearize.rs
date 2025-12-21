@@ -57,7 +57,9 @@
 //!
 //! - Default frame is East-North-Up (ENU) but NED is also supported via `is_enu` flag
 //! - Gravity is positive down (NED) or negative up (ENU)
-//! - Angles are wrapped to [-π, π] for latitude/yaw and [0, 2π] for all Euler angles
+//! - Latitude is constrained to [-π/2, π/2] (±90°)
+//! - Longitude and yaw are wrapped to [-π, π]
+//! - Roll and pitch are typically in [-π, π] but may vary by implementation
 
 use crate::earth::{self, vector_to_skew_symmetric};
 use crate::StrapdownState;
@@ -169,11 +171,10 @@ pub fn state_transition_jacobian(
     // ∂(lat(+))/∂(v_n): derivative of the kinematic relationship
     f[(0, 3)] = 1.0 / (r_n + alt) * dt;
 
-    // Longitude update accounts for cos(lat) in denominator
-    let cos_lat = lat.cos().max(1e-6);
+    // Longitude update accounts for cos(lat) in denominator (cos_lat already computed above)
     // ∂(lon(+))/∂(lon(-)): identity (no direct dependence)
     // ∂(lon(+))/∂(lat): derivative through cos(lat)
-    f[(1, 0)] += v_e / ((r_e + alt) * cos_lat.powi(2)) * lat.sin() * dt;
+    f[(1, 0)] += v_e / ((r_e + alt) * cos_lat.powi(2)) * sin_lat * dt;
     // ∂(lon(+))/∂(v_e): kinematic relationship
     f[(1, 4)] = 1.0 / ((r_e + alt) * cos_lat) * dt;
 
