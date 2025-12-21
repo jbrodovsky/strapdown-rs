@@ -300,7 +300,13 @@ impl NavigationFilter for UnscentedKalmanFilter {
         self.mean_state[7] = wrap_to_2pi(self.mean_state[7]);
         self.mean_state[8] = wrap_to_2pi(self.mean_state[8]);
         self.covariance -= &k * &s * &k.transpose();
-        self.covariance = 0.5 * (&self.covariance + self.covariance.transpose());
+        // Ensure covariance remains positive semi-definite with gentle regularization
+        self.covariance = symmetrize(&self.covariance);
+        // Add small diagonal regularization to prevent negative eigenvalues
+        let eps = 1e-9;
+        for i in 0..self.state_size {
+            self.covariance[(i, i)] += eps;
+        }
     }
     fn get_estimate(&self) -> DVector<f64> {
         self.mean_state.clone()
