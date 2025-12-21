@@ -210,10 +210,11 @@ pub struct RBProcessNoise {
 }
 
 impl Default for RBProcessNoise {
-    /// Default process noise for RBPF with 2.5D navigation.
+    /// Default process noise for RBPF with 2.5D navigation. Default process noise values
+    /// are tuned to MEMS-grade sensors.
     fn default() -> Self {
         // Position noise (for particle diffusion)
-        let position_std = Vector3::new(1e-3, 1e-3, 5e-2);
+        let position_std = Vector3::new(1e-6, 1e-6, 1e-3);
 
         // Linear state noise (for UKF predict)
         let linear_noise_diag = vec![
