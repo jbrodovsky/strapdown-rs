@@ -804,8 +804,7 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
     // Store the initial state and metadata
     results.push(NavigationResult::from((
         &first_record.time,
-        &state.into(),
-        &DMatrix::from_diagonal(&DVector::from_element(15, 0.0)),
+        &state
     )));
     let mut previous_time = records[0].time;
     // Process each subsequent record
@@ -821,8 +820,7 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
         forward(&mut state, imu_data, dt);
         results.push(NavigationResult::from((
             &current_time,
-            &state.into(),
-            &DMatrix::from_diagonal(&DVector::from_element(15, 0.0)),
+            &state
         )));
         previous_time = record.time;
     }
