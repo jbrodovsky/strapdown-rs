@@ -393,7 +393,7 @@ fn test_ukf_closed_loop_on_real_data() {
     let cfg = GnssDegradationConfig {
         scheduler: GnssScheduler::PassThrough,
         fault: GnssFaultModel::None,
-        seed: 42,
+        ..Default::default()
     };
 
     let stream = build_event_stream(&records, &cfg);
@@ -534,7 +534,7 @@ fn test_ukf_with_degraded_gnss() {
             phase_s: 0.0,
         },
         fault: GnssFaultModel::None,
-        seed: 42,
+        ..Default::default()
     };
 
     let stream = build_event_stream(&records, &cfg);
@@ -623,7 +623,7 @@ fn test_ukf_outperforms_dead_reckoning() {
     let cfg = GnssDegradationConfig {
         scheduler,
         fault: fault_model,
-        seed: 42,
+        ..Default::default()
     };
     let stream = build_event_stream(&records, &cfg);
 
@@ -691,7 +691,7 @@ fn test_particle_filter_closed_loop_on_real_data() {
     let cfg = GnssDegradationConfig {
         scheduler: GnssScheduler::PassThrough,
         fault: GnssFaultModel::None,
-        seed: 42,
+        ..Default::default()
     };
 
     let stream = build_event_stream(&records, &cfg);
@@ -761,7 +761,7 @@ fn test_particle_filter_with_gnss_dropout() {
             start_phase_s: 0.0,
         },
         fault: GnssFaultModel::None,
-        seed: 42,
+        ..Default::default()
     };
 
     let stream = build_event_stream(&records, &cfg);
@@ -825,7 +825,7 @@ fn test_particle_filter_vs_ukf_comparison() {
     let cfg = GnssDegradationConfig {
         scheduler: GnssScheduler::PassThrough,
         fault: GnssFaultModel::None,
-        seed: 42,
+        ..Default::default()
     };
 
     // Run both filters with the same event stream
@@ -905,7 +905,7 @@ fn test_rbpf_closed_loop_on_real_data() {
     let cfg = GnssDegradationConfig {
         scheduler: GnssScheduler::PassThrough,
         fault: GnssFaultModel::None,
-        seed: 42,
+        ..Default::default()
     };
 
     let stream = build_event_stream(&records, &cfg);
@@ -979,7 +979,7 @@ fn test_rbpf_with_gnss_dropout() {
             start_phase_s: 0.0,
         },
         fault: GnssFaultModel::None,
-        seed: 42,
+        ..Default::default()
     };
 
     let stream = build_event_stream(&records, &cfg);
