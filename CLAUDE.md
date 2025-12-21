@@ -174,7 +174,7 @@ The Free Core implementation must achieve the following capabilities:
 - Variables named by quantity (not mathematical symbols) for clarity
 
 ### Coordinate Conventions
-- **Navigation frame**: NED (North-East-Down) local-level frame
+- **Navigation frame**: local-level frame (latitude, longitude, altitude)
   - Default convention is East-North-Up (ENU) but NED is also supported
   - Users control via `is_enu` boolean flags and sign conventions
   - Vertical velocity: positive up in ENU, positive down in NED
@@ -253,3 +253,4 @@ When developing Free Core features, consider extensibility for future profession
 - Main branch for PRs: `main`
 - Create feature branches for development
 - Current focus: Implementing Free Core specification features for reproducible research simulations
+- When asked to execute on an issue or new high-level feature request, ask the user if this should be completed on the current branch or to create a new branch
