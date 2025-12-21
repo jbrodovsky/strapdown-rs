@@ -280,34 +280,35 @@ fn run_particle_filter_sim(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn E
             );
 
             // Create process noise for standard PF
-            let process_noise = ProcessNoise {
-                position_std: Vector3::new(
-                    args.position_std * 1e-3,
-                    args.position_std * 1e-3,
-                    args.position_std * 5e-2,
-                ),
-                velocity_std: Vector3::new(
-                    args.velocity_std * 1e-2,
-                    args.velocity_std * 1e-2,
-                    args.velocity_std * 1e-1,
-                ),
-                attitude_std: Vector3::new(
-                    args.attitude_std * 1e-3,
-                    args.attitude_std * 1e-3,
-                    args.attitude_std * 1e-3,
-                ),
-                accel_bias_std: Vector3::new(
-                    args.accel_bias_std * 1e-3,
-                    args.accel_bias_std * 1e-3,
-                    args.accel_bias_std * 1e-3,
-                ),
-                gyro_bias_std: Vector3::new(
-                    args.gyro_bias_std * 1e-4,
-                    args.gyro_bias_std * 1e-4,
-                    args.gyro_bias_std * 1e-4,
-                ),
-                damping_states_std: None,
-            };
+            // let process_noise = ProcessNoise {
+            //     position_std: Vector3::new(
+            //         args.position_std * 1e-3,
+            //         args.position_std * 1e-3,
+            //         args.position_std * 5e-2,
+            //     ),
+            //     velocity_std: Vector3::new(
+            //         args.velocity_std * 1e-2,
+            //         args.velocity_std * 1e-2,
+            //         args.velocity_std * 1e-1,
+            //     ),
+            //     attitude_std: Vector3::new(
+            //         args.attitude_std * 1e-3,
+            //         args.attitude_std * 1e-3,
+            //         args.attitude_std * 1e-3,
+            //     ),
+            //     accel_bias_std: Vector3::new(
+            //         args.accel_bias_std * 1e-3,
+            //         args.accel_bias_std * 1e-3,
+            //         args.accel_bias_std * 1e-3,
+            //     ),
+            //     gyro_bias_std: Vector3::new(
+            //         args.gyro_bias_std * 1e-4,
+            //         args.gyro_bias_std * 1e-4,
+            //         args.gyro_bias_std * 1e-4,
+            //     ),
+            //     damping_states_std: None,
+            // };
+            let process_noise = ProcessNoise::default();
 
             let mut filter = initialize_particle_filter(
                 records[0].clone(),
@@ -337,9 +338,9 @@ fn run_particle_filter_sim(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn E
             // Create process noise for RBPF
             let process_noise = RBProcessNoise {
                 position_std: Vector3::new(
-                    args.position_std * 1e-3,
-                    args.position_std * 1e-3,
-                    args.position_std * 5e-2,
+                    args.position_std * 1e-6,
+                    args.position_std * 1e-6,
+                    args.position_std * 5e-3,
                 ),
                 linear_states_covariance: DMatrix::from_diagonal(
                     &DVector::from_vec(vec![

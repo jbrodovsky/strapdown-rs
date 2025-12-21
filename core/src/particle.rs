@@ -172,10 +172,10 @@ impl Default for ProcessNoise {
     fn default() -> Self {
         ProcessNoise {
             // Position: tight horizontal, loose vertical
-            position_std: Vector3::new(1e-3, 1e-3, 5e-2), // [rad, rad, m]
+            position_std: Vector3::new(1e-6, 1e-6, 1e-3), // [rad, rad, m]
 
             // Velocity: moderate horizontal, LARGE vertical (2.5D key)
-            velocity_std: Vector3::new(1e-2, 1e-2, 1e-1), // [m/s, m/s, m/s]
+            velocity_std: Vector3::new(1e-3, 1e-3, 1e-6), // [m/s, m/s, m/s]
 
             // Attitude: moderate uncertainty
             attitude_std: Vector3::new(1e-3, 1e-3, 1e-3), // [rad]
@@ -1510,6 +1510,9 @@ impl NavigationFilter for ParticleFilter {
 
     fn get_certainty(&self) -> DMatrix<f64> {
         self.empirical_covariance()
+        // return identity for now to permit the filter to complet and show results.
+        // Arguably, we don't even really need this.
+        // DMatrix::identity(self.state_size, self.state_size)
     }
 }
 
