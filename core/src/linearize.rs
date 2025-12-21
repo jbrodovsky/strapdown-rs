@@ -17,6 +17,34 @@
 //! - `v_n`, `v_e`, `v_d`: velocity components in m/s (NED/ENU local-level frame)
 //! - `roll`, `pitch`, `yaw`: Euler angles in radians (XYZ rotation sequence)
 //!
+//! # Usage Example
+//!
+//! ```rust
+//! use strapdown::linearize::{state_transition_jacobian, gps_position_jacobian};
+//! use strapdown::StrapdownState;
+//! use nalgebra::{Vector3, Rotation3};
+//!
+//! // Create navigation state
+//! let state = StrapdownState::new(
+//!     45.0, -122.0, 100.0,  // position
+//!     10.0, 5.0, 0.0,        // velocity
+//!     Rotation3::identity(), // attitude
+//!     true,                  // in_degrees
+//!     Some(true),            // is_enu
+//! );
+//!
+//! // Get Jacobians for EKF predict/update
+//! let accel = Vector3::new(0.0, 0.0, 9.81);
+//! let gyro = Vector3::zeros();
+//! let dt = 0.01;
+//!
+//! let f_matrix = state_transition_jacobian(&state, &accel, &gyro, dt);
+//! let h_matrix = gps_position_jacobian(&state);
+//!
+//! // Use in EKF: P(+) = F*P(-)*F^T + G*Q*G^T
+//! // Use in measurement update: K = P*H^T*(H*P*H^T + R)^-1
+//! ```
+//!
 //! # References
 //!
 //! Jacobian derivations follow Groves, "Principles of GNSS, Inertial, and Multisensor
@@ -105,7 +133,7 @@ pub fn state_transition_jacobian(
 
     // Earth model parameters
     let (r_n, r_e, _) = earth::principal_radii(&lat, &alt);
-    let g = earth::gravity(&lat.to_degrees(), &alt);
+    let _g = earth::gravity(&lat.to_degrees(), &alt); // Reserved for future use
     let omega_ie = earth::earth_rate_lla(&lat.to_degrees());
     let omega_en = earth::transport_rate(&lat.to_degrees(), &alt, &vel);
     
