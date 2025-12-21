@@ -891,7 +891,7 @@ fn test_rbpf_closed_loop_on_real_data() {
     // Initialize RBPF with 100 particles (fewer than standard PF)
     let mut rbpf = initialize_rbpf(
         initial.clone(),
-        1000,
+        100,
         VerticalChannelMode::Simplified,
         None,
         None,
