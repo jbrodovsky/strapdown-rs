@@ -1604,6 +1604,109 @@ mod tests {
         // Should have events
         assert!(events.events.len() > 0);
     }
+
+    #[test]
+    fn test_magnetometer_config_default() {
+        let config = MagnetometerConfig::default();
+        assert!(!config.enabled);
+        assert_eq!(config.reference_field_ned, [25.0, 0.0, 40.0]);
+        assert_eq!(config.hard_iron_offset, [0.0; 3]);
+        assert_eq!(config.soft_iron_matrix, [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(config.noise_std, 5.0);
+    }
+
+    #[test]
+    fn test_magnetometer_in_event_stream_disabled() {
+        let records = create_test_records(5, 0.1);
+        let config = GnssDegradationConfig {
+            scheduler: GnssScheduler::PassThrough,
+            fault: GnssFaultModel::None,
+            magnetometer: MagnetometerConfig {
+                enabled: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        
+        let stream = build_event_stream(&records, &config);
+        
+        let mag_count = stream
+            .events
+            .iter()
+            .filter(|e| {
+                if let Event::Measurement { meas, .. } = e {
+                    meas.as_any()
+                        .downcast_ref::<MagnetometerMeasurement>()
+                        .is_some()
+                } else {
+                    false
+                }
+            })
+            .count();
+        
+        assert_eq!(mag_count, 0);
+    }
+
+    #[test]
+    fn test_magnetometer_in_event_stream_enabled() {
+        let mut records = create_test_records(3, 0.1);
+        for record in &mut records {
+            record.mag_x = 20.0;
+            record.mag_y = 5.0;
+            record.mag_z = 40.0;
+        }
+        
+        let config = GnssDegradationConfig {
+            scheduler: GnssScheduler::PassThrough,
+            fault: GnssFaultModel::None,
+            magnetometer: MagnetometerConfig {
+                enabled: true,
+                reference_field_ned: [25.0, 0.0, 45.0],
+                hard_iron_offset: [1.0, 0.5, 2.0],
+                soft_iron_matrix: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                noise_std: 3.0,
+            },
+            ..Default::default()
+        };
+        
+        let stream = build_event_stream(&records, &config);
+        
+        let mag_count = stream
+            .events
+            .iter()
+            .filter(|e| {
+                if let Event::Measurement { meas, .. } = e {
+                    meas.as_any()
+                        .downcast_ref::<MagnetometerMeasurement>()
+                        .is_some()
+                } else {
+                    false
+                }
+            })
+            .count();
+        
+        assert_eq!(mag_count, 2);
+        
+        let mag_meas = stream
+            .events
+            .iter()
+            .find_map(|e| {
+                if let Event::Measurement { meas, .. } = e {
+                    meas.as_any().downcast_ref::<MagnetometerMeasurement>()
+                } else {
+                    None
+                }
+            })
+            .expect("Should have at least one magnetometer measurement");
+        
+        assert_eq!(mag_meas.mag_x, 20.0);
+        assert_eq!(mag_meas.mag_y, 5.0);
+        assert_eq!(mag_meas.mag_z, 40.0);
+        assert_eq!(mag_meas.reference_field_ned[0], 25.0);
+        assert_eq!(mag_meas.reference_field_ned[1], 0.0);
+        assert_eq!(mag_meas.reference_field_ned[2], 45.0);
+        assert_eq!(mag_meas.noise_std, 3.0);
+    }
 }
 #[cfg(test)]
 mod serialization_tests {
