@@ -1295,9 +1295,6 @@ pub fn initialize_rbpf(
     imu_biases_covariance: Option<Vec<f64>>,
     process_noise: Option<RBProcessNoise>,
     resampling_strategy: Option<ResamplingStrategy>,
-    ukf_alpha: Option<f64>,
-    ukf_beta: Option<f64>,
-    ukf_kappa: Option<f64>,
     seed: Option<u64>,
 ) -> RaoBlackwellizedParticleFilter {
     let initial_state = InitialState {
@@ -1375,9 +1372,6 @@ pub fn initialize_rbpf(
         num_particles,
         vertical_mode,
         resampling_strategy.unwrap_or(ResamplingStrategy::Systematic),
-        ukf_alpha.unwrap_or(1e-3),
-        ukf_beta.unwrap_or(2.0),
-        ukf_kappa.unwrap_or(0.0),
         seed,
     )
 }

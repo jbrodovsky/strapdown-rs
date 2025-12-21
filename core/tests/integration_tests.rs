@@ -31,7 +31,7 @@ use strapdown::kalman::{InitialState, UnscentedKalmanFilter};
 use strapdown::messages::{
     GnssDegradationConfig, GnssFaultModel, GnssScheduler, build_event_stream,
 };
-use strapdown::particle::{ProcessNoise, RBProcessNoise, VerticalChannelMode};
+use strapdown::particle::{ProcessNoise, VerticalChannelMode};
 use strapdown::sim::{
     NavigationResult, TestDataRecord, dead_reckoning, initialize_particle_filter, initialize_rbpf,
     initialize_ukf, run_closed_loop,
@@ -901,9 +901,6 @@ fn test_rbpf_closed_loop_on_real_data() {
         None,
         None,
         None,
-        Some(1e-3), // UKF alpha
-        Some(2.0),  // UKF beta
-        Some(0.0),  // UKF kappa
         Some(42),   // Seed
     );
 
@@ -974,9 +971,6 @@ fn test_rbpf_with_gnss_dropout() {
         None,
         None,
         None,
-        Some(1e-3),
-        Some(2.0),
-        Some(0.0),
         Some(42),
     );
 
@@ -1043,9 +1037,6 @@ fn test_rbpf_vs_standard_pf_comparison() {
         None,
         None,
         None,
-        Some(1e-3),
-        Some(2.0),
-        Some(0.0),
         Some(42),
     );
 
