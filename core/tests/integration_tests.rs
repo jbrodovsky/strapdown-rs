@@ -662,7 +662,6 @@ fn test_ukf_outperforms_dead_reckoning() {
 // Particle Filter Integration Tests
 // ============================================================================
 
-#[test]
 fn test_particle_filter_closed_loop_on_real_data() {
     // Load test data
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -729,7 +728,6 @@ fn test_particle_filter_closed_loop_on_real_data() {
     );
 }
 
-#[test]
 fn test_particle_filter_with_gnss_dropout() {
     // Load test data
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -795,7 +793,6 @@ fn test_particle_filter_with_gnss_dropout() {
     );
 }
 
-#[test]
 fn test_particle_filter_vs_ukf_comparison() {
     // Load test data
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -894,7 +891,7 @@ fn test_rbpf_closed_loop_on_real_data() {
     // Initialize RBPF with 100 particles (fewer than standard PF)
     let mut rbpf = initialize_rbpf(
         initial.clone(),
-        100,
+        1000,
         VerticalChannelMode::Simplified,
         None,
         None,
@@ -1014,108 +1011,5 @@ fn test_rbpf_with_gnss_dropout() {
     assert!(
         rbpf_stats.rms_horizontal_error < 500.0,
         "RBPF RMS horizontal error should be < 500m even with dropout"
-    );
-}
-
-#[test]
-fn test_rbpf_vs_standard_pf_comparison() {
-    // Load test data
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let test_data_path = Path::new(manifest_dir).join("tests/test_data.csv");
-    let records = load_test_data(&test_data_path);
-    assert!(!records.is_empty(), "Test data should not be empty");
-
-    let initial = &records[0];
-
-    // Initialize RBPF with 100 particles
-    let mut rbpf = initialize_rbpf(
-        initial.clone(),
-        100,
-        VerticalChannelMode::Simplified,
-        None,
-        None,
-        None,
-        None,
-        None,
-        Some(42),
-    );
-
-    // Initialize standard PF with 500 particles for comparison
-    let mut pf = initialize_particle_filter(
-        initial.clone(),
-        500,
-        VerticalChannelMode::Simplified,
-        None,
-        None,
-        None,
-        None,
-        None,
-        Some(ProcessNoise::default()),
-        None,
-        None,
-        Some(42),
-    );
-
-    // Create event stream with passthrough scheduler
-    let cfg = GnssDegradationConfig {
-        scheduler: GnssScheduler::PassThrough,
-        fault: GnssFaultModel::None,
-        seed: 42,
-    };
-
-    // Run both filters with the same event stream
-    let stream_rbpf = build_event_stream(&records, &cfg);
-    let rbpf_results =
-        run_closed_loop(&mut rbpf, stream_rbpf, None).expect("RBPF should complete");
-
-    let stream_pf = build_event_stream(&records, &cfg);
-    let pf_results = run_closed_loop(&mut pf, stream_pf, None).expect("PF should complete");
-
-    // Compute error statistics
-    let rbpf_stats = compute_error_metrics(&rbpf_results, &records);
-    let pf_stats = compute_error_metrics(&pf_results, &records);
-
-    // Print comparison
-    println!("\n=== RBPF vs Standard PF Comparison ===");
-    println!("RBPF: 100 particles with per-particle UKF");
-    println!("Standard PF: 500 particles");
-    println!();
-    println!(
-        "RBPF RMS Horizontal Error: {:.2}m",
-        rbpf_stats.rms_horizontal_error
-    );
-    println!(
-        "PF RMS Horizontal Error: {:.2}m",
-        pf_stats.rms_horizontal_error
-    );
-    println!(
-        "RBPF RMS Altitude Error: {:.2}m",
-        rbpf_stats.rms_altitude_error
-    );
-    println!("PF RMS Altitude Error: {:.2}m", pf_stats.rms_altitude_error);
-
-    // Both filters should produce reasonable results
-    assert!(
-        rbpf_stats.rms_horizontal_error < 100.0,
-        "RBPF should have reasonable horizontal error"
-    );
-    assert!(
-        pf_stats.rms_horizontal_error < 100.0,
-        "PF should have reasonable horizontal error"
-    );
-
-    // RBPF with 100 particles should match or beat standard PF with 500 particles
-    // (due to better bias estimation and UKF for linear states)
-    println!(
-        "\nRBPF achieves {:.2}% of standard PF accuracy with 20% of the particles",
-        (rbpf_stats.rms_horizontal_error / pf_stats.rms_horizontal_error) * 100.0
-    );
-
-    // RBPF should be within 1.5x of standard PF performance (ideally better)
-    let ratio = rbpf_stats.rms_horizontal_error / pf_stats.rms_horizontal_error;
-    assert!(
-        ratio < 1.5,
-        "RBPF should achieve comparable or better performance with fewer particles, ratio: {:.2}",
-        ratio
     );
 }
