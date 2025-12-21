@@ -1040,7 +1040,9 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
         // Add magnetometer measurement if enabled and data is available
         if cfg.magnetometer.enabled {
             let mag_components = [r1.mag_x, r1.mag_y, r1.mag_z];
-            let mag_present = mag_components.iter().all(|v| !v.is_nan());
+            // Check for valid data: not NaN and not all zeros (sensor failure indicator)
+            let mag_present = mag_components.iter().all(|v| !v.is_nan())
+                && mag_components.iter().any(|v| v.abs() > 1e-6);
             
             if mag_present {
                 use nalgebra::{Matrix3, Vector3};

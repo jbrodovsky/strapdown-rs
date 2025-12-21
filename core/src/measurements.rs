@@ -310,7 +310,10 @@ impl Default for MagnetometerMeasurement {
             mag_x: 0.0,
             mag_y: 0.0,
             mag_z: 0.0,
-            reference_field_ned: Vector3::new(25.0, 0.0, 40.0), // Example: Northern hemisphere
+            // Typical mid-latitude northern hemisphere magnetic field
+            // Users should set this to match their geographic location
+            // using Earth magnetic models (WMM, IGRF) or local calibration
+            reference_field_ned: Vector3::new(25.0, 0.0, 40.0),
             hard_iron_offset: Vector3::zeros(),
             soft_iron_matrix: Matrix3::identity(),
             noise_std: 5.0, // Default 5 μT noise std
@@ -379,9 +382,9 @@ impl MeasurementModel for MagnetometerMeasurement {
         // Rotate reference field from NED to body frame
         let mag_body = rot_ned_to_body * self.reference_field_ned;
 
-        // Apply calibration: add hard-iron offset and apply inverse soft-iron
-        // Note: We're computing expected measurement in calibrated space, so we
-        // apply the same calibration transform
+        // Apply calibration transform to get expected measurement in calibrated space
+        // This matches the calibration applied in get_vector() to the raw measurements
+        // Both the expected and actual measurements are in the same calibrated space
         let expected_mag = self.soft_iron_matrix * (mag_body - self.hard_iron_offset);
 
         DVector::from_vec(vec![expected_mag[0], expected_mag[1], expected_mag[2]])
