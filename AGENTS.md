@@ -1,5 +1,7 @@
 # Repository Guidelines
 
+When asked to execute on an issue or new high-level feature request, ask the user if this should be completed on the current branch or to create a new branch
+
 ## Project Structure & Module Organization
 This is a Cargo workspace with three primary crates plus supporting data/scripts.
 - `core/`: `strapdown-core` library (INS algorithms, filters, simulation utilities).
