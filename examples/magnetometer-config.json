@@ -1,0 +1,20 @@
+{
+  "scheduler": {
+    "kind": "pass_through"
+  },
+  "fault": {
+    "kind": "none"
+  },
+  "seed": 42,
+  "magnetometer": {
+    "enabled": true,
+    "reference_field_ned": [25.0, 0.0, 40.0],
+    "hard_iron_offset": [0.0, 0.0, 0.0],
+    "soft_iron_matrix": [
+      1.0, 0.0, 0.0,
+      0.0, 1.0, 0.0,
+      0.0, 0.0, 1.0
+    ],
+    "noise_std": 5.0
+  }
+}
