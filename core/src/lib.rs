@@ -28,6 +28,7 @@
 //! - [earth]: Contains functions and constants related to Earth models, coordinate transformations, and geodetic calculations.
 //! - [kalman]: Contains the implementation of Kalman-style navigation filters (including nonlinear variants)
 //! - [linalg]: Contains linear algebra utilities and helper functions.
+//! - [linearize]: Contains analytic Jacobians for strapdown mechanization and measurement models (for EKF/ESKF/RBPF-EKF).
 //! - [measurements]: Contains measurement models and utilities for processing sensor data in the context of navigation filters.
 //! - [messages]: Contains message definitions for sensor data and filter outputs used in constructing simulations.
 //! - [sim]: Contains simulation utilities for running and testing filters.
@@ -149,6 +150,7 @@
 pub mod earth;
 pub mod kalman;
 pub mod linalg;
+pub mod linearize;
 pub mod measurements;
 pub mod messages;
 pub mod particle;
