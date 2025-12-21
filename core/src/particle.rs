@@ -232,6 +232,23 @@ impl Default for RBProcessNoise {
     }
 }
 
+/// Per-particle Extended Kalman Filter for linear states.
+///
+/// Implements EKF for the 12-state linear/conditionally-Gaussian subspace:
+/// velocity (3), attitude (3), accelerometer biases (3), gyroscope biases (3).
+/// 
+/// The EKF uses linearization (Jacobians) instead of sigma points, making it
+/// computationally more efficient than the UKF at the cost of some accuracy
+/// for highly nonlinear systems.
+#[derive(Clone, Debug)]
+pub struct PerParticleEKF {
+    /// Mean state: [v_n, v_e, v_v, roll, pitch, yaw, b_ax, b_ay, b_az, b_gx, b_gy, b_gz]
+    pub mean_state: DVector<f64>,
+
+    /// Covariance matrix (12×12)
+    pub covariance: DMatrix<f64>,
+}
+
 /// Per-particle Unscented Kalman Filter for linear states.
 ///
 /// Implements UKF for the 12-state linear/conditionally-Gaussian subspace:
@@ -246,12 +263,332 @@ pub struct PerParticleUKF {
 
     /// UKF parameters
     alpha: f64,
+    #[allow(dead_code)]
     beta: f64,
     kappa: f64,
 
     /// Cached UKF weights (computed once in constructor)
     weights_mean: DVector<f64>,
     weights_cov: DVector<f64>,
+}
+
+impl PerParticleEKF {
+    /// Create a new per-particle EKF.
+    ///
+    /// # Arguments
+    /// * `initial_state` - Initial 12-state vector
+    /// * `initial_cov` - Initial 12×12 covariance matrix
+    pub fn new(
+        initial_state: DVector<f64>,
+        initial_cov: DMatrix<f64>,
+    ) -> Self {
+        PerParticleEKF {
+            mean_state: initial_state,
+            covariance: initial_cov,
+        }
+    }
+
+    /// Get current state estimate.
+    pub fn get_estimate(&self) -> DVector<f64> {
+        self.mean_state.clone()
+    }
+
+    /// Get current covariance.
+    pub fn get_covariance(&self) -> DMatrix<f64> {
+        self.covariance.clone()
+    }
+
+    /// EKF predict step conditioned on particle position.
+    ///
+    /// Propagates the 12-state linear system: velocity, attitude, biases.
+    /// Position-dependent terms (gravity, Earth rate, transport rate) are
+    /// evaluated at the given particle position.
+    ///
+    /// Uses linearization (Jacobian computation) instead of sigma points.
+    ///
+    /// # Arguments
+    /// * `position` - Particle position [lat, lon, alt]
+    /// * `imu_data` - IMU measurements (bias-corrected)
+    /// * `process_noise` - Process noise covariance (12×12)
+    /// * `dt` - Time step
+    /// * `is_enu` - Coordinate frame flag
+    pub fn predict(
+        &mut self,
+        position: &Vector3<f64>,
+        imu_data: IMUData,
+        process_noise: &DMatrix<f64>,
+        dt: f64,
+        is_enu: bool,
+    ) {
+        // Extract current state
+        let velocity = Vector3::new(self.mean_state[0], self.mean_state[1], self.mean_state[2]);
+        let attitude_euler = Vector3::new(self.mean_state[3], self.mean_state[4], self.mean_state[5]);
+        let accel_bias = Vector3::new(self.mean_state[6], self.mean_state[7], self.mean_state[8]);
+        let gyro_bias = Vector3::new(self.mean_state[9], self.mean_state[10], self.mean_state[11]);
+
+        // Bias-corrected IMU
+        let corrected_accel = imu_data.accel - accel_bias;
+        let corrected_gyro = imu_data.gyro - gyro_bias;
+
+        // Propagate state through nonlinear dynamics
+        let (roll, pitch, yaw) = (attitude_euler[0], attitude_euler[1], attitude_euler[2]);
+        let c_bn = Rotation3::from_euler_angles(roll, pitch, yaw);
+        let specific_force = c_bn.matrix() * corrected_accel;
+
+        let new_velocity = propagate_velocity_2_5d(&velocity, &specific_force, position, dt, is_enu);
+        let new_attitude = propagate_attitude(&attitude_euler, &corrected_gyro, position, dt);
+
+        // Biases stay constant (random walk handled by process noise)
+        let new_accel_bias = accel_bias;
+        let new_gyro_bias = gyro_bias;
+
+        // Update mean state
+        self.mean_state[0] = new_velocity[0];
+        self.mean_state[1] = new_velocity[1];
+        self.mean_state[2] = new_velocity[2];
+        self.mean_state[3] = new_attitude[0];
+        self.mean_state[4] = new_attitude[1];
+        self.mean_state[5] = new_attitude[2];
+        self.mean_state[6] = new_accel_bias[0];
+        self.mean_state[7] = new_accel_bias[1];
+        self.mean_state[8] = new_accel_bias[2];
+        self.mean_state[9] = new_gyro_bias[0];
+        self.mean_state[10] = new_gyro_bias[1];
+        self.mean_state[11] = new_gyro_bias[2];
+
+        // Compute state transition matrix F (Jacobian of dynamics)
+        let f = self.compute_state_transition_jacobian(
+            position,
+            &velocity,
+            &attitude_euler,
+            &corrected_accel,
+            &corrected_gyro,
+            dt,
+            is_enu,
+        );
+
+        // Propagate covariance: P(k+1|k) = F * P(k|k) * F^T + Q
+        let cov_predicted = &f * &self.covariance * f.transpose() + process_noise;
+        self.covariance = symmetrize(&cov_predicted);
+
+        // Add small regularization to ensure positive definiteness
+        for i in 0..self.covariance.nrows() {
+            self.covariance[(i, i)] = self.covariance[(i, i)].max(1e-12);
+        }
+    }
+
+    /// Compute the state transition Jacobian matrix F.
+    ///
+    /// The state is [v_n, v_e, v_v, roll, pitch, yaw, b_ax, b_ay, b_az, b_gx, b_gy, b_gz].
+    /// Returns the 12×12 Jacobian ∂f/∂x evaluated at the current state.
+    fn compute_state_transition_jacobian(
+        &self,
+        _position: &Vector3<f64>,
+        _velocity: &Vector3<f64>,
+        attitude_euler: &Vector3<f64>,
+        corrected_accel: &Vector3<f64>,
+        _corrected_gyro: &Vector3<f64>,
+        dt: f64,
+        _is_enu: bool,
+    ) -> DMatrix<f64> {
+        // For simplicity, use a first-order approximation: F ≈ I + dt * A
+        // where A is the continuous-time dynamics Jacobian
+        let mut f = DMatrix::identity(12, 12);
+
+        let (roll, pitch, yaw) = (attitude_euler[0], attitude_euler[1], attitude_euler[2]);
+        let c_bn = Rotation3::from_euler_angles(roll, pitch, yaw);
+
+        // Velocity derivatives w.r.t. attitude (how rotation affects specific force)
+        // ∂v/∂attitude: specific force transformation depends on attitude
+        let dcbn_droll = compute_dcbn_droll(roll, pitch, yaw);
+        let dcbn_dpitch = compute_dcbn_dpitch(roll, pitch, yaw);
+        let dcbn_dyaw = compute_dcbn_dyaw(roll, pitch, yaw);
+
+        // ∂(C_bn * f_b) / ∂roll
+        let df_droll = dcbn_droll * corrected_accel;
+        let df_dpitch = dcbn_dpitch * corrected_accel;
+        let df_dyaw = dcbn_dyaw * corrected_accel;
+
+        // Velocity w.r.t. attitude (rows 0-2, cols 3-5)
+        f[(0, 3)] += dt * df_droll[0];
+        f[(0, 4)] += dt * df_dpitch[0];
+        f[(0, 5)] += dt * df_dyaw[0];
+        f[(1, 3)] += dt * df_droll[1];
+        f[(1, 4)] += dt * df_dpitch[1];
+        f[(1, 5)] += dt * df_dyaw[1];
+        // Vertical velocity is decoupled in 2.5D (stays at identity)
+
+        // Velocity w.r.t. accelerometer bias (rows 0-2, cols 6-8)
+        // ∂v/∂b_a = -C_bn * dt (negative because we subtract bias)
+        let dvn_dba = -c_bn.matrix() * dt;
+        for i in 0..3 {
+            for j in 0..3 {
+                f[(i, 6 + j)] += dvn_dba[(i, j)];
+            }
+        }
+
+        // Attitude w.r.t. gyro bias (rows 3-5, cols 9-11)
+        // ∂attitude/∂b_g ≈ -dt (simplified, actual is more complex)
+        f[(3, 9)] -= dt;
+        f[(4, 10)] -= dt;
+        f[(5, 11)] -= dt;
+
+        // Biases are random walk: ∂b/∂b = I (already in identity matrix)
+
+        f
+    }
+
+    /// EKF update step, returns marginal log-likelihood for particle weighting.
+    ///
+    /// Performs standard EKF measurement update on the linear states and
+    /// computes the marginal likelihood p(z | position) which is used to
+    /// update the particle weight.
+    ///
+    /// # Arguments
+    /// * `position` - Particle position
+    /// * `measurement` - Measurement model
+    ///
+    /// # Returns
+    /// Log-likelihood for particle weight update
+    pub fn update<M: MeasurementModel + ?Sized>(
+        &mut self,
+        position: &Vector3<f64>,
+        measurement: &M,
+    ) -> f64 {
+        // Construct full 15-state vector from position + linear states
+        let mut full_state = DVector::zeros(15);
+        full_state[0] = position[0]; // lat
+        full_state[1] = position[1]; // lon
+        full_state[2] = position[2]; // alt
+        full_state.rows_mut(3, 12).copy_from(&self.mean_state);
+
+        // Get predicted measurement
+        let predicted_meas = measurement.get_expected_measurement(&full_state);
+        let innovation = measurement.get_vector() - &predicted_meas;
+
+        // Get measurement noise covariance
+        let r = measurement.get_noise();
+        let meas_dim = innovation.len();
+
+        // Compute measurement Jacobian H (∂h/∂x)
+        let h = self.compute_measurement_jacobian(position, measurement);
+
+        // Compute innovation covariance: S = H * P * H^T + R
+        let s = &h * &self.covariance * h.transpose() + r;
+        let s_sym = symmetrize(&s);
+
+        // Compute Kalman gain: K = P * H^T * S^-1
+        let s_inv = robust_spd_solve(&s_sym, &DMatrix::identity(meas_dim, meas_dim));
+        let kalman_gain = &self.covariance * h.transpose() * &s_inv;
+
+        // Update state: x = x + K * innovation
+        self.mean_state += &kalman_gain * &innovation;
+
+        // Update covariance (Joseph form for numerical stability)
+        // P = (I - K*H) * P * (I - K*H)^T + K * R * K^T
+        let i_kh = DMatrix::identity(12, 12) - &kalman_gain * &h;
+        let updated_cov = &i_kh * &self.covariance * i_kh.transpose() 
+            + &kalman_gain * measurement.get_noise() * kalman_gain.transpose();
+        self.covariance = symmetrize(&updated_cov);
+
+        // Add small regularization to ensure positive definiteness
+        for i in 0..self.covariance.nrows() {
+            self.covariance[(i, i)] = self.covariance[(i, i)].max(1e-12);
+        }
+
+        // Compute log-likelihood for particle weighting
+        let det = s_sym.determinant().max(1e-10);
+        let mahalanobis = (&innovation.transpose() * &s_inv * &innovation)[(0, 0)];
+        let log_likelihood = -0.5
+            * (mahalanobis + det.ln() + meas_dim as f64 * (2.0 * std::f64::consts::PI).ln());
+
+        log_likelihood
+    }
+
+    /// Compute measurement Jacobian H (∂h/∂x).
+    ///
+    /// Uses numerical differentiation for generality.
+    fn compute_measurement_jacobian<M: MeasurementModel + ?Sized>(
+        &self,
+        position: &Vector3<f64>,
+        measurement: &M,
+    ) -> DMatrix<f64> {
+        let meas_dim = measurement.get_vector().len();
+        let mut h = DMatrix::zeros(meas_dim, 12);
+
+        // Perturbation size for numerical differentiation
+        let eps = 1e-7;
+
+        // Construct nominal full state
+        let mut nominal_state = DVector::zeros(15);
+        nominal_state[0] = position[0];
+        nominal_state[1] = position[1];
+        nominal_state[2] = position[2];
+        nominal_state.rows_mut(3, 12).copy_from(&self.mean_state);
+
+        let nominal_meas = measurement.get_expected_measurement(&nominal_state);
+
+        // Perturb each linear state and compute derivative
+        for i in 0..12 {
+            let mut perturbed_state = nominal_state.clone();
+            perturbed_state[3 + i] += eps;
+
+            let perturbed_meas = measurement.get_expected_measurement(&perturbed_state);
+            let diff = (perturbed_meas - &nominal_meas) / eps;
+
+            h.set_column(i, &diff);
+        }
+
+        h
+    }
+}
+
+/// Compute derivative of rotation matrix C_bn with respect to roll.
+fn compute_dcbn_droll(roll: f64, pitch: f64, yaw: f64) -> Matrix3<f64> {
+    let cr = roll.cos();
+    let sr = roll.sin();
+    let cp = pitch.cos();
+    let sp = pitch.sin();
+    let cy = yaw.cos();
+    let sy = yaw.sin();
+
+    Matrix3::new(
+        0.0, 0.0, 0.0,
+        (sr * sp * cy - cr * sy) - (-sr * sp * cy + cr * sy), (sr * sp * sy + cr * cy) - (-sr * sp * sy - cr * cy), sr * cp - (-sr * cp),
+        (sr * sp * cy + cr * sy) - (cr * sy - sr * sp * cy), (sr * sp * sy - cr * cy) - (-cr * cy - sr * sp * sy), sr * cp - sr * cp,
+    )
+}
+
+/// Compute derivative of rotation matrix C_bn with respect to pitch.
+fn compute_dcbn_dpitch(roll: f64, pitch: f64, yaw: f64) -> Matrix3<f64> {
+    let cr = roll.cos();
+    let sr = roll.sin();
+    let cp = pitch.cos();
+    let sp = pitch.sin();
+    let cy = yaw.cos();
+    let sy = yaw.sin();
+
+    Matrix3::new(
+        -sp * cy, -sp * sy, -cp,
+        cr * cp * cy - (-cr * sp * cy), cr * cp * sy - (-cr * sp * sy), -cr * sp - cr * cp,
+        sr * cp * cy - (-sr * sp * cy), sr * cp * sy - (-sr * sp * sy), -sr * sp - sr * cp,
+    )
+}
+
+/// Compute derivative of rotation matrix C_bn with respect to yaw.
+fn compute_dcbn_dyaw(roll: f64, pitch: f64, yaw: f64) -> Matrix3<f64> {
+    let cr = roll.cos();
+    let sr = roll.sin();
+    let cp = pitch.cos();
+    let sp = pitch.sin();
+    let cy = yaw.cos();
+    let sy = yaw.sin();
+
+    Matrix3::new(
+        -cp * sy, cp * cy, 0.0,
+        -(cr * sp * sy + sr * cy) + (cr * sp * cy - sr * sy), (cr * sp * cy - sr * sy) - (cr * sp * sy + sr * cy), 0.0,
+        -(sr * sp * sy - cr * cy) + (sr * sp * cy + cr * sy), (sr * sp * cy + cr * sy) - (sr * sp * sy - cr * cy), 0.0,
+    )
 }
 
 impl PerParticleUKF {
@@ -544,14 +881,14 @@ impl PerParticleUKF {
 /// Rao-Blackwellized particle for RBPF.
 ///
 /// Contains nonlinear position states (as particle) and conditionally-linear
-/// states (as per-particle UKF).
+/// states (as per-particle EKF).
 #[derive(Clone, Debug)]
 pub struct RBParticle {
     /// Position states: [latitude (rad), longitude (rad), altitude (m)]
     pub position: Vector3<f64>,
 
-    /// Per-particle UKF for linear states (12-state: velocity, attitude, biases)
-    pub kalman_filter: PerParticleUKF,
+    /// Per-particle EKF for linear states (12-state: velocity, attitude, biases)
+    pub kalman_filter: PerParticleEKF,
 
     /// Importance weight (unnormalized likelihood)
     pub weight: f64,
@@ -577,19 +914,13 @@ impl RBParticle {
     pub fn from_state_vector(
         state: &DVector<f64>,
         initial_linear_cov: &DMatrix<f64>,
-        ukf_alpha: f64,
-        ukf_beta: f64,
-        ukf_kappa: f64,
     ) -> Self {
         let position = Vector3::new(state[0], state[1], state[2]);
         let linear_states = state.rows(3, 12).into_owned();
 
-        let kalman_filter = PerParticleUKF::new(
+        let kalman_filter = PerParticleEKF::new(
             linear_states,
             initial_linear_cov.clone(),
-            ukf_alpha,
-            ukf_beta,
-            ukf_kappa,
         );
 
         RBParticle {
@@ -1056,9 +1387,6 @@ impl ParticleFilter {
 ///     100, // Fewer particles than standard PF
 ///     VerticalChannelMode::Simplified,
 ///     ResamplingStrategy::Systematic,
-///     1e-3, // UKF alpha
-///     2.0,  // UKF beta
-///     0.0,  // UKF kappa
 ///     Some(42), // Random seed
 /// );
 /// ```
@@ -1086,11 +1414,6 @@ pub struct RaoBlackwellizedParticleFilter {
 
     /// Coordinate frame flag
     is_enu: bool,
-
-    /// UKF parameters for per-particle filters
-    ukf_alpha: f64,
-    ukf_beta: f64,
-    ukf_kappa: f64,
 }
 
 impl Debug for RaoBlackwellizedParticleFilter {
@@ -1114,7 +1437,7 @@ impl Display for RaoBlackwellizedParticleFilter {
 }
 
 impl RaoBlackwellizedParticleFilter {
-    /// Create a new Rao-Blackwellized particle filter.
+    /// Create a new Rao-Blackwellized particle filter with EKF.
     ///
     /// # Arguments
     /// * `initial_state` - Initial navigation state (mean)
@@ -1124,9 +1447,6 @@ impl RaoBlackwellizedParticleFilter {
     /// * `num_particles` - Number of particles in ensemble (typically 50-200)
     /// * `vertical_mode` - Vertical channel treatment mode
     /// * `resampling_strategy` - Resampling algorithm
-    /// * `ukf_alpha` - UKF spread parameter (typically 1e-3)
-    /// * `ukf_beta` - UKF distribution parameter (typically 2.0)
-    /// * `ukf_kappa` - UKF secondary scaling (typically 0.0)
     /// * `seed` - Optional random seed for reproducibility
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -1137,9 +1457,6 @@ impl RaoBlackwellizedParticleFilter {
         num_particles: usize,
         vertical_mode: VerticalChannelMode,
         resampling_strategy: ResamplingStrategy,
-        ukf_alpha: f64,
-        ukf_beta: f64,
-        ukf_kappa: f64,
         seed: Option<u64>,
     ) -> Self {
         // Initialize RNG
@@ -1189,7 +1506,7 @@ impl RaoBlackwellizedParticleFilter {
         let linear_cov_diag = DVector::from_vec(covariance_diagonal[3..15].to_vec());
         let linear_cov = DMatrix::from_diagonal(&linear_cov_diag);
 
-        // Initialize particles by sampling positions and initializing UKFs
+        // Initialize particles by sampling positions and initializing EKFs
         let particles: Vec<RBParticle> = (0..num_particles)
             .map(|_| {
                 // Sample position from N(μ_pos, P_pos)
@@ -1200,10 +1517,10 @@ impl RaoBlackwellizedParticleFilter {
                     position[i] += noise;
                 }
 
-                // Initialize per-particle UKF with mean linear states
+                // Initialize per-particle EKF with mean linear states
                 let linear_states = mean_state.rows(3, 12).into_owned();
                 let kalman_filter =
-                    PerParticleUKF::new(linear_states, linear_cov.clone(), ukf_alpha, ukf_beta, ukf_kappa);
+                    PerParticleEKF::new(linear_states, linear_cov.clone());
 
                 RBParticle {
                     position,
@@ -1222,9 +1539,6 @@ impl RaoBlackwellizedParticleFilter {
             effective_particle_threshold: 0.5 * num_particles as f64,
             rng,
             is_enu: initial_state.is_enu,
-            ukf_alpha,
-            ukf_beta,
-            ukf_kappa,
         }
     }
 
@@ -1721,7 +2035,7 @@ fn propagate_attitude(
     dt: f64,
 ) -> Vector3<f64> {
     let lat_deg = position[0].to_degrees();
-    let alt = position[2];
+    let _alt = position[2];
 
     // Create rotation matrix from Euler angles
     let (roll, pitch, yaw) = (attitude_euler[0], attitude_euler[1], attitude_euler[2]);
