@@ -155,15 +155,6 @@ struct ParticleFilterSimArgs {
     /// Gyroscope bias uncertainty standard deviation (rad/s)
     #[arg(long, default_value_t = 0.01)]
     gyro_bias_std: f64,
-    /// UKF alpha parameter (only for RBPF, controls spread of sigma points)
-    #[arg(long, default_value_t = 1e-3)]
-    ukf_alpha: f64,
-    /// UKF beta parameter (only for RBPF, incorporates prior knowledge of distribution)
-    #[arg(long, default_value_t = 2.0)]
-    ukf_beta: f64,
-    /// UKF kappa parameter (only for RBPF, secondary scaling parameter)
-    #[arg(long, default_value_t = 0.0)]
-    ukf_kappa: f64,
     /// Scheduler settings (dropouts / reduced rate)
     #[command(flatten)]
     scheduler: SchedulerArgs,
@@ -368,9 +359,6 @@ fn run_particle_filter_sim(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn E
                 None,
                 Some(process_noise),
                 Some(ResamplingStrategy::Systematic),
-                Some(args.ukf_alpha),
-                Some(args.ukf_beta),
-                Some(args.ukf_kappa),
                 Some(args.seed),
             );
 

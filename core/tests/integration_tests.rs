@@ -31,7 +31,7 @@ use strapdown::kalman::{InitialState, UnscentedKalmanFilter};
 use strapdown::messages::{
     GnssDegradationConfig, GnssFaultModel, GnssScheduler, build_event_stream,
 };
-use strapdown::particle::{ProcessNoise, RBProcessNoise, VerticalChannelMode};
+use strapdown::particle::{ProcessNoise, VerticalChannelMode};
 use strapdown::sim::{
     NavigationResult, TestDataRecord, dead_reckoning, initialize_particle_filter, initialize_rbpf,
     initialize_ukf, run_closed_loop,
