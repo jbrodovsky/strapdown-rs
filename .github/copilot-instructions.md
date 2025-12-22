@@ -54,3 +54,112 @@ Experimental geophysical navigation using gravity/magnetic anomaly maps:
 - Provides alternative PNT in GNSS-denied environments
 
 Additional core capabilities should be implemented as needed either as a new create for larger features or as new modules within an existing crate for smaller features.
+
+## Dependencies and Prerequisites
+
+### System Dependencies
+The project requires the following system libraries for building:
+- `pkg-config`
+- `libhdf5-dev` and `libhdf5-openmpi-dev` (for HDF5 support)
+- `libnetcdf-dev` (for NetCDF geophysical data)
+- `zlib1g-dev` (for compression support)
+
+On Ubuntu/Debian systems, install with:
+```bash
+sudo apt update
+sudo apt install -y pkg-config libhdf5-dev libhdf5-openmpi-dev libnetcdf-dev zlib1g-dev
+```
+
+### Rust Toolchain
+- Minimum Rust version: 1.70+ (stable channel)
+- Required components: `clippy`, `rustfmt`
+
+## Build and Test Commands
+
+### Building the Project
+Build the entire workspace:
+```bash
+cargo build --workspace --all-features
+```
+
+Build a specific crate:
+```bash
+cargo build -p strapdown-core
+cargo build -p strapdown-sim
+cargo build -p strapdown-geonav
+```
+
+### Running Tests
+Run all tests in the workspace:
+```bash
+cargo test --workspace --all-features --verbose
+```
+
+Run tests for a specific crate:
+```bash
+cargo test -p strapdown-core
+```
+
+### Linting and Formatting
+Run clippy for linting:
+```bash
+cargo clippy --workspace --all-features
+```
+
+Format code with rustfmt:
+```bash
+cargo fmt --all
+```
+
+### Running the Simulation
+The `strapdown-sim` binary can be run with various options:
+```bash
+# Build and install the simulation binary
+cargo install --path sim
+
+# Run with a configuration file
+strapdown-sim --config examples/configs/example.toml
+
+# Run with specific log level
+strapdown-sim --config examples/configs/example.toml --log-level debug
+```
+
+## Testing Guidelines
+
+### Test Structure
+- **Unit tests**: Inline in source files using `#[cfg(test)]` modules
+- **Integration tests**: Located in `core/tests/integration_tests.rs`
+- Tests should cover edge cases, error handling, and numerical accuracy
+
+### Test Naming
+- Test function names should be descriptive: `test_<functionality>_<scenario>`
+- Example: `test_wgs84_geodetic_to_ecef_conversion`
+
+### Running Specific Tests
+```bash
+# Run tests matching a pattern
+cargo test test_wgs84
+
+# Run a specific test
+cargo test test_specific_function_name
+```
+
+## Common Workflows
+
+### Adding a New Module
+1. Create the module file in the appropriate crate's `src/` directory
+2. Add the module declaration in `lib.rs` or `main.rs`
+3. Include comprehensive doc comments with examples
+4. Add unit tests within the module
+5. Update integration tests if needed
+
+### Working with Simulation Data
+- Input data format: CSV files from Sensor Logger app or similar
+- CSV columns expected: timestamp, gyro (x,y,z), accel (x,y,z), GPS data, etc.
+- See `core/src/sim.rs` for data loading functions
+
+### Adding a New Kalman Filter
+- Extend `core/src/kalman.rs` module
+- Implement state transition and measurement models
+- Follow the existing UKF pattern for consistency
+- Add comprehensive tests for filter convergence and accuracy
