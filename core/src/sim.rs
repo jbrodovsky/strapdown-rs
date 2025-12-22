@@ -594,6 +594,7 @@ impl From<(&DateTime<Utc>, &UnscentedKalmanFilter)> for NavigationResult {
 ///
 /// # Returns
 /// A NavigationResult struct containing the navigation solution from the particle ensemble.
+/* TODO: Uncomment when particle filter implementation is complete
 impl From<(&DateTime<Utc>, &ParticleFilter)> for NavigationResult {
     fn from((timestamp, pf): (&DateTime<Utc>, &ParticleFilter)) -> Self {
         let state = &pf.get_estimate();
@@ -633,6 +634,7 @@ impl From<(&DateTime<Utc>, &ParticleFilter)> for NavigationResult {
         }
     }
 }
+*/
 
 /// Convert StrapdownState to NavigationResult.
 ///
@@ -1125,6 +1127,7 @@ pub fn initialize_ukf(
     )
 }
 
+/* TODO: Uncomment when particle filter implementation is complete
 /// Initialize a particle filter for simulation.
 ///
 /// This function creates and initializes a `ParticleFilter` with the given parameters,
@@ -1370,6 +1373,7 @@ pub fn initialize_rbpf(
         seed,
     )
 }
+*/
 
 // ==== Simulation Helper functions ====
 
