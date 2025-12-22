@@ -1,9 +1,9 @@
 name: Draft PDF
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "joss" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "joss" ]
 
 jobs:
   paper:

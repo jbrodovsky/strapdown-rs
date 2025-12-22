@@ -30,10 +30,7 @@ use clap::{Args, ValueEnum};
 use crate::earth::METERS_TO_DEGREES;
 use crate::kalman::{InitialState, NavigationFilter, UnscentedKalmanFilter};
 use crate::messages::{Event, EventStream, GnssFaultModel, GnssScheduler};
-use crate::particle::{
-    AveragingStrategy, ParticleFilter, ProcessNoise, RBProcessNoise,
-    RaoBlackwellizedParticleFilter, ResamplingStrategy, VerticalChannelMode,
-};
+
 use crate::{IMUData, StrapdownState, forward};
 use health::HealthMonitor;
 
