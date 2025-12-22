@@ -21,7 +21,7 @@ use std::path::Path;
 
 use anyhow::{Result, bail};
 use chrono::{DateTime, Duration, Utc};
-use nalgebra::{DMatrix, DVector, Vector3};
+use nalgebra::{DMatrix, DVector, Rotation3, Vector3};
 use serde::{Deserialize, Deserializer, Serialize};
 
 #[cfg(feature = "clap")]
@@ -1124,6 +1124,169 @@ pub fn initialize_ukf(
         1e-3, // Use a scalar for measurement noise as expected by UKF::new
         2.0,
         0.0,
+    )
+}
+
+/// Initialize an Extended Kalman Filter for simulation.
+///
+/// This function creates and initializes an `ExtendedKalmanFilter` with the given parameters,
+/// providing a linearized Gaussian approximation for navigation state estimation. The EKF
+/// uses analytic Jacobians for efficient uncertainty propagation.
+///
+/// # Arguments
+///
+/// * `initial_pose` - A `TestDataRecord` containing the initial pose information.
+/// * `attitude_covariance` - Optional vector of f64 representing the initial attitude covariance.
+/// * `imu_biases` - Optional vector of f64 representing the initial IMU biases.
+/// * `imu_biases_covariance` - Optional vector of f64 for IMU bias covariance.
+/// * `process_noise_diagonal` - Optional vector for the diagonal of the process noise matrix.
+/// * `use_biases` - If true, uses 15-state (with IMU biases), otherwise 9-state configuration.
+///
+/// # Returns
+///
+/// * `ExtendedKalmanFilter` - An instance of the Extended Kalman Filter initialized with the provided parameters.
+///
+/// # Example
+///
+/// ```no_run
+/// use strapdown::sim::{TestDataRecord, initialize_ekf};
+///
+/// // Assuming you have a TestDataRecord from sensor data
+/// let initial_pose = TestDataRecord::default();
+/// let ekf = initialize_ekf(
+///     initial_pose,
+///     None,  // Use default attitude covariance
+///     None,  // Use default IMU biases
+///     None,  // Use default IMU bias covariance
+///     None,  // Use default process noise
+///     true,  // Use 15-state configuration with biases
+/// );
+/// ```
+#[allow(clippy::too_many_arguments)]
+pub fn initialize_ekf(
+    initial_pose: TestDataRecord,
+    attitude_covariance: Option<Vec<f64>>,
+    imu_biases: Option<Vec<f64>>,
+    imu_biases_covariance: Option<Vec<f64>>,
+    process_noise_diagonal: Option<Vec<f64>>,
+    use_biases: bool,
+) -> crate::kalman::ExtendedKalmanFilter {
+    use crate::kalman::ExtendedKalmanFilter;
+
+    // Build initial state from sensor data
+    let initial_state = InitialState {
+        latitude: initial_pose.latitude,
+        longitude: initial_pose.longitude,
+        altitude: initial_pose.altitude,
+        northward_velocity: initial_pose.speed * initial_pose.bearing.to_radians().cos(),
+        eastward_velocity: initial_pose.speed * initial_pose.bearing.to_radians().sin(),
+        vertical_velocity: 0.0,
+        roll: if initial_pose.roll.is_nan() {
+            0.0
+        } else {
+            initial_pose.roll
+        },
+        pitch: if initial_pose.pitch.is_nan() {
+            0.0
+        } else {
+            initial_pose.pitch
+        },
+        yaw: if initial_pose.yaw.is_nan() {
+            0.0
+        } else {
+            initial_pose.yaw
+        },
+        in_degrees: true,
+        is_enu: true,
+    };
+
+    // Determine state size based on use_biases flag
+    let state_size = if use_biases { 15 } else { 9 };
+
+    // Build process noise diagonal
+    let process_noise_diagonal = match process_noise_diagonal {
+        Some(pn) => {
+            assert!(
+                pn.len() == state_size,
+                "Process noise diagonal length mismatch: expected {}, got {}",
+                state_size,
+                pn.len()
+            );
+            pn
+        }
+        None => {
+            if use_biases {
+                DEFAULT_PROCESS_NOISE.to_vec()
+            } else {
+                DEFAULT_PROCESS_NOISE[0..9].to_vec()
+            }
+        }
+    };
+
+    // Build covariance diagonal
+    let position_accuracy = initial_pose.horizontal_accuracy;
+    let mut covariance_diagonal = vec![
+        (position_accuracy * METERS_TO_DEGREES).powf(2.0),
+        (position_accuracy * METERS_TO_DEGREES).powf(2.0),
+        initial_pose.vertical_accuracy.powf(2.0),
+        initial_pose.speed_accuracy.powf(2.0),
+        initial_pose.speed_accuracy.powf(2.0),
+        initial_pose.speed_accuracy.powf(2.0),
+    ];
+
+    // Add attitude covariance
+    match attitude_covariance {
+        Some(att_cov) => {
+            assert!(
+                att_cov.len() == 3,
+                "Attitude covariance must have 3 elements"
+            );
+            covariance_diagonal.extend(att_cov);
+        }
+        None => covariance_diagonal.extend(vec![1e-9; 3]),
+    }
+
+    // Add IMU bias covariance if using biases
+    let imu_biases_vec = if use_biases {
+        match imu_biases {
+            Some(biases) => {
+                assert!(biases.len() == 6, "IMU biases must have 6 elements");
+                covariance_diagonal.extend(match imu_biases_covariance {
+                    Some(imu_cov) => {
+                        assert!(
+                            imu_cov.len() == 6,
+                            "IMU bias covariance must have 6 elements"
+                        );
+                        imu_cov
+                    }
+                    None => vec![1e-3; 6],
+                });
+                biases
+            }
+            None => {
+                covariance_diagonal.extend(vec![1e-3; 6]);
+                vec![0.0; 6]
+            }
+        }
+    } else {
+        vec![0.0; 6] // Not used in 9-state, but required by constructor
+    };
+
+    assert!(
+        covariance_diagonal.len() == state_size,
+        "Covariance diagonal length mismatch: expected {}, got {}",
+        state_size,
+        covariance_diagonal.len()
+    );
+
+    let process_noise = DMatrix::from_diagonal(&DVector::from_vec(process_noise_diagonal));
+
+    ExtendedKalmanFilter::new(
+        initial_state,
+        imu_biases_vec,
+        covariance_diagonal,
+        process_noise,
+        use_biases,
     )
 }
 
