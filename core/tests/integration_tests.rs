@@ -655,3 +655,370 @@ fn test_ukf_outperforms_dead_reckoning() {
         );
     }
 }
+
+// ==================== Extended Kalman Filter Integration Tests ====================
+
+/// Test EKF completes successfully on a real dataset
+#[test]
+#[ignore] // Requires data file to be present
+fn test_ekf_completes_successfully() {
+    let data_path = Path::new("../examples/data/test_dataset.csv");
+    if !data_path.exists() {
+        println!("Test data not found at {:?}, skipping test", data_path);
+        return;
+    }
+
+    let records = load_test_data(data_path);
+    assert!(!records.is_empty(), "Test data should not be empty");
+
+    // Initialize EKF with 15-state configuration
+    let initial_state = create_initial_state(&records[0]);
+    let imu_biases = vec![0.0; 6];
+    let initial_covariance = vec![
+        1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.001, 0.001, 0.001,
+    ];
+    let process_noise = DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec()));
+
+    let mut ekf = strapdown::kalman::ExtendedKalmanFilter::new(
+        initial_state,
+        imu_biases,
+        initial_covariance,
+        process_noise,
+        true, // use_biases
+    );
+
+    // Create event stream with no faults
+    let scheduler = GnssScheduler::PassThrough;
+    let fault_model = GnssFaultModel::None;
+    let cfg = GnssDegradationConfig {
+        scheduler,
+        fault: fault_model,
+        ..Default::default()
+    };
+    let stream = build_event_stream(&records, &cfg);
+
+    // Run EKF
+    let ekf_results = run_closed_loop(&mut ekf, stream, None);
+    assert!(ekf_results.is_ok(), "EKF should complete without errors");
+
+    let results = ekf_results.unwrap();
+    assert!(!results.is_empty(), "EKF should produce results");
+    println!("EKF produced {} navigation solutions", results.len());
+
+    // Compute error metrics
+    let stats = compute_error_metrics(&results, &records);
+    println!("\n=== EKF Performance Metrics ===");
+    println!(
+        "Mean horizontal error: {:.2}m",
+        stats.mean_horizontal_error
+    );
+    println!("Max horizontal error: {:.2}m", stats.max_horizontal_error);
+    println!("RMS horizontal error: {:.2}m", stats.rms_horizontal_error);
+    println!("Mean altitude error: {:.2}m", stats.mean_altitude_error);
+
+    // Check that errors are bounded
+    assert!(
+        stats.max_horizontal_error < 100.0,
+        "Maximum horizontal error should be bounded: {:.2}m",
+        stats.max_horizontal_error
+    );
+}
+
+/// Test EKF 9-state configuration (no biases)
+#[test]
+#[ignore] // Requires data file to be present
+fn test_ekf_9state_configuration() {
+    let data_path = Path::new("../examples/data/test_dataset.csv");
+    if !data_path.exists() {
+        println!("Test data not found at {:?}, skipping test", data_path);
+        return;
+    }
+
+    let records = load_test_data(data_path);
+    assert!(!records.is_empty(), "Test data should not be empty");
+
+    // Initialize EKF with 9-state configuration (no biases)
+    let initial_state = create_initial_state(&records[0]);
+    let imu_biases = vec![0.0; 6]; // Provided but won't be used
+    let initial_covariance = vec![1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 0.01, 0.01, 0.01];
+    let process_noise =
+        DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE[0..9].to_vec()));
+
+    let mut ekf = strapdown::kalman::ExtendedKalmanFilter::new(
+        initial_state,
+        imu_biases,
+        initial_covariance,
+        process_noise,
+        false, // Don't use biases (9-state)
+    );
+
+    // Create event stream
+    let scheduler = GnssScheduler::PassThrough;
+    let fault_model = GnssFaultModel::None;
+    let cfg = GnssDegradationConfig {
+        scheduler,
+        fault: fault_model,
+        ..Default::default()
+    };
+    let stream = build_event_stream(&records, &cfg);
+
+    // Run EKF
+    let ekf_results = run_closed_loop(&mut ekf, stream, None);
+    assert!(
+        ekf_results.is_ok(),
+        "9-state EKF should complete without errors"
+    );
+
+    let results = ekf_results.unwrap();
+    assert!(!results.is_empty(), "9-state EKF should produce results");
+    println!("9-state EKF produced {} navigation solutions", results.len());
+
+    // Compute error metrics
+    let stats = compute_error_metrics(&results, &records);
+    println!("\n=== 9-State EKF Performance Metrics ===");
+    println!("RMS horizontal error: {:.2}m", stats.rms_horizontal_error);
+
+    // Check that errors are bounded
+    assert!(
+        stats.max_horizontal_error < 150.0,
+        "9-state EKF max horizontal error should be bounded: {:.2}m",
+        stats.max_horizontal_error
+    );
+}
+
+/// Compare EKF vs UKF performance
+#[test]
+#[ignore] // Requires data file to be present
+fn test_ekf_vs_ukf_comparison() {
+    let data_path = Path::new("../examples/data/test_dataset.csv");
+    if !data_path.exists() {
+        println!("Test data not found at {:?}, skipping test", data_path);
+        return;
+    }
+
+    let records = load_test_data(data_path);
+    assert!(!records.is_empty(), "Test data should not be empty");
+
+    let initial_state = create_initial_state(&records[0]);
+    let imu_biases = vec![0.0; 6];
+    let initial_covariance = vec![
+        1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.001, 0.001, 0.001,
+    ];
+    let process_noise = DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec()));
+
+    // Run EKF
+    let mut ekf = strapdown::kalman::ExtendedKalmanFilter::new(
+        initial_state.clone(),
+        imu_biases.clone(),
+        initial_covariance.clone(),
+        process_noise.clone(),
+        true,
+    );
+
+    let scheduler = GnssScheduler::PassThrough;
+    let fault_model = GnssFaultModel::None;
+    let cfg = GnssDegradationConfig {
+        scheduler,
+        fault: fault_model,
+        ..Default::default()
+    };
+    let stream1 = build_event_stream(&records, &cfg);
+
+    let ekf_results = run_closed_loop(&mut ekf, stream1, None).expect("EKF should complete");
+    let ekf_stats = compute_error_metrics(&ekf_results, &records);
+
+    // Run UKF
+    let mut ukf = UnscentedKalmanFilter::new(
+        initial_state,
+        imu_biases,
+        None,
+        initial_covariance,
+        process_noise,
+        1e-3,
+        2.0,
+        0.0,
+    );
+
+    let stream2 = build_event_stream(&records, &cfg);
+    let ukf_results = run_closed_loop(&mut ukf, stream2, None).expect("UKF should complete");
+    let ukf_stats = compute_error_metrics(&ukf_results, &records);
+
+    // Print comparison
+    println!("\n=== EKF vs UKF Performance Comparison ===");
+    println!(
+        "EKF RMS Horizontal Error: {:.2}m",
+        ekf_stats.rms_horizontal_error
+    );
+    println!(
+        "UKF RMS Horizontal Error: {:.2}m",
+        ukf_stats.rms_horizontal_error
+    );
+    println!(
+        "EKF Mean Altitude Error: {:.2}m",
+        ekf_stats.mean_altitude_error
+    );
+    println!(
+        "UKF Mean Altitude Error: {:.2}m",
+        ukf_stats.mean_altitude_error
+    );
+
+    // Both filters should have bounded errors
+    assert!(
+        ekf_stats.rms_horizontal_error < 50.0,
+        "EKF RMS horizontal error should be bounded: {:.2}m",
+        ekf_stats.rms_horizontal_error
+    );
+    assert!(
+        ukf_stats.rms_horizontal_error < 50.0,
+        "UKF RMS horizontal error should be bounded: {:.2}m",
+        ukf_stats.rms_horizontal_error
+    );
+
+    // EKF and UKF should have comparable performance (within 50% of each other)
+    let ratio = ekf_stats.rms_horizontal_error / ukf_stats.rms_horizontal_error;
+    println!("EKF/UKF performance ratio: {:.2}", ratio);
+    assert!(
+        ratio > 0.5 && ratio < 2.0,
+        "EKF and UKF should have comparable performance, ratio: {:.2}",
+        ratio
+    );
+}
+
+/// Test EKF with GNSS degradation (outages)
+#[test]
+#[ignore] // Requires data file to be present
+fn test_ekf_with_gnss_outages() {
+    let data_path = Path::new("../examples/data/test_dataset.csv");
+    if !data_path.exists() {
+        println!("Test data not found at {:?}, skipping test", data_path);
+        return;
+    }
+
+    let records = load_test_data(data_path);
+    assert!(!records.is_empty(), "Test data should not be empty");
+
+    let initial_state = create_initial_state(&records[0]);
+    let imu_biases = vec![0.0; 6];
+    let initial_covariance = vec![
+        1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.001, 0.001, 0.001,
+    ];
+    let process_noise = DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec()));
+
+    let mut ekf = strapdown::kalman::ExtendedKalmanFilter::new(
+        initial_state,
+        imu_biases,
+        initial_covariance,
+        process_noise,
+        true,
+    );
+
+    // Create event stream with periodic outages
+    let scheduler = GnssScheduler::DutyCycle {
+        on_s: 10.0,
+        off_s: 5.0,
+        start_phase_s: 0.0,
+    };
+    let fault_model = GnssFaultModel::None;
+    let cfg = GnssDegradationConfig {
+        scheduler,
+        fault: fault_model,
+        seed: 42,
+        ..Default::default()
+    };
+    let stream = build_event_stream(&records, &cfg);
+
+    // Run EKF
+    let ekf_results = run_closed_loop(&mut ekf, stream, None);
+    assert!(
+        ekf_results.is_ok(),
+        "EKF should complete with GNSS outages"
+    );
+
+    let results = ekf_results.unwrap();
+    assert!(!results.is_empty(), "EKF should produce results");
+
+    // Compute error metrics
+    let stats = compute_error_metrics(&results, &records);
+    println!("\n=== EKF Performance with GNSS Outages ===");
+    println!("RMS horizontal error: {:.2}m", stats.rms_horizontal_error);
+    println!("Max horizontal error: {:.2}m", stats.max_horizontal_error);
+
+    // Errors will be higher with outages, but should still be bounded
+    assert!(
+        stats.max_horizontal_error < 200.0,
+        "EKF with outages should have bounded error: {:.2}m",
+        stats.max_horizontal_error
+    );
+}
+
+/// Test EKF bounded drift vs open-loop
+#[test]
+#[ignore] // Requires data file to be present
+fn test_ekf_bounded_drift_vs_open_loop() {
+    let data_path = Path::new("../examples/data/test_dataset.csv");
+    if !data_path.exists() {
+        println!("Test data not found at {:?}, skipping test", data_path);
+        return;
+    }
+
+    let records = load_test_data(data_path);
+    assert!(!records.is_empty(), "Test data should not be empty");
+
+    // Run dead reckoning (open-loop)
+    let dr_results = dead_reckoning(&records);
+    let dr_stats = compute_error_metrics(&dr_results, &records);
+
+    // Run EKF (closed-loop)
+    let initial_state = create_initial_state(&records[0]);
+    let imu_biases = vec![0.0; 6];
+    let initial_covariance = vec![
+        1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.001, 0.001, 0.001,
+    ];
+    let process_noise = DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec()));
+
+    let mut ekf = strapdown::kalman::ExtendedKalmanFilter::new(
+        initial_state,
+        imu_biases,
+        initial_covariance,
+        process_noise,
+        true,
+    );
+
+    let scheduler = GnssScheduler::PassThrough;
+    let fault_model = GnssFaultModel::None;
+    let cfg = GnssDegradationConfig {
+        scheduler,
+        fault: fault_model,
+        ..Default::default()
+    };
+    let stream = build_event_stream(&records, &cfg);
+
+    let ekf_results = run_closed_loop(&mut ekf, stream, None).expect("EKF should complete");
+    let ekf_stats = compute_error_metrics(&ekf_results, &records);
+
+    // Print comparison
+    println!("\n=== EKF vs Dead Reckoning Performance ===");
+    println!(
+        "Dead Reckoning RMS Horizontal Error: {:.2}m",
+        dr_stats.rms_horizontal_error
+    );
+    println!(
+        "EKF RMS Horizontal Error: {:.2}m",
+        ekf_stats.rms_horizontal_error
+    );
+    println!(
+        "Improvement: {:.1}%",
+        (1.0 - ekf_stats.rms_horizontal_error / dr_stats.rms_horizontal_error) * 100.0
+    );
+
+    // EKF should significantly outperform dead reckoning
+    if dr_stats.rms_horizontal_error > 5.0 {
+        // Only compare if DR has meaningful drift
+        assert!(
+            ekf_stats.rms_horizontal_error < dr_stats.rms_horizontal_error,
+            "EKF should have lower RMS horizontal error than dead reckoning. EKF: {:.2}m, DR: {:.2}m",
+            ekf_stats.rms_horizontal_error,
+            dr_stats.rms_horizontal_error
+        );
+    }
+}
