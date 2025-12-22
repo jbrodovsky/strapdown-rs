@@ -1,0 +1,50 @@
+# Example GNSS degradation configuration with magnetometer aiding enabled
+#
+# This configuration demonstrates how to enable and configure magnetometer aiding
+# for improved heading/yaw estimation during GNSS outages.
+
+# GNSS scheduler - controls when GNSS measurements are available
+scheduler:
+  kind: "pass_through"  # Options: pass_through, fixed_interval, duty_cycle
+
+# GNSS fault model - controls how GNSS measurements are corrupted
+fault:
+  kind: "none"  # Options: none, degraded, hijack, slow_bias, combo
+
+# Random seed for reproducibility
+seed: 42
+
+# Magnetometer aiding configuration
+magnetometer:
+  # Enable magnetometer measurements
+  enabled: true
+  
+  # Reference magnetic field vector in NED frame (microteslas)
+  # This should be set based on your geographic location using WMM or IGRF
+  # Examples:
+  #   - Mid-latitude Northern Hemisphere (e.g., USA): [25.0, 0.0, 40.0]
+  #   - Mid-latitude Southern Hemisphere (e.g., Australia): [25.0, 0.0, -40.0]
+  #   - Equator: [30.0, 0.0, 0.0]
+  #   - North Pole: [0.0, 0.0, 60.0]
+  reference_field_ned: [25.0, 0.0, 40.0]
+  
+  # Hard-iron offset calibration (microteslas)
+  # Constant bias in each axis from ferromagnetic materials on vehicle
+  # Determined during calibration procedure
+  hard_iron_offset: [0.0, 0.0, 0.0]
+  
+  # Soft-iron correction matrix (dimensionless, 3x3 row-major)
+  # Corrects for scale factors and cross-axis misalignment
+  # Identity matrix = no correction
+  soft_iron_matrix: [
+    1.0, 0.0, 0.0,
+    0.0, 1.0, 0.0,
+    0.0, 0.0, 1.0
+  ]
+  
+  # Measurement noise standard deviation (microteslas)
+  # Typical values: 3-10 μT depending on sensor quality
+  noise_std: 5.0
+
+# Usage:
+# strapdown-sim closed-loop --input data.csv --output results.csv --config magnetometer-config.yaml

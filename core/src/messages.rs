@@ -11,7 +11,7 @@ use std::path::Path;
 use crate::IMUData;
 use crate::earth::meters_ned_to_dlat_dlon;
 use crate::measurements::{
-    GPSPositionAndVelocityMeasurement, MeasurementModel, RelativeAltitudeMeasurement,
+    GPSPositionAndVelocityMeasurement, MagnetometerMeasurement, MeasurementModel, RelativeAltitudeMeasurement,
 };
 use crate::sim::TestDataRecord;
 /// Scheduler for controlling when GNSS measurements are emitted into the simulation.
@@ -241,7 +241,7 @@ pub enum GnssFaultModel {
 ///         sigma_vel_mps: 0.3,
 ///         r_scale: 5.0,
 ///     },
-///     seed: 42,
+///     ..Default::default()
 /// };
 /// ```
 /// Default seed value for reproducible simulations
@@ -267,6 +267,63 @@ pub struct GnssDegradationConfig {
     /// realization of stochastic processes such as AR(1) degradation.
     #[serde(default = "default_seed")]
     pub seed: u64,
+
+    /// Magnetometer aiding configuration
+    #[serde(default)]
+    pub magnetometer: MagnetometerConfig,
+}
+
+/// Configuration for magnetometer aiding
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MagnetometerConfig {
+    /// Enable magnetometer measurements
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Reference magnetic field vector in NED frame (μT)
+    /// [North, East, Down] components
+    /// Typical values: Northern hemisphere ~[25, 0, 40], Southern ~[25, 0, -40]
+    #[serde(default = "default_reference_field")]
+    pub reference_field_ned: [f64; 3],
+
+    /// Hard-iron offset calibration (μT)
+    /// Constant bias in magnetometer readings [x, y, z]
+    #[serde(default)]
+    pub hard_iron_offset: [f64; 3],
+
+    /// Soft-iron correction matrix (dimensionless)
+    /// 3x3 matrix stored in row-major order: [m11, m12, m13, m21, m22, m23, m31, m32, m33]
+    /// Default is identity matrix (no correction)
+    #[serde(default = "default_soft_iron_matrix")]
+    pub soft_iron_matrix: [f64; 9],
+
+    /// Measurement noise standard deviation (μT)
+    #[serde(default = "default_mag_noise")]
+    pub noise_std: f64,
+}
+
+impl Default for MagnetometerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            reference_field_ned: default_reference_field(),
+            hard_iron_offset: [0.0; 3],
+            soft_iron_matrix: default_soft_iron_matrix(),
+            noise_std: default_mag_noise(),
+        }
+    }
+}
+
+fn default_reference_field() -> [f64; 3] {
+    [25.0, 0.0, 40.0] // Northern hemisphere typical
+}
+
+fn default_soft_iron_matrix() -> [f64; 9] {
+    [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0] // Identity matrix
+}
+
+fn default_mag_noise() -> f64 {
+    5.0 // 5 μT noise std
 }
 
 impl Default for GnssDegradationConfig {
@@ -275,6 +332,7 @@ impl Default for GnssDegradationConfig {
             scheduler: GnssScheduler::default(),
             fault: GnssFaultModel::default(),
             seed: default_seed(),
+            magnetometer: MagnetometerConfig::default(),
         }
     }
 }
@@ -845,7 +903,7 @@ pub fn apply_fault(
 ///         rho_vel: 0.95, sigma_vel_mps: 0.3,
 ///         r_scale: 5.0,
 ///     },
-///     seed: 42,
+///     ..Default::default()
 /// };
 /// let events = build_event_stream(&records, &cfg);
 /// // feed into your event-driven filter loop
@@ -978,6 +1036,51 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
                 elapsed_s: *t1,
             });
         }
+        
+        // Add magnetometer measurement if enabled and data is available
+        if cfg.magnetometer.enabled {
+            let mag_components = [r1.mag_x, r1.mag_y, r1.mag_z];
+            // Check for valid data: not NaN and not all zeros (sensor failure indicator)
+            let mag_present = mag_components.iter().all(|v| !v.is_nan())
+                && mag_components.iter().any(|v| v.abs() > 1e-6);
+            
+            if mag_present {
+                use nalgebra::{Matrix3, Vector3};
+                
+                let reference_field = Vector3::new(
+                    cfg.magnetometer.reference_field_ned[0],
+                    cfg.magnetometer.reference_field_ned[1],
+                    cfg.magnetometer.reference_field_ned[2],
+                );
+                
+                let hard_iron = Vector3::new(
+                    cfg.magnetometer.hard_iron_offset[0],
+                    cfg.magnetometer.hard_iron_offset[1],
+                    cfg.magnetometer.hard_iron_offset[2],
+                );
+                
+                let soft_iron = Matrix3::new(
+                    cfg.magnetometer.soft_iron_matrix[0], cfg.magnetometer.soft_iron_matrix[1], cfg.magnetometer.soft_iron_matrix[2],
+                    cfg.magnetometer.soft_iron_matrix[3], cfg.magnetometer.soft_iron_matrix[4], cfg.magnetometer.soft_iron_matrix[5],
+                    cfg.magnetometer.soft_iron_matrix[6], cfg.magnetometer.soft_iron_matrix[7], cfg.magnetometer.soft_iron_matrix[8],
+                );
+                
+                let mag_meas = MagnetometerMeasurement {
+                    mag_x: r1.mag_x,
+                    mag_y: r1.mag_y,
+                    mag_z: r1.mag_z,
+                    reference_field_ned: reference_field,
+                    hard_iron_offset: hard_iron,
+                    soft_iron_matrix: soft_iron,
+                    noise_std: cfg.magnetometer.noise_std,
+                };
+                
+                events.push(Event::Measurement {
+                    meas: Box::new(mag_meas),
+                    elapsed_s: *t1,
+                });
+            }
+        }
     }
     EventStream { start_time, events }
 }
@@ -1038,7 +1141,7 @@ mod tests {
         let config = GnssDegradationConfig {
             scheduler: GnssScheduler::PassThrough,
             fault: GnssFaultModel::None,
-            seed: 42,
+            ..Default::default()
         };
 
         let events = build_event_stream(&records, &config);
@@ -1077,7 +1180,7 @@ mod tests {
                 phase_s: 0.0,
             },
             fault: GnssFaultModel::None,
-            seed: 42,
+            ..Default::default()
         };
 
         let events = build_event_stream(&records, &config);
@@ -1113,7 +1216,7 @@ mod tests {
                 start_phase_s: 0.0,
             },
             fault: GnssFaultModel::None,
-            seed: 42,
+            ..Default::default()
         };
         //
         let events = build_event_stream(&records, &config);
@@ -1147,6 +1250,7 @@ mod tests {
                 r_scale: 5.0,
             },
             seed: 500,
+            ..Default::default()
         };
 
         let events = build_event_stream(&records, &config);
@@ -1256,7 +1360,7 @@ mod tests {
                 start_s: 1.0,
                 duration_s: 1.0, // Hijack from 1.0s to 2.0s
             },
-            seed: 42,
+            ..Default::default()
         };
 
         let events = build_event_stream(&records, &config);
@@ -1302,7 +1406,7 @@ mod tests {
         let config = GnssDegradationConfig {
             scheduler: GnssScheduler::PassThrough,
             fault: GnssFaultModel::Combo(vec![GnssFaultModel::None, GnssFaultModel::None]),
-            seed: 42,
+            ..Default::default()
         };
 
         // This should at least not crash
@@ -1344,7 +1448,7 @@ mod tests {
                 rotate_omega_rps: 0.1,
                 q_bias: 0.0,
             },
-            seed: 42,
+            ..Default::default()
         };
 
         let events = build_event_stream(&records, &config);
@@ -1372,7 +1476,7 @@ mod tests {
                 rotate_omega_rps: 0.0,
                 q_bias: 1.0,
             },
-            seed: 42,
+            ..Default::default()
         };
 
         let events = build_event_stream(&records, &config);
@@ -1467,7 +1571,7 @@ mod tests {
         let config = GnssDegradationConfig {
             scheduler: GnssScheduler::PassThrough,
             fault: GnssFaultModel::None,
-            seed: 42,
+            ..Default::default()
         };
 
         let events = build_event_stream(&records, &config);
@@ -1495,12 +1599,115 @@ mod tests {
                 start_phase_s: 0.0,
             },
             fault: GnssFaultModel::None,
-            seed: 42,
+            ..Default::default()
         };
 
         let events = build_event_stream(&records, &config);
         // Should have events
         assert!(events.events.len() > 0);
+    }
+
+    #[test]
+    fn test_magnetometer_config_default() {
+        let config = MagnetometerConfig::default();
+        assert!(!config.enabled);
+        assert_eq!(config.reference_field_ned, [25.0, 0.0, 40.0]);
+        assert_eq!(config.hard_iron_offset, [0.0; 3]);
+        assert_eq!(config.soft_iron_matrix, [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(config.noise_std, 5.0);
+    }
+
+    #[test]
+    fn test_magnetometer_in_event_stream_disabled() {
+        let records = create_test_records(5, 0.1);
+        let config = GnssDegradationConfig {
+            scheduler: GnssScheduler::PassThrough,
+            fault: GnssFaultModel::None,
+            magnetometer: MagnetometerConfig {
+                enabled: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        
+        let stream = build_event_stream(&records, &config);
+        
+        let mag_count = stream
+            .events
+            .iter()
+            .filter(|e| {
+                if let Event::Measurement { meas, .. } = e {
+                    meas.as_any()
+                        .downcast_ref::<MagnetometerMeasurement>()
+                        .is_some()
+                } else {
+                    false
+                }
+            })
+            .count();
+        
+        assert_eq!(mag_count, 0);
+    }
+
+    #[test]
+    fn test_magnetometer_in_event_stream_enabled() {
+        let mut records = create_test_records(3, 0.1);
+        for record in &mut records {
+            record.mag_x = 20.0;
+            record.mag_y = 5.0;
+            record.mag_z = 40.0;
+        }
+        
+        let config = GnssDegradationConfig {
+            scheduler: GnssScheduler::PassThrough,
+            fault: GnssFaultModel::None,
+            magnetometer: MagnetometerConfig {
+                enabled: true,
+                reference_field_ned: [25.0, 0.0, 45.0],
+                hard_iron_offset: [1.0, 0.5, 2.0],
+                soft_iron_matrix: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                noise_std: 3.0,
+            },
+            ..Default::default()
+        };
+        
+        let stream = build_event_stream(&records, &config);
+        
+        let mag_count = stream
+            .events
+            .iter()
+            .filter(|e| {
+                if let Event::Measurement { meas, .. } = e {
+                    meas.as_any()
+                        .downcast_ref::<MagnetometerMeasurement>()
+                        .is_some()
+                } else {
+                    false
+                }
+            })
+            .count();
+        
+        assert_eq!(mag_count, 2);
+        
+        let mag_meas = stream
+            .events
+            .iter()
+            .find_map(|e| {
+                if let Event::Measurement { meas, .. } = e {
+                    meas.as_any().downcast_ref::<MagnetometerMeasurement>()
+                } else {
+                    None
+                }
+            })
+            .expect("Should have at least one magnetometer measurement");
+        
+        assert_eq!(mag_meas.mag_x, 20.0);
+        assert_eq!(mag_meas.mag_y, 5.0);
+        assert_eq!(mag_meas.mag_z, 40.0);
+        assert_eq!(mag_meas.reference_field_ned[0], 25.0);
+        assert_eq!(mag_meas.reference_field_ned[1], 0.0);
+        assert_eq!(mag_meas.reference_field_ned[2], 45.0);
+        assert_eq!(mag_meas.noise_std, 3.0);
     }
 }
 #[cfg(test)]
@@ -1518,7 +1725,7 @@ mod serialization_tests {
                 sigma_vel_mps: 0.3,
                 r_scale: 5.0,
             },
-            seed: 42,
+            ..Default::default()
         }
     }
 
