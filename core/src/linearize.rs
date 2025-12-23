@@ -615,18 +615,18 @@ mod tests {
     fn test_state_transition_jacobian_multiple_states() {
         // Test across multiple randomized states
         use rand::Rng;
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         for _ in 0..10 {
-            let lat = rng.gen_range(-80.0..80.0);
-            let lon = rng.gen_range(-180.0..180.0);
-            let alt = rng.gen_range(0.0..5000.0);
-            let v_n = rng.gen_range(-10.0..10.0); // Smaller velocities
-            let v_e = rng.gen_range(-10.0..10.0);
-            let v_d = rng.gen_range(-2.0..2.0);
-            let roll = rng.gen_range(-0.1..0.1); // Smaller angles
-            let pitch = rng.gen_range(-0.1..0.1);
-            let yaw = rng.gen_range(-0.5..0.5);
+            let lat = rng.random_range(-80.0..80.0);
+            let lon = rng.random_range(-180.0..180.0);
+            let alt = rng.random_range(0.0..5000.0);
+            let v_n = rng.random_range(-10.0..10.0); // Smaller velocities
+            let v_e = rng.random_range(-10.0..10.0);
+            let v_d = rng.random_range(-2.0..2.0);
+            let roll = rng.random_range(-0.1..0.1); // Smaller angles
+            let pitch = rng.random_range(-0.1..0.1);
+            let yaw = rng.random_range(-0.5..0.5);
 
             let state = StrapdownState::new(
                 lat,
@@ -641,14 +641,14 @@ mod tests {
             );
 
             let accel = Vector3::new(
-                rng.gen_range(-0.5..0.5), // Smaller accelerations
-                rng.gen_range(-0.5..0.5),
-                rng.gen_range(9.0..10.5),
+                rng.random_range(-0.5..0.5), // Smaller accelerations
+                rng.random_range(-0.5..0.5),
+                rng.random_range(9.0..10.5),
             );
             let gyro = Vector3::new(
-                rng.gen_range(-0.01..0.01), // Smaller rates
-                rng.gen_range(-0.01..0.01),
-                rng.gen_range(-0.01..0.01),
+                rng.random_range(-0.01..0.01), // Smaller rates
+                rng.random_range(-0.01..0.01),
+                rng.random_range(-0.01..0.01),
             );
             let dt = 0.0001; // Very small dt for high accuracy
 
