@@ -312,7 +312,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     scheduler: build_scheduler(&args.scheduler),
                     fault: build_fault(&args.fault),
                     seed: args.seed,
-                    magnetometer: todo!(),
+                    magnetometer: Default::default(),
                 }
             };
 
