@@ -3,14 +3,12 @@ use log::{error, info};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use strapdown::messages::{GnssDegradationConfig, build_event_stream};
-use strapdown::particle::{AveragingStrategy, ProcessNoise, RBProcessNoise, ResamplingStrategy, VerticalChannelMode};
 use strapdown::sim::{
     FaultArgs, NavigationResult, SchedulerArgs, TestDataRecord, build_fault, build_scheduler,
-    initialize_particle_filter, initialize_rbpf, initialize_ukf, run_closed_loop,
+    initialize_ukf, run_closed_loop,
 };
 
 // Import nalgebra types needed for process noise construction
-use nalgebra::{DMatrix, DVector, Vector3};
 
 const LONG_ABOUT: &str = "STRAPDOWN: A simulation and analysis tool for strapdown inertial navigation systems.
 
@@ -232,155 +230,6 @@ fn validate_output_path(output: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Run particle filter simulation with either standard PF or RBPF
-fn run_particle_filter_sim(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error>> {
-    validate_input_file(&args.sim.input)?;
-    validate_output_path(&args.sim.output)?;
-
-    info!("Loading test data from {:?}", args.sim.input);
-    let records = TestDataRecord::from_csv(&args.sim.input)
-        .map_err(|e| format!("Failed to load test data: {}", e))?;
-
-    if records.is_empty() {
-        return Err("No data records found in input file".into());
-    }
-
-    info!("Loaded {} data records", records.len());
-
-    // Build GNSS degradation configuration
-    let cfg = if let Some(config_path) = &args.config {
-        info!("Loading GNSS degradation config from {:?}", config_path);
-        GnssDegradationConfig::from_file(config_path)
-            .map_err(|e| format!("Failed to load config: {}", e))?
-    } else {
-        GnssDegradationConfig {
-            scheduler: build_scheduler(&args.scheduler),
-            fault: build_fault(&args.fault),
-            seed: args.seed,
-        }
-    };
-
-    info!("Building event stream with GNSS degradation");
-    let stream = build_event_stream(&records, &cfg);
-
-    let results = match args.filter_type {
-        ParticleFilterType::Standard => {
-            info!(
-                "Initializing standard particle filter with {} particles",
-                args.num_particles
-            );
-
-            // Create process noise for standard PF
-            let process_noise = ProcessNoise {
-                position_std: Vector3::new(
-                    args.position_std * 1e-3,
-                    args.position_std * 1e-3,
-                    args.position_std * 5e-2,
-                ),
-                velocity_std: Vector3::new(
-                    args.velocity_std * 1e-2,
-                    args.velocity_std * 1e-2,
-                    args.velocity_std * 1e-1,
-                ),
-                attitude_std: Vector3::new(
-                    args.attitude_std * 1e-3,
-                    args.attitude_std * 1e-3,
-                    args.attitude_std * 1e-3,
-                ),
-                accel_bias_std: Vector3::new(
-                    args.accel_bias_std * 1e-3,
-                    args.accel_bias_std * 1e-3,
-                    args.accel_bias_std * 1e-3,
-                ),
-                gyro_bias_std: Vector3::new(
-                    args.gyro_bias_std * 1e-4,
-                    args.gyro_bias_std * 1e-4,
-                    args.gyro_bias_std * 1e-4,
-                ),
-                damping_states_std: None,
-            };
-
-            let mut filter = initialize_particle_filter(
-                records[0].clone(),
-                args.num_particles,
-                VerticalChannelMode::Simplified,
-                None,
-                None,
-                None,
-                None,
-                None,
-                Some(process_noise),
-                Some(ResamplingStrategy::Systematic),
-                Some(AveragingStrategy::WeightedMean),
-                Some(args.seed),
-            );
-
-            info!("Running standard particle filter simulation");
-            run_closed_loop(&mut filter, stream, None)
-                .map_err(|e| format!("Particle filter simulation failed: {}", e))?
-        }
-        ParticleFilterType::RaoBlackwellized => {
-            info!(
-                "Initializing Rao-Blackwellized particle filter with {} particles",
-                args.num_particles
-            );
-
-            // Create process noise for RBPF
-            let process_noise = RBProcessNoise {
-                position_std: Vector3::new(
-                    args.position_std * 1e-3,
-                    args.position_std * 1e-3,
-                    args.position_std * 5e-2,
-                ),
-                linear_states_covariance: DMatrix::from_diagonal(
-                    &DVector::from_vec(vec![
-                        args.velocity_std.powi(2) * 1e-2,
-                        args.velocity_std.powi(2) * 1e-2,
-                        args.velocity_std.powi(2) * 1e-1,
-                        args.attitude_std.powi(2) * 1e-3,
-                        args.attitude_std.powi(2) * 1e-3,
-                        args.attitude_std.powi(2) * 1e-3,
-                        args.accel_bias_std.powi(2) * 1e-3,
-                        args.accel_bias_std.powi(2) * 1e-3,
-                        args.accel_bias_std.powi(2) * 1e-3,
-                        args.gyro_bias_std.powi(2) * 1e-4,
-                        args.gyro_bias_std.powi(2) * 1e-4,
-                        args.gyro_bias_std.powi(2) * 1e-4,
-                    ]),
-                ),
-            };
-
-            let mut filter = initialize_rbpf(
-                records[0].clone(),
-                args.num_particles,
-                VerticalChannelMode::Simplified,
-                None,
-                None,
-                None,
-                Some(process_noise),
-                Some(ResamplingStrategy::Systematic),
-                Some(args.seed),
-            );
-
-            info!("Running Rao-Blackwellized particle filter simulation");
-            run_closed_loop(&mut filter, stream, None)
-                .map_err(|e| format!("RBPF simulation failed: {}", e))?
-        }
-    };
-
-    info!(
-        "Simulation complete. Generated {} navigation results",
-        results.len()
-    );
-
-    info!("Writing results to {:?}", args.sim.output);
-    NavigationResult::to_csv(&results, &args.sim.output)
-        .map_err(|e| format!("Failed to write results: {}", e))?;
-
-    info!("Done!");
-    Ok(())
-}
-
 fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
 
@@ -389,7 +238,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     match cli.command {
         Command::ParticleFilter(args) => {
-            run_particle_filter_sim(&args)?;
+            println!("Particle filter mode is not yet implemented");
+            info!("Particle filter mode is not yet implemented");
+            // Note: Particle filter mode is currently not fully implemented
         }
         Command::GenerateConfig(args) => {
             // Validate output path
@@ -421,7 +272,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             validate_input_file(&args.sim.input)?;
             validate_output_path(&args.sim.output)?;
             info!("Running in closed-loop mode");
-            
+
             // Load sensor data records from CSV
             let records = TestDataRecord::from_csv(&args.sim.input)?;
             info!(
@@ -429,7 +280,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 records.len(),
                 &args.sim.input.display()
             );
-            
+
             let cfg = if let Some(ref cfg_path) = args.config {
                 match GnssDegradationConfig::from_file(cfg_path) {
                     Ok(c) => c,
@@ -443,19 +294,20 @@ fn main() -> Result<(), Box<dyn Error>> {
                     scheduler: build_scheduler(&args.scheduler),
                     fault: build_fault(&args.fault),
                     seed: args.seed,
+                    magnetometer: todo!(),
                 }
             };
-            
+
             info!("Using GNSS degradation config: {:?}", cfg);
             let event_stream = build_event_stream(&records, &cfg);
             info!(
                 "Initialized event stream with {} events",
                 event_stream.events.len()
             );
-            
+
             let mut ukf = initialize_ukf(records[0].clone(), None, None, None, None, None, None);
             info!("Initialized UKF with state: {:?}", ukf);
-            
+
             let results = run_closed_loop(&mut ukf, event_stream, None);
             match results {
                 Ok(ref nav_results) => {

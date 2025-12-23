@@ -375,7 +375,7 @@ impl MeasurementModel for MagnetometerMeasurement {
         // Compute rotation matrix from body to NED frame (C_bn)
         // This is what from_euler_angles gives us
         let rot_body_to_ned = Rotation3::from_euler_angles(roll, pitch, yaw);
-        
+
         // To rotate from NED to body, we need the transpose (inverse for rotation matrices)
         let rot_ned_to_body = rot_body_to_ned.transpose();
 
@@ -630,18 +630,14 @@ mod tests {
         // After correction: raw - offset
         let vec = meas.get_vector();
         assert_approx_eq!(vec[0], 20.0, EPS); // 25 - 5
-        assert_approx_eq!(vec[1], 5.0, EPS);  // 3 - (-2)
+        assert_approx_eq!(vec[1], 5.0, EPS); // 3 - (-2)
         assert_approx_eq!(vec[2], 40.0, EPS); // 43 - 3
     }
 
     #[test]
     fn magnetometer_soft_iron_correction() {
         // Simple scale matrix (scales X by 2, Y by 0.5, Z unchanged)
-        let soft_iron = Matrix3::new(
-            2.0, 0.0, 0.0,
-            0.0, 0.5, 0.0,
-            0.0, 0.0, 1.0,
-        );
+        let soft_iron = Matrix3::new(2.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 1.0);
         let meas = MagnetometerMeasurement {
             mag_x: 10.0,
             mag_y: 10.0,
@@ -654,7 +650,7 @@ mod tests {
 
         let vec = meas.get_vector();
         assert_approx_eq!(vec[0], 20.0, EPS); // 10 * 2
-        assert_approx_eq!(vec[1], 5.0, EPS);  // 10 * 0.5
+        assert_approx_eq!(vec[1], 5.0, EPS); // 10 * 0.5
         assert_approx_eq!(vec[2], 40.0, EPS); // 40 * 1
     }
 
@@ -696,14 +692,14 @@ mod tests {
     fn magnetometer_expected_measurement_yaw_rotation() {
         // State with 90 degree yaw rotation (pointing East)
         let state = DVector::from_vec(vec![
-            0.0,                    // lat
-            0.0,                    // lon
-            0.0,                    // alt
-            0.0,                    // v_n
-            0.0,                    // v_e
-            0.0,                    // v_d
-            0.0,                    // roll
-            0.0,                    // pitch
+            0.0,                         // lat
+            0.0,                         // lon
+            0.0,                         // alt
+            0.0,                         // v_n
+            0.0,                         // v_e
+            0.0,                         // v_d
+            0.0,                         // roll
+            0.0,                         // pitch
             std::f64::consts::FRAC_PI_2, // yaw = 90 degrees
         ]);
 
@@ -723,16 +719,15 @@ mod tests {
         // So North component (25) -> -body_y, East (0) -> body_x
         let expected = meas.get_expected_measurement(&state);
         assert_eq!(expected.len(), 3);
-        assert_approx_eq!(expected[0], 0.0, 1e-6);   // East component
+        assert_approx_eq!(expected[0], 0.0, 1e-6); // East component
         assert_approx_eq!(expected[1], -25.0, 1e-6); // -North component
-        assert_approx_eq!(expected[2], 40.0, 1e-6);  // Down unchanged
+        assert_approx_eq!(expected[2], 40.0, 1e-6); // Down unchanged
     }
 
     #[test]
     fn magnetometer_expected_measurement_with_calibration() {
         let state = DVector::from_vec(vec![
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            0.0, // roll
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, // roll
             0.0, // pitch
             0.0, // yaw
         ]);
@@ -755,9 +750,9 @@ mod tests {
         // Expected: soft_iron * (reference - hard_iron)
         // = 1.1 * ([20, 5, 40] - [1, -1, 2])
         // = 1.1 * [19, 6, 38]
-        assert_approx_eq!(expected[0], 20.9, 1e-6);  // 19 * 1.1
-        assert_approx_eq!(expected[1], 6.6, 1e-6);   // 6 * 1.1
-        assert_approx_eq!(expected[2], 41.8, 1e-6);  // 38 * 1.1
+        assert_approx_eq!(expected[0], 20.9, 1e-6); // 19 * 1.1
+        assert_approx_eq!(expected[1], 6.6, 1e-6); // 6 * 1.1
+        assert_approx_eq!(expected[2], 41.8, 1e-6); // 38 * 1.1
     }
 
     #[test]
@@ -781,12 +776,12 @@ mod tests {
     fn magnetometer_downcast() {
         let meas = MagnetometerMeasurement::default();
         let boxed: Box<dyn MeasurementModel> = Box::new(meas.clone());
-        
+
         let any = boxed.as_any();
         let down = any
             .downcast_ref::<MagnetometerMeasurement>()
             .expect("downcast failed");
-        
+
         assert_eq!(down.get_dimension(), 3);
         assert_eq!(down.noise_std, meas.noise_std);
     }
