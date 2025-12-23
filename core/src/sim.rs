@@ -27,8 +27,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 #[cfg(feature = "clap")]
 use clap::{Args, ValueEnum};
 
-use crate::earth::METERS_TO_DEGREES;
 use crate::NavigationFilter;
+use crate::earth::METERS_TO_DEGREES;
 use crate::kalman::{InitialState, UnscentedKalmanFilter};
 use crate::messages::{Event, EventStream, GnssFaultModel, GnssScheduler};
 
@@ -748,10 +748,7 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
         is_enu: true,
     };
     // Store the initial state and metadata
-    results.push(NavigationResult::from((
-        &first_record.time,
-        &state
-    )));
+    results.push(NavigationResult::from((&first_record.time, &state)));
     let mut previous_time = records[0].time;
     // Process each subsequent record
     for record in records.iter().skip(1) {
@@ -764,10 +761,7 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
             gyro: Vector3::new(record.gyro_x, record.gyro_y, record.gyro_z),
         };
         forward(&mut state, imu_data, dt);
-        results.push(NavigationResult::from((
-            &current_time,
-            &state
-        )));
+        results.push(NavigationResult::from((&current_time, &state)));
         previous_time = record.time;
     }
     results

@@ -31,9 +31,7 @@ use strapdown::kalman::{InitialState, UnscentedKalmanFilter};
 use strapdown::messages::{
     GnssDegradationConfig, GnssFaultModel, GnssScheduler, build_event_stream,
 };
-use strapdown::sim::{
-    NavigationResult, TestDataRecord, dead_reckoning, run_closed_loop,
-};
+use strapdown::sim::{NavigationResult, TestDataRecord, dead_reckoning, run_closed_loop};
 
 use nalgebra::{DMatrix, DVector};
 

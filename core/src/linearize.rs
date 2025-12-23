@@ -61,8 +61,8 @@
 //! - Longitude and yaw are wrapped to [-π, π]
 //! - Roll and pitch are typically in [-π, π] but may vary by implementation
 
-use crate::earth::{self, vector_to_skew_symmetric};
 use crate::StrapdownState;
+use crate::earth::{self, vector_to_skew_symmetric};
 use nalgebra::{DMatrix, Vector3};
 
 /// Compute the state transition Jacobian (F) for strapdown mechanization
@@ -74,7 +74,7 @@ use nalgebra::{DMatrix, Vector3};
 /// # Mathematical Background
 ///
 /// The state transition model is: x(t+dt) ≈ x(t) + f(x(t), u(t)) * dt
-/// 
+///
 /// The Jacobian F = ∂f/∂x evaluated at the current state, where f represents
 /// the strapdown mechanization equations (attitude, velocity, position updates).
 ///
@@ -129,7 +129,7 @@ pub fn state_transition_jacobian(
     let v_n = state.velocity_north;
     let v_e = state.velocity_east;
     let v_d = state.velocity_vertical;
-    
+
     let vel = Vector3::new(v_n, v_e, v_d);
     let c_bn = state.attitude.matrix(); // Body-to-nav rotation matrix
 
@@ -138,7 +138,7 @@ pub fn state_transition_jacobian(
     let _g = earth::gravity(&lat.to_degrees(), &alt); // Reserved for future use
     let omega_ie = earth::earth_rate_lla(&lat.to_degrees());
     let omega_en = earth::transport_rate(&lat.to_degrees(), &alt, &vel);
-    
+
     let omega_ie_skew = vector_to_skew_symmetric(&omega_ie);
     let omega_en_skew = vector_to_skew_symmetric(&omega_en);
 
@@ -151,15 +151,16 @@ pub fn state_transition_jacobian(
     let e2 = earth::ECCENTRICITY_SQUARED;
     let k = earth::K;
     let ge = earth::GE;
-    
+
     let numerator = 1.0 + k * sin2_lat;
     let denominator_sqrt = (1.0 - e2 * sin2_lat).sqrt();
-    
+
     // ∂g/∂φ using quotient and chain rules
     let dnumerator_dphi = 2.0 * k * sin_lat * cos_lat;
     let ddenominator_sqrt_dphi = -e2 * sin_lat * cos_lat / denominator_sqrt;
-    let dgravity_dlat = ge * (dnumerator_dphi * denominator_sqrt - numerator * ddenominator_sqrt_dphi) 
-                        / (denominator_sqrt * denominator_sqrt);
+    let dgravity_dlat = ge
+        * (dnumerator_dphi * denominator_sqrt - numerator * ddenominator_sqrt_dphi)
+        / (denominator_sqrt * denominator_sqrt);
 
     // Transform specific force to navigation frame
     let f_bn = c_bn * imu_accel;
@@ -184,7 +185,7 @@ pub fn state_transition_jacobian(
 
     // --- Velocity derivatives (rows 3-5) ---
     // Velocity update includes Coriolis, centrifugal, gravity, and specific force
-    
+
     // ∂(v(+))/∂(v(-)): Coriolis and transport effects
     // v(+) = v(-) + [f - g - (2*Ω_ie + Ω_en) × v]*dt
     let coriolis_transport = -(2.0 * omega_ie_skew + omega_en_skew);
@@ -225,7 +226,7 @@ pub fn state_transition_jacobian(
     // Attitude update: C(+) = C(-) * (I + Ω_ib*dt) - (Ω_ie + Ω_en) * C(-) * dt
     // In error-state formulation: δε(+) ≈ δε(-) - (Ω_ie + Ω_en) × δε(-) * dt
     // This gives: Φ_ε = I - [Ω_ie + Ω_en]× * dt
-    
+
     let omega_in_skew = omega_ie_skew + omega_en_skew;
     for i in 0..3 {
         for j in 0..3 {
@@ -237,7 +238,7 @@ pub fn state_transition_jacobian(
     // Ω_en depends on velocity, so changes in velocity affect attitude dynamics
     // From transport rate: ω_en = [v_e/(R_e+h), -v_n/(R_n+h), -v_e*tan(lat)/(R_e+h)]
     // These couple into attitude through the integration
-    f[(6, 4)] += 1.0 / (r_e + alt) * dt;  // ∂(ε_x)/∂(v_e)
+    f[(6, 4)] += 1.0 / (r_e + alt) * dt; // ∂(ε_x)/∂(v_e)
     f[(7, 3)] += -1.0 / (r_n + alt) * dt; // ∂(ε_y)/∂(v_n)
     f[(8, 4)] += -lat.tan() / (r_e + alt) * dt; // ∂(ε_z)/∂(v_e)
 
@@ -467,7 +468,14 @@ mod tests {
 
         // Evaluate nominal dynamics
         let mut state_nominal = state.clone();
-        crate::forward(&mut state_nominal, crate::IMUData { accel: *imu_accel, gyro: *imu_gyro }, dt);
+        crate::forward(
+            &mut state_nominal,
+            crate::IMUData {
+                accel: *imu_accel,
+                gyro: *imu_gyro,
+            },
+            dt,
+        );
         let f0: Vec<f64> = (&state_nominal).into();
 
         // Perturb each state component
@@ -480,7 +488,14 @@ mod tests {
             state_pert.is_enu = state.is_enu;
 
             // Propagate perturbed state
-            crate::forward(&mut state_pert, crate::IMUData { accel: *imu_accel, gyro: *imu_gyro }, dt);
+            crate::forward(
+                &mut state_pert,
+                crate::IMUData {
+                    accel: *imu_accel,
+                    gyro: *imu_gyro,
+                },
+                dt,
+            );
             let f_pert: Vec<f64> = (&state_pert).into();
 
             // Compute finite difference
@@ -496,10 +511,14 @@ mod tests {
     fn test_state_transition_jacobian_stationary() {
         // Test Jacobian at a stationary state
         let state = StrapdownState::new(
-            45.0, -122.0, 100.0,
-            0.0, 0.0, 0.0,
+            45.0,
+            -122.0,
+            100.0,
+            0.0,
+            0.0,
+            0.0,
             Rotation3::identity(),
-            true,  // degrees
+            true,       // degrees
             Some(true), // ENU
         );
 
@@ -527,9 +546,15 @@ mod tests {
         }
 
         if max_error >= 1e-6 {
-            eprintln!("Largest error at ({}, {}): analytic={:.10e}, numeric={:.10e}, diff={:.10e}",
-                      max_i, max_j, f_analytic[(max_i, max_j)], f_numeric[(max_i, max_j)], max_error);
-            
+            eprintln!(
+                "Largest error at ({}, {}): analytic={:.10e}, numeric={:.10e}, diff={:.10e}",
+                max_i,
+                max_j,
+                f_analytic[(max_i, max_j)],
+                f_numeric[(max_i, max_j)],
+                max_error
+            );
+
             // Print a few more large errors for context
             let mut errors: Vec<(usize, usize, f64)> = Vec::new();
             for i in 0..9 {
@@ -560,8 +585,12 @@ mod tests {
     fn test_state_transition_jacobian_moving() {
         // Test Jacobian with non-zero velocities and small rotations
         let state = StrapdownState::new(
-            45.0, -122.0, 100.0,
-            5.0, 3.0, -0.5,  // Smaller velocities
+            45.0,
+            -122.0,
+            100.0,
+            5.0,
+            3.0,
+            -0.5,                                           // Smaller velocities
             Rotation3::from_euler_angles(0.01, 0.01, 0.01), // Smaller rotations
             true,
             Some(true),
@@ -592,27 +621,32 @@ mod tests {
             let lat = rng.gen_range(-80.0..80.0);
             let lon = rng.gen_range(-180.0..180.0);
             let alt = rng.gen_range(0.0..5000.0);
-            let v_n = rng.gen_range(-10.0..10.0);  // Smaller velocities
+            let v_n = rng.gen_range(-10.0..10.0); // Smaller velocities
             let v_e = rng.gen_range(-10.0..10.0);
             let v_d = rng.gen_range(-2.0..2.0);
-            let roll = rng.gen_range(-0.1..0.1);    // Smaller angles
+            let roll = rng.gen_range(-0.1..0.1); // Smaller angles
             let pitch = rng.gen_range(-0.1..0.1);
             let yaw = rng.gen_range(-0.5..0.5);
 
             let state = StrapdownState::new(
-                lat, lon, alt, v_n, v_e, v_d,
+                lat,
+                lon,
+                alt,
+                v_n,
+                v_e,
+                v_d,
                 Rotation3::from_euler_angles(roll, pitch, yaw),
                 true,
                 Some(true),
             );
 
             let accel = Vector3::new(
-                rng.gen_range(-0.5..0.5),  // Smaller accelerations
+                rng.gen_range(-0.5..0.5), // Smaller accelerations
                 rng.gen_range(-0.5..0.5),
                 rng.gen_range(9.0..10.5),
             );
             let gyro = Vector3::new(
-                rng.gen_range(-0.01..0.01),  // Smaller rates
+                rng.gen_range(-0.01..0.01), // Smaller rates
                 rng.gen_range(-0.01..0.01),
                 rng.gen_range(-0.01..0.01),
             );
@@ -636,7 +670,7 @@ mod tests {
         let state = StrapdownState::default();
         let dt = 0.01;
         let g = process_noise_jacobian(&state, dt);
-        
+
         assert_eq!(g.nrows(), 9);
         assert_eq!(g.ncols(), 6);
     }
@@ -644,8 +678,12 @@ mod tests {
     #[test]
     fn test_process_noise_jacobian_structure() {
         let state = StrapdownState::new(
-            45.0, -122.0, 100.0,
-            0.0, 0.0, 0.0,
+            45.0,
+            -122.0,
+            100.0,
+            0.0,
+            0.0,
+            0.0,
             Rotation3::identity(),
             true,
             Some(true),
@@ -664,14 +702,24 @@ mod tests {
         // with C_b^n transformation - for identity rotation, only diagonals are non-zero
         for i in 3..6 {
             // Diagonal elements should be non-zero (identity * dt)
-            assert!(g[(i, i-3)].abs() > 0.0, "g[{}, {}] should be non-zero", i, i-3);
+            assert!(
+                g[(i, i - 3)].abs() > 0.0,
+                "g[{}, {}] should be non-zero",
+                i,
+                i - 3
+            );
         }
 
         // Attitude rows (6-8) should couple to gyro noise (cols 3-5)
         // For identity rotation, only diagonal elements are non-zero
         for i in 6..9 {
             // Diagonal elements should be non-zero
-            assert!(g[(i, i-3)].abs() > 0.0, "g[{}, {}] should be non-zero", i, i-3);
+            assert!(
+                g[(i, i - 3)].abs() > 0.0,
+                "g[{}, {}] should be non-zero",
+                i,
+                i - 3
+            );
         }
     }
 
@@ -761,7 +809,7 @@ mod tests {
     fn test_measurement_jacobians_consistency() {
         // Verify that GPS position+velocity is combination of individual measurements
         let state = StrapdownState::default();
-        
+
         let h_pos = gps_position_jacobian(&state);
         let h_vel = gps_velocity_jacobian(&state);
         let h_combined = gps_position_velocity_jacobian(&state);

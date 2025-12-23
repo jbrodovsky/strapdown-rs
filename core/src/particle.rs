@@ -8,9 +8,9 @@
 //! to accurately approximate the posterior distribution. As such, they are often used in scenarios
 //! where Kalman filters struggle, such as in the presence of multimodal distributions or severe
 //! nonlinearities with state dynamics and dimensions that are manageable.
-//! 
+//!
 //! A full 15-state canonical strapdown inertial navigation system is feasible with particle filters
-//! for moderate particle counts (e.g., 1000-5000 particles) on modern hardware with *reasonably 
+//! for moderate particle counts (e.g., 1000-5000 particles) on modern hardware with *reasonably
 //! good* IMU quality. For more challenging scenarios, such as low-quality IMUs or more complex
 //! motion dynamics, hybrid approaches like Rao-Blackwellized Particle Filters (RBPF) can
 //! be employed. RBPFs use particles to represent a subset of the state (e.g., position and velocity)
@@ -26,16 +26,9 @@
 
 use std::any::Any;
 
-use crate::NavigationFilter;
-use crate::earth;
-use crate::kalman::{InitialState};
 use crate::measurements::MeasurementModel;
 
-use nalgebra::{DMatrix, DVector, Matrix3, Rotation3, Vector2, Vector3};
-use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
-use rand_distr::{Distribution, Normal};
-use std::fmt::{self, Debug, Display};
+use nalgebra::DVector;
 
 pub trait Particle: Any {
     /// Downcast helper method to allow for type-safe downcasting

@@ -6,7 +6,9 @@
 
 use crate::linalg::{matrix_square_root, robust_spd_solve, symmetrize};
 use crate::measurements::MeasurementModel;
-use crate::{IMUData, NavigationFilter, StrapdownState, forward, wrap_to_2pi, wrap_to_180, wrap_to_360};
+use crate::{
+    IMUData, NavigationFilter, StrapdownState, forward, wrap_to_2pi, wrap_to_180, wrap_to_360,
+};
 
 use std::fmt::{self, Debug, Display};
 
@@ -42,7 +44,11 @@ impl InitialState {
         in_degrees: bool,
         is_enu: Option<bool>,
     ) -> Self {
-        let latitude = if in_degrees { latitude } else { latitude.to_degrees() };
+        let latitude = if in_degrees {
+            latitude
+        } else {
+            latitude.to_degrees()
+        };
         let longitude = if in_degrees {
             wrap_to_180(longitude)
         } else {
@@ -317,7 +323,7 @@ mod tests {
     use super::*;
     use crate::earth;
     use crate::measurements::{
-        GPSPositionMeasurement, GPSVelocityMeasurement, GPSPositionAndVelocityMeasurement,
+        GPSPositionAndVelocityMeasurement, GPSPositionMeasurement, GPSVelocityMeasurement,
         RelativeAltitudeMeasurement,
     };
     use assert_approx_eq::assert_approx_eq;
@@ -670,8 +676,14 @@ mod tests {
             initial_state,
             IMU_BIASES.to_vec(),
             None,
-            vec![1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8, 1e-8],
-            DMatrix::from_diagonal(&DVector::from_vec(vec![1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9])),
+            vec![
+                1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8,
+                1e-8,
+            ],
+            DMatrix::from_diagonal(&DVector::from_vec(vec![
+                1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9,
+                1e-9,
+            ])),
             ALPHA,
             BETA,
             KAPPA,
@@ -679,7 +691,7 @@ mod tests {
 
         let dt = 0.1;
         let num_steps = 10;
-        
+
         // Simulate free fall with only gravity (no vertical acceleration resistance)
         for _ in 0..num_steps {
             let imu_data = IMUData {
@@ -692,11 +704,19 @@ mod tests {
         // After 1 second of free fall, should have accumulated vertical velocity
         // v = g*t = 9.81 * 1.0 = 9.81 m/s (downward is negative in ENU)
         let final_vd = ukf.mean_state[5];
-        assert!(final_vd < -5.0, "Expected significant vertical velocity, got {}", final_vd);
+        assert!(
+            final_vd < -5.0,
+            "Expected significant vertical velocity, got {}",
+            final_vd
+        );
 
         // Altitude should have decreased
         let final_altitude = ukf.mean_state[2];
-        assert!(final_altitude < 100.0, "Expected altitude decrease, got {}", final_altitude);
+        assert!(
+            final_altitude < 100.0,
+            "Expected altitude decrease, got {}",
+            final_altitude
+        );
 
         // Apply measurement update with GPS position
         let measurement = GPSPositionMeasurement {
@@ -733,8 +753,14 @@ mod tests {
             initial_state,
             IMU_BIASES.to_vec(),
             None,
-            vec![1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8, 1e-8],
-            DMatrix::from_diagonal(&DVector::from_vec(vec![1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9])),
+            vec![
+                1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8,
+                1e-8,
+            ],
+            DMatrix::from_diagonal(&DVector::from_vec(vec![
+                1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9,
+                1e-9,
+            ])),
             ALPHA,
             BETA,
             KAPPA,
@@ -742,7 +768,7 @@ mod tests {
 
         let dt = 0.1;
         let num_steps = 10;
-        
+
         // Simulate hover with upward acceleration exactly canceling gravity
         for _ in 0..num_steps {
             let imu_data = IMUData {
@@ -801,8 +827,14 @@ mod tests {
             initial_state,
             IMU_BIASES.to_vec(),
             None,
-            vec![1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8, 1e-8],
-            DMatrix::from_diagonal(&DVector::from_vec(vec![1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9])),
+            vec![
+                1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8,
+                1e-8,
+            ],
+            DMatrix::from_diagonal(&DVector::from_vec(vec![
+                1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9,
+                1e-9,
+            ])),
             ALPHA,
             BETA,
             KAPPA,
@@ -811,7 +843,7 @@ mod tests {
         let dt = 0.1;
         let num_steps = 10;
         let initial_lat = ukf.mean_state[0];
-        
+
         // Simulate constant northward motion with gravity compensation
         for _ in 0..num_steps {
             let imu_data = IMUData {
@@ -823,9 +855,12 @@ mod tests {
 
         // Latitude should have increased (moving north)
         let final_lat = ukf.mean_state[0];
-        assert!(final_lat > initial_lat, 
-                "Expected latitude increase, got initial: {} final: {}", 
-                initial_lat, final_lat);
+        assert!(
+            final_lat > initial_lat,
+            "Expected latitude increase, got initial: {} final: {}",
+            initial_lat,
+            final_lat
+        );
 
         // Northward velocity should remain approximately constant
         let final_vn = ukf.mean_state[3];
@@ -874,8 +909,14 @@ mod tests {
             initial_state,
             IMU_BIASES.to_vec(),
             None,
-            vec![1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8, 1e-8],
-            DMatrix::from_diagonal(&DVector::from_vec(vec![1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9])),
+            vec![
+                1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8,
+                1e-8,
+            ],
+            DMatrix::from_diagonal(&DVector::from_vec(vec![
+                1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9,
+                1e-9,
+            ])),
             ALPHA,
             BETA,
             KAPPA,
@@ -884,7 +925,7 @@ mod tests {
         let dt = 0.1;
         let num_steps = 10;
         let initial_lon = ukf.mean_state[1];
-        
+
         // Simulate constant eastward motion with gravity compensation
         for _ in 0..num_steps {
             let imu_data = IMUData {
@@ -896,9 +937,12 @@ mod tests {
 
         // Longitude should have increased (moving east)
         let final_lon = ukf.mean_state[1];
-        assert!(final_lon > initial_lon,
-                "Expected longitude increase, got initial: {} final: {}",
-                initial_lon, final_lon);
+        assert!(
+            final_lon > initial_lon,
+            "Expected longitude increase, got initial: {} final: {}",
+            initial_lon,
+            final_lon
+        );
 
         // Eastward velocity should remain approximately constant
         let final_ve = ukf.mean_state[4];
@@ -963,8 +1007,14 @@ mod tests {
             initial_state,
             IMU_BIASES.to_vec(),
             None,
-            vec![1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8, 1e-8],
-            DMatrix::from_diagonal(&DVector::from_vec(vec![1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9])),
+            vec![
+                1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8,
+                1e-8,
+            ],
+            DMatrix::from_diagonal(&DVector::from_vec(vec![
+                1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9,
+                1e-9,
+            ])),
             ALPHA,
             BETA,
             KAPPA,
@@ -974,7 +1024,7 @@ mod tests {
         let num_steps = 10;
         let initial_lat = ukf.mean_state[0];
         let initial_lon = ukf.mean_state[1];
-        
+
         // Simulate combined motion
         for _ in 0..num_steps {
             let imu_data = IMUData {

@@ -11,7 +11,8 @@ use std::path::Path;
 use crate::IMUData;
 use crate::earth::meters_ned_to_dlat_dlon;
 use crate::measurements::{
-    GPSPositionAndVelocityMeasurement, MagnetometerMeasurement, MeasurementModel, RelativeAltitudeMeasurement,
+    GPSPositionAndVelocityMeasurement, MagnetometerMeasurement, MeasurementModel,
+    RelativeAltitudeMeasurement,
 };
 use crate::sim::TestDataRecord;
 /// Scheduler for controlling when GNSS measurements are emitted into the simulation.
@@ -1036,35 +1037,41 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
                 elapsed_s: *t1,
             });
         }
-        
+
         // Add magnetometer measurement if enabled and data is available
         if cfg.magnetometer.enabled {
             let mag_components = [r1.mag_x, r1.mag_y, r1.mag_z];
             // Check for valid data: not NaN and not all zeros (sensor failure indicator)
             let mag_present = mag_components.iter().all(|v| !v.is_nan())
                 && mag_components.iter().any(|v| v.abs() > 1e-6);
-            
+
             if mag_present {
                 use nalgebra::{Matrix3, Vector3};
-                
+
                 let reference_field = Vector3::new(
                     cfg.magnetometer.reference_field_ned[0],
                     cfg.magnetometer.reference_field_ned[1],
                     cfg.magnetometer.reference_field_ned[2],
                 );
-                
+
                 let hard_iron = Vector3::new(
                     cfg.magnetometer.hard_iron_offset[0],
                     cfg.magnetometer.hard_iron_offset[1],
                     cfg.magnetometer.hard_iron_offset[2],
                 );
-                
+
                 let soft_iron = Matrix3::new(
-                    cfg.magnetometer.soft_iron_matrix[0], cfg.magnetometer.soft_iron_matrix[1], cfg.magnetometer.soft_iron_matrix[2],
-                    cfg.magnetometer.soft_iron_matrix[3], cfg.magnetometer.soft_iron_matrix[4], cfg.magnetometer.soft_iron_matrix[5],
-                    cfg.magnetometer.soft_iron_matrix[6], cfg.magnetometer.soft_iron_matrix[7], cfg.magnetometer.soft_iron_matrix[8],
+                    cfg.magnetometer.soft_iron_matrix[0],
+                    cfg.magnetometer.soft_iron_matrix[1],
+                    cfg.magnetometer.soft_iron_matrix[2],
+                    cfg.magnetometer.soft_iron_matrix[3],
+                    cfg.magnetometer.soft_iron_matrix[4],
+                    cfg.magnetometer.soft_iron_matrix[5],
+                    cfg.magnetometer.soft_iron_matrix[6],
+                    cfg.magnetometer.soft_iron_matrix[7],
+                    cfg.magnetometer.soft_iron_matrix[8],
                 );
-                
+
                 let mag_meas = MagnetometerMeasurement {
                     mag_x: r1.mag_x,
                     mag_y: r1.mag_y,
@@ -1074,7 +1081,7 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
                     soft_iron_matrix: soft_iron,
                     noise_std: cfg.magnetometer.noise_std,
                 };
-                
+
                 events.push(Event::Measurement {
                     meas: Box::new(mag_meas),
                     elapsed_s: *t1,
@@ -1308,7 +1315,9 @@ mod tests {
                 assert_approx_eq!(meas.longitude, original_lon, 1e-3);
 
                 // Check if positions vary between measurements
-                if let Some(prev_lat) = prev_lat && (meas.latitude - prev_lat as f64).abs() > 1e-10 {
+                if let Some(prev_lat) = prev_lat
+                    && (meas.latitude - prev_lat as f64).abs() > 1e-10
+                {
                     all_same = false;
                 }
                 prev_lat = Some(meas.latitude);
@@ -1613,7 +1622,10 @@ mod tests {
         assert!(!config.enabled);
         assert_eq!(config.reference_field_ned, [25.0, 0.0, 40.0]);
         assert_eq!(config.hard_iron_offset, [0.0; 3]);
-        assert_eq!(config.soft_iron_matrix, [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(
+            config.soft_iron_matrix,
+            [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+        );
         assert_eq!(config.noise_std, 5.0);
     }
 
@@ -1629,9 +1641,9 @@ mod tests {
             },
             ..Default::default()
         };
-        
+
         let stream = build_event_stream(&records, &config);
-        
+
         let mag_count = stream
             .events
             .iter()
@@ -1645,7 +1657,7 @@ mod tests {
                 }
             })
             .count();
-        
+
         assert_eq!(mag_count, 0);
     }
 
@@ -1657,7 +1669,7 @@ mod tests {
             record.mag_y = 5.0;
             record.mag_z = 40.0;
         }
-        
+
         let config = GnssDegradationConfig {
             scheduler: GnssScheduler::PassThrough,
             fault: GnssFaultModel::None,
@@ -1670,9 +1682,9 @@ mod tests {
             },
             ..Default::default()
         };
-        
+
         let stream = build_event_stream(&records, &config);
-        
+
         let mag_count = stream
             .events
             .iter()
@@ -1686,9 +1698,9 @@ mod tests {
                 }
             })
             .count();
-        
+
         assert_eq!(mag_count, 2);
-        
+
         let mag_meas = stream
             .events
             .iter()
@@ -1700,7 +1712,7 @@ mod tests {
                 }
             })
             .expect("Should have at least one magnetometer measurement");
-        
+
         assert_eq!(mag_meas.mag_x, 20.0);
         assert_eq!(mag_meas.mag_y, 5.0);
         assert_eq!(mag_meas.mag_z, 40.0);
