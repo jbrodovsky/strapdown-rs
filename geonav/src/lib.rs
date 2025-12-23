@@ -31,7 +31,7 @@ use world_magnetic_model::uom::si::f32::{Angle, Length};
 use world_magnetic_model::uom::si::length::meter;
 
 use strapdown::earth::gravity_anomaly;
-use strapdown::kalman::{NavigationFilter, UnscentedKalmanFilter};
+use strapdown::kalman::UnscentedKalmanFilter;
 use strapdown::measurements::{
     GPSPositionAndVelocityMeasurement, MeasurementModel, RelativeAltitudeMeasurement,
 };
@@ -40,7 +40,7 @@ use strapdown::messages::{
 };
 use strapdown::sim::health::{HealthLimits, HealthMonitor};
 use strapdown::sim::{NavigationResult, TestDataRecord};
-use strapdown::{IMUData, StrapdownState};
+use strapdown::{IMUData, NavigationFilter, StrapdownState};
 
 //================= Map Information ========================================================================
 /// Resolution values for bathymetric or terrain relief maps
@@ -864,7 +864,7 @@ pub fn geo_closed_loop(
         // Apply event
         match event {
             Event::Imu { dt_s, imu, .. } => {
-                ukf.predict(imu, dt_s);
+                ukf.predict(&imu, dt_s);
                 if let Err(e) =
                     monitor.check(ukf.get_estimate().as_slice(), &ukf.get_certainty(), None)
                 {
@@ -939,7 +939,9 @@ mod tests {
     use nalgebra::{DMatrix, DVector};
     use std::rc::Rc;
     use strapdown::earth::GP;
-    use strapdown::messages::{GnssDegradationConfig, GnssFaultModel, GnssScheduler};
+    use strapdown::messages::{
+        GnssDegradationConfig, GnssFaultModel, GnssScheduler, MagnetometerConfig,
+    };
     use strapdown::sim::TestDataRecord;
 
     /// Helper function to create a simple test gravity map
@@ -1170,6 +1172,7 @@ mod tests {
             scheduler: GnssScheduler::PassThrough,
             fault: GnssFaultModel::None,
             seed: 42,
+            magnetometer: MagnetometerConfig::default(),
         };
         let geomap = Rc::new(create_test_gravity_map());
 
@@ -1202,6 +1205,7 @@ mod tests {
             scheduler: GnssScheduler::PassThrough,
             fault: GnssFaultModel::None,
             seed: 42,
+            magnetometer: MagnetometerConfig::default(),
         };
         let geomap = Rc::new(create_test_magnetic_map());
 
@@ -1308,6 +1312,7 @@ mod tests {
             scheduler: GnssScheduler::PassThrough,
             fault: GnssFaultModel::None,
             seed: 42,
+            magnetometer: MagnetometerConfig::default(),
         };
         let geomap = Rc::new(create_test_gravity_map());
 
@@ -1340,6 +1345,7 @@ mod tests {
             scheduler: GnssScheduler::PassThrough,
             fault: GnssFaultModel::None,
             seed: 42,
+            magnetometer: MagnetometerConfig::default(),
         };
         let geomap = Rc::new(create_test_gravity_map());
 
