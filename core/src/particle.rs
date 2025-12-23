@@ -24,6 +24,7 @@
 //! - [`ParticleAveragingStrategy`]: Methods for extracting state estimates from particles
 //! - [`ParticleResamplingStrategy`]: Algorithms for combating particle degeneracy
 
+use std::any::Any;
 
 use crate::earth;
 use crate::kalman::{InitialState, NavigationFilter};
@@ -34,3 +35,24 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use rand_distr::{Distribution, Normal};
 use std::fmt::{self, Debug, Display};
+
+pub trait Particle: Any {
+    /// Downcast helper method to allow for type-safe downcasting
+    fn as_any(&self) -> &dyn Any;
+    /// Downcast helper method for mutable references
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+    fn new(initial_state: &DVector<f64>, weight: f64) -> Self
+    where
+        Self: Sized;
+    /// Returns the state vector of the particle.
+    fn state(&self) -> DVector<f64>;
+
+    /// Updates the particle weight based on the provided measurement model and actual measurement.
+    fn update_weight<M: MeasurementModel>(&mut self, measurement_model: &M, measurement: &M::MeasurementType);
+
+    /// Returns the weight of the particle.
+    fn weight(&self) -> f64;
+
+    /// Sets the weight of the particle.
+    fn set_weight(&mut self, weight: f64);
+}
