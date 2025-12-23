@@ -6,7 +6,9 @@
 
 use crate::linalg::{matrix_square_root, robust_spd_solve, symmetrize};
 use crate::measurements::MeasurementModel;
-use crate::{IMUData, StrapdownState, forward, wrap_to_2pi, wrap_to_180, wrap_to_360};
+use crate::{
+    IMUData, NavigationFilter, StrapdownState, forward, wrap_to_2pi, wrap_to_180, wrap_to_360,
+};
 
 use std::fmt::{self, Debug, Display};
 
@@ -42,7 +44,11 @@ impl InitialState {
         in_degrees: bool,
         is_enu: Option<bool>,
     ) -> Self {
-        let latitude = if in_degrees { latitude } else { latitude.to_degrees() };
+        let latitude = if in_degrees {
+            latitude
+        } else {
+            latitude.to_degrees()
+        };
         let longitude = if in_degrees {
             wrap_to_180(longitude)
         } else {
@@ -73,15 +79,6 @@ impl InitialState {
         }
     }
 }
-
-/// Generic Navigation (Kalman?) filter trait
-pub trait NavigationFilter {
-    fn predict(&mut self, imu_data: IMUData, dt: f64);
-    fn update<M: MeasurementModel + ?Sized>(&mut self, measurement: &M);
-    fn get_estimate(&self) -> DVector<f64>;
-    fn get_certainty(&self) -> DMatrix<f64>;
-}
-
 /// Unscented Kalman Filter implementation
 #[derive(Clone)]
 pub struct UnscentedKalmanFilter {
@@ -204,7 +201,12 @@ impl UnscentedKalmanFilter {
     }
 }
 impl NavigationFilter for UnscentedKalmanFilter {
-    fn predict(&mut self, imu_data: IMUData, dt: f64) {
+    fn predict<C: crate::InputModel>(&mut self, control_input: &C, dt: f64) {
+        let imu_input = control_input
+            .as_any()
+            .downcast_ref::<IMUData>()
+            .expect("UnscentedKalmanFilter.predict expects an IMUData InputModel");
+
         let mut sigma_points = self.get_sigma_points();
         for i in 0..sigma_points.ncols() {
             let mut sigma_point_vec = sigma_points.column(i).clone_owned();
@@ -241,8 +243,8 @@ impl NavigationFilter for UnscentedKalmanFilter {
                 DVector::from_vec(vec![0.0, 0.0, 0.0])
             };
             let imu_data = IMUData {
-                accel: imu_data.accel - &accel_biases,
-                gyro: imu_data.gyro - &gyro_biases,
+                accel: imu_input.accel - &accel_biases,
+                gyro: imu_input.gyro - &gyro_biases,
             };
             forward(&mut state, imu_data, dt);
             sigma_point_vec[0] = state.latitude;
@@ -860,7 +862,7 @@ mod tests {
     use super::*;
     use crate::earth;
     use crate::measurements::{
-        GPSPositionMeasurement, GPSVelocityMeasurement, GPSPositionAndVelocityMeasurement,
+        GPSPositionAndVelocityMeasurement, GPSPositionMeasurement, GPSVelocityMeasurement,
         RelativeAltitudeMeasurement,
     };
     use assert_approx_eq::assert_approx_eq;
@@ -966,7 +968,7 @@ mod tests {
             accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
             gyro: Vector3::new(0.0, 0.0, 0.0), // No rotation
         };
-        ukf.predict(imu_data, dt);
+        ukf.predict(&imu_data, dt);
         assert!(
             ukf.mean_state.len() == 15 //+ measurement_bias.len()
         );
@@ -1031,7 +1033,7 @@ mod tests {
             gyro: Vector3::new(0.0, 0.0, 0.0),
         };
 
-        ukf.predict(imu_data, 0.1);
+        ukf.predict(&imu_data, 0.1);
 
         // Just verify prediction completed without panic
         assert_eq!(ukf.mean_state.len(), 15);
@@ -1056,7 +1058,7 @@ mod tests {
             accel: Vector3::new(0.0, 0.0, -9.81),
             gyro: Vector3::new(0.0, 0.0, 0.0),
         };
-        ukf.predict(imu_data, 0.1);
+        ukf.predict(&imu_data, 0.1);
 
         // Update with GPS position measurement
         let measurement = GPSPositionMeasurement {
@@ -1213,8 +1215,14 @@ mod tests {
             initial_state,
             IMU_BIASES.to_vec(),
             None,
-            vec![1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8, 1e-8],
-            DMatrix::from_diagonal(&DVector::from_vec(vec![1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9])),
+            vec![
+                1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8,
+                1e-8,
+            ],
+            DMatrix::from_diagonal(&DVector::from_vec(vec![
+                1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9,
+                1e-9,
+            ])),
             ALPHA,
             BETA,
             KAPPA,
@@ -1222,24 +1230,32 @@ mod tests {
 
         let dt = 0.1;
         let num_steps = 10;
-        
+
         // Simulate free fall with only gravity (no vertical acceleration resistance)
         for _ in 0..num_steps {
             let imu_data = IMUData {
                 accel: Vector3::new(0.0, 0.0, 0.0), // Free fall - no measured acceleration
                 gyro: Vector3::new(0.0, 0.0, 0.0),
             };
-            ukf.predict(imu_data, dt);
+            ukf.predict(&imu_data, dt);
         }
 
         // After 1 second of free fall, should have accumulated vertical velocity
         // v = g*t = 9.81 * 1.0 = 9.81 m/s (downward is negative in ENU)
         let final_vd = ukf.mean_state[5];
-        assert!(final_vd < -5.0, "Expected significant vertical velocity, got {}", final_vd);
+        assert!(
+            final_vd < -5.0,
+            "Expected significant vertical velocity, got {}",
+            final_vd
+        );
 
         // Altitude should have decreased
         let final_altitude = ukf.mean_state[2];
-        assert!(final_altitude < 100.0, "Expected altitude decrease, got {}", final_altitude);
+        assert!(
+            final_altitude < 100.0,
+            "Expected altitude decrease, got {}",
+            final_altitude
+        );
 
         // Apply measurement update with GPS position
         let measurement = GPSPositionMeasurement {
@@ -1276,8 +1292,14 @@ mod tests {
             initial_state,
             IMU_BIASES.to_vec(),
             None,
-            vec![1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8, 1e-8],
-            DMatrix::from_diagonal(&DVector::from_vec(vec![1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9])),
+            vec![
+                1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8,
+                1e-8,
+            ],
+            DMatrix::from_diagonal(&DVector::from_vec(vec![
+                1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9,
+                1e-9,
+            ])),
             ALPHA,
             BETA,
             KAPPA,
@@ -1285,14 +1307,14 @@ mod tests {
 
         let dt = 0.1;
         let num_steps = 10;
-        
+
         // Simulate hover with upward acceleration exactly canceling gravity
         for _ in 0..num_steps {
             let imu_data = IMUData {
                 accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
                 gyro: Vector3::new(0.0, 0.0, 0.0),
             };
-            ukf.predict(imu_data, dt);
+            ukf.predict(&imu_data, dt);
         }
 
         // Velocity should remain near zero
@@ -1344,8 +1366,14 @@ mod tests {
             initial_state,
             IMU_BIASES.to_vec(),
             None,
-            vec![1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8, 1e-8],
-            DMatrix::from_diagonal(&DVector::from_vec(vec![1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9])),
+            vec![
+                1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8,
+                1e-8,
+            ],
+            DMatrix::from_diagonal(&DVector::from_vec(vec![
+                1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9,
+                1e-9,
+            ])),
             ALPHA,
             BETA,
             KAPPA,
@@ -1354,21 +1382,24 @@ mod tests {
         let dt = 0.1;
         let num_steps = 10;
         let initial_lat = ukf.mean_state[0];
-        
+
         // Simulate constant northward motion with gravity compensation
         for _ in 0..num_steps {
             let imu_data = IMUData {
                 accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
                 gyro: Vector3::new(0.0, 0.0, 0.0),
             };
-            ukf.predict(imu_data, dt);
+            ukf.predict(&imu_data, dt);
         }
 
         // Latitude should have increased (moving north)
         let final_lat = ukf.mean_state[0];
-        assert!(final_lat > initial_lat, 
-                "Expected latitude increase, got initial: {} final: {}", 
-                initial_lat, final_lat);
+        assert!(
+            final_lat > initial_lat,
+            "Expected latitude increase, got initial: {} final: {}",
+            initial_lat,
+            final_lat
+        );
 
         // Northward velocity should remain approximately constant
         let final_vn = ukf.mean_state[3];
@@ -1417,8 +1448,14 @@ mod tests {
             initial_state,
             IMU_BIASES.to_vec(),
             None,
-            vec![1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8, 1e-8],
-            DMatrix::from_diagonal(&DVector::from_vec(vec![1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9])),
+            vec![
+                1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8,
+                1e-8,
+            ],
+            DMatrix::from_diagonal(&DVector::from_vec(vec![
+                1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9,
+                1e-9,
+            ])),
             ALPHA,
             BETA,
             KAPPA,
@@ -1427,21 +1464,24 @@ mod tests {
         let dt = 0.1;
         let num_steps = 10;
         let initial_lon = ukf.mean_state[1];
-        
+
         // Simulate constant eastward motion with gravity compensation
         for _ in 0..num_steps {
             let imu_data = IMUData {
                 accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
                 gyro: Vector3::new(0.0, 0.0, 0.0),
             };
-            ukf.predict(imu_data, dt);
+            ukf.predict(&imu_data, dt);
         }
 
         // Longitude should have increased (moving east)
         let final_lon = ukf.mean_state[1];
-        assert!(final_lon > initial_lon,
-                "Expected longitude increase, got initial: {} final: {}",
-                initial_lon, final_lon);
+        assert!(
+            final_lon > initial_lon,
+            "Expected longitude increase, got initial: {} final: {}",
+            initial_lon,
+            final_lon
+        );
 
         // Eastward velocity should remain approximately constant
         let final_ve = ukf.mean_state[4];
@@ -1506,8 +1546,14 @@ mod tests {
             initial_state,
             IMU_BIASES.to_vec(),
             None,
-            vec![1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8, 1e-8],
-            DMatrix::from_diagonal(&DVector::from_vec(vec![1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9])),
+            vec![
+                1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8,
+                1e-8,
+            ],
+            DMatrix::from_diagonal(&DVector::from_vec(vec![
+                1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9,
+                1e-9,
+            ])),
             ALPHA,
             BETA,
             KAPPA,
@@ -1517,14 +1563,14 @@ mod tests {
         let num_steps = 10;
         let initial_lat = ukf.mean_state[0];
         let initial_lon = ukf.mean_state[1];
-        
+
         // Simulate combined motion
         for _ in 0..num_steps {
             let imu_data = IMUData {
                 accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
                 gyro: Vector3::new(0.0, 0.0, 0.0),
             };
-            ukf.predict(imu_data, dt);
+            ukf.predict(&imu_data, dt);
         }
 
         // Both latitude and longitude should have increased
