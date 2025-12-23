@@ -21,7 +21,7 @@ use std::path::Path;
 
 use anyhow::{Result, bail};
 use chrono::{DateTime, Duration, Utc};
-use nalgebra::{DMatrix, DVector, Rotation3, Vector3};
+use nalgebra::{DMatrix, DVector, Vector3};
 use serde::{Deserialize, Deserializer, Serialize};
 
 #[cfg(feature = "clap")]
