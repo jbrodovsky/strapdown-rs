@@ -14,7 +14,30 @@ use std::fmt::{self, Debug, Display};
 
 use nalgebra::{DMatrix, DVector, Rotation3};
 
-/// Basic strapdown initial state struct
+/// Initial navigation state used to seed filters.
+///
+/// This struct contains the minimal navigation state required to initialize
+/// either the UKF or EKF implementations in this module. Fields represent
+/// a local-level navigation solution (latitude, longitude, altitude, NED/ENU
+/// velocity components, and Euler attitude angles). The `in_degrees` flag
+/// indicates whether the provided angles/lat/lon are in degrees; the
+/// constructor will normalize and convert angles to radians when required.
+/// The `is_enu` flag determines whether the navigation frame is ENU (true)
+/// or NED (false) for internal mechanization.
+///
+/// Field units and conventions:
+/// - `latitude`, `longitude`: degrees if `in_degrees==true`, otherwise radians
+/// - `altitude`: meters
+/// - velocities: m/s (north, east, vertical)
+/// - `roll`, `pitch`, `yaw`: radians internally (constructor normalizes)
+///
+/// # Example
+///
+/// ```rust
+/// use strapdown::kalman::InitialState;
+/// let init = InitialState::new(45.0, -122.0, 100.0, 0.0, 0.0, 0.0,
+///                              0.0, 0.0, 0.0, true, Some(true));
+/// ```
 #[derive(Clone, Debug, Default)]
 pub struct InitialState {
     pub latitude: f64,
@@ -30,6 +53,31 @@ pub struct InitialState {
     pub is_enu: bool,
 }
 impl InitialState {
+    /// Create a new `InitialState`, normalizing/convertng angles as required.
+    ///
+    /// The constructor accepts latitude/longitude and Euler angles either in
+    /// degrees (when `in_degrees==true`) or already in radians. When degrees
+    /// are provided the values are normalized and converted to radians for
+    /// internal use. The optional `is_enu` parameter selects the local-frame
+    /// convention (defaults to ENU when omitted).
+    ///
+    /// # Arguments
+    ///
+    /// * `latitude` - Latitude (degrees if `in_degrees==true`, otherwise radians)
+    /// * `longitude` - Longitude (degrees if `in_degrees==true`, otherwise radians)
+    /// * `altitude` - Altitude in meters
+    /// * `northward_velocity` - Northward velocity in m/s
+    /// * `eastward_velocity` - Eastward velocity in m/s
+    /// * `vertical_velocity` - Vertical velocity in m/s
+    /// * `roll` - Roll angle (degrees if `in_degrees==true`)
+    /// * `pitch` - Pitch angle (degrees if `in_degrees==true`)
+    /// * `yaw` - Yaw angle (degrees if `in_degrees==true`)
+    /// * `in_degrees` - If true the latitude/longitude/angles are provided in degrees
+    /// * `is_enu` - Optional: use ENU frame if true, NED if false (defaults to ENU)
+    ///
+    /// # Returns
+    ///
+    /// A normalized `InitialState` with internal angles in radians when returned.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         latitude: f64,
@@ -79,7 +127,21 @@ impl InitialState {
         }
     }
 }
-/// Unscented Kalman Filter implementation
+/// Unscented Kalman Filter (UKF) implementation for strapdown navigation.
+///
+/// The UKF approximates the posterior distribution using a deterministic set
+/// of sigma points which are propagated through the nonlinear strapdown
+/// mechanization. This implementation stores the mean state and covariance
+/// in `nalgebra` `DVector`/`DMatrix` types and supports optional IMU bias
+/// states and additional user states appended to the navigation state.
+///
+/// # State layout
+/// The base navigation state ordering matches the rest of the crate:
+/// `[lat, lon, alt, v_n, v_e, v_d, roll, pitch, yaw, ...]` with any IMU
+/// biases or extra states appended after the ninth element.
+///
+/// # References
+/// - Julier, S. & Uhlmann, J. "Unscented Filtering and Nonlinear Estimation".
 #[derive(Clone)]
 pub struct UnscentedKalmanFilter {
     mean_state: DVector<f64>,
@@ -115,6 +177,29 @@ impl Display for UnscentedKalmanFilter {
 }
 impl UnscentedKalmanFilter {
     #[allow(clippy::too_many_arguments)]
+    /// Create a new UKF instance.
+    ///
+    /// # Arguments
+    ///
+    /// * `initial_state` - Navigation initial state (`InitialState`).
+    /// * `imu_biases` - Initial IMU bias estimates appended to the state.
+    /// * `other_states` - Optional additional state vector to append.
+    /// * `covariance_diagonal` - Initial diagonal elements for the covariance matrix.
+    /// * `process_noise` - Process noise covariance matrix (state-space Q).
+    /// * `alpha`, `beta`, `kappa` - UKF tuning parameters (see Julier & Uhlmann).
+    ///
+    /// # Returns
+    ///
+    /// A configured `UnscentedKalmanFilter` with computed sigma weights.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use strapdown::kalman::{UnscentedKalmanFilter, InitialState};
+    /// use nalgebra::DMatrix;
+    /// let init = InitialState::default();
+    /// let ukf = UnscentedKalmanFilter::new(init, vec![0.0;6], None, vec![1e-6;9], DMatrix::identity(9,9), 1e-3, 2.0, 0.0);
+    /// ```
     pub fn new(
         initial_state: InitialState,
         imu_biases: Vec<f64>,
@@ -179,6 +264,11 @@ impl UnscentedKalmanFilter {
         }
     }
     pub fn get_sigma_points(&self) -> DMatrix<f64> {
+        // Generate the augmented sigma points matrix for the current mean and covariance.
+        //
+        // The returned matrix has dimensions `(state_size) x (2*state_size + 1)` where each
+        // column is a sigma point. Sigma point generation follows the scaled unscented
+        // transform: sqrt((n+lambda) P) columns added/subtracted from the mean.
         let p = (self.state_size as f64 + self.lambda) * self.covariance.clone();
         let sqrt_p = matrix_square_root(&p);
         let mu = self.mean_state.clone();
@@ -196,11 +286,20 @@ impl UnscentedKalmanFilter {
         cross_covariance: &DMatrix<f64>,
         s: &DMatrix<f64>,
     ) -> DMatrix<f64> {
+        // Compute a numerically robust Kalman gain K = P_xz * S^{-1} using a
+        // symmetric positive-definite solver. This helps avoid instability when
+        // the innovation covariance `s` is poorly conditioned.
         let kt = robust_spd_solve(&symmetrize(s), &cross_covariance.transpose());
         kt.transpose()
     }
 }
 impl NavigationFilter for UnscentedKalmanFilter {
+    /// Predict step for the UKF: propagate sigma points through the mechanization.
+    ///
+    /// # Arguments
+    ///
+    /// * `control_input` - An `InputModel` implementing type (expected `IMUData`).
+    /// * `dt` - Time step in seconds.
     fn predict<C: crate::InputModel>(&mut self, control_input: &C, dt: f64) {
         let imu_input = control_input
             .as_any()
@@ -271,6 +370,12 @@ impl NavigationFilter for UnscentedKalmanFilter {
         self.mean_state = mu_bar;
         self.covariance = symmetrize(&p_bar);
     }
+    /// Update step for the UKF: map sigma points into measurement space and
+    /// compute cross-covariances to form the Kalman gain.
+    ///
+    /// # Arguments
+    ///
+    /// * `measurement` - A measurement model implementing `MeasurementModel`.
     fn update<M: MeasurementModel + ?Sized>(&mut self, measurement: &M) {
         //let measurement_sigma_points = measurement.get_sigma_points(&self.get_sigma_points());
         let mut measurement_sigma_points =
@@ -310,9 +415,12 @@ impl NavigationFilter for UnscentedKalmanFilter {
             self.covariance[(i, i)] += eps;
         }
     }
+    /// Return the current mean state estimate.
     fn get_estimate(&self) -> DVector<f64> {
         self.mean_state.clone()
     }
+
+    /// Return the current state covariance (certainty) matrix.
     fn get_certainty(&self) -> DMatrix<f64> {
         self.covariance.clone()
     }
@@ -402,7 +510,8 @@ impl NavigationFilter for UnscentedKalmanFilter {
 /// # Example
 ///
 /// ```rust
-/// use strapdown::kalman::{ExtendedKalmanFilter, InitialState, NavigationFilter};
+/// use strapdown::NavigationFilter;
+/// use strapdown::kalman::{ExtendedKalmanFilter, InitialState};
 /// use strapdown::measurements::GPSPositionMeasurement;
 /// use strapdown::IMUData;
 /// use nalgebra::{DMatrix, Vector3};
