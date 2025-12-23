@@ -26,8 +26,9 @@
 
 use std::any::Any;
 
+use crate::NavigationFilter;
 use crate::earth;
-use crate::kalman::{InitialState, NavigationFilter};
+use crate::kalman::{InitialState};
 use crate::measurements::MeasurementModel;
 
 use nalgebra::{DMatrix, DVector, Matrix3, Rotation3, Vector2, Vector3};
@@ -48,7 +49,7 @@ pub trait Particle: Any {
     fn state(&self) -> DVector<f64>;
 
     /// Updates the particle weight based on the provided measurement model and actual measurement.
-    fn update_weight<M: MeasurementModel>(&mut self, measurement_model: &M, measurement: &M::MeasurementType);
+    fn update_weight<M: MeasurementModel>(&mut self, measurement: &M);
 
     /// Returns the weight of the particle.
     fn weight(&self) -> f64;

@@ -849,7 +849,7 @@ pub fn run_closed_loop<F: NavigationFilter>(
         // Apply event
         match event {
             Event::Imu { dt_s, imu, .. } => {
-                filter.predict(imu, dt_s);
+                filter.predict(&imu, dt_s);
                 let mean = filter.get_estimate();
                 let cov = filter.get_certainty();
                 if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {

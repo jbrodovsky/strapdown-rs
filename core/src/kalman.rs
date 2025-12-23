@@ -6,7 +6,7 @@
 
 use crate::linalg::{matrix_square_root, robust_spd_solve, symmetrize};
 use crate::measurements::MeasurementModel;
-use crate::{IMUData, StrapdownState, forward, wrap_to_2pi, wrap_to_180, wrap_to_360};
+use crate::{IMUData, NavigationFilter, StrapdownState, forward, wrap_to_2pi, wrap_to_180, wrap_to_360};
 
 use std::fmt::{self, Debug, Display};
 
@@ -73,15 +73,6 @@ impl InitialState {
         }
     }
 }
-
-/// Generic Navigation (Kalman?) filter trait
-pub trait NavigationFilter {
-    fn predict(&mut self, imu_data: IMUData, dt: f64);
-    fn update<M: MeasurementModel + ?Sized>(&mut self, measurement: &M);
-    fn get_estimate(&self) -> DVector<f64>;
-    fn get_certainty(&self) -> DMatrix<f64>;
-}
-
 /// Unscented Kalman Filter implementation
 #[derive(Clone)]
 pub struct UnscentedKalmanFilter {
@@ -204,7 +195,12 @@ impl UnscentedKalmanFilter {
     }
 }
 impl NavigationFilter for UnscentedKalmanFilter {
-    fn predict(&mut self, imu_data: IMUData, dt: f64) {
+    fn predict<C: crate::InputModel>(&mut self, control_input: &C, dt: f64) {
+        let imu_input = control_input
+            .as_any()
+            .downcast_ref::<IMUData>()
+            .expect("UnscentedKalmanFilter.predict expects an IMUData InputModel");
+
         let mut sigma_points = self.get_sigma_points();
         for i in 0..sigma_points.ncols() {
             let mut sigma_point_vec = sigma_points.column(i).clone_owned();
@@ -241,8 +237,8 @@ impl NavigationFilter for UnscentedKalmanFilter {
                 DVector::from_vec(vec![0.0, 0.0, 0.0])
             };
             let imu_data = IMUData {
-                accel: imu_data.accel - &accel_biases,
-                gyro: imu_data.gyro - &gyro_biases,
+                accel: imu_input.accel - &accel_biases,
+                gyro: imu_input.gyro - &gyro_biases,
             };
             forward(&mut state, imu_data, dt);
             sigma_point_vec[0] = state.latitude;
@@ -427,7 +423,7 @@ mod tests {
             accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
             gyro: Vector3::new(0.0, 0.0, 0.0), // No rotation
         };
-        ukf.predict(imu_data, dt);
+        ukf.predict(&imu_data, dt);
         assert!(
             ukf.mean_state.len() == 15 //+ measurement_bias.len()
         );
@@ -492,7 +488,7 @@ mod tests {
             gyro: Vector3::new(0.0, 0.0, 0.0),
         };
 
-        ukf.predict(imu_data, 0.1);
+        ukf.predict(&imu_data, 0.1);
 
         // Just verify prediction completed without panic
         assert_eq!(ukf.mean_state.len(), 15);
@@ -517,7 +513,7 @@ mod tests {
             accel: Vector3::new(0.0, 0.0, -9.81),
             gyro: Vector3::new(0.0, 0.0, 0.0),
         };
-        ukf.predict(imu_data, 0.1);
+        ukf.predict(&imu_data, 0.1);
 
         // Update with GPS position measurement
         let measurement = GPSPositionMeasurement {
@@ -690,7 +686,7 @@ mod tests {
                 accel: Vector3::new(0.0, 0.0, 0.0), // Free fall - no measured acceleration
                 gyro: Vector3::new(0.0, 0.0, 0.0),
             };
-            ukf.predict(imu_data, dt);
+            ukf.predict(&imu_data, dt);
         }
 
         // After 1 second of free fall, should have accumulated vertical velocity
@@ -753,7 +749,7 @@ mod tests {
                 accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
                 gyro: Vector3::new(0.0, 0.0, 0.0),
             };
-            ukf.predict(imu_data, dt);
+            ukf.predict(&imu_data, dt);
         }
 
         // Velocity should remain near zero
@@ -822,7 +818,7 @@ mod tests {
                 accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
                 gyro: Vector3::new(0.0, 0.0, 0.0),
             };
-            ukf.predict(imu_data, dt);
+            ukf.predict(&imu_data, dt);
         }
 
         // Latitude should have increased (moving north)
@@ -895,7 +891,7 @@ mod tests {
                 accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
                 gyro: Vector3::new(0.0, 0.0, 0.0),
             };
-            ukf.predict(imu_data, dt);
+            ukf.predict(&imu_data, dt);
         }
 
         // Longitude should have increased (moving east)
@@ -985,7 +981,7 @@ mod tests {
                 accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
                 gyro: Vector3::new(0.0, 0.0, 0.0),
             };
-            ukf.predict(imu_data, dt);
+            ukf.predict(&imu_data, dt);
         }
 
         // Both latitude and longitude should have increased
