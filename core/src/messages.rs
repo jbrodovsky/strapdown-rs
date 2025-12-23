@@ -516,7 +516,7 @@ pub struct EventStream {
 ///
 /// ## Example
 ///
-/// ```ignore
+/// ```
 /// use strapdown::messages::FaultState;
 ///
 /// // Create a new state with a fixed seed for reproducibility
@@ -588,19 +588,6 @@ impl FaultState {
 /// - `rho`: Correlation coefficient.
 /// - `sigma`: Innovation standard deviation.
 /// - `rng`: Deterministic random number generator used for noise sampling.
-///
-/// ## Example
-///
-/// ```ignore
-/// use rand::SeedableRng;
-///
-/// let mut x = 0.0;
-/// let mut rng = SeedableRng::seed_from_u64(42);
-/// for _ in 0..5 {
-///     ar1_step(&mut x, 0.99, 3.0, &mut rng);
-///     println!("New error state: {x}");
-/// }
-/// ```
 fn ar1_step(x: &mut f64, rho: f64, sigma: f64, rng: &mut rand::rngs::StdRng) {
     let n = Normal::new(0.0, sigma.max(0.0)).unwrap();
     *x = rho * *x + n.sample(rng);
@@ -676,9 +663,20 @@ fn ar1_step(x: &mut f64, rho: f64, sigma: f64, rng: &mut rand::rngs::StdRng) {
 /// - AR(1) updates use a Normal(0, σ) innovation each step; see [`ar1_step`].
 ///
 /// # Examples
-/// ```ignore
+/// ```
 /// // Degraded GNSS with AR(1) wander and inflated R
+/// use strapdown::messages::{GnssFaultModel, FaultState, apply_fault};
 /// let mut st = FaultState::new(42);
+/// let t = 100.0; // current time (s)
+/// let dt = 1.0;  // time since last GNSS fix (s
+/// let lat_deg = 39.95;
+/// let lon_deg = -75.16;
+/// let alt_m = 30.0;
+/// let vn_mps = 0.1;
+/// let ve_mps = -0.2;
+/// let horiz_std_m = 5.0;
+/// let vert_std_m = 10.0;
+/// let vel_std_mps = 0.2;
 /// let (lat, lon, alt, vn, ve, hstd, vstd) = apply_fault(
 ///     &GnssFaultModel::Degraded {
 ///         rho_pos: 0.99, sigma_pos_m: 3.0,
@@ -896,7 +894,11 @@ pub fn apply_fault(
 /// - The event vector capacity is sized roughly to `2 * records.len()` (IMU + GNSS).
 ///
 /// # Example
-/// ```ignore
+/// ```
+/// use strapdown::messages::{build_event_stream, GnssDegradationConfig, GnssScheduler, GnssFaultModel};
+/// use strapdown::sim::TestDataRecord;
+/// 
+/// let records = vec![TestDataRecord::default(); 10]; // load or generate your test data
 /// let cfg = GnssDegradationConfig {
 ///     scheduler: GnssScheduler::FixedInterval { interval_s: 10.0, phase_s: 0.0 },
 ///     fault: GnssFaultModel::Degraded {

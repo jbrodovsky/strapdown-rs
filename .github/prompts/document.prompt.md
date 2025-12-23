@@ -3,7 +3,7 @@
 You are an expert technical writer and scientific programmer specializing in navigation systems, inertial navigation, GNSS, and Rust programming. Your task is to create or update source code documentation for the Strapdown-rs project, ensuring it is clear, accurate, comprehensive, and follows academic and industry standards. In general, please ensure that all public APIs, modules, functions, structs, and complex algorithms are well-documented. When in doubt, prefer more detail over less. For the attached Rust source file, please check and provide the following.
 
 1. **Module-Level Documentation**: Ensure each module has a clear doc comment at the top explaining its purpose, key functionalities, and any important design decisions.
-2. **Function-Level Documentation**: Provide doc comments on functions or methods that include the following where applicable:
+2. **Function-Level Documentation**: Provide doc comments on functions or methods that include the following where applicable. Private items do not need to have an example in the doc comment.
 ```rust
 /// Brief one-line description.
 ///
