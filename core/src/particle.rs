@@ -299,7 +299,9 @@ impl<P: Particle> ParticleFilter<P> {
                 i += 1;
             }
             
-            indices.push((i - 1).min(weights.len() - 1));
+            // Ensure i is at least 1 before subtracting, and clamp to valid range
+            let idx = if i > 0 { i - 1 } else { 0 };
+            indices.push(idx.min(weights.len() - 1));
         }
 
         indices
@@ -323,7 +325,9 @@ impl<P: Particle> ParticleFilter<P> {
                 i += 1;
             }
             
-            indices.push((i - 1).min(weights.len() - 1));
+            // Ensure i is at least 1 before subtracting, and clamp to valid range
+            let idx = if i > 0 { i - 1 } else { 0 };
+            indices.push(idx.min(weights.len() - 1));
         }
 
         indices
@@ -331,6 +335,8 @@ impl<P: Particle> ParticleFilter<P> {
 
     /// Compute state estimate from particles using the configured averaging strategy
     fn compute_state_estimate(&self) -> DVector<f64> {
+        assert!(!self.particles.is_empty(), "Cannot compute state estimate from empty particle set");
+        
         match self.averaging_strategy {
             ParticleAveragingStrategy::Mean => {
                 // Simple mean
@@ -362,6 +368,8 @@ impl<P: Particle> ParticleFilter<P> {
     /// This computes the sample covariance of the particles around their
     /// weighted mean, providing an estimate of state uncertainty.
     fn compute_covariance(&self) -> DMatrix<f64> {
+        assert!(!self.particles.is_empty(), "Cannot compute covariance from empty particle set");
+        
         let mean = self.compute_state_estimate();
         let state_dim = mean.len();
         let mut cov = DMatrix::zeros(state_dim, state_dim);
