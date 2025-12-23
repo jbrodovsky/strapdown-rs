@@ -688,6 +688,8 @@ fn test_ekf_closed_loop_on_real_data() {
 
     let process_noise = DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec()));
 
+    // Initialize EKF (note: EKF constructor differs from UKF - no measurement bias parameter,
+    // uses use_biases flag instead of optional measurement_bias)
     let mut ekf = ExtendedKalmanFilter::new(
         initial_state,
         vec![0.0; 6], // Zero initial bias estimates
@@ -788,7 +790,7 @@ fn test_ekf_closed_loop_on_real_data() {
         );
         assert!(
             result.velocity_vertical.is_finite(),
-            "Velocity down should be finite: {}",
+            "Velocity vertical should be finite: {}",
             result.velocity_vertical
         );
     }
@@ -908,7 +910,11 @@ fn test_ekf_outperforms_dead_reckoning() {
     // Run EKF
     let initial_state = create_initial_state(&records[0]);
     let initial_covariance = vec![
-        1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.001, 0.001, 0.001,
+        1e-6, 1e-6, 1.0, // position
+        0.1, 0.1, 0.1, // velocity
+        0.01, 0.01, 0.01, // attitude
+        0.01, 0.01, 0.01, // accel bias
+        0.001, 0.001, 0.001, // gyro bias
     ];
     let process_noise = DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec()));
 
