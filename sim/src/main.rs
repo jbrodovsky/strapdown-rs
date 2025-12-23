@@ -4,11 +4,11 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 use strapdown::messages::{GnssDegradationConfig, build_event_stream};
 use strapdown::sim::{
-    FaultArgs, NavigationResult, SchedulerArgs, TestDataRecord, build_fault, build_scheduler, initialize_ukf, run_closed_loop,
+    FaultArgs, NavigationResult, SchedulerArgs, TestDataRecord, build_fault, build_scheduler,
+    initialize_ukf, run_closed_loop,
 };
 
 // Import nalgebra types needed for process noise construction
-use nalgebra::{DMatrix, DVector, Vector3};
 
 const LONG_ABOUT: &str = "STRAPDOWN: A simulation and analysis tool for strapdown inertial navigation systems.
 
@@ -230,7 +230,6 @@ fn validate_output_path(output: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-
 fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
 
@@ -273,7 +272,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             validate_input_file(&args.sim.input)?;
             validate_output_path(&args.sim.output)?;
             info!("Running in closed-loop mode");
-            
+
             // Load sensor data records from CSV
             let records = TestDataRecord::from_csv(&args.sim.input)?;
             info!(
@@ -281,7 +280,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 records.len(),
                 &args.sim.input.display()
             );
-            
+
             let cfg = if let Some(ref cfg_path) = args.config {
                 match GnssDegradationConfig::from_file(cfg_path) {
                     Ok(c) => c,
@@ -298,17 +297,17 @@ fn main() -> Result<(), Box<dyn Error>> {
                     magnetometer: todo!(),
                 }
             };
-            
+
             info!("Using GNSS degradation config: {:?}", cfg);
             let event_stream = build_event_stream(&records, &cfg);
             info!(
                 "Initialized event stream with {} events",
                 event_stream.events.len()
             );
-            
+
             let mut ukf = initialize_ukf(records[0].clone(), None, None, None, None, None, None);
             info!("Initialized UKF with state: {:?}", ukf);
-            
+
             let results = run_closed_loop(&mut ukf, event_stream, None);
             match results {
                 Ok(ref nav_results) => {
