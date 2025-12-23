@@ -31,7 +31,7 @@ use crate::{InputModel, NavigationFilter};
 
 use nalgebra::{DMatrix, DVector};
 use rand::prelude::*;
-use rand::{rng, SeedableRng};
+use rand::{thread_rng, SeedableRng};
 
 /// Trait defining the interface for particle state representation
 ///
@@ -178,7 +178,7 @@ impl<P: Particle> ParticleFilter<P> {
             resampling_strategy,
             averaging_strategy,
             resampling_threshold,
-            rng: StdRng::seed_from_u64(rng().random()),
+            rng: StdRng::seed_from_u64(thread_rng().random()),
         }
     }
 
@@ -388,23 +388,32 @@ impl<P: Particle> ParticleFilter<P> {
 impl<P: Particle> NavigationFilter for ParticleFilter<P> {
     /// Predict step: Propagate particles forward using the control input
     ///
-    /// Note: This implementation requires that particle types handle their own
-    /// state propagation. Users must ensure their Particle implementation includes
-    /// logic to propagate the state forward based on the control input.
+    /// **Important Note**: This generic implementation does not perform actual particle
+    /// state propagation. Users must propagate their particles' states **before** calling
+    /// this method or implement a custom wrapper that handles propagation.
+    ///
+    /// The predict step is intentionally left to user implementations because:
+    /// 1. Different particle types have different state representations (full state vs RBPF)
+    /// 2. Propagation models vary by application (IMU-based, velocity-based, etc.)
+    /// 3. Process noise injection is application-specific
+    ///
+    /// For a typical INS particle filter, users would:
+    /// ```ignore
+    /// // Propagate each particle's state
+    /// for particle in pf.particles_mut() {
+    ///     // Apply motion model with process noise
+    ///     particle.propagate(imu_data, dt);
+    /// }
+    /// // Then call the predict method (currently a no-op)
+    /// pf.predict(&imu_data, dt);
+    /// ```
     ///
     /// # Arguments
     /// * `control_input` - The control input (e.g., IMU data)
     /// * `dt` - Time step
     fn predict<C: InputModel>(&mut self, _control_input: &C, _dt: f64) {
-        // Note: In a full implementation, particles would propagate their states here.
-        // This is left to the user's Particle implementation since different particle
-        // types may have different propagation models (e.g., full state vs RBPF).
-        //
-        // Users should call their particle's propagate method in their own code
-        // or implement a ParticleFilter subtype with specific propagation logic.
-        //
-        // For a generic implementation, we just note that this is where particle
-        // propagation would occur. The specific propagation is application-dependent.
+        // No-op: Particle propagation is delegated to the user's Particle implementation
+        // See method documentation for usage details
     }
 
     /// Update step: Update particle weights based on measurement
@@ -765,13 +774,13 @@ mod tests {
     #[test]
     fn test_resampling_strategy_default() {
         let strategy = ParticleResamplingStrategy::default();
-        matches!(strategy, ParticleResamplingStrategy::Systematic);
+        assert!(matches!(strategy, ParticleResamplingStrategy::Systematic));
     }
 
     #[test]
     fn test_averaging_strategy_default() {
         let strategy = ParticleAveragingStrategy::default();
-        matches!(strategy, ParticleAveragingStrategy::WeightedMean);
+        assert!(matches!(strategy, ParticleAveragingStrategy::WeightedMean));
     }
 
     #[test]
