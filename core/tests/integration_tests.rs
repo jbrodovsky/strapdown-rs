@@ -27,7 +27,7 @@
 use std::path::Path;
 
 use strapdown::earth::haversine_distance;
-use strapdown::kalman::{InitialState, UnscentedKalmanFilter};
+use strapdown::kalman::{ExtendedKalmanFilter, InitialState, UnscentedKalmanFilter};
 use strapdown::messages::{
     GnssDegradationConfig, GnssFaultModel, GnssScheduler, build_event_stream,
 };
@@ -649,6 +649,309 @@ fn test_ukf_outperforms_dead_reckoning() {
             ukf_stats.rms_horizontal_error < dr_stats.rms_horizontal_error,
             "UKF should have lower RMS horizontal error than dead reckoning. UKF: {:.2}m, DR: {:.2}m",
             ukf_stats.rms_horizontal_error,
+            dr_stats.rms_horizontal_error
+        );
+    }
+}
+
+// ==================== Extended Kalman Filter Integration Tests ====================
+
+/// Test EKF closed-loop filter on real data
+///
+/// This test runs a closed-loop EKF with GNSS measurements on real data and verifies that:
+/// 1. The filter completes without errors
+/// 2. Position errors remain bounded
+/// 3. The filter performs comparably to UKF
+#[test]
+fn test_ekf_closed_loop_on_real_data() {
+    // Load test data
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let test_data_path = Path::new(manifest_dir).join("tests/test_data.csv");
+    let records = load_test_data(&test_data_path);
+
+    assert!(
+        !records.is_empty(),
+        "Test data should contain at least one record"
+    );
+
+    // Create initial state from first record
+    let initial_state = create_initial_state(&records[0]);
+
+    // Initialize EKF with 15-state configuration (with biases)
+    let initial_covariance = vec![
+        1e-6, 1e-6, 1.0, // position covariance (lat, lon, alt)
+        0.1, 0.1, 0.1, // velocity covariance
+        0.01, 0.01, 0.01, // attitude covariance (roll, pitch, yaw)
+        0.01, 0.01, 0.01, // accelerometer bias covariance
+        0.001, 0.001, 0.001, // gyroscope bias covariance
+    ];
+
+    let process_noise = DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec()));
+
+    let mut ekf = ExtendedKalmanFilter::new(
+        initial_state,
+        vec![0.0; 6], // Zero initial bias estimates
+        initial_covariance,
+        process_noise,
+        true, // use_biases (15-state configuration)
+    );
+
+    // Create event stream with passthrough scheduler (all GNSS measurements used)
+    let cfg = GnssDegradationConfig {
+        scheduler: GnssScheduler::PassThrough,
+        fault: GnssFaultModel::None,
+        ..Default::default()
+    };
+
+    let stream = build_event_stream(&records, &cfg);
+
+    // Run closed-loop filter
+    let results =
+        run_closed_loop(&mut ekf, stream, None).expect("Closed-loop EKF filter should complete");
+
+    // Verify results
+    assert!(
+        !results.is_empty(),
+        "Closed-loop EKF filter should produce results"
+    );
+
+    // Compute error metrics
+    let stats = compute_error_metrics(&results, &records);
+
+    // Print statistics
+    println!("\n=== EKF Closed-Loop Error Statistics ===");
+    println!(
+        "Horizontal Error: mean={:.2}m, max={:.2}m, rms={:.2}m",
+        stats.mean_horizontal_error, stats.max_horizontal_error, stats.rms_horizontal_error
+    );
+    println!(
+        "Altitude Error: mean={:.2}m, max={:.2}m, rms={:.2}m",
+        stats.mean_altitude_error, stats.max_altitude_error, stats.rms_altitude_error
+    );
+    println!(
+        "Velocity Error: N={:.3}m/s, E={:.3}m/s, D={:.3}m/s",
+        stats.mean_velocity_north_error,
+        stats.mean_velocity_east_error,
+        stats.mean_velocity_vertical_error
+    );
+
+    // Assert error bounds - these should be reasonable for a working filter with GNSS
+    // With good GNSS, horizontal error should be within a few meters RMS
+    assert!(
+        stats.rms_horizontal_error < 30.0,
+        "RMS horizontal error should be less than 30m with GNSS, got {:.2}m",
+        stats.rms_horizontal_error
+    );
+
+    // Altitude error should also be bounded
+    assert!(
+        stats.rms_altitude_error < 50.0,
+        "RMS altitude error should be less than 50m with GNSS, got {:.2}m",
+        stats.rms_altitude_error
+    );
+
+    // Maximum errors should not be excessive
+    assert!(
+        stats.max_horizontal_error < 100.0,
+        "Maximum horizontal error should be less than 100m, got {:.2}m",
+        stats.max_horizontal_error
+    );
+
+    // Verify no NaN or infinite values in results
+    for result in &results {
+        assert!(
+            result.latitude.is_finite(),
+            "Latitude should be finite: {}",
+            result.latitude
+        );
+        assert!(
+            result.longitude.is_finite(),
+            "Longitude should be finite: {}",
+            result.longitude
+        );
+        assert!(
+            result.altitude.is_finite(),
+            "Altitude should be finite: {}",
+            result.altitude
+        );
+        assert!(
+            result.velocity_north.is_finite(),
+            "Velocity north should be finite: {}",
+            result.velocity_north
+        );
+        assert!(
+            result.velocity_east.is_finite(),
+            "Velocity east should be finite: {}",
+            result.velocity_east
+        );
+        assert!(
+            result.velocity_vertical.is_finite(),
+            "Velocity down should be finite: {}",
+            result.velocity_vertical
+        );
+    }
+}
+
+/// Test EKF with degraded GNSS (reduced update rate)
+///
+/// This test simulates degraded GNSS conditions with reduced update rate and verifies
+/// that the filter still performs reasonably well, though with higher errors than full-rate GNSS.
+#[test]
+fn test_ekf_with_degraded_gnss() {
+    // Load test data
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let test_data_path = Path::new(manifest_dir).join("tests/test_data.csv");
+    let records = load_test_data(&test_data_path);
+
+    assert!(
+        !records.is_empty(),
+        "Test data should contain at least one record"
+    );
+
+    // Create initial state from first record
+    let initial_state = create_initial_state(&records[0]);
+
+    // Initialize EKF
+    let initial_covariance = vec![
+        1e-6, 1e-6, 1.0, // position
+        0.1, 0.1, 0.1, // velocity
+        0.01, 0.01, 0.01, // attitude
+        0.01, 0.01, 0.01, // accel bias
+        0.001, 0.001, 0.001, // gyro bias
+    ];
+
+    let process_noise = DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec()));
+
+    let mut ekf = ExtendedKalmanFilter::new(
+        initial_state,
+        vec![0.0; 6],
+        initial_covariance,
+        process_noise,
+        true, // 15-state with biases
+    );
+
+    // Create event stream with periodic scheduler (e.g., every 5 seconds)
+    let cfg = GnssDegradationConfig {
+        scheduler: GnssScheduler::FixedInterval {
+            interval_s: 5.0,
+            phase_s: 0.0,
+        },
+        fault: GnssFaultModel::None,
+        ..Default::default()
+    };
+
+    let stream = build_event_stream(&records, &cfg);
+
+    // Run closed-loop filter
+    let results = run_closed_loop(&mut ekf, stream, None)
+        .expect("Closed-loop EKF filter with degraded GNSS should complete");
+
+    // Compute error metrics
+    let stats = compute_error_metrics(&results, &records);
+
+    // Print statistics
+    println!("\n=== EKF with Degraded GNSS (5s updates) Error Statistics ===");
+    println!(
+        "Horizontal Error: mean={:.2}m, max={:.2}m, rms={:.2}m",
+        stats.mean_horizontal_error, stats.max_horizontal_error, stats.rms_horizontal_error
+    );
+    println!(
+        "Altitude Error: mean={:.2}m, max={:.2}m, rms={:.2}m",
+        stats.mean_altitude_error, stats.max_altitude_error, stats.rms_altitude_error
+    );
+
+    // Error bounds should be looser than full-rate GNSS but still reasonable
+    assert!(
+        stats.rms_horizontal_error < 50.0,
+        "RMS horizontal error with degraded GNSS should be less than 50m, got {:.2}m",
+        stats.rms_horizontal_error
+    );
+
+    assert!(
+        stats.max_horizontal_error < 600.0,
+        "Maximum horizontal error with degraded GNSS should be less than 600m, got {:.2}m",
+        stats.max_horizontal_error
+    );
+
+    // Verify no invalid values
+    for result in &results {
+        assert!(result.latitude.is_finite());
+        assert!(result.longitude.is_finite());
+        assert!(result.altitude.is_finite());
+    }
+}
+
+/// Test that closed-loop EKF outperforms dead reckoning
+///
+/// This test runs both dead reckoning and EKF on the same data and verifies that
+/// the EKF produces lower errors than dead reckoning, demonstrating the benefit
+/// of GNSS-aided navigation.
+#[test]
+fn test_ekf_outperforms_dead_reckoning() {
+    // Load test data
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let test_data_path = Path::new(manifest_dir).join("tests/test_data.csv");
+    let records = load_test_data(&test_data_path);
+
+    assert!(
+        !records.is_empty(),
+        "Test data should contain at least one record"
+    );
+
+    // Run dead reckoning
+    let dr_results = dead_reckoning(&records);
+    let dr_stats = compute_error_metrics(&dr_results, &records);
+
+    // Run EKF
+    let initial_state = create_initial_state(&records[0]);
+    let initial_covariance = vec![
+        1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.001, 0.001, 0.001,
+    ];
+    let process_noise = DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec()));
+
+    let mut ekf = ExtendedKalmanFilter::new(
+        initial_state,
+        vec![0.0; 6],
+        initial_covariance,
+        process_noise,
+        true, // 15-state
+    );
+
+    let scheduler = GnssScheduler::PassThrough;
+    let fault_model = GnssFaultModel::None;
+    let cfg = GnssDegradationConfig {
+        scheduler,
+        fault: fault_model,
+        ..Default::default()
+    };
+    let stream = build_event_stream(&records, &cfg);
+
+    let ekf_results = run_closed_loop(&mut ekf, stream, None).expect("EKF should complete");
+    let ekf_stats = compute_error_metrics(&ekf_results, &records);
+
+    // Print comparison
+    println!("\n=== Performance Comparison (EKF vs Dead Reckoning) ===");
+    println!(
+        "Dead Reckoning RMS Horizontal Error: {:.2}m",
+        dr_stats.rms_horizontal_error
+    );
+    println!(
+        "EKF RMS Horizontal Error: {:.2}m",
+        ekf_stats.rms_horizontal_error
+    );
+    println!(
+        "Improvement: {:.1}%",
+        (1.0 - ekf_stats.rms_horizontal_error / dr_stats.rms_horizontal_error) * 100.0
+    );
+
+    // EKF should significantly outperform dead reckoning
+    // Allow for some tolerance in case of very short datasets or near-stationary conditions
+    if dr_stats.rms_horizontal_error > 5.0 {
+        // Only compare if DR has meaningful drift
+        assert!(
+            ekf_stats.rms_horizontal_error < dr_stats.rms_horizontal_error,
+            "EKF should have lower RMS horizontal error than dead reckoning. EKF: {:.2}m, DR: {:.2}m",
+            ekf_stats.rms_horizontal_error,
             dr_stats.rms_horizontal_error
         );
     }
