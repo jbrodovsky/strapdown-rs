@@ -435,7 +435,7 @@ fn test_ukf_closed_loop_on_real_data() {
     // Altitude error should also be bounded
     assert!(
         stats.rms_altitude_error < 50.0,
-        "RMS altitude error should be less than 30m with GNSS, got {:.2}m",
+        "RMS altitude error should be less than 50m with GNSS, got {:.2}m",
         stats.rms_altitude_error
     );
 
