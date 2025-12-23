@@ -1067,6 +1067,154 @@ pub fn initialize_ukf(
         0.0,
     )
 }
+
+/// Initialize an Extended Kalman Filter for simulation.
+///
+/// This function creates and initializes an `ExtendedKalmanFilter` with the given parameters,
+/// providing a linearized Gaussian approximation for navigation state estimation.
+///
+/// # Arguments
+///
+/// * `initial_pose` - A `TestDataRecord` containing the initial pose information.
+/// * `attitude_covariance` - Optional initial attitude covariance.
+/// * `imu_biases` - Optional initial IMU biases.
+/// * `imu_biases_covariance` - Optional IMU bias covariance.
+/// * `process_noise_diagonal` - Optional process noise diagonal.
+/// * `use_biases` - If true, uses 15-state (with IMU biases), otherwise 9-state.
+///
+/// # Returns
+///
+/// * `ExtendedKalmanFilter` - An instance of the Extended Kalman Filter.
+#[allow(clippy::too_many_arguments)]
+pub fn initialize_ekf(
+    initial_pose: TestDataRecord,
+    attitude_covariance: Option<Vec<f64>>,
+    imu_biases: Option<Vec<f64>>,
+    imu_biases_covariance: Option<Vec<f64>>,
+    process_noise_diagonal: Option<Vec<f64>>,
+    use_biases: bool,
+) -> crate::kalman::ExtendedKalmanFilter {
+    use crate::kalman::ExtendedKalmanFilter;
+
+    // Build initial state from sensor data
+    let initial_state = InitialState {
+        latitude: initial_pose.latitude,
+        longitude: initial_pose.longitude,
+        altitude: initial_pose.altitude,
+        // Note: `initial_pose.bearing` is stored in degrees in `TestDataRecord`.
+        // Convert to radians here for use with trigonometric functions.
+        northward_velocity: initial_pose.speed * initial_pose.bearing.to_radians().cos(),
+        eastward_velocity: initial_pose.speed * initial_pose.bearing.to_radians().sin(),
+        vertical_velocity: 0.0,
+        roll: if initial_pose.roll.is_nan() {
+            0.0
+        } else {
+            initial_pose.roll
+        },
+        pitch: if initial_pose.pitch.is_nan() {
+            0.0
+        } else {
+            initial_pose.pitch
+        },
+        yaw: if initial_pose.yaw.is_nan() {
+            0.0
+        } else {
+            initial_pose.yaw
+        },
+        in_degrees: true,
+        is_enu: true,
+    };
+
+    // Determine state size based on use_biases flag
+    let state_size = if use_biases { 15 } else { 9 };
+
+    // Build process noise diagonal
+    let process_noise_diagonal = match process_noise_diagonal {
+        Some(pn) => {
+            assert!(
+                pn.len() == state_size,
+                "Process noise diagonal length mismatch: expected {}, got {}",
+                state_size,
+                pn.len()
+            );
+            pn
+        }
+        None => {
+            if use_biases {
+                DEFAULT_PROCESS_NOISE.to_vec()
+            } else {
+                DEFAULT_PROCESS_NOISE[0..9].to_vec()
+            }
+        }
+    };
+
+    // Build covariance diagonal
+    let position_accuracy = initial_pose.horizontal_accuracy;
+    let mut covariance_diagonal = vec![
+        (position_accuracy * METERS_TO_DEGREES).powf(2.0),
+        (position_accuracy * METERS_TO_DEGREES).powf(2.0),
+        initial_pose.vertical_accuracy.powf(2.0),
+        initial_pose.speed_accuracy.powf(2.0),
+        initial_pose.speed_accuracy.powf(2.0),
+        initial_pose.speed_accuracy.powf(2.0),
+    ];
+
+    // Add attitude covariance
+    match attitude_covariance {
+        Some(att_cov) => {
+            assert!(
+                att_cov.len() == 3,
+                "Attitude covariance must have 3 elements"
+            );
+            covariance_diagonal.extend(att_cov);
+        }
+        None => covariance_diagonal.extend(vec![1e-9; 3]),
+    }
+
+    // Add IMU bias covariance if using biases
+    let imu_biases_vec = if use_biases {
+        match imu_biases {
+            Some(biases) => {
+                assert!(biases.len() == 6, "IMU biases must have 6 elements");
+                covariance_diagonal.extend(match imu_biases_covariance {
+                    Some(imu_cov) => {
+                        assert!(
+                            imu_cov.len() == 6,
+                            "IMU bias covariance must have 6 elements"
+                        );
+                        imu_cov
+                    }
+                    None => vec![1e-3; 6],
+                });
+                biases
+            }
+            None => {
+                covariance_diagonal.extend(vec![1e-3; 6]);
+                vec![0.0; 6]
+            }
+        }
+    } else {
+        vec![0.0; 6] // Not used in 9-state, but required by constructor
+    };
+
+    assert!(
+        covariance_diagonal.len() == state_size,
+        "Covariance diagonal length mismatch: expected {}, got {}",
+        state_size,
+        covariance_diagonal.len()
+    );
+
+    let process_noise = DMatrix::from_diagonal(&DVector::from_vec(process_noise_diagonal));
+
+    ExtendedKalmanFilter::new(
+        initial_state,
+        imu_biases_vec,
+        covariance_diagonal,
+        process_noise,
+        use_biases,
+    )
+}
+
 // ==== Simulation Helper functions ====
 
 pub fn print_sim_status<F: NavigationFilter>(filter: &F) {
@@ -2544,4 +2692,138 @@ mod tests {
         let result = run_closed_loop(&mut ukf, stream, Some(health_limits));
         assert!(result.is_ok());
     }
+
+    // ==================== Extended Kalman Filter Tests ====================
+
+    #[test]
+    fn test_initialize_ekf_default_9state() {
+        let rec = TestDataRecord {
+            time: Utc::now(),
+            horizontal_accuracy: 5.0,
+            vertical_accuracy: 2.0,
+            speed_accuracy: 1.0,
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            speed: 10.0,
+            bearing: 45.0, // In degrees
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            ..Default::default()
+        };
+        let ekf = initialize_ekf(rec, None, None, None, None, false);
+        let estimate = ekf.get_estimate();
+        assert_eq!(estimate.len(), 9, "9-state EKF should have 9 states");
+        // Check velocity decomposition (bearing 45° means equal north/east components)
+        assert!((estimate[3] - estimate[4]).abs() < 1.0); // vn ≈ ve for 45° bearing
+    }
+
+    #[test]
+    fn test_initialize_ekf_default_15state() {
+        let rec = TestDataRecord {
+            time: Utc::now(),
+            horizontal_accuracy: 5.0,
+            vertical_accuracy: 2.0,
+            speed_accuracy: 1.0,
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            speed: 10.0,
+            bearing: 45.0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            ..Default::default()
+        };
+        let ekf = initialize_ekf(rec, None, None, None, None, true);
+        let estimate = ekf.get_estimate();
+        assert_eq!(estimate.len(), 15, "15-state EKF should have 15 states");
+        // Check that biases are initialized to zero by default
+        for i in 9..15 {
+            assert!(estimate[i].abs() < 1e-6, "Default biases should be near zero");
+        }
+    }
+
+    #[test]
+    fn test_initialize_ekf_with_nan_angles() {
+        let rec = TestDataRecord {
+            time: Utc::now(),
+            horizontal_accuracy: 5.0,
+            vertical_accuracy: 2.0,
+            speed_accuracy: 1.0,
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            speed: 10.0,
+            bearing: 45.0,
+            roll: f64::NAN,
+            pitch: f64::NAN,
+            yaw: f64::NAN,
+            ..Default::default()
+        };
+        let ekf = initialize_ekf(rec, None, None, None, None, true);
+        let estimate = ekf.get_estimate();
+        // Should default NaN angles to 0.0
+        assert!(estimate[6].abs() < 1e-6, "NaN roll should default to 0"); // roll
+        assert!(estimate[7].abs() < 1e-6, "NaN pitch should default to 0"); // pitch
+        assert!(estimate[8].abs() < 1e-6, "NaN yaw should default to 0"); // yaw
+    }
+
+    #[test]
+    fn test_initialize_ekf_with_custom_biases() {
+        let rec = TestDataRecord {
+            time: Utc::now(),
+            horizontal_accuracy: 5.0,
+            vertical_accuracy: 2.0,
+            speed_accuracy: 1.0,
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            speed: 10.0,
+            bearing: 45.0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            ..Default::default()
+        };
+        let ekf = initialize_ekf(
+            rec,
+            Some(vec![1e-4, 2e-4, 3e-4]),
+            Some(vec![0.01, 0.02, 0.03, 0.001, 0.002, 0.003]),
+            Some(vec![1e-5; 6]),
+            None,
+            true,
+        );
+        let estimate = ekf.get_estimate();
+        assert_eq!(estimate.len(), 15);
+        // Check that custom biases are set
+        assert!((estimate[9] - 0.01).abs() < 1e-9);
+        assert!((estimate[10] - 0.02).abs() < 1e-9);
+        assert!((estimate[11] - 0.03).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_initialize_ekf_with_custom_process_noise() {
+        let rec = TestDataRecord {
+            time: Utc::now(),
+            horizontal_accuracy: 5.0,
+            vertical_accuracy: 2.0,
+            speed_accuracy: 1.0,
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            speed: 10.0,
+            bearing: 45.0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            ..Default::default()
+        };
+        let custom_noise = vec![1e-7; 15];
+        let ekf = initialize_ekf(rec, None, None, None, Some(custom_noise.clone()), true);
+        // Verify EKF was created successfully
+        assert_eq!(ekf.get_estimate().len(), 15);
+    }
 }
+
