@@ -156,11 +156,161 @@ pub mod messages;
 pub mod particle;
 pub mod sim;
 
-use nalgebra::{DVector, Matrix3, Rotation3, Vector3};
+use nalgebra::{DMatrix, DVector, Matrix3, Rotation3, Vector3, Vector6};
 
+use std::any::Any;
 use std::convert::{From, Into, TryFrom};
 use std::fmt::{self, Debug, Display};
 
+use crate::measurements::MeasurementModel;
+
+/// Generic Bayesian Navigation filter trait that provides the generic
+/// interface used across all types of Bayesian based filters
+pub trait NavigationFilter {
+    fn predict<C: InputModel>(&mut self, control_input: &C, dt: f64);
+    fn update<M: MeasurementModel + ?Sized>(&mut self, measurement: &M);
+    fn get_estimate(&self) -> DVector<f64>;
+    fn get_certainty(&self) -> DMatrix<f64>;
+}
+/// Generic input model trait for all types of control inputs
+/// 
+/// Control inputs are really just measurements that are used to 
+/// propagate or predict the state estimate rather than to constrain
+/// error. In navigation, this is typically higher-order states such
+/// as velocities or accelerations.
+/// 
+/// See [measurements::MeasurementModel] for the complementary trait
+/// used for measurement updates. Similar to that trait, this trait
+/// is intended to permit a generic input to truly generalize the 
+/// Bayesian architecture. This is largely done in effort to reuse
+/// some of the architecuter between a standard Kalman-family INS filter
+/// and something like a simplified velocity-based particle filter.
+/// Both filters use the same Bayesian architecture and can probably 
+/// be run using assumptions about the method interfaces that traits
+/// provide.
+/// 
+/// Note: process noise is handled seperately even though it is a 
+/// related topic.
+/// 
+/// # Methods
+/// - `get_dimension()`: Returns the dimension of the input vector.
+/// - `get_vector()`: Returns the input as a vector.
+/// 
+/// # Downcasting
+/// The trait includes helper methods for downcasting to allow for type-safe
+/// downcasting of trait objects.
+pub trait InputModel {
+    /// Downcast helper method to allow for type-safe downcasting
+    fn as_any(&self) -> &dyn Any;
+    /// Downcast helper method for mutable references
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+    /// Get the dimension of the measurement/vector
+    fn get_dimension(&self) -> usize;
+    /// Get the measurement / input as a vector
+    fn get_vector(&self) -> DVector<f64>;
+}
+
+// ============= Some process noise utilities ===================================================================================================
+
+/// Enum for characterizing the performance quality of an IMU as it relates to the INS system it would be implemented on. This enum provides some
+/// default values.
+/// 
+/// Benchmarks for typical IMU grades are shown below. While these are not strict definitions the power-law distribution and order of magnitude
+/// is typical for the associated application. [1]:
+/// 
+/// | IMU Grade  | Gyro Bias Instability (°/h) | Gyro ARW (°/√h) | Accel Bias Instability (m/s^2) | Accel VRW (m/s/√h) | Typical Tech         |
+/// |------------|-----------------------------|-----------------|--------------------------------|--------------------|----------------------|
+/// | Consumer   | >100                        | >1.0            | >0.1                           | >0.1               | Low-cost MEMS        |
+/// | Industrial | 10-100                      | 0.1-1.0         | 0.01-0.1                       | 0.03-0.1           | High-end MEMS        |
+/// | Tactical   | 0.1-1                       | 0.01-0.1        | 0.001-0.01                     | 0.01-0.03          | High-MEMS / FOG      |
+/// | Navigation | 0.0001-0.1                  | 0.005-0.01      | 0.0001-0.001                   | 0.005-0.01         | FOG / RLG            |
+/// | Strategic  | <0.0001                     | <0.005          | <0.0001                        | <0.0001            | High-end RLG         |
+/// 
+/// These quantities relate to Bayesian filter process noise. The velocity random walk (ARW/VRW) terms can be used to directly 
+/// set the process noise for velocity states (standard deviations). The bias instability terms can be used to set the process 
+/// noise for gyro and accelerometer bias states if those are included in the filter state vector. 
+/// # References
+/// - [1] https://www.advancednavigation.com/tech-articles/mems-vs-fog-what-inertial-system-should-you-choose/
+/// - [2] https://www.vectornav.com/resources/detail/what-is-an-inertial-measurement-unit
+/// - [3] Principles of GNSS, Inertial, and Multisensor Navigation Systems. Chapter 4.4.1, Paul D. Groves, 2nd Edition. Table 4.1
+/// 
+#[derive(Clone, Copy, Debug, Default)]
+pub enum IMUQuality {
+    #[default]
+    /// Consumer-grade IMUs are typically low cost MEMS sensors found in consumer electronics (e.g. smartphones), wearables, and basic drones
+    Consumer,
+    /// Industrial-grade IMUs are higher-end MEMS sensors found in automotive, robotics, and commercial drones
+    Industrial,
+    /// Tactical-grade IMUs are typically Fiber-Optic Gyroscopes (FOGs) found in military and high-performance applications and are robust to GNSS denial.
+    Tactical,
+    /// Extremely accurate and stable for long-term use in aircraft, ships, and submarines. Drift rates ranging from 1 nautical mile per hour to 1 nm / 72 hours
+    /// using high end FOG or Ring-Laser Gyros (RLGs) 
+    Navigation,
+    /// Strategic or survey grade offer exceptional precisions for geodetic and survey applications as well as ballistic missiles or nuclear submarines. Frequently
+    /// use RLGs.
+    Strategic,
+}
+impl IMUQuality {
+    /// Get typical gyro bias instability in degrees per hour for the given IMU quality in radians per hour
+    pub fn gyro_bias_instability_dph(&self) -> f64 {
+        match self {
+            IMUQuality::Consumer => 100.0_f64.to_radians(),
+            IMUQuality::Industrial => 50.0_f64.to_radians(),
+            IMUQuality::Tactical => 1.0_f64.to_radians(),
+            IMUQuality::Navigation => 0.01_f64.to_radians(),
+            IMUQuality::Strategic => 0.0001_f64.to_radians(),
+        }
+    }
+    /// Get typical gyro angle random walk in radians per root hour for the given IMU quality
+    pub fn gyro_angle_random_walk(&self) -> f64 {
+        match self {
+            IMUQuality::Consumer => 1.0_f64.to_radians(),
+            IMUQuality::Industrial => 0.1_f64.to_radians(),
+            IMUQuality::Tactical => 0.01_f64.to_radians(),
+            IMUQuality::Navigation => 0.005_f64.to_radians(),
+            IMUQuality::Strategic => 0.0005_f64.to_radians(),
+        }
+    }
+    /// Get typical accelerometer bias instability in m/s^2 for the given IMU quality
+    pub fn accel_bias_instability_mps2(&self) -> f64 {
+        match self {
+            IMUQuality::Consumer => 0.1,
+            IMUQuality::Industrial => 0.05,
+            IMUQuality::Tactical => 0.001,
+            IMUQuality::Navigation => 0.0001,
+            IMUQuality::Strategic => 0.00001,
+        }
+    }
+    /// Get typical accelerometer velocity random walk in m/s/√h for the given IMU quality
+    pub fn accel_velocity_random_walk(&self) -> f64 {
+        match self {
+            IMUQuality::Consumer => 0.1,
+            IMUQuality::Industrial => 0.03,
+            IMUQuality::Tactical => 0.01,
+            IMUQuality::Navigation => 0.005,
+            IMUQuality::Strategic => 0.0001,
+        }
+    }
+    /// Get typical process noise matrix for gyro bias
+    pub fn gyro_process_noise(&self) -> Matrix3<f64> {
+        Matrix3::<f64>::identity() * self.gyro_bias_instability_dph().powi(2)
+    }
+    /// Get typical process noise matrix for accel bias
+    pub fn accel_process_noise(&self) -> Matrix3<f64> {
+        Matrix3::<f64>::identity() * self.accel_bias_instability_mps2().powi(2)
+    }
+    /// Get typical process noise matrix for velocity random walk
+    /// Note: this is typically applied to velocity states directly
+    pub fn velocity_process_noise(&self) -> Matrix3<f64> {
+        Matrix3::<f64>::identity() * self.accel_velocity_random_walk().powi(2)
+    }
+    /// Get typical proces noise matrix for angle random walk
+    /// Note: this is typically applied to the orientatio states directly
+    pub fn attitude_process_noise(&self) -> Matrix3<f64> {
+        Matrix3::<f64>::identity() * self.gyro_angle_random_walk().powi(2)
+    }
+
+}
 /// Basic structure for holding raw IMU data in the form of sensed acceleration and angular rate vectors.
 ///
 /// The vectors are in the body frame of the vehicle and perceived by the IMU (i.e. not compensating for gravity).
@@ -171,7 +321,7 @@ pub struct IMUData {
     /// Acceleration in m/s^2, body frame x, y, z axis
     pub accel: Vector3<f64>,
     /// Angular rate in rad/s, body frame x, y, z axis
-    pub gyro: Vector3<f64>,
+    pub gyro: Vector3<f64>
 }
 impl Display for IMUData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -192,7 +342,7 @@ impl From<Vec<f64>> for IMUData {
         }
         IMUData {
             accel: Vector3::new(vec[0], vec[1], vec[2]),
-            gyro: Vector3::new(vec[3], vec[4], vec[5]),
+            gyro: Vector3::new(vec[3], vec[4], vec[5])
         }
     }
 }
@@ -209,6 +359,83 @@ impl From<IMUData> for Vec<f64> {
         ]
     }
 }
+impl InputModel for IMUData {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+    /// Get the dimension of the measurement/vector
+    fn get_dimension(&self) -> usize {
+        6
+    }
+    /// Get the measurement / input as a vector
+    fn get_vector(&self) -> DVector<f64> {
+        DVector::from_vec(self.accel
+            .iter()
+            .chain(self.gyro.iter())
+            .cloned()
+            .collect())
+    }
+}
+/// Basic structure for holding velocity input data for simplified navigation filters
+#[derive(Copy, Clone, Debug, Default)]
+pub struct VelocityData {
+    /// Linear velocities (i.e. northward, eastward, vertical velocities in m/s)
+    pub linear: Vector3<f64>,
+    /// Angular velocities in rad/s
+    pub angular: Vector3<f64>
+}
+impl From<Vec<f64>> for VelocityData {
+    fn from(data: Vec<f64>) -> Self {
+        if data.len() != 6 {
+            panic!("VelocityData must be initialized with a vector of length 6 (3 for linear, 3 for angular)");
+        }
+        VelocityData {
+            linear: Vector3::new(data[0], data[1], data[2]),
+            angular: Vector3::new(data[3], data[4], data[5])
+        }
+    }
+}
+impl From<(Vector3<f64>, Vector3<f64>)> for VelocityData {
+    fn from(data: (Vector3<f64>, Vector3<f64>)) -> Self {
+        VelocityData {
+            linear: data.0,
+            angular: data.1
+        }
+    }
+}
+impl From<Vector6<f64>> for VelocityData {
+    fn from(data: Vector6<f64>) -> Self {
+        VelocityData {
+            linear: Vector3::new(data[0], data[1], data[2]),
+            angular: Vector3::new(data[3], data[4], data[5])
+        }
+    }
+}
+impl InputModel for VelocityData {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+    /// Get the dimension of the measurement/vector
+    fn get_dimension(&self) -> usize {
+        6
+    }
+    /// Get the measurement / input as a vector
+    fn get_vector(&self) -> DVector<f64> {
+        DVector::from_vec(self.linear
+            .iter()
+            .chain(self.angular.iter())
+            .cloned()
+            .collect())
+    }
+}
+
+
 /// Basic structure for holding the strapdown mechanization state in the form of position, velocity, and attitude.
 /// Attitude is stored in matrix form (rotation or direction cosine matrix, users choice and only impacts filter
 /// implementation) and position and velocity are stored as vectors. For computational simplicity, latitude and
@@ -415,6 +642,7 @@ impl From<&StrapdownState> for DVector<f64> {
         DVector::from_vec(state.into())
     }
 }
+
 /// Local Level Frame form of the forward kinematics equations. Corresponds to section 5.4 Local-Navigation Frame Equations
 /// from the book _Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems, Second Edition_
 /// by Paul D. Groves; Second Edition.
