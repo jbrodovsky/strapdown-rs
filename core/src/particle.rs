@@ -87,25 +87,27 @@
 //!     // particle.propagate(imu_data, dt);
 //! }
 //!
-//! // Update with measurements (handled by the filter)
-//! // pf.update(&gps_measurement);
+//! // Update particle weights based on measurements
+//! // for particle in pf.particles_mut() {
+//! //     particle.update_weight(&gps_measurement);
+//! // }
+//! // pf.normalize_weights();
+//!
+//! // Resample if needed
+//! // let n_eff = pf.effective_sample_size();
+//! // if n_eff < threshold {
+//! //     pf.resample();
+//! // }
 //!
 //! // Get state estimate
 //! let state_estimate = pf.get_estimate();
 //! let covariance = pf.get_certainty();
 //! ```
 //!
-//! # Integration with NavigationFilter
-//!
-//! The `ParticleFilter` implements the `NavigationFilter` trait, making it compatible with
-//! existing code that works with Kalman filters. However, note that the `predict()` method
-//! is a no-op - users must propagate particle states manually before calling `predict()`.
-//!
 
 use std::any::Any;
 
 use crate::measurements::MeasurementModel;
-use crate::{InputModel, NavigationFilter};
 
 use nalgebra::{DMatrix, DVector};
 use rand::prelude::*;
@@ -153,6 +155,7 @@ pub trait Particle: Any {
 /// Different averaging strategies can be used depending on the application:
 /// - Mean: Simple arithmetic mean of particle states
 /// - WeightedMean: Weighted average using particle weights
+/// - HighestWeight: State of the particle with highest weight
 #[derive(Clone, Copy, Debug, Default)]
 pub enum ParticleAveragingStrategy {
     /// Arithmetic mean of all particle states (ignores weights)
@@ -160,6 +163,8 @@ pub enum ParticleAveragingStrategy {
     /// Weighted mean using particle weights
     #[default]
     WeightedMean,
+    /// State of the particle with the highest weight (maximum a posteriori estimate)
+    HighestWeight,
 }
 
 /// Strategy for resampling particles to combat degeneracy
@@ -176,6 +181,8 @@ pub enum ParticleResamplingStrategy {
     Systematic,
     /// Stratified resampling: divide [0,1] into N strata and sample once per stratum
     Stratified,
+    /// Residual resampling: deterministic selection of high-weight particles, then random sampling for remainder
+    Residual,
 }
 
 /// Generic particle filter for Bayesian state estimation
@@ -322,6 +329,9 @@ impl<P: Particle> ParticleFilter<P> {
             ParticleResamplingStrategy::Stratified => {
                 self.stratified_resample(&weights, num_particles)
             }
+            ParticleResamplingStrategy::Residual => {
+                self.residual_resample(&weights, num_particles)
+            }
         };
 
         // Create new particle set from resampled indices
@@ -411,6 +421,62 @@ impl<P: Particle> ParticleFilter<P> {
         indices
     }
 
+    /// Residual resampling
+    ///
+    /// Deterministically selects particles based on integer parts of N*weights,
+    /// then randomly samples remaining particles. This minimizes variance while
+    /// ensuring particles with high weights are always included.
+    fn residual_resample(&mut self, weights: &[f64], num_samples: usize) -> Vec<usize> {
+        let mut indices = Vec::with_capacity(num_samples);
+        
+        // Calculate expected number of copies for each particle
+        let n_weights: Vec<f64> = weights.iter().map(|&w| w * num_samples as f64).collect();
+        
+        // Deterministic selection: take integer part of each weight
+        let mut residual_weights = Vec::with_capacity(weights.len());
+        for (i, &nw) in n_weights.iter().enumerate() {
+            let n_copies = nw.floor() as usize;
+            for _ in 0..n_copies {
+                indices.push(i);
+            }
+            // Store fractional part for residual sampling
+            residual_weights.push(nw - nw.floor());
+        }
+        
+        // Normalize residual weights
+        let residual_sum: f64 = residual_weights.iter().sum();
+        if residual_sum > 0.0 {
+            for w in &mut residual_weights {
+                *w /= residual_sum;
+            }
+        }
+        
+        // Random sampling for remaining particles
+        let remaining = num_samples - indices.len();
+        if remaining > 0 {
+            // Use systematic resampling for the residuals
+            let step = 1.0 / remaining as f64;
+            let start: f64 = self.rng.random::<f64>() * step;
+            
+            let mut cumsum = 0.0;
+            let mut i = 0;
+            
+            for j in 0..remaining {
+                let u = start + (j as f64) * step;
+                
+                while cumsum < u && i < residual_weights.len() {
+                    cumsum += residual_weights[i];
+                    i += 1;
+                }
+                
+                let idx = if i > 0 { i - 1 } else { 0 };
+                indices.push(idx.min(weights.len() - 1));
+            }
+        }
+        
+        indices
+    }
+
     /// Compute state estimate from particles using the configured averaging strategy
     fn compute_state_estimate(&self) -> DVector<f64> {
         assert!(!self.particles.is_empty(), "Cannot compute state estimate from empty particle set");
@@ -437,6 +503,15 @@ impl<P: Particle> ParticleFilter<P> {
                 }
                 
                 weighted_mean
+            }
+            ParticleAveragingStrategy::HighestWeight => {
+                // Return state of particle with highest weight (MAP estimate)
+                let max_particle = self.particles
+                    .iter()
+                    .max_by(|a, b| a.weight().partial_cmp(&b.weight()).unwrap())
+                    .expect("Particle set is not empty");
+                
+                max_particle.state()
             }
         }
     }
@@ -469,78 +544,19 @@ impl<P: Particle> ParticleFilter<P> {
     pub fn particles_mut(&mut self) -> &mut [P] {
         &mut self.particles
     }
-}
-
-impl<P: Particle> NavigationFilter for ParticleFilter<P> {
-    /// Predict step: Propagate particles forward using the control input
-    ///
-    /// **Important Note**: This generic implementation does not perform actual particle
-    /// state propagation. Users must propagate their particles' states **before** calling
-    /// this method or implement a custom wrapper that handles propagation.
-    ///
-    /// The predict step is intentionally left to user implementations because:
-    /// 1. Different particle types have different state representations (full state vs RBPF)
-    /// 2. Propagation models vary by application (IMU-based, velocity-based, etc.)
-    /// 3. Process noise injection is application-specific
-    ///
-    /// For a typical INS particle filter, users would:
-    /// ```ignore
-    /// // Propagate each particle's state
-    /// for particle in pf.particles_mut() {
-    ///     // Apply motion model with process noise
-    ///     particle.propagate(imu_data, dt);
-    /// }
-    /// // Then call the predict method (currently a no-op)
-    /// pf.predict(&imu_data, dt);
-    /// ```
-    ///
-    /// # Arguments
-    /// * `control_input` - The control input (e.g., IMU data)
-    /// * `dt` - Time step
-    fn predict<C: InputModel>(&mut self, _control_input: &C, _dt: f64) {
-        // No-op: Particle propagation is delegated to the user's Particle implementation
-        // See method documentation for usage details
-    }
-
-    /// Update step: Update particle weights based on measurement
-    ///
-    /// This method:
-    /// 1. Updates each particle's weight based on the measurement likelihood
-    /// 2. Normalizes the weights
-    /// 3. Checks if resampling is needed and performs it if necessary
-    ///
-    /// # Arguments
-    /// * `measurement` - The measurement to incorporate
-    fn update<M: MeasurementModel + ?Sized>(&mut self, measurement: &M) {
-        // Update weights for each particle
-        for particle in &mut self.particles {
-            particle.update_weight(measurement);
-        }
-
-        // Normalize weights
-        self.normalize_weights();
-
-        // Check if resampling is needed
-        let n_eff = self.effective_sample_size();
-        let threshold = self.resampling_threshold * self.particles.len() as f64;
-
-        if n_eff < threshold {
-            self.resample();
-        }
-    }
 
     /// Get the current state estimate
     ///
-    /// Returns the weighted mean (or simple mean) of particle states
-    /// depending on the configured averaging strategy
-    fn get_estimate(&self) -> DVector<f64> {
+    /// Returns the state estimate computed from particles using the configured
+    /// averaging strategy (mean, weighted mean, or highest weight).
+    pub fn get_estimate(&self) -> DVector<f64> {
         self.compute_state_estimate()
     }
 
     /// Get the state covariance estimate
     ///
-    /// Returns the sample covariance computed from the particles
-    fn get_certainty(&self) -> DMatrix<f64> {
+    /// Returns the sample covariance computed from the particles around their mean.
+    pub fn get_certainty(&self) -> DMatrix<f64> {
         self.compute_covariance()
     }
 }
@@ -769,6 +785,22 @@ mod tests {
     }
 
     #[test]
+    fn test_residual_resampling() {
+        let initial_state = DVector::from_vec(vec![0.0, 0.0, 0.0]);
+        let mut pf = ParticleFilter::<SimpleParticle>::new(
+            &initial_state,
+            100,
+            ParticleResamplingStrategy::Residual,
+            ParticleAveragingStrategy::WeightedMean,
+            0.5,
+        );
+
+        pf.resample();
+
+        assert_eq!(pf.num_particles(), 100);
+    }
+
+    #[test]
     fn test_compute_state_estimate_mean() {
         let initial_state = DVector::from_vec(vec![1.0, 2.0, 3.0]);
         let pf = ParticleFilter::<SimpleParticle>::new(
@@ -807,6 +839,36 @@ mod tests {
     }
 
     #[test]
+    fn test_compute_state_estimate_highest_weight() {
+        let initial_state = DVector::from_vec(vec![1.0, 2.0, 3.0]);
+        let mut pf = ParticleFilter::<SimpleParticle>::new(
+            &initial_state,
+            10,
+            ParticleResamplingStrategy::Systematic,
+            ParticleAveragingStrategy::HighestWeight,
+            0.5,
+        );
+
+        // Set different weights - make one particle have highest weight
+        for (i, particle) in pf.particles_mut().iter_mut().enumerate() {
+            if i == 5 {
+                particle.set_weight(0.5);
+                // Give it a different state
+                *particle = SimpleParticle::new(&DVector::from_vec(vec![10.0, 20.0, 30.0]), 0.5);
+            } else {
+                particle.set_weight(0.05);
+            }
+        }
+
+        let estimate = pf.get_estimate();
+
+        // Should return the state of particle with highest weight
+        assert!((estimate[0] - 10.0).abs() < 1e-10);
+        assert!((estimate[1] - 20.0).abs() < 1e-10);
+        assert!((estimate[2] - 30.0).abs() < 1e-10);
+    }
+
+    #[test]
     fn test_compute_covariance() {
         let initial_state = DVector::from_vec(vec![0.0, 0.0, 0.0]);
         let pf = ParticleFilter::<SimpleParticle>::new(
@@ -830,7 +892,7 @@ mod tests {
     }
 
     #[test]
-    fn test_navigation_filter_update() {
+    fn test_weight_update_and_normalization() {
         let initial_state = DVector::from_vec(vec![0.0, 0.0, 0.0]);
         let mut pf = ParticleFilter::<SimpleParticle>::new(
             &initial_state,
@@ -849,8 +911,13 @@ mod tests {
             vertical_noise_std: 2.0,
         };
 
-        // Perform update
-        pf.update(&measurement);
+        // Update weights for each particle
+        for particle in pf.particles_mut() {
+            particle.update_weight(&measurement);
+        }
+
+        // Normalize weights
+        pf.normalize_weights();
 
         // Weights should be normalized
         let sum: f64 = pf.particles().iter().map(|p| p.weight()).sum();
