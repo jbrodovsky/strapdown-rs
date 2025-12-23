@@ -23,6 +23,84 @@
 //! - [`ParticleFilter`]: The main particle filter struct managing particles and weights
 //! - [`ParticleAveragingStrategy`]: Methods for extracting state estimates from particles
 //! - [`ParticleResamplingStrategy`]: Algorithms for combating particle degeneracy
+//!
+//! # Usage Example
+//!
+//! To use the particle filter, you must first implement the `Particle` trait for your custom
+//! particle type:
+//!
+//! ```rust
+//! use strapdown::particle::{Particle, ParticleFilter, ParticleResamplingStrategy, ParticleAveragingStrategy};
+//! use strapdown::measurements::MeasurementModel;
+//! use nalgebra::DVector;
+//! use std::any::Any;
+//!
+//! // Define your custom particle type
+//! struct MyParticle {
+//!     state: DVector<f64>,  // [lat, lon, alt, v_n, v_e, v_d, roll, pitch, yaw]
+//!     weight: f64,
+//! }
+//!
+//! impl Particle for MyParticle {
+//!     fn as_any(&self) -> &dyn Any { self }
+//!     fn as_any_mut(&mut self) -> &mut dyn Any { self }
+//!     
+//!     fn new(initial_state: &DVector<f64>, weight: f64) -> Self {
+//!         MyParticle {
+//!             state: initial_state.clone(),
+//!             weight,
+//!         }
+//!     }
+//!     
+//!     fn state(&self) -> DVector<f64> {
+//!         self.state.clone()
+//!     }
+//!     
+//!     fn update_weight<M: MeasurementModel + ?Sized>(&mut self, measurement: &M) {
+//!         // Compute likelihood p(z|x) and update weight
+//!         let expected = measurement.get_expected_measurement(&self.state);
+//!         let actual = measurement.get_vector();
+//!         let diff = actual - expected;
+//!         
+//!         // Simple Gaussian likelihood (customize for your application)
+//!         let likelihood = (-0.5 * diff.norm_squared()).exp();
+//!         self.weight *= likelihood;
+//!     }
+//!     
+//!     fn weight(&self) -> f64 { self.weight }
+//!     fn set_weight(&mut self, weight: f64) { self.weight = weight; }
+//! }
+//!
+//! // Create and use the particle filter
+//! let initial_state = DVector::from_vec(vec![0.0; 9]);
+//! let mut pf = ParticleFilter::<MyParticle>::new(
+//!     &initial_state,
+//!     1000,  // number of particles
+//!     ParticleResamplingStrategy::Systematic,
+//!     ParticleAveragingStrategy::WeightedMean,
+//!     0.5,   // resampling threshold
+//! );
+//!
+//! // Propagate particles (user responsibility)
+//! for particle in pf.particles_mut() {
+//!     // Apply your motion model with process noise
+//!     // particle.propagate(imu_data, dt);
+//! }
+//!
+//! // Update with measurements (handled by the filter)
+//! // pf.update(&gps_measurement);
+//!
+//! // Get state estimate
+//! let state_estimate = pf.get_estimate();
+//! let covariance = pf.get_certainty();
+//! ```
+//!
+//! # Integration with NavigationFilter
+//!
+//! The `ParticleFilter` implements the `NavigationFilter` trait, making it compatible with
+//! existing code that works with Kalman filters. However, note that the `predict()` method
+//! is a no-op - users must propagate particle states manually before calling `predict()`.
+//!
 
 use std::any::Any;
 
