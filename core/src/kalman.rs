@@ -435,7 +435,7 @@ impl NavigationFilter for UnscentedKalmanFilter {
 ///     accel: Vector3::new(0.0, 0.0, 9.81),
 ///     gyro: Vector3::zeros(),
 /// };
-/// ekf.predict(imu_data, 0.01);
+/// ekf.predict(&imu_data, 0.01);
 ///
 /// // Update with GPS measurement
 /// let gps_meas = GPSPositionMeasurement {
@@ -600,18 +600,21 @@ impl NavigationFilter for ExtendedKalmanFilter {
     /// \end{bmatrix} dt
     /// $$
     ///
-    /// The process noise Jacobian $G$ maps IMU noise to state uncertainty:
+    /// # Process Noise
     ///
-    /// $$
-    /// G = \begin{bmatrix}
-    /// 0 & 0 \\\\
-    /// C_b^n & 0 \\\\
-    /// 0 & -C_b^n
-    /// \end{bmatrix} dt
-    /// $$
-    ///
-    /// where $C_b^n$ is the body-to-navigation frame rotation matrix.
-    fn predict(&mut self, imu_data: IMUData, dt: f64) {
+    /// The covariance propagation uses $P_{k+1} = F_k P_k F_k^T + Q_k$, where $Q_k$ is
+    /// the process noise covariance matrix. In the full formulation, $Q_k = G Q_w G^T$,
+    /// where $G$ is the process noise Jacobian mapping IMU noise to state uncertainty,
+    /// and $Q_w$ is the IMU noise covariance. In this implementation, the `process_noise`
+    /// parameter is assumed to already incorporate $G Q_w G^T$, i.e., it represents
+    /// the final process noise covariance in state space.
+    fn predict<C: crate::InputModel>(&mut self, control_input: &C, dt: f64) {
+        // Downcast to IMUData
+        let imu_data = control_input
+            .as_any()
+            .downcast_ref::<IMUData>()
+            .expect("ExtendedKalmanFilter.predict expects an IMUData InputModel");
+
         // Extract current state
         let mut state = StrapdownState {
             latitude: self.mean_state[0],
@@ -811,7 +814,7 @@ impl NavigationFilter for ExtendedKalmanFilter {
         // State update: x = x + K * nu
         self.mean_state += &k * innovation;
 
-        // Wrap angles to [-pi, pi]
+        // Wrap angles to [0, 2*pi)
         self.mean_state[6] = wrap_to_2pi(self.mean_state[6]);
         self.mean_state[7] = wrap_to_2pi(self.mean_state[7]);
         self.mean_state[8] = wrap_to_2pi(self.mean_state[8]);
@@ -1671,7 +1674,7 @@ mod tests {
             accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
             gyro: Vector3::new(0.0, 0.0, 0.0),
         };
-        ekf.predict(imu_data, dt);
+        ekf.predict(&imu_data, dt);
         assert_eq!(ekf.mean_state.len(), 9);
 
         // Test GPS position measurement update
@@ -1708,7 +1711,7 @@ mod tests {
             accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
             gyro: Vector3::new(0.0, 0.0, 0.0),
         };
-        ekf.predict(imu_data, dt);
+        ekf.predict(&imu_data, dt);
         assert_eq!(ekf.mean_state.len(), 15);
 
         // Test GPS position measurement update
@@ -1743,7 +1746,7 @@ mod tests {
             gyro: Vector3::new(0.0, 0.0, 0.0),
         };
 
-        ekf.predict(imu_data, 0.1);
+        ekf.predict(&imu_data, 0.1);
 
         // Just verify prediction completed without panic
         assert_eq!(ekf.mean_state.len(), 15);
@@ -1875,7 +1878,7 @@ mod tests {
                 accel: Vector3::new(0.0, 0.0, 0.0), // Free fall - no measured acceleration
                 gyro: Vector3::new(0.0, 0.0, 0.0),
             };
-            ekf.predict(imu_data, dt);
+            ekf.predict(&imu_data, dt);
         }
 
         // After 1 second of free fall, should have accumulated vertical velocity
@@ -1934,7 +1937,7 @@ mod tests {
                 accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
                 gyro: Vector3::new(0.0, 0.0, 0.0),
             };
-            ekf.predict(imu_data, dt);
+            ekf.predict(&imu_data, dt);
         }
 
         // Velocity should remain near zero
@@ -2000,7 +2003,7 @@ mod tests {
                 accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
                 gyro: Vector3::new(0.0, 0.0, 0.0),
             };
-            ekf.predict(imu_data, dt);
+            ekf.predict(&imu_data, dt);
         }
 
         // Latitude should have increased (moving north)
@@ -2070,7 +2073,7 @@ mod tests {
                 accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
                 gyro: Vector3::new(0.0, 0.0, 0.0),
             };
-            ekf.predict(imu_data, dt);
+            ekf.predict(&imu_data, dt);
         }
 
         // Longitude should have increased (moving east)
@@ -2157,7 +2160,7 @@ mod tests {
                 accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
                 gyro: Vector3::new(0.0, 0.0, 0.0),
             };
-            ekf.predict(imu_data, dt);
+            ekf.predict(&imu_data, dt);
         }
 
         // Both latitude and longitude should have increased
@@ -2257,7 +2260,7 @@ mod tests {
         };
         ekf.update(&measurement);
 
-        // Angles should be wrapped to [-2*pi, 2*pi] range
+        // Angles should be wrapped to [0, 2*pi] range
         assert!(ekf.mean_state[6] >= 0.0 && ekf.mean_state[6] <= 2.0 * std::f64::consts::PI);
         assert!(ekf.mean_state[7] >= 0.0 && ekf.mean_state[7] <= 2.0 * std::f64::consts::PI);
         assert!(ekf.mean_state[8] >= 0.0 && ekf.mean_state[8] <= 2.0 * std::f64::consts::PI);
