@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use strapdown::messages::{GnssDegradationConfig, build_event_stream};
 use strapdown::sim::{
     FaultArgs, NavigationResult, SchedulerArgs, TestDataRecord, build_fault, build_scheduler,
-    initialize_ukf, run_closed_loop,
+    initialize_ukf, initialize_ekf, run_closed_loop,
 };
 
 // Import nalgebra types needed for process noise construction
@@ -94,12 +94,24 @@ struct SimArgs {
     output: PathBuf,
 }
 
+/// Filter type selection for closed-loop mode
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum FilterType {
+    /// Unscented Kalman Filter (UKF) - uses sigma points to propagate uncertainty
+    Ukf,
+    /// Extended Kalman Filter (EKF) - uses linearized Jacobians
+    Ekf,
+}
+
 /// Closed-loop simulation arguments combining SimArgs with closed-loop specific options
 #[derive(Args, Clone, Debug)]
 struct ClosedLoopSimArgs {
     /// Common simulation input/output arguments
     #[command(flatten)]
     sim: SimArgs,
+    /// Filter type to use for closed-loop navigation
+    #[arg(long, value_enum, default_value_t = FilterType::Ukf)]
+    filter: FilterType,
     /// RNG seed (applies to any stochastic options)
     #[arg(long, default_value_t = 42)]
     seed: u64,
@@ -271,7 +283,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         Command::ClosedLoop(args) => {
             validate_input_file(&args.sim.input)?;
             validate_output_path(&args.sim.output)?;
-            info!("Running in closed-loop mode");
+            
+            // Log which filter type is being used
+            let filter_name = match args.filter {
+                FilterType::Ukf => "Unscented Kalman Filter (UKF)",
+                FilterType::Ekf => "Extended Kalman Filter (EKF)",
+            };
+            info!("Running in closed-loop mode with {}", filter_name);
 
             // Load sensor data records from CSV
             let records = TestDataRecord::from_csv(&args.sim.input)?;
@@ -294,7 +312,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     scheduler: build_scheduler(&args.scheduler),
                     fault: build_fault(&args.fault),
                     seed: args.seed,
-                    magnetometer: todo!(),
+                    magnetometer: Default::default(),
                 }
             };
 
@@ -305,10 +323,23 @@ fn main() -> Result<(), Box<dyn Error>> {
                 event_stream.events.len()
             );
 
-            let mut ukf = initialize_ukf(records[0].clone(), None, None, None, None, None, None);
-            info!("Initialized UKF with state: {:?}", ukf);
-
-            let results = run_closed_loop(&mut ukf, event_stream, None);
+            // Initialize filter based on user selection
+            // Note: UKF and EKF have different initialization APIs:
+            // - UKF supports arbitrary additional states (other_states, other_states_covariance)
+            // - EKF uses use_biases flag to choose between 9-state and 15-state configurations
+            let results = match args.filter {
+                FilterType::Ukf => {
+                    let mut ukf = initialize_ukf(records[0].clone(), None, None, None, None, None, None);
+                    info!("Initialized UKF with state: {:?}", ukf);
+                    run_closed_loop(&mut ukf, event_stream, None)
+                }
+                FilterType::Ekf => {
+                    let mut ekf = initialize_ekf(records[0].clone(), None, None, None, None, true);
+                    info!("Initialized EKF with state: {:?}", ekf);
+                    run_closed_loop(&mut ekf, event_stream, None)
+                }
+            };
+            
             match results {
                 Ok(ref nav_results) => {
                     match NavigationResult::to_csv(nav_results, &args.sim.output) {

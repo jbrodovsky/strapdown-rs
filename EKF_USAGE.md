@@ -163,18 +163,23 @@ ekf.update(&meas);
 
 ## Command Line Usage (Simulator)
 
-Once the sim binary particle filter stubs are resolved, the EKF can be used via command line:
+The EKF is now fully integrated into the simulator and can be used via command line:
 
 ```bash
-# Run closed-loop simulation with EKF
+# Run closed-loop simulation with EKF (linearized Jacobians)
 strapdown-sim closed-loop --filter ekf --input data.csv --output results.csv
 
-# Run with UKF (default)
+# Run with UKF (default, sigma point propagation)
 strapdown-sim closed-loop --filter ukf --input data.csv --output results.csv
 
 # With GNSS degradation config
 strapdown-sim closed-loop --filter ekf --config gnss_config.toml --input data.csv --output results.csv
+
+# View available options
+strapdown-sim closed-loop --help
 ```
+
+The `--filter` option accepts either `ukf` or `ekf`, with `ukf` as the default for backward compatibility.
 
 ## Performance Characteristics
 
