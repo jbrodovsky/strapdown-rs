@@ -324,6 +324,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             );
 
             // Initialize filter based on user selection
+            // Note: UKF and EKF have different initialization APIs:
+            // - UKF supports arbitrary additional states (other_states, other_states_covariance)
+            // - EKF uses use_biases flag to choose between 9-state and 15-state configurations
             let results = match args.filter {
                 FilterType::Ukf => {
                     let mut ukf = initialize_ukf(records[0].clone(), None, None, None, None, None, None);
