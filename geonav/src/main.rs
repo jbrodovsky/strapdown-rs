@@ -8,8 +8,8 @@ use geonav::{
     GeoMap, GeophysicalMeasurementType, GravityResolution, MagneticResolution, build_event_stream,
     geo_closed_loop,
 };
-use strapdown::kalman::NavigationFilter;
-use strapdown::messages::GnssDegradationConfig;
+use strapdown::NavigationFilter;
+use strapdown::messages::{GnssDegradationConfig, MagnetometerConfig};
 use strapdown::sim::{
     DEFAULT_PROCESS_NOISE, FaultArgs, NavigationResult, SchedulerArgs, TestDataRecord, build_fault,
     build_scheduler, initialize_ukf,
@@ -305,6 +305,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             scheduler: build_scheduler(&cli.gnss.scheduler),
             fault: build_fault(&cli.gnss.fault),
             seed: cli.gnss.seed,
+            magnetometer: MagnetometerConfig::default(),
         }
     };
 
