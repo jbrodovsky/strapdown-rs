@@ -37,7 +37,7 @@ jobs:
         restore-keys: ${{ runner.os }}-cargo-
 
     - name: Test
-      run: cargo test --workspace --all-features --locked --verbose
+      run: cargo test --workspace --release --all-features --locked --verbose
 
     - name: Lint
       run: cargo clippy --workspace --all-features --fix
