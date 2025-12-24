@@ -1645,4 +1645,92 @@ mod tests {
         // With frequency limit, we should have fewer or equal number of measurements
         assert!(gravity_events.len() <= gravity_events_no_limit.len());
     }
+
+    #[test]
+    fn test_geomap_gradient() {
+        let map = create_test_gravity_map();
+        
+        // Test gradient computation at center point
+        let (dlat, dlon) = map.get_gradient(&41.0, &-73.0, 1e-6);
+        
+        // Gradient should be non-zero for a non-constant map
+        assert!(dlat.abs() > 1e-10 || dlon.abs() > 1e-10, 
+                "Expected non-zero gradient at center of map");
+        
+        // Test gradient at corner (should handle boundaries gracefully)
+        let (dlat_corner, dlon_corner) = map.get_gradient(&40.0, &-74.0, 1e-6);
+        assert!(dlat_corner.is_finite() && dlon_corner.is_finite(),
+                "Gradient should be finite at map corners");
+    }
+
+    #[test]
+    fn test_gravity_measurement_jacobian() {
+        let map = Rc::new(create_test_gravity_map());
+        let measurement = GravityMeasurement {
+            map: map.clone(),
+            noise_std: 100.0,
+            gravity_observed: 9.8,
+            latitude: 41.0_f64.to_radians(),
+            altitude: 100.0,
+            north_velocity: 0.0,
+            east_velocity: 0.0,
+        };
+        
+        // Create a state vector for Jacobian computation
+        let state = DVector::from_vec(vec![
+            41.0_f64.to_radians(),  // lat
+            -73.0_f64.to_radians(), // lon
+            100.0,                   // alt
+            0.0, 0.0, 0.0,          // velocities
+            0.0, 0.0, 0.0,          // attitude
+        ]);
+        
+        let jacobian = measurement.get_jacobian(&state);
+        
+        // Jacobian should be 1x9
+        assert_eq!(jacobian.nrows(), 1);
+        assert_eq!(jacobian.ncols(), 9);
+        
+        // First two columns (lat, lon derivatives) may be non-zero
+        // Other columns should be zero for direct position dependence
+        for j in 2..9 {
+            assert_approx_eq!(jacobian[(0, j)], 0.0, 1e-10);
+        }
+    }
+
+    #[test]
+    fn test_magnetic_measurement_jacobian() {
+        let map = Rc::new(create_test_magnetic_map());
+        let measurement = MagneticAnomalyMeasurement {
+            map: map.clone(),
+            noise_std: 100.0,
+            mag_obs: 48000.0,
+            latitude: 41.0,
+            longitude: -73.0,
+            altitude: 100.0,
+            year: 2023,
+            day: 216,
+        };
+        
+        // Create a state vector for Jacobian computation
+        let state = DVector::from_vec(vec![
+            41.0_f64.to_radians(),  // lat
+            -73.0_f64.to_radians(), // lon
+            100.0,                   // alt
+            0.0, 0.0, 0.0,          // velocities
+            0.0, 0.0, 0.0,          // attitude
+        ]);
+        
+        let jacobian = measurement.get_jacobian(&state);
+        
+        // Jacobian should be 1x9
+        assert_eq!(jacobian.nrows(), 1);
+        assert_eq!(jacobian.ncols(), 9);
+        
+        // First two columns (lat, lon derivatives) may be non-zero
+        // Other columns should be zero for direct position dependence
+        for j in 2..9 {
+            assert_approx_eq!(jacobian[(0, j)], 0.0, 1e-10);
+        }
+    }
 }

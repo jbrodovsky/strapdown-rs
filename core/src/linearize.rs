@@ -483,7 +483,7 @@ pub fn gravity_anomaly_jacobian(_state: &StrapdownState) -> DMatrix<f64> {
     // Gravity anomaly depends on position (lat, lon) through map lookup
     // The partial derivatives ∂z/∂lat and ∂z/∂lon are computed numerically
     // by the measurement model based on map gradients
-    let mut h = DMatrix::<f64>::zeros(1, 9);
+    let h = DMatrix::<f64>::zeros(1, 9);
     // These will be filled in by the measurement model with numerical derivatives
     // from the geophysical map interpolation
     // h[(0, 0)] = ∂(anomaly)/∂(lat) - computed from map gradient
@@ -527,7 +527,7 @@ pub fn magnetic_anomaly_jacobian(_state: &StrapdownState) -> DMatrix<f64> {
     // Magnetic anomaly depends on position (lat, lon) through map lookup
     // The partial derivatives ∂z/∂lat and ∂z/∂lon are computed numerically
     // by the measurement model based on map gradients
-    let mut h = DMatrix::<f64>::zeros(1, 9);
+    let h = DMatrix::<f64>::zeros(1, 9);
     // These will be filled in by the measurement model with numerical derivatives
     // from the geophysical map interpolation
     // h[(0, 0)] = ∂(anomaly)/∂(lat) - computed from map gradient
