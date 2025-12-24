@@ -36,6 +36,10 @@ use crate::{wrap_latitude, wrap_to_180};
 use nalgebra::{Matrix3, Vector3};
 use nav_types::{ECEF, WGS84};
 use world_magnetic_model::GeomagneticField;
+use world_magnetic_model::time::Date;
+use world_magnetic_model::uom::si::angle::degree;
+use world_magnetic_model::uom::si::f32::{Angle, Length};
+use world_magnetic_model::uom::si::length::meter;
 
 /// Earth's rotation rate rad/s ($\omega_{ie}$)
 pub const RATE: f64 = 7.2921159e-5;
@@ -805,6 +809,84 @@ pub fn magnetic_anomaly(
     let obs = (mag_x.powi(2) + mag_y.powi(2) + mag_z.powi(2)).sqrt();
     obs - (magnetic_field.f().value as f64)
 }
+
+/// Calculate the magnetic field vector in NED frame using the World Magnetic Model (WMM)
+///
+/// This function computes the Earth's magnetic field at a given location using the
+/// World Magnetic Model (WMM). The WMM is a model of the Earth's magnetic field that
+/// is updated every 5 years by NOAA and the British Geological Survey.
+///
+/// # Arguments
+/// - `latitude` - The WGS84 latitude in degrees
+/// - `longitude` - The WGS84 longitude in degrees
+/// - `altitude` - The WGS84 altitude in meters above the WGS84 ellipsoid
+/// - `year` - The year for the magnetic field calculation (e.g., 2025)
+/// - `day_of_year` - The day of year (1-365 or 1-366 for leap years)
+///
+/// # Returns
+/// A `Vector3<f64>` containing the magnetic field components in microteslas (μT) in NED frame:
+/// - [0]: North component (μT)
+/// - [1]: East component (μT)
+/// - [2]: Down component (μT)
+///
+/// # Errors
+/// Returns `None` if the WMM calculation fails (e.g., invalid date or coordinates).
+///
+/// # Example
+/// ```rust
+/// use strapdown::earth;
+/// use nalgebra::Vector3;
+///
+/// // Calculate magnetic field at Philadelphia on January 1, 2025
+/// let lat = 39.95;  // degrees
+/// let lon = -75.16; // degrees
+/// let alt = 100.0;  // meters
+/// 
+/// if let Some(field) = earth::magnetic_field_wmm(&lat, &lon, &alt, 2025, 1) {
+///     println!("Magnetic field: North={:.2}, East={:.2}, Down={:.2} μT",
+///              field[0], field[1], field[2]);
+/// }
+/// ```
+///
+/// # Notes
+/// - The magnetic field is returned in microteslas (μT), which is the standard unit
+///   for magnetometer measurements.
+/// - The WMM is valid from 2020-2025. Using dates outside this range may produce
+///   extrapolated results with reduced accuracy.
+/// - Altitude should be in meters above the WGS84 ellipsoid, not above mean sea level.
+pub fn magnetic_field_wmm(
+    latitude: &f64,
+    longitude: &f64,
+    altitude: &f64,
+    year: i32,
+    day_of_year: u16,
+) -> Option<Vector3<f64>> {
+    // Create the date for the WMM calculation
+    let date = Date::from_ordinal_date(year, day_of_year).ok()?;
+    
+    // Create the geomagnetic field calculation
+    // Note: WMM uses f32 for its calculations
+    let field = GeomagneticField::new(
+        Length::new::<meter>(*altitude as f32),
+        Angle::new::<degree>(*latitude as f32),
+        Angle::new::<degree>(*longitude as f32),
+        date,
+    ).ok()?;
+    
+    // Extract components and convert from Tesla to microteslas
+    // WMM .value returns the raw f32 value in SI units (Tesla for magnetic flux density)
+    // 1 Tesla = 1,000,000 μT
+    let north_t = field.x().value as f64;  // North component in T
+    let east_t = field.y().value as f64;   // East component in T  
+    let down_t = field.z().value as f64;   // Down component in T
+    
+    // Convert from T to μT (1 T = 1,000,000 μT)
+    let north_ut = north_t * 1_000_000.0;
+    let east_ut = east_t * 1_000_000.0;
+    let down_ut = down_t * 1_000_000.0;
+    
+    Some(Vector3::new(north_ut, east_ut, down_ut))
+}
 // === Unit tests ===
 #[cfg(test)]
 mod tests {
@@ -1264,5 +1346,51 @@ mod tests {
             correction_north.abs() > 0.0,
             "North velocity should produce correction"
         );
+    }
+
+    #[test]
+    fn test_magnetic_field_wmm() {
+        // Test WMM calculation at a known location
+        let latitude = 39.95;  // Philadelphia, PA
+        let longitude = -75.16;
+        let altitude = 100.0;
+        let year = 2025;
+        let day_of_year = 1;
+
+        let field = magnetic_field_wmm(&latitude, &longitude, &altitude, year, day_of_year);
+        assert!(field.is_some(), "WMM calculation should succeed");
+
+        let field = field.unwrap();
+        
+        // Check that all components are finite
+        assert!(field[0].is_finite(), "North component should be finite");
+        assert!(field[1].is_finite(), "East component should be finite");
+        assert!(field[2].is_finite(), "Down component should be finite");
+
+        // Check reasonable magnitude for mid-latitudes (20-70 μT typical)
+        let magnitude = (field[0].powi(2) + field[1].powi(2) + field[2].powi(2)).sqrt();
+        assert!(magnitude > 10.0 && magnitude < 100.0, 
+                "Magnetic field magnitude should be reasonable, got {} μT", magnitude);
+
+        // For northern hemisphere, down component should be positive
+        assert!(field[2] > 0.0, "Down component should be positive in northern hemisphere");
+
+        // Test at equator - down component should be near zero
+        let field_eq = magnetic_field_wmm(&0.0, &0.0, &0.0, year, day_of_year);
+        assert!(field_eq.is_some(), "WMM calculation at equator should succeed");
+        let field_eq = field_eq.unwrap();
+        assert!(field_eq[2].abs() < 20.0, "Down component at equator should be small");
+    }
+
+    #[test]
+    fn test_magnetic_field_wmm_invalid_date() {
+        // Test with invalid date
+        let latitude = 39.95;
+        let longitude = -75.16;
+        let altitude = 100.0;
+        
+        // Day 366 in a non-leap year should fail
+        let field = magnetic_field_wmm(&latitude, &longitude, &altitude, 2025, 366);
+        assert!(field.is_none(), "Invalid date should return None");
     }
 }

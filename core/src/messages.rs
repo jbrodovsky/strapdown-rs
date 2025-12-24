@@ -281,8 +281,24 @@ pub struct MagnetometerConfig {
     #[serde(default)]
     pub enabled: bool,
 
+    /// Use World Magnetic Model to compute reference field from position
+    /// If false, uses the manual reference_field_ned
+    #[serde(default)]
+    pub use_wmm: bool,
+
+    /// Year for WMM calculation (e.g., 2025)
+    /// Only used if use_wmm is true
+    #[serde(default = "default_wmm_year")]
+    pub wmm_year: i32,
+
+    /// Day of year for WMM calculation (1-365 or 1-366)
+    /// Only used if use_wmm is true
+    #[serde(default = "default_wmm_day")]
+    pub wmm_day_of_year: u16,
+
     /// Reference magnetic field vector in NED frame (μT)
     /// [North, East, Down] components
+    /// Only used if use_wmm is false
     /// Typical values: Northern hemisphere ~[25, 0, 40], Southern ~[25, 0, -40]
     #[serde(default = "default_reference_field")]
     pub reference_field_ned: [f64; 3],
@@ -307,6 +323,9 @@ impl Default for MagnetometerConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            use_wmm: false,
+            wmm_year: default_wmm_year(),
+            wmm_day_of_year: default_wmm_day(),
             reference_field_ned: default_reference_field(),
             hard_iron_offset: [0.0; 3],
             soft_iron_matrix: default_soft_iron_matrix(),
@@ -325,6 +344,14 @@ fn default_soft_iron_matrix() -> [f64; 9] {
 
 fn default_mag_noise() -> f64 {
     5.0 // 5 μT noise std
+}
+
+fn default_wmm_year() -> i32 {
+    2025
+}
+
+fn default_wmm_day() -> u16 {
+    1
 }
 
 impl Default for GnssDegradationConfig {
@@ -1079,6 +1106,9 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
                     mag_y: r1.mag_y,
                     mag_z: r1.mag_z,
                     reference_field_ned: reference_field,
+                    use_wmm: cfg.magnetometer.use_wmm,
+                    wmm_year: cfg.magnetometer.wmm_year,
+                    wmm_day_of_year: cfg.magnetometer.wmm_day_of_year,
                     hard_iron_offset: hard_iron,
                     soft_iron_matrix: soft_iron,
                     noise_std: cfg.magnetometer.noise_std,
@@ -1677,6 +1707,9 @@ mod tests {
             fault: GnssFaultModel::None,
             magnetometer: MagnetometerConfig {
                 enabled: true,
+                use_wmm: false,
+                wmm_year: 2025,
+                wmm_day_of_year: 1,
                 reference_field_ned: [25.0, 0.0, 45.0],
                 hard_iron_offset: [1.0, 0.5, 2.0],
                 soft_iron_matrix: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
