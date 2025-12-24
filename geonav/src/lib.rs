@@ -15,6 +15,8 @@
 //! `grav_y`, `grav_z`), but these values are not the specific anomaly. The scalar gravity must be calculated and corrected
 //! using the vehicle velocity (Eotvos correction) and the reference gravity at the current position (from a gravity map) to
 //! calculate the free air anomaly.
+
+pub mod velocity_particle;
 use std::any::Any;
 use std::fmt::{Debug, Display};
 use std::path::PathBuf;
