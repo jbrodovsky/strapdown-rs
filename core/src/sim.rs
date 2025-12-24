@@ -583,6 +583,47 @@ impl From<(&DateTime<Utc>, &UnscentedKalmanFilter)> for NavigationResult {
         }
     }
 }
+
+impl From<(&DateTime<Utc>, &crate::kalman::ExtendedKalmanFilter)> for NavigationResult {
+    fn from((timestamp, ekf): (&DateTime<Utc>, &crate::kalman::ExtendedKalmanFilter)) -> Self {
+        let state = &ekf.get_estimate();
+        let covariance = ekf.get_certainty();
+        NavigationResult {
+            timestamp: *timestamp,
+            latitude: state[0].to_degrees(),
+            longitude: state[1].to_degrees(),
+            altitude: state[2],
+            velocity_north: state[3],
+            velocity_east: state[4],
+            velocity_vertical: state[5],
+            roll: state[6],
+            pitch: state[7],
+            yaw: state[8],
+            acc_bias_x: if state.len() > 9 { state[9] } else { 0.0 },
+            acc_bias_y: if state.len() > 10 { state[10] } else { 0.0 },
+            acc_bias_z: if state.len() > 11 { state[11] } else { 0.0 },
+            gyro_bias_x: if state.len() > 12 { state[12] } else { 0.0 },
+            gyro_bias_y: if state.len() > 13 { state[13] } else { 0.0 },
+            gyro_bias_z: if state.len() > 14 { state[14] } else { 0.0 },
+            latitude_cov: covariance[(0, 0)],
+            longitude_cov: covariance[(1, 1)],
+            altitude_cov: covariance[(2, 2)],
+            velocity_n_cov: covariance[(3, 3)],
+            velocity_e_cov: covariance[(4, 4)],
+            velocity_v_cov: covariance[(5, 5)],
+            roll_cov: covariance[(6, 6)],
+            pitch_cov: covariance[(7, 7)],
+            yaw_cov: covariance[(8, 8)],
+            acc_bias_x_cov: if covariance.nrows() > 9 { covariance[(9, 9)] } else { 0.0 },
+            acc_bias_y_cov: if covariance.nrows() > 10 { covariance[(10, 10)] } else { 0.0 },
+            acc_bias_z_cov: if covariance.nrows() > 11 { covariance[(11, 11)] } else { 0.0 },
+            gyro_bias_x_cov: if covariance.nrows() > 12 { covariance[(12, 12)] } else { 0.0 },
+            gyro_bias_y_cov: if covariance.nrows() > 13 { covariance[(13, 13)] } else { 0.0 },
+            gyro_bias_z_cov: if covariance.nrows() > 14 { covariance[(14, 14)] } else { 0.0 },
+        }
+    }
+}
+
 /// Convert StrapdownState to NavigationResult.
 ///
 /// This implementation is useful for converting the output of a StrapdownState into a
