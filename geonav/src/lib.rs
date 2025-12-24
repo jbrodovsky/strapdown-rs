@@ -610,13 +610,11 @@ impl GravityMeasurement {
         let lon = state[1];
         
         // Compute numerical gradient from the geophysical map
-        // Epsilon in radians (approximately 1e-6 degrees converted to radians)
         let (dlat_deg, dlon_deg) = self.map.get_gradient(&lat.to_degrees(), &lon.to_degrees(), 1e-6);
         
         // Convert gradient from per-degree to per-radian
-        // ∂z/∂(lat_rad) = ∂z/∂(lat_deg) * ∂(lat_deg)/∂(lat_rad) = ∂z/∂(lat_deg) * (180/π)
-        h[(0, 0)] = dlat_deg * 180.0 / std::f64::consts::PI;
-        h[(0, 1)] = dlon_deg * 180.0 / std::f64::consts::PI;
+        h[(0, 0)] = dlat_deg * RAD_TO_DEG;
+        h[(0, 1)] = dlon_deg * RAD_TO_DEG;
         
         h
     }
@@ -1134,7 +1132,7 @@ pub fn geo_closed_loop_ekf(
                     
                     // For EKF with geophysical measurements, use standard update
                     // The measurement model will compute necessary Jacobians
-                    ekf_update_geophysical(ekf, gravity, &mean_vec);
+                    ekf_update_geophysical(ekf, gravity);
                 } else if let Some(magnetic) = meas
                     .as_any_mut()
                     .downcast_mut::<MagneticAnomalyMeasurement>()
@@ -1146,7 +1144,7 @@ pub fn geo_closed_loop_ekf(
                     magnetic.set_state(&strapdown);
                     
                     // Custom update with measurement state preparation
-                    ekf_update_geophysical(ekf, magnetic, &mean_vec);
+                    ekf_update_geophysical(ekf, magnetic);
                 } else {
                     // Handle standard measurements (GPS, baro, etc.)
                     ekf.update(meas.as_ref());
@@ -1187,7 +1185,6 @@ pub fn geo_closed_loop_ekf(
 fn ekf_update_geophysical(
     ekf: &mut strapdown::kalman::ExtendedKalmanFilter,
     measurement: &dyn GeophysicalAnomalyMeasurementModel,
-    _state: &DVector<f64>,
 ) {
     // For now, we use the standard EKF update which computes Jacobians internally
     // The Jacobian computation methods are available in the measurement models via get_jacobian()
