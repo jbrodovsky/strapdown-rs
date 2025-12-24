@@ -209,17 +209,19 @@ impl VelocityInformedParticle {
         let v_d = velocity[2];  // m/s down
 
         // Convert velocities to position changes
-        // Approximate conversion for small displacements
-        use strapdown::earth::{EARTH_RADIUS_EQUATOR, EARTH_SEMI_MINOR_AXIS};
+        // Use WGS84 principal radii for accurate geodetic calculations
+        use strapdown::earth::principal_radii;
+        
+        // Get principal radii at current position (expects latitude in degrees)
+        let lat_deg = lat.to_degrees();
+        let (r_n, r_e, _) = principal_radii(&lat_deg, &alt);
         
         // Latitude change (northward displacement)
-        let r_n = EARTH_SEMI_MINOR_AXIS + alt;  // Radius of curvature in meridian
         let delta_lat = (v_n * dt) / r_n;
         
         // Longitude change (eastward displacement)
-        let r_e = (EARTH_RADIUS_EQUATOR + alt) * lat.cos();  // Radius in prime vertical
         let delta_lon = if lat.cos().abs() > 1e-8 {
-            (v_e * dt) / r_e
+            (v_e * dt) / (r_e * lat.cos())
         } else {
             0.0  // At poles, longitude is undefined
         };
@@ -227,15 +229,18 @@ impl VelocityInformedParticle {
         // Altitude change (vertical displacement, down is positive)
         let delta_alt = -v_d * dt;  // Negative because down is positive in NED frame
 
-        // Add process noise (jitter) in meters, then convert to radians for lat/lon
-        let noise_lat = rng.gen::<f64>() * process_noise_std * 2.0 - process_noise_std;  // [-std, +std]
-        let noise_lon = rng.gen::<f64>() * process_noise_std * 2.0 - process_noise_std;
-        let noise_alt = rng.gen::<f64>() * process_noise_std * 2.0 - process_noise_std;
+        // Add process noise (jitter) using Gaussian distribution
+        use rand_distr::{Normal, Distribution};
+        
+        let normal = Normal::new(0.0, process_noise_std).unwrap();
+        let noise_lat_m = normal.sample(rng);  // meters
+        let noise_lon_m = normal.sample(rng);  // meters
+        let noise_alt = normal.sample(rng);    // meters
 
         // Convert noise from meters to radians for lat/lon
-        let noise_lat_rad = noise_lat / r_n;
+        let noise_lat_rad = noise_lat_m / r_n;
         let noise_lon_rad = if lat.cos().abs() > 1e-8 {
-            noise_lon / r_e
+            noise_lon_m / (r_e * lat.cos())
         } else {
             0.0
         };
