@@ -447,6 +447,94 @@ pub fn relative_altitude_jacobian(_state: &StrapdownState) -> DMatrix<f64> {
     h
 }
 
+/// Compute measurement Jacobian (H) for gravity anomaly measurement
+///
+/// Gravity anomaly measurements depend on latitude and longitude (position)
+/// to query the geophysical map. The measurement is a scalar anomaly value
+/// interpolated from the map at the current position.
+///
+/// # Arguments
+///
+/// * `_state` - Current navigation state (used for consistency, map lookup done elsewhere)
+///
+/// # Returns
+///
+/// 1×9 measurement Jacobian matrix H for gravity anomaly
+///
+/// # Example
+///
+/// ```rust
+/// use strapdown::linearize::gravity_anomaly_jacobian;
+/// use strapdown::StrapdownState;
+///
+/// let state = StrapdownState::default();
+/// let h = gravity_anomaly_jacobian(&state);
+/// assert_eq!(h.nrows(), 1);
+/// assert_eq!(h.ncols(), 9);
+/// ```
+///
+/// # Note
+///
+/// The Jacobian is computed numerically by the measurement model due to the
+/// complex bilinear interpolation in the geophysical map. This function returns
+/// a template structure where the actual values are filled in by the measurement
+/// model based on map derivatives.
+pub fn gravity_anomaly_jacobian(_state: &StrapdownState) -> DMatrix<f64> {
+    // Gravity anomaly depends on position (lat, lon) through map lookup
+    // The partial derivatives ∂z/∂lat and ∂z/∂lon are computed numerically
+    // by the measurement model based on map gradients
+    let mut h = DMatrix::<f64>::zeros(1, 9);
+    // These will be filled in by the measurement model with numerical derivatives
+    // from the geophysical map interpolation
+    // h[(0, 0)] = ∂(anomaly)/∂(lat) - computed from map gradient
+    // h[(0, 1)] = ∂(anomaly)/∂(lon) - computed from map gradient
+    h
+}
+
+/// Compute measurement Jacobian (H) for magnetic anomaly measurement
+///
+/// Magnetic anomaly measurements depend on latitude and longitude (position)
+/// to query the geophysical map. The measurement is a scalar anomaly value
+/// interpolated from the map at the current position.
+///
+/// # Arguments
+///
+/// * `_state` - Current navigation state (used for consistency, map lookup done elsewhere)
+///
+/// # Returns
+///
+/// 1×9 measurement Jacobian matrix H for magnetic anomaly
+///
+/// # Example
+///
+/// ```rust
+/// use strapdown::linearize::magnetic_anomaly_jacobian;
+/// use strapdown::StrapdownState;
+///
+/// let state = StrapdownState::default();
+/// let h = magnetic_anomaly_jacobian(&state);
+/// assert_eq!(h.nrows(), 1);
+/// assert_eq!(h.ncols(), 9);
+/// ```
+///
+/// # Note
+///
+/// The Jacobian is computed numerically by the measurement model due to the
+/// complex bilinear interpolation in the geophysical map. This function returns
+/// a template structure where the actual values are filled in by the measurement
+/// model based on map derivatives.
+pub fn magnetic_anomaly_jacobian(_state: &StrapdownState) -> DMatrix<f64> {
+    // Magnetic anomaly depends on position (lat, lon) through map lookup
+    // The partial derivatives ∂z/∂lat and ∂z/∂lon are computed numerically
+    // by the measurement model based on map gradients
+    let mut h = DMatrix::<f64>::zeros(1, 9);
+    // These will be filled in by the measurement model with numerical derivatives
+    // from the geophysical map interpolation
+    // h[(0, 0)] = ∂(anomaly)/∂(lat) - computed from map gradient
+    // h[(0, 1)] = ∂(anomaly)/∂(lon) - computed from map gradient
+    h
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
