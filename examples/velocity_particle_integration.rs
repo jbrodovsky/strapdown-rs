@@ -37,9 +37,6 @@
 //! cargo run --example velocity_particle_integration
 //! ```
 
-use nalgebra::DVector;
-use std::rc::Rc;
-
 // Note: This is a conceptual example. In a real application, you would need:
 // 1. Actual IMU/GNSS data
 // 2. Geophysical maps (gravity or magnetic)
@@ -162,16 +159,10 @@ fn demonstrate_api() {
     println!("=== API Demonstration (Mock Data) ===\n");
     
     // Initial position: 45°N, 122°W, 100m altitude
-    let initial_position = DVector::from_vec(vec![
-        45.0_f64.to_radians(),
-        -122.0_f64.to_radians(),
-        100.0,
-    ]);
-    
     println!("Initial position:");
-    println!("  Latitude:  {} rad ({:.4}°)", initial_position[0], initial_position[0].to_degrees());
-    println!("  Longitude: {} rad ({:.4}°)", initial_position[1], initial_position[1].to_degrees());
-    println!("  Altitude:  {} m", initial_position[2]);
+    println!("  Latitude:  0.7854 rad (45.0000°)");
+    println!("  Longitude: -2.1293 rad (-122.0000°)");
+    println!("  Altitude:  100.0 m");
     println!("");
     
     // This would normally come from geonav crate
@@ -185,24 +176,27 @@ fn demonstrate_api() {
     println!("");
     
     // Simulate velocity from UKF: 10 m/s north, 5 m/s east, 0 m/s vertical
-    let velocity = DVector::from_vec(vec![10.0, 5.0, 0.0]);
-    println!("Velocity from UKF: [{:.1}, {:.1}, {:.1}] m/s", velocity[0], velocity[1], velocity[2]);
+    println!("Velocity from UKF: [10.0, 5.0, 0.0] m/s");
     println!("");
     
     println!("Propagating particles:");
     println!("  pf.propagate(&velocity, 0.1);  // dt = 0.1s");
     println!("");
     
-    // Expected position change
-    use std::f64::consts::PI;
-    let earth_radius = 6.371e6; // meters
-    let expected_lat_change = (velocity[0] * 0.1) / earth_radius * (180.0 / PI);
-    let expected_lon_change = (velocity[1] * 0.1) / (earth_radius * (initial_position[0].cos())) * (180.0 / PI);
+    // Expected position change (approximate calculations)
+    let earth_radius: f64 = 6.371e6; // meters
+    let initial_lat_rad: f64 = 0.7854;
+    let velocity_north: f64 = 10.0;
+    let velocity_east: f64 = 5.0;
+    let dt: f64 = 0.1;
+    
+    let expected_lat_change = (velocity_north * dt) / earth_radius * (180.0 / std::f64::consts::PI);
+    let expected_lon_change = (velocity_east * dt) / (earth_radius * initial_lat_rad.cos()) * (180.0 / std::f64::consts::PI);
     
     println!("Expected position change (approximate):");
-    println!("  Δ Latitude:  {:.8}° ({:.3} m north)", expected_lat_change, velocity[0] * 0.1);
-    println!("  Δ Longitude: {:.8}° ({:.3} m east)", expected_lon_change, velocity[1] * 0.1);
-    println!("  Δ Altitude:  {:.3} m", -velocity[2] * 0.1);
+    println!("  Δ Latitude:  {:.8}° ({:.3} m north)", expected_lat_change, velocity_north * dt);
+    println!("  Δ Longitude: {:.8}° ({:.3} m east)", expected_lon_change, velocity_east * dt);
+    println!("  Δ Altitude:  {:.3} m", 0.0);
     println!("");
     
     println!("Updating with geophysical measurement:");
