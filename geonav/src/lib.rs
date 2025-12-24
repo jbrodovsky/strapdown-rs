@@ -42,6 +42,9 @@ use strapdown::sim::health::{HealthLimits, HealthMonitor};
 use strapdown::sim::{NavigationResult, TestDataRecord};
 use strapdown::{IMUData, NavigationFilter, StrapdownState};
 
+/// Conversion factor from radians to degrees (180/π)
+const RAD_TO_DEG: f64 = 180.0 / std::f64::consts::PI;
+
 //================= Map Information ========================================================================
 /// Resolution values for bathymetric or terrain relief maps
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -724,8 +727,8 @@ impl MagneticAnomalyMeasurement {
         let (dlat_deg, dlon_deg) = self.map.get_gradient(&lat.to_degrees(), &lon.to_degrees(), 1e-6);
         
         // Convert gradient from per-degree to per-radian
-        h[(0, 0)] = dlat_deg * 180.0 / std::f64::consts::PI;
-        h[(0, 1)] = dlon_deg * 180.0 / std::f64::consts::PI;
+        h[(0, 0)] = dlat_deg * RAD_TO_DEG;
+        h[(0, 1)] = dlon_deg * RAD_TO_DEG;
         
         h
     }
@@ -1129,9 +1132,9 @@ pub fn geo_closed_loop_ekf(
                     let strapdown: StrapdownState = (&mean[..9]).try_into().unwrap();
                     gravity.set_state(&strapdown);
                     
-                    // For EKF with geophysical measurements, we use a custom update
-                    // that computes the Jacobian from the map gradient
-                    ekf_update_with_jacobian(ekf, gravity, &mean_vec);
+                    // For EKF with geophysical measurements, use standard update
+                    // The measurement model will compute necessary Jacobians
+                    ekf_update_geophysical(ekf, gravity, &mean_vec);
                 } else if let Some(magnetic) = meas
                     .as_any_mut()
                     .downcast_mut::<MagneticAnomalyMeasurement>()
@@ -1142,8 +1145,8 @@ pub fn geo_closed_loop_ekf(
                     let strapdown: StrapdownState = (&mean[..9]).try_into().unwrap();
                     magnetic.set_state(&strapdown);
                     
-                    // Custom update with Jacobian from magnetic map
-                    ekf_update_with_jacobian(ekf, magnetic, &mean_vec);
+                    // Custom update with measurement state preparation
+                    ekf_update_geophysical(ekf, magnetic, &mean_vec);
                 } else {
                     // Handle standard measurements (GPS, baro, etc.)
                     ekf.update(meas.as_ref());
@@ -1176,19 +1179,19 @@ pub fn geo_closed_loop_ekf(
     Ok(results)
 }
 
-/// Helper function to perform EKF update with custom Jacobian for geophysical measurements
+/// Helper function to perform EKF update with geophysical measurements
 ///
-/// This function handles the measurement update for geophysical anomaly measurements
-/// where the Jacobian is computed from the map gradient rather than using the standard
-/// measurement model.
-fn ekf_update_with_jacobian(
+/// This function handles the measurement update for geophysical anomaly measurements.
+/// Currently uses the standard EKF update method. Future enhancements could pass custom
+/// Jacobians directly to the EKF for improved efficiency.
+fn ekf_update_geophysical(
     ekf: &mut strapdown::kalman::ExtendedKalmanFilter,
     measurement: &dyn GeophysicalAnomalyMeasurementModel,
     _state: &DVector<f64>,
 ) {
-    // For now, we'll use the standard EKF update which will compute its own Jacobian
-    // In a future enhancement, we could pass custom Jacobians to the EKF
-    // The Jacobian computation functions are available in the measurement models
+    // For now, we use the standard EKF update which computes Jacobians internally
+    // The Jacobian computation methods are available in the measurement models via get_jacobian()
+    // A future enhancement could modify the EKF to accept precomputed custom Jacobians
     ekf.update(measurement as &dyn MeasurementModel);
 }
 
