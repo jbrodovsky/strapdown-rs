@@ -12,6 +12,7 @@ RUST_BACKTRACE = "1"
 HDF5_DIR = "${PIXI_PROJECT_ROOT}/.pixi/envs/default"
 RUSTFLAGS="-C link-args=-Wl,-rpath,.pixi/envs/default/include/lib"
 PATH = "${PIXI_PROJECT_ROOT}/target/release:${PATH}"
+RUSTDOCFLAGS="--html-in-header ${PIXI_PROJECT_ROOT}/katex-header.html"
 
 [tasks]
 build = "cargo build --workspace --release"
