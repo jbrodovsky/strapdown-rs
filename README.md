@@ -10,7 +10,7 @@ Markdown: [![status](https://joss.theoj.org/papers/5079592cc860d1435482a4a7764ed
 
 Strapdown-rs is a straightforward strapdown inertial navigation system (INS) implementation in Rust. It is designed to be simple and easy to understand, making it a great starting point for those interested in learning about or implementing strapdown INS algorithms. It is currently under active development.
 
-**📖 [User Guide](docs/USER_GUIDE.md)** | **📚 [API Documentation](https://docs.rs/strapdown-core)** | **🔧 [Example Configurations](examples/configs/)**
+**📖 [Full Documentation](https://jbrodovsky.github.io/strapdown-rs/)** | **📚 [API Documentation](https://docs.rs/strapdown-core)** | **🔧 [Example Configurations](examples/configs/)**
 
 The primary contributions of this project are:
 

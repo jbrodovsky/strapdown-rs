@@ -1,0 +1,39 @@
+[book]
+title = "Strapdown-rs Documentation"
+authors = ["James Brodovsky"]
+description = "A Rust library for strapdown inertial navigation systems"
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+create-missing = true
+
+[output.html]
+mathjax-support = true
+git-repository-url = "https://github.com/jbrodovsky/strapdown-rs"
+edit-url-template = "https://github.com/jbrodovsky/strapdown-rs/edit/main/book/{path}"
+site-url = "/strapdown-rs/"
+cname = "www.strapdown.rs"
+default-theme = "light"
+preferred-dark-theme = "navy"
+no-section-label = false
+additional-css = ["custom.css"]
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.playground]
+editable = false
+copyable = true
+line-numbers = true
+
+[output.html.search]
+enable = true
+limit-results = 30
+use-boolean-and = true
+
+[preprocessor.links]
+
+[preprocessor.index]
