@@ -6,9 +6,10 @@ use std::rc::Rc;
 
 use geonav::{
     GeoMap, GeophysicalMeasurementType, GravityResolution, MagneticResolution, build_event_stream,
-    geo_closed_loop,
+    geo_closed_loop, geo_closed_loop_ekf,
 };
 use strapdown::NavigationFilter;
+use strapdown::kalman::{ExtendedKalmanFilter, InitialState};
 use strapdown::messages::{GnssDegradationConfig, MagnetometerConfig};
 use strapdown::sim::{
     DEFAULT_PROCESS_NOISE, FaultArgs, NavigationResult, SchedulerArgs, TestDataRecord, build_fault,
@@ -20,6 +21,8 @@ const LONG_ABOUT: &str = "GEONAV-SIM: A geophysical navigation simulation tool f
 This program extends the basic strapdown simulation by incorporating geophysical measurements such as gravity and magnetic anomalies for enhanced navigation accuracy. It loads geophysical maps (NetCDF format) and simulates how these measurements can aid inertial navigation systems, particularly in GNSS-denied environments.
 
 The program operates in closed-loop mode, incorporating both GNSS measurements (when available) and geophysical measurements from loaded maps. It can simulate various GNSS degradation scenarios while maintaining navigation accuracy through geophysical aiding.
+
+The program supports both Unscented Kalman Filter (UKF) and Extended Kalman Filter (EKF) implementations for state estimation.
 
 Input data format is identical to strapdown-sim, with additional geophysical map files:
 * Input CSV: Standard IMU/GNSS data as per strapdown-sim specification
@@ -38,6 +41,9 @@ struct Cli {
     /// Output CSV file path
     #[arg(short, long, value_parser)]
     output: PathBuf,
+    /// Filter type (UKF or EKF)
+    #[arg(long, value_enum, default_value_t = FilterType::Ukf)]
+    filter: FilterType,
     /// Geophysical measurement configuration
     #[command(flatten)]
     geo: GeophysicalArgs,
@@ -50,6 +56,14 @@ struct Cli {
     /// Log file path (if not specified, logs to stderr)
     #[arg(long)]
     log_file: Option<PathBuf>,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+pub enum FilterType {
+    /// Unscented Kalman Filter (sigma-point based)
+    Ukf,
+    /// Extended Kalman Filter (linearization based)
+    Ekf,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -319,27 +333,89 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
     info!("Built event stream with {} events", events.events.len());
 
-    // Initialize UKF
-    let mut process_noise: Vec<f64> = DEFAULT_PROCESS_NOISE.into();
-    process_noise.extend([1e-9]); // Extend for geophysical state
+    // Run simulation based on filter type
+    let results = match cli.filter {
+        FilterType::Ukf => {
+            info!("Initializing UKF...");
+            let mut process_noise: Vec<f64> = DEFAULT_PROCESS_NOISE.into();
+            process_noise.extend([1e-9]); // Extend for geophysical state
 
-    let mut ukf = initialize_ukf(
-        records[0].clone(),
-        None,
-        None,
-        None,
-        Some(vec![cli.geo.geo_bias; 1]),
-        Some(vec![cli.geo.geo_noise_std; 1]),
-        Some(process_noise),
-    );
-    info!(
-        "Initialized UKF with state dimension {}",
-        ukf.get_estimate().len()
-    );
-    info!("Initial state: {:?}", ukf.get_estimate());
-    // Run closed-loop simulation
-    info!("Running geophysical navigation simulation...");
-    let results = geo_closed_loop(&mut ukf, events);
+            let mut ukf = initialize_ukf(
+                records[0].clone(),
+                None,
+                None,
+                None,
+                Some(vec![cli.geo.geo_bias; 1]),
+                Some(vec![cli.geo.geo_noise_std; 1]),
+                Some(process_noise),
+            );
+            info!(
+                "Initialized UKF with state dimension {}",
+                ukf.get_estimate().len()
+            );
+            info!("Initial state: {:?}", ukf.get_estimate());
+            
+            info!("Running UKF geophysical navigation simulation...");
+            geo_closed_loop(&mut ukf, events)
+        }
+        FilterType::Ekf => {
+            info!("Initializing EKF...");
+            
+            // Construct initial state from first record
+            let initial_state = InitialState {
+                latitude: records[0].latitude,
+                longitude: records[0].longitude,
+                altitude: records[0].altitude,
+                northward_velocity: records[0].speed * records[0].bearing.to_radians().cos(),
+                eastward_velocity: records[0].speed * records[0].bearing.to_radians().sin(),
+                vertical_velocity: 0.0,
+                roll: 0.0,
+                pitch: 0.0,
+                yaw: records[0].bearing.to_radians(),
+                in_degrees: true,
+                is_enu: true,
+            };
+            
+            // IMU biases (accelerometer + gyroscope)
+            let imu_biases = vec![0.0; 6];
+            
+            // Initial covariance diagonal (15-state: pos, vel, att, biases)
+            let covariance_diagonal = vec![
+                1e-6, 1e-6, 1.0,      // Position uncertainty
+                0.1, 0.1, 0.1,         // Velocity uncertainty
+                1e-4, 1e-4, 1e-4,      // Attitude uncertainty
+                1e-6, 1e-6, 1e-6,      // Accel bias uncertainty
+                1e-8, 1e-8, 1e-8,      // Gyro bias uncertainty
+            ];
+            
+            // Process noise (15-state)
+            use nalgebra::DMatrix;
+            let process_noise = DMatrix::from_diagonal(&nalgebra::DVector::from_vec(vec![
+                1e-9, 1e-9, 1e-6,      // Position process noise
+                1e-6, 1e-6, 1e-6,      // Velocity process noise
+                1e-9, 1e-9, 1e-9,      // Attitude process noise
+                1e-9, 1e-9, 1e-9,      // Accel bias process noise
+                1e-9, 1e-9, 1e-9,      // Gyro bias process noise
+            ]));
+            
+            let mut ekf = ExtendedKalmanFilter::new(
+                initial_state,
+                imu_biases,
+                covariance_diagonal,
+                process_noise,
+                true, // Use 15-state with biases
+            );
+            
+            info!(
+                "Initialized EKF with state dimension {}",
+                ekf.get_estimate().len()
+            );
+            info!("Initial state: {:?}", ekf.get_estimate());
+            
+            info!("Running EKF geophysical navigation simulation...");
+            geo_closed_loop_ekf(&mut ekf, events)
+        }
+    };
 
     // Write results
     match results {
