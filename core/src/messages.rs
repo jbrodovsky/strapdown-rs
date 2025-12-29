@@ -1,5 +1,5 @@
 // gnss_degrader.rs
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, Utc};
 use nalgebra::Vector3;
 use rand::SeedableRng;
 use rand_distr::{Distribution, Normal};
@@ -348,16 +348,25 @@ fn default_mag_noise() -> f64 {
 
 /// Default WMM year for magnetometer configuration
 /// 
-/// Note: This default should be updated when a new WMM model is released.
-/// WMM2020 is valid from 2020-2025. WMM2025 would cover 2025-2030.
-/// Consider setting this value explicitly in your configuration rather than
-/// relying on this default to ensure compatibility with your dataset dates.
+/// Returns the current year as determined by the system clock. This provides a
+/// reasonable default that stays current as time progresses, though it may fall
+/// outside the valid range of the underlying WMM model (WMM2020: 2020-2025).
+/// 
+/// For production use, it's recommended to set this value explicitly in your
+/// configuration to match your dataset dates and ensure compatibility with the
+/// available WMM model version.
 fn default_wmm_year() -> i32 {
-    2025
+    chrono::Utc::now().year()
 }
 
+/// Default WMM day of year for magnetometer configuration
+///
+/// Returns the current day of year as determined by the system clock. This keeps
+/// the default synchronized with the current date.
+///
+/// For production use, set this explicitly to match your dataset dates.
 fn default_wmm_day() -> u16 {
-    1
+    chrono::Utc::now().ordinal() as u16
 }
 
 impl Default for GnssDegradationConfig {
