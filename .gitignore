@@ -45,3 +45,6 @@ examples/geonav-sim/pf
 # Ignore ruff
 .ruff_cache/
 papers/anomaly_ukf/data/combined_statistics_error.csv
+
+# mdBook output
+book/book/

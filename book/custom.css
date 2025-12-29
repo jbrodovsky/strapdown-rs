@@ -1,0 +1,85 @@
+/* Custom CSS for Strapdown-rs documentation */
+
+/* Main navigation and header styling */
+.nav-chapters {
+    background-color: var(--sidebar-bg);
+}
+
+/* Code blocks and syntax highlighting improvements */
+pre > .buttons {
+    opacity: 0.7;
+}
+
+pre > .buttons:hover {
+    opacity: 1;
+}
+
+/* Improve readability of inline code */
+code {
+    padding: 0.1em 0.3em;
+    background-color: var(--inline-code-bg);
+    border-radius: 3px;
+}
+
+/* Warning, info, and note boxes */
+.warning, .info, .note {
+    padding: 1em;
+    margin: 1em 0;
+    border-left: 4px solid;
+    border-radius: 4px;
+}
+
+.warning {
+    background-color: #fff3cd;
+    border-color: #ffc107;
+    color: #856404;
+}
+
+.info {
+    background-color: #d1ecf1;
+    border-color: #17a2b8;
+    color: #0c5460;
+}
+
+.note {
+    background-color: #d4edda;
+    border-color: #28a745;
+    color: #155724;
+}
+
+/* Responsive improvements for mobile */
+@media (max-width: 768px) {
+    .content {
+        padding: 0 1em;
+    }
+}
+
+/* Table styling improvements */
+table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1em 0;
+}
+
+table thead {
+    background-color: var(--table-header-bg);
+}
+
+table th, table td {
+    padding: 0.5em;
+    border: 1px solid var(--table-border-color);
+}
+
+/* Link styling */
+a {
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+/* Math expressions */
+.MathJax {
+    outline: none;
+}
