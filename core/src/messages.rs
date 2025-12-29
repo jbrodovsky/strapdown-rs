@@ -346,6 +346,12 @@ fn default_mag_noise() -> f64 {
     5.0 // 5 μT noise std
 }
 
+/// Default WMM year for magnetometer configuration
+/// 
+/// Note: This default should be updated when a new WMM model is released.
+/// WMM2020 is valid from 2020-2025. WMM2025 would cover 2025-2030.
+/// Consider setting this value explicitly in your configuration rather than
+/// relying on this default to ensure compatibility with your dataset dates.
 fn default_wmm_year() -> i32 {
     2025
 }
