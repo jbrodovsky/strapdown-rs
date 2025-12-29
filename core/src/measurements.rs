@@ -963,7 +963,7 @@ mod tests {
             reference_field_ned: Vector3::new(25.0, 0.0, 45.0),
             use_wmm: true,
             wmm_year: 2025,
-            wmm_day_of_year: 366, // Invalid day for non-leap year
+            wmm_day_of_year: 366, // Invalid day 366 for 2025 (non-leap year, should trigger fallback)
             hard_iron_offset: Vector3::zeros(),
             soft_iron_matrix: Matrix3::identity(),
             noise_std: 3.0,
