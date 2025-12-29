@@ -8,19 +8,12 @@ members = [
 ]
 resolver = "3"
 
-[workspace.package]
-# name = "strapdown-rs"
-authors = ["James Brodovsky"]
-description = "A Rust library for strapdown inertial navigation systems."
-documentation = "https://docs.rs/strapdown-rs/"
-license = "MIT"
-readme = "README.md"
-homepage = "https://www.strapdown.rs"
-repository = "https://github.com/jbrodovsky/strapdown-rs"
-keywords = ["strapdown", "inertial", "navigation", "IMU", "INS"]
+[profile.test]
+inherits = "release"
 
-[workspace.dependencies]
-# nalgebra = "*"
-# rand = "*"
-# csv = "*"
-# [package.metadata.docs.rs]
+[workspace.metadata.book]
+title = "Strapdown-rs Documentation"
+authors = ["James Brodovsky"]
+description = "A Rust library for strapdown inertial navigation systems"
+language = "en"
+src = "book/src"
