@@ -417,6 +417,9 @@ impl MeasurementModel for MagnetometerMeasurement {
         let yaw = state[8];
 
         // Get reference field - either from WMM or use the provided value
+        // Note: WMM calculation involves Date parsing and GeomagneticField computation
+        // on every call. For high-rate filter updates (>100 Hz), consider caching the
+        // result or using manual reference_field_ned mode for better performance.
         let reference_field = if self.use_wmm {
             // Extract position from state: lat (0), lon (1), alt (2)
             let latitude = state[0].to_degrees();

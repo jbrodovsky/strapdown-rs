@@ -816,6 +816,11 @@ pub fn magnetic_anomaly(
 /// World Magnetic Model (WMM). The WMM is a model of the Earth's magnetic field that
 /// is updated every 5 years by NOAA and the British Geological Survey.
 ///
+/// **Note on Units:** This function returns values in **microteslas (μT)**, which is
+/// the standard unit for magnetometer measurements. This differs from 
+/// [`calculate_magnetic_field`] which returns nanoteslas (nT) using a simpler dipole
+/// model. To convert between units: 1 μT = 1000 nT.
+///
 /// # Arguments
 /// - `latitude` - The WGS84 latitude in degrees
 /// - `longitude` - The WGS84 longitude in degrees
@@ -851,8 +856,10 @@ pub fn magnetic_anomaly(
 /// # Notes
 /// - The magnetic field is returned in microteslas (μT), which is the standard unit
 ///   for magnetometer measurements.
-/// - The WMM is valid from 2020-2025. Using dates outside this range may produce
-///   extrapolated results with reduced accuracy.
+/// - The underlying WMM2020 model (via world_magnetic_model v0.4.0) is valid from 
+///   2020-2025. Using dates outside this range will produce extrapolated results with
+///   significantly reduced accuracy. Consider updating to a newer WMM version when
+///   available for dates beyond 2025.
 /// - Altitude should be in meters above the WGS84 ellipsoid, not above mean sea level.
 pub fn magnetic_field_wmm(
     latitude: &f64,
