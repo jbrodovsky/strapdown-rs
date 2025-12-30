@@ -70,9 +70,8 @@ def plot_street_map(latitude: list[float], longitude: list[float], margin=0.01) 
 
     # Create a figure
     # Create a map using cartopy with OpenStreetMap background
-    fig = plt.figure(figsize=(12, 10))
-    ax = plt.axes(projection=ccrs.PlateCarree())
-    ax.set_extent(
+    fig, ax = plt.subplots(figsize=(12, 10), subplot_kw={"projection": ccrs.PlateCarree()})
+    ax.set_extent(  # ty:ignore[unresolved-attribute]
         [lon_min - margin, lon_max + margin, lat_min - margin, lat_max + margin],
         crs=ccrs.PlateCarree(),
     )  # type: ignore
