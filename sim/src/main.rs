@@ -1,58 +1,51 @@
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand};
 use log::{error, info};
 use std::error::Error;
 use std::path::{Path, PathBuf};
-use strapdown::messages::{GnssDegradationConfig, build_event_stream};
+use strapdown::messages::build_event_stream;
 use strapdown::sim::{
-    FaultArgs, NavigationResult, SchedulerArgs, TestDataRecord, build_fault, build_scheduler,
-    initialize_ukf, initialize_ekf, run_closed_loop,
+    ClosedLoopConfig, FilterType, FaultArgs, NavigationResult, ParticleFilterConfig,
+    ParticleFilterType, SchedulerArgs, SimulationConfig, SimulationMode, TestDataRecord,
+    build_fault, build_scheduler, initialize_ekf, initialize_ukf, run_closed_loop,
 };
-
-// Import nalgebra types needed for process noise construction
 
 const LONG_ABOUT: &str = "STRAPDOWN: A simulation and analysis tool for strapdown inertial navigation systems.
 
-This program can operate in two modes: open-loop and closed-loop. In open loop mode, the system relies solely on inertial measurements (IMU) and an initial position estimate and performs simple dead reckoning. This mode is only particularly useful for high-accuracy low noise IMUs such as those for aerospace or marine applications (i.e. have a drift rate <=1nm per 24 hours). In closed-loop mode, the system incorporates GNSS measurements to correct for IMU drift and improve overall navigation accuracy. The closed-loop mode can simulate various GNSS degradation scenarios, including jamming (signal dropouts, reduced update rates, and measurement corruption) and a limited form of spoofing (bias introduction, signal hijack).
+This program can operate in three modes: open-loop, closed-loop, and particle-filter.
 
-This program is designed to work with tabular comma-separated value datasets that contain IMU and GNSS measurements of the form:
-* time - ISO UTC timestamp of the form YYYY-MM-DD HH:mm:ss.ssss+HH:MM (where the +HH:MM is the timezone offset)
-* speed - Speed measurement in meters per second
-* bearing - Bearing measurement in degrees
-* altitude - Altitude measurement in meters
-* longitude - Longitude measurement in degrees
-* latitude - Latitude measurement in degrees
-* qz - Quaternion component
-* qy - Quaternion component
-* qx - Quaternion component
-* qw - Quaternion component
-* roll - Roll angle in degrees
-* pitch - Pitch angle in degrees
-* yaw - Yaw angle in degrees
-* acc_z - Acceleration in the Z direction (meters per second squared)
-* acc_y - Acceleration in the Y direction (meters per second squared)
-* acc_x - Acceleration in the X direction (meters per second squared)
-* gyro_z - Angular velocity around the Z axis (radians per second)
-* gyro_y - Angular velocity around the Y axis (radians per second)
-* gyro_x - Angular velocity around the X axis (radians per second)
-* mag_z - Magnetic field strength in the Z direction (micro teslas)
-* mag_y - Magnetic field strength in the Y direction (micro teslas)
-* mag_x - Magnetic field strength in the X direction (micro teslas)
-* relativeAltitude - Relative altitude measurement (meters)
-* pressure - Atmospheric pressure measurement (milli bar)
-* grav_z - Gravitational acceleration in the Z direction (meters per second squared)
-* grav_y - Gravitational acceleration in the Y direction (meters per second squared)
-* grav_x - Gravitational acceleration in the X direction (meters per second squared)";
+- **Open-loop mode**: Relies solely on inertial measurements (IMU) and an initial position estimate 
+  for dead reckoning. Useful for high-accuracy IMUs with drift rates ≤1 nm per 24 hours.
+
+- **Closed-loop mode**: Incorporates GNSS measurements to correct IMU drift using either an 
+  Unscented Kalman Filter (UKF) or Extended Kalman Filter (EKF). Supports GNSS degradation 
+  scenarios including jamming, reduced update rates, and spoofing.
+
+- **Particle-filter mode**: Uses particle-based state estimation, supporting both standard and 
+  Rao-Blackwellized implementations.
+
+You can run simulations either by:
+  1. Loading all parameters from a configuration file (TOML/JSON/YAML)
+  2. Specifying parameters via command-line flags
+
+For dataset format details, see the documentation or use --help with specific subcommands.";
 
 /// Command line arguments
 #[derive(Parser)]
 #[command(author, version, about, long_about = LONG_ABOUT)]
 struct Cli {
-    /// Command to execute
+    /// Run simulation from a configuration file (TOML/JSON/YAML)
+    /// This option overrides any subcommand arguments
+    #[arg(short, long, global = true)]
+    config: Option<PathBuf>,
+    
+    /// Command to execute (ignored if --config is provided)
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
+    
     /// Log level (off, error, warn, info, debug, trace)
     #[arg(long, default_value = "info", global = true)]
     log_level: String,
+    
     /// Log file path (if not specified, logs to stderr)
     #[arg(long, global = true)]
     log_file: Option<PathBuf>,
@@ -63,76 +56,63 @@ struct Cli {
 enum Command {
     #[command(
         name = "open-loop",
-        about = "Run the simulation in open-loop (feed-forward INS) mode"
+        about = "Run simulation in open-loop (dead reckoning) mode"
     )]
     OpenLoop(SimArgs),
+    
     #[command(
         name = "closed-loop",
-        about = "Run the simulation in closed-loop (feedback INS) mode"
+        about = "Run simulation in closed-loop (Kalman filter) mode"
     )]
     ClosedLoop(ClosedLoopSimArgs),
+    
     #[command(
         name = "particle-filter",
-        about = "Run the simulation using a particle filter INS architecture"
+        about = "Run simulation using particle filter"
     )]
     ParticleFilter(ParticleFilterSimArgs),
+    
     #[command(
-        name = "generate-config",
-        about = "Generate a blank template GNSS degradation configuration file"
+        name = "create-config",
+        about = "Generate a template configuration file"
     )]
-    GenerateConfig(GenerateConfigArgs),
+    CreateConfig(CreateConfigArgs),
 }
 
 /// Common simulation arguments for input/output
 #[derive(Args, Clone, Debug)]
 struct SimArgs {
-    /// Input file path
+    /// Input CSV file path
     #[arg(short, long, value_parser)]
     input: PathBuf,
-    /// Output file path
+    
+    /// Output CSV file path
     #[arg(short, long, value_parser)]
     output: PathBuf,
 }
 
-/// Filter type selection for closed-loop mode
-#[derive(Clone, Copy, Debug, ValueEnum)]
-enum FilterType {
-    /// Unscented Kalman Filter (UKF) - uses sigma points to propagate uncertainty
-    Ukf,
-    /// Extended Kalman Filter (EKF) - uses linearized Jacobians
-    Ekf,
-}
-
-/// Closed-loop simulation arguments combining SimArgs with closed-loop specific options
+/// Closed-loop simulation arguments
 #[derive(Args, Clone, Debug)]
 struct ClosedLoopSimArgs {
     /// Common simulation input/output arguments
     #[command(flatten)]
     sim: SimArgs,
+    
     /// Filter type to use for closed-loop navigation
     #[arg(long, value_enum, default_value_t = FilterType::Ukf)]
     filter: FilterType,
-    /// RNG seed (applies to any stochastic options)
+    
+    /// RNG seed for stochastic processes
     #[arg(long, default_value_t = 42)]
     seed: u64,
-    /// Scheduler settings (dropouts / reduced rate)
+    
+    /// GNSS scheduler settings (dropouts / reduced rate)
     #[command(flatten)]
     scheduler: SchedulerArgs,
+    
     /// Fault model settings (corrupt measurement content)
     #[command(flatten)]
     fault: FaultArgs,
-    /// Path to a GNSS degradation config file (json|yaml|yml|toml)
-    #[arg(long)]
-    config: Option<PathBuf>,
-}
-
-/// Particle filter type selection
-#[derive(Clone, Copy, Debug, ValueEnum)]
-enum ParticleFilterType {
-    /// Standard particle filter (all states as particles)
-    Standard,
-    /// Rao-Blackwellized particle filter (position as particles, velocity/attitude/biases as per-particle UKF)
-    RaoBlackwellized,
 }
 
 /// Particle filter simulation arguments
@@ -141,48 +121,59 @@ struct ParticleFilterSimArgs {
     /// Common simulation input/output arguments
     #[command(flatten)]
     sim: SimArgs,
+    
     /// Particle filter type
     #[arg(long, value_enum, default_value_t = ParticleFilterType::Standard)]
     filter_type: ParticleFilterType,
-    /// RNG seed (applies to any stochastic options)
+    
+    /// RNG seed for stochastic processes
     #[arg(long, default_value_t = 42)]
     seed: u64,
-    /// Number of particles (RBPF typically needs fewer: 50-200 vs Standard: 500-1000)
+    
+    /// Number of particles
     #[arg(long, default_value_t = 100)]
     num_particles: usize,
+    
     /// Position uncertainty standard deviation (meters)
     #[arg(long, default_value_t = 10.0)]
     position_std: f64,
+    
     /// Velocity uncertainty standard deviation (m/s)
     #[arg(long, default_value_t = 1.0)]
     velocity_std: f64,
+    
     /// Attitude uncertainty standard deviation (radians)
     #[arg(long, default_value_t = 0.1)]
     attitude_std: f64,
+    
     /// Accelerometer bias uncertainty standard deviation (m/s²)
     #[arg(long, default_value_t = 0.1)]
     accel_bias_std: f64,
+    
     /// Gyroscope bias uncertainty standard deviation (rad/s)
     #[arg(long, default_value_t = 0.01)]
     gyro_bias_std: f64,
-    /// Scheduler settings (dropouts / reduced rate)
+    
+    /// GNSS scheduler settings (dropouts / reduced rate)
     #[command(flatten)]
     scheduler: SchedulerArgs,
+    
     /// Fault model settings (corrupt measurement content)
     #[command(flatten)]
     fault: FaultArgs,
-    /// Path to a GNSS degradation config file (json|yaml|yml|toml)
-    #[arg(long)]
-    config: Option<PathBuf>,
 }
 
-/// Arguments for the generate-config command
+/// Arguments for create-config command
 #[derive(Args, Clone, Debug)]
-struct GenerateConfigArgs {
-    /// Output file path for the generated config file.
-    /// The file extension determines the format: .json, .yaml/.yml, or .toml
+struct CreateConfigArgs {
+    /// Output file path for the config file
+    /// File extension determines format: .json, .yaml/.yml, or .toml (recommended)
     #[arg(short, long, value_parser)]
     output: PathBuf,
+    
+    /// Simulation mode for the template
+    #[arg(short, long, value_enum, default_value_t = SimulationMode::ClosedLoop)]
+    mode: SimulationMode,
 }
 
 /// Initialize the logger with the specified configuration
@@ -242,114 +233,214 @@ fn validate_output_path(output: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
-    let cli = Cli::parse();
-
-    // Initialize logger
-    init_logger(&cli.log_level, cli.log_file.as_ref())?;
-
-    match cli.command {
-        Command::ParticleFilter(args) => {
-            println!("Particle filter mode is not yet implemented");
-            info!("Particle filter mode is not yet implemented");
-            // Note: Particle filter mode is currently not fully implemented
-        }
-        Command::GenerateConfig(args) => {
-            // Validate output path
-            validate_output_path(&args.output)?;
-
-            // Create a default config with sensible baseline values
-            let cfg = GnssDegradationConfig::default();
-
-            // Write to file using the appropriate format based on extension
-            match cfg.to_file(&args.output) {
-                Ok(_) => {
-                    info!("Generated config file: {}", args.output.display());
-                    println!("Generated config file: {}", args.output.display());
-                }
-                Err(e) => {
-                    error!("Failed to write config file: {}", e);
-                    return Err(Box::new(e));
-                }
-            }
-        }
-        Command::OpenLoop(args) => {
-            validate_input_file(&args.input)?;
-            validate_output_path(&args.output)?;
+/// Execute simulation from a configuration file
+fn run_from_config(config_path: &Path) -> Result<(), Box<dyn Error>> {
+    info!("Loading configuration from {}", config_path.display());
+    
+    let config = SimulationConfig::from_file(config_path)?;
+    info!("Configuration loaded successfully");
+    info!("Mode: {:?}", config.mode);
+    info!("Input: {}", config.input);
+    info!("Output: {}", config.output);
+    
+    // Validate paths
+    let input = Path::new(&config.input);
+    let output = Path::new(&config.output);
+    validate_input_file(input)?;
+    validate_output_path(output)?;
+    
+    // Load sensor data
+    let records = TestDataRecord::from_csv(input)?;
+    info!("Read {} records from {}", records.len(), config.input);
+    
+    // Execute based on mode
+    match config.mode {
+        SimulationMode::OpenLoop => {
             info!("Open-loop mode is not yet fully implemented");
-            // Note: Open-loop mode is currently not fully implemented
-            // This would run dead reckoning simulation
+            println!("Open-loop mode is not yet fully implemented");
         }
-        Command::ClosedLoop(args) => {
-            validate_input_file(&args.sim.input)?;
-            validate_output_path(&args.sim.output)?;
+        SimulationMode::ClosedLoop => {
+            let filter_config = config.closed_loop.unwrap_or_default();
+            info!("Running closed-loop mode with {:?} filter", filter_config.filter);
             
-            // Log which filter type is being used
-            let filter_name = match args.filter {
-                FilterType::Ukf => "Unscented Kalman Filter (UKF)",
-                FilterType::Ekf => "Extended Kalman Filter (EKF)",
-            };
-            info!("Running in closed-loop mode with {}", filter_name);
-
-            // Load sensor data records from CSV
-            let records = TestDataRecord::from_csv(&args.sim.input)?;
-            info!(
-                "Read {} records from {}",
-                records.len(),
-                &args.sim.input.display()
-            );
-
-            let cfg = if let Some(ref cfg_path) = args.config {
-                match GnssDegradationConfig::from_file(cfg_path) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        error!("Failed to read config {}: {}", cfg_path.display(), e);
-                        return Err(Box::new(e));
-                    }
-                }
-            } else {
-                GnssDegradationConfig {
-                    scheduler: build_scheduler(&args.scheduler),
-                    fault: build_fault(&args.fault),
-                    seed: args.seed,
-                    magnetometer: Default::default(),
-                }
-            };
-
-            info!("Using GNSS degradation config: {:?}", cfg);
-            let event_stream = build_event_stream(&records, &cfg);
-            info!(
-                "Initialized event stream with {} events",
-                event_stream.events.len()
-            );
-
-            // Initialize filter based on user selection
-            // Note: UKF and EKF have different initialization APIs:
-            // - UKF supports arbitrary additional states (other_states, other_states_covariance)
-            // - EKF uses use_biases flag to choose between 9-state and 15-state configurations
-            let results = match args.filter {
+            let event_stream = build_event_stream(&records, &config.gnss_degradation);
+            info!("Initialized event stream with {} events", event_stream.events.len());
+            
+            let results = match filter_config.filter {
                 FilterType::Ukf => {
                     let mut ukf = initialize_ukf(records[0].clone(), None, None, None, None, None, None);
-                    info!("Initialized UKF with state: {:?}", ukf);
+                    info!("Initialized UKF");
                     run_closed_loop(&mut ukf, event_stream, None)
                 }
                 FilterType::Ekf => {
                     let mut ekf = initialize_ekf(records[0].clone(), None, None, None, None, true);
-                    info!("Initialized EKF with state: {:?}", ekf);
+                    info!("Initialized EKF");
                     run_closed_loop(&mut ekf, event_stream, None)
                 }
             };
             
             match results {
                 Ok(ref nav_results) => {
-                    match NavigationResult::to_csv(nav_results, &args.sim.output) {
-                        Ok(_) => info!("Results written to {}", args.sim.output.display()),
-                        Err(e) => error!("Error writing results: {}", e),
-                    }
+                    NavigationResult::to_csv(nav_results, output)?;
+                    info!("Results written to {}", config.output);
+                    println!("Results written to {}", config.output);
                 }
-                Err(e) => error!("Error running closed-loop simulation: {}", e),
-            };
+                Err(e) => {
+                    error!("Error running closed-loop simulation: {}", e);
+                    return Err(e.into());
+                }
+            }
+        }
+        SimulationMode::ParticleFilter => {
+            info!("Particle filter mode is not yet fully implemented");
+            println!("Particle filter mode is not yet fully implemented");
         }
     }
+    
     Ok(())
+}
+
+/// Execute open-loop simulation
+fn run_open_loop(args: &SimArgs) -> Result<(), Box<dyn Error>> {
+    validate_input_file(&args.input)?;
+    validate_output_path(&args.output)?;
+    
+    info!("Open-loop mode is not yet fully implemented");
+    println!("Open-loop mode is not yet fully implemented");
+    
+    Ok(())
+}
+
+/// Execute closed-loop simulation
+fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
+    validate_input_file(&args.sim.input)?;
+    validate_output_path(&args.sim.output)?;
+    
+    let filter_name = match args.filter {
+        FilterType::Ukf => "Unscented Kalman Filter (UKF)",
+        FilterType::Ekf => "Extended Kalman Filter (EKF)",
+    };
+    info!("Running in closed-loop mode with {}", filter_name);
+    
+    // Load sensor data records from CSV
+    let records = TestDataRecord::from_csv(&args.sim.input)?;
+    info!("Read {} records from {}", records.len(), args.sim.input.display());
+    
+    // Build GNSS degradation config from CLI args
+    let gnss_degradation = strapdown::messages::GnssDegradationConfig {
+        scheduler: build_scheduler(&args.scheduler),
+        fault: build_fault(&args.fault),
+        seed: args.seed,
+        magnetometer: Default::default(),
+    };
+    
+    info!("Using GNSS degradation config: {:?}", gnss_degradation);
+    let event_stream = build_event_stream(&records, &gnss_degradation);
+    info!("Initialized event stream with {} events", event_stream.events.len());
+    
+    // Initialize and run filter
+    let results = match args.filter {
+        FilterType::Ukf => {
+            let mut ukf = initialize_ukf(records[0].clone(), None, None, None, None, None, None);
+            info!("Initialized UKF with state: {:?}", ukf);
+            run_closed_loop(&mut ukf, event_stream, None)
+        }
+        FilterType::Ekf => {
+            let mut ekf = initialize_ekf(records[0].clone(), None, None, None, None, true);
+            info!("Initialized EKF with state: {:?}", ekf);
+            run_closed_loop(&mut ekf, event_stream, None)
+        }
+    };
+    
+    match results {
+        Ok(ref nav_results) => {
+            NavigationResult::to_csv(nav_results, &args.sim.output)?;
+            info!("Results written to {}", args.sim.output.display());
+            println!("Results written to {}", args.sim.output.display());
+        }
+        Err(e) => {
+            error!("Error running closed-loop simulation: {}", e);
+            return Err(e.into());
+        }
+    }
+    
+    Ok(())
+}
+
+/// Execute particle filter simulation
+fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error>> {
+    validate_input_file(&args.sim.input)?;
+    validate_output_path(&args.sim.output)?;
+    
+    info!("Particle filter mode is not yet fully implemented");
+    println!("Particle filter mode is not yet fully implemented");
+    // Note: Implementation would go here once particle filter is ready
+    
+    Ok(())
+}
+
+/// Generate a template configuration file
+fn create_config_file(args: &CreateConfigArgs) -> Result<(), Box<dyn Error>> {
+    validate_output_path(&args.output)?;
+    
+    // Create config with appropriate mode-specific fields
+    let config = match args.mode {
+        SimulationMode::OpenLoop => SimulationConfig {
+            mode: SimulationMode::OpenLoop,
+            closed_loop: None,
+            particle_filter: None,
+            ..Default::default()
+        },
+        SimulationMode::ClosedLoop => SimulationConfig {
+            mode: SimulationMode::ClosedLoop,
+            closed_loop: Some(ClosedLoopConfig::default()),
+            particle_filter: None,
+            ..Default::default()
+        },
+        SimulationMode::ParticleFilter => SimulationConfig {
+            mode: SimulationMode::ParticleFilter,
+            closed_loop: None,
+            particle_filter: Some(ParticleFilterConfig::default()),
+            ..Default::default()
+        },
+    };
+    
+    // Write to file using appropriate format
+    config.to_file(&args.output)?;
+    
+    info!("Created config file: {}", args.output.display());
+    println!("Created config file: {}", args.output.display());
+    println!("Edit the file to customize your simulation, then run:");
+    println!("  strapdown-sim --config {}", args.output.display());
+    
+    Ok(())
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let cli = Cli::parse();
+
+    // Initialize logger
+    init_logger(&cli.log_level, cli.log_file.as_ref())?;
+
+    // If --config is provided, run from config file and ignore subcommands
+    if let Some(ref config_path) = cli.config {
+        return run_from_config(config_path);
+    }
+
+    // Otherwise, execute based on subcommand
+    match cli.command {
+        Some(Command::OpenLoop(args)) => run_open_loop(&args),
+        Some(Command::ClosedLoop(args)) => run_closed_loop_cli(&args),
+        Some(Command::ParticleFilter(args)) => run_particle_filter(&args),
+        Some(Command::CreateConfig(args)) => create_config_file(&args),
+        None => {
+            error!("No command specified. Use --help for usage information");
+            eprintln!("No command specified. Use --help for usage information");
+            eprintln!("Examples:");
+            eprintln!("  strapdown-sim --config my_config.toml");
+            eprintln!("  strapdown-sim create-config --output my_config.toml");
+            eprintln!("  strapdown-sim closed-loop -i input.csv -o output.csv --filter ukf");
+            std::process::exit(1);
+        }
+    }
 }
