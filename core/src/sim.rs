@@ -16,7 +16,7 @@
 use core::f64;
 use log::{debug, info, warn};
 use std::fmt::{Debug, Display};
-use std::io::{self};
+use std::io::{self, Read, Write};
 use std::path::Path;
 
 use anyhow::{Result, bail};
@@ -1525,6 +1525,235 @@ pub fn build_fault(a: &FaultArgs) -> GnssFaultModel {
             start_s: a.hijack_start_s,
             duration_s: a.hijack_duration_s,
         },
+    }
+}
+
+//================= Unified Simulation Configuration =====================================
+
+/// Simulation mode selection
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "clap", derive(ValueEnum))]
+#[serde(rename_all = "kebab-case")]
+pub enum SimulationMode {
+    /// Open-loop dead reckoning (INS only, no corrections)
+    OpenLoop,
+    /// Closed-loop with Kalman filter corrections from GNSS/other sensors
+    ClosedLoop,
+    /// Particle filter based navigation
+    ParticleFilter,
+}
+
+/// Filter type for closed-loop mode
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "clap", derive(ValueEnum))]
+#[serde(rename_all = "kebab-case")]
+pub enum FilterType {
+    /// Unscented Kalman Filter
+    Ukf,
+    /// Extended Kalman Filter
+    Ekf,
+}
+
+impl Default for FilterType {
+    fn default() -> Self {
+        FilterType::Ukf
+    }
+}
+
+/// Particle filter type selection
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "clap", derive(ValueEnum))]
+#[serde(rename_all = "kebab-case")]
+pub enum ParticleFilterType {
+    /// Standard particle filter (all states as particles)
+    Standard,
+    /// Rao-Blackwellized particle filter (position as particles, velocity/attitude/biases as per-particle filters)
+    RaoBlackwellized,
+}
+
+impl Default for ParticleFilterType {
+    fn default() -> Self {
+        ParticleFilterType::Standard
+    }
+}
+
+/// Closed-loop specific configuration
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ClosedLoopConfig {
+    /// Filter type (UKF or EKF)
+    #[serde(default)]
+    pub filter: FilterType,
+}
+
+impl Default for ClosedLoopConfig {
+    fn default() -> Self {
+        Self {
+            filter: FilterType::Ukf,
+        }
+    }
+}
+
+/// Particle filter specific configuration
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ParticleFilterConfig {
+    /// Particle filter type
+    #[serde(default)]
+    pub filter_type: ParticleFilterType,
+    /// Number of particles
+    #[serde(default = "default_num_particles")]
+    pub num_particles: usize,
+    /// Position uncertainty standard deviation (meters)
+    #[serde(default = "default_position_std")]
+    pub position_std: f64,
+    /// Velocity uncertainty standard deviation (m/s)
+    #[serde(default = "default_velocity_std")]
+    pub velocity_std: f64,
+    /// Attitude uncertainty standard deviation (radians)
+    #[serde(default = "default_attitude_std")]
+    pub attitude_std: f64,
+    /// Accelerometer bias uncertainty standard deviation (m/s²)
+    #[serde(default = "default_accel_bias_std")]
+    pub accel_bias_std: f64,
+    /// Gyroscope bias uncertainty standard deviation (rad/s)
+    #[serde(default = "default_gyro_bias_std")]
+    pub gyro_bias_std: f64,
+}
+
+fn default_num_particles() -> usize { 100 }
+fn default_position_std() -> f64 { 10.0 }
+fn default_velocity_std() -> f64 { 1.0 }
+fn default_attitude_std() -> f64 { 0.1 }
+fn default_accel_bias_std() -> f64 { 0.1 }
+fn default_gyro_bias_std() -> f64 { 0.01 }
+
+impl Default for ParticleFilterConfig {
+    fn default() -> Self {
+        Self {
+            filter_type: ParticleFilterType::default(),
+            num_particles: default_num_particles(),
+            position_std: default_position_std(),
+            velocity_std: default_velocity_std(),
+            attitude_std: default_attitude_std(),
+            accel_bias_std: default_accel_bias_std(),
+            gyro_bias_std: default_gyro_bias_std(),
+        }
+    }
+}
+
+/// Unified simulation configuration supporting all modes
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SimulationConfig {
+    /// Input CSV file path (relative or absolute)
+    pub input: String,
+    /// Output CSV file path (relative or absolute)
+    pub output: String,
+    /// Simulation mode
+    pub mode: SimulationMode,
+    /// Random number generator seed
+    #[serde(default = "default_seed")]
+    pub seed: u64,
+    /// Closed-loop specific settings (only used if mode is ClosedLoop)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_loop: Option<ClosedLoopConfig>,
+    /// Particle filter specific settings (only used if mode is ParticleFilter)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub particle_filter: Option<ParticleFilterConfig>,
+    /// GNSS degradation configuration (scheduler + fault model)
+    #[serde(default)]
+    pub gnss_degradation: crate::messages::GnssDegradationConfig,
+}
+
+fn default_seed() -> u64 { 42 }
+
+impl Default for SimulationConfig {
+    fn default() -> Self {
+        Self {
+            input: "input.csv".to_string(),
+            output: "output.csv".to_string(),
+            mode: SimulationMode::ClosedLoop,
+            seed: default_seed(),
+            closed_loop: Some(ClosedLoopConfig::default()),
+            particle_filter: None,
+            gnss_degradation: crate::messages::GnssDegradationConfig::default(),
+        }
+    }
+}
+
+impl SimulationConfig {
+    /// Write the configuration to a JSON file (pretty-printed)
+    pub fn to_json<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
+        let file = std::fs::File::create(path)?;
+        serde_json::to_writer_pretty(file, self).map_err(io::Error::other)
+    }
+
+    /// Read the configuration from a JSON file
+    pub fn from_json<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let file = std::fs::File::open(path)?;
+        serde_json::from_reader(file).map_err(io::Error::other)
+    }
+
+    /// Write the configuration as YAML
+    pub fn to_yaml<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
+        let mut file = std::fs::File::create(path)?;
+        let s = serde_yaml::to_string(self).map_err(io::Error::other)?;
+        file.write_all(s.as_bytes())
+    }
+
+    /// Read the configuration from YAML
+    pub fn from_yaml<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let file = std::fs::File::open(path)?;
+        serde_yaml::from_reader(file).map_err(io::Error::other)
+    }
+
+    /// Write the configuration as TOML
+    pub fn to_toml<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
+        let mut file = std::fs::File::create(path)?;
+        let s = toml::to_string_pretty(self).map_err(io::Error::other)?;
+        file.write_all(s.as_bytes())
+    }
+
+    /// Read the configuration from TOML
+    pub fn from_toml<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let mut s = String::new();
+        let mut file = std::fs::File::open(path)?;
+        file.read_to_string(&mut s)?;
+        toml::from_str(&s).map_err(io::Error::other)
+    }
+
+    /// Generic write: choose format by file extension (.json/.yaml/.yml/.toml)
+    pub fn to_file<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
+        let p = path.as_ref();
+        let ext = p
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_lowercase());
+        match ext.as_deref() {
+            Some("json") => self.to_json(p),
+            Some("yaml") | Some("yml") => self.to_yaml(p),
+            Some("toml") => self.to_toml(p),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unsupported file extension (expected .json, .yaml, .yml, or .toml)",
+            )),
+        }
+    }
+
+    /// Generic read: choose format by file extension (.json/.yaml/.yml/.toml)
+    pub fn from_file<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let p = path.as_ref();
+        let ext = p
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_lowercase());
+        match ext.as_deref() {
+            Some("json") => Self::from_json(p),
+            Some("yaml") | Some("yml") => Self::from_yaml(p),
+            Some("toml") => Self::from_toml(p),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unsupported file extension (expected .json, .yaml, .yml, or .toml)",
+            )),
+        }
     }
 }
 

@@ -1,0 +1,41 @@
+input = "input.csv"
+output = "output.csv"
+mode = "closed-loop"
+seed = 42
+
+[closed_loop]
+filter = "ukf"
+
+[gnss_degradation]
+seed = 42
+
+[gnss_degradation.scheduler]
+kind = "pass_through"
+
+[gnss_degradation.fault]
+kind = "none"
+
+[gnss_degradation.magnetometer]
+enabled = false
+reference_field_ned = [
+    25.0,
+    0.0,
+    40.0,
+]
+hard_iron_offset = [
+    0.0,
+    0.0,
+    0.0,
+]
+soft_iron_matrix = [
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+noise_std = 5.0
