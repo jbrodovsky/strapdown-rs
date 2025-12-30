@@ -229,13 +229,34 @@ impl VelocityInformedParticle {
         // Altitude change (vertical displacement, down is positive)
         let delta_alt = -v_d * dt;  // Negative because down is positive in NED frame
 
-        // Add process noise (jitter) using Gaussian distribution
-        use rand_distr::{Normal, Distribution};
-        
-        let normal = Normal::new(0.0, process_noise_std).unwrap();
-        let noise_lat_m = normal.sample(rng);  // meters
-        let noise_lon_m = normal.sample(rng);  // meters
-        let noise_alt = normal.sample(rng);    // meters
+        // Add process noise (jitter) using Gaussian distribution (Box-Muller using RngCore)
+        use rand::RngCore;
+
+        // Helper: generate a single normal(0,1) sample via Box-Muller using 53-bit uniform floats
+        let mut sample_normal = |rng: &mut StdRng| -> f64 {
+            // Create two uniform(0,1) values from next_u64() producing 53-bit precision floats
+            let u1 = ((rng.next_u64() >> 11) as f64) * (1.0 / ((1u64 << 53) as f64));
+            let u2 = ((rng.next_u64() >> 11) as f64) * (1.0 / ((1u64 << 53) as f64));
+            let r = (-2.0 * u1.ln()).sqrt();
+            let theta = 2.0 * std::f64::consts::PI * u2;
+            r * theta.cos()
+        };
+
+        let noise_lat_m = if process_noise_std > 0.0 {
+            sample_normal(rng) * process_noise_std
+        } else {
+            0.0
+        };
+        let noise_lon_m = if process_noise_std > 0.0 {
+            sample_normal(rng) * process_noise_std
+        } else {
+            0.0
+        };
+        let noise_alt = if process_noise_std > 0.0 {
+            sample_normal(rng) * process_noise_std
+        } else {
+            0.0
+        };
 
         // Convert noise from meters to radians for lat/lon
         let noise_lat_rad = noise_lat_m / r_n;
