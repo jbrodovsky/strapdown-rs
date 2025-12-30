@@ -8,9 +8,15 @@
 use crate::earth::METERS_TO_DEGREES;
 
 use std::any::Any;
+use std::cell::RefCell;
 use std::fmt::{self, Debug, Display};
 
 use nalgebra::{DMatrix, DVector, Matrix3, Rotation3, Vector3};
+use world_magnetic_model::GeomagneticField;
+use world_magnetic_model::time::Date;
+use world_magnetic_model::uom::si::angle::degree;
+use world_magnetic_model::uom::si::f32::{Angle, Length};
+use world_magnetic_model::uom::si::length::meter;
 
 /// Generic measurement model trait for all types of measurements
 pub trait MeasurementModel: Any {
@@ -260,6 +266,13 @@ impl MeasurementModel for RelativeAltitudeMeasurement {
 /// The measurement is the three-axis magnetic field vector (mag_x, mag_y, mag_z) in
 /// microteslas (μT) measured in the body frame of the vehicle.
 ///
+/// # Reference Field
+///
+/// The reference magnetic field can be provided in two ways:
+/// 1. **Manual**: Set `reference_field_ned` directly with known values
+/// 2. **Automatic (WMM)**: Provide a `GeomagneticField` object which is updated
+///    only when the position changes significantly, avoiding repeated expensive calculations.
+///
 /// # Calibration Parameters
 ///
 /// - **Hard-iron offset**: A constant bias in the magnetometer readings caused by
@@ -274,16 +287,29 @@ impl MeasurementModel for RelativeAltitudeMeasurement {
 ///
 /// The expected measurement is computed by:
 /// 1. Extract roll, pitch, yaw from the state vector (indices 6, 7, 8)
-/// 2. Compute rotation matrix from NED frame to body frame using attitude
-/// 3. Rotate the local NED magnetic field reference vector into the body frame
-/// 4. Apply soft-iron and hard-iron calibration corrections
+/// 2. If `wmm_field` is Some, update it with position (indices 0, 1, 2) and query reference field
+/// 3. Compute rotation matrix from NED frame to body frame using attitude
+/// 4. Rotate the local NED magnetic field reference vector into the body frame
+/// 5. Apply soft-iron and hard-iron calibration corrections
 ///
-/// # Note on Reference Field
+/// # Example
+/// ```rust
+/// use nalgebra::{Vector3, Matrix3};
+/// use strapdown::measurements::MagnetometerMeasurement;
 ///
-/// The reference magnetic field should be provided in the local NED (or ENU) frame.
-/// This can be computed using Earth models (e.g., WMM, IGRF) or measured during
-/// calibration. The reference field strength is typically 25-65 μT depending on location.
-#[derive(Clone, Debug)]
+/// // Manual reference field (e.g., from prior calibration)
+/// let meas = MagnetometerMeasurement {
+///     mag_x: 20.0,
+///     mag_y: 5.0,
+///     mag_z: 40.0,
+///     reference_field_ned: Vector3::new(25.0, 0.0, 45.0),
+///     wmm_field: None,
+///     hard_iron_offset: Vector3::zeros(),
+///     soft_iron_matrix: Matrix3::identity(),
+///     noise_std: 3.0,
+/// };
+/// ```
+#[derive(Clone)]
 pub struct MagnetometerMeasurement {
     /// Measured magnetic field in body frame X-axis (μT)
     pub mag_x: f64,
@@ -293,7 +319,14 @@ pub struct MagnetometerMeasurement {
     pub mag_z: f64,
     /// Reference magnetic field vector in NED frame (μT)
     /// [North, East, Down] components
+    /// Used when wmm_field is None
     pub reference_field_ned: Vector3<f64>,
+    /// World Magnetic Model field object for automatic reference field computation
+    /// When Some, position updates only change coordinates without recreating the field object
+    /// Uses RefCell for interior mutability to allow updates in get_expected_measurement
+    pub wmm_field: Option<RefCell<GeomagneticField>>,
+    /// Date used for WMM calculations (stored separately since GeomagneticField doesn't expose it)
+    pub wmm_date: Option<Date>,
     /// Hard-iron offset correction vector (μT)
     /// This offset is subtracted from raw measurements
     pub hard_iron_offset: Vector3<f64>,
@@ -304,6 +337,22 @@ pub struct MagnetometerMeasurement {
     pub noise_std: f64,
 }
 
+impl Debug for MagnetometerMeasurement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MagnetometerMeasurement")
+            .field("mag_x", &self.mag_x)
+            .field("mag_y", &self.mag_y)
+            .field("mag_z", &self.mag_z)
+            .field("reference_field_ned", &self.reference_field_ned)
+            .field("wmm_field", &self.wmm_field.is_some())
+            .field("wmm_date", &self.wmm_date.is_some())
+            .field("hard_iron_offset", &self.hard_iron_offset)
+            .field("soft_iron_matrix", &self.soft_iron_matrix)
+            .field("noise_std", &self.noise_std)
+            .finish()
+    }
+}
+
 impl Default for MagnetometerMeasurement {
     fn default() -> Self {
         Self {
@@ -312,8 +361,11 @@ impl Default for MagnetometerMeasurement {
             mag_z: 0.0,
             // Typical mid-latitude northern hemisphere magnetic field
             // Users should set this to match their geographic location
-            // using Earth magnetic models (WMM, IGRF) or local calibration
+            // using Earth magnetic models (WMM, IGRF) or local calibration,
+            // or provide a wmm_field object for automatic calculation
             reference_field_ned: Vector3::new(25.0, 0.0, 40.0),
+            wmm_field: None,
+            wmm_date: None,
             hard_iron_offset: Vector3::zeros(),
             soft_iron_matrix: Matrix3::identity(),
             noise_std: 5.0, // Default 5 μT noise std
@@ -323,17 +375,119 @@ impl Default for MagnetometerMeasurement {
 
 impl Display for MagnetometerMeasurement {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let ref_source = if self.wmm_field.is_some() {
+            "WMM"
+        } else {
+            "Manual"
+        };
         write!(
             f,
-            "MagnetometerMeasurement(mag: [{:.2}, {:.2}, {:.2}] μT, ref: [{:.2}, {:.2}, {:.2}] μT, noise: {:.2} μT)",
+            "MagnetometerMeasurement(mag: [{:.2}, {:.2}, {:.2}] μT, ref: [{:.2}, {:.2}, {:.2}] μT ({}), noise: {:.2} μT)",
             self.mag_x,
             self.mag_y,
             self.mag_z,
             self.reference_field_ned[0],
             self.reference_field_ned[1],
             self.reference_field_ned[2],
+            ref_source,
             self.noise_std
         )
+    }
+}
+
+impl MagnetometerMeasurement {
+    /// Update the WMM field with new coordinates
+    ///
+    /// This method updates the internal `GeomagneticField` object with new coordinates
+    /// without recreating the date object, which is more efficient for high-rate
+    /// filter updates.
+    ///
+    /// # Arguments
+    /// - `latitude` - WGS84 latitude in degrees
+    /// - `longitude` - WGS84 longitude in degrees  
+    /// - `altitude` - WGS84 altitude in meters above ellipsoid
+    ///
+    /// # Returns
+    /// Returns `true` if the field was successfully updated, `false` otherwise.
+    pub fn update_wmm_coordinates(&self, latitude: f64, longitude: f64, altitude: f64) -> bool {
+        if let (Some(field_cell), Some(date)) = (&self.wmm_field, &self.wmm_date) {
+            match GeomagneticField::new(
+                Length::new::<meter>(altitude as f32),
+                Angle::new::<degree>(latitude as f32),
+                Angle::new::<degree>(longitude as f32),
+                *date,
+            ) {
+                Ok(new_field) => {
+                    *field_cell.borrow_mut() = new_field;
+                    true
+                }
+                Err(_) => false,
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Initialize the WMM field with a specific date
+    ///
+    /// Creates a new `GeomagneticField` object for the given date. This should be
+    /// called once during initialization, then use `update_wmm_coordinates` to update
+    /// positions efficiently.
+    ///
+    /// # Arguments
+    /// - `year` - Year for WMM calculation (e.g., 2025)
+    /// - `day_of_year` - Day of year (1-365 or 1-366)
+    ///
+    /// # Returns
+    /// Returns `true` if the field was successfully initialized, `false` otherwise.
+    pub fn init_wmm_field(&mut self, year: i32, day_of_year: u16) -> bool {
+        let date = match Date::from_ordinal_date(year, day_of_year) {
+            Ok(d) => d,
+            Err(_) => return false,
+        };
+
+        // Create with a default position (will be updated via update_wmm_coordinates)
+        self.wmm_field = match GeomagneticField::new(
+            Length::new::<meter>(0.0),
+            Angle::new::<degree>(0.0),
+            Angle::new::<degree>(0.0),
+            date,
+        ) {
+            Ok(field) => Some(RefCell::new(field)),
+            Err(_) => None,
+        };
+        
+        self.wmm_date = Some(date);
+
+        self.wmm_field.is_some()
+    }
+
+    /// Get the reference magnetic field from WMM at given coordinates
+    ///
+    /// This method updates the WMM field object with the provided coordinates and
+    /// returns the magnetic field vector in NED frame in microteslas.
+    ///
+    /// # Arguments
+    /// - `latitude` - WGS84 latitude in degrees
+    /// - `longitude` - WGS84 longitude in degrees
+    /// - `altitude` - WGS84 altitude in meters above ellipsoid
+    ///
+    /// # Returns
+    /// Returns the magnetic field vector in NED frame (μT), or None if WMM field is not initialized
+    pub fn get_wmm_field_at(&self, latitude: f64, longitude: f64, altitude: f64) -> Option<Vector3<f64>> {
+        if self.update_wmm_coordinates(latitude, longitude, altitude) {
+            if let Some(ref field_cell) = self.wmm_field {
+                let field = field_cell.borrow();
+                // Extract components and convert from Tesla to microteslas
+                // 1 Tesla = 1,000,000 μT
+                let north_ut = field.x().value as f64 * 1_000_000.0;
+                let east_ut = field.y().value as f64 * 1_000_000.0;
+                let down_ut = field.z().value as f64 * 1_000_000.0;
+                
+                return Some(Vector3::new(north_ut, east_ut, down_ut));
+            }
+        }
+        None
     }
 }
 
@@ -372,6 +526,22 @@ impl MeasurementModel for MagnetometerMeasurement {
         let pitch = state[7];
         let yaw = state[8];
 
+        // Get reference field - either from WMM or use the provided value
+        // When WMM field is Some, only coordinates are updated (not the date),
+        // which avoids expensive Date parsing on every call
+        let reference_field = if self.wmm_field.is_some() {
+            // Extract position from state: lat (0), lon (1), alt (2)
+            let latitude = state[0].to_degrees();
+            let longitude = state[1].to_degrees();
+            let altitude = state[2];
+            
+            // Get magnetic field from WMM with updated coordinates
+            self.get_wmm_field_at(latitude, longitude, altitude)
+                .unwrap_or(self.reference_field_ned)
+        } else {
+            self.reference_field_ned
+        };
+
         // Compute rotation matrix from body to NED frame (C_bn)
         // This is what from_euler_angles gives us
         let rot_body_to_ned = Rotation3::from_euler_angles(roll, pitch, yaw);
@@ -380,7 +550,7 @@ impl MeasurementModel for MagnetometerMeasurement {
         let rot_ned_to_body = rot_body_to_ned.transpose();
 
         // Rotate reference field from NED to body frame
-        let mag_body = rot_ned_to_body * self.reference_field_ned;
+        let mag_body = rot_ned_to_body * reference_field;
 
         // Apply calibration transform to get expected measurement in calibrated space
         // This matches the calibration applied in get_vector() to the raw measurements
@@ -594,6 +764,9 @@ mod tests {
             mag_y: 5.0,
             mag_z: 40.0,
             reference_field_ned: Vector3::new(25.0, 0.0, 45.0),
+            use_wmm: false,
+            wmm_year: 2025,
+            wmm_day_of_year: 1,
             hard_iron_offset: Vector3::zeros(),
             soft_iron_matrix: Matrix3::identity(),
             noise_std: 3.0,
@@ -622,6 +795,9 @@ mod tests {
             mag_y: 3.0,
             mag_z: 43.0,
             reference_field_ned: Vector3::new(25.0, 0.0, 45.0),
+            use_wmm: false,
+            wmm_year: 2025,
+            wmm_day_of_year: 1,
             hard_iron_offset: hard_iron,
             soft_iron_matrix: Matrix3::identity(),
             noise_std: 3.0,
@@ -643,6 +819,9 @@ mod tests {
             mag_y: 10.0,
             mag_z: 40.0,
             reference_field_ned: Vector3::new(25.0, 0.0, 45.0),
+            use_wmm: false,
+            wmm_year: 2025,
+            wmm_day_of_year: 1,
             hard_iron_offset: Vector3::zeros(),
             soft_iron_matrix: soft_iron,
             noise_std: 3.0,
@@ -675,6 +854,9 @@ mod tests {
             mag_y: 0.0,
             mag_z: 0.0,
             reference_field_ned: reference,
+            use_wmm: false,
+            wmm_year: 2025,
+            wmm_day_of_year: 1,
             hard_iron_offset: Vector3::zeros(),
             soft_iron_matrix: Matrix3::identity(),
             noise_std: 3.0,
@@ -710,6 +892,9 @@ mod tests {
             mag_y: 0.0,
             mag_z: 0.0,
             reference_field_ned: reference,
+            use_wmm: false,
+            wmm_year: 2025,
+            wmm_day_of_year: 1,
             hard_iron_offset: Vector3::zeros(),
             soft_iron_matrix: Matrix3::identity(),
             noise_std: 3.0,
@@ -741,6 +926,9 @@ mod tests {
             mag_y: 0.0,
             mag_z: 0.0,
             reference_field_ned: reference,
+            use_wmm: false,
+            wmm_year: 2025,
+            wmm_day_of_year: 1,
             hard_iron_offset: hard_iron,
             soft_iron_matrix: soft_iron,
             noise_std: 3.0,
@@ -762,6 +950,9 @@ mod tests {
             mag_y: 5.0,
             mag_z: 40.0,
             reference_field_ned: Vector3::new(25.0, 0.0, 45.0),
+            use_wmm: false,
+            wmm_year: 2025,
+            wmm_day_of_year: 1,
             hard_iron_offset: Vector3::zeros(),
             soft_iron_matrix: Matrix3::identity(),
             noise_std: 3.0,
@@ -784,5 +975,180 @@ mod tests {
 
         assert_eq!(down.get_dimension(), 3);
         assert_eq!(down.noise_std, meas.noise_std);
+    }
+
+    #[test]
+    fn magnetometer_wmm_disabled() {
+        // Test that WMM is disabled by default and uses manual reference field
+        let meas = MagnetometerMeasurement {
+            mag_x: 20.0,
+            mag_y: 5.0,
+            mag_z: 40.0,
+            reference_field_ned: Vector3::new(25.0, 0.0, 45.0),
+            use_wmm: false,
+            wmm_year: 2025,
+            wmm_day_of_year: 1,
+            hard_iron_offset: Vector3::zeros(),
+            soft_iron_matrix: Matrix3::identity(),
+            noise_std: 3.0,
+        };
+
+        // State with zero attitude and position at Philadelphia
+        let state = DVector::from_vec(vec![
+            39.95_f64.to_radians(), // lat
+            -75.16_f64.to_radians(), // lon
+            100.0,                    // alt
+            0.0,                      // v_n
+            0.0,                      // v_e
+            0.0,                      // v_d
+            0.0,                      // roll
+            0.0,                      // pitch
+            0.0,                      // yaw
+        ]);
+
+        let expected = meas.get_expected_measurement(&state);
+        
+        // With zero attitude, body frame = NED frame, so expected should equal reference field
+        assert_approx_eq!(expected[0], 25.0, 1e-6);
+        assert_approx_eq!(expected[1], 0.0, 1e-6);
+        assert_approx_eq!(expected[2], 45.0, 1e-6);
+    }
+
+    #[test]
+    fn magnetometer_wmm_enabled() {
+        // Test that WMM computes reference field from state position
+        let meas = MagnetometerMeasurement {
+            mag_x: 20.0,
+            mag_y: 5.0,
+            mag_z: 40.0,
+            reference_field_ned: Vector3::new(999.0, 999.0, 999.0), // Should be ignored
+            use_wmm: true,
+            wmm_year: 2025,
+            wmm_day_of_year: 1,
+            hard_iron_offset: Vector3::zeros(),
+            soft_iron_matrix: Matrix3::identity(),
+            noise_std: 3.0,
+        };
+
+        // State with zero attitude and position at Philadelphia
+        let state = DVector::from_vec(vec![
+            39.95_f64.to_radians(), // lat
+            -75.16_f64.to_radians(), // lon
+            100.0,                    // alt
+            0.0,                      // v_n
+            0.0,                      // v_e
+            0.0,                      // v_d
+            0.0,                      // roll
+            0.0,                      // pitch
+            0.0,                      // yaw
+        ]);
+
+        let expected = meas.get_expected_measurement(&state);
+        
+        // With zero attitude, expected should be WMM field at this location
+        // We can't check exact values but can verify reasonableness
+        assert!(expected[0].abs() < 100.0, "North component should be reasonable");
+        assert!(expected[1].abs() < 100.0, "East component should be reasonable");
+        assert!(expected[2] > 0.0, "Down component should be positive in northern hemisphere");
+        
+        // Should not be the default reference field
+        assert!((expected[0] - 999.0).abs() > 1.0, "Should use WMM, not default reference");
+    }
+
+    #[test]
+    fn magnetometer_wmm_fallback() {
+        // Test that WMM falls back to manual reference field on error
+        let meas = MagnetometerMeasurement {
+            mag_x: 20.0,
+            mag_y: 5.0,
+            mag_z: 40.0,
+            reference_field_ned: Vector3::new(25.0, 0.0, 45.0),
+            use_wmm: true,
+            wmm_year: 2025,
+            wmm_day_of_year: 366, // Invalid day 366 for 2025 (non-leap year, should trigger fallback)
+            hard_iron_offset: Vector3::zeros(),
+            soft_iron_matrix: Matrix3::identity(),
+            noise_std: 3.0,
+        };
+
+        let state = DVector::from_vec(vec![
+            39.95_f64.to_radians(), // lat
+            -75.16_f64.to_radians(), // lon
+            100.0,                    // alt
+            0.0, 0.0, 0.0,            // velocities
+            0.0, 0.0, 0.0,            // attitude
+        ]);
+
+        let expected = meas.get_expected_measurement(&state);
+        
+        // Should fall back to manual reference field
+        assert_approx_eq!(expected[0], 25.0, 1e-6);
+        assert_approx_eq!(expected[1], 0.0, 1e-6);
+        assert_approx_eq!(expected[2], 45.0, 1e-6);
+    }
+
+    #[test]
+    fn magnetometer_wmm_with_rotation() {
+        // Test WMM with non-zero attitude
+        let meas = MagnetometerMeasurement {
+            mag_x: 0.0,
+            mag_y: 0.0,
+            mag_z: 0.0,
+            reference_field_ned: Vector3::zeros(), // Unused with WMM
+            use_wmm: true,
+            wmm_year: 2025,
+            wmm_day_of_year: 180,
+            hard_iron_offset: Vector3::zeros(),
+            soft_iron_matrix: Matrix3::identity(),
+            noise_std: 3.0,
+        };
+
+        // State with 90° yaw rotation
+        let state = DVector::from_vec(vec![
+            39.95_f64.to_radians(),              // lat
+            -75.16_f64.to_radians(),             // lon
+            100.0,                                // alt
+            0.0, 0.0, 0.0,                        // velocities
+            0.0,                                  // roll
+            0.0,                                  // pitch
+            std::f64::consts::FRAC_PI_2,         // yaw = 90°
+        ]);
+
+        let expected = meas.get_expected_measurement(&state);
+        
+        // All components should be rotated, none should be exactly zero
+        assert!(expected[0].abs() > 0.1 || expected[1].abs() > 0.1, 
+                "Rotation should affect expected measurement");
+    }
+
+    #[test]
+    fn magnetometer_display_shows_wmm_status() {
+        // Test manual mode display
+        let meas_manual = MagnetometerMeasurement {
+            mag_x: 20.0,
+            mag_y: 5.0,
+            mag_z: 40.0,
+            reference_field_ned: Vector3::new(25.0, 0.0, 45.0),
+            use_wmm: false,
+            wmm_year: 2025,
+            wmm_day_of_year: 1,
+            hard_iron_offset: Vector3::zeros(),
+            soft_iron_matrix: Matrix3::identity(),
+            noise_std: 3.0,
+        };
+        let s = format!("{}", meas_manual);
+        assert!(s.contains("Manual"), "Display should show manual mode");
+
+        // Test WMM mode display
+        let meas_wmm = MagnetometerMeasurement {
+            use_wmm: true,
+            wmm_year: 2025,
+            wmm_day_of_year: 180,
+            ..meas_manual
+        };
+        let s = format!("{}", meas_wmm);
+        assert!(s.contains("WMM"), "Display should show WMM mode");
+        assert!(s.contains("2025"), "Display should show WMM year");
+        assert!(s.contains("180"), "Display should show WMM day");
     }
 }

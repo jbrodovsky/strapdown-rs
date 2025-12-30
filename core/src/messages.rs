@@ -1,5 +1,5 @@
 // gnss_degrader.rs
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, Utc};
 use nalgebra::Vector3;
 use rand::SeedableRng;
 use rand_distr::{Distribution, Normal};
@@ -281,8 +281,24 @@ pub struct MagnetometerConfig {
     #[serde(default)]
     pub enabled: bool,
 
+    /// Use World Magnetic Model to compute reference field from position
+    /// If false, uses the manual reference_field_ned
+    #[serde(default)]
+    pub use_wmm: bool,
+
+    /// Year for WMM calculation (e.g., 2025)
+    /// Only used if use_wmm is true
+    #[serde(default = "default_wmm_year")]
+    pub wmm_year: i32,
+
+    /// Day of year for WMM calculation (1-365 or 1-366)
+    /// Only used if use_wmm is true
+    #[serde(default = "default_wmm_day")]
+    pub wmm_day_of_year: u16,
+
     /// Reference magnetic field vector in NED frame (μT)
     /// [North, East, Down] components
+    /// Only used if use_wmm is false
     /// Typical values: Northern hemisphere ~[25, 0, 40], Southern ~[25, 0, -40]
     #[serde(default = "default_reference_field")]
     pub reference_field_ned: [f64; 3],
@@ -307,6 +323,9 @@ impl Default for MagnetometerConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            use_wmm: false,
+            wmm_year: default_wmm_year(),
+            wmm_day_of_year: default_wmm_day(),
             reference_field_ned: default_reference_field(),
             hard_iron_offset: [0.0; 3],
             soft_iron_matrix: default_soft_iron_matrix(),
@@ -325,6 +344,29 @@ fn default_soft_iron_matrix() -> [f64; 9] {
 
 fn default_mag_noise() -> f64 {
     5.0 // 5 μT noise std
+}
+
+/// Default WMM year for magnetometer configuration
+/// 
+/// Returns the current year as determined by the system clock. This provides a
+/// reasonable default that stays current as time progresses, though it may fall
+/// outside the valid range of the underlying WMM model (WMM2020: 2020-2025).
+/// 
+/// For production use, it's recommended to set this value explicitly in your
+/// configuration to match your dataset dates and ensure compatibility with the
+/// available WMM model version.
+fn default_wmm_year() -> i32 {
+    chrono::Utc::now().year()
+}
+
+/// Default WMM day of year for magnetometer configuration
+///
+/// Returns the current day of year as determined by the system clock. This keeps
+/// the default synchronized with the current date.
+///
+/// For production use, set this explicitly to match your dataset dates.
+fn default_wmm_day() -> u16 {
+    chrono::Utc::now().ordinal() as u16
 }
 
 impl Default for GnssDegradationConfig {
@@ -1074,15 +1116,22 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
                     cfg.magnetometer.soft_iron_matrix[8],
                 );
 
-                let mag_meas = MagnetometerMeasurement {
+                let mut mag_meas = MagnetometerMeasurement {
                     mag_x: r1.mag_x,
                     mag_y: r1.mag_y,
                     mag_z: r1.mag_z,
                     reference_field_ned: reference_field,
+                    wmm_field: None,
+                    wmm_date: None,
                     hard_iron_offset: hard_iron,
                     soft_iron_matrix: soft_iron,
                     noise_std: cfg.magnetometer.noise_std,
                 };
+                
+                // Initialize WMM field if requested
+                if cfg.magnetometer.use_wmm {
+                    mag_meas.init_wmm_field(cfg.magnetometer.wmm_year, cfg.magnetometer.wmm_day_of_year);
+                }
 
                 events.push(Event::Measurement {
                     meas: Box::new(mag_meas),
@@ -1677,6 +1726,9 @@ mod tests {
             fault: GnssFaultModel::None,
             magnetometer: MagnetometerConfig {
                 enabled: true,
+                use_wmm: false,
+                wmm_year: 2025,
+                wmm_day_of_year: 1,
                 reference_field_ned: [25.0, 0.0, 45.0],
                 hard_iron_offset: [1.0, 0.5, 2.0],
                 soft_iron_matrix: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
