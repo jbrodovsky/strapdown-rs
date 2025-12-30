@@ -1116,18 +1116,22 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
                     cfg.magnetometer.soft_iron_matrix[8],
                 );
 
-                let mag_meas = MagnetometerMeasurement {
+                let mut mag_meas = MagnetometerMeasurement {
                     mag_x: r1.mag_x,
                     mag_y: r1.mag_y,
                     mag_z: r1.mag_z,
                     reference_field_ned: reference_field,
-                    use_wmm: cfg.magnetometer.use_wmm,
-                    wmm_year: cfg.magnetometer.wmm_year,
-                    wmm_day_of_year: cfg.magnetometer.wmm_day_of_year,
+                    wmm_field: None,
+                    wmm_date: None,
                     hard_iron_offset: hard_iron,
                     soft_iron_matrix: soft_iron,
                     noise_std: cfg.magnetometer.noise_std,
                 };
+                
+                // Initialize WMM field if requested
+                if cfg.magnetometer.use_wmm {
+                    mag_meas.init_wmm_field(cfg.magnetometer.wmm_year, cfg.magnetometer.wmm_day_of_year);
+                }
 
                 events.push(Event::Measurement {
                     meas: Box::new(mag_meas),

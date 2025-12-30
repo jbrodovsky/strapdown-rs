@@ -8,9 +8,15 @@
 use crate::earth::METERS_TO_DEGREES;
 
 use std::any::Any;
+use std::cell::RefCell;
 use std::fmt::{self, Debug, Display};
 
 use nalgebra::{DMatrix, DVector, Matrix3, Rotation3, Vector3};
+use world_magnetic_model::GeomagneticField;
+use world_magnetic_model::time::Date;
+use world_magnetic_model::uom::si::angle::degree;
+use world_magnetic_model::uom::si::f32::{Angle, Length};
+use world_magnetic_model::uom::si::length::meter;
 
 /// Generic measurement model trait for all types of measurements
 pub trait MeasurementModel: Any {
@@ -264,8 +270,8 @@ impl MeasurementModel for RelativeAltitudeMeasurement {
 ///
 /// The reference magnetic field can be provided in two ways:
 /// 1. **Manual**: Set `reference_field_ned` directly with known values
-/// 2. **Automatic (WMM)**: Set `use_wmm` to true and provide date information. The reference
-///    field will be computed from the state's position using the World Magnetic Model.
+/// 2. **Automatic (WMM)**: Provide a `GeomagneticField` object which is updated
+///    only when the position changes significantly, avoiding repeated expensive calculations.
 ///
 /// # Calibration Parameters
 ///
@@ -281,7 +287,7 @@ impl MeasurementModel for RelativeAltitudeMeasurement {
 ///
 /// The expected measurement is computed by:
 /// 1. Extract roll, pitch, yaw from the state vector (indices 6, 7, 8)
-/// 2. If `use_wmm` is true, compute the reference field from position (indices 0, 1, 2)
+/// 2. If `wmm_field` is Some, update it with position (indices 0, 1, 2) and query reference field
 /// 3. Compute rotation matrix from NED frame to body frame using attitude
 /// 4. Rotate the local NED magnetic field reference vector into the body frame
 /// 5. Apply soft-iron and hard-iron calibration corrections
@@ -292,25 +298,18 @@ impl MeasurementModel for RelativeAltitudeMeasurement {
 /// use strapdown::measurements::MagnetometerMeasurement;
 ///
 /// // Manual reference field (e.g., from prior calibration)
-/// let mut meas = MagnetometerMeasurement {
+/// let meas = MagnetometerMeasurement {
 ///     mag_x: 20.0,
 ///     mag_y: 5.0,
 ///     mag_z: 40.0,
 ///     reference_field_ned: Vector3::new(25.0, 0.0, 45.0),
-///     use_wmm: false,
-///     wmm_year: 2025,
-///     wmm_day_of_year: 1,
+///     wmm_field: None,
 ///     hard_iron_offset: Vector3::zeros(),
 ///     soft_iron_matrix: Matrix3::identity(),
 ///     noise_std: 3.0,
 /// };
-///
-/// // Or use WMM to compute reference field automatically
-/// meas.use_wmm = true;
-/// meas.wmm_year = 2025;
-/// meas.wmm_day_of_year = 180;  // Mid-year
 /// ```
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct MagnetometerMeasurement {
     /// Measured magnetic field in body frame X-axis (μT)
     pub mag_x: f64,
@@ -320,14 +319,14 @@ pub struct MagnetometerMeasurement {
     pub mag_z: f64,
     /// Reference magnetic field vector in NED frame (μT)
     /// [North, East, Down] components
-    /// If `use_wmm` is true, this is computed automatically from the state position
+    /// Used when wmm_field is None
     pub reference_field_ned: Vector3<f64>,
-    /// Use World Magnetic Model to compute reference field from position
-    pub use_wmm: bool,
-    /// Year for WMM calculation (e.g., 2025)
-    pub wmm_year: i32,
-    /// Day of year for WMM calculation (1-365 or 1-366)
-    pub wmm_day_of_year: u16,
+    /// World Magnetic Model field object for automatic reference field computation
+    /// When Some, position updates only change coordinates without recreating the field object
+    /// Uses RefCell for interior mutability to allow updates in get_expected_measurement
+    pub wmm_field: Option<RefCell<GeomagneticField>>,
+    /// Date used for WMM calculations (stored separately since GeomagneticField doesn't expose it)
+    pub wmm_date: Option<Date>,
     /// Hard-iron offset correction vector (μT)
     /// This offset is subtracted from raw measurements
     pub hard_iron_offset: Vector3<f64>,
@@ -336,6 +335,22 @@ pub struct MagnetometerMeasurement {
     pub soft_iron_matrix: Matrix3<f64>,
     /// Measurement noise standard deviation (μT)
     pub noise_std: f64,
+}
+
+impl Debug for MagnetometerMeasurement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MagnetometerMeasurement")
+            .field("mag_x", &self.mag_x)
+            .field("mag_y", &self.mag_y)
+            .field("mag_z", &self.mag_z)
+            .field("reference_field_ned", &self.reference_field_ned)
+            .field("wmm_field", &self.wmm_field.is_some())
+            .field("wmm_date", &self.wmm_date.is_some())
+            .field("hard_iron_offset", &self.hard_iron_offset)
+            .field("soft_iron_matrix", &self.soft_iron_matrix)
+            .field("noise_std", &self.noise_std)
+            .finish()
+    }
 }
 
 impl Default for MagnetometerMeasurement {
@@ -347,11 +362,10 @@ impl Default for MagnetometerMeasurement {
             // Typical mid-latitude northern hemisphere magnetic field
             // Users should set this to match their geographic location
             // using Earth magnetic models (WMM, IGRF) or local calibration,
-            // or enable use_wmm for automatic calculation
+            // or provide a wmm_field object for automatic calculation
             reference_field_ned: Vector3::new(25.0, 0.0, 40.0),
-            use_wmm: false,
-            wmm_year: 2025,
-            wmm_day_of_year: 1,
+            wmm_field: None,
+            wmm_date: None,
             hard_iron_offset: Vector3::zeros(),
             soft_iron_matrix: Matrix3::identity(),
             noise_std: 5.0, // Default 5 μT noise std
@@ -361,10 +375,10 @@ impl Default for MagnetometerMeasurement {
 
 impl Display for MagnetometerMeasurement {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let ref_source = if self.use_wmm {
-            format!("WMM({}/{})", self.wmm_year, self.wmm_day_of_year)
+        let ref_source = if self.wmm_field.is_some() {
+            "WMM"
         } else {
-            "Manual".to_string()
+            "Manual"
         };
         write!(
             f,
@@ -378,6 +392,102 @@ impl Display for MagnetometerMeasurement {
             ref_source,
             self.noise_std
         )
+    }
+}
+
+impl MagnetometerMeasurement {
+    /// Update the WMM field with new coordinates
+    ///
+    /// This method updates the internal `GeomagneticField` object with new coordinates
+    /// without recreating the date object, which is more efficient for high-rate
+    /// filter updates.
+    ///
+    /// # Arguments
+    /// - `latitude` - WGS84 latitude in degrees
+    /// - `longitude` - WGS84 longitude in degrees  
+    /// - `altitude` - WGS84 altitude in meters above ellipsoid
+    ///
+    /// # Returns
+    /// Returns `true` if the field was successfully updated, `false` otherwise.
+    pub fn update_wmm_coordinates(&self, latitude: f64, longitude: f64, altitude: f64) -> bool {
+        if let (Some(field_cell), Some(date)) = (&self.wmm_field, &self.wmm_date) {
+            match GeomagneticField::new(
+                Length::new::<meter>(altitude as f32),
+                Angle::new::<degree>(latitude as f32),
+                Angle::new::<degree>(longitude as f32),
+                *date,
+            ) {
+                Ok(new_field) => {
+                    *field_cell.borrow_mut() = new_field;
+                    true
+                }
+                Err(_) => false,
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Initialize the WMM field with a specific date
+    ///
+    /// Creates a new `GeomagneticField` object for the given date. This should be
+    /// called once during initialization, then use `update_wmm_coordinates` to update
+    /// positions efficiently.
+    ///
+    /// # Arguments
+    /// - `year` - Year for WMM calculation (e.g., 2025)
+    /// - `day_of_year` - Day of year (1-365 or 1-366)
+    ///
+    /// # Returns
+    /// Returns `true` if the field was successfully initialized, `false` otherwise.
+    pub fn init_wmm_field(&mut self, year: i32, day_of_year: u16) -> bool {
+        let date = match Date::from_ordinal_date(year, day_of_year) {
+            Ok(d) => d,
+            Err(_) => return false,
+        };
+
+        // Create with a default position (will be updated via update_wmm_coordinates)
+        self.wmm_field = match GeomagneticField::new(
+            Length::new::<meter>(0.0),
+            Angle::new::<degree>(0.0),
+            Angle::new::<degree>(0.0),
+            date,
+        ) {
+            Ok(field) => Some(RefCell::new(field)),
+            Err(_) => None,
+        };
+        
+        self.wmm_date = Some(date);
+
+        self.wmm_field.is_some()
+    }
+
+    /// Get the reference magnetic field from WMM at given coordinates
+    ///
+    /// This method updates the WMM field object with the provided coordinates and
+    /// returns the magnetic field vector in NED frame in microteslas.
+    ///
+    /// # Arguments
+    /// - `latitude` - WGS84 latitude in degrees
+    /// - `longitude` - WGS84 longitude in degrees
+    /// - `altitude` - WGS84 altitude in meters above ellipsoid
+    ///
+    /// # Returns
+    /// Returns the magnetic field vector in NED frame (μT), or None if WMM field is not initialized
+    pub fn get_wmm_field_at(&self, latitude: f64, longitude: f64, altitude: f64) -> Option<Vector3<f64>> {
+        if self.update_wmm_coordinates(latitude, longitude, altitude) {
+            if let Some(ref field_cell) = self.wmm_field {
+                let field = field_cell.borrow();
+                // Extract components and convert from Tesla to microteslas
+                // 1 Tesla = 1,000,000 μT
+                let north_ut = field.x().value as f64 * 1_000_000.0;
+                let east_ut = field.y().value as f64 * 1_000_000.0;
+                let down_ut = field.z().value as f64 * 1_000_000.0;
+                
+                return Some(Vector3::new(north_ut, east_ut, down_ut));
+            }
+        }
+        None
     }
 }
 
@@ -417,28 +527,17 @@ impl MeasurementModel for MagnetometerMeasurement {
         let yaw = state[8];
 
         // Get reference field - either from WMM or use the provided value
-        // Note: WMM calculation involves Date parsing and GeomagneticField computation
-        // on every call. For high-rate filter updates (>100 Hz), consider caching the
-        // result or using manual reference_field_ned mode for better performance.
-        let reference_field = if self.use_wmm {
+        // When WMM field is Some, only coordinates are updated (not the date),
+        // which avoids expensive Date parsing on every call
+        let reference_field = if self.wmm_field.is_some() {
             // Extract position from state: lat (0), lon (1), alt (2)
             let latitude = state[0].to_degrees();
             let longitude = state[1].to_degrees();
             let altitude = state[2];
             
-            // Compute magnetic field using WMM
-            if let Some(field) = crate::earth::magnetic_field_wmm(
-                &latitude,
-                &longitude,
-                &altitude,
-                self.wmm_year,
-                self.wmm_day_of_year,
-            ) {
-                field
-            } else {
-                // Fallback to stored reference field if WMM fails
-                self.reference_field_ned
-            }
+            // Get magnetic field from WMM with updated coordinates
+            self.get_wmm_field_at(latitude, longitude, altitude)
+                .unwrap_or(self.reference_field_ned)
         } else {
             self.reference_field_ned
         };
