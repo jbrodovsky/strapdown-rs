@@ -1,6 +1,6 @@
 .vscode
 target
-data/**/*
+data/raw
 examples/strapdown-sim/out
 
 # Map files
