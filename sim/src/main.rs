@@ -1001,15 +1001,13 @@ fn prompt_log_level() -> String {
 
 /// Prompt for log file path
 fn prompt_log_file() -> Option<String> {
-    loop {
-        println!(
-            "Please specify a log file path (press Enter to log to stderr, or 'q' to quit):"
-        );
-        match read_user_input() {
-            None => return None,
-            Some(input) if !input.trim().is_empty() => return Some(input),
-            _ => return None,
-        }
+    println!(
+        "Please specify a log file path (press Enter to log to stderr, or 'q' to quit):"
+    );
+    match read_user_input() {
+        None => None,
+        Some(input) if !input.trim().is_empty() => Some(input),
+        _ => None,
     }
 }
 
@@ -1080,11 +1078,10 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
 
     // validate output location exists and write to file using appropriate format based on file extension
     let config_output_path = Path::new(&save_path).join(&config_name);
-    if let Some(parent) = config_output_path.parent() {
-        if !parent.as_os_str().is_empty() && !parent.exists() {
+    if let Some(parent) = config_output_path.parent()
+        && !parent.as_os_str().is_empty() && !parent.exists() {
             std::fs::create_dir_all(parent)?;
         }
-    }
     config.to_file(&config_output_path)?;
 
     println!(
@@ -1110,7 +1107,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let log_level = &config.logging.level;
         
         // Create PathBuf from config file string if needed
-        let config_log_file = config.logging.file.as_ref().map(|s| PathBuf::from(s));
+        let config_log_file = config.logging.file.as_ref().map(PathBuf::from);
         let log_file = cli.log_file.as_ref().or(config_log_file.as_ref());
         
         // Initialize logger with resolved settings
