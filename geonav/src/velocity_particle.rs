@@ -77,15 +77,15 @@
 //! let position = pf.get_estimate();
 //! ```
 
-use std::any::Any;
-use nalgebra::{DVector, DMatrix};
-use rand::{SeedableRng, Rng};
+use nalgebra::{DMatrix, DVector};
+use rand::SeedableRng;
 use rand::rngs::StdRng;
+use std::any::Any;
 
-use strapdown::particle::{
-    Particle, ParticleFilter, ParticleResamplingStrategy, ParticleAveragingStrategy
-};
 use strapdown::measurements::MeasurementModel;
+use strapdown::particle::{
+    Particle, ParticleAveragingStrategy, ParticleFilter, ParticleResamplingStrategy,
+};
 
 /// Velocity-informed particle for position tracking
 ///
@@ -115,7 +115,11 @@ impl Particle for VelocityInformedParticle {
     }
 
     fn new(initial_state: &DVector<f64>, weight: f64) -> Self {
-        assert_eq!(initial_state.len(), 3, "VelocityInformedParticle requires 3-state vector [lat, lon, alt]");
+        assert_eq!(
+            initial_state.len(),
+            3,
+            "VelocityInformedParticle requires 3-state vector [lat, lon, alt]"
+        );
         VelocityInformedParticle {
             position: initial_state.clone(),
             weight,
@@ -129,14 +133,14 @@ impl Particle for VelocityInformedParticle {
     fn update_weight<M: MeasurementModel + ?Sized>(&mut self, measurement: &M) {
         // Compute expected measurement from particle's position
         let expected = measurement.get_expected_measurement(&self.position);
-        let actual = measurement.get_vector();
-        
+        let actual = measurement.get_measurement(&self.position);
+
         // Measurement residual
         let innovation = actual - expected;
-        
+
         // Measurement noise covariance
         let noise_cov = measurement.get_noise();
-        
+
         // Compute Gaussian likelihood: exp(-0.5 * innovation^T * R^{-1} * innovation)
         // For diagonal covariance, this simplifies to a product of 1D Gaussians
         let mut log_likelihood = 0.0;
@@ -147,10 +151,12 @@ impl Particle for VelocityInformedParticle {
                 // Gaussian PDF: (1 / (sqrt(2*pi) * sigma)) * exp(-0.5 * ((x - mu) / sigma)^2)
                 // In log space: -0.5 * log(2*pi) - log(sigma) - 0.5 * ((x - mu) / sigma)^2
                 let normalized_innovation = innovation[i] / std_dev;
-                log_likelihood += -0.5 * normalized_innovation.powi(2) - std_dev.ln() - 0.5 * (2.0 * std::f64::consts::PI).ln();
+                log_likelihood += -0.5 * normalized_innovation.powi(2)
+                    - std_dev.ln()
+                    - 0.5 * (2.0 * std::f64::consts::PI).ln();
             }
         }
-        
+
         // Update weight by multiplying with likelihood (in log space: add)
         // To avoid numerical underflow, we work with log weights and convert back
         let likelihood = log_likelihood.exp();
@@ -174,7 +180,11 @@ impl VelocityInformedParticle {
 
     /// Set the particle's position
     pub fn set_position(&mut self, position: DVector<f64>) {
-        assert_eq!(position.len(), 3, "Position must be 3-element vector [lat, lon, alt]");
+        assert_eq!(
+            position.len(),
+            3,
+            "Position must be 3-element vector [lat, lon, alt]"
+        );
         self.position = position;
     }
 
@@ -196,44 +206,48 @@ impl VelocityInformedParticle {
         process_noise_std: f64,
         rng: &mut StdRng,
     ) {
-        assert_eq!(velocity.len(), 3, "Velocity must be 3-element vector [v_n, v_e, v_d]");
+        assert_eq!(
+            velocity.len(),
+            3,
+            "Velocity must be 3-element vector [v_n, v_e, v_d]"
+        );
 
         // Extract current position
-        let lat = self.position[0];  // radians
-        let lon = self.position[1];  // radians
-        let alt = self.position[2];  // meters
+        let lat = self.position[0]; // radians
+        let lon = self.position[1]; // radians
+        let alt = self.position[2]; // meters
 
         // Extract velocity components
-        let v_n = velocity[0];  // m/s north
-        let v_e = velocity[1];  // m/s east
-        let v_d = velocity[2];  // m/s down
+        let v_n = velocity[0]; // m/s north
+        let v_e = velocity[1]; // m/s east
+        let v_d = velocity[2]; // m/s down
 
         // Convert velocities to position changes
         // Use WGS84 principal radii for accurate geodetic calculations
         use strapdown::earth::principal_radii;
-        
+
         // Get principal radii at current position (expects latitude in degrees)
         let lat_deg = lat.to_degrees();
         let (r_n, r_e, _) = principal_radii(&lat_deg, &alt);
-        
+
         // Latitude change (northward displacement)
         let delta_lat = (v_n * dt) / r_n;
-        
+
         // Longitude change (eastward displacement)
         let delta_lon = if lat.cos().abs() > 1e-8 {
             (v_e * dt) / (r_e * lat.cos())
         } else {
-            0.0  // At poles, longitude is undefined
+            0.0 // At poles, longitude is undefined
         };
-        
+
         // Altitude change (vertical displacement, down is positive)
-        let delta_alt = -v_d * dt;  // Negative because down is positive in NED frame
+        let delta_alt = -v_d * dt; // Negative because down is positive in NED frame
 
         // Add process noise (jitter) using Gaussian distribution (Box-Muller using RngCore)
         use rand::RngCore;
 
         // Helper: generate a single normal(0,1) sample via Box-Muller using 53-bit uniform floats
-        let mut sample_normal = |rng: &mut StdRng| -> f64 {
+        let sample_normal = |rng: &mut StdRng| -> f64 {
             // Create two uniform(0,1) values from next_u64() producing 53-bit precision floats
             let u1 = ((rng.next_u64() >> 11) as f64) * (1.0 / ((1u64 << 53) as f64));
             let u2 = ((rng.next_u64() >> 11) as f64) * (1.0 / ((1u64 << 53) as f64));
@@ -272,8 +286,10 @@ impl VelocityInformedParticle {
         self.position[2] = alt + delta_alt + noise_alt;
 
         // Ensure latitude is within [-pi/2, pi/2]
-        self.position[0] = self.position[0].max(-std::f64::consts::FRAC_PI_2).min(std::f64::consts::FRAC_PI_2);
-        
+        self.position[0] = self.position[0]
+            .max(-std::f64::consts::FRAC_PI_2)
+            .min(std::f64::consts::FRAC_PI_2);
+
         // Wrap longitude to [-pi, pi]
         while self.position[1] > std::f64::consts::PI {
             self.position[1] -= 2.0 * std::f64::consts::PI;
@@ -354,16 +370,23 @@ impl VelocityInformedParticleFilter {
         num_particles: usize,
         process_noise_std: f64,
     ) -> Self {
-        assert_eq!(initial_position.len(), 3, "Initial position must be 3-element vector [lat, lon, alt]");
+        assert_eq!(
+            initial_position.len(),
+            3,
+            "Initial position must be 3-element vector [lat, lon, alt]"
+        );
         assert!(num_particles > 0, "Number of particles must be positive");
-        assert!(process_noise_std >= 0.0, "Process noise standard deviation must be non-negative");
+        assert!(
+            process_noise_std >= 0.0,
+            "Process noise standard deviation must be non-negative"
+        );
 
         let filter = ParticleFilter::<VelocityInformedParticle>::new(
             &initial_position,
             num_particles,
             ParticleResamplingStrategy::Systematic,
             ParticleAveragingStrategy::WeightedMean,
-            0.5,  // Resample when effective sample size < 50% of particles
+            0.5, // Resample when effective sample size < 50% of particles
         );
 
         let rng = StdRng::seed_from_u64(rand::random());
@@ -397,9 +420,16 @@ impl VelocityInformedParticleFilter {
         averaging_strategy: ParticleAveragingStrategy,
         resampling_threshold: f64,
     ) -> Self {
-        assert_eq!(initial_position.len(), 3, "Initial position must be 3-element vector [lat, lon, alt]");
+        assert_eq!(
+            initial_position.len(),
+            3,
+            "Initial position must be 3-element vector [lat, lon, alt]"
+        );
         assert!(num_particles > 0, "Number of particles must be positive");
-        assert!(process_noise_std >= 0.0, "Process noise standard deviation must be non-negative");
+        assert!(
+            process_noise_std >= 0.0,
+            "Process noise standard deviation must be non-negative"
+        );
 
         let filter = ParticleFilter::<VelocityInformedParticle>::new(
             &initial_position,
@@ -436,7 +466,11 @@ impl VelocityInformedParticleFilter {
     /// pf.propagate(&velocity, 0.1);
     /// ```
     pub fn propagate(&mut self, velocity: &DVector<f64>, dt: f64) {
-        assert_eq!(velocity.len(), 3, "Velocity must be 3-element vector [v_n, v_e, v_d]");
+        assert_eq!(
+            velocity.len(),
+            3,
+            "Velocity must be 3-element vector [v_n, v_e, v_d]"
+        );
         assert!(dt > 0.0, "Time step must be positive");
 
         // Propagate each particle
@@ -547,7 +581,10 @@ impl VelocityInformedParticleFilter {
     ///
     /// * `std_dev` - New process noise standard deviation in meters
     pub fn set_process_noise_std(&mut self, std_dev: f64) {
-        assert!(std_dev >= 0.0, "Process noise standard deviation must be non-negative");
+        assert!(
+            std_dev >= 0.0,
+            "Process noise standard deviation must be non-negative"
+        );
         self.process_noise_std = std_dev;
     }
 }
@@ -578,10 +615,8 @@ mod tests {
 
     #[test]
     fn test_particle_propagation_northward() {
-        let mut particle = VelocityInformedParticle::new(
-            &DVector::from_vec(vec![0.0, 0.0, 0.0]),
-            1.0
-        );
+        let mut particle =
+            VelocityInformedParticle::new(&DVector::from_vec(vec![0.0, 0.0, 0.0]), 1.0);
         let velocity = DVector::from_vec(vec![10.0, 0.0, 0.0]); // 10 m/s north
         let dt = 1.0; // 1 second
         let mut rng = StdRng::seed_from_u64(42);
@@ -592,20 +627,18 @@ mod tests {
 
         // Latitude should increase (moving north)
         assert!(final_lat > initial_lat);
-        
+
         // Longitude should remain approximately the same
         assert_approx_eq!(particle.position()[1], 0.0, 1e-6);
-        
+
         // Altitude should remain the same
         assert_approx_eq!(particle.position()[2], 0.0, 1e-6);
     }
 
     #[test]
     fn test_particle_propagation_eastward() {
-        let mut particle = VelocityInformedParticle::new(
-            &DVector::from_vec(vec![0.0, 0.0, 0.0]),
-            1.0
-        );
+        let mut particle =
+            VelocityInformedParticle::new(&DVector::from_vec(vec![0.0, 0.0, 0.0]), 1.0);
         let velocity = DVector::from_vec(vec![0.0, 10.0, 0.0]); // 10 m/s east
         let dt = 1.0;
         let mut rng = StdRng::seed_from_u64(42);
@@ -615,17 +648,15 @@ mod tests {
 
         // Longitude should increase (moving east)
         assert!(particle.position()[1] > initial_lon);
-        
+
         // Latitude should remain approximately the same
         assert_approx_eq!(particle.position()[0], 0.0, 1e-6);
     }
 
     #[test]
     fn test_particle_propagation_vertical() {
-        let mut particle = VelocityInformedParticle::new(
-            &DVector::from_vec(vec![0.0, 0.0, 100.0]),
-            1.0
-        );
+        let mut particle =
+            VelocityInformedParticle::new(&DVector::from_vec(vec![0.0, 0.0, 100.0]), 1.0);
         let velocity = DVector::from_vec(vec![0.0, 0.0, -1.0]); // 1 m/s up (negative in NED)
         let dt = 10.0;
         let mut rng = StdRng::seed_from_u64(42);
@@ -643,7 +674,7 @@ mod tests {
 
         assert_eq!(pf.num_particles(), 100);
         assert_approx_eq!(pf.process_noise_std(), 1.0, 1e-10);
-        
+
         // All particles should start with uniform weights
         let expected_weight = 1.0 / 100.0;
         for particle in pf.particles() {
@@ -662,7 +693,7 @@ mod tests {
         pf.propagate(&velocity, dt);
 
         let estimate = pf.get_estimate();
-        
+
         // After propagation, mean position should have moved north and east
         assert!(estimate[0] > 0.0); // Latitude increased
         assert!(estimate[1] > 0.0); // Longitude increased
@@ -715,7 +746,7 @@ mod tests {
     fn test_longitude_wrapping() {
         let mut particle = VelocityInformedParticle::new(
             &DVector::from_vec(vec![0.0, 3.0, 0.0]), // Close to pi
-            1.0
+            1.0,
         );
         let velocity = DVector::from_vec(vec![0.0, 1000.0, 0.0]); // Large eastward velocity
         let dt = 100.0; // Long time step
@@ -732,7 +763,7 @@ mod tests {
     fn test_latitude_clamping() {
         let mut particle = VelocityInformedParticle::new(
             &DVector::from_vec(vec![1.5, 0.0, 0.0]), // Close to pi/2
-            1.0
+            1.0,
         );
         let velocity = DVector::from_vec(vec![1000.0, 0.0, 0.0]); // Large northward velocity
         let dt = 100.0; // Long time step

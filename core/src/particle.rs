@@ -59,11 +59,11 @@
 //!     fn update_weight<M: MeasurementModel + ?Sized>(&mut self, measurement: &M) {
 //!         // Compute likelihood p(z|x) and update weight
 //!         let expected = measurement.get_expected_measurement(&self.state);
-//!         let actual = measurement.get_vector();
+//!         let actual = measurement.get_measurement(&self.state);
 //!         let diff = actual - expected;
 //!         
 //!         // Simple Gaussian likelihood (customize for your application)
-//!         let likelihood = (-0.5 * diff.norm_squared()).exp();
+//!         let likelihood = (-0.5 * diff.norm_squared() as f64).exp();
 //!         self.weight *= likelihood;
 //!     }
 //!     
@@ -111,7 +111,7 @@ use crate::measurements::MeasurementModel;
 
 use nalgebra::{DMatrix, DVector};
 use rand::prelude::*;
-use rand::{thread_rng, SeedableRng};
+use rand::{SeedableRng, thread_rng};
 
 /// Trait defining the interface for particle state representation
 ///
@@ -123,7 +123,7 @@ pub trait Particle: Any {
     fn as_any(&self) -> &dyn Any;
     /// Downcast helper method for mutable references
     fn as_any_mut(&mut self) -> &mut dyn Any;
-    
+
     /// Creates a new particle with the given initial state and weight
     ///
     /// # Arguments
@@ -132,7 +132,7 @@ pub trait Particle: Any {
     fn new(initial_state: &DVector<f64>, weight: f64) -> Self
     where
         Self: Sized;
-        
+
     /// Returns the state vector of the particle
     fn state(&self) -> DVector<f64>;
 
@@ -199,7 +199,7 @@ pub enum ParticleResamplingStrategy {
 /// ```ignore
 /// // Define a custom particle type
 /// struct MyParticle { state: DVector<f64>, weight: f64 }
-/// 
+///
 /// impl Particle for MyParticle {
 ///     // ... implement required methods
 /// }
@@ -279,12 +279,8 @@ impl<P: Particle> ParticleFilter<P> {
     /// This metric indicates how many particles are effectively contributing
     /// to the state estimate. Low N_eff indicates particle degeneracy.
     pub fn effective_sample_size(&self) -> f64 {
-        let sum_squared_weights: f64 = self
-            .particles
-            .iter()
-            .map(|p| p.weight().powi(2))
-            .sum();
-        
+        let sum_squared_weights: f64 = self.particles.iter().map(|p| p.weight().powi(2)).sum();
+
         if sum_squared_weights > 0.0 {
             1.0 / sum_squared_weights
         } else {
@@ -295,7 +291,7 @@ impl<P: Particle> ParticleFilter<P> {
     /// Normalize particle weights to sum to 1.0
     pub fn normalize_weights(&mut self) {
         let sum: f64 = self.particles.iter().map(|p| p.weight()).sum();
-        
+
         if sum > 0.0 {
             for particle in &mut self.particles {
                 particle.set_weight(particle.weight() / sum);
@@ -329,9 +325,7 @@ impl<P: Particle> ParticleFilter<P> {
             ParticleResamplingStrategy::Stratified => {
                 self.stratified_resample(&weights, num_particles)
             }
-            ParticleResamplingStrategy::Residual => {
-                self.residual_resample(&weights, num_particles)
-            }
+            ParticleResamplingStrategy::Residual => self.residual_resample(&weights, num_particles),
         };
 
         // Create new particle set from resampled indices
@@ -361,7 +355,10 @@ impl<P: Particle> ParticleFilter<P> {
 
         for _ in 0..num_samples {
             let u: f64 = self.rng.random();
-            let idx = cumsum.iter().position(|&c| c >= u).unwrap_or(weights.len() - 1);
+            let idx = cumsum
+                .iter()
+                .position(|&c| c >= u)
+                .unwrap_or(weights.len() - 1);
             indices.push(idx);
         }
 
@@ -378,15 +375,15 @@ impl<P: Particle> ParticleFilter<P> {
 
         let mut cumsum = 0.0;
         let mut i = 0;
-        
+
         for j in 0..num_samples {
             let u = start + (j as f64) * step;
-            
+
             while cumsum < u && i < weights.len() {
                 cumsum += weights[i];
                 i += 1;
             }
-            
+
             // Ensure i is at least 1 before subtracting, and clamp to valid range
             let idx = if i > 0 { i - 1 } else { 0 };
             indices.push(idx.min(weights.len() - 1));
@@ -407,12 +404,12 @@ impl<P: Particle> ParticleFilter<P> {
 
         for j in 0..num_samples {
             let u = (j as f64 + self.rng.random::<f64>()) * step;
-            
+
             while cumsum < u && i < weights.len() {
                 cumsum += weights[i];
                 i += 1;
             }
-            
+
             // Ensure i is at least 1 before subtracting, and clamp to valid range
             let idx = if i > 0 { i - 1 } else { 0 };
             indices.push(idx.min(weights.len() - 1));
@@ -428,10 +425,10 @@ impl<P: Particle> ParticleFilter<P> {
     /// ensuring particles with high weights are always included.
     fn residual_resample(&mut self, weights: &[f64], num_samples: usize) -> Vec<usize> {
         let mut indices = Vec::with_capacity(num_samples);
-        
+
         // Calculate expected number of copies for each particle
         let n_weights: Vec<f64> = weights.iter().map(|&w| w * num_samples as f64).collect();
-        
+
         // Deterministic selection: take integer part of each weight
         let mut residual_weights = Vec::with_capacity(weights.len());
         for (i, &nw) in n_weights.iter().enumerate() {
@@ -442,7 +439,7 @@ impl<P: Particle> ParticleFilter<P> {
             // Store fractional part for residual sampling
             residual_weights.push(nw - nw.floor());
         }
-        
+
         // Normalize residual weights
         let residual_sum: f64 = residual_weights.iter().sum();
         if residual_sum > 0.0 {
@@ -450,67 +447,71 @@ impl<P: Particle> ParticleFilter<P> {
                 *w /= residual_sum;
             }
         }
-        
+
         // Random sampling for remaining particles
         let remaining = num_samples - indices.len();
         if remaining > 0 {
             // Use systematic resampling for the residuals
             let step = 1.0 / remaining as f64;
             let start: f64 = self.rng.random::<f64>() * step;
-            
+
             let mut cumsum = 0.0;
             let mut i = 0;
-            
+
             for j in 0..remaining {
                 let u = start + (j as f64) * step;
-                
+
                 while cumsum < u && i < residual_weights.len() {
                     cumsum += residual_weights[i];
                     i += 1;
                 }
-                
+
                 let idx = if i > 0 { i - 1 } else { 0 };
                 indices.push(idx.min(weights.len() - 1));
             }
         }
-        
+
         indices
     }
 
     /// Compute state estimate from particles using the configured averaging strategy
     fn compute_state_estimate(&self) -> DVector<f64> {
-        assert!(!self.particles.is_empty(), "Cannot compute state estimate from empty particle set");
-        
+        assert!(
+            !self.particles.is_empty(),
+            "Cannot compute state estimate from empty particle set"
+        );
+
         match self.averaging_strategy {
             ParticleAveragingStrategy::Mean => {
                 // Simple mean
                 let state_dim = self.particles[0].state().len();
                 let mut mean = DVector::zeros(state_dim);
-                
+
                 for particle in &self.particles {
                     mean += particle.state();
                 }
-                
+
                 mean / self.particles.len() as f64
             }
             ParticleAveragingStrategy::WeightedMean => {
                 // Weighted mean
                 let state_dim = self.particles[0].state().len();
                 let mut weighted_mean = DVector::zeros(state_dim);
-                
+
                 for particle in &self.particles {
                     weighted_mean += particle.state() * particle.weight();
                 }
-                
+
                 weighted_mean
             }
             ParticleAveragingStrategy::HighestWeight => {
                 // Return state of particle with highest weight (MAP estimate)
-                let max_particle = self.particles
+                let max_particle = self
+                    .particles
                     .iter()
                     .max_by(|a, b| a.weight().partial_cmp(&b.weight()).unwrap())
                     .expect("Particle set is not empty");
-                
+
                 max_particle.state()
             }
         }
@@ -521,8 +522,11 @@ impl<P: Particle> ParticleFilter<P> {
     /// This computes the sample covariance of the particles around their
     /// weighted mean, providing an estimate of state uncertainty.
     fn compute_covariance(&self) -> DMatrix<f64> {
-        assert!(!self.particles.is_empty(), "Cannot compute covariance from empty particle set");
-        
+        assert!(
+            !self.particles.is_empty(),
+            "Cannot compute covariance from empty particle set"
+        );
+
         let mean = self.compute_state_estimate();
         let state_dim = mean.len();
         let mut cov = DMatrix::zeros(state_dim, state_dim);
@@ -596,10 +600,10 @@ mod tests {
         fn update_weight<M: MeasurementModel + ?Sized>(&mut self, measurement: &M) {
             // Simple likelihood: exp(-distance^2 / (2 * sigma^2))
             let expected = measurement.get_expected_measurement(&self.state);
-            let actual = measurement.get_vector();
+            let actual = measurement.get_measurement(&self.state);
             let diff = actual - expected;
             let noise = measurement.get_noise();
-            
+
             // Simple Gaussian likelihood assuming diagonal covariance
             let mut likelihood = 1.0;
             for i in 0..diff.len() {
@@ -608,7 +612,7 @@ mod tests {
                     likelihood *= (-0.5 * diff[i].powi(2) / sigma_sq).exp();
                 }
             }
-            
+
             self.weight *= likelihood;
         }
 
@@ -633,7 +637,7 @@ mod tests {
         );
 
         assert_eq!(pf.num_particles(), 100);
-        
+
         // Check that all particles are initialized with uniform weight
         let expected_weight = 1.0 / 100.0;
         for particle in pf.particles() {
@@ -808,7 +812,7 @@ mod tests {
             10,
             ParticleResamplingStrategy::Systematic,
             ParticleAveragingStrategy::Mean,
-        0.5,
+            0.5,
         );
 
         let estimate = pf.get_estimate();
@@ -974,7 +978,7 @@ mod tests {
         }
 
         let n_eff = pf.effective_sample_size();
-        
+
         // N_eff should be much less than N for degenerate distribution
         assert!(n_eff < 10.0, "Expected N_eff < 10, got {}", n_eff);
     }

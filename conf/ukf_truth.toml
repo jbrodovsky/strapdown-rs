@@ -1,0 +1,16 @@
+input = "data/input"
+output = "data/output"
+mode = "closed-loop"
+seed = 42
+
+[closed_loop]
+filter = "ukf"
+
+[gnss_degradation]
+seed = 42
+
+[gnss_degradation.scheduler]
+kind = "pass_through"
+
+[gnss_degradation.fault]
+kind = "none"

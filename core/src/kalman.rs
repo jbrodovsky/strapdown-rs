@@ -402,7 +402,7 @@ impl NavigationFilter for UnscentedKalmanFilter {
             cross_covariance += self.weights_cov[i] * state_diff * measurement_diff.transpose();
         }
         let k = self.robust_kalman_gain(&cross_covariance, &s);
-        self.mean_state += &k * (measurement.get_vector() - &z_hat);
+        self.mean_state += &k * (measurement.get_measurement(&self.mean_state) - &z_hat);
         self.mean_state[6] = wrap_to_2pi(self.mean_state[6]);
         self.mean_state[7] = wrap_to_2pi(self.mean_state[7]);
         self.mean_state[8] = wrap_to_2pi(self.mean_state[8]);
@@ -865,8 +865,8 @@ impl NavigationFilter for ExtendedKalmanFilter {
         // Get measurement Jacobian H based on measurement type
         // We need to determine which type of measurement this is
         use crate::measurements::{
-            GPSPositionMeasurement, GPSVelocityMeasurement, GPSPositionAndVelocityMeasurement,
-            RelativeAltitudeMeasurement,
+            GPSPositionAndVelocityMeasurement, GPSPositionMeasurement, GPSVelocityMeasurement,
+            MagnetometerYawMeasurement, RelativeAltitudeMeasurement,
         };
 
         // Extract the 9-state navigation state for Jacobian computation
@@ -886,14 +886,40 @@ impl NavigationFilter for ExtendedKalmanFilter {
         };
 
         // Compute measurement Jacobian for 9-state system
-        let h_9state = if measurement.as_any().downcast_ref::<GPSPositionMeasurement>().is_some() {
+        let h_9state = if measurement
+            .as_any()
+            .downcast_ref::<GPSPositionMeasurement>()
+            .is_some()
+        {
             crate::linearize::gps_position_jacobian(&nav_state)
-        } else if measurement.as_any().downcast_ref::<GPSVelocityMeasurement>().is_some() {
+        } else if measurement
+            .as_any()
+            .downcast_ref::<GPSVelocityMeasurement>()
+            .is_some()
+        {
             crate::linearize::gps_velocity_jacobian(&nav_state)
-        } else if measurement.as_any().downcast_ref::<GPSPositionAndVelocityMeasurement>().is_some() {
+        } else if measurement
+            .as_any()
+            .downcast_ref::<GPSPositionAndVelocityMeasurement>()
+            .is_some()
+        {
             crate::linearize::gps_position_velocity_jacobian(&nav_state)
-        } else if measurement.as_any().downcast_ref::<RelativeAltitudeMeasurement>().is_some() {
+        } else if measurement
+            .as_any()
+            .downcast_ref::<RelativeAltitudeMeasurement>()
+            .is_some()
+        {
             crate::linearize::relative_altitude_jacobian(&nav_state)
+        } else if let Some(mag_meas) = measurement
+            .as_any()
+            .downcast_ref::<MagnetometerYawMeasurement>()
+        {
+            crate::linearize::magnetometer_yaw_jacobian(
+                &nav_state,
+                mag_meas.mag_x,
+                mag_meas.mag_y,
+                mag_meas.mag_z,
+            )
         } else {
             // Fallback: assume direct position measurement
             crate::linearize::gps_position_jacobian(&nav_state)
@@ -914,11 +940,13 @@ impl NavigationFilter for ExtendedKalmanFilter {
         let s = &h_matrix * &self.covariance * h_matrix.transpose() + measurement.get_noise();
 
         // Kalman gain: K = P * H^T * S^(-1)
-        let k = self.covariance.clone() * h_matrix.transpose() * 
-                robust_spd_solve(&symmetrize(&s), &DMatrix::identity(s.nrows(), s.ncols())).transpose();
+        let k = self.covariance.clone()
+            * h_matrix.transpose()
+            * robust_spd_solve(&symmetrize(&s), &DMatrix::identity(s.nrows(), s.ncols()))
+                .transpose();
 
         // Innovation (measurement residual): nu = z - z_hat
-        let innovation = measurement.get_vector() - &z_hat;
+        let innovation = measurement.get_measurement(&self.mean_state) - &z_hat;
 
         // State update: x = x + K * nu
         self.mean_state += &k * innovation;
@@ -1973,14 +2001,20 @@ mod tests {
         let mut ekf = ExtendedKalmanFilter::new(
             initial_state,
             IMU_BIASES.to_vec(),
-            vec![1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8, 1e-8],
-            DMatrix::from_diagonal(&DVector::from_vec(vec![1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9])),
+            vec![
+                1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8,
+                1e-8,
+            ],
+            DMatrix::from_diagonal(&DVector::from_vec(vec![
+                1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9,
+                1e-9,
+            ])),
             true,
         );
 
         let dt = 0.1;
         let num_steps = 10;
-        
+
         // Simulate free fall with only gravity (no vertical acceleration resistance)
         for _ in 0..num_steps {
             let imu_data = IMUData {
@@ -1992,11 +2026,19 @@ mod tests {
 
         // After 1 second of free fall, should have accumulated vertical velocity
         let final_vd = ekf.mean_state[5];
-        assert!(final_vd < -5.0, "Expected significant vertical velocity, got {}", final_vd);
+        assert!(
+            final_vd < -5.0,
+            "Expected significant vertical velocity, got {}",
+            final_vd
+        );
 
         // Altitude should have decreased
         let final_altitude = ekf.mean_state[2];
-        assert!(final_altitude < 100.0, "Expected altitude decrease, got {}", final_altitude);
+        assert!(
+            final_altitude < 100.0,
+            "Expected altitude decrease, got {}",
+            final_altitude
+        );
 
         // Apply measurement update with GPS position
         let measurement = GPSPositionMeasurement {
@@ -2032,14 +2074,20 @@ mod tests {
         let mut ekf = ExtendedKalmanFilter::new(
             initial_state,
             IMU_BIASES.to_vec(),
-            vec![1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8, 1e-8],
-            DMatrix::from_diagonal(&DVector::from_vec(vec![1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9])),
+            vec![
+                1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8,
+                1e-8,
+            ],
+            DMatrix::from_diagonal(&DVector::from_vec(vec![
+                1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9,
+                1e-9,
+            ])),
             true,
         );
 
         let dt = 0.1;
         let num_steps = 10;
-        
+
         // Simulate hover with upward acceleration exactly canceling gravity
         for _ in 0..num_steps {
             let imu_data = IMUData {
@@ -2097,15 +2145,21 @@ mod tests {
         let mut ekf = ExtendedKalmanFilter::new(
             initial_state,
             IMU_BIASES.to_vec(),
-            vec![1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8, 1e-8],
-            DMatrix::from_diagonal(&DVector::from_vec(vec![1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9])),
+            vec![
+                1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8,
+                1e-8,
+            ],
+            DMatrix::from_diagonal(&DVector::from_vec(vec![
+                1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9,
+                1e-9,
+            ])),
             true,
         );
 
         let dt = 0.1;
         let num_steps = 10;
         let initial_lat = ekf.mean_state[0];
-        
+
         // Simulate constant northward motion with gravity compensation
         for _ in 0..num_steps {
             let imu_data = IMUData {
@@ -2117,9 +2171,12 @@ mod tests {
 
         // Latitude should have increased (moving north)
         let final_lat = ekf.mean_state[0];
-        assert!(final_lat > initial_lat, 
-                "Expected latitude increase, got initial: {} final: {}", 
-                initial_lat, final_lat);
+        assert!(
+            final_lat > initial_lat,
+            "Expected latitude increase, got initial: {} final: {}",
+            initial_lat,
+            final_lat
+        );
 
         // Northward velocity should remain approximately constant
         let final_vn = ekf.mean_state[3];
@@ -2167,15 +2224,21 @@ mod tests {
         let mut ekf = ExtendedKalmanFilter::new(
             initial_state,
             IMU_BIASES.to_vec(),
-            vec![1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8, 1e-8],
-            DMatrix::from_diagonal(&DVector::from_vec(vec![1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9])),
+            vec![
+                1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8,
+                1e-8,
+            ],
+            DMatrix::from_diagonal(&DVector::from_vec(vec![
+                1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9,
+                1e-9,
+            ])),
             true,
         );
 
         let dt = 0.1;
         let num_steps = 10;
         let initial_lon = ekf.mean_state[1];
-        
+
         // Simulate constant eastward motion with gravity compensation
         for _ in 0..num_steps {
             let imu_data = IMUData {
@@ -2187,9 +2250,12 @@ mod tests {
 
         // Longitude should have increased (moving east)
         let final_lon = ekf.mean_state[1];
-        assert!(final_lon > initial_lon,
-                "Expected longitude increase, got initial: {} final: {}",
-                initial_lon, final_lon);
+        assert!(
+            final_lon > initial_lon,
+            "Expected longitude increase, got initial: {} final: {}",
+            initial_lon,
+            final_lon
+        );
 
         // Eastward velocity should remain approximately constant
         let final_ve = ekf.mean_state[4];
@@ -2253,8 +2319,14 @@ mod tests {
         let mut ekf = ExtendedKalmanFilter::new(
             initial_state,
             IMU_BIASES.to_vec(),
-            vec![1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8, 1e-8],
-            DMatrix::from_diagonal(&DVector::from_vec(vec![1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9])),
+            vec![
+                1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8,
+                1e-8,
+            ],
+            DMatrix::from_diagonal(&DVector::from_vec(vec![
+                1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9,
+                1e-9,
+            ])),
             true,
         );
 
@@ -2262,7 +2334,7 @@ mod tests {
         let num_steps = 10;
         let initial_lat = ekf.mean_state[0];
         let initial_lon = ekf.mean_state[1];
-        
+
         // Simulate combined motion
         for _ in 0..num_steps {
             let imu_data = IMUData {
@@ -2329,9 +2401,12 @@ mod tests {
         let final_trace: f64 = (0..15).map(|i| ekf.covariance[(i, i)]).sum();
 
         // Covariance should decrease after measurement update
-        assert!(final_trace < initial_trace, 
-                "Covariance should decrease after measurement update: {} >= {}",
-                final_trace, initial_trace);
+        assert!(
+            final_trace < initial_trace,
+            "Covariance should decrease after measurement update: {} >= {}",
+            final_trace,
+            initial_trace
+        );
     }
 
     #[test]
