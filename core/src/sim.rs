@@ -1670,6 +1670,30 @@ impl Default for ParticleFilterConfig {
     }
 }
 
+/// Logging configuration
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LoggingConfig {
+    /// Log level (off, error, warn, info, debug, trace)
+    #[serde(default = "default_log_level")]
+    pub level: String,
+    /// Optional log file path (if not specified, logs to stderr)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+}
+
+fn default_log_level() -> String {
+    "info".to_string()
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            level: default_log_level(),
+            file: None,
+        }
+    }
+}
+
 /// Unified simulation configuration supporting all modes
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SimulationConfig {
@@ -1682,6 +1706,12 @@ pub struct SimulationConfig {
     /// Random number generator seed
     #[serde(default = "default_seed")]
     pub seed: u64,
+    /// Run simulations in parallel when processing multiple files
+    #[serde(default)]
+    pub parallel: bool,
+    /// Logging configuration
+    #[serde(default)]
+    pub logging: LoggingConfig,
     /// Closed-loop specific settings (only used if mode is ClosedLoop)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closed_loop: Option<ClosedLoopConfig>,
@@ -1704,6 +1734,8 @@ impl Default for SimulationConfig {
             output: "output.csv".to_string(),
             mode: SimulationMode::ClosedLoop,
             seed: default_seed(),
+            parallel: false,
+            logging: LoggingConfig::default(),
             closed_loop: Some(ClosedLoopConfig::default()),
             particle_filter: None,
             gnss_degradation: crate::messages::GnssDegradationConfig::default(),
