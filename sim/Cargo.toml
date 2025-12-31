@@ -1,8 +1,10 @@
 [package]
+authors = ["James Brodovsky"]
 name = "strapdown-sim"
 version = "0.1.0"
 edition = "2024"
-
+description = "Strapdown inertial navigation system simulation tool"
+license = "MIT"
 
 [dependencies]
 clap = { version = "4.5.4", features = ["derive"] }

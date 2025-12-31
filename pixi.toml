@@ -21,6 +21,7 @@ fmt = "ruff format . && cargo fmt"
 preprocess = "python scripts/preprocess.py --input_dir data/raw/ --output_dir data/input/"
 code = "code ."
 coverage = "cargo tarpaulin --workspace --timeout 600"
+# analysis = "analysis"
 #test = "pytest --cov=geophysical_nav --cov-report=xml --cov-report=html"
 
 [tasks.getmaps]
@@ -48,20 +49,12 @@ cmd = "python scripts/truth.py --input-dir {{ input }} --output-dir {{ output }}
 
 [dependencies]
 python = ">=3.12,<3.14"
-numpy = ">=2.3.4,<3"
-pandas = ">=2.3.3,<3"
-cartopy = ">=0.25.0,<0.26"
-tqdm = ">=4.67.1,<5"
-pygmt = ">=0.17.0,<0.18"
-matplotlib = ">=3.10.7,<4"
-haversine = ">=2.9.0,<3"
-scipy = ">=1.16.3,<2"
 rust = ">=1.91.0,<1.92"
 rust-src = ">=1.91.0,<2"
-filterpy = ">=1.4.5,<2"
-notebook = ">=7.4.7,<8"
-ipykernel = ">=7.1.0,<8"
+uv = ">=0.9.21,<0.10"
+gmt = ">=6.6.0,<7"
 
 [pypi-dependencies]
 anglewrapper = ">=0.1.1, <0.2"
+analysis = {path = "./analysis", editable = true}
 

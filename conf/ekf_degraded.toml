@@ -1,0 +1,23 @@
+input = "data/input"
+output = "data/output/ukf_degraded"
+mode = "closed-loop"
+seed = 42
+
+[closed_loop]
+filter = "ukf"
+
+[gnss_degradation]
+seed = 42
+
+[gnss_degradation.scheduler]
+kind = "fixed_interval"
+interval_s = 60.0
+phase_s = 0.0
+
+[gnss_degradation.fault]
+kind = "degraded"
+rho_pos = 0.99
+sigma_pos_m = 15.0
+rho_vel = 0.95
+sigma_vel_mps = 5.0
+r_scale = 15.0
