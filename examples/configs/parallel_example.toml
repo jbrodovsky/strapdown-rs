@@ -1,0 +1,46 @@
+# Example configuration with parallel execution and custom logging
+# This demonstrates the new parallel processing and logging configuration options
+
+# Input can be a single CSV file or a directory of CSV files
+input = "data/input"
+
+# Output directory where results will be saved
+output = "data/output"
+
+# Simulation mode: "dead-reckoning", "open-loop", "closed-loop", or "particle-filter"
+mode = "closed-loop"
+
+# Random seed for reproducibility
+seed = 42
+
+# Enable parallel processing when multiple files are detected
+# When true, files will be processed concurrently using all available CPU cores
+parallel = true
+
+# Logging configuration
+[logging]
+# Log level: "off", "error", "warn", "info", "debug", or "trace"
+level = "info"
+# Optional log file path (omit to log to stderr)
+file = "simulation.log"
+
+# Closed-loop filter configuration (only used in closed-loop mode)
+[closed_loop]
+filter = "ukf"  # "ukf" or "ekf"
+
+# GNSS degradation configuration
+[gnss_degradation]
+seed = 42
+
+[gnss_degradation.scheduler]
+kind = "pass_through"
+
+[gnss_degradation.fault]
+kind = "none"
+
+[gnss_degradation.magnetometer]
+enabled = false
+reference_field_ned = [25.0, 0.0, 40.0]
+hard_iron_offset = [0.0, 0.0, 0.0]
+soft_iron_matrix = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+noise_std = 5.0

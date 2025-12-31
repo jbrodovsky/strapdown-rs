@@ -2,6 +2,10 @@ input = "input.csv"
 output = "output.csv"
 mode = "closed-loop"
 seed = 42
+parallel = false
+
+[logging]
+level = "info"
 
 [closed_loop]
 filter = "ukf"
