@@ -10,12 +10,14 @@ use crate::earth::METERS_TO_DEGREES;
 use std::any::Any;
 use std::fmt::{self, Debug, Display};
 
-use nalgebra::{DMatrix, DVector};
+use nalgebra::{DMatrix, DVector, Vector3, Rotation3};
 use world_magnetic_model::GeomagneticField;
 use world_magnetic_model::time::Date;
 use world_magnetic_model::uom::si::angle::degree;
 use world_magnetic_model::uom::si::f32::{Angle, Length};
 use world_magnetic_model::uom::si::length::meter;
+
+pub const MAG_YAW_NOISE: f64 = 0.2; // radians
 
 /// Generic measurement model trait for all types of measurements.
 ///
@@ -403,41 +405,6 @@ impl Display for MagnetometerYawMeasurement {
 }
 
 impl MagnetometerYawMeasurement {
-    /// Compute tilt-compensated magnetic heading from body-frame magnetometer readings.
-    ///
-    /// Applies rotation using roll and pitch to project the magnetic field onto the
-    /// horizontal plane, then computes heading using atan2.
-    ///
-    /// # Arguments
-    ///
-    /// * `roll` - Roll angle in radians
-    /// * `pitch` - Pitch angle in radians
-    ///
-    /// # Returns
-    ///
-    /// Magnetic heading in radians, in range [0, 2π)
-    pub fn compute_tilt_compensated_heading(&self, roll: f64, pitch: f64) -> f64 {
-        let (sin_roll, cos_roll) = roll.sin_cos();
-        let (sin_pitch, cos_pitch) = pitch.sin_cos();
-
-        // Project magnetometer readings onto horizontal plane
-        // These formulas rotate the body-frame mag vector to level frame
-        let mag_x_horizontal = self.mag_x * cos_pitch
-            + self.mag_y * sin_roll * sin_pitch
-            + self.mag_z * cos_roll * sin_pitch;
-        let mag_y_horizontal = self.mag_y * cos_roll - self.mag_z * sin_roll;
-
-        // Compute heading (note: atan2 returns [-π, π], we wrap to [0, 2π))
-        let heading = mag_y_horizontal.atan2(mag_x_horizontal);
-
-        // Wrap to [0, 2π) to match state convention
-        if heading < 0.0 {
-            heading + 2.0 * std::f64::consts::PI
-        } else {
-            heading
-        }
-    }
-
     /// Get magnetic declination at the given position using WMM.
     ///
     /// # Arguments
@@ -484,9 +451,13 @@ impl MeasurementModel for MagnetometerYawMeasurement {
         // Extract roll and pitch from state for tilt compensation
         let roll = if state.len() > 6 { state[6] } else { 0.0 };
         let pitch = if state.len() > 7 { state[7] } else { 0.0 };
+        let yaw = if state.len() > 8 { state[8] } else { 0.0 };
 
-        // Compute tilt-compensated magnetic heading
-        let mut heading = self.compute_tilt_compensated_heading(roll, pitch);
+        // Compute tilt-compensated magnetic vector
+        //let mut heading = self.compute_tilt_compensated_heading(roll, pitch);
+        let attitude = Rotation3::from_euler_angles(roll, pitch, yaw);
+        let mag_vector = attitude * Vector3::new(self.mag_x, self.mag_y, self.mag_z);
+        let mut heading = mag_vector.y.atan2(mag_vector.x);
 
         // Apply declination correction if enabled
         if self.apply_declination && state.len() >= 3 {

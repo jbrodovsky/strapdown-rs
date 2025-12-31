@@ -1559,7 +1559,9 @@ pub fn build_fault(a: &FaultArgs) -> GnssFaultModel {
 #[cfg_attr(feature = "clap", derive(ValueEnum))]
 #[serde(rename_all = "kebab-case")]
 pub enum SimulationMode {
-    /// Open-loop dead reckoning (INS only, no corrections)
+    /// Dead reckoning with no corrections
+    DeadReckoning,
+    /// Open-loop feed-forward INS
     OpenLoop,
     /// Closed-loop with Kalman filter corrections from GNSS/other sensors
     ClosedLoop,

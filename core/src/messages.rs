@@ -12,7 +12,7 @@ use crate::IMUData;
 use crate::earth::meters_ned_to_dlat_dlon;
 use crate::measurements::{
     GPSPositionAndVelocityMeasurement, MagnetometerYawMeasurement, MeasurementModel,
-    RelativeAltitudeMeasurement,
+    RelativeAltitudeMeasurement, MAG_YAW_NOISE,
 };
 use crate::sim::TestDataRecord;
 /// Scheduler for controlling when GNSS measurements are emitted into the simulation.
@@ -986,7 +986,7 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
                 mag_x: r1.mag_x,
                 mag_y: r1.mag_y,
                 mag_z: r1.mag_z,
-                noise_std: 0.1, // set a default noise std; adjust as needed
+                noise_std: MAG_YAW_NOISE, // set a default noise std; adjust as needed
                 apply_declination: true,
                 year: r1.time.year(),
                 day_of_year: r1.time.day() as u16,
@@ -1063,7 +1063,7 @@ mod tests {
 
         // We expect IMU events for each record except the first,
         // and GNSS events for each record except the first
-        assert_eq!(events.events.len(), 27); // 9 IMU + 9 GNSS + 9 Baro
+        assert_eq!(events.events.len(), 36); // 9 IMU + 9 GNSS + 9 Baro + 9 Mag
 
         // Count IMU and GNSS events
         let imu_count = events
@@ -1113,7 +1113,7 @@ mod tests {
             .filter(|e| matches!(e, Event::Measurement { .. }))
             .count();
         assert_eq!(imu_count, 19);
-        assert_eq!(measurements, 23); // At 0.5s, 1.0s, 1.5s, and 1.9s + 19 baro measurements
+        assert_eq!(measurements, 42); // At 0.5s, 1.0s, 1.5s, and 1.9s + 19 baro measurements + 19 mag measurements
     }
     #[test]
     fn test_duty_cycle_scheduler() {
@@ -1144,12 +1144,12 @@ mod tests {
             .filter(|e| matches!(e, Event::Measurement { .. }))
             .collect();
         // We initialize off of the first event and only get GNSS updates every two seconds starting from 1.0
-        // (60 - 1) // 2 = 29 + 59 baro
+        // (60 - 1) // 2 = 29 + 59 baro + 59 mag = 147
         assert!(measurements.len() >= 2);
         assert!(
-            measurements.len() == 88,
+            measurements.len() == 147,
             "{}",
-            format!("Expected 88 GNSS events, found: {}", measurements.len())
+            format!("Expected 147 GNSS events, found: {}", measurements.len())
         );
     }
     #[test]
