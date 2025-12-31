@@ -53,7 +53,7 @@ For dataset format details, see the documentation or use --help with specific su
 
 /// Command line arguments
 #[derive(Parser)]
-#[command(author, version, about, long_about = LONG_ABOUT)]
+#[command(author, version, about = "A simulation and analysis tool for strapdown inertial navigation systems.", long_about = LONG_ABOUT)]
 struct Cli {
     /// Run simulation from a configuration file (TOML/JSON/YAML)
     /// This option overrides any subcommand arguments
@@ -77,28 +77,36 @@ struct Cli {
 #[derive(Subcommand, Clone)]
 enum Command {
     #[command(
-        name = "open-loop",
-        about = "Run simulation in open-loop (dead reckoning) mode"
+        name = "dr",
+        about = "Run simulation in dead reckoning mode",
+        long_about = "Run INS simulation in dead reckoning mode. In this mode, only inertial measurements (IMU) and an initial position estimate are used to propagate the navigation solution. External measurements like GNSS are not incorporated."
+    )]
+    DeadReckoning(SimArgs),
+    #[command(
+        name = "ol",
+        about = "Run simulation in open-loop mode",
+        long_about = "Run INS simulation in an open-loop (feed-forward) mode. In this mode, an initial position estimate and inertial measurements (IMU) are used to propagate the navigation solution. A Kalman filter (EKF or UKF) is used to estimate the errors to the navigation solution from GNSS measurements and apply the correction. Various GNSS degradation scenarios can be simulated, including jamming, reduced update rates, and spoofing."
     )]
     OpenLoop(SimArgs),
-
     #[command(
-        name = "closed-loop",
-        about = "Run simulation in closed-loop (Kalman filter) mode"
+        name = "cl",
+        about = "Run simulation in closed-loop mode",
+        long_about = "Run INS simulation in a closed-loop (feedback) mode. In this mode, GNSS measurements are incorporated to correct for IMU drift and directly reset or update the navigation states using either an Unscented Kalman Filter (UKF) or Extended Kalman Filter (EKF). Various GNSS degradation scenarios can be simulated, including jamming, reduced update rates, and spoofing."
     )]
     ClosedLoop(ClosedLoopSimArgs),
 
     #[command(
-        name = "particle-filter",
-        about = "Run simulation using particle filter"
+        name = "pf",
+        about = "Run simulation using particle filter.",
+        long_about = "Run INS simulation using a particle filter for state estimation. This mode supports both standard and Rao-Blackwellized particle filter implementations. Various GNSS degradation scenarios can be simulated, including jamming, reduced update rates, and spoofing."
     )]
     ParticleFilter(ParticleFilterSimArgs),
 
     #[command(
-        name = "create-config",
+        name = "conf",
         about = "Generate a template configuration file"
     )]
-    CreateConfig(CreateConfigArgs),
+    CreateConfig, //(CreateConfigArgs),
 }
 
 /// Common simulation arguments for input/output
@@ -286,7 +294,7 @@ fn get_csv_files(input: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
 /// If processing multiple files, appends input filename to output path
 fn generate_output_path(output: &Path, input_file: &Path, is_multiple: bool) -> PathBuf {
     if !is_multiple {
-        return output.to_path_buf();
+        return output.to_path_buf().join(input_file.file_name().unwrap());
     }
 
     let input_stem = input_file
@@ -308,13 +316,13 @@ fn generate_output_path(output: &Path, input_file: &Path, is_multiple: bool) -> 
     }
 }
 
-/// Validate output path and create parent directories if needed
+/// Validate output path and create parent directories if needed.
+/// If output ends with `.csv`, treat as a single file output and ensure its parent exists.
+/// Otherwise, treat as a directory and create it if needed.
 fn validate_output_path(output: &Path) -> Result<(), Box<dyn Error>> {
-    if let Some(parent) = output.parent()
-        && !parent.as_os_str().is_empty()
-        && !parent.exists()
-    {
-        std::fs::create_dir_all(parent)?;
+    // Output is a directory, create it if it doesn't exist
+    if !output.exists() {
+        std::fs::create_dir_all(output)?;
     }
     Ok(())
 }
@@ -357,6 +365,12 @@ fn run_from_config(config_path: &Path) -> Result<(), Box<dyn Error>> {
 
         // Execute based on mode
         match config.mode {
+            SimulationMode::DeadReckoning => {
+                info!("Dead reckoning mode is not yet fully implemented");
+                if !is_multiple || csv_files.first() == Some(input_file) {
+                    println!("Dead reckoning mode is not yet fully implemented");
+                }
+            }
             SimulationMode::OpenLoop => {
                 info!("Open-loop mode is not yet fully implemented");
                 if !is_multiple || csv_files.first() == Some(input_file) {
@@ -391,12 +405,12 @@ fn run_from_config(config_path: &Path) -> Result<(), Box<dyn Error>> {
                     }
                 };
 
-                let output_file = generate_output_path(output, input_file, is_multiple);
+                let output_file = output.join(input_file.file_name().unwrap()); //generate_output_path(output, input_file, is_multiple);
                 match results {
                     Ok(ref nav_results) => {
                         NavigationResult::to_csv(nav_results, &output_file)?;
                         info!("Results written to {}", output_file.display());
-                        println!("Results written to {}", output_file.display());
+                        //println!("Results written to {}", output_file.display());
                     }
                     Err(e) => {
                         error!("Error running closed-loop simulation: {}", e);
@@ -407,7 +421,7 @@ fn run_from_config(config_path: &Path) -> Result<(), Box<dyn Error>> {
             SimulationMode::ParticleFilter => {
                 info!("Particle filter mode is not yet fully implemented");
                 if !is_multiple || csv_files.first() == Some(input_file) {
-                    println!("Particle filter mode is not yet fully implemented");
+                    //println!("Particle filter mode is not yet fully implemented");
                 }
             }
         }
@@ -460,15 +474,12 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
 
     if is_multiple {
         info!("Processing {} CSV files from directory", csv_files.len());
-        println!("Processing {} CSV files from directory", csv_files.len());
+        //println!("Processing {} CSV files from directory", csv_files.len());
     }
 
     // Process each CSV file
     for input_file in &csv_files {
         info!("Processing file: {}", input_file.display());
-        if is_multiple {
-            println!("\nProcessing: {}", input_file.display());
-        }
 
         // Load sensor data records from CSV
         let records = TestDataRecord::from_csv(input_file)?;
@@ -506,13 +517,13 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
                 run_closed_loop(&mut ekf, event_stream, None)
             }
         };
+        let output_file = Path::new(&args.sim.output).join(input_file); //generate_output_path(&args.sim.output, input_file, is_multiple);
 
-        let output_file = generate_output_path(&args.sim.output, input_file, is_multiple);
         match results {
             Ok(ref nav_results) => {
                 NavigationResult::to_csv(nav_results, &output_file)?;
                 info!("Results written to {}", output_file.display());
-                println!("Results written to {}", output_file.display());
+                // println!("Results written to {}", output_file.display());
             }
             Err(e) => {
                 error!(
@@ -524,7 +535,7 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
                     return Err(e.into());
                 }
                 // For multiple files, continue processing remaining files
-                println!(
+                error!(
                     "Error processing {}: {}. Continuing with remaining files...",
                     input_file.display(),
                     e
@@ -564,24 +575,54 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
     Ok(())
 }
 
+/// Read a line from stdin, trimming whitespace and checking for quit command
+/// Returns None if user enters 'q', otherwise returns the trimmed input
+fn read_user_input() -> Option<String> {
+    let mut input = String::new();
+    io::stdin()
+        .read_line(&mut input)
+        .expect("Failed to read line");
+    let input = input.trim();
+
+    if input.eq_ignore_ascii_case("q") {
+        std::process::exit(0);
+    }
+
+    if input.is_empty() {
+        None
+    } else {
+        Some(input.to_string())
+    }
+}
+
+/// Prompt for configuration name with validation
+fn prompt_config_name() -> String {
+    loop {
+        println!("Please name your configuration file with extension (.toml, .json, .yaml) or 'q' to quit:");
+        if let Some(input) = read_user_input() {
+            return input;
+        }
+        println!("Error: Configuration path cannot be empty. Please try again.\n");
+    }
+}
+/// Prompt for configuration file path with validation
+fn prompt_config_path() -> String {
+    loop {
+        println!("Please specify the output configuration file path (or 'q' to quit):");
+        if let Some(input) = read_user_input() {
+            return input;
+        }
+        println!("Error: Configuration path cannot be empty. Please try again.\n");
+    }
+}
+
 /// Prompt for input CSV file or directory path with validation
 fn prompt_input_path() -> String {
     loop {
-        println!("Please specify the input CSV file or directory path (or 'q' to quit):");
-        let mut input = String::new();
-        io::stdin()
-            .read_line(&mut input)
-            .expect("Failed to read line");
-        let input = input.trim();
-
-        if input.eq_ignore_ascii_case("q") {
-            std::process::exit(0);
+        println!("Please specify the input location, either a single CSV file or a directory containing them. ('q' to quit):");
+        if let Some(input) = read_user_input() {
+            return input;
         }
-
-        if !input.is_empty() {
-            return input.to_string();
-        }
-
         println!("Error: Input path cannot be empty. Please try again.\n");
     }
 }
@@ -589,21 +630,10 @@ fn prompt_input_path() -> String {
 /// Prompt for output CSV file path with validation
 fn prompt_output_path() -> String {
     loop {
-        println!("Please specify the output CSV file path (or 'q' to quit):");
-        let mut input = String::new();
-        io::stdin()
-            .read_line(&mut input)
-            .expect("Failed to read line");
-        let input = input.trim();
-
-        if input.eq_ignore_ascii_case("q") {
-            std::process::exit(0);
+        println!("Please specify the output location to save output data. ('q' to quit):");
+        if let Some(input) = read_user_input() {
+            return input;
         }
-
-        if !input.is_empty() {
-            return input.to_string();
-        }
-
         println!("Error: Output path cannot be empty. Please try again.\n");
     }
 }
@@ -613,27 +643,20 @@ fn prompt_simulation_mode() -> SimulationMode {
     loop {
         println!(
             "Please specify the simulation mode you would like:\n\
-            \t[1] - Open-Loop (Dead Reckoning)\n\
-            \t[2] - Closed-Loop (Kalman Filter)\n\
-            \t[3] - Particle Filter\n\
-            \t[q] - Quit\n\
-            --> "
+            [1] - Dead Reckoning\n\
+            [2] - Open-Loop (Feed-Forward)\n\
+            [3] - Closed-Loop (Feedback)\n\
+            [4] - Particle Filter\n\
+            [q] - Quit\n"
         );
-        let mut input = String::new();
-        io::stdin()
-            .read_line(&mut input)
-            .expect("Failed to read line");
-        let input = input.trim();
-
-        if input.eq_ignore_ascii_case("q") {
-            std::process::exit(0);
-        }
-
-        match input {
-            "1" => return SimulationMode::OpenLoop,
-            "2" => return SimulationMode::ClosedLoop,
-            "3" => return SimulationMode::ParticleFilter,
-            _ => println!("Error: Invalid selection. Please enter 1, 2, 3, or q.\n"),
+        if let Some(input) = read_user_input() {
+            match input.as_str() {
+                "1" => return SimulationMode::DeadReckoning,
+                "2" => return SimulationMode::OpenLoop,
+                "3" => return SimulationMode::ClosedLoop,
+                "4" => return SimulationMode::ParticleFilter,
+                _ => println!("Error: Invalid selection. Please enter 1, 2, 3, or q.\n"),
+            }
         }
     }
 }
@@ -643,25 +666,16 @@ fn prompt_filter_type() -> FilterType {
     loop {
         println!(
             "Please specify the filter type you would like:\n\
-            \t[1] - Unscented Kalman Filter (UKF)\n\
-            \t[2] - Extended Kalman Filter (EKF)\n\
-            \t[q] - Quit\n\
-            --> "
+            [1] - Unscented Kalman Filter (UKF)\n\
+            [2] - Extended Kalman Filter (EKF)\n\
+            [q] - Quit\n"
         );
-        let mut input = String::new();
-        io::stdin()
-            .read_line(&mut input)
-            .expect("Failed to read line");
-        let input = input.trim();
-
-        if input.eq_ignore_ascii_case("q") {
-            std::process::exit(0);
-        }
-
-        match input {
-            "1" => return FilterType::Ukf,
-            "2" => return FilterType::Ekf,
-            _ => println!("Error: Invalid selection. Please enter 1, 2, or q.\n"),
+        if let Some(input) = read_user_input() {
+            match input.as_str() {
+                "1" => return FilterType::Ukf,
+                "2" => return FilterType::Ekf,
+                _ => println!("Error: Invalid selection. Please enter 1, 2, or q.\n"),
+            }
         }
     }
 }
@@ -670,23 +684,12 @@ fn prompt_filter_type() -> FilterType {
 fn prompt_seed() -> u64 {
     loop {
         println!("Please specify a random seed (press Enter for default 42, or 'q' to quit):");
-        let mut input = String::new();
-        io::stdin()
-            .read_line(&mut input)
-            .expect("Failed to read line");
-        let input = input.trim();
-
-        if input.eq_ignore_ascii_case("q") {
-            std::process::exit(0);
-        }
-
-        if input.is_empty() {
-            return 42;
-        }
-
-        match input.parse::<u64>() {
-            Ok(seed) => return seed,
-            Err(_) => println!("Error: Invalid seed. Please enter a positive integer.\n"),
+        match read_user_input() {
+            None => return 42,
+            Some(input) => match input.parse::<u64>() {
+                Ok(seed) => return seed,
+                Err(_) => println!("Error: Invalid seed. Please enter a positive integer.\n"),
+            },
         }
     }
 }
@@ -696,27 +699,18 @@ fn prompt_gnss_scheduler() -> GnssScheduler {
     loop {
         println!(
             "Would you like to add a GNSS scheduler to simulate periodic denial or jamming?\n\
-            \t[1] - Pass-Through (no degradation)\n\
-            \t[2] - Fixed Interval (specific time and phase between measurements)\n\
-            \t[3] - Duty Cycle (duration on/off)\n\
-            \t[q] - Quit\n\
-            --> "
+            [1] - Pass-Through (no degradation)\n\
+            [2] - Fixed Interval (specific time and phase between measurements)\n\
+            [3] - Duty Cycle (duration on/off)\n\
+            [q] - Quit\n"
         );
-        let mut input = String::new();
-        io::stdin()
-            .read_line(&mut input)
-            .expect("Failed to read line");
-        let input = input.trim();
-
-        if input.eq_ignore_ascii_case("q") {
-            std::process::exit(0);
-        }
-
-        match input {
-            "1" => return GnssScheduler::PassThrough,
-            "2" => return prompt_fixed_interval_scheduler(),
-            "3" => return prompt_duty_cycle_scheduler(),
-            _ => println!("Error: Invalid selection. Please enter 1, 2, 3, or q.\n"),
+        if let Some(input) = read_user_input() {
+            match input.as_str() {
+                "1" => return GnssScheduler::PassThrough,
+                "2" => return prompt_fixed_interval_scheduler(),
+                "3" => return prompt_duty_cycle_scheduler(),
+                _ => println!("Error: Invalid selection. Please enter 1, 2, 3, or q.\n"),
+            }
         }
     }
 }
@@ -725,41 +719,22 @@ fn prompt_gnss_scheduler() -> GnssScheduler {
 fn prompt_fixed_interval_scheduler() -> GnssScheduler {
     let interval_s = loop {
         println!("Enter the interval between measurements in seconds (or 'q' to quit):");
-        let mut input = String::new();
-        io::stdin()
-            .read_line(&mut input)
-            .expect("Failed to read line");
-        let input = input.trim();
-
-        if input.eq_ignore_ascii_case("q") {
-            std::process::exit(0);
-        }
-
-        match input.parse::<f64>() {
-            Ok(val) if val > 0.0 => break val,
-            _ => println!("Error: Please enter a positive number.\n"),
+        if let Some(input) = read_user_input() {
+            match input.parse::<f64>() {
+                Ok(val) if val > 0.0 => break val,
+                _ => println!("Error: Please enter a positive number.\n"),
+            }
         }
     };
 
     let phase_s = loop {
         println!("Enter the initial phase offset in seconds (press Enter for 0, or 'q' to quit):");
-        let mut input = String::new();
-        io::stdin()
-            .read_line(&mut input)
-            .expect("Failed to read line");
-        let input = input.trim();
-
-        if input.eq_ignore_ascii_case("q") {
-            std::process::exit(0);
-        }
-
-        if input.is_empty() {
-            break 0.0;
-        }
-
-        match input.parse::<f64>() {
-            Ok(val) if val >= 0.0 => break val,
-            _ => println!("Error: Please enter a non-negative number.\n"),
+        match read_user_input() {
+            None => break 0.0,
+            Some(input) => match input.parse::<f64>() {
+                Ok(val) if val >= 0.0 => break val,
+                _ => println!("Error: Please enter a non-negative number.\n"),
+            },
         }
     };
 
@@ -773,59 +748,32 @@ fn prompt_fixed_interval_scheduler() -> GnssScheduler {
 fn prompt_duty_cycle_scheduler() -> GnssScheduler {
     let on_s = loop {
         println!("Enter the ON duration in seconds (or 'q' to quit):");
-        let mut input = String::new();
-        io::stdin()
-            .read_line(&mut input)
-            .expect("Failed to read line");
-        let input = input.trim();
-
-        if input.eq_ignore_ascii_case("q") {
-            std::process::exit(0);
-        }
-
-        match input.parse::<f64>() {
-            Ok(val) if val > 0.0 => break val,
-            _ => println!("Error: Please enter a positive number.\n"),
+        if let Some(input) = read_user_input() {
+            match input.parse::<f64>() {
+                Ok(val) if val > 0.0 => break val,
+                _ => println!("Error: Please enter a positive number.\n"),
+            }
         }
     };
 
     let off_s = loop {
         println!("Enter the OFF duration in seconds (or 'q' to quit):");
-        let mut input = String::new();
-        io::stdin()
-            .read_line(&mut input)
-            .expect("Failed to read line");
-        let input = input.trim();
-
-        if input.eq_ignore_ascii_case("q") {
-            std::process::exit(0);
-        }
-
-        match input.parse::<f64>() {
-            Ok(val) if val > 0.0 => break val,
-            _ => println!("Error: Please enter a positive number.\n"),
+        if let Some(input) = read_user_input() {
+            match input.parse::<f64>() {
+                Ok(val) if val > 0.0 => break val,
+                _ => println!("Error: Please enter a positive number.\n"),
+            }
         }
     };
 
     let start_phase_s = loop {
         println!("Enter the start phase offset in seconds (press Enter for 0, or 'q' to quit):");
-        let mut input = String::new();
-        io::stdin()
-            .read_line(&mut input)
-            .expect("Failed to read line");
-        let input = input.trim();
-
-        if input.eq_ignore_ascii_case("q") {
-            std::process::exit(0);
-        }
-
-        if input.is_empty() {
-            break 0.0;
-        }
-
-        match input.parse::<f64>() {
-            Ok(val) if val >= 0.0 => break val,
-            _ => println!("Error: Please enter a non-negative number.\n"),
+        match read_user_input() {
+            None => break 0.0,
+            Some(input) => match input.parse::<f64>() {
+                Ok(val) if val >= 0.0 => break val,
+                _ => println!("Error: Please enter a non-negative number.\n"),
+            },
         }
     };
 
@@ -843,29 +791,20 @@ fn prompt_gnss_fault_model() -> strapdown::messages::GnssFaultModel {
     loop {
         println!(
             "Would you like to add a GNSS fault model to corrupt measurements?\n\
-            \t[1] - None (no corruption)\n\
-            \t[2] - Degraded (AR(1) random walk with increased uncertainty)\n\
-            \t[3] - Slow Bias (slowly drifting bias)\n\
-            \t[4] - Hijack (position spoofing)\n\
-            \t[q] - Quit\n\
-            --> "
+            [1] - None (no corruption)\n\
+            [2] - Degraded (AR(1) random walk with increased uncertainty)\n\
+            [3] - Slow Bias (slowly drifting bias)\n\
+            [4] - Hijack (position spoofing)\n\
+            [q] - Quit\n"
         );
-        let mut input = String::new();
-        io::stdin()
-            .read_line(&mut input)
-            .expect("Failed to read line");
-        let input = input.trim();
-
-        if input.eq_ignore_ascii_case("q") {
-            std::process::exit(0);
-        }
-
-        match input {
-            "1" => return GnssFaultModel::None,
-            "2" => return prompt_degraded_fault_model(),
-            "3" => return prompt_slow_bias_fault_model(),
-            "4" => return prompt_hijack_fault_model(),
-            _ => println!("Error: Invalid selection. Please enter 1, 2, 3, 4, or q.\n"),
+        if let Some(input) = read_user_input() {
+            match input.as_str() {
+                "1" => return GnssFaultModel::None,
+                "2" => return prompt_degraded_fault_model(),
+                "3" => return prompt_slow_bias_fault_model(),
+                "4" => return prompt_hijack_fault_model(),
+                _ => println!("Error: Invalid selection. Please enter 1, 2, 3, 4, or q.\n"),
+            }
         }
     }
 }
@@ -938,37 +877,31 @@ fn prompt_f64_with_default(prompt_text: &str, default: f64, min_val: f64, max_va
             "{} (press Enter for {}, or 'q' to quit):",
             prompt_text, default
         );
-        let mut input = String::new();
-        io::stdin()
-            .read_line(&mut input)
-            .expect("Failed to read line");
-        let input = input.trim();
-
-        if input.eq_ignore_ascii_case("q") {
-            std::process::exit(0);
-        }
-
-        if input.is_empty() {
-            return default;
-        }
-
-        match input.parse::<f64>() {
-            Ok(val) if val >= min_val && val <= max_val => return val,
-            Ok(_) => println!(
-                "Error: Value must be between {} and {}.\n",
-                min_val, max_val
-            ),
-            Err(_) => println!("Error: Please enter a valid number.\n"),
+        match read_user_input() {
+            None => return default,
+            Some(input) => match input.parse::<f64>() {
+                Ok(val) if val >= min_val && val <= max_val => return val,
+                Ok(_) => println!(
+                    "Error: Value must be between {} and {}.\n",
+                    min_val, max_val
+                ),
+                Err(_) => println!("Error: Please enter a valid number.\n"),
+            },
         }
     }
 }
 
 /// Interactive configuration file creation wizard that creates a custom
 /// [SimulationConfig] and writes it to file.
-fn create_config_file(args: &CreateConfigArgs) -> Result<(), Box<dyn Error>> {
+fn create_config_file() -> Result<(), Box<dyn Error>> {
     println!("\n=== Strapdown Simulation Configuration Wizard ===\n");
 
     // Gather all configuration parameters
+    let config_name = prompt_config_name();
+    let save_path = prompt_config_path();
+    
+    
+    println!("\nCreating configuration file at: {}/{}\n", save_path, config_name);
     let input_path = prompt_input_path();
     let output_path = prompt_output_path();
     let mode = prompt_simulation_mode();
@@ -1003,7 +936,7 @@ fn create_config_file(args: &CreateConfigArgs) -> Result<(), Box<dyn Error>> {
     // Build the complete configuration
     let config = SimulationConfig {
         input: input_path,
-        output: output_path,
+        output: output_path.clone(),
         mode,
         seed,
         closed_loop,
@@ -1011,15 +944,21 @@ fn create_config_file(args: &CreateConfigArgs) -> Result<(), Box<dyn Error>> {
         gnss_degradation,
     };
 
-    // Write to file using appropriate format based on file extension
-    config.to_file(&args.output)?;
+    // validate output location exists and write to file using appropriate format based on file extension
+    let config_output_path = Path::new(&save_path).join(&config_name);
+    if let Some(parent) = config_output_path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    config.to_file(&config_output_path)?;
 
     println!(
         "\n✓ Configuration file successfully created: {}",
-        args.output.display()
+        config_output_path.display()
     );
     println!("\nYou can now run the simulation with:");
-    println!("  strapdown-sim --config {}", args.output.display());
+    println!("  strapdown-sim --config {}", config_output_path.display());
 
     Ok(())
 }
@@ -1037,17 +976,17 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Otherwise, execute based on subcommand
     match cli.command {
+        Some(Command::DeadReckoning(args)) => {
+            println!("Running in Dead Reckoning mode... {}", &args.input.display());
+            eprintln!("Error: Dead Reckoning mode is not yet implemented.");
+            std::process::exit(1);
+        }
         Some(Command::OpenLoop(args)) => run_open_loop(&args),
         Some(Command::ClosedLoop(args)) => run_closed_loop_cli(&args),
         Some(Command::ParticleFilter(args)) => run_particle_filter(&args),
-        Some(Command::CreateConfig(args)) => create_config_file(&args),
+        Some(Command::CreateConfig) => create_config_file(),
         None => {
-            error!("No command specified. Use --help for usage information");
-            eprintln!("No command specified. Use --help for usage information");
-            eprintln!("Examples:");
-            eprintln!("  strapdown-sim --config my_config.toml");
-            eprintln!("  strapdown-sim create-config --output my_config.toml");
-            eprintln!("  strapdown-sim closed-loop -i input.csv -o output.csv --filter ukf");
+            eprintln!("Error: No command provided. Use -h or --help for usage information.");
             std::process::exit(1);
         }
     }
