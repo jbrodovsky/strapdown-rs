@@ -11,7 +11,7 @@ use std::path::Path;
 use crate::IMUData;
 use crate::earth::meters_ned_to_dlat_dlon;
 use crate::measurements::{
-    GPSPositionAndVelocityMeasurement, MagnetometerMeasurement, MeasurementModel,
+    GPSPositionAndVelocityMeasurement, MagnetometerYawMeasurement, MeasurementModel,
     RelativeAltitudeMeasurement,
 };
 use crate::sim::TestDataRecord;
@@ -268,105 +268,6 @@ pub struct GnssDegradationConfig {
     /// realization of stochastic processes such as AR(1) degradation.
     #[serde(default = "default_seed")]
     pub seed: u64,
-
-    /// Magnetometer aiding configuration
-    #[serde(default)]
-    pub magnetometer: MagnetometerConfig,
-}
-
-/// Configuration for magnetometer aiding
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct MagnetometerConfig {
-    /// Enable magnetometer measurements
-    #[serde(default)]
-    pub enabled: bool,
-
-    /// Use World Magnetic Model to compute reference field from position
-    /// If false, uses the manual reference_field_ned
-    #[serde(default)]
-    pub use_wmm: bool,
-
-    /// Year for WMM calculation (e.g., 2025)
-    /// Only used if use_wmm is true
-    #[serde(default = "default_wmm_year")]
-    pub wmm_year: i32,
-
-    /// Day of year for WMM calculation (1-365 or 1-366)
-    /// Only used if use_wmm is true
-    #[serde(default = "default_wmm_day")]
-    pub wmm_day_of_year: u16,
-
-    /// Reference magnetic field vector in NED frame (μT)
-    /// [North, East, Down] components
-    /// Only used if use_wmm is false
-    /// Typical values: Northern hemisphere ~[25, 0, 40], Southern ~[25, 0, -40]
-    #[serde(default = "default_reference_field")]
-    pub reference_field_ned: [f64; 3],
-
-    /// Hard-iron offset calibration (μT)
-    /// Constant bias in magnetometer readings [x, y, z]
-    #[serde(default)]
-    pub hard_iron_offset: [f64; 3],
-
-    /// Soft-iron correction matrix (dimensionless)
-    /// 3x3 matrix stored in row-major order: [m11, m12, m13, m21, m22, m23, m31, m32, m33]
-    /// Default is identity matrix (no correction)
-    #[serde(default = "default_soft_iron_matrix")]
-    pub soft_iron_matrix: [f64; 9],
-
-    /// Measurement noise standard deviation (μT)
-    #[serde(default = "default_mag_noise")]
-    pub noise_std: f64,
-}
-
-impl Default for MagnetometerConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            use_wmm: false,
-            wmm_year: default_wmm_year(),
-            wmm_day_of_year: default_wmm_day(),
-            reference_field_ned: default_reference_field(),
-            hard_iron_offset: [0.0; 3],
-            soft_iron_matrix: default_soft_iron_matrix(),
-            noise_std: default_mag_noise(),
-        }
-    }
-}
-
-fn default_reference_field() -> [f64; 3] {
-    [25.0, 0.0, 40.0] // Northern hemisphere typical
-}
-
-fn default_soft_iron_matrix() -> [f64; 9] {
-    [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0] // Identity matrix
-}
-
-fn default_mag_noise() -> f64 {
-    5.0 // 5 μT noise std
-}
-
-/// Default WMM year for magnetometer configuration
-/// 
-/// Returns the current year as determined by the system clock. This provides a
-/// reasonable default that stays current as time progresses, though it may fall
-/// outside the valid range of the underlying WMM model (WMM2020: 2020-2025).
-/// 
-/// For production use, it's recommended to set this value explicitly in your
-/// configuration to match your dataset dates and ensure compatibility with the
-/// available WMM model version.
-fn default_wmm_year() -> i32 {
-    chrono::Utc::now().year()
-}
-
-/// Default WMM day of year for magnetometer configuration
-///
-/// Returns the current day of year as determined by the system clock. This keeps
-/// the default synchronized with the current date.
-///
-/// For production use, set this explicitly to match your dataset dates.
-fn default_wmm_day() -> u16 {
-    chrono::Utc::now().ordinal() as u16
 }
 
 impl Default for GnssDegradationConfig {
@@ -375,7 +276,6 @@ impl Default for GnssDegradationConfig {
             scheduler: GnssScheduler::default(),
             fault: GnssFaultModel::default(),
             seed: default_seed(),
-            magnetometer: MagnetometerConfig::default(),
         }
     }
 }
@@ -939,7 +839,7 @@ pub fn apply_fault(
 /// ```
 /// use strapdown::messages::{build_event_stream, GnssDegradationConfig, GnssScheduler, GnssFaultModel};
 /// use strapdown::sim::TestDataRecord;
-/// 
+///
 /// let records = vec![TestDataRecord::default(); 10]; // load or generate your test data
 /// let cfg = GnssDegradationConfig {
 ///     scheduler: GnssScheduler::FixedInterval { interval_s: 10.0, phase_s: 0.0 },
@@ -1081,63 +981,20 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
                 elapsed_s: *t1,
             });
         }
-
-        // Add magnetometer measurement if enabled and data is available
-        if cfg.magnetometer.enabled {
-            let mag_components = [r1.mag_x, r1.mag_y, r1.mag_z];
-            // Check for valid data: not NaN and not all zeros (sensor failure indicator)
-            let mag_present = mag_components.iter().all(|v| !v.is_nan())
-                && mag_components.iter().any(|v| v.abs() > 1e-6);
-
-            if mag_present {
-                use nalgebra::{Matrix3, Vector3};
-
-                let reference_field = Vector3::new(
-                    cfg.magnetometer.reference_field_ned[0],
-                    cfg.magnetometer.reference_field_ned[1],
-                    cfg.magnetometer.reference_field_ned[2],
-                );
-
-                let hard_iron = Vector3::new(
-                    cfg.magnetometer.hard_iron_offset[0],
-                    cfg.magnetometer.hard_iron_offset[1],
-                    cfg.magnetometer.hard_iron_offset[2],
-                );
-
-                let soft_iron = Matrix3::new(
-                    cfg.magnetometer.soft_iron_matrix[0],
-                    cfg.magnetometer.soft_iron_matrix[1],
-                    cfg.magnetometer.soft_iron_matrix[2],
-                    cfg.magnetometer.soft_iron_matrix[3],
-                    cfg.magnetometer.soft_iron_matrix[4],
-                    cfg.magnetometer.soft_iron_matrix[5],
-                    cfg.magnetometer.soft_iron_matrix[6],
-                    cfg.magnetometer.soft_iron_matrix[7],
-                    cfg.magnetometer.soft_iron_matrix[8],
-                );
-
-                let mut mag_meas = MagnetometerMeasurement {
-                    mag_x: r1.mag_x,
-                    mag_y: r1.mag_y,
-                    mag_z: r1.mag_z,
-                    reference_field_ned: reference_field,
-                    wmm_field: None,
-                    wmm_date: None,
-                    hard_iron_offset: hard_iron,
-                    soft_iron_matrix: soft_iron,
-                    noise_std: cfg.magnetometer.noise_std,
-                };
-                
-                // Initialize WMM field if requested
-                if cfg.magnetometer.use_wmm {
-                    mag_meas.init_wmm_field(cfg.magnetometer.wmm_year, cfg.magnetometer.wmm_day_of_year);
-                }
-
-                events.push(Event::Measurement {
-                    meas: Box::new(mag_meas),
-                    elapsed_s: *t1,
-                });
-            }
+        if [r1.mag_x, r1.mag_y, r1.mag_z].iter().all(|v| !v.is_nan()) {
+            let mag_meas = MagnetometerYawMeasurement {
+                mag_x: r1.mag_x,
+                mag_y: r1.mag_y,
+                mag_z: r1.mag_z,
+                noise_std: 0.1, // set a default noise std; adjust as needed
+                apply_declination: true,
+                year: r1.time.year(),
+                day_of_year: r1.time.day() as u16,
+            };
+            events.push(Event::Measurement {
+                meas: Box::new(mag_meas),
+                elapsed_s: *t1,
+            });
         }
     }
     EventStream { start_time, events }
@@ -1665,115 +1522,6 @@ mod tests {
         let events = build_event_stream(&records, &config);
         // Should have events
         assert!(events.events.len() > 0);
-    }
-
-    #[test]
-    fn test_magnetometer_config_default() {
-        let config = MagnetometerConfig::default();
-        assert!(!config.enabled);
-        assert_eq!(config.reference_field_ned, [25.0, 0.0, 40.0]);
-        assert_eq!(config.hard_iron_offset, [0.0; 3]);
-        assert_eq!(
-            config.soft_iron_matrix,
-            [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
-        );
-        assert_eq!(config.noise_std, 5.0);
-    }
-
-    #[test]
-    fn test_magnetometer_in_event_stream_disabled() {
-        let records = create_test_records(5, 0.1);
-        let config = GnssDegradationConfig {
-            scheduler: GnssScheduler::PassThrough,
-            fault: GnssFaultModel::None,
-            magnetometer: MagnetometerConfig {
-                enabled: false,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        let stream = build_event_stream(&records, &config);
-
-        let mag_count = stream
-            .events
-            .iter()
-            .filter(|e| {
-                if let Event::Measurement { meas, .. } = e {
-                    meas.as_any()
-                        .downcast_ref::<MagnetometerMeasurement>()
-                        .is_some()
-                } else {
-                    false
-                }
-            })
-            .count();
-
-        assert_eq!(mag_count, 0);
-    }
-
-    #[test]
-    fn test_magnetometer_in_event_stream_enabled() {
-        let mut records = create_test_records(3, 0.1);
-        for record in &mut records {
-            record.mag_x = 20.0;
-            record.mag_y = 5.0;
-            record.mag_z = 40.0;
-        }
-
-        let config = GnssDegradationConfig {
-            scheduler: GnssScheduler::PassThrough,
-            fault: GnssFaultModel::None,
-            magnetometer: MagnetometerConfig {
-                enabled: true,
-                use_wmm: false,
-                wmm_year: 2025,
-                wmm_day_of_year: 1,
-                reference_field_ned: [25.0, 0.0, 45.0],
-                hard_iron_offset: [1.0, 0.5, 2.0],
-                soft_iron_matrix: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
-                noise_std: 3.0,
-            },
-            ..Default::default()
-        };
-
-        let stream = build_event_stream(&records, &config);
-
-        let mag_count = stream
-            .events
-            .iter()
-            .filter(|e| {
-                if let Event::Measurement { meas, .. } = e {
-                    meas.as_any()
-                        .downcast_ref::<MagnetometerMeasurement>()
-                        .is_some()
-                } else {
-                    false
-                }
-            })
-            .count();
-
-        assert_eq!(mag_count, 2);
-
-        let mag_meas = stream
-            .events
-            .iter()
-            .find_map(|e| {
-                if let Event::Measurement { meas, .. } = e {
-                    meas.as_any().downcast_ref::<MagnetometerMeasurement>()
-                } else {
-                    None
-                }
-            })
-            .expect("Should have at least one magnetometer measurement");
-
-        assert_eq!(mag_meas.mag_x, 20.0);
-        assert_eq!(mag_meas.mag_y, 5.0);
-        assert_eq!(mag_meas.mag_z, 40.0);
-        assert_eq!(mag_meas.reference_field_ned[0], 25.0);
-        assert_eq!(mag_meas.reference_field_ned[1], 0.0);
-        assert_eq!(mag_meas.reference_field_ned[2], 45.0);
-        assert_eq!(mag_meas.noise_std, 3.0);
     }
 }
 #[cfg(test)]

@@ -554,9 +554,9 @@ impl MeasurementModel for GravityMeasurement {
     fn get_dimension(&self) -> usize {
         1 // Single measurement: map value at current position
     }
-    fn get_vector(&self) -> DVector<f64> {
-        // Return the observed gravity as the measurement vector
-        // The expected measurement will be computed in get_sigma_points using the current state
+    fn get_measurement(&self, _state: &DVector<f64>) -> DVector<f64> {
+        // Return the observed gravity anomaly as the measurement vector
+        // Gravity measurement is state-independent (computed from sensor data)
         DVector::from_vec(vec![self.get_anomaly()])
     }
     fn get_noise(&self) -> DMatrix<f64> {
@@ -607,17 +607,19 @@ impl GravityMeasurement {
     /// 1×9 Jacobian matrix H for gravity anomaly measurement
     pub fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64> {
         let mut h = DMatrix::<f64>::zeros(1, 9);
-        
+
         let lat = state[0];
         let lon = state[1];
-        
+
         // Compute numerical gradient from the geophysical map
-        let (dlat_deg, dlon_deg) = self.map.get_gradient(&lat.to_degrees(), &lon.to_degrees(), 1e-6);
-        
+        let (dlat_deg, dlon_deg) =
+            self.map
+                .get_gradient(&lat.to_degrees(), &lon.to_degrees(), 1e-6);
+
         // Convert gradient from per-degree to per-radian
         h[(0, 0)] = dlat_deg * RAD_TO_DEG;
         h[(0, 1)] = dlon_deg * RAD_TO_DEG;
-        
+
         h
     }
 }
@@ -668,7 +670,9 @@ impl MeasurementModel for MagneticAnomalyMeasurement {
     fn get_dimension(&self) -> usize {
         1 // Single measurement: map value at current position
     }
-    fn get_vector(&self) -> DVector<f64> {
+    fn get_measurement(&self, _state: &DVector<f64>) -> DVector<f64> {
+        // Return the observed magnetic anomaly as the measurement vector
+        // Magnetic anomaly measurement is state-independent (computed from sensor data)
         DVector::from_vec(vec![self.get_anomaly()])
     }
     fn get_noise(&self) -> DMatrix<f64> {
@@ -719,17 +723,19 @@ impl MagneticAnomalyMeasurement {
     /// 1×9 Jacobian matrix H for magnetic anomaly measurement
     pub fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64> {
         let mut h = DMatrix::<f64>::zeros(1, 9);
-        
+
         let lat = state[0];
         let lon = state[1];
-        
+
         // Compute numerical gradient from the geophysical map
-        let (dlat_deg, dlon_deg) = self.map.get_gradient(&lat.to_degrees(), &lon.to_degrees(), 1e-6);
-        
+        let (dlat_deg, dlon_deg) =
+            self.map
+                .get_gradient(&lat.to_degrees(), &lon.to_degrees(), 1e-6);
+
         // Convert gradient from per-degree to per-radian
         h[(0, 0)] = dlat_deg * RAD_TO_DEG;
         h[(0, 1)] = dlon_deg * RAD_TO_DEG;
-        
+
         h
     }
 }
@@ -1088,7 +1094,6 @@ pub fn geo_closed_loop_ekf(
     ekf: &mut strapdown::kalman::ExtendedKalmanFilter,
     stream: EventStream,
 ) -> anyhow::Result<Vec<NavigationResult>> {
-    
     let start_time = stream.start_time;
     let mut results: Vec<NavigationResult> = Vec::with_capacity(stream.events.len());
     let total = stream.events.len();
@@ -1105,14 +1110,14 @@ pub fn geo_closed_loop_ekf(
             use std::io::Write;
             std::io::stdout().flush().ok();
         }
-        
+
         // Compute wall-clock time for this event
         let elapsed_s = match &event {
             Event::Imu { elapsed_s, .. } => *elapsed_s,
             Event::Measurement { elapsed_s, .. } => *elapsed_s,
         };
         let ts = start_time + Duration::milliseconds((elapsed_s * 1000.0).round() as i64);
-        
+
         // Apply event
         match event {
             Event::Imu { dt_s, imu, .. } => {
@@ -1131,7 +1136,7 @@ pub fn geo_closed_loop_ekf(
                     let mean = mean_vec.as_slice();
                     let strapdown: StrapdownState = (&mean[..9]).try_into().unwrap();
                     gravity.set_state(&strapdown);
-                    
+
                     // For EKF with geophysical measurements, use standard update
                     // The measurement model will compute necessary Jacobians
                     ekf_update_geophysical(ekf, gravity);
@@ -1144,14 +1149,14 @@ pub fn geo_closed_loop_ekf(
                     let mean = mean_vec.as_slice();
                     let strapdown: StrapdownState = (&mean[..9]).try_into().unwrap();
                     magnetic.set_state(&strapdown);
-                    
+
                     // Custom update with measurement state preparation
                     ekf_update_geophysical(ekf, magnetic);
                 } else {
                     // Handle standard measurements (GPS, baro, etc.)
                     ekf.update(meas.as_ref());
                 }
-                
+
                 // Health check after measurement update
                 if let Err(e) =
                     monitor.check(ekf.get_estimate().as_slice(), &ekf.get_certainty(), None)
@@ -1160,7 +1165,7 @@ pub fn geo_closed_loop_ekf(
                 }
             }
         }
-        
+
         // If timestamp changed, or it's the last event, record the previous state
         if Some(ts) != last_ts {
             if let Some(prev_ts) = last_ts {
@@ -1168,13 +1173,13 @@ pub fn geo_closed_loop_ekf(
             }
             last_ts = Some(ts);
         }
-        
+
         // If this is the last event, also push
         if i == total - 1 {
             results.push(NavigationResult::from((&ts, &*ekf)));
         }
     }
-    
+
     debug!("EKF geophysical navigation simulation complete");
     Ok(results)
 }
@@ -1202,9 +1207,7 @@ mod tests {
     use nalgebra::{DMatrix, DVector};
     use std::rc::Rc;
     use strapdown::earth::GP;
-    use strapdown::messages::{
-        GnssDegradationConfig, GnssFaultModel, GnssScheduler, MagnetometerConfig,
-    };
+    use strapdown::messages::{GnssDegradationConfig, GnssFaultModel, GnssScheduler};
     use strapdown::sim::TestDataRecord;
 
     /// Helper function to create a simple test gravity map
@@ -1326,7 +1329,9 @@ mod tests {
 
         assert_eq!(measurement.get_dimension(), 1);
 
-        let measurement_vector = measurement.get_vector();
+        // Dummy state for get_measurement (gravity anomaly is state-independent)
+        let dummy_state = DVector::from_vec(vec![0.0; 9]);
+        let measurement_vector = measurement.get_measurement(&dummy_state);
         assert_eq!(measurement_vector.len(), 1);
         assert_approx_eq!(measurement_vector[0], 0.00, 0.1);
 
@@ -1352,7 +1357,9 @@ mod tests {
 
         assert_eq!(measurement.get_dimension(), 1);
 
-        let measurement_vector = measurement.get_vector();
+        // Dummy state for get_measurement (magnetic anomaly is state-independent)
+        let dummy_state = DVector::from_vec(vec![0.0; 9]);
+        let measurement_vector = measurement.get_measurement(&dummy_state);
         assert_eq!(measurement_vector.len(), 1);
 
         // Should compute magnitude: sqrt(20000^2 + 5000^2 + 45000^2)
@@ -1435,7 +1442,6 @@ mod tests {
             scheduler: GnssScheduler::PassThrough,
             fault: GnssFaultModel::None,
             seed: 42,
-            magnetometer: MagnetometerConfig::default(),
         };
         let geomap = Rc::new(create_test_gravity_map());
 
@@ -1468,7 +1474,6 @@ mod tests {
             scheduler: GnssScheduler::PassThrough,
             fault: GnssFaultModel::None,
             seed: 42,
-            magnetometer: MagnetometerConfig::default(),
         };
         let geomap = Rc::new(create_test_magnetic_map());
 
@@ -1575,7 +1580,6 @@ mod tests {
             scheduler: GnssScheduler::PassThrough,
             fault: GnssFaultModel::None,
             seed: 42,
-            magnetometer: MagnetometerConfig::default(),
         };
         let geomap = Rc::new(create_test_gravity_map());
 
@@ -1608,7 +1612,6 @@ mod tests {
             scheduler: GnssScheduler::PassThrough,
             fault: GnssFaultModel::None,
             seed: 42,
-            magnetometer: MagnetometerConfig::default(),
         };
         let geomap = Rc::new(create_test_gravity_map());
 
@@ -1651,18 +1654,22 @@ mod tests {
     #[test]
     fn test_geomap_gradient() {
         let map = create_test_gravity_map();
-        
+
         // Test gradient computation at center point
         let (dlat, dlon) = map.get_gradient(&41.0, &-73.0, 1e-6);
-        
+
         // Gradient should be non-zero for a non-constant map
-        assert!(dlat.abs() > 1e-10 || dlon.abs() > 1e-10, 
-                "Expected non-zero gradient at center of map");
-        
+        assert!(
+            dlat.abs() > 1e-10 || dlon.abs() > 1e-10,
+            "Expected non-zero gradient at center of map"
+        );
+
         // Test gradient at corner (should handle boundaries gracefully)
         let (dlat_corner, dlon_corner) = map.get_gradient(&40.0, &-74.0, 1e-6);
-        assert!(dlat_corner.is_finite() && dlon_corner.is_finite(),
-                "Gradient should be finite at map corners");
+        assert!(
+            dlat_corner.is_finite() && dlon_corner.is_finite(),
+            "Gradient should be finite at map corners"
+        );
     }
 
     #[test]
@@ -1677,22 +1684,26 @@ mod tests {
             north_velocity: 0.0,
             east_velocity: 0.0,
         };
-        
+
         // Create a state vector for Jacobian computation
         let state = DVector::from_vec(vec![
             41.0_f64.to_radians(),  // lat
             -73.0_f64.to_radians(), // lon
-            100.0,                   // alt
-            0.0, 0.0, 0.0,          // velocities
-            0.0, 0.0, 0.0,          // attitude
+            100.0,                  // alt
+            0.0,
+            0.0,
+            0.0, // velocities
+            0.0,
+            0.0,
+            0.0, // attitude
         ]);
-        
+
         let jacobian = measurement.get_jacobian(&state);
-        
+
         // Jacobian should be 1x9
         assert_eq!(jacobian.nrows(), 1);
         assert_eq!(jacobian.ncols(), 9);
-        
+
         // First two columns (lat, lon derivatives) may be non-zero
         // Other columns should be zero for direct position dependence
         for j in 2..9 {
@@ -1713,22 +1724,26 @@ mod tests {
             year: 2023,
             day: 216,
         };
-        
+
         // Create a state vector for Jacobian computation
         let state = DVector::from_vec(vec![
             41.0_f64.to_radians(),  // lat
             -73.0_f64.to_radians(), // lon
-            100.0,                   // alt
-            0.0, 0.0, 0.0,          // velocities
-            0.0, 0.0, 0.0,          // attitude
+            100.0,                  // alt
+            0.0,
+            0.0,
+            0.0, // velocities
+            0.0,
+            0.0,
+            0.0, // attitude
         ]);
-        
+
         let jacobian = measurement.get_jacobian(&state);
-        
+
         // Jacobian should be 1x9
         assert_eq!(jacobian.nrows(), 1);
         assert_eq!(jacobian.ncols(), 9);
-        
+
         // First two columns (lat, lon derivatives) may be non-zero
         // Other columns should be zero for direct position dependence
         for j in 2..9 {

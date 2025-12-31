@@ -1,24 +1,41 @@
 //! Measurement-related code for the strapdown navigation system.
 //!
 //! This module defines generic measurement models and specific implementations
-//! for GPS position, GPS velocity, combined GPS position and velocity, and relative
-//! altitude measurements. These models are used in inertial navigation systems to
-//! process sensor data.
+//! for GPS position, GPS velocity, combined GPS position and velocity, relative
+//! altitude, and magnetometer-based yaw measurements. These models are used in
+//! inertial navigation systems to process sensor data.
 
 use crate::earth::METERS_TO_DEGREES;
 
 use std::any::Any;
-use std::cell::RefCell;
 use std::fmt::{self, Debug, Display};
 
-use nalgebra::{DMatrix, DVector, Matrix3, Rotation3, Vector3};
+use nalgebra::{DMatrix, DVector};
 use world_magnetic_model::GeomagneticField;
 use world_magnetic_model::time::Date;
 use world_magnetic_model::uom::si::angle::degree;
 use world_magnetic_model::uom::si::f32::{Angle, Length};
 use world_magnetic_model::uom::si::length::meter;
 
-/// Generic measurement model trait for all types of measurements
+/// Generic measurement model trait for all types of measurements.
+///
+/// This trait defines the interface for measurement models used in Kalman-style
+/// navigation filters. Measurement models define the relationship between the
+/// state vector and observable measurements, following the probabilistic notation
+/// $p(z|x)$ where $z$ is the measurement and $x$ is the state.
+///
+/// # State Vector Layout
+///
+/// The standard state vector ordering is:
+/// ```text
+/// x = [lat, lon, alt, v_n, v_e, v_d, roll, pitch, yaw, ...]
+///      [0]  [1]  [2]  [3]  [4]   [5]  [6]   [7]    [8]
+/// ```
+///
+/// For 15-state filters with IMU biases:
+/// ```text
+/// x = [lat, lon, alt, v_n, v_e, v_d, roll, pitch, yaw, b_ax, b_ay, b_az, b_gx, b_gy, b_gz]
+/// ```
 pub trait MeasurementModel: Any {
     /// Downcast helper method to allow for type-safe downcasting
     fn as_any(&self) -> &dyn Any;
@@ -26,13 +43,32 @@ pub trait MeasurementModel: Any {
     fn as_any_mut(&mut self) -> &mut dyn Any;
     /// Get the dimension of the measurement vector
     fn get_dimension(&self) -> usize;
-    /// Get the measurement in a vector format
-    fn get_vector(&self) -> DVector<f64>;
+    /// Get the measurement in a vector format given the current state estimate.
+    ///
+    /// This method returns the actual measurement value(s) as a vector. The state
+    /// parameter allows state-dependent measurements (e.g., tilt-compensated
+    /// magnetometer yaw requires roll and pitch from the state).
+    ///
+    /// # Arguments
+    ///
+    /// * `state` - Current state estimate vector
+    ///
+    /// # Returns
+    ///
+    /// A `DVector<f64>` containing the measurement value(s)
+    fn get_measurement(&self, state: &DVector<f64>) -> DVector<f64>;
     /// Get the measurement noise characteristics in a matrix format
     fn get_noise(&self) -> DMatrix<f64>;
-    //fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64>
     /// Get the expected measurements from the state. Measurement model function
     /// that maps the state values to measurement space.
+    ///
+    /// # Arguments
+    ///
+    /// * `state` - State vector (may be a sigma point or particle state)
+    ///
+    /// # Returns
+    ///
+    /// Expected measurement given the state
     fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64>;
 }
 
@@ -68,7 +104,8 @@ impl MeasurementModel for GPSPositionMeasurement {
     fn get_dimension(&self) -> usize {
         3
     }
-    fn get_vector(&self) -> DVector<f64> {
+    fn get_measurement(&self, _state: &DVector<f64>) -> DVector<f64> {
+        // GPS position measurement is state-independent
         DVector::from_vec(vec![
             self.latitude.to_radians(),
             self.longitude.to_radians(),
@@ -82,20 +119,10 @@ impl MeasurementModel for GPSPositionMeasurement {
             self.vertical_noise_std.powi(2),
         ]))
     }
-    // fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
-    //     let mut measurement_sigma_points = DMatrix::<f64>::zeros(3, state_sigma_points.ncols());
-    //     for (i, sigma_point) in state_sigma_points.column_iter().enumerate() {
-    //         measurement_sigma_points[(0, i)] = sigma_point[0];
-    //         measurement_sigma_points[(1, i)] = sigma_point[1];
-    //         measurement_sigma_points[(2, i)] = sigma_point[2];
-    //     }
-    //     measurement_sigma_points
-    // }
     fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
         DVector::from_vec(vec![state[0], state[1], state[2]])
     }
 }
-
 /// GPS Velocity measurement model
 #[derive(Clone, Debug, Default)]
 pub struct GPSVelocityMeasurement {
@@ -128,7 +155,8 @@ impl MeasurementModel for GPSVelocityMeasurement {
     fn get_dimension(&self) -> usize {
         3
     }
-    fn get_vector(&self) -> DVector<f64> {
+    fn get_measurement(&self, _state: &DVector<f64>) -> DVector<f64> {
+        // GPS velocity measurement is state-independent
         DVector::from_vec(vec![
             self.northward_velocity,
             self.eastward_velocity,
@@ -145,17 +173,7 @@ impl MeasurementModel for GPSVelocityMeasurement {
     fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
         DVector::from_vec(vec![state[3], state[4], state[5]])
     }
-    // fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
-    //     let mut measurement_sigma_points = DMatrix::<f64>::zeros(3, state_sigma_points.ncols());
-    //     for (i, sigma_point) in state_sigma_points.column_iter().enumerate() {
-    //         measurement_sigma_points[(0, i)] = sigma_point[3];
-    //         measurement_sigma_points[(1, i)] = sigma_point[4];
-    //         measurement_sigma_points[(2, i)] = sigma_point[5];
-    //     }
-    //     measurement_sigma_points
-    // }
 }
-
 /// GPS Position and Velocity measurement model
 #[derive(Clone, Debug, Default)]
 pub struct GPSPositionAndVelocityMeasurement {
@@ -178,7 +196,8 @@ impl MeasurementModel for GPSPositionAndVelocityMeasurement {
     fn get_dimension(&self) -> usize {
         5
     }
-    fn get_vector(&self) -> DVector<f64> {
+    fn get_measurement(&self, _state: &DVector<f64>) -> DVector<f64> {
+        // GPS position and velocity measurement is state-independent
         DVector::from_vec(vec![
             self.latitude.to_radians(),
             self.longitude.to_radians(),
@@ -239,7 +258,8 @@ impl MeasurementModel for RelativeAltitudeMeasurement {
     fn get_dimension(&self) -> usize {
         1
     }
-    fn get_vector(&self) -> DVector<f64> {
+    fn get_measurement(&self, _state: &DVector<f64>) -> DVector<f64> {
+        // Barometric altitude measurement is state-independent
         DVector::from_vec(vec![self.relative_altitude + self.reference_altitude])
     }
     fn get_noise(&self) -> DMatrix<f64> {
@@ -257,241 +277,197 @@ impl MeasurementModel for RelativeAltitudeMeasurement {
     // }
 }
 
-/// Magnetometer measurement model
+/// Magnetometer-based yaw measurement model.
 ///
-/// This measurement model maps the vehicle attitude state to expected magnetic field
-/// measurements in the body frame. It supports calibration parameters for hard-iron
-/// offset correction and soft-iron correction (scale and misalignment).
+/// This measurement model uses body-frame magnetometer data to derive a tilt-compensated
+/// yaw (heading) measurement. The measurement applies tilt compensation using roll and
+/// pitch from the state vector, then optionally corrects for magnetic declination using
+/// the World Magnetic Model (WMM) to obtain true heading.
 ///
-/// The measurement is the three-axis magnetic field vector (mag_x, mag_y, mag_z) in
-/// microteslas (μT) measured in the body frame of the vehicle.
+/// # Mathematical Background
 ///
-/// # Reference Field
+/// ## Tilt Compensation
 ///
-/// The reference magnetic field can be provided in two ways:
-/// 1. **Manual**: Set `reference_field_ned` directly with known values
-/// 2. **Automatic (WMM)**: Provide a `GeomagneticField` object which is updated
-///    only when the position changes significantly, avoiding repeated expensive calculations.
+/// Raw magnetometer readings in the body frame must be projected onto the horizontal plane
+/// to compute magnetic heading. Given body-frame magnetic field components $(m_x, m_y, m_z)$
+/// and attitude angles $(\phi, \theta)$ (roll, pitch), the horizontal components are:
 ///
-/// # Calibration Parameters
+/// $$
+/// \begin{aligned}
+/// m_{x,h} &= m_x \cos\theta + m_y \sin\phi \sin\theta + m_z \cos\phi \sin\theta \\\\
+/// m_{y,h} &= m_y \cos\phi - m_z \sin\phi
+/// \end{aligned}
+/// $$
 ///
-/// - **Hard-iron offset**: A constant bias in the magnetometer readings caused by
-///   ferromagnetic materials on the vehicle. This is represented as a 3D vector
-///   (offset_x, offset_y, offset_z) in μT that is subtracted from raw measurements.
+/// ## Magnetic Heading
 ///
-/// - **Soft-iron correction**: A 3x3 matrix that corrects for scale factors and
-///   cross-axis misalignments caused by nearby magnetic materials. Applied as:
-///   `corrected = soft_iron_matrix * (raw - hard_iron_offset)`
+/// The magnetic heading (yaw relative to magnetic north) is:
 ///
-/// # Measurement Model
+/// $$
+/// \psi_m = \arctan2(m_{y,h}, m_{x,h})
+/// $$
 ///
-/// The expected measurement is computed by:
-/// 1. Extract roll, pitch, yaw from the state vector (indices 6, 7, 8)
-/// 2. If `wmm_field` is Some, update it with position (indices 0, 1, 2) and query reference field
-/// 3. Compute rotation matrix from NED frame to body frame using attitude
-/// 4. Rotate the local NED magnetic field reference vector into the body frame
-/// 5. Apply soft-iron and hard-iron calibration corrections
+/// ## True Heading
+///
+/// If declination correction is enabled, the true heading is:
+///
+/// $$
+/// \psi = \psi_m + \delta
+/// $$
+///
+/// where $\delta$ is the magnetic declination (positive east) obtained from WMM.
+///
+/// # State Vector Requirements
+///
+/// This measurement model requires the following state indices:
+/// - `state[0]`: latitude (radians) - for WMM lookup
+/// - `state[1]`: longitude (radians) - for WMM lookup  
+/// - `state[2]`: altitude (meters) - for WMM lookup
+/// - `state[6]`: roll (radians) - for tilt compensation
+/// - `state[7]`: pitch (radians) - for tilt compensation
+/// - `state[8]`: yaw (radians) - expected measurement
 ///
 /// # Example
-/// ```rust
-/// use nalgebra::{Vector3, Matrix3};
-/// use strapdown::measurements::MagnetometerMeasurement;
 ///
-/// // Manual reference field (e.g., from prior calibration)
-/// let meas = MagnetometerMeasurement {
-///     mag_x: 20.0,
-///     mag_y: 5.0,
-///     mag_z: 40.0,
-///     reference_field_ned: Vector3::new(25.0, 0.0, 45.0),
-///     wmm_field: None,
-///     hard_iron_offset: Vector3::zeros(),
-///     soft_iron_matrix: Matrix3::identity(),
-///     noise_std: 3.0,
+/// ```rust
+/// use strapdown::measurements::MagnetometerYawMeasurement;
+/// use strapdown::measurements::MeasurementModel;
+/// use nalgebra::DVector;
+///
+/// // Create measurement from magnetometer data
+/// let mag_meas = MagnetometerYawMeasurement {
+///     mag_x: 20.0,  // µT
+///     mag_y: 5.0,   // µT
+///     mag_z: -45.0, // µT
+///     noise_std: 0.05, // radians (~3 degrees)
+///     apply_declination: true,
+///     year: 2025,
+///     day_of_year: 1,
 /// };
+///
+/// // State vector with position and attitude
+/// let state = DVector::from_vec(vec![
+///     0.7854,   // lat (45 deg in rad)
+///     -2.1293,  // lon (-122 deg in rad)
+///     100.0,    // alt (m)
+///     0.0, 0.0, 0.0,  // velocities
+///     0.0,      // roll
+///     0.0,      // pitch
+///     0.5,      // yaw
+/// ]);
+///
+/// // Get tilt-compensated yaw measurement
+/// let z = mag_meas.get_measurement(&state);
+/// assert_eq!(z.len(), 1);
 /// ```
-#[derive(Clone)]
-pub struct MagnetometerMeasurement {
-    /// Measured magnetic field in body frame X-axis (μT)
+#[derive(Clone, Debug)]
+pub struct MagnetometerYawMeasurement {
+    /// Body-frame magnetic field x-component (forward) in micro teslas
     pub mag_x: f64,
-    /// Measured magnetic field in body frame Y-axis (μT)
+    /// Body-frame magnetic field y-component (right) in micro teslas
     pub mag_y: f64,
-    /// Measured magnetic field in body frame Z-axis (μT)
+    /// Body-frame magnetic field z-component (down) in micro teslas
     pub mag_z: f64,
-    /// Reference magnetic field vector in NED frame (μT)
-    /// [North, East, Down] components
-    /// Used when wmm_field is None
-    pub reference_field_ned: Vector3<f64>,
-    /// World Magnetic Model field object for automatic reference field computation
-    /// When Some, position updates only change coordinates without recreating the field object
-    /// Uses RefCell for interior mutability to allow updates in get_expected_measurement
-    pub wmm_field: Option<RefCell<GeomagneticField>>,
-    /// Date used for WMM calculations (stored separately since GeomagneticField doesn't expose it)
-    pub wmm_date: Option<Date>,
-    /// Hard-iron offset correction vector (μT)
-    /// This offset is subtracted from raw measurements
-    pub hard_iron_offset: Vector3<f64>,
-    /// Soft-iron correction matrix (dimensionless)
-    /// Applied to correct for scale and misalignment
-    pub soft_iron_matrix: Matrix3<f64>,
-    /// Measurement noise standard deviation (μT)
+    /// Measurement noise standard deviation in radians
     pub noise_std: f64,
+    /// Whether to apply WMM declination correction for true heading
+    pub apply_declination: bool,
+    /// Year for WMM calculation (e.g., 2025)
+    pub year: i32,
+    /// Day of year for WMM calculation (1-366)
+    pub day_of_year: u16,
 }
 
-impl Debug for MagnetometerMeasurement {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MagnetometerMeasurement")
-            .field("mag_x", &self.mag_x)
-            .field("mag_y", &self.mag_y)
-            .field("mag_z", &self.mag_z)
-            .field("reference_field_ned", &self.reference_field_ned)
-            .field("wmm_field", &self.wmm_field.is_some())
-            .field("wmm_date", &self.wmm_date.is_some())
-            .field("hard_iron_offset", &self.hard_iron_offset)
-            .field("soft_iron_matrix", &self.soft_iron_matrix)
-            .field("noise_std", &self.noise_std)
-            .finish()
-    }
-}
-
-impl Default for MagnetometerMeasurement {
+impl Default for MagnetometerYawMeasurement {
     fn default() -> Self {
         Self {
             mag_x: 0.0,
             mag_y: 0.0,
             mag_z: 0.0,
-            // Typical mid-latitude northern hemisphere magnetic field
-            // Users should set this to match their geographic location
-            // using Earth magnetic models (WMM, IGRF) or local calibration,
-            // or provide a wmm_field object for automatic calculation
-            reference_field_ned: Vector3::new(25.0, 0.0, 40.0),
-            wmm_field: None,
-            wmm_date: None,
-            hard_iron_offset: Vector3::zeros(),
-            soft_iron_matrix: Matrix3::identity(),
-            noise_std: 5.0, // Default 5 μT noise std
+            noise_std: 0.05, // ~3 degrees
+            apply_declination: false,
+            year: 2025,
+            day_of_year: 1,
         }
     }
 }
 
-impl Display for MagnetometerMeasurement {
+impl Display for MagnetometerYawMeasurement {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let ref_source = if self.wmm_field.is_some() {
-            "WMM"
-        } else {
-            "Manual"
-        };
         write!(
             f,
-            "MagnetometerMeasurement(mag: [{:.2}, {:.2}, {:.2}] μT, ref: [{:.2}, {:.2}, {:.2}] μT ({}), noise: {:.2} μT)",
-            self.mag_x,
-            self.mag_y,
-            self.mag_z,
-            self.reference_field_ned[0],
-            self.reference_field_ned[1],
-            self.reference_field_ned[2],
-            ref_source,
-            self.noise_std
+            "MagnetometerYawMeasurement(mag: [{:.2}, {:.2}, {:.2}] µT, noise: {:.4} rad, decl: {})",
+            self.mag_x, self.mag_y, self.mag_z, self.noise_std, self.apply_declination
         )
     }
 }
 
-impl MagnetometerMeasurement {
-    /// Update the WMM field with new coordinates
+impl MagnetometerYawMeasurement {
+    /// Compute tilt-compensated magnetic heading from body-frame magnetometer readings.
     ///
-    /// This method updates the internal `GeomagneticField` object with new coordinates
-    /// without recreating the date object, which is more efficient for high-rate
-    /// filter updates.
+    /// Applies rotation using roll and pitch to project the magnetic field onto the
+    /// horizontal plane, then computes heading using atan2.
     ///
     /// # Arguments
-    /// - `latitude` - WGS84 latitude in degrees
-    /// - `longitude` - WGS84 longitude in degrees  
-    /// - `altitude` - WGS84 altitude in meters above ellipsoid
+    ///
+    /// * `roll` - Roll angle in radians
+    /// * `pitch` - Pitch angle in radians
     ///
     /// # Returns
-    /// Returns `true` if the field was successfully updated, `false` otherwise.
-    pub fn update_wmm_coordinates(&self, latitude: f64, longitude: f64, altitude: f64) -> bool {
-        if let (Some(field_cell), Some(date)) = (&self.wmm_field, &self.wmm_date) {
-            match GeomagneticField::new(
-                Length::new::<meter>(altitude as f32),
-                Angle::new::<degree>(latitude as f32),
-                Angle::new::<degree>(longitude as f32),
-                *date,
-            ) {
-                Ok(new_field) => {
-                    *field_cell.borrow_mut() = new_field;
-                    true
-                }
-                Err(_) => false,
-            }
+    ///
+    /// Magnetic heading in radians, in range [0, 2π)
+    pub fn compute_tilt_compensated_heading(&self, roll: f64, pitch: f64) -> f64 {
+        let (sin_roll, cos_roll) = roll.sin_cos();
+        let (sin_pitch, cos_pitch) = pitch.sin_cos();
+
+        // Project magnetometer readings onto horizontal plane
+        // These formulas rotate the body-frame mag vector to level frame
+        let mag_x_horizontal = self.mag_x * cos_pitch
+            + self.mag_y * sin_roll * sin_pitch
+            + self.mag_z * cos_roll * sin_pitch;
+        let mag_y_horizontal = self.mag_y * cos_roll - self.mag_z * sin_roll;
+
+        // Compute heading (note: atan2 returns [-π, π], we wrap to [0, 2π))
+        let heading = mag_y_horizontal.atan2(mag_x_horizontal);
+
+        // Wrap to [0, 2π) to match state convention
+        if heading < 0.0 {
+            heading + 2.0 * std::f64::consts::PI
         } else {
-            false
+            heading
         }
     }
 
-    /// Initialize the WMM field with a specific date
-    ///
-    /// Creates a new `GeomagneticField` object for the given date. This should be
-    /// called once during initialization, then use `update_wmm_coordinates` to update
-    /// positions efficiently.
+    /// Get magnetic declination at the given position using WMM.
     ///
     /// # Arguments
-    /// - `year` - Year for WMM calculation (e.g., 2025)
-    /// - `day_of_year` - Day of year (1-365 or 1-366)
+    ///
+    /// * `lat_deg` - Latitude in degrees
+    /// * `lon_deg` - Longitude in degrees
+    /// * `alt_m` - Altitude in meters
     ///
     /// # Returns
-    /// Returns `true` if the field was successfully initialized, `false` otherwise.
-    pub fn init_wmm_field(&mut self, year: i32, day_of_year: u16) -> bool {
-        let date = match Date::from_ordinal_date(year, day_of_year) {
-            Ok(d) => d,
-            Err(_) => return false,
-        };
+    ///
+    /// Magnetic declination in radians (positive east)
+    pub fn get_declination(&self, lat_deg: f64, lon_deg: f64, alt_m: f64) -> f64 {
+        let date = Date::from_ordinal_date(self.year, self.day_of_year)
+            .unwrap_or_else(|_| Date::from_ordinal_date(2025, 1).unwrap());
 
-        // Create with a default position (will be updated via update_wmm_coordinates)
-        self.wmm_field = match GeomagneticField::new(
-            Length::new::<meter>(0.0),
-            Angle::new::<degree>(0.0),
-            Angle::new::<degree>(0.0),
+        let field = GeomagneticField::new(
+            Length::new::<meter>(alt_m as f32),
+            Angle::new::<degree>(lat_deg as f32),
+            Angle::new::<degree>(lon_deg as f32),
             date,
-        ) {
-            Ok(field) => Some(RefCell::new(field)),
-            Err(_) => None,
-        };
-        
-        self.wmm_date = Some(date);
+        );
 
-        self.wmm_field.is_some()
-    }
-
-    /// Get the reference magnetic field from WMM at given coordinates
-    ///
-    /// This method updates the WMM field object with the provided coordinates and
-    /// returns the magnetic field vector in NED frame in microteslas.
-    ///
-    /// # Arguments
-    /// - `latitude` - WGS84 latitude in degrees
-    /// - `longitude` - WGS84 longitude in degrees
-    /// - `altitude` - WGS84 altitude in meters above ellipsoid
-    ///
-    /// # Returns
-    /// Returns the magnetic field vector in NED frame (μT), or None if WMM field is not initialized
-    pub fn get_wmm_field_at(&self, latitude: f64, longitude: f64, altitude: f64) -> Option<Vector3<f64>> {
-        if self.update_wmm_coordinates(latitude, longitude, altitude) {
-            if let Some(ref field_cell) = self.wmm_field {
-                let field = field_cell.borrow();
-                // Extract components and convert from Tesla to microteslas
-                // 1 Tesla = 1,000,000 μT
-                let north_ut = field.x().value as f64 * 1_000_000.0;
-                let east_ut = field.y().value as f64 * 1_000_000.0;
-                let down_ut = field.z().value as f64 * 1_000_000.0;
-                
-                return Some(Vector3::new(north_ut, east_ut, down_ut));
-            }
+        match field {
+            Ok(f) => f.declination().get::<degree>() as f64 * std::f64::consts::PI / 180.0,
+            Err(_) => 0.0, // Return 0 declination if WMM fails (e.g., position out of range)
         }
-        None
     }
 }
 
-impl MeasurementModel for MagnetometerMeasurement {
+impl MeasurementModel for MagnetometerYawMeasurement {
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -501,63 +477,40 @@ impl MeasurementModel for MagnetometerMeasurement {
     }
 
     fn get_dimension(&self) -> usize {
-        3
+        1 // Single yaw measurement
     }
 
-    fn get_vector(&self) -> DVector<f64> {
-        // Apply calibration corrections to raw measurements
-        let raw_mag = Vector3::new(self.mag_x, self.mag_y, self.mag_z);
-        let corrected_mag = self.soft_iron_matrix * (raw_mag - self.hard_iron_offset);
-        DVector::from_vec(vec![corrected_mag[0], corrected_mag[1], corrected_mag[2]])
+    fn get_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
+        // Extract roll and pitch from state for tilt compensation
+        let roll = if state.len() > 6 { state[6] } else { 0.0 };
+        let pitch = if state.len() > 7 { state[7] } else { 0.0 };
+
+        // Compute tilt-compensated magnetic heading
+        let mut heading = self.compute_tilt_compensated_heading(roll, pitch);
+
+        // Apply declination correction if enabled
+        if self.apply_declination && state.len() >= 3 {
+            let lat_deg = state[0].to_degrees();
+            let lon_deg = state[1].to_degrees();
+            let alt_m = state[2];
+            let declination = self.get_declination(lat_deg, lon_deg, alt_m);
+            heading += declination;
+
+            // Re-wrap to [0, 2π) after adding declination
+            heading = heading.rem_euclid(2.0 * std::f64::consts::PI);
+        }
+
+        DVector::from_vec(vec![heading])
     }
 
     fn get_noise(&self) -> DMatrix<f64> {
-        // Isotropic noise model: same noise in all three axes
-        DMatrix::from_diagonal(&DVector::from_vec(vec![
-            self.noise_std.powi(2),
-            self.noise_std.powi(2),
-            self.noise_std.powi(2),
-        ]))
+        DMatrix::from_diagonal(&DVector::from_vec(vec![self.noise_std.powi(2)]))
     }
 
     fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
-        // Extract attitude from state: roll (6), pitch (7), yaw (8)
-        let roll = state[6];
-        let pitch = state[7];
-        let yaw = state[8];
-
-        // Get reference field - either from WMM or use the provided value
-        // When WMM field is Some, only coordinates are updated (not the date),
-        // which avoids expensive Date parsing on every call
-        let reference_field = if self.wmm_field.is_some() {
-            // Extract position from state: lat (0), lon (1), alt (2)
-            let latitude = state[0].to_degrees();
-            let longitude = state[1].to_degrees();
-            let altitude = state[2];
-            
-            // Get magnetic field from WMM with updated coordinates
-            self.get_wmm_field_at(latitude, longitude, altitude)
-                .unwrap_or(self.reference_field_ned)
-        } else {
-            self.reference_field_ned
-        };
-
-        // Compute rotation matrix from body to NED frame (C_bn)
-        // This is what from_euler_angles gives us
-        let rot_body_to_ned = Rotation3::from_euler_angles(roll, pitch, yaw);
-
-        // To rotate from NED to body, we need the transpose (inverse for rotation matrices)
-        let rot_ned_to_body = rot_body_to_ned.transpose();
-
-        // Rotate reference field from NED to body frame
-        let mag_body = rot_ned_to_body * reference_field;
-
-        // Apply calibration transform to get expected measurement in calibrated space
-        // This matches the calibration applied in get_vector() to the raw measurements
-        // Both the expected and actual measurements are in the same calibrated space
-        let expected_mag = self.soft_iron_matrix * (mag_body - self.hard_iron_offset);
-
-        DVector::from_vec(vec![expected_mag[0], expected_mag[1], expected_mag[2]])
+        // Expected measurement is the yaw from the state (index 8)
+        let yaw = if state.len() > 8 { state[8] } else { 0.0 };
+        DVector::from_vec(vec![yaw])
     }
 }
 
@@ -578,8 +531,11 @@ mod tests {
             vertical_noise_std: 2.0,
         };
 
+        // Dummy state for get_measurement (GPS position is state-independent)
+        let dummy_state = DVector::from_vec(vec![0.0; 9]);
+
         // Vector in radians for lat/lon
-        let vec = meas.get_vector();
+        let vec = meas.get_measurement(&dummy_state);
         assert_eq!(vec.len(), 3);
         assert!((vec[0] - 37.0_f64.to_radians()).abs() < EPS);
         assert!((vec[1] - (-122.0_f64).to_radians()).abs() < EPS);
@@ -619,7 +575,10 @@ mod tests {
             vertical_noise_std: 0.1,
         };
 
-        let vec = meas.get_vector();
+        // Dummy state for get_measurement (GPS velocity is state-independent)
+        let dummy_state = DVector::from_vec(vec![0.0; 9]);
+
+        let vec = meas.get_measurement(&dummy_state);
         assert_eq!(vec.len(), 3);
         assert!((vec[0] - 1.5).abs() < EPS);
         assert!((vec[1] - (-0.5)).abs() < EPS);
@@ -656,7 +615,11 @@ mod tests {
             vertical_noise_std: 4.0,
             velocity_noise_std: 0.5,
         };
-        let vec = meas.get_vector();
+
+        // Dummy state for get_measurement (GPS measurement is state-independent)
+        let dummy_state = DVector::from_vec(vec![0.0; 9]);
+
+        let vec = meas.get_measurement(&dummy_state);
         assert_eq!(vec.len(), 5);
         assert!((vec[0] - 10.0_f64.to_radians()).abs() < EPS);
         assert!((vec[3] - 2.0).abs() < EPS);
@@ -687,7 +650,11 @@ mod tests {
             relative_altitude: -5.0,
             reference_altitude: 100.0,
         };
-        let vec = meas.get_vector();
+
+        // Dummy state for get_measurement (barometric altitude is state-independent)
+        let dummy_state = DVector::from_vec(vec![0.0; 9]);
+
+        let vec = meas.get_measurement(&dummy_state);
         assert_eq!(vec.len(), 1);
         assert!((vec[0] - 95.0).abs() < EPS);
 
@@ -749,406 +716,158 @@ mod tests {
     }
 
     #[test]
-    fn magnetometer_measurement_default() {
-        let meas = MagnetometerMeasurement::default();
-        assert_eq!(meas.get_dimension(), 3);
-        assert!(meas.noise_std > 0.0);
-        assert_eq!(meas.hard_iron_offset, Vector3::zeros());
-        assert_eq!(meas.soft_iron_matrix, Matrix3::identity());
+    fn magnetometer_yaw_measurement_level_attitude() {
+        // Test magnetometer yaw with level attitude (no tilt)
+        // Magnetic field pointing north (positive x) should give ~0 heading
+        let meas = MagnetometerYawMeasurement {
+            mag_x: 20.0, // pointing north
+            mag_y: 0.0,
+            mag_z: -45.0, // typical downward component
+            noise_std: 0.05,
+            apply_declination: false,
+            year: 2025,
+            day_of_year: 1,
+        };
+
+        // State with zero roll/pitch (level)
+        let state = DVector::from_vec(vec![
+            0.7854,  // lat (45 deg)
+            -2.1293, // lon (-122 deg)
+            100.0,   // alt
+            0.0, 0.0, 0.0, // velocities
+            0.0, // roll = 0
+            0.0, // pitch = 0
+            0.0, // yaw
+        ]);
+
+        let z = meas.get_measurement(&state);
+        assert_eq!(z.len(), 1);
+
+        // With mag pointing north and level attitude, heading should be ~0
+        assert!(z[0].abs() < 0.01, "Expected heading near 0, got {}", z[0]);
     }
 
     #[test]
-    fn magnetometer_measurement_vector_and_noise() {
-        let meas = MagnetometerMeasurement {
-            mag_x: 20.0,
-            mag_y: 5.0,
-            mag_z: 40.0,
-            reference_field_ned: Vector3::new(25.0, 0.0, 45.0),
-            use_wmm: false,
-            wmm_year: 2025,
-            wmm_day_of_year: 1,
-            hard_iron_offset: Vector3::zeros(),
-            soft_iron_matrix: Matrix3::identity(),
-            noise_std: 3.0,
+    fn magnetometer_yaw_measurement_east_heading() {
+        // Test magnetometer pointing east (positive y)
+        let meas = MagnetometerYawMeasurement {
+            mag_x: 0.0,
+            mag_y: 20.0, // pointing east
+            mag_z: -45.0,
+            noise_std: 0.05,
+            apply_declination: false,
+            year: 2025,
+            day_of_year: 1,
         };
 
-        // Get measurement vector (should be same as input with identity calibration)
-        let vec = meas.get_vector();
-        assert_eq!(vec.len(), 3);
-        assert_approx_eq!(vec[0], 20.0, EPS);
-        assert_approx_eq!(vec[1], 5.0, EPS);
-        assert_approx_eq!(vec[2], 40.0, EPS);
+        let state = DVector::from_vec(vec![
+            0.7854, -2.1293, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, // level attitude
+        ]);
 
-        // Check noise matrix
+        let z = meas.get_measurement(&state);
+
+        // With mag pointing east and level attitude, heading should be ~π/2 (90 deg)
+        let expected = std::f64::consts::FRAC_PI_2;
+        assert!(
+            (z[0] - expected).abs() < 0.01,
+            "Expected heading near π/2, got {}",
+            z[0]
+        );
+    }
+
+    #[test]
+    fn magnetometer_yaw_tilt_compensation() {
+        // Test that tilt compensation changes the result
+        let meas = MagnetometerYawMeasurement {
+            mag_x: 20.0,
+            mag_y: 5.0,
+            mag_z: -45.0,
+            noise_std: 0.05,
+            apply_declination: false,
+            year: 2025,
+            day_of_year: 1,
+        };
+
+        // Level state
+        let level_state =
+            DVector::from_vec(vec![0.7854, -2.1293, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+
+        // Tilted state (10 degrees roll)
+        let tilted_state = DVector::from_vec(vec![
+            0.7854, -2.1293, 100.0, 0.0, 0.0, 0.0, 0.1745, 0.0, 0.0, // ~10 deg roll
+        ]);
+
+        let z_level = meas.get_measurement(&level_state);
+        let z_tilted = meas.get_measurement(&tilted_state);
+
+        // Heading should be different when tilted (tilt compensation effect)
+        assert!(
+            (z_level[0] - z_tilted[0]).abs() > 0.001,
+            "Tilt compensation should change heading"
+        );
+    }
+
+    #[test]
+    fn magnetometer_yaw_expected_measurement() {
+        // Test that expected measurement extracts yaw from state
+        let meas = MagnetometerYawMeasurement::default();
+
+        let state = DVector::from_vec(vec![
+            0.7854, -2.1293, 100.0, 0.0, 0.0, 0.0, 0.1, 0.2, 1.5708, // yaw = π/2
+        ]);
+
+        let expected = meas.get_expected_measurement(&state);
+        assert_eq!(expected.len(), 1);
+        assert!(
+            (expected[0] - 1.5708).abs() < EPS,
+            "Expected measurement should be state yaw"
+        );
+    }
+
+    #[test]
+    fn magnetometer_yaw_noise_matrix() {
+        let meas = MagnetometerYawMeasurement {
+            noise_std: 0.1,
+            ..Default::default()
+        };
+
         let noise = meas.get_noise();
-        assert_eq!(noise.nrows(), 3);
-        assert_approx_eq!(noise[(0, 0)], 9.0, EPS); // 3.0^2
-        assert_approx_eq!(noise[(1, 1)], 9.0, EPS);
-        assert_approx_eq!(noise[(2, 2)], 9.0, EPS);
+        assert_eq!(noise.nrows(), 1);
+        assert_eq!(noise.ncols(), 1);
+        assert!(
+            (noise[(0, 0)] - 0.01).abs() < EPS,
+            "Noise variance should be 0.1^2 = 0.01"
+        );
     }
 
     #[test]
-    fn magnetometer_hard_iron_correction() {
-        let hard_iron = Vector3::new(5.0, -2.0, 3.0);
-        let meas = MagnetometerMeasurement {
-            mag_x: 25.0,
-            mag_y: 3.0,
-            mag_z: 43.0,
-            reference_field_ned: Vector3::new(25.0, 0.0, 45.0),
-            use_wmm: false,
-            wmm_year: 2025,
-            wmm_day_of_year: 1,
-            hard_iron_offset: hard_iron,
-            soft_iron_matrix: Matrix3::identity(),
-            noise_std: 3.0,
-        };
-
-        // After correction: raw - offset
-        let vec = meas.get_vector();
-        assert_approx_eq!(vec[0], 20.0, EPS); // 25 - 5
-        assert_approx_eq!(vec[1], 5.0, EPS); // 3 - (-2)
-        assert_approx_eq!(vec[2], 40.0, EPS); // 43 - 3
-    }
-
-    #[test]
-    fn magnetometer_soft_iron_correction() {
-        // Simple scale matrix (scales X by 2, Y by 0.5, Z unchanged)
-        let soft_iron = Matrix3::new(2.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 1.0);
-        let meas = MagnetometerMeasurement {
-            mag_x: 10.0,
-            mag_y: 10.0,
-            mag_z: 40.0,
-            reference_field_ned: Vector3::new(25.0, 0.0, 45.0),
-            use_wmm: false,
-            wmm_year: 2025,
-            wmm_day_of_year: 1,
-            hard_iron_offset: Vector3::zeros(),
-            soft_iron_matrix: soft_iron,
-            noise_std: 3.0,
-        };
-
-        let vec = meas.get_vector();
-        assert_approx_eq!(vec[0], 20.0, EPS); // 10 * 2
-        assert_approx_eq!(vec[1], 5.0, EPS); // 10 * 0.5
-        assert_approx_eq!(vec[2], 40.0, EPS); // 40 * 1
-    }
-
-    #[test]
-    fn magnetometer_expected_measurement_zero_attitude() {
-        // State with zero attitude (aligned with NED)
-        let state = DVector::from_vec(vec![
-            0.0, // lat
-            0.0, // lon
-            0.0, // alt
-            0.0, // v_n
-            0.0, // v_e
-            0.0, // v_d
-            0.0, // roll
-            0.0, // pitch
-            0.0, // yaw
-        ]);
-
-        let reference = Vector3::new(25.0, 5.0, 40.0);
-        let meas = MagnetometerMeasurement {
-            mag_x: 0.0,
-            mag_y: 0.0,
-            mag_z: 0.0,
-            reference_field_ned: reference,
-            use_wmm: false,
-            wmm_year: 2025,
-            wmm_day_of_year: 1,
-            hard_iron_offset: Vector3::zeros(),
-            soft_iron_matrix: Matrix3::identity(),
-            noise_std: 3.0,
-        };
-
-        // With zero attitude, body frame = NED frame
-        let expected = meas.get_expected_measurement(&state);
-        assert_eq!(expected.len(), 3);
-        assert_approx_eq!(expected[0], 25.0, 1e-6);
-        assert_approx_eq!(expected[1], 5.0, 1e-6);
-        assert_approx_eq!(expected[2], 40.0, 1e-6);
-    }
-
-    #[test]
-    fn magnetometer_expected_measurement_yaw_rotation() {
-        // State with 90 degree yaw rotation (pointing East)
-        let state = DVector::from_vec(vec![
-            0.0,                         // lat
-            0.0,                         // lon
-            0.0,                         // alt
-            0.0,                         // v_n
-            0.0,                         // v_e
-            0.0,                         // v_d
-            0.0,                         // roll
-            0.0,                         // pitch
-            std::f64::consts::FRAC_PI_2, // yaw = 90 degrees
-        ]);
-
-        // Reference field: 25 μT North, 0 East, 40 Down
-        let reference = Vector3::new(25.0, 0.0, 40.0);
-        let meas = MagnetometerMeasurement {
-            mag_x: 0.0,
-            mag_y: 0.0,
-            mag_z: 0.0,
-            reference_field_ned: reference,
-            use_wmm: false,
-            wmm_year: 2025,
-            wmm_day_of_year: 1,
-            hard_iron_offset: Vector3::zeros(),
-            soft_iron_matrix: Matrix3::identity(),
-            noise_std: 3.0,
-        };
-
-        // After 90° yaw: body_x points East, body_y points South
-        // So North component (25) -> -body_y, East (0) -> body_x
-        let expected = meas.get_expected_measurement(&state);
-        assert_eq!(expected.len(), 3);
-        assert_approx_eq!(expected[0], 0.0, 1e-6); // East component
-        assert_approx_eq!(expected[1], -25.0, 1e-6); // -North component
-        assert_approx_eq!(expected[2], 40.0, 1e-6); // Down unchanged
-    }
-
-    #[test]
-    fn magnetometer_expected_measurement_with_calibration() {
-        let state = DVector::from_vec(vec![
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, // roll
-            0.0, // pitch
-            0.0, // yaw
-        ]);
-
-        let reference = Vector3::new(20.0, 5.0, 40.0);
-        let hard_iron = Vector3::new(1.0, -1.0, 2.0);
-        let soft_iron = Matrix3::identity() * 1.1; // 10% scale factor
-
-        let meas = MagnetometerMeasurement {
-            mag_x: 0.0,
-            mag_y: 0.0,
-            mag_z: 0.0,
-            reference_field_ned: reference,
-            use_wmm: false,
-            wmm_year: 2025,
-            wmm_day_of_year: 1,
-            hard_iron_offset: hard_iron,
-            soft_iron_matrix: soft_iron,
-            noise_std: 3.0,
-        };
-
-        let expected = meas.get_expected_measurement(&state);
-        // Expected: soft_iron * (reference - hard_iron)
-        // = 1.1 * ([20, 5, 40] - [1, -1, 2])
-        // = 1.1 * [19, 6, 38]
-        assert_approx_eq!(expected[0], 20.9, 1e-6); // 19 * 1.1
-        assert_approx_eq!(expected[1], 6.6, 1e-6); // 6 * 1.1
-        assert_approx_eq!(expected[2], 41.8, 1e-6); // 38 * 1.1
-    }
-
-    #[test]
-    fn magnetometer_display() {
-        let meas = MagnetometerMeasurement {
+    fn magnetometer_yaw_display() {
+        let meas = MagnetometerYawMeasurement {
             mag_x: 20.0,
             mag_y: 5.0,
-            mag_z: 40.0,
-            reference_field_ned: Vector3::new(25.0, 0.0, 45.0),
-            use_wmm: false,
-            wmm_year: 2025,
-            wmm_day_of_year: 1,
-            hard_iron_offset: Vector3::zeros(),
-            soft_iron_matrix: Matrix3::identity(),
-            noise_std: 3.0,
+            mag_z: -45.0,
+            noise_std: 0.05,
+            apply_declination: true,
+            year: 2025,
+            day_of_year: 1,
         };
+
         let s = format!("{}", meas);
-        assert!(s.contains("MagnetometerMeasurement"));
+        assert!(s.contains("MagnetometerYawMeasurement"));
         assert!(s.contains("20.00"));
-        assert!(s.contains("μT"));
+        assert!(s.contains("true")); // apply_declination
     }
 
     #[test]
-    fn magnetometer_downcast() {
-        let meas = MagnetometerMeasurement::default();
-        let boxed: Box<dyn MeasurementModel> = Box::new(meas.clone());
+    fn magnetometer_yaw_downcast() {
+        let meas = MagnetometerYawMeasurement::default();
+        let boxed: Box<dyn MeasurementModel> = Box::new(meas);
 
         let any = boxed.as_any();
-        let down = any
-            .downcast_ref::<MagnetometerMeasurement>()
-            .expect("downcast failed");
-
-        assert_eq!(down.get_dimension(), 3);
-        assert_eq!(down.noise_std, meas.noise_std);
-    }
-
-    #[test]
-    fn magnetometer_wmm_disabled() {
-        // Test that WMM is disabled by default and uses manual reference field
-        let meas = MagnetometerMeasurement {
-            mag_x: 20.0,
-            mag_y: 5.0,
-            mag_z: 40.0,
-            reference_field_ned: Vector3::new(25.0, 0.0, 45.0),
-            use_wmm: false,
-            wmm_year: 2025,
-            wmm_day_of_year: 1,
-            hard_iron_offset: Vector3::zeros(),
-            soft_iron_matrix: Matrix3::identity(),
-            noise_std: 3.0,
-        };
-
-        // State with zero attitude and position at Philadelphia
-        let state = DVector::from_vec(vec![
-            39.95_f64.to_radians(), // lat
-            -75.16_f64.to_radians(), // lon
-            100.0,                    // alt
-            0.0,                      // v_n
-            0.0,                      // v_e
-            0.0,                      // v_d
-            0.0,                      // roll
-            0.0,                      // pitch
-            0.0,                      // yaw
-        ]);
-
-        let expected = meas.get_expected_measurement(&state);
-        
-        // With zero attitude, body frame = NED frame, so expected should equal reference field
-        assert_approx_eq!(expected[0], 25.0, 1e-6);
-        assert_approx_eq!(expected[1], 0.0, 1e-6);
-        assert_approx_eq!(expected[2], 45.0, 1e-6);
-    }
-
-    #[test]
-    fn magnetometer_wmm_enabled() {
-        // Test that WMM computes reference field from state position
-        let meas = MagnetometerMeasurement {
-            mag_x: 20.0,
-            mag_y: 5.0,
-            mag_z: 40.0,
-            reference_field_ned: Vector3::new(999.0, 999.0, 999.0), // Should be ignored
-            use_wmm: true,
-            wmm_year: 2025,
-            wmm_day_of_year: 1,
-            hard_iron_offset: Vector3::zeros(),
-            soft_iron_matrix: Matrix3::identity(),
-            noise_std: 3.0,
-        };
-
-        // State with zero attitude and position at Philadelphia
-        let state = DVector::from_vec(vec![
-            39.95_f64.to_radians(), // lat
-            -75.16_f64.to_radians(), // lon
-            100.0,                    // alt
-            0.0,                      // v_n
-            0.0,                      // v_e
-            0.0,                      // v_d
-            0.0,                      // roll
-            0.0,                      // pitch
-            0.0,                      // yaw
-        ]);
-
-        let expected = meas.get_expected_measurement(&state);
-        
-        // With zero attitude, expected should be WMM field at this location
-        // We can't check exact values but can verify reasonableness
-        assert!(expected[0].abs() < 100.0, "North component should be reasonable");
-        assert!(expected[1].abs() < 100.0, "East component should be reasonable");
-        assert!(expected[2] > 0.0, "Down component should be positive in northern hemisphere");
-        
-        // Should not be the default reference field
-        assert!((expected[0] - 999.0).abs() > 1.0, "Should use WMM, not default reference");
-    }
-
-    #[test]
-    fn magnetometer_wmm_fallback() {
-        // Test that WMM falls back to manual reference field on error
-        let meas = MagnetometerMeasurement {
-            mag_x: 20.0,
-            mag_y: 5.0,
-            mag_z: 40.0,
-            reference_field_ned: Vector3::new(25.0, 0.0, 45.0),
-            use_wmm: true,
-            wmm_year: 2025,
-            wmm_day_of_year: 366, // Invalid day 366 for 2025 (non-leap year, should trigger fallback)
-            hard_iron_offset: Vector3::zeros(),
-            soft_iron_matrix: Matrix3::identity(),
-            noise_std: 3.0,
-        };
-
-        let state = DVector::from_vec(vec![
-            39.95_f64.to_radians(), // lat
-            -75.16_f64.to_radians(), // lon
-            100.0,                    // alt
-            0.0, 0.0, 0.0,            // velocities
-            0.0, 0.0, 0.0,            // attitude
-        ]);
-
-        let expected = meas.get_expected_measurement(&state);
-        
-        // Should fall back to manual reference field
-        assert_approx_eq!(expected[0], 25.0, 1e-6);
-        assert_approx_eq!(expected[1], 0.0, 1e-6);
-        assert_approx_eq!(expected[2], 45.0, 1e-6);
-    }
-
-    #[test]
-    fn magnetometer_wmm_with_rotation() {
-        // Test WMM with non-zero attitude
-        let meas = MagnetometerMeasurement {
-            mag_x: 0.0,
-            mag_y: 0.0,
-            mag_z: 0.0,
-            reference_field_ned: Vector3::zeros(), // Unused with WMM
-            use_wmm: true,
-            wmm_year: 2025,
-            wmm_day_of_year: 180,
-            hard_iron_offset: Vector3::zeros(),
-            soft_iron_matrix: Matrix3::identity(),
-            noise_std: 3.0,
-        };
-
-        // State with 90° yaw rotation
-        let state = DVector::from_vec(vec![
-            39.95_f64.to_radians(),              // lat
-            -75.16_f64.to_radians(),             // lon
-            100.0,                                // alt
-            0.0, 0.0, 0.0,                        // velocities
-            0.0,                                  // roll
-            0.0,                                  // pitch
-            std::f64::consts::FRAC_PI_2,         // yaw = 90°
-        ]);
-
-        let expected = meas.get_expected_measurement(&state);
-        
-        // All components should be rotated, none should be exactly zero
-        assert!(expected[0].abs() > 0.1 || expected[1].abs() > 0.1, 
-                "Rotation should affect expected measurement");
-    }
-
-    #[test]
-    fn magnetometer_display_shows_wmm_status() {
-        // Test manual mode display
-        let meas_manual = MagnetometerMeasurement {
-            mag_x: 20.0,
-            mag_y: 5.0,
-            mag_z: 40.0,
-            reference_field_ned: Vector3::new(25.0, 0.0, 45.0),
-            use_wmm: false,
-            wmm_year: 2025,
-            wmm_day_of_year: 1,
-            hard_iron_offset: Vector3::zeros(),
-            soft_iron_matrix: Matrix3::identity(),
-            noise_std: 3.0,
-        };
-        let s = format!("{}", meas_manual);
-        assert!(s.contains("Manual"), "Display should show manual mode");
-
-        // Test WMM mode display
-        let meas_wmm = MagnetometerMeasurement {
-            use_wmm: true,
-            wmm_year: 2025,
-            wmm_day_of_year: 180,
-            ..meas_manual
-        };
-        let s = format!("{}", meas_wmm);
-        assert!(s.contains("WMM"), "Display should show WMM mode");
-        assert!(s.contains("2025"), "Display should show WMM year");
-        assert!(s.contains("180"), "Display should show WMM day");
+        let down = any.downcast_ref::<MagnetometerYawMeasurement>();
+        assert!(
+            down.is_some(),
+            "Should be able to downcast MagnetometerYawMeasurement"
+        );
     }
 }

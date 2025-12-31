@@ -614,12 +614,36 @@ impl From<(&DateTime<Utc>, &crate::kalman::ExtendedKalmanFilter)> for Navigation
             roll_cov: covariance[(6, 6)],
             pitch_cov: covariance[(7, 7)],
             yaw_cov: covariance[(8, 8)],
-            acc_bias_x_cov: if covariance.nrows() > 9 { covariance[(9, 9)] } else { 0.0 },
-            acc_bias_y_cov: if covariance.nrows() > 10 { covariance[(10, 10)] } else { 0.0 },
-            acc_bias_z_cov: if covariance.nrows() > 11 { covariance[(11, 11)] } else { 0.0 },
-            gyro_bias_x_cov: if covariance.nrows() > 12 { covariance[(12, 12)] } else { 0.0 },
-            gyro_bias_y_cov: if covariance.nrows() > 13 { covariance[(13, 13)] } else { 0.0 },
-            gyro_bias_z_cov: if covariance.nrows() > 14 { covariance[(14, 14)] } else { 0.0 },
+            acc_bias_x_cov: if covariance.nrows() > 9 {
+                covariance[(9, 9)]
+            } else {
+                0.0
+            },
+            acc_bias_y_cov: if covariance.nrows() > 10 {
+                covariance[(10, 10)]
+            } else {
+                0.0
+            },
+            acc_bias_z_cov: if covariance.nrows() > 11 {
+                covariance[(11, 11)]
+            } else {
+                0.0
+            },
+            gyro_bias_x_cov: if covariance.nrows() > 12 {
+                covariance[(12, 12)]
+            } else {
+                0.0
+            },
+            gyro_bias_y_cov: if covariance.nrows() > 13 {
+                covariance[(13, 13)]
+            } else {
+                0.0
+            },
+            gyro_bias_z_cov: if covariance.nrows() > 14 {
+                covariance[(14, 14)]
+            } else {
+                0.0
+            },
         }
     }
 }
@@ -1547,34 +1571,26 @@ pub enum SimulationMode {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "clap", derive(ValueEnum))]
 #[serde(rename_all = "kebab-case")]
+#[derive(Default)]
 pub enum FilterType {
     /// Unscented Kalman Filter
+    #[default]
     Ukf,
     /// Extended Kalman Filter
     Ekf,
-}
-
-impl Default for FilterType {
-    fn default() -> Self {
-        FilterType::Ukf
-    }
 }
 
 /// Particle filter type selection
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "clap", derive(ValueEnum))]
 #[serde(rename_all = "kebab-case")]
+#[derive(Default)]
 pub enum ParticleFilterType {
     /// Standard particle filter (all states as particles)
+    #[default]
     Standard,
     /// Rao-Blackwellized particle filter (position as particles, velocity/attitude/biases as per-particle filters)
     RaoBlackwellized,
-}
-
-impl Default for ParticleFilterType {
-    fn default() -> Self {
-        ParticleFilterType::Standard
-    }
 }
 
 /// Closed-loop specific configuration
@@ -1619,12 +1635,24 @@ pub struct ParticleFilterConfig {
     pub gyro_bias_std: f64,
 }
 
-fn default_num_particles() -> usize { 100 }
-fn default_position_std() -> f64 { 10.0 }
-fn default_velocity_std() -> f64 { 1.0 }
-fn default_attitude_std() -> f64 { 0.1 }
-fn default_accel_bias_std() -> f64 { 0.1 }
-fn default_gyro_bias_std() -> f64 { 0.01 }
+fn default_num_particles() -> usize {
+    100
+}
+fn default_position_std() -> f64 {
+    10.0
+}
+fn default_velocity_std() -> f64 {
+    1.0
+}
+fn default_attitude_std() -> f64 {
+    0.1
+}
+fn default_accel_bias_std() -> f64 {
+    0.1
+}
+fn default_gyro_bias_std() -> f64 {
+    0.01
+}
 
 impl Default for ParticleFilterConfig {
     fn default() -> Self {
@@ -1663,7 +1691,9 @@ pub struct SimulationConfig {
     pub gnss_degradation: crate::messages::GnssDegradationConfig,
 }
 
-fn default_seed() -> u64 { 42 }
+fn default_seed() -> u64 {
+    42
+}
 
 impl Default for SimulationConfig {
     fn default() -> Self {
@@ -3011,7 +3041,10 @@ mod tests {
         assert_eq!(estimate.len(), 15, "15-state EKF should have 15 states");
         // Check that biases are initialized to zero by default
         for i in 9..15 {
-            assert!(estimate[i].abs() < 1e-6, "Default biases should be near zero");
+            assert!(
+                estimate[i].abs() < 1e-6,
+                "Default biases should be near zero"
+            );
         }
     }
 
@@ -3096,4 +3129,3 @@ mod tests {
         assert_eq!(ekf.get_estimate().len(), 15);
     }
 }
-
