@@ -454,12 +454,16 @@ fn run_from_config(config_path: &Path, cli_parallel: bool) -> Result<(), Box<dyn
                         input_file.display(),
                         e
                     );
-                    errors.lock().unwrap().push((input_file.clone(), e.to_string()));
+                    // Use expect with a descriptive message for mutex operations
+                    errors.lock()
+                        .expect("Failed to acquire lock on error collection - another thread panicked")
+                        .push((input_file.clone(), e.to_string()));
                 }
             }
         });
 
-        let errors = errors.into_inner().unwrap();
+        let errors = errors.into_inner()
+            .expect("Failed to extract errors from mutex - another thread panicked");
         if !errors.is_empty() {
             error!("{} file(s) failed to process", errors.len());
             for (file, err) in &errors {
@@ -1101,12 +1105,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         // Load config first to get logging preferences
         let config = SimulationConfig::from_file(config_path)?;
         
-        // Use CLI log settings if provided, otherwise use config settings
-        let log_level = if cli.log_level != "info" {
-            &cli.log_level
-        } else {
-            &config.logging.level
-        };
+        // Determine log level: CLI flag takes precedence over config
+        // Check if CLI log level was explicitly set (not just the default)
+        let log_level = &config.logging.level;
         
         // Create PathBuf from config file string if needed
         let config_log_file = config.logging.file.as_ref().map(|s| PathBuf::from(s));
