@@ -10,7 +10,7 @@ use geonav::{
 };
 use strapdown::NavigationFilter;
 use strapdown::kalman::{ExtendedKalmanFilter, InitialState};
-use strapdown::messages::{GnssDegradationConfig, MagnetometerConfig};
+use strapdown::messages::GnssDegradationConfig;
 use strapdown::sim::{
     DEFAULT_PROCESS_NOISE, FaultArgs, NavigationResult, SchedulerArgs, TestDataRecord, build_fault,
     build_scheduler, initialize_ukf,
@@ -319,7 +319,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             scheduler: build_scheduler(&cli.gnss.scheduler),
             fault: build_fault(&cli.gnss.fault),
             seed: cli.gnss.seed,
-            magnetometer: MagnetometerConfig::default(),
         }
     };
 
@@ -354,13 +353,13 @@ fn main() -> Result<(), Box<dyn Error>> {
                 ukf.get_estimate().len()
             );
             info!("Initial state: {:?}", ukf.get_estimate());
-            
+
             info!("Running UKF geophysical navigation simulation...");
             geo_closed_loop(&mut ukf, events)
         }
         FilterType::Ekf => {
             info!("Initializing EKF...");
-            
+
             // Construct initial state from first record
             let initial_state = InitialState {
                 latitude: records[0].latitude,
@@ -375,29 +374,29 @@ fn main() -> Result<(), Box<dyn Error>> {
                 in_degrees: true,
                 is_enu: true,
             };
-            
+
             // IMU biases (accelerometer + gyroscope)
             let imu_biases = vec![0.0; 6];
-            
+
             // Initial covariance diagonal (15-state: pos, vel, att, biases)
             let covariance_diagonal = vec![
-                1e-6, 1e-6, 1.0,      // Position uncertainty
-                0.1, 0.1, 0.1,         // Velocity uncertainty
-                1e-4, 1e-4, 1e-4,      // Attitude uncertainty
-                1e-6, 1e-6, 1e-6,      // Accel bias uncertainty
-                1e-8, 1e-8, 1e-8,      // Gyro bias uncertainty
+                1e-6, 1e-6, 1.0, // Position uncertainty
+                0.1, 0.1, 0.1, // Velocity uncertainty
+                1e-4, 1e-4, 1e-4, // Attitude uncertainty
+                1e-6, 1e-6, 1e-6, // Accel bias uncertainty
+                1e-8, 1e-8, 1e-8, // Gyro bias uncertainty
             ];
-            
+
             // Process noise (15-state)
             use nalgebra::DMatrix;
             let process_noise = DMatrix::from_diagonal(&nalgebra::DVector::from_vec(vec![
-                1e-9, 1e-9, 1e-6,      // Position process noise
-                1e-6, 1e-6, 1e-6,      // Velocity process noise
-                1e-9, 1e-9, 1e-9,      // Attitude process noise
-                1e-9, 1e-9, 1e-9,      // Accel bias process noise
-                1e-9, 1e-9, 1e-9,      // Gyro bias process noise
+                1e-9, 1e-9, 1e-6, // Position process noise
+                1e-6, 1e-6, 1e-6, // Velocity process noise
+                1e-9, 1e-9, 1e-9, // Attitude process noise
+                1e-9, 1e-9, 1e-9, // Accel bias process noise
+                1e-9, 1e-9, 1e-9, // Gyro bias process noise
             ]));
-            
+
             let mut ekf = ExtendedKalmanFilter::new(
                 initial_state,
                 imu_biases,
@@ -405,13 +404,13 @@ fn main() -> Result<(), Box<dyn Error>> {
                 process_noise,
                 true, // Use 15-state with biases
             );
-            
+
             info!(
                 "Initialized EKF with state dimension {}",
                 ekf.get_estimate().len()
             );
             info!("Initial state: {:?}", ekf.get_estimate());
-            
+
             info!("Running EKF geophysical navigation simulation...");
             geo_closed_loop_ekf(&mut ekf, events)
         }
