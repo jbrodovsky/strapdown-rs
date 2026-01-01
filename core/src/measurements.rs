@@ -10,7 +10,7 @@ use crate::earth::METERS_TO_DEGREES;
 use std::any::Any;
 use std::fmt::{self, Debug, Display};
 
-use nalgebra::{DMatrix, DVector, Vector3, Rotation3};
+use nalgebra::{DMatrix, DVector, Rotation3, Vector3};
 use world_magnetic_model::GeomagneticField;
 use world_magnetic_model::time::Date;
 use world_magnetic_model::uom::si::angle::degree;

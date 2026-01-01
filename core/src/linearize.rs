@@ -338,52 +338,52 @@ pub fn error_state_transition_jacobian(
 ) -> DMatrix<f64> {
     // Start with identity matrix (I + F*dt formulation)
     let mut f = DMatrix::<f64>::identity(15, 15);
-    
+
     // Get rotation matrix from body to navigation frame
     let c_bn = state.attitude.matrix();
-    
+
     // Get Earth parameters
     let lat = state.latitude;
     let h = state.altitude;
     let lat_deg = lat.to_degrees();
     let (r_n, r_e, _r_p) = earth::principal_radii(&lat_deg, &h);
     let g = earth::gravity(&lat, &h);
-    
+
     // ===== Position Error Block (rows 0-2) =====
-    
+
     // ∂(δṗ)/∂(δv): Position error rate depends on velocity error
     // δṗ_n = δv_n / R_n
     // δṗ_e = δv_e / (R_e * cos(lat))
     // δṗ_d = δv_d
-    f[(0, 3)] = dt / r_n;  // ∂(δp_n)/∂(δv_n)
-    f[(1, 4)] = dt / (r_e * lat.cos());  // ∂(δp_e)/∂(δv_e)
-    f[(2, 5)] = dt;  // ∂(δp_d)/∂(δv_d)
-    
+    f[(0, 3)] = dt / r_n; // ∂(δp_n)/∂(δv_n)
+    f[(1, 4)] = dt / (r_e * lat.cos()); // ∂(δp_e)/∂(δv_e)
+    f[(2, 5)] = dt; // ∂(δp_d)/∂(δv_d)
+
     // Note: Position error doesn't directly depend on attitude error or biases
-    
+
     // ===== Velocity Error Block (rows 3-5) =====
-    
+
     // ∂(δv̇)/∂(δp): Velocity error rate depends on position error (gravity gradient, Coriolis)
     // These terms are typically small and often neglected in practice
     // For now, we include the primary gravity gradient effect
-    let gravity_gradient = -2.0 * g / (r_n + h);  // Simplified
-    f[(5, 2)] = dt * gravity_gradient;  // ∂(δv_d)/∂(δp_d) - altitude affects gravity
-    
+    let gravity_gradient = -2.0 * g / (r_n + h); // Simplified
+    f[(5, 2)] = dt * gravity_gradient; // ∂(δv_d)/∂(δp_d) - altitude affects gravity
+
     // ∂(δv̇)/∂(δv): Velocity error damping due to Coriolis and centrifugal effects
     // These coupling terms are small for low dynamics and often approximated as zero
     // The main effect is self-coupling which is captured by identity matrix
-    
+
     // ∂(δv̇)/∂(δθ): Velocity error depends on attitude error (most important coupling!)
     // δv̇^n = -[C_b^n f^b]_× δθ
     // where [a]_× is the skew-symmetric matrix of vector a
-    let f_n = c_bn * imu_accel;  // Transform measured acceleration to nav frame
+    let f_n = c_bn * imu_accel; // Transform measured acceleration to nav frame
     let f_skew = vector_to_skew_symmetric(&f_n);
     for i in 0..3 {
         for j in 0..3 {
             f[(3 + i, 6 + j)] = -f_skew[(i, j)] * dt;
         }
     }
-    
+
     // ∂(δv̇)/∂(δb_a): Velocity error depends on accelerometer bias error
     // δv̇^n = -C_b^n δb_a
     for i in 0..3 {
@@ -391,9 +391,9 @@ pub fn error_state_transition_jacobian(
             f[(3 + i, 9 + j)] = -c_bn[(i, j)] * dt;
         }
     }
-    
+
     // ===== Attitude Error Block (rows 6-8) =====
-    
+
     // ∂(δθ̇)/∂(δθ): Attitude error dynamics (rotation coupling)
     // δθ̇ = -[ω^b]_× δθ (in body frame)
     // This represents how attitude errors rotate due to angular velocity
@@ -403,19 +403,19 @@ pub fn error_state_transition_jacobian(
             f[(6 + i, 6 + j)] = -omega_skew[(i, j)] * dt;
         }
     }
-    
+
     // ∂(δθ̇)/∂(δb_g): Attitude error depends on gyroscope bias error
     // δθ̇ = -δb_g (small angle approximation)
     f[(6, 12)] = -dt;
     f[(7, 13)] = -dt;
     f[(8, 14)] = -dt;
-    
+
     // ===== IMU Bias Error Blocks (rows 9-14) =====
-    
+
     // Biases are modeled as random walk: δḃ = 0 + noise
     // This means F_bb = 0, which is already set by the identity matrix initialization
     // The identity diagonal (1.0) represents the bias persistence (integration)
-    
+
     f
 }
 

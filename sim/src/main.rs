@@ -28,8 +28,8 @@ use std::sync::Mutex;
 use strapdown::messages::{GnssScheduler, build_event_stream};
 use strapdown::sim::{
     FaultArgs, FilterType, NavigationResult, ParticleFilterType, SchedulerArgs, SimulationConfig,
-    SimulationMode, TestDataRecord, build_fault, build_scheduler, initialize_ekf, initialize_eskf, initialize_ukf,
-    run_closed_loop,
+    SimulationMode, TestDataRecord, build_fault, build_scheduler, initialize_ekf, initialize_eskf,
+    initialize_ukf, run_closed_loop,
 };
 
 const LONG_ABOUT: &str =
@@ -108,10 +108,7 @@ enum Command {
     )]
     ParticleFilter(ParticleFilterSimArgs),
 
-    #[command(
-        name = "conf",
-        about = "Generate a template configuration file"
-    )]
+    #[command(name = "conf", about = "Generate a template configuration file")]
     CreateConfig, //(CreateConfigArgs),
 }
 
@@ -416,12 +413,12 @@ fn run_from_config(config_path: &Path, cli_parallel: bool) -> Result<(), Box<dyn
     info!("Loading configuration from {}", config_path.display());
 
     let mut config = SimulationConfig::from_file(config_path)?;
-    
+
     // Override parallel setting if CLI flag is set
     if cli_parallel {
         config.parallel = true;
     }
-    
+
     info!("Configuration loaded successfully");
     info!("Mode: {:?}", config.mode);
     info!("Input: {}", config.input);
@@ -454,20 +451,20 @@ fn run_from_config(config_path: &Path, cli_parallel: bool) -> Result<(), Box<dyn
             match process_file(input_file, output, &config) {
                 Ok(()) => {}
                 Err(e) => {
-                    error!(
-                        "Error processing {}: {}",
-                        input_file.display(),
-                        e
-                    );
+                    error!("Error processing {}: {}", input_file.display(), e);
                     // Use expect with a descriptive message for mutex operations
-                    errors.lock()
-                        .expect("Failed to acquire lock on error collection - another thread panicked")
+                    errors
+                        .lock()
+                        .expect(
+                            "Failed to acquire lock on error collection - another thread panicked",
+                        )
                         .push((input_file.clone(), e.to_string()));
                 }
             }
         });
 
-        let errors = errors.into_inner()
+        let errors = errors
+            .into_inner()
             .expect("Failed to extract errors from mutex - another thread panicked");
         if !errors.is_empty() {
             error!("{} file(s) failed to process", errors.len());
@@ -497,7 +494,7 @@ fn run_from_config(config_path: &Path, cli_parallel: bool) -> Result<(), Box<dyn
 }
 
 /// Execute a single closed-loop simulation run
-/// 
+///
 /// This is a helper function that extracts the common logic for running closed-loop simulations
 /// with either UKF or EKF filters. It handles event stream creation, filter initialization,
 /// simulation execution, and results writing.
@@ -517,20 +514,17 @@ fn run_single_closed_loop_simulation(
     // Initialize and run filter based on type
     let results = match filter_type {
         FilterType::Ukf => {
-            let mut ukf =
-                initialize_ukf(records[0].clone(), None, None, None, None, None, None);
+            let mut ukf = initialize_ukf(records[0].clone(), None, None, None, None, None, None);
             info!("Initialized UKF");
             run_closed_loop(&mut ukf, event_stream, None)
         }
         FilterType::Ekf => {
-            let mut ekf =
-                initialize_ekf(records[0].clone(), None, None, None, None, true);
+            let mut ekf = initialize_ekf(records[0].clone(), None, None, None, None, true);
             info!("Initialized EKF");
             run_closed_loop(&mut ekf, event_stream, None)
         }
         FilterType::Eskf => {
-            let mut eskf =
-                initialize_eskf(records[0].clone(), None, None, None, None);
+            let mut eskf = initialize_eskf(records[0].clone(), None, None, None, None);
             info!("Initialized ESKF");
             run_closed_loop(&mut eskf, event_stream, None)
         }
@@ -703,7 +697,9 @@ fn read_user_input() -> Option<String> {
 /// Prompt for configuration name with validation
 fn prompt_config_name() -> String {
     loop {
-        println!("Please name your configuration file with extension (.toml, .json, .yaml) or 'q' to quit:");
+        println!(
+            "Please name your configuration file with extension (.toml, .json, .yaml) or 'q' to quit:"
+        );
         if let Some(input) = read_user_input() {
             return input;
         }
@@ -724,7 +720,9 @@ fn prompt_config_path() -> String {
 /// Prompt for input CSV file or directory path with validation
 fn prompt_input_path() -> String {
     loop {
-        println!("Please specify the input location, either a single CSV file or a directory containing them. ('q' to quit):");
+        println!(
+            "Please specify the input location, either a single CSV file or a directory containing them. ('q' to quit):"
+        );
         if let Some(input) = read_user_input() {
             return input;
         }
@@ -1049,9 +1047,7 @@ fn prompt_log_level() -> strapdown::sim::LogLevel {
 
 /// Prompt for log file path
 fn prompt_log_file() -> Option<String> {
-    println!(
-        "Please specify a log file path (press Enter to log to stderr, or 'q' to quit):"
-    );
+    println!("Please specify a log file path (press Enter to log to stderr, or 'q' to quit):");
     match read_user_input() {
         None => None,
         Some(input) if !input.trim().is_empty() => Some(input),
@@ -1067,9 +1063,11 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
     // Gather all configuration parameters
     let config_name = prompt_config_name();
     let save_path = prompt_config_path();
-    
-    
-    println!("\nCreating configuration file at: {}/{}\n", save_path, config_name);
+
+    println!(
+        "\nCreating configuration file at: {}/{}\n",
+        save_path, config_name
+    );
     let input_path = prompt_input_path();
     let output_path = prompt_output_path();
     let mode = prompt_simulation_mode();
@@ -1127,9 +1125,11 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
     // validate output location exists and write to file using appropriate format based on file extension
     let config_output_path = Path::new(&save_path).join(&config_name);
     if let Some(parent) = config_output_path.parent()
-        && !parent.as_os_str().is_empty() && !parent.exists() {
-            std::fs::create_dir_all(parent)?;
-        }
+        && !parent.as_os_str().is_empty()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
     config.to_file(&config_output_path)?;
 
     println!(
@@ -1149,18 +1149,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     if let Some(ref config_path) = cli.config {
         // Load config first to get logging preferences
         let config = SimulationConfig::from_file(config_path)?;
-        
+
         // Determine log level: CLI flag takes precedence over config
         // Check if CLI log level was explicitly set (not just the default)
         let log_level = config.logging.level.as_str();
-        
+
         // Create PathBuf from config file string if needed
         let config_log_file = config.logging.file.as_ref().map(PathBuf::from);
         let log_file = cli.log_file.as_ref().or(config_log_file.as_ref());
-        
+
         // Initialize logger with resolved settings
         init_logger(log_level, log_file)?;
-        
+
         return run_from_config(config_path, cli.parallel);
     }
 
@@ -1170,7 +1170,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Otherwise, execute based on subcommand
     match cli.command {
         Some(Command::DeadReckoning(args)) => {
-            println!("Running in Dead Reckoning mode... {}", &args.input.display());
+            println!(
+                "Running in Dead Reckoning mode... {}",
+                &args.input.display()
+            );
             eprintln!("Error: Dead Reckoning mode is not yet implemented.");
             std::process::exit(1);
         }
@@ -1213,7 +1216,7 @@ mod tests {
     #[test]
     fn test_filter_type_variants() {
         let filters = vec![FilterType::Ukf, FilterType::Ekf, FilterType::Eskf];
-        assert_eq!(filters.len(), 2);
+        assert_eq!(filters.len(), 3); // Updated to include ESKF
     }
 
     #[test]
@@ -1241,24 +1244,15 @@ mod tests {
         let json_path = PathBuf::from("test.json");
         let yaml_path = PathBuf::from("test.yaml");
 
-        assert_eq!(
-            toml_path.extension().and_then(|s| s.to_str()),
-            Some("toml")
-        );
-        assert_eq!(
-            json_path.extension().and_then(|s| s.to_str()),
-            Some("json")
-        );
-        assert_eq!(
-            yaml_path.extension().and_then(|s| s.to_str()),
-            Some("yaml")
-        );
+        assert_eq!(toml_path.extension().and_then(|s| s.to_str()), Some("toml"));
+        assert_eq!(json_path.extension().and_then(|s| s.to_str()), Some("json"));
+        assert_eq!(yaml_path.extension().and_then(|s| s.to_str()), Some("yaml"));
     }
 
     #[test]
     fn test_logging_config_default() {
-        use strapdown::sim::{LoggingConfig, LogLevel};
-        
+        use strapdown::sim::{LogLevel, LoggingConfig};
+
         let logging = LoggingConfig::default();
         assert_eq!(logging.level, LogLevel::Info);
         assert!(logging.file.is_none());
@@ -1266,8 +1260,8 @@ mod tests {
 
     #[test]
     fn test_simulation_config_with_parallel() {
-        use strapdown::sim::{SimulationConfig, LogLevel};
-        
+        use strapdown::sim::{LogLevel, SimulationConfig};
+
         let config = SimulationConfig::default();
         assert!(!config.parallel); // Should default to false
         assert_eq!(config.logging.level, LogLevel::Info);
@@ -1275,8 +1269,8 @@ mod tests {
 
     #[test]
     fn test_logging_config_creation() {
-        use strapdown::sim::{LoggingConfig, LogLevel};
-        
+        use strapdown::sim::{LogLevel, LoggingConfig};
+
         let logging = LoggingConfig {
             level: LogLevel::Debug,
             file: Some("/tmp/test.log".to_string()),
