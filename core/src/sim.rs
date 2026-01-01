@@ -1674,7 +1674,7 @@ impl Default for ParticleFilterConfig {
 ///
 /// This enum is serialized/deserialized as lowercase strings to match existing
 /// configuration files (e.g., `"info"`, `"debug"`).
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[cfg_attr(feature = "clap", derive(ValueEnum))]
 pub enum LogLevel {
@@ -1684,6 +1684,20 @@ pub enum LogLevel {
     Info,
     Debug,
     Trace,
+}
+
+impl LogLevel {
+    /// Convert LogLevel to string representation
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            LogLevel::Off => "off",
+            LogLevel::Error => "error",
+            LogLevel::Warn => "warn",
+            LogLevel::Info => "info",
+            LogLevel::Debug => "debug",
+            LogLevel::Trace => "trace",
+        }
+    }
 }
 
 /// Logging configuration
