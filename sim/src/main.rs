@@ -625,7 +625,7 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
                     e
                 );
                 if !is_multiple {
-                    return Err(e.into());
+                    return Err(e);
                 }
                 // For multiple files, continue processing remaining files
                 error!(
@@ -1005,7 +1005,8 @@ fn prompt_parallel() -> bool {
 }
 
 /// Prompt for log level
-fn prompt_log_level() -> String {
+fn prompt_log_level() -> strapdown::sim::LogLevel {
+    use strapdown::sim::LogLevel;
     loop {
         println!(
             "Please select the log level:\n\
@@ -1018,14 +1019,14 @@ fn prompt_log_level() -> String {
             [q] - Quit\n"
         );
         match read_user_input() {
-            None => return "info".to_string(),
+            None => return LogLevel::Info,
             Some(input) => match input.as_str() {
-                "1" => return "off".to_string(),
-                "2" => return "error".to_string(),
-                "3" => return "warn".to_string(),
-                "4" => return "info".to_string(),
-                "5" => return "debug".to_string(),
-                "6" => return "trace".to_string(),
+                "1" => return LogLevel::Off,
+                "2" => return LogLevel::Error,
+                "3" => return LogLevel::Warn,
+                "4" => return LogLevel::Info,
+                "5" => return LogLevel::Debug,
+                "6" => return LogLevel::Trace,
                 _ => println!("Error: Invalid selection. Please enter 1-6.\n"),
             },
         }
@@ -1137,7 +1138,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         
         // Determine log level: CLI flag takes precedence over config
         // Check if CLI log level was explicitly set (not just the default)
-        let log_level = &config.logging.level;
+        let log_level = config.logging.level.as_str();
         
         // Create PathBuf from config file string if needed
         let config_log_file = config.logging.file.as_ref().map(PathBuf::from);
@@ -1242,31 +1243,31 @@ mod tests {
 
     #[test]
     fn test_logging_config_default() {
-        use strapdown::sim::LoggingConfig;
+        use strapdown::sim::{LoggingConfig, LogLevel};
         
         let logging = LoggingConfig::default();
-        assert_eq!(logging.level, "info");
+        assert_eq!(logging.level, LogLevel::Info);
         assert!(logging.file.is_none());
     }
 
     #[test]
     fn test_simulation_config_with_parallel() {
-        use strapdown::sim::SimulationConfig;
+        use strapdown::sim::{SimulationConfig, LogLevel};
         
         let config = SimulationConfig::default();
         assert!(!config.parallel); // Should default to false
-        assert_eq!(config.logging.level, "info");
+        assert_eq!(config.logging.level, LogLevel::Info);
     }
 
     #[test]
     fn test_logging_config_creation() {
-        use strapdown::sim::LoggingConfig;
+        use strapdown::sim::{LoggingConfig, LogLevel};
         
         let logging = LoggingConfig {
-            level: "debug".to_string(),
+            level: LogLevel::Debug,
             file: Some("/tmp/test.log".to_string()),
         };
-        assert_eq!(logging.level, "debug");
+        assert_eq!(logging.level, LogLevel::Debug);
         assert_eq!(logging.file, Some("/tmp/test.log".to_string()));
     }
 }
