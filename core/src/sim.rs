@@ -325,13 +325,24 @@ impl TestDataRecord {
         let file = File::create(path)?;
         let n = records.len();
         
+        // Handle empty datasets
+        if n == 0 {
+            // Create group to indicate structure even for empty datasets
+            let _group = file.create_group("test_data")?;
+            return Ok(());
+        }
+        
         // Create a group for test data records
         let group = file.create_group("test_data")?;
         
         // Write timestamps as strings
-        let timestamps: Vec<hdf5::types::VarLenAscii> = records.iter()
-            .map(|r| hdf5::types::VarLenAscii::from_ascii(&r.time.to_rfc3339()).unwrap())
+        let timestamps: Result<Vec<hdf5::types::VarLenAscii>> = records.iter()
+            .map(|r| {
+                hdf5::types::VarLenAscii::from_ascii(&r.time.to_rfc3339())
+                    .map_err(|e| anyhow::anyhow!("Failed to encode timestamp as ASCII: {}", e))
+            })
             .collect();
+        let timestamps = timestamps?;
         let ds_time = group.new_dataset::<hdf5::types::VarLenAscii>()
             .shape([n])
             .create("time")?;
@@ -403,10 +414,16 @@ impl TestDataRecord {
         let file = File::open(path)?;
         let group = file.group("test_data")?;
         
-        // Read timestamps
-        let ds_time = group.dataset("time")?;
-        let timestamps: Vec<hdf5::types::VarLenAscii> = ds_time.read_raw()?;
-        let n = timestamps.len();
+        // Check if time dataset exists (might be empty dataset)
+        if let Ok(ds_time) = group.dataset("time") {
+            // Read timestamps
+            let timestamps: Vec<hdf5::types::VarLenAscii> = ds_time.read_raw()?;
+            let n = timestamps.len();
+            
+            // Handle empty dataset
+            if n == 0 {
+                return Ok(Vec::new());
+            }
         
         // Helper macro to read f64 arrays
         macro_rules! read_f64_field {
@@ -490,6 +507,10 @@ impl TestDataRecord {
         }
         
         Ok(records)
+        } else {
+            // No time dataset means empty file
+            Ok(Vec::new())
+        }
     }
 }
 impl Display for TestDataRecord {
@@ -700,13 +721,24 @@ impl NavigationResult {
         let file = File::create(path)?;
         let n = records.len();
         
+        // Handle empty datasets
+        if n == 0 {
+            // Create group to indicate structure even for empty datasets
+            let _group = file.create_group("navigation_results")?;
+            return Ok(());
+        }
+        
         // Create a group for navigation results
         let group = file.create_group("navigation_results")?;
         
         // Write timestamps as strings
-        let timestamps: Vec<hdf5::types::VarLenAscii> = records.iter()
-            .map(|r| hdf5::types::VarLenAscii::from_ascii(&r.timestamp.to_rfc3339()).unwrap())
+        let timestamps: Result<Vec<hdf5::types::VarLenAscii>> = records.iter()
+            .map(|r| {
+                hdf5::types::VarLenAscii::from_ascii(&r.timestamp.to_rfc3339())
+                    .map_err(|e| anyhow::anyhow!("Failed to encode timestamp as ASCII: {}", e))
+            })
             .collect();
+        let timestamps = timestamps?;
         let ds_time = group.new_dataset::<hdf5::types::VarLenAscii>()
             .shape([n])
             .create("timestamp")?;
@@ -781,10 +813,16 @@ impl NavigationResult {
         let file = File::open(path)?;
         let group = file.group("navigation_results")?;
         
-        // Read timestamps
-        let ds_time = group.dataset("timestamp")?;
-        let timestamps: Vec<hdf5::types::VarLenAscii> = ds_time.read_raw()?;
-        let n = timestamps.len();
+        // Check if timestamp dataset exists (might be empty dataset)
+        if let Ok(ds_time) = group.dataset("timestamp") {
+            // Read timestamps
+            let timestamps: Vec<hdf5::types::VarLenAscii> = ds_time.read_raw()?;
+            let n = timestamps.len();
+            
+            // Handle empty dataset
+            if n == 0 {
+                return Ok(Vec::new());
+            }
         
         // Helper macro to read f64 arrays
         macro_rules! read_f64_field {
@@ -871,6 +909,10 @@ impl NavigationResult {
         }
         
         Ok(records)
+        } else {
+            // No timestamp dataset means empty file
+            Ok(Vec::new())
+        }
     }
 }
 /// Convert DVectors containing the navigation state mean and covariance into a NavigationResult
