@@ -1,7 +1,7 @@
 //! Comprehensive integration tests for INS filters using real data
 //!
 //! This module contains end-to-end integration tests for the strapdown inertial navigation
-//! filters using real data recorded from a MEMS-grade IMU. See [mems-nav-dataset](www.github.com/jbrodovsky/mems-nav-dataset). 
+//! filters using real data recorded from a MEMS-grade IMU. See [mems-nav-dataset](www.github.com/jbrodovsky/mems-nav-dataset).
 //! These tests ensure that the entire navigation system works as expected in realistic scenarios, not just
 //! at the API level but with actual IMU and GNSS data.
 //!
@@ -12,8 +12,8 @@
 //! - **Altitude error**: Simple difference between estimated and GNSS altitude (meters)
 //! - **Velocity error**: Component-wise differences for north, east, and down velocities (m/s)
 //! - **Orientation error**: Component-wise differences for roll, pitch, and yaw (radians)
-//! 
-//! The specific performance numbers given in the assertions in the test are not theoretical 
+//!
+//! The specific performance numbers given in the assertions in the test are not theoretical
 //! or design goals, but rather empirically derived from running the filters on the dataset and observing
 //! performance on the test data set. They serve as regression checks to ensure that future changes
 //! do not degrade performance.
@@ -231,7 +231,7 @@ fn compute_error_metrics(results: &[NavigationResult], records: &[TestDataRecord
         stats.rms_horizontal_error = (horizontal_errors.iter().map(|e| e.powi(2)).sum::<f64>()
             / horizontal_errors.len() as f64)
             .sqrt();
-        
+
         // Compute median
         let mut sorted_horizontal = horizontal_errors.clone();
         sorted_horizontal.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -257,7 +257,7 @@ fn compute_error_metrics(results: &[NavigationResult], records: &[TestDataRecord
         stats.rms_altitude_error = (altitude_errors.iter().map(|e| e.powi(2)).sum::<f64>()
             / altitude_errors.len() as f64)
             .sqrt();
-        
+
         // Compute median
         let mut sorted_altitude = altitude_errors.clone();
         sorted_altitude.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -350,11 +350,19 @@ fn test_dead_reckoning_on_real_data() {
     println!("\n=== Dead Reckoning Error Statistics ===");
     println!(
         "Horizontal Error: mean={:.2}m, min={:.2}m, median={:.2}m, max={:.2}m, rms={:.2}m",
-        stats.mean_horizontal_error, stats.min_horizontal_error, stats.median_horizontal_error, stats.max_horizontal_error, stats.rms_horizontal_error
+        stats.mean_horizontal_error,
+        stats.min_horizontal_error,
+        stats.median_horizontal_error,
+        stats.max_horizontal_error,
+        stats.rms_horizontal_error
     );
     println!(
         "Altitude Error: mean={:.2}m, min={:.2}m, median={:.2}m, max={:.2}m, rms={:.2}m",
-        stats.mean_altitude_error, stats.min_altitude_error, stats.median_altitude_error, stats.max_altitude_error, stats.rms_altitude_error
+        stats.mean_altitude_error,
+        stats.min_altitude_error,
+        stats.median_altitude_error,
+        stats.max_altitude_error,
+        stats.rms_altitude_error
     );
     println!(
         "Velocity Error: N={:.3}m/s, E={:.3}m/s, D={:.3}m/s",
@@ -453,11 +461,19 @@ fn test_ukf_closed_loop_on_real_data() {
     println!("\n=== UKF Closed-Loop Error Statistics ===");
     println!(
         "Horizontal Error: mean={:.2}m, min={:.2}m, median={:.2}m, max={:.2}m, rms={:.2}m",
-        stats.mean_horizontal_error, stats.min_horizontal_error, stats.median_horizontal_error, stats.max_horizontal_error, stats.rms_horizontal_error
+        stats.mean_horizontal_error,
+        stats.min_horizontal_error,
+        stats.median_horizontal_error,
+        stats.max_horizontal_error,
+        stats.rms_horizontal_error
     );
     println!(
         "Altitude Error: mean={:.2}m, min={:.2}m, median={:.2}m, max={:.2}m, rms={:.2}m",
-        stats.mean_altitude_error, stats.min_altitude_error, stats.median_altitude_error, stats.max_altitude_error, stats.rms_altitude_error
+        stats.mean_altitude_error,
+        stats.min_altitude_error,
+        stats.median_altitude_error,
+        stats.max_altitude_error,
+        stats.rms_altitude_error
     );
     println!(
         "Velocity Error: N={:.3}m/s, E={:.3}m/s, D={:.3}m/s",
@@ -593,11 +609,19 @@ fn test_ukf_with_degraded_gnss() {
     println!("\n=== UKF with Degraded GNSS (5s updates) Error Statistics ===");
     println!(
         "Horizontal Error: mean={:.2}m, min={:.2}m, median={:.2}m, max={:.2}m, rms={:.2}m",
-        stats.mean_horizontal_error, stats.min_horizontal_error, stats.median_horizontal_error, stats.max_horizontal_error, stats.rms_horizontal_error
+        stats.mean_horizontal_error,
+        stats.min_horizontal_error,
+        stats.median_horizontal_error,
+        stats.max_horizontal_error,
+        stats.rms_horizontal_error
     );
     println!(
         "Altitude Error: mean={:.2}m, min={:.2}m, median={:.2}m, max={:.2}m, rms={:.2}m",
-        stats.mean_altitude_error, stats.min_altitude_error, stats.median_altitude_error, stats.max_altitude_error, stats.rms_altitude_error
+        stats.mean_altitude_error,
+        stats.min_altitude_error,
+        stats.median_altitude_error,
+        stats.max_altitude_error,
+        stats.rms_altitude_error
     );
 
     // Error bounds should be looser than full-rate GNSS but still reasonable
@@ -771,11 +795,19 @@ fn test_ekf_closed_loop_on_real_data() {
     println!("\n=== EKF Closed-Loop Error Statistics ===");
     println!(
         "Horizontal Error: mean={:.2}m, min={:.2}m, median={:.2}m, max={:.2}m, rms={:.2}m",
-        stats.mean_horizontal_error, stats.min_horizontal_error, stats.median_horizontal_error, stats.max_horizontal_error, stats.rms_horizontal_error
+        stats.mean_horizontal_error,
+        stats.min_horizontal_error,
+        stats.median_horizontal_error,
+        stats.max_horizontal_error,
+        stats.rms_horizontal_error
     );
     println!(
         "Altitude Error: mean={:.2}m, min={:.2}m, median={:.2}m, max={:.2}m, rms={:.2}m",
-        stats.mean_altitude_error, stats.min_altitude_error, stats.median_altitude_error, stats.max_altitude_error, stats.rms_altitude_error
+        stats.mean_altitude_error,
+        stats.min_altitude_error,
+        stats.median_altitude_error,
+        stats.max_altitude_error,
+        stats.rms_altitude_error
     );
     println!(
         "Velocity Error: N={:.3}m/s, E={:.3}m/s, D={:.3}m/s",
@@ -904,11 +936,19 @@ fn test_ekf_with_degraded_gnss() {
     println!("\n=== EKF with Degraded GNSS (5s updates) Error Statistics ===");
     println!(
         "Horizontal Error: mean={:.2}m, min={:.2}m, median={:.2}m, max={:.2}m, rms={:.2}m",
-        stats.mean_horizontal_error, stats.min_horizontal_error, stats.median_horizontal_error, stats.max_horizontal_error, stats.rms_horizontal_error
+        stats.mean_horizontal_error,
+        stats.min_horizontal_error,
+        stats.median_horizontal_error,
+        stats.max_horizontal_error,
+        stats.rms_horizontal_error
     );
     println!(
         "Altitude Error: mean={:.2}m, min={:.2}m, median={:.2}m, max={:.2}m, rms={:.2}m",
-        stats.mean_altitude_error, stats.min_altitude_error, stats.median_altitude_error, stats.max_altitude_error, stats.rms_altitude_error
+        stats.mean_altitude_error,
+        stats.min_altitude_error,
+        stats.median_altitude_error,
+        stats.max_altitude_error,
+        stats.rms_altitude_error
     );
 
     // Error bounds should be looser than full-rate GNSS but still reasonable
