@@ -491,6 +491,54 @@ fn run_from_config(config_path: &Path, cli_parallel: bool) -> Result<(), Box<dyn
     Ok(())
 }
 
+/// Execute a single closed-loop simulation run
+/// 
+/// This is a helper function that extracts the common logic for running closed-loop simulations
+/// with either UKF or EKF filters. It handles event stream creation, filter initialization,
+/// simulation execution, and results writing.
+fn run_single_closed_loop_simulation(
+    filter_type: FilterType,
+    records: &[TestDataRecord],
+    gnss_degradation: &strapdown::messages::GnssDegradationConfig,
+    output_file: &Path,
+) -> Result<(), Box<dyn Error>> {
+    // Build event stream from records and GNSS degradation config
+    let event_stream = build_event_stream(records, gnss_degradation);
+    info!(
+        "Initialized event stream with {} events",
+        event_stream.events.len()
+    );
+
+    // Initialize and run filter based on type
+    let results = match filter_type {
+        FilterType::Ukf => {
+            let mut ukf =
+                initialize_ukf(records[0].clone(), None, None, None, None, None, None);
+            info!("Initialized UKF");
+            run_closed_loop(&mut ukf, event_stream, None)
+        }
+        FilterType::Ekf => {
+            let mut ekf =
+                initialize_ekf(records[0].clone(), None, None, None, None, true);
+            info!("Initialized EKF");
+            run_closed_loop(&mut ekf, event_stream, None)
+        }
+    };
+
+    // Write results to CSV
+    match results {
+        Ok(ref nav_results) => {
+            NavigationResult::to_csv(nav_results, output_file)?;
+            info!("Results written to {}", output_file.display());
+            Ok(())
+        }
+        Err(e) => {
+            error!("Error running closed-loop simulation: {}", e);
+            Err(e.into())
+        }
+    }
+}
+
 /// Execute open-loop simulation
 fn run_open_loop(args: &SimArgs) -> Result<(), Box<dyn Error>> {
     validate_input_path(&args.input)?;
@@ -558,33 +606,17 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
         };
 
         info!("Using GNSS degradation config: {:?}", gnss_degradation);
-        let event_stream = build_event_stream(&records, &gnss_degradation);
-        info!(
-            "Initialized event stream with {} events",
-            event_stream.events.len()
-        );
+        let output_file = Path::new(&args.sim.output).join(input_file);
 
-        // Initialize and run filter
-        let results = match args.filter {
-            FilterType::Ukf => {
-                let mut ukf =
-                    initialize_ukf(records[0].clone(), None, None, None, None, None, None);
-                info!("Initialized UKF with state: {:?}", ukf);
-                run_closed_loop(&mut ukf, event_stream, None)
-            }
-            FilterType::Ekf => {
-                let mut ekf = initialize_ekf(records[0].clone(), None, None, None, None, true);
-                info!("Initialized EKF with state: {:?}", ekf);
-                run_closed_loop(&mut ekf, event_stream, None)
-            }
-        };
-        let output_file = Path::new(&args.sim.output).join(input_file); //generate_output_path(&args.sim.output, input_file, is_multiple);
-
-        match results {
-            Ok(ref nav_results) => {
-                NavigationResult::to_csv(nav_results, &output_file)?;
-                info!("Results written to {}", output_file.display());
-                // println!("Results written to {}", output_file.display());
+        // Run simulation using the common helper function
+        match run_single_closed_loop_simulation(
+            args.filter,
+            &records,
+            &gnss_degradation,
+            &output_file,
+        ) {
+            Ok(()) => {
+                // Success - result logging is handled by the helper function
             }
             Err(e) => {
                 error!(
