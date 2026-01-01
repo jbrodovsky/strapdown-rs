@@ -245,6 +245,180 @@ pub fn state_transition_jacobian(
     f
 }
 
+/// Compute the error-state transition Jacobian for ESKF
+///
+/// This function computes the linearized state transition matrix F for the
+/// error-state formulation used in Error-State Kalman Filters (ESKF). Unlike
+/// the full-state Jacobian, this operates on error states where attitude
+/// errors are represented as small angles rather than full Euler angles.
+///
+/// # Key Differences from Full-State EKF
+///
+/// 1. **Attitude representation**: Error state uses 3 small-angle parameters
+///    instead of 3 Euler angles, avoiding singularities
+/// 2. **Linearization point**: Linearized around the nominal (true) trajectory,
+///    not around the previous estimate
+/// 3. **Error dynamics**: Captures how errors propagate, not how states evolve
+///
+/// # Mathematical Background
+///
+/// The error-state dynamics are:
+/// $$
+/// \delta \dot{x} = F_{\delta x} \delta x + G w
+/// $$
+///
+/// where $\delta x = [δp^n, δv^n, δθ, δb_a, δb_g]^T$ is the 15-element error state:
+/// - $δp^n$ : Position error in local-level frame (m)
+/// - $δv^n$ : Velocity error in local-level frame (m/s)
+/// - $δθ$ : Attitude error as small angles (rad)
+/// - $δb_a$ : Accelerometer bias error (m/s²)
+/// - $δb_g$ : Gyroscope bias error (rad/s)
+///
+/// The discrete-time error-state transition is:
+/// $$
+/// \delta x_{k+1} \approx (I + F_{\delta x} \cdot dt) \delta x_k
+/// $$
+///
+/// # Block Structure of F_δx (15×15)
+///
+/// ```text
+/// F = | F_pp  F_pv  F_pθ   0     0   |  (position)
+///     | F_vp  F_vv  F_vθ  F_vba  0   |  (velocity)
+///     | F_θp  F_θv  F_θθ   0    F_θbg|  (attitude)
+///     |  0     0     0    F_bb   0   |  (accel bias)
+///     |  0     0     0     0    F_bb |  (gyro bias)
+/// ```
+///
+/// where most blocks are sparse and bias dynamics are random walk (F_bb = 0).
+///
+/// # Arguments
+///
+/// * `state` - Current nominal navigation state (the "truth" around which to linearize)
+/// * `imu_accel` - Bias-corrected specific force measurement (body frame, m/s²)
+/// * `imu_gyro` - Bias-corrected angular rate measurement (body frame, rad/s)
+/// * `dt` - Time step in seconds
+///
+/// # Returns
+///
+/// 15×15 error-state transition Jacobian matrix F_δx
+///
+/// # References
+///
+/// - Sola, J. "Quaternion kinematics for the error-state Kalman filter" (2017), Section 6.3
+/// - Groves 2nd ed., Section 14.2.4 (adapted for error-state formulation)
+/// - Trawny, N. & Roumeliotis, S. "Indirect Kalman Filter for 3D Attitude Estimation" (2005)
+///
+/// # Example
+///
+/// ```rust
+/// use strapdown::linearize::error_state_transition_jacobian;
+/// use strapdown::StrapdownState;
+/// use nalgebra::{Vector3, Rotation3};
+///
+/// let state = StrapdownState::new(
+///     45.0, -122.0, 100.0,
+///     10.0, 5.0, 0.0,
+///     Rotation3::identity(),
+///     true,
+///     None,
+///  );
+/// let accel = Vector3::new(0.0, 0.0, 9.81);
+/// let gyro = Vector3::zeros();
+/// let dt = 0.01;
+///
+/// let f_error = error_state_transition_jacobian(&state, &accel, &gyro, dt);
+/// assert_eq!(f_error.nrows(), 15);
+/// assert_eq!(f_error.ncols(), 15);
+/// ```
+pub fn error_state_transition_jacobian(
+    state: &StrapdownState,
+    imu_accel: &Vector3<f64>,
+    imu_gyro: &Vector3<f64>,
+    dt: f64,
+) -> DMatrix<f64> {
+    // Start with identity matrix (I + F*dt formulation)
+    let mut f = DMatrix::<f64>::identity(15, 15);
+    
+    // Get rotation matrix from body to navigation frame
+    let c_bn = state.attitude.matrix();
+    
+    // Get Earth parameters
+    let lat = state.latitude;
+    let h = state.altitude;
+    let lat_deg = lat.to_degrees();
+    let (r_n, r_e, _r_p) = earth::principal_radii(&lat_deg, &h);
+    let g = earth::gravity(&lat, &h);
+    
+    // ===== Position Error Block (rows 0-2) =====
+    
+    // ∂(δṗ)/∂(δv): Position error rate depends on velocity error
+    // δṗ_n = δv_n / R_n
+    // δṗ_e = δv_e / (R_e * cos(lat))
+    // δṗ_d = δv_d
+    f[(0, 3)] = dt / r_n;  // ∂(δp_n)/∂(δv_n)
+    f[(1, 4)] = dt / (r_e * lat.cos());  // ∂(δp_e)/∂(δv_e)
+    f[(2, 5)] = dt;  // ∂(δp_d)/∂(δv_d)
+    
+    // Note: Position error doesn't directly depend on attitude error or biases
+    
+    // ===== Velocity Error Block (rows 3-5) =====
+    
+    // ∂(δv̇)/∂(δp): Velocity error rate depends on position error (gravity gradient, Coriolis)
+    // These terms are typically small and often neglected in practice
+    // For now, we include the primary gravity gradient effect
+    let gravity_gradient = -2.0 * g / (r_n + h);  // Simplified
+    f[(5, 2)] = dt * gravity_gradient;  // ∂(δv_d)/∂(δp_d) - altitude affects gravity
+    
+    // ∂(δv̇)/∂(δv): Velocity error damping due to Coriolis and centrifugal effects
+    // These coupling terms are small for low dynamics and often approximated as zero
+    // The main effect is self-coupling which is captured by identity matrix
+    
+    // ∂(δv̇)/∂(δθ): Velocity error depends on attitude error (most important coupling!)
+    // δv̇^n = -[C_b^n f^b]_× δθ
+    // where [a]_× is the skew-symmetric matrix of vector a
+    let f_n = c_bn * imu_accel;  // Transform measured acceleration to nav frame
+    let f_skew = vector_to_skew_symmetric(&f_n);
+    for i in 0..3 {
+        for j in 0..3 {
+            f[(3 + i, 6 + j)] = -f_skew[(i, j)] * dt;
+        }
+    }
+    
+    // ∂(δv̇)/∂(δb_a): Velocity error depends on accelerometer bias error
+    // δv̇^n = -C_b^n δb_a
+    for i in 0..3 {
+        for j in 0..3 {
+            f[(3 + i, 9 + j)] = -c_bn[(i, j)] * dt;
+        }
+    }
+    
+    // ===== Attitude Error Block (rows 6-8) =====
+    
+    // ∂(δθ̇)/∂(δθ): Attitude error dynamics (rotation coupling)
+    // δθ̇ = -[ω^b]_× δθ (in body frame)
+    // This represents how attitude errors rotate due to angular velocity
+    let omega_skew = vector_to_skew_symmetric(imu_gyro);
+    for i in 0..3 {
+        for j in 0..3 {
+            f[(6 + i, 6 + j)] = -omega_skew[(i, j)] * dt;
+        }
+    }
+    
+    // ∂(δθ̇)/∂(δb_g): Attitude error depends on gyroscope bias error
+    // δθ̇ = -δb_g (small angle approximation)
+    f[(6, 12)] = -dt;
+    f[(7, 13)] = -dt;
+    f[(8, 14)] = -dt;
+    
+    // ===== IMU Bias Error Blocks (rows 9-14) =====
+    
+    // Biases are modeled as random walk: δḃ = 0 + noise
+    // This means F_bb = 0, which is already set by the identity matrix initialization
+    // The identity diagonal (1.0) represents the bias persistence (integration)
+    
+    f
+}
+
 /// Compute the process noise Jacobian (G) for IMU errors
 ///
 /// This function computes the process noise distribution matrix G that maps

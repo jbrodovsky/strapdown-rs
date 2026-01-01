@@ -28,7 +28,7 @@ use std::sync::Mutex;
 use strapdown::messages::{GnssScheduler, build_event_stream};
 use strapdown::sim::{
     FaultArgs, FilterType, NavigationResult, ParticleFilterType, SchedulerArgs, SimulationConfig,
-    SimulationMode, TestDataRecord, build_fault, build_scheduler, initialize_ekf, initialize_ukf,
+    SimulationMode, TestDataRecord, build_fault, build_scheduler, initialize_ekf, initialize_eskf, initialize_ukf,
     run_closed_loop,
 };
 
@@ -384,6 +384,11 @@ fn process_file(
                     info!("Initialized EKF");
                     run_closed_loop(&mut ekf, event_stream, None)
                 }
+                FilterType::Eskf => {
+                    let mut eskf = initialize_eskf(records[0].clone(), None, None, None, None);
+                    info!("Initialized ESKF");
+                    run_closed_loop(&mut eskf, event_stream, None)
+                }
             };
 
             let output_file = output.join(input_file.file_name().unwrap());
@@ -523,6 +528,12 @@ fn run_single_closed_loop_simulation(
             info!("Initialized EKF");
             run_closed_loop(&mut ekf, event_stream, None)
         }
+        FilterType::Eskf => {
+            let mut eskf =
+                initialize_eskf(records[0].clone(), None, None, None, None);
+            info!("Initialized ESKF");
+            run_closed_loop(&mut eskf, event_stream, None)
+        }
     };
 
     // Write results to CSV
@@ -574,6 +585,7 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
     let filter_name = match args.filter {
         FilterType::Ukf => "Unscented Kalman Filter (UKF)",
         FilterType::Ekf => "Extended Kalman Filter (EKF)",
+        FilterType::Eskf => "Error-State Kalman Filter (ESKF)",
     };
     info!("Running in closed-loop mode with {}", filter_name);
 
@@ -761,13 +773,15 @@ fn prompt_filter_type() -> FilterType {
             "Please specify the filter type you would like:\n\
             [1] - Unscented Kalman Filter (UKF)\n\
             [2] - Extended Kalman Filter (EKF)\n\
+            [3] - Error-State Kalman Filter (ESKF)\n\
             [q] - Quit\n"
         );
         if let Some(input) = read_user_input() {
             match input.as_str() {
                 "1" => return FilterType::Ukf,
                 "2" => return FilterType::Ekf,
-                _ => println!("Error: Invalid selection. Please enter 1, 2, or q.\n"),
+                "3" => return FilterType::Eskf,
+                _ => println!("Error: Invalid selection. Please enter 1, 2, 3, or q.\n"),
             }
         }
     }
@@ -1198,7 +1212,7 @@ mod tests {
 
     #[test]
     fn test_filter_type_variants() {
-        let filters = vec![FilterType::Ukf, FilterType::Ekf];
+        let filters = vec![FilterType::Ukf, FilterType::Ekf, FilterType::Eskf];
         assert_eq!(filters.len(), 2);
     }
 
