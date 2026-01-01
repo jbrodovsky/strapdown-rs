@@ -1670,19 +1670,35 @@ impl Default for ParticleFilterConfig {
     }
 }
 
+/// Log level options for simulation logging.
+///
+/// This enum is serialized/deserialized as lowercase strings to match existing
+/// configuration files (e.g., `"info"`, `"debug"`).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "clap", derive(ValueEnum))]
+pub enum LogLevel {
+    Off,
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
 /// Logging configuration
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LoggingConfig {
     /// Log level (off, error, warn, info, debug, trace)
     #[serde(default = "default_log_level")]
-    pub level: String,
+    pub level: LogLevel,
     /// Optional log file path (if not specified, logs to stderr)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
 }
 
-fn default_log_level() -> String {
-    "info".to_string()
+fn default_log_level() -> LogLevel {
+    LogLevel::Info
 }
 
 impl Default for LoggingConfig {
