@@ -457,7 +457,7 @@ impl TestDataRecord {
         let mut records = Vec::with_capacity(times.len());
         for i in 0..times.len() {
             records.push(TestDataRecord {
-                time: DateTime::from_timestamp(times[i] as i64, 0)
+                time: DateTime::from_timestamp(times[i].round() as i64, 0)
                     .unwrap_or_else(|| DateTime::from_timestamp(0, 0).unwrap()),
                 bearing_accuracy: bearing_accuracy[i],
                 speed_accuracy: speed_accuracy[i],
@@ -799,7 +799,7 @@ impl NavigationResult {
             ($name:expr) => {{
                 let var = file.variable($name).ok_or_else(|| anyhow::anyhow!("Variable '{}' not found", $name))?;
                 var.get_values::<f64, _>(..).unwrap_or_else(|_| {
-                    warn!("Failed to read variable '{}', using 0.0", $name);
+                    warn!("Failed to read variable '{}', using 0.0 (navigation state) or NaN (IMU measurement)", $name);
                     vec![0.0; times.len()]
                 })
             }};
@@ -843,7 +843,7 @@ impl NavigationResult {
         let mut records = Vec::with_capacity(times.len());
         for i in 0..times.len() {
             records.push(NavigationResult {
-                timestamp: DateTime::from_timestamp(times[i] as i64, 0)
+                timestamp: DateTime::from_timestamp(times[i].round() as i64, 0)
                     .unwrap_or_else(|| DateTime::from_timestamp(0, 0).unwrap()),
                 latitude: latitude[i],
                 longitude: longitude[i],
