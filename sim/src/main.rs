@@ -473,17 +473,18 @@ fn run_from_config(config_path: &Path, cli_parallel: bool) -> Result<(), Box<dyn
         }
     } else {
         // Sequential processing
+        let mut failures = 0usize;
         for input_file in &csv_files {
             if let Err(e) = process_file(input_file, output, &config) {
                 if !is_multiple {
                     return Err(e);
                 }
-                error!(
-                    "Error processing {}: {}. Continuing with remaining files...",
-                    input_file.display(),
-                    e
-                );
+                failures += 1;
+                error!("Error processing {}: {}", input_file.display(), e);
             }
+        }
+        if failures > 0 {
+            error!("{} file(s) failed to process", failures);
         }
     }
 
