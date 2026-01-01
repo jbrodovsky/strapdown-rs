@@ -57,6 +57,19 @@ const DEFAULT_PROCESS_NOISE: [f64; 15] = [
     1e-8, // gyro bias y noise
     1e-8, // gyro bias z noise
 ];
+
+/// Default initial covariance for testing (15-state)
+const DEFAULT_INITIAL_COVARIANCE: [f64; 15] = [
+    1e-6, 1e-6, 1.0, // position covariance (lat, lon, alt in meters)
+    0.1, 0.1, 0.1, // velocity covariance (m/s)
+    0.01, 0.01, 0.01, // attitude covariance (radians)
+    0.01, 0.01, 0.01, // accelerometer bias covariance (m/s²)
+    0.001, 0.001, 0.001, // gyroscope bias covariance (rad/s)
+];
+
+/// Minimum meaningful drift for dead reckoning comparison (meters)
+/// Below this threshold, the comparison is not meaningful as the vehicle may be stationary
+const MIN_DRIFT_FOR_COMPARISON: f64 = 5.0;
 /// Error statistics for a navigation solution
 #[derive(Debug, Clone)]
 struct ErrorStats {
@@ -416,13 +429,7 @@ fn test_ukf_closed_loop_on_real_data() {
 
     // Initialize UKF
     let imu_biases = vec![0.0; 6]; // Zero initial bias estimates
-    let initial_covariance = vec![
-        1e-6, 1e-6, 1.0, // position covariance (lat, lon, alt)
-        0.1, 0.1, 0.1, // velocity covariance
-        0.01, 0.01, 0.01, // attitude covariance (roll, pitch, yaw)
-        0.01, 0.01, 0.01, // accelerometer bias covariance
-        0.001, 0.001, 0.001, // gyroscope bias covariance
-    ];
+    let initial_covariance = DEFAULT_INITIAL_COVARIANCE.to_vec();
 
     let process_noise = DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec()));
 
@@ -567,13 +574,7 @@ fn test_ukf_with_degraded_gnss() {
 
     // Initialize UKF
     let imu_biases = vec![0.0; 6];
-    let initial_covariance = vec![
-        1e-6, 1e-6, 1.0, // position
-        0.1, 0.1, 0.1, // velocity
-        0.01, 0.01, 0.01, // attitude
-        0.01, 0.01, 0.01, // accel bias
-        0.001, 0.001, 0.001, // gyro bias
-    ];
+    let initial_covariance = DEFAULT_INITIAL_COVARIANCE.to_vec();
 
     let process_noise = DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec()));
 
@@ -716,7 +717,7 @@ fn test_ukf_outperforms_dead_reckoning() {
 
     // UKF should significantly outperform dead reckoning
     // Allow for some tolerance in case of very short datasets or near-stationary conditions
-    if dr_stats.rms_horizontal_error > 5.0 {
+    if dr_stats.rms_horizontal_error > MIN_DRIFT_FOR_COMPARISON {
         // Only compare if DR has meaningful drift
         assert!(
             ukf_stats.rms_horizontal_error < dr_stats.rms_horizontal_error,
@@ -751,13 +752,7 @@ fn test_ekf_closed_loop_on_real_data() {
     let initial_state = create_initial_state(&records[0]);
 
     // Initialize EKF with 15-state configuration (with biases)
-    let initial_covariance = vec![
-        1e-6, 1e-6, 1.0, // position covariance (lat, lon, alt)
-        0.1, 0.1, 0.1, // velocity covariance
-        0.01, 0.01, 0.01, // attitude covariance (roll, pitch, yaw)
-        0.01, 0.01, 0.01, // accelerometer bias covariance
-        0.001, 0.001, 0.001, // gyroscope bias covariance
-    ];
+    let initial_covariance = DEFAULT_INITIAL_COVARIANCE.to_vec();
 
     let process_noise = DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec()));
 
@@ -897,13 +892,7 @@ fn test_ekf_with_degraded_gnss() {
     let initial_state = create_initial_state(&records[0]);
 
     // Initialize EKF
-    let initial_covariance = vec![
-        1e-6, 1e-6, 1.0, // position
-        0.1, 0.1, 0.1, // velocity
-        0.01, 0.01, 0.01, // attitude
-        0.01, 0.01, 0.01, // accel bias
-        0.001, 0.001, 0.001, // gyro bias
-    ];
+    let initial_covariance = DEFAULT_INITIAL_COVARIANCE.to_vec();
 
     let process_noise = DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec()));
 
@@ -1008,13 +997,7 @@ fn test_ekf_outperforms_dead_reckoning() {
 
     // Run EKF
     let initial_state = create_initial_state(&records[0]);
-    let initial_covariance = vec![
-        1e-6, 1e-6, 1.0, // position
-        0.1, 0.1, 0.1, // velocity
-        0.01, 0.01, 0.01, // attitude
-        0.01, 0.01, 0.01, // accel bias
-        0.001, 0.001, 0.001, // gyro bias
-    ];
+    let initial_covariance = DEFAULT_INITIAL_COVARIANCE.to_vec();
     let process_noise = DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec()));
 
     let mut ekf = ExtendedKalmanFilter::new(
@@ -1054,7 +1037,7 @@ fn test_ekf_outperforms_dead_reckoning() {
 
     // EKF should significantly outperform dead reckoning
     // Allow for some tolerance in case of very short datasets or near-stationary conditions
-    if dr_stats.rms_horizontal_error > 5.0 {
+    if dr_stats.rms_horizontal_error > MIN_DRIFT_FOR_COMPARISON {
         // Only compare if DR has meaningful drift
         assert!(
             ekf_stats.rms_horizontal_error < dr_stats.rms_horizontal_error,
@@ -1406,7 +1389,7 @@ fn test_eskf_outperforms_dead_reckoning() {
 
     // ESKF should significantly outperform dead reckoning
     // Allow for some tolerance in case of very short datasets or near-stationary conditions
-    if dr_stats.rms_horizontal_error > 5.0 {
+    if dr_stats.rms_horizontal_error > MIN_DRIFT_FOR_COMPARISON {
         // Only compare if DR has meaningful drift
         assert!(
             eskf_stats.rms_horizontal_error < dr_stats.rms_horizontal_error,
