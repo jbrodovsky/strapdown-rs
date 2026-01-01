@@ -1,12 +1,38 @@
-//! Simulation utilities and CSV data loading for strapdown inertial navigation.
+//! Simulation utilities and data serialization for strapdown inertial navigation.
 //!
 //! This module provides tools for simulating and evaluating strapdown inertial navigation systems.
 //! It is primarily designed to work with data produced from the [Sensor Logger](https://www.tszheichoi.com/sensorlogger)
 //! app, as such it makes assumptions about the data format and structure that that corresponds to
-//! how that app records data. That data is typically stored in CSV format and is represented by the
-//! `TestDataRecord` struct. This struct is fairly comprehensive and should be easily reusable for
-//! other applications. Modeling off of that struct is the `NavigationResult` struct which is used
-//! to store navigation solutions from simulations, such as dead reckoning or Kalman filtering.
+//! how that app records data. 
+//!
+//! ## Data Formats
+//!
+//! The module supports both CSV and netCDF formats for input and output data:
+//! 
+//! - **CSV format**: Human-readable text format, suitable for quick inspection and editing
+//! - **netCDF format**: Binary format optimized for large datasets, better for archival and data interchange
+//!
+//! Data is represented by the `TestDataRecord` struct (sensor measurements) and `NavigationResult` struct
+//! (navigation solutions). Both structs support serialization to/from CSV and netCDF formats.
+//!
+//! ### Example: Working with netCDF files
+//!
+//! ```no_run
+//! use strapdown::sim::{TestDataRecord, NavigationResult};
+//!
+//! // Read test data from netCDF file
+//! let test_data = TestDataRecord::from_netcdf("input_data.nc")
+//!     .expect("Failed to read input data");
+//!
+//! // ... perform navigation simulation ...
+//!
+//! // Write navigation results to netCDF file
+//! # let nav_results: Vec<NavigationResult> = vec![];
+//! NavigationResult::to_netcdf(&nav_results, "output_results.nc")
+//!     .expect("Failed to write navigation results");
+//! ```
+//!
+//! ## Simulation Functions
 //!
 //! This module also provides basic functionality for analyzing canonical strapdown inertial navigation
 //! systems via the `dead_reckoning` and `closed_loop` functions. The `closed_loop` function in particular
