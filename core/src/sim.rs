@@ -1280,6 +1280,167 @@ pub fn initialize_ekf(
     )
 }
 
+/// Initialize an Error-State Kalman Filter (ESKF) for simulation.
+///
+/// This function creates and initializes an `ErrorStateKalmanFilter` with the given parameters,
+/// providing a robust error-state formulation that uses quaternions for nominal attitude and
+/// small-angle representation for attitude errors.
+///
+/// The ESKF is the standard approach for strapdown INS, offering better numerical stability
+/// and avoiding attitude singularities compared to full-state EKF implementations.
+///
+/// # Arguments
+///
+/// * `initial_pose` - A `TestDataRecord` containing the initial pose information.
+/// * `attitude_covariance` - Optional initial attitude covariance (for error state).
+/// * `imu_biases` - Optional initial IMU biases [b_ax, b_ay, b_az, b_gx, b_gy, b_gz].
+/// * `imu_biases_covariance` - Optional IMU bias covariance (for error state).
+/// * `process_noise_diagonal` - Optional process noise diagonal (15 elements for error state).
+///
+/// # Returns
+///
+/// * `ErrorStateKalmanFilter` - An instance of the Error-State Kalman Filter.
+///
+/// # Example
+///
+/// ```no_run
+/// use strapdown::sim::{initialize_eskf, TestDataRecord};
+/// use chrono::Utc;
+///
+/// let initial_pose = TestDataRecord {
+///     time: Utc::now(),
+///     latitude: 45.0,
+///     longitude: -122.0,
+///     altitude: 100.0,
+///     // ... other fields ...
+///     ..Default::default()
+/// };
+/// let eskf = initialize_eskf(initial_pose, None, None, None, None);
+/// ```
+#[allow(clippy::too_many_arguments)]
+pub fn initialize_eskf(
+    initial_pose: TestDataRecord,
+    attitude_covariance: Option<Vec<f64>>,
+    imu_biases: Option<Vec<f64>>,
+    imu_biases_covariance: Option<Vec<f64>>,
+    process_noise_diagonal: Option<Vec<f64>>,
+) -> crate::kalman::ErrorStateKalmanFilter {
+    use crate::kalman::ErrorStateKalmanFilter;
+
+    // Build initial state from sensor data
+    let initial_state = InitialState {
+        latitude: initial_pose.latitude,
+        longitude: initial_pose.longitude,
+        altitude: initial_pose.altitude,
+        // Note: `initial_pose.bearing` is stored in degrees in `TestDataRecord`.
+        // Convert to radians here for use with trigonometric functions.
+        northward_velocity: initial_pose.speed * initial_pose.bearing.to_radians().cos(),
+        eastward_velocity: initial_pose.speed * initial_pose.bearing.to_radians().sin(),
+        vertical_velocity: 0.0,
+        roll: if initial_pose.roll.is_nan() {
+            0.0
+        } else {
+            initial_pose.roll
+        },
+        pitch: if initial_pose.pitch.is_nan() {
+            0.0
+        } else {
+            initial_pose.pitch
+        },
+        yaw: if initial_pose.yaw.is_nan() {
+            0.0
+        } else {
+            initial_pose.yaw
+        },
+        in_degrees: true,
+        is_enu: true,
+    };
+
+    // ESKF always uses 15-state error vector (pos, vel, att, accel_bias, gyro_bias)
+    let state_size = 15;
+
+    // Build process noise diagonal for error state (15 elements)
+    let process_noise_diagonal = match process_noise_diagonal {
+        Some(pn) => {
+            assert!(
+                pn.len() == state_size,
+                "Process noise diagonal length mismatch: expected {}, got {}",
+                state_size,
+                pn.len()
+            );
+            pn
+        }
+        None => DEFAULT_PROCESS_NOISE.to_vec(),
+    };
+
+    // Build IMU biases
+    let imu_biases = match imu_biases {
+        Some(biases) => {
+            assert!(
+                biases.len() == 6,
+                "IMU biases length mismatch: expected 6, got {}",
+                biases.len()
+            );
+            biases
+        }
+        None => vec![0.0; 6],
+    };
+
+    // Build error covariance diagonal
+    // This represents initial uncertainty in the error state (NOT nominal state)
+    let mut error_covariance_diagonal = vec![
+        1e-6, 1e-6, 1e-4, // position error covariance (m²)
+        1e-3, 1e-3, 1e-3, // velocity error covariance (m²/s²)
+    ];
+
+    // Add attitude error covariance
+    error_covariance_diagonal.extend(match attitude_covariance {
+        Some(att_cov) => {
+            assert!(
+                att_cov.len() == 3,
+                "Attitude covariance length mismatch: expected 3, got {}",
+                att_cov.len()
+            );
+            att_cov
+        }
+        None => vec![1e-5; 3], // Default: small attitude uncertainty (rad²)
+    });
+
+    // Add IMU bias error covariance
+    error_covariance_diagonal.extend(match imu_biases_covariance {
+        Some(bias_cov) => {
+            assert!(
+                bias_cov.len() == 6,
+                "IMU bias covariance length mismatch: expected 6, got {}",
+                bias_cov.len()
+            );
+            bias_cov
+        }
+        None => {
+            vec![
+                1e-6, 1e-6, 1e-6, // accel bias error covariance
+                1e-8, 1e-8, 1e-8, // gyro bias error covariance
+            ]
+        }
+    });
+
+    assert!(
+        error_covariance_diagonal.len() == state_size,
+        "Error covariance diagonal length mismatch: expected {}, got {}",
+        state_size,
+        error_covariance_diagonal.len()
+    );
+
+    let process_noise = DMatrix::from_diagonal(&DVector::from_vec(process_noise_diagonal));
+
+    ErrorStateKalmanFilter::new(
+        initial_state,
+        imu_biases,
+        error_covariance_diagonal,
+        process_noise,
+    )
+}
+
 // ==== Simulation Helper functions ====
 
 pub fn print_sim_status<F: NavigationFilter>(filter: &F) {
@@ -1580,6 +1741,8 @@ pub enum FilterType {
     Ukf,
     /// Extended Kalman Filter
     Ekf,
+    /// Error-State Kalman Filter (ESKF) with multiplicative attitude error
+    Eskf,
 }
 
 /// Particle filter type selection
