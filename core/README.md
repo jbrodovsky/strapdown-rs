@@ -21,3 +21,53 @@ The toolbox is designed for research, teaching, and development purposes and aim
 The simulation program provides a simple command line interface for running various configurations of the INS. In can run in open-loop (dead reckoning) mode or closed-loop (full state loosely couple UKF) mode. It can simulate various scenarios such as intermittent GPS, GPS degradation, and more. The simulation is designed to be easy to use and provides a simple API for generating datsets for further navigation processing or research.
 
 Both `strapdown-sim` and `geonav-sim` include built-in logging capabilities using the Rust `log` crate. Library functions use log macros for diagnostic output that can be captured by any logging backend.
+
+## Data Formats
+
+The library supports both CSV and HDF5 file formats for input and output data.
+
+### CSV Format
+
+CSV is the default format for compatibility and ease of inspection. The library can read and write:
+- **TestDataRecord**: Input sensor data (IMU, GNSS, magnetometer, barometer) from apps like Sensor Logger
+- **NavigationResult**: Output navigation solutions (position, velocity, attitude, biases, and covariances)
+
+```rust
+use strapdown::sim::{TestDataRecord, NavigationResult};
+
+// Read CSV files
+let input_data = TestDataRecord::from_csv("sensor_data.csv")?;
+let results = NavigationResult::from_csv("nav_results.csv")?;
+
+// Write CSV files
+TestDataRecord::to_csv(&input_data, "sensor_data_out.csv")?;
+NavigationResult::to_csv(&results, "nav_results_out.csv")?;
+```
+
+### HDF5 Format
+
+HDF5 provides efficient storage for large datasets with better compression and faster I/O:
+
+```rust
+use strapdown::sim::{TestDataRecord, NavigationResult};
+
+// Read HDF5 files
+let input_data = TestDataRecord::from_hdf5("sensor_data.h5")?;
+let results = NavigationResult::from_hdf5("nav_results.h5")?;
+
+// Write HDF5 files
+TestDataRecord::to_hdf5(&input_data, "sensor_data_out.h5")?;
+NavigationResult::to_hdf5(&results, "nav_results_out.h5")?;
+```
+
+**HDF5 File Structure:**
+- TestDataRecord data is stored in a `/test_data` group
+- NavigationResult data is stored in a `/navigation_results` group
+- Each field is stored as a separate dataset within the group
+- Timestamps are stored as RFC3339-formatted strings
+
+The HDF5 format is particularly useful for:
+- Large datasets that benefit from compression
+- Integration with scientific computing workflows (Python, MATLAB, Julia)
+- Parallel I/O operations
+- Hierarchical data organization

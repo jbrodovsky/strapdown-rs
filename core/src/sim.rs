@@ -1,12 +1,42 @@
-//! Simulation utilities and CSV data loading for strapdown inertial navigation.
+//! Simulation utilities and data I/O for strapdown inertial navigation.
 //!
 //! This module provides tools for simulating and evaluating strapdown inertial navigation systems.
 //! It is primarily designed to work with data produced from the [Sensor Logger](https://www.tszheichoi.com/sensorlogger)
 //! app, as such it makes assumptions about the data format and structure that that corresponds to
-//! how that app records data. That data is typically stored in CSV format and is represented by the
-//! `TestDataRecord` struct. This struct is fairly comprehensive and should be easily reusable for
-//! other applications. Modeling off of that struct is the `NavigationResult` struct which is used
-//! to store navigation solutions from simulations, such as dead reckoning or Kalman filtering.
+//! how that app records data. 
+//!
+//! # Data Structures
+//!
+//! - **`TestDataRecord`**: Input sensor data including IMU, GNSS, magnetometer, and barometer measurements
+//! - **`NavigationResult`**: Output navigation solutions including position, velocity, attitude, biases, and covariances
+//!
+//! Both structures support CSV and HDF5 file formats for input and output:
+//!
+//! ## CSV Format
+//! ```no_run
+//! use strapdown::sim::{TestDataRecord, NavigationResult};
+//!
+//! // Read and write CSV files
+//! let data = TestDataRecord::from_csv("sensor_data.csv").unwrap();
+//! TestDataRecord::to_csv(&data, "output.csv").unwrap();
+//!
+//! let results = NavigationResult::from_csv("nav_results.csv").unwrap();
+//! NavigationResult::to_csv(&results, "output.csv").unwrap();
+//! ```
+//!
+//! ## HDF5 Format
+//! ```no_run
+//! use strapdown::sim::{TestDataRecord, NavigationResult};
+//!
+//! // Read and write HDF5 files
+//! let data = TestDataRecord::from_hdf5("sensor_data.h5").unwrap();
+//! TestDataRecord::to_hdf5(&data, "output.h5").unwrap();
+//!
+//! let results = NavigationResult::from_hdf5("nav_results.h5").unwrap();
+//! NavigationResult::to_hdf5(&results, "output.h5").unwrap();
+//! ```
+//!
+//! # Simulation Functions
 //!
 //! This module also provides basic functionality for analyzing canonical strapdown inertial navigation
 //! systems via the `dead_reckoning` and `closed_loop` functions. The `closed_loop` function in particular
