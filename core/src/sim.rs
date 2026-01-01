@@ -3758,4 +3758,184 @@ mod tests {
         // Verify EKF was created successfully
         assert_eq!(ekf.get_estimate().len(), 15);
     }
+
+    #[test]
+    fn test_test_data_record_netcdf_roundtrip() {
+        use tempfile::NamedTempFile;
+        
+        // Create sample TestDataRecord
+        let record = TestDataRecord {
+            time: Utc::now(),
+            bearing_accuracy: 0.1,
+            speed_accuracy: 0.2,
+            vertical_accuracy: 0.3,
+            horizontal_accuracy: 0.4,
+            speed: 5.0,
+            bearing: 90.0,
+            altitude: 100.0,
+            longitude: -122.0,
+            latitude: 37.0,
+            qz: 0.1,
+            qy: 0.2,
+            qx: 0.3,
+            qw: 0.4,
+            roll: 0.5,
+            pitch: 0.6,
+            yaw: 0.7,
+            acc_z: 9.81,
+            acc_y: 0.1,
+            acc_x: 0.2,
+            gyro_z: 0.01,
+            gyro_y: 0.02,
+            gyro_x: 0.03,
+            mag_z: 50.0,
+            mag_y: -30.0,
+            mag_x: -20.0,
+            relative_altitude: 10.0,
+            pressure: 1013.25,
+            grav_z: 9.81,
+            grav_y: 0.0,
+            grav_x: 0.0,
+        };
+
+        let records = vec![record.clone()];
+
+        // Create a temporary file
+        let temp_file = NamedTempFile::new().unwrap();
+        let path = temp_file.path();
+
+        // Write to netCDF
+        TestDataRecord::to_netcdf(&records, path).expect("Failed to write netCDF");
+
+        // Read from netCDF
+        let read_records = TestDataRecord::from_netcdf(path).expect("Failed to read netCDF");
+
+        // Verify
+        assert_eq!(read_records.len(), 1);
+        let read_record = &read_records[0];
+        
+        assert_eq!(read_record.time.timestamp(), record.time.timestamp());
+        assert!((read_record.bearing_accuracy - record.bearing_accuracy).abs() < 1e-6);
+        assert!((read_record.speed_accuracy - record.speed_accuracy).abs() < 1e-6);
+        assert!((read_record.latitude - record.latitude).abs() < 1e-6);
+        assert!((read_record.longitude - record.longitude).abs() < 1e-6);
+        assert!((read_record.altitude - record.altitude).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_navigation_result_netcdf_roundtrip() {
+        use tempfile::NamedTempFile;
+        
+        // Create sample NavigationResult
+        let result = NavigationResult {
+            timestamp: Utc::now(),
+            latitude: 37.5,
+            longitude: -122.5,
+            altitude: 150.0,
+            velocity_north: 1.0,
+            velocity_east: 2.0,
+            velocity_vertical: 0.5,
+            roll: 0.1,
+            pitch: 0.2,
+            yaw: 0.3,
+            acc_bias_x: 0.01,
+            acc_bias_y: 0.02,
+            acc_bias_z: 0.03,
+            gyro_bias_x: 0.001,
+            gyro_bias_y: 0.002,
+            gyro_bias_z: 0.003,
+            latitude_cov: 1e-6,
+            longitude_cov: 1e-6,
+            altitude_cov: 1e-6,
+            velocity_n_cov: 1e-6,
+            velocity_e_cov: 1e-6,
+            velocity_v_cov: 1e-6,
+            roll_cov: 1e-6,
+            pitch_cov: 1e-6,
+            yaw_cov: 1e-6,
+            acc_bias_x_cov: 1e-6,
+            acc_bias_y_cov: 1e-6,
+            acc_bias_z_cov: 1e-6,
+            gyro_bias_x_cov: 1e-6,
+            gyro_bias_y_cov: 1e-6,
+            gyro_bias_z_cov: 1e-6,
+        };
+
+        let results = vec![result.clone()];
+
+        // Create a temporary file
+        let temp_file = NamedTempFile::new().unwrap();
+        let path = temp_file.path();
+
+        // Write to netCDF
+        NavigationResult::to_netcdf(&results, path).expect("Failed to write netCDF");
+
+        // Read from netCDF
+        let read_results = NavigationResult::from_netcdf(path).expect("Failed to read netCDF");
+
+        // Verify
+        assert_eq!(read_results.len(), 1);
+        let read_result = &read_results[0];
+        
+        assert_eq!(read_result.timestamp.timestamp(), result.timestamp.timestamp());
+        assert!((read_result.latitude - result.latitude).abs() < 1e-6);
+        assert!((read_result.longitude - result.longitude).abs() < 1e-6);
+        assert!((read_result.altitude - result.altitude).abs() < 1e-6);
+        assert!((read_result.velocity_north - result.velocity_north).abs() < 1e-6);
+        assert!((read_result.velocity_east - result.velocity_east).abs() < 1e-6);
+        assert!((read_result.roll - result.roll).abs() < 1e-6);
+        assert!((read_result.pitch - result.pitch).abs() < 1e-6);
+        assert!((read_result.yaw - result.yaw).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_multiple_records_netcdf() {
+        use tempfile::NamedTempFile;
+        
+        // Create multiple TestDataRecords
+        let mut records = Vec::new();
+        for i in 0..5 {
+            records.push(TestDataRecord {
+                time: Utc::now() + Duration::seconds(i as i64),
+                latitude: 37.0 + (i as f64) * 0.01,
+                longitude: -122.0 + (i as f64) * 0.01,
+                altitude: 100.0 + (i as f64) * 10.0,
+                speed: (i as f64) * 2.0,
+                bearing: (i as f64) * 45.0,
+                ..Default::default()
+            });
+        }
+
+        // Create a temporary file
+        let temp_file = NamedTempFile::new().unwrap();
+        let path = temp_file.path();
+
+        // Write to netCDF
+        TestDataRecord::to_netcdf(&records, path).expect("Failed to write netCDF");
+
+        // Read from netCDF
+        let read_records = TestDataRecord::from_netcdf(path).expect("Failed to read netCDF");
+
+        // Verify
+        assert_eq!(read_records.len(), 5);
+        for i in 0..5 {
+            assert_eq!(read_records[i].time.timestamp(), records[i].time.timestamp());
+            assert!((read_records[i].latitude - records[i].latitude).abs() < 1e-6);
+            assert!((read_records[i].longitude - records[i].longitude).abs() < 1e-6);
+            assert!((read_records[i].altitude - records[i].altitude).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn test_empty_records_netcdf() {
+        use tempfile::NamedTempFile;
+        
+        let records: Vec<TestDataRecord> = Vec::new();
+        let temp_file = NamedTempFile::new().unwrap();
+        let path = temp_file.path();
+
+        // Should fail with empty records
+        let result = TestDataRecord::to_netcdf(&records, path);
+        assert!(result.is_err());
+    }
 }
