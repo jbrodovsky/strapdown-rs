@@ -1078,13 +1078,7 @@ fn test_eskf_closed_loop_on_real_data() {
     let initial_state = create_initial_state(&records[0]);
 
     // Initialize ESKF with 15-state configuration (error-state representation)
-    let initial_error_covariance = vec![
-        1e-6, 1e-6, 1.0, // position error covariance (lat, lon, alt)
-        0.1, 0.1, 0.1, // velocity error covariance
-        0.01, 0.01, 0.01, // attitude error covariance (small angles)
-        0.01, 0.01, 0.01, // accelerometer bias error covariance
-        0.001, 0.001, 0.001, // gyroscope bias error covariance
-    ];
+    let initial_error_covariance = DEFAULT_INITIAL_COVARIANCE.to_vec();
 
     let process_noise = DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec()));
 
@@ -1231,13 +1225,7 @@ fn test_eskf_with_degraded_gnss() {
     let initial_state = create_initial_state(&records[0]);
 
     // Initialize ESKF
-    let initial_error_covariance = vec![
-        1e-6, 1e-6, 1.0, // position error
-        0.1, 0.1, 0.1, // velocity error
-        0.01, 0.01, 0.01, // attitude error
-        0.01, 0.01, 0.01, // accel bias error
-        0.001, 0.001, 0.001, // gyro bias error
-    ];
+    let initial_error_covariance = DEFAULT_INITIAL_COVARIANCE.to_vec();
 
     let process_noise = DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec()));
 
@@ -1346,13 +1334,7 @@ fn test_eskf_outperforms_dead_reckoning() {
 
     // Run ESKF
     let initial_state = create_initial_state(&records[0]);
-    let initial_error_covariance = vec![
-        1e-6, 1e-6, 1.0, // position error
-        0.1, 0.1, 0.1, // velocity error
-        0.01, 0.01, 0.01, // attitude error
-        0.01, 0.01, 0.01, // accel bias error
-        0.001, 0.001, 0.001, // gyro bias error
-    ];
+    let initial_error_covariance = DEFAULT_INITIAL_COVARIANCE.to_vec();
     let process_noise = DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec()));
 
     let mut eskf = ErrorStateKalmanFilter::new(
@@ -1424,20 +1406,23 @@ fn test_eskf_stability_high_dynamics() {
     let initial_state = create_initial_state(&records[0]);
 
     // Initialize ESKF with more aggressive process noise to simulate high dynamics
+    // Higher uncertainty values to accommodate rapid maneuvers and accelerations
     let initial_error_covariance = vec![
-        1e-6, 1e-6, 1.0, 0.5, 0.5, 0.5, // Higher velocity uncertainty
-        0.05, 0.05, 0.05, // Higher attitude uncertainty
-        0.05, 0.05, 0.05, // Higher accel bias uncertainty
-        0.005, 0.005, 0.005, // Higher gyro bias uncertainty
+        1e-6, 1e-6, 1.0, // position error (same as default)
+        0.5, 0.5, 0.5,   // velocity error (5x default - allows for higher acceleration)
+        0.05, 0.05, 0.05, // attitude error (5x default - allows for rapid rotations)
+        0.05, 0.05, 0.05, // accel bias error (5x default - less confident in bias)
+        0.005, 0.005, 0.005, // gyro bias error (5x default - less confident in bias)
     ];
 
     // Increased process noise for high dynamics
+    // 10x velocity noise and 10x attitude noise to accommodate rapid changes
     let process_noise_values = vec![
-        1e-5, 1e-5, 1e-5, // position noise
-        1e-2, 1e-2, 1e-2, // velocity noise (higher for dynamics)
-        1e-4, 1e-4, 1e-4, // attitude noise (higher for dynamics)
-        1e-5, 1e-5, 1e-5, // accel bias noise
-        1e-7, 1e-7, 1e-7, // gyro bias noise
+        1e-5, 1e-5, 1e-5, // position noise (10x default)
+        1e-2, 1e-2, 1e-2, // velocity noise (10x default for high dynamics)
+        1e-4, 1e-4, 1e-4, // attitude noise (10x default for rapid maneuvers)
+        1e-5, 1e-5, 1e-5, // accel bias noise (10x default)
+        1e-7, 1e-7, 1e-7, // gyro bias noise (10x default)
     ];
     let process_noise = DMatrix::from_diagonal(&DVector::from_vec(process_noise_values));
 
@@ -1556,9 +1541,7 @@ fn test_filter_comparison() {
     };
 
     // Run UKF
-    let initial_covariance = vec![
-        1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.001, 0.001, 0.001,
-    ];
+    let initial_covariance = DEFAULT_INITIAL_COVARIANCE.to_vec();
     let process_noise = DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec()));
 
     let mut ukf = UnscentedKalmanFilter::new(
