@@ -12,7 +12,7 @@ use crate::{
 
 use std::fmt::{self, Debug, Display};
 
-use nalgebra::{DMatrix, DVector, Rotation3, Vector3, UnitQuaternion};
+use nalgebra::{DMatrix, DVector, Rotation3, UnitQuaternion, Vector3};
 
 /// Initial navigation state used to seed filters.
 ///
@@ -2449,6 +2449,386 @@ mod tests {
         assert!(ekf.mean_state[7] >= 0.0 && ekf.mean_state[7] <= 2.0 * std::f64::consts::PI);
         assert!(ekf.mean_state[8] >= 0.0 && ekf.mean_state[8] <= 2.0 * std::f64::consts::PI);
     }
+
+    // ==================== Error-State Kalman Filter Tests ====================
+
+    #[test]
+    fn eskf_construction() {
+        // Test ESKF construction
+        let eskf = ErrorStateKalmanFilter::new(
+            UKF_PARAMS,
+            IMU_BIASES.to_vec(),
+            COVARIANCE_DIAGONAL.to_vec(),
+            DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
+        );
+
+        // Verify state size
+        let state = eskf.get_estimate();
+        assert_eq!(state.len(), 15);
+
+        // Verify error state is initialized to zero
+        assert_eq!(eskf.error_state.len(), 15);
+        for i in 0..15 {
+            assert_approx_eq!(eskf.error_state[i], 0.0, 1e-10);
+        }
+
+        // Verify quaternion is normalized
+        let quat_norm = eskf.nominal_quaternion.norm();
+        assert_approx_eq!(quat_norm, 1.0, 1e-6);
+    }
+
+    #[test]
+    fn eskf_debug_display() {
+        // Test Debug and Display implementations for ESKF
+        let eskf = ErrorStateKalmanFilter::new(
+            UKF_PARAMS,
+            IMU_BIASES.to_vec(),
+            COVARIANCE_DIAGONAL.to_vec(),
+            DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
+        );
+
+        // Test Debug
+        let debug_str = format!("{:?}", eskf);
+        assert!(debug_str.contains("ESKF"));
+        assert!(debug_str.contains("nominal_position"));
+
+        // Test Display
+        let display_str = format!("{}", eskf);
+        assert!(display_str.contains("ErrorStateKalmanFilter"));
+        assert!(display_str.contains("nominal_quaternion"));
+    }
+
+    #[test]
+    fn eskf_quaternion_normalization() {
+        // Test that quaternion remains normalized after predict/update cycles
+        let mut eskf = ErrorStateKalmanFilter::new(
+            UKF_PARAMS,
+            IMU_BIASES.to_vec(),
+            COVARIANCE_DIAGONAL.to_vec(),
+            DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
+        );
+
+        // Run several predict/update cycles
+        for _ in 0..10 {
+            let imu_data = IMUData {
+                accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
+                gyro: Vector3::new(0.01, 0.01, 0.01), // Small rotation
+            };
+            eskf.predict(&imu_data, 0.01);
+
+            let measurement = GPSPositionMeasurement {
+                latitude: 0.0,
+                longitude: 0.0,
+                altitude: 0.0,
+                horizontal_noise_std: 5.0,
+                vertical_noise_std: 2.0,
+            };
+            eskf.update(&measurement);
+        }
+
+        // Verify quaternion is still normalized
+        let quat_norm = eskf.nominal_quaternion.norm();
+        assert_approx_eq!(quat_norm, 1.0, 1e-6);
+    }
+
+    #[test]
+    fn eskf_error_reset_after_update() {
+        // Test that error state is reset to zero after measurement update
+        let mut eskf = ErrorStateKalmanFilter::new(
+            UKF_PARAMS,
+            IMU_BIASES.to_vec(),
+            vec![1e-3; 15], // Higher initial uncertainty
+            DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
+        );
+
+        // Predict to build up error covariance
+        let imu_data = IMUData {
+            accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
+            gyro: Vector3::zeros(),
+        };
+        eskf.predict(&imu_data, 1.0);
+
+        // Update with measurement
+        let measurement = GPSPositionMeasurement {
+            latitude: 0.001, // Small offset from initial
+            longitude: 0.001,
+            altitude: 1.0,
+            horizontal_noise_std: 5.0,
+            vertical_noise_std: 2.0,
+        };
+        eskf.update(&measurement);
+
+        // Verify error state is reset to zero after update
+        for i in 0..15 {
+            assert_approx_eq!(eskf.error_state[i], 0.0, 1e-10);
+        }
+    }
+
+    #[test]
+    fn eskf_bias_estimation() {
+        // Test that ESKF estimates and corrects biases
+        let initial_state = InitialState {
+            latitude: 0.0,
+            longitude: 0.0,
+            altitude: 100.0,
+            northward_velocity: 0.0,
+            eastward_velocity: 0.0,
+            vertical_velocity: 0.0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            in_degrees: false,
+            is_enu: true,
+        };
+
+        // Initialize with non-zero biases
+        let true_accel_bias = Vector3::new(0.1, 0.05, 0.08);
+        let true_gyro_bias = Vector3::new(0.01, 0.015, 0.02);
+
+        let mut eskf = ErrorStateKalmanFilter::new(
+            initial_state,
+            vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // Start with zero bias estimate
+            vec![1e-6; 15],
+            DMatrix::from_diagonal(&DVector::from_vec(vec![
+                1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-6, 1e-6,
+                1e-6, // Allow bias to change
+                1e-8, 1e-8, 1e-8,
+            ])),
+        );
+
+        // Run predict/update cycles with biased IMU data
+        for _ in 0..20 {
+            let imu_data = IMUData {
+                accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)) + true_accel_bias,
+                gyro: true_gyro_bias.clone(),
+            };
+            eskf.predict(&imu_data, 0.1);
+
+            // Perfect measurements to help converge
+            let measurement = GPSPositionMeasurement {
+                latitude: 0.0,
+                longitude: 0.0,
+                altitude: 100.0,
+                horizontal_noise_std: 1.0,
+                vertical_noise_std: 0.5,
+            };
+            eskf.update(&measurement);
+        }
+
+        // Verify biases remain bounded (not diverging)
+        let state = eskf.get_estimate();
+        assert!(state[9].abs() < 1.0); // accel bias x
+        assert!(state[10].abs() < 1.0); // accel bias y
+        assert!(state[11].abs() < 1.0); // accel bias z
+        assert!(state[12].abs() < 0.5); // gyro bias x
+        assert!(state[13].abs() < 0.5); // gyro bias y
+        assert!(state[14].abs() < 0.5); // gyro bias z
+    }
+
+    #[test]
+    fn eskf_hover_motion() {
+        // Test ESKF with stationary hover motion
+        let initial_state = InitialState {
+            latitude: 0.0,
+            longitude: 0.0,
+            altitude: 100.0,
+            northward_velocity: 0.0,
+            eastward_velocity: 0.0,
+            vertical_velocity: 0.0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            in_degrees: false,
+            is_enu: true,
+        };
+
+        let mut eskf = ErrorStateKalmanFilter::new(
+            initial_state,
+            IMU_BIASES.to_vec(),
+            vec![
+                1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8,
+                1e-8,
+            ],
+            DMatrix::from_diagonal(&DVector::from_vec(vec![
+                1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9,
+                1e-9,
+            ])),
+        );
+
+        let dt = 0.1;
+        let num_steps = 10;
+
+        // Simulate hover with gravity compensation
+        for _ in 0..num_steps {
+            let imu_data = IMUData {
+                accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
+                gyro: Vector3::zeros(),
+            };
+            eskf.predict(&imu_data, dt);
+        }
+
+        // Verify state remained approximately constant
+        let state = eskf.get_estimate();
+        assert_approx_eq!(state[0], 0.0, 0.001); // latitude
+        assert_approx_eq!(state[1], 0.0, 0.001); // longitude
+        assert_approx_eq!(state[2], 100.0, 1.0); // altitude
+        assert_approx_eq!(state[3], 0.0, 0.5); // velocity north
+        assert_approx_eq!(state[4], 0.0, 0.5); // velocity east
+        assert_approx_eq!(state[5], 0.0, 0.5); // velocity vertical
+    }
+
+    #[test]
+    fn eskf_with_velocity_measurement() {
+        // Test ESKF with velocity measurement
+        let mut eskf = ErrorStateKalmanFilter::new(
+            UKF_PARAMS,
+            IMU_BIASES.to_vec(),
+            COVARIANCE_DIAGONAL.to_vec(),
+            DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
+        );
+
+        let vel_meas = GPSVelocityMeasurement {
+            northward_velocity: 0.0,
+            eastward_velocity: 0.0,
+            vertical_velocity: 0.0,
+            horizontal_noise_std: 0.5,
+            vertical_noise_std: 0.5,
+        };
+
+        eskf.update(&vel_meas);
+
+        // Verify update completed and error state is reset
+        let state = eskf.get_estimate();
+        assert_eq!(state.len(), 15);
+        for i in 0..15 {
+            assert_approx_eq!(eskf.error_state[i], 0.0, 1e-10);
+        }
+    }
+
+    #[test]
+    fn eskf_covariance_reduction() {
+        // Test that measurement updates reduce covariance
+        let mut eskf = ErrorStateKalmanFilter::new(
+            UKF_PARAMS,
+            IMU_BIASES.to_vec(),
+            vec![1.0; 15], // Start with high uncertainty
+            DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
+        );
+
+        // Get initial covariance trace
+        let initial_trace: f64 = (0..15).map(|i| eskf.error_covariance[(i, i)]).sum();
+
+        // Apply measurement update
+        let measurement = GPSPositionMeasurement {
+            latitude: 0.0,
+            longitude: 0.0,
+            altitude: 0.0,
+            horizontal_noise_std: 1.0,
+            vertical_noise_std: 1.0,
+        };
+        eskf.update(&measurement);
+
+        // Get final covariance trace
+        let final_trace: f64 = (0..15).map(|i| eskf.error_covariance[(i, i)]).sum();
+
+        // Covariance should decrease after measurement update
+        assert!(
+            final_trace < initial_trace,
+            "Covariance should decrease after measurement update: {} >= {}",
+            final_trace,
+            initial_trace
+        );
+    }
+
+    #[test]
+    fn eskf_angle_wrapping() {
+        // Test that angles are properly wrapped
+        let initial_state = InitialState {
+            latitude: 0.0,
+            longitude: 0.0,
+            altitude: 100.0,
+            northward_velocity: 0.0,
+            eastward_velocity: 0.0,
+            vertical_velocity: 0.0,
+            roll: 3.0, // Close to pi
+            pitch: 3.0,
+            yaw: 3.0,
+            in_degrees: false,
+            is_enu: true,
+        };
+
+        let mut eskf = ErrorStateKalmanFilter::new(
+            initial_state,
+            IMU_BIASES.to_vec(),
+            COVARIANCE_DIAGONAL.to_vec(),
+            DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
+        );
+
+        // Apply a measurement update (which triggers angle wrapping in get_estimate)
+        let measurement = GPSPositionMeasurement {
+            latitude: 0.0,
+            longitude: 0.0,
+            altitude: 100.0,
+            horizontal_noise_std: 5.0,
+            vertical_noise_std: 2.0,
+        };
+        eskf.update(&measurement);
+
+        // Get state (which wraps angles)
+        let state = eskf.get_estimate();
+
+        // Angles should be wrapped to [0, 2*pi] range
+        assert!(state[6] >= 0.0 && state[6] <= 2.0 * std::f64::consts::PI);
+        assert!(state[7] >= 0.0 && state[7] <= 2.0 * std::f64::consts::PI);
+        assert!(state[8] >= 0.0 && state[8] <= 2.0 * std::f64::consts::PI);
+    }
+
+    #[test]
+    fn eskf_no_singularities() {
+        // Test that ESKF avoids singularities even with large rotations
+        let initial_state = InitialState {
+            latitude: 45.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            northward_velocity: 10.0,
+            eastward_velocity: 5.0,
+            vertical_velocity: 0.0,
+            roll: std::f64::consts::FRAC_PI_2 - 0.1, // Close to gimbal lock
+            pitch: 0.0,
+            yaw: 0.0,
+            in_degrees: false,
+            is_enu: true,
+        };
+
+        let mut eskf = ErrorStateKalmanFilter::new(
+            initial_state,
+            IMU_BIASES.to_vec(),
+            COVARIANCE_DIAGONAL.to_vec(),
+            DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
+        );
+
+        // Apply large rotations
+        for _ in 0..10 {
+            let imu_data = IMUData {
+                accel: Vector3::new(0.0, 0.0, earth::gravity(&0.785, &100.0)),
+                gyro: Vector3::new(0.5, 0.5, 0.5), // Large rotation rates
+            };
+            eskf.predict(&imu_data, 0.01);
+        }
+
+        // Verify quaternion is still normalized (no singularities)
+        let quat_norm = eskf.nominal_quaternion.norm();
+        assert_approx_eq!(quat_norm, 1.0, 1e-6);
+
+        // Verify state is still valid
+        let state = eskf.get_estimate();
+        assert!(state[0].is_finite()); // latitude
+        assert!(state[1].is_finite()); // longitude
+        assert!(state[2].is_finite()); // altitude
+        for i in 6..9 {
+            assert!(state[i].is_finite()); // angles
+        }
+    }
 }
 
 /// Error-State Kalman Filter (ESKF) implementation for strapdown INS
@@ -2456,7 +2836,7 @@ mod tests {
 /// The Error-State Kalman Filter is the standard approach for strapdown inertial navigation
 /// systems. Unlike the full-state EKF which directly estimates position, velocity, and
 /// attitude, the ESKF maintains:
-/// 
+///
 /// 1. **Nominal state**: A high-fidelity nonlinear propagation of the full navigation state
 ///    using quaternion or DCM attitude representation
 /// 2. **Error state**: A small-perturbation linear estimate of errors in position, velocity,
@@ -2605,33 +2985,33 @@ mod tests {
 #[derive(Clone)]
 pub struct ErrorStateKalmanFilter {
     /// Nominal position state (latitude, longitude, altitude)
-    nominal_latitude: f64,    // radians
-    nominal_longitude: f64,   // radians  
-    nominal_altitude: f64,    // meters
-    
+    nominal_latitude: f64, // radians
+    nominal_longitude: f64, // radians
+    nominal_altitude: f64,  // meters
+
     /// Nominal velocity state (NED/ENU frame)
-    nominal_velocity_north: f64,  // m/s
-    nominal_velocity_east: f64,   // m/s
+    nominal_velocity_north: f64, // m/s
+    nominal_velocity_east: f64,     // m/s
     nominal_velocity_vertical: f64, // m/s
-    
+
     /// Nominal attitude as unit quaternion [w, x, y, z]
     /// Represents rotation from body frame to local-level frame (NED/ENU)
     nominal_quaternion: nalgebra::Vector4<f64>,
-    
+
     /// IMU biases (part of nominal state, augmented)
-    nominal_accel_bias: Vector3<f64>,  // m/s²
-    nominal_gyro_bias: Vector3<f64>,   // rad/s
-    
+    nominal_accel_bias: Vector3<f64>, // m/s²
+    nominal_gyro_bias: Vector3<f64>, // rad/s
+
     /// Error state vector (15 elements: 3 pos + 3 vel + 3 att + 3 acc_bias + 3 gyro_bias)
     /// Initialized to zero and reset to zero after each update
     error_state: DVector<f64>,
-    
+
     /// Error state covariance matrix (15x15)
     error_covariance: DMatrix<f64>,
-    
+
     /// Process noise covariance matrix (15x15)
     process_noise: DMatrix<f64>,
-    
+
     /// Coordinate frame flag (true for ENU, false for NED)
     is_enu: bool,
 }
@@ -2639,8 +3019,22 @@ pub struct ErrorStateKalmanFilter {
 impl Debug for ErrorStateKalmanFilter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ESKF")
-            .field("nominal_position", &[self.nominal_latitude, self.nominal_longitude, self.nominal_altitude])
-            .field("nominal_velocity", &[self.nominal_velocity_north, self.nominal_velocity_east, self.nominal_velocity_vertical])
+            .field(
+                "nominal_position",
+                &[
+                    self.nominal_latitude,
+                    self.nominal_longitude,
+                    self.nominal_altitude,
+                ],
+            )
+            .field(
+                "nominal_velocity",
+                &[
+                    self.nominal_velocity_north,
+                    self.nominal_velocity_east,
+                    self.nominal_velocity_vertical,
+                ],
+            )
             .field("nominal_quaternion", &self.nominal_quaternion)
             .field("error_state", &self.error_state)
             .field("error_covariance", &self.error_covariance)
@@ -2653,8 +3047,22 @@ impl Debug for ErrorStateKalmanFilter {
 impl Display for ErrorStateKalmanFilter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ErrorStateKalmanFilter")
-            .field("nominal_position", &[self.nominal_latitude, self.nominal_longitude, self.nominal_altitude])
-            .field("nominal_velocity", &[self.nominal_velocity_north, self.nominal_velocity_east, self.nominal_velocity_vertical])
+            .field(
+                "nominal_position",
+                &[
+                    self.nominal_latitude,
+                    self.nominal_longitude,
+                    self.nominal_altitude,
+                ],
+            )
+            .field(
+                "nominal_velocity",
+                &[
+                    self.nominal_velocity_north,
+                    self.nominal_velocity_east,
+                    self.nominal_velocity_vertical,
+                ],
+            )
             .field("nominal_quaternion", &self.nominal_quaternion)
             .field("error_state", &self.error_state)
             .field("error_covariance", &self.error_covariance)
@@ -2700,24 +3108,17 @@ impl ErrorStateKalmanFilter {
     ) -> ErrorStateKalmanFilter {
         // Convert initial Euler angles to quaternion for nominal state
         let (roll, pitch, yaw) = if initial_state.in_degrees {
-            (
-                initial_state.roll,
-                initial_state.pitch,
-                initial_state.yaw,
-            )
+            (initial_state.roll, initial_state.pitch, initial_state.yaw)
         } else {
-            (
-                initial_state.roll,
-                initial_state.pitch,
-                initial_state.yaw,
-            )
+            (initial_state.roll, initial_state.pitch, initial_state.yaw)
         };
-        
+
         // Convert Euler angles to quaternion (XYZ sequence: roll, pitch, yaw)
         let rotation = Rotation3::from_euler_angles(roll, pitch, yaw);
         let unit_quat = UnitQuaternion::from_rotation_matrix(&rotation);
-        let nominal_quaternion = nalgebra::Vector4::new(unit_quat.w, unit_quat.i, unit_quat.j, unit_quat.k);
-        
+        let nominal_quaternion =
+            nalgebra::Vector4::new(unit_quat.w, unit_quat.i, unit_quat.j, unit_quat.k);
+
         // Initialize nominal state
         let (nominal_latitude, nominal_longitude) = if initial_state.in_degrees {
             (
@@ -2727,16 +3128,17 @@ impl ErrorStateKalmanFilter {
         } else {
             (initial_state.latitude, initial_state.longitude)
         };
-        
+
         let nominal_accel_bias = Vector3::new(imu_biases[0], imu_biases[1], imu_biases[2]);
         let nominal_gyro_bias = Vector3::new(imu_biases[3], imu_biases[4], imu_biases[5]);
-        
+
         // Initialize error state to zero (15 elements)
         let error_state = DVector::zeros(15);
-        
+
         // Initialize error covariance
-        let error_covariance = DMatrix::from_diagonal(&DVector::from_vec(error_covariance_diagonal));
-        
+        let error_covariance =
+            DMatrix::from_diagonal(&DVector::from_vec(error_covariance_diagonal));
+
         ErrorStateKalmanFilter {
             nominal_latitude,
             nominal_longitude,
@@ -2753,7 +3155,7 @@ impl ErrorStateKalmanFilter {
             is_enu: initial_state.is_enu,
         }
     }
-    
+
     /// Inject error state into nominal state and reset error state to zero
     ///
     /// This is the key operation that distinguishes ESKF from full-state EKF.
@@ -2781,16 +3183,16 @@ impl ErrorStateKalmanFilter {
         // Position error injection (convert error in meters to lat/lon in radians)
         let lat_deg = self.nominal_latitude.to_degrees();
         let (r_n, r_e, _r_p) = crate::earth::principal_radii(&lat_deg, &self.nominal_altitude);
-        
+
         self.nominal_latitude += self.error_state[0] / r_n;
         self.nominal_longitude += self.error_state[1] / (r_e * self.nominal_latitude.cos());
         self.nominal_altitude += self.error_state[2];
-        
+
         // Velocity error injection
         self.nominal_velocity_north += self.error_state[3];
         self.nominal_velocity_east += self.error_state[4];
         self.nominal_velocity_vertical += self.error_state[5];
-        
+
         // Attitude error injection using quaternion multiplication
         // Small angle approximation: q(δθ) ≈ [1, δθ/2]^T
         let delta_theta = Vector3::new(
@@ -2798,7 +3200,7 @@ impl ErrorStateKalmanFilter {
             self.error_state[7],
             self.error_state[8],
         );
-        
+
         // Create error quaternion from small angle vector
         let delta_q = nalgebra::Vector4::new(
             1.0,
@@ -2806,36 +3208,36 @@ impl ErrorStateKalmanFilter {
             delta_theta[1] * 0.5,
             delta_theta[2] * 0.5,
         );
-        
+
         // Quaternion multiplication: q_new = q_nominal ⊗ q_error
         let w = self.nominal_quaternion[0];
         let x = self.nominal_quaternion[1];
         let y = self.nominal_quaternion[2];
         let z = self.nominal_quaternion[3];
-        
+
         let dw = delta_q[0];
         let dx = delta_q[1];
         let dy = delta_q[2];
         let dz = delta_q[3];
-        
+
         self.nominal_quaternion[0] = w * dw - x * dx - y * dy - z * dz;
         self.nominal_quaternion[1] = w * dx + x * dw + y * dz - z * dy;
         self.nominal_quaternion[2] = w * dy - x * dz + y * dw + z * dx;
         self.nominal_quaternion[3] = w * dz + x * dy - y * dx + z * dw;
-        
+
         // Normalize quaternion to maintain unit length
         let norm = self.nominal_quaternion.norm();
         self.nominal_quaternion /= norm;
-        
+
         // Bias error injection
         self.nominal_accel_bias[0] += self.error_state[9];
         self.nominal_accel_bias[1] += self.error_state[10];
         self.nominal_accel_bias[2] += self.error_state[11];
-        
+
         self.nominal_gyro_bias[0] += self.error_state[12];
         self.nominal_gyro_bias[1] += self.error_state[13];
         self.nominal_gyro_bias[2] += self.error_state[14];
-        
+
         // Reset error state to zero
         self.error_state.fill(0.0);
     }
@@ -2876,24 +3278,23 @@ impl NavigationFilter for ErrorStateKalmanFilter {
             .as_any()
             .downcast_ref::<IMUData>()
             .expect("ErrorStateKalmanFilter.predict expects an IMUData InputModel");
-        
+
         // Compensate IMU measurements for biases
         let corrected_accel = imu_data.accel - &self.nominal_accel_bias;
         let corrected_gyro = imu_data.gyro - &self.nominal_gyro_bias;
-        
+
         // ===== Nominal State Propagation (Nonlinear) =====
-        
+
         // Convert quaternion to rotation matrix for propagation
         let qw = self.nominal_quaternion[0];
         let qx = self.nominal_quaternion[1];
         let qy = self.nominal_quaternion[2];
         let qz = self.nominal_quaternion[3];
-        
-        let unit_quat = UnitQuaternion::from_quaternion(
-            nalgebra::Quaternion::new(qw, qx, qy, qz)
-        );
-        let rotation = Rotation3::from_matrix_unchecked(unit_quat.to_rotation_matrix().into_inner());
-        
+
+        let unit_quat = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(qw, qx, qy, qz));
+        let rotation =
+            Rotation3::from_matrix_unchecked(unit_quat.to_rotation_matrix().into_inner());
+
         // Create StrapdownState for nominal propagation
         let mut nominal_state = StrapdownState {
             latitude: self.nominal_latitude,
@@ -2905,14 +3306,14 @@ impl NavigationFilter for ErrorStateKalmanFilter {
             attitude: rotation,
             is_enu: self.is_enu,
         };
-        
+
         // Propagate nominal state using full strapdown mechanization
         let corrected_imu = IMUData {
             accel: corrected_accel.clone(),
             gyro: corrected_gyro.clone(),
         };
         forward(&mut nominal_state, corrected_imu, dt);
-        
+
         // Update nominal state from propagation
         self.nominal_latitude = nominal_state.latitude;
         self.nominal_longitude = nominal_state.longitude;
@@ -2920,15 +3321,16 @@ impl NavigationFilter for ErrorStateKalmanFilter {
         self.nominal_velocity_north = nominal_state.velocity_north;
         self.nominal_velocity_east = nominal_state.velocity_east;
         self.nominal_velocity_vertical = nominal_state.velocity_vertical;
-        
+
         // Convert rotation back to quaternion and normalize
         let unit_quat = UnitQuaternion::from_rotation_matrix(&nominal_state.attitude);
-        self.nominal_quaternion = nalgebra::Vector4::new(unit_quat.w, unit_quat.i, unit_quat.j, unit_quat.k);
+        self.nominal_quaternion =
+            nalgebra::Vector4::new(unit_quat.w, unit_quat.i, unit_quat.j, unit_quat.k);
         let norm = self.nominal_quaternion.norm();
         self.nominal_quaternion /= norm;
-        
+
         // ===== Error State Covariance Propagation (Linear) =====
-        
+
         // Compute error-state transition Jacobian F_δx
         // Note: This is different from full-state Jacobian because we're linearizing
         // around the nominal trajectory, and attitude errors use small angles
@@ -2938,20 +3340,21 @@ impl NavigationFilter for ErrorStateKalmanFilter {
             &corrected_gyro,
             dt,
         );
-        
+
         // Propagate error covariance: P = F * P * F^T + Q
-        self.error_covariance = &f_error * &self.error_covariance * f_error.transpose() + &self.process_noise;
-        
+        self.error_covariance =
+            &f_error * &self.error_covariance * f_error.transpose() + &self.process_noise;
+
         // Ensure covariance remains symmetric and positive semi-definite
         self.error_covariance = symmetrize(&self.error_covariance);
-        
+
         // Add small regularization to prevent numerical issues
         let eps = 1e-9;
         for i in 0..15 {
             self.error_covariance[(i, i)] += eps;
         }
     }
-    
+
     /// Update step: compute error state correction and inject into nominal state
     ///
     /// The ESKF update:
@@ -2992,41 +3395,38 @@ impl NavigationFilter for ErrorStateKalmanFilter {
         nominal_state_vec[3] = self.nominal_velocity_north;
         nominal_state_vec[4] = self.nominal_velocity_east;
         nominal_state_vec[5] = self.nominal_velocity_vertical;
-        
+
         // Convert quaternion to Euler angles for measurement model
-        let quat = nalgebra::UnitQuaternion::from_quaternion(
-            nalgebra::Quaternion::new(
-                self.nominal_quaternion[0],
-                self.nominal_quaternion[1],
-                self.nominal_quaternion[2],
-                self.nominal_quaternion[3],
-            )
-        );
+        let quat = nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+            self.nominal_quaternion[0],
+            self.nominal_quaternion[1],
+            self.nominal_quaternion[2],
+            self.nominal_quaternion[3],
+        ));
         let euler = quat.euler_angles();
         nominal_state_vec[6] = euler.0; // roll
         nominal_state_vec[7] = euler.1; // pitch
         nominal_state_vec[8] = euler.2; // yaw
-        
+
         // Get expected measurement from nominal state
         let z_hat = measurement.get_expected_measurement(&nominal_state_vec);
-        
+
         // Compute measurement Jacobian H (maps error state to measurements)
         // For ESKF, we need to account for the error-state representation
         use crate::measurements::{
             GPSPositionAndVelocityMeasurement, GPSPositionMeasurement, GPSVelocityMeasurement,
             MagnetometerYawMeasurement, RelativeAltitudeMeasurement,
         };
-        
+
         // Create StrapdownState for Jacobian computation
         let qw = self.nominal_quaternion[0];
         let qx = self.nominal_quaternion[1];
         let qy = self.nominal_quaternion[2];
         let qz = self.nominal_quaternion[3];
-        let unit_quat = UnitQuaternion::from_quaternion(
-            nalgebra::Quaternion::new(qw, qx, qy, qz)
-        );
-        let rotation = Rotation3::from_matrix_unchecked(unit_quat.to_rotation_matrix().into_inner());
-        
+        let unit_quat = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(qw, qx, qy, qz));
+        let rotation =
+            Rotation3::from_matrix_unchecked(unit_quat.to_rotation_matrix().into_inner());
+
         let nav_state = StrapdownState {
             latitude: self.nominal_latitude,
             longitude: self.nominal_longitude,
@@ -3037,7 +3437,7 @@ impl NavigationFilter for ErrorStateKalmanFilter {
             attitude: rotation,
             is_enu: self.is_enu,
         };
-        
+
         // Compute measurement Jacobian for 9-state nav system
         let h_9state = if measurement
             .as_any()
@@ -3077,47 +3477,48 @@ impl NavigationFilter for ErrorStateKalmanFilter {
             // Fallback: assume direct position measurement
             crate::linearize::gps_position_jacobian(&nav_state)
         };
-        
+
         // Extend H to full 15-state error state (add zero columns for bias states)
         let meas_dim = measurement.get_dimension();
         let mut h_error = DMatrix::<f64>::zeros(meas_dim, 15);
         h_error.view_mut((0, 0), (meas_dim, 9)).copy_from(&h_9state);
         // Measurement doesn't depend on biases (columns 9-14 remain zero)
-        
+
         // Innovation covariance: S = H * P * H^T + R
         let s = &h_error * &self.error_covariance * h_error.transpose() + measurement.get_noise();
-        
+
         // Kalman gain: K = P * H^T * S^(-1)
         let k = self.error_covariance.clone()
             * h_error.transpose()
             * robust_spd_solve(&symmetrize(&s), &DMatrix::identity(s.nrows(), s.ncols()))
                 .transpose();
-        
+
         // Innovation (measurement residual): nu = z - z_hat
         let innovation = measurement.get_measurement(&nominal_state_vec) - &z_hat;
-        
+
         // Error state update: δx = K * nu
         self.error_state = &k * innovation;
-        
+
         // Inject error state into nominal state and reset
         self.inject_error_state();
-        
+
         // Error covariance update (Joseph form for numerical stability):
         // P = (I - K*H)*P*(I - K*H)^T + K*R*K^T
         let i_kh = DMatrix::identity(15, 15) - &k * &h_error;
         let r = measurement.get_noise();
-        self.error_covariance = &i_kh * &self.error_covariance * i_kh.transpose() + &k * r * k.transpose();
-        
+        self.error_covariance =
+            &i_kh * &self.error_covariance * i_kh.transpose() + &k * r * k.transpose();
+
         // Ensure covariance remains symmetric and positive semi-definite
         self.error_covariance = symmetrize(&self.error_covariance);
-        
+
         // Add small regularization
         let eps = 1e-9;
         for i in 0..15 {
             self.error_covariance[(i, i)] += eps;
         }
     }
-    
+
     /// Get the current nominal state estimate
     ///
     /// Returns the nominal state vector in the same format as EKF/UKF for compatibility:
@@ -3126,31 +3527,29 @@ impl NavigationFilter for ErrorStateKalmanFilter {
     /// Note: The internal representation uses quaternions, but this converts to Euler angles
     fn get_estimate(&self) -> DVector<f64> {
         let mut state = DVector::zeros(15);
-        
+
         // Position
         state[0] = self.nominal_latitude;
         state[1] = self.nominal_longitude;
         state[2] = self.nominal_altitude;
-        
+
         // Velocity
         state[3] = self.nominal_velocity_north;
         state[4] = self.nominal_velocity_east;
         state[5] = self.nominal_velocity_vertical;
-        
+
         // Attitude (convert quaternion to Euler angles)
-        let quat = nalgebra::UnitQuaternion::from_quaternion(
-            nalgebra::Quaternion::new(
-                self.nominal_quaternion[0],
-                self.nominal_quaternion[1],
-                self.nominal_quaternion[2],
-                self.nominal_quaternion[3],
-            )
-        );
+        let quat = nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+            self.nominal_quaternion[0],
+            self.nominal_quaternion[1],
+            self.nominal_quaternion[2],
+            self.nominal_quaternion[3],
+        ));
         let euler = quat.euler_angles();
         state[6] = wrap_to_2pi(euler.0); // roll
         state[7] = wrap_to_2pi(euler.1); // pitch
         state[8] = wrap_to_2pi(euler.2); // yaw
-        
+
         // Biases
         state[9] = self.nominal_accel_bias[0];
         state[10] = self.nominal_accel_bias[1];
@@ -3158,10 +3557,10 @@ impl NavigationFilter for ErrorStateKalmanFilter {
         state[12] = self.nominal_gyro_bias[0];
         state[13] = self.nominal_gyro_bias[1];
         state[14] = self.nominal_gyro_bias[2];
-        
+
         state
     }
-    
+
     /// Get the current error state uncertainty (covariance matrix)
     ///
     /// Returns the error covariance matrix P (15x15) representing uncertainty
