@@ -353,7 +353,13 @@ fn process_file(
             let results = dead_reckoning(&records);
             info!("Generated {} navigation results", results.len());
 
-            let output_file = output.join(input_file.file_name().unwrap());
+            let output_file = output
+                .join(input_file.file_name().ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("Input file path '{}' has no filename", input_file.display()),
+                    )
+                })?);
             NavigationResult::to_csv(&results, &output_file)?;
             info!("Results written to {}", output_file.display());
             Ok(())
@@ -583,7 +589,13 @@ fn run_dead_reckoning(args: &SimArgs) -> Result<(), Box<dyn Error>> {
         info!("Generated {} navigation results", results.len());
 
         // Write results to CSV
-        let output_file = Path::new(&args.output).join(input_file.file_name().unwrap());
+        let output_file = Path::new(&args.output)
+            .join(input_file.file_name().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("Input file path '{}' has no filename", input_file.display()),
+                )
+            })?);
         NavigationResult::to_csv(&results, &output_file)?;
         info!("Results written to {}", output_file.display());
     }
