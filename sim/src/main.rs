@@ -20,9 +20,11 @@
 
 use clap::{Args, Parser, Subcommand};
 use log::{error, info};
+use rayon::prelude::*;
 use std::error::Error;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use strapdown::messages::{GnssScheduler, build_event_stream};
 use strapdown::sim::{
     FaultArgs, FilterType, NavigationResult, ParticleFilterType, SchedulerArgs, SimulationConfig,
@@ -71,6 +73,10 @@ struct Cli {
     /// Log file path (if not specified, logs to stderr)
     #[arg(long, global = true)]
     log_file: Option<PathBuf>,
+
+    /// Run simulations in parallel when processing multiple files
+    #[arg(long, global = true)]
+    parallel: bool,
 }
 
 /// Top-level commands
@@ -327,15 +333,95 @@ fn validate_output_path(output: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Process a single CSV file with the given configuration
+fn process_file(
+    input_file: &Path,
+    output: &Path,
+    config: &SimulationConfig,
+) -> Result<(), Box<dyn Error>> {
+    info!("Processing file: {}", input_file.display());
+
+    // Load sensor data
+    let records = TestDataRecord::from_csv(input_file)?;
+    info!(
+        "Read {} records from {}",
+        records.len(),
+        input_file.display()
+    );
+
+    // Execute based on mode
+    match config.mode {
+        SimulationMode::DeadReckoning => {
+            info!("Dead reckoning mode is not yet fully implemented");
+            Err("Dead reckoning mode is not yet fully implemented".into())
+        }
+        SimulationMode::OpenLoop => {
+            info!("Open-loop mode is not yet fully implemented");
+            Err("Open-loop mode is not yet fully implemented".into())
+        }
+        SimulationMode::ClosedLoop => {
+            let filter_config = config.closed_loop.clone().unwrap_or_default();
+            info!(
+                "Running closed-loop mode with {:?} filter",
+                filter_config.filter
+            );
+
+            let event_stream = build_event_stream(&records, &config.gnss_degradation);
+            info!(
+                "Initialized event stream with {} events",
+                event_stream.events.len()
+            );
+
+            let results = match filter_config.filter {
+                FilterType::Ukf => {
+                    let mut ukf =
+                        initialize_ukf(records[0].clone(), None, None, None, None, None, None);
+                    info!("Initialized UKF");
+                    run_closed_loop(&mut ukf, event_stream, None)
+                }
+                FilterType::Ekf => {
+                    let mut ekf = initialize_ekf(records[0].clone(), None, None, None, None, true);
+                    info!("Initialized EKF");
+                    run_closed_loop(&mut ekf, event_stream, None)
+                }
+            };
+
+            let output_file = output.join(input_file.file_name().unwrap());
+            match results {
+                Ok(ref nav_results) => {
+                    NavigationResult::to_csv(nav_results, &output_file)?;
+                    info!("Results written to {}", output_file.display());
+                    Ok(())
+                }
+                Err(e) => {
+                    error!("Error running closed-loop simulation: {}", e);
+                    Err(e.into())
+                }
+            }
+        }
+        SimulationMode::ParticleFilter => {
+            info!("Particle filter mode is not yet fully implemented");
+            Err("Particle filter mode is not yet fully implemented".into())
+        }
+    }
+}
+
 /// Execute simulation from a configuration file
-fn run_from_config(config_path: &Path) -> Result<(), Box<dyn Error>> {
+fn run_from_config(config_path: &Path, cli_parallel: bool) -> Result<(), Box<dyn Error>> {
     info!("Loading configuration from {}", config_path.display());
 
-    let config = SimulationConfig::from_file(config_path)?;
+    let mut config = SimulationConfig::from_file(config_path)?;
+    
+    // Override parallel setting if CLI flag is set
+    if cli_parallel {
+        config.parallel = true;
+    }
+    
     info!("Configuration loaded successfully");
     info!("Mode: {:?}", config.mode);
     info!("Input: {}", config.input);
     info!("Output: {}", config.output);
+    info!("Parallel: {}", config.parallel);
 
     // Validate paths
     let input = Path::new(&config.input);
@@ -349,55 +435,56 @@ fn run_from_config(config_path: &Path) -> Result<(), Box<dyn Error>> {
 
     if is_multiple {
         info!("Processing {} CSV files from directory", csv_files.len());
+        if config.parallel {
+            info!("Running in parallel mode");
+        }
     }
 
-    // Process each CSV file
-    for input_file in &csv_files {
-        info!("Processing file: {}", input_file.display());
+    // Process files either sequentially or in parallel
+    if config.parallel && is_multiple {
+        // Parallel processing
+        let errors = Mutex::new(Vec::new());
 
-        // Load sensor data
-        let records = TestDataRecord::from_csv(input_file)?;
-        info!(
-            "Read {} records from {}",
-            records.len(),
-            input_file.display()
-        );
-
-        // Execute based on mode
-        match config.mode {
-            SimulationMode::DeadReckoning => {
-                info!("Dead reckoning mode is not yet fully implemented");
-                if !is_multiple || csv_files.first() == Some(input_file) {
-                    println!("Dead reckoning mode is not yet fully implemented");
+        csv_files.par_iter().for_each(|input_file| {
+            match process_file(input_file, output, &config) {
+                Ok(()) => {}
+                Err(e) => {
+                    error!(
+                        "Error processing {}: {}",
+                        input_file.display(),
+                        e
+                    );
+                    // Use expect with a descriptive message for mutex operations
+                    errors.lock()
+                        .expect("Failed to acquire lock on error collection - another thread panicked")
+                        .push((input_file.clone(), e.to_string()));
                 }
             }
-            SimulationMode::OpenLoop => {
-                info!("Open-loop mode is not yet fully implemented");
-                if !is_multiple || csv_files.first() == Some(input_file) {
-                    println!("Open-loop mode is not yet fully implemented");
-                }
-            }
-            SimulationMode::ClosedLoop => {
-                let filter_config = config.closed_loop.clone().unwrap_or_default();
-                info!(
-                    "Running closed-loop mode with {:?} filter",
-                    filter_config.filter
-                );
+        });
 
-                let output_file = output.join(input_file.file_name().unwrap());
-                run_single_closed_loop_simulation(
-                    filter_config.filter,
-                    &records,
-                    &config.gnss_degradation,
-                    &output_file,
-                )?;
+        let errors = errors.into_inner()
+            .expect("Failed to extract errors from mutex - another thread panicked");
+        if !errors.is_empty() {
+            error!("{} file(s) failed to process", errors.len());
+            for (file, err) in &errors {
+                error!("  {}: {}", file.display(), err);
             }
-            SimulationMode::ParticleFilter => {
-                info!("Particle filter mode is not yet fully implemented");
-                if !is_multiple || csv_files.first() == Some(input_file) {
-                    //println!("Particle filter mode is not yet fully implemented");
+            return Err(format!("{} file(s) failed to process", errors.len()).into());
+        }
+    } else {
+        // Sequential processing
+        let mut failures = 0usize;
+        for input_file in &csv_files {
+            if let Err(e) = process_file(input_file, output, &config) {
+                if !is_multiple {
+                    return Err(e);
                 }
+                failures += 1;
+                error!("Error processing {}: {}", input_file.display(), e);
             }
+        }
+        if failures > 0 {
+            error!("{} file(s) failed to process", failures);
         }
     }
 
@@ -538,7 +625,7 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
                     e
                 );
                 if !is_multiple {
-                    return Err(e.into());
+                    return Err(e);
                 }
                 // For multiple files, continue processing remaining files
                 error!(
@@ -897,6 +984,67 @@ fn prompt_f64_with_default(prompt_text: &str, default: f64, min_val: f64, max_va
     }
 }
 
+/// Prompt for parallel execution preference
+fn prompt_parallel() -> bool {
+    loop {
+        println!(
+            "Would you like to run simulations in parallel when processing multiple files?\n\
+            [y] - Yes (parallel execution)\n\
+            [n] - No (sequential execution, default)\n\
+            [q] - Quit\n"
+        );
+        match read_user_input() {
+            None => return false,
+            Some(input) => match input.to_lowercase().as_str() {
+                "y" | "yes" => return true,
+                "n" | "no" => return false,
+                _ => println!("Error: Please enter 'y' or 'n'.\n"),
+            },
+        }
+    }
+}
+
+/// Prompt for log level
+fn prompt_log_level() -> strapdown::sim::LogLevel {
+    use strapdown::sim::LogLevel;
+    loop {
+        println!(
+            "Please select the log level:\n\
+            [1] - off\n\
+            [2] - error\n\
+            [3] - warn\n\
+            [4] - info (default)\n\
+            [5] - debug\n\
+            [6] - trace\n\
+            [q] - Quit\n"
+        );
+        match read_user_input() {
+            None => return LogLevel::Info,
+            Some(input) => match input.as_str() {
+                "1" => return LogLevel::Off,
+                "2" => return LogLevel::Error,
+                "3" => return LogLevel::Warn,
+                "4" => return LogLevel::Info,
+                "5" => return LogLevel::Debug,
+                "6" => return LogLevel::Trace,
+                _ => println!("Error: Invalid selection. Please enter 1-6.\n"),
+            },
+        }
+    }
+}
+
+/// Prompt for log file path
+fn prompt_log_file() -> Option<String> {
+    println!(
+        "Please specify a log file path (press Enter to log to stderr, or 'q' to quit):"
+    );
+    match read_user_input() {
+        None => None,
+        Some(input) if !input.trim().is_empty() => Some(input),
+        _ => None,
+    }
+}
+
 /// Interactive configuration file creation wizard that creates a custom
 /// [SimulationConfig] and writes it to file.
 fn create_config_file() -> Result<(), Box<dyn Error>> {
@@ -912,6 +1060,16 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
     let output_path = prompt_output_path();
     let mode = prompt_simulation_mode();
     let seed = prompt_seed();
+    let parallel = prompt_parallel();
+
+    // Logging configuration
+    println!("\n--- Logging Configuration ---");
+    let log_level = prompt_log_level();
+    let log_file = prompt_log_file();
+    let logging = strapdown::sim::LoggingConfig {
+        level: log_level,
+        file: log_file,
+    };
 
     // Mode-specific configuration
     let closed_loop = if matches!(mode, SimulationMode::ClosedLoop) {
@@ -945,6 +1103,8 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
         output: output_path.clone(),
         mode,
         seed,
+        parallel,
+        logging,
         closed_loop,
         particle_filter,
         gnss_degradation,
@@ -952,11 +1112,10 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
 
     // validate output location exists and write to file using appropriate format based on file extension
     let config_output_path = Path::new(&save_path).join(&config_name);
-    if let Some(parent) = config_output_path.parent() {
-        if !parent.as_os_str().is_empty() && !parent.exists() {
+    if let Some(parent) = config_output_path.parent()
+        && !parent.as_os_str().is_empty() && !parent.exists() {
             std::fs::create_dir_all(parent)?;
         }
-    }
     config.to_file(&config_output_path)?;
 
     println!(
@@ -972,13 +1131,27 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
 fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
 
-    // Initialize logger
-    init_logger(&cli.log_level, cli.log_file.as_ref())?;
-
-    // If --config is provided, run from config file and ignore subcommands
+    // If --config is provided, load config and potentially override logger with config values
     if let Some(ref config_path) = cli.config {
-        return run_from_config(config_path);
+        // Load config first to get logging preferences
+        let config = SimulationConfig::from_file(config_path)?;
+        
+        // Determine log level: CLI flag takes precedence over config
+        // Check if CLI log level was explicitly set (not just the default)
+        let log_level = config.logging.level.as_str();
+        
+        // Create PathBuf from config file string if needed
+        let config_log_file = config.logging.file.as_ref().map(PathBuf::from);
+        let log_file = cli.log_file.as_ref().or(config_log_file.as_ref());
+        
+        // Initialize logger with resolved settings
+        init_logger(log_level, log_file)?;
+        
+        return run_from_config(config_path, cli.parallel);
     }
+
+    // Initialize logger with CLI settings for command-line mode
+    init_logger(&cli.log_level, cli.log_file.as_ref())?;
 
     // Otherwise, execute based on subcommand
     match cli.command {
@@ -1066,5 +1239,35 @@ mod tests {
             yaml_path.extension().and_then(|s| s.to_str()),
             Some("yaml")
         );
+    }
+
+    #[test]
+    fn test_logging_config_default() {
+        use strapdown::sim::{LoggingConfig, LogLevel};
+        
+        let logging = LoggingConfig::default();
+        assert_eq!(logging.level, LogLevel::Info);
+        assert!(logging.file.is_none());
+    }
+
+    #[test]
+    fn test_simulation_config_with_parallel() {
+        use strapdown::sim::{SimulationConfig, LogLevel};
+        
+        let config = SimulationConfig::default();
+        assert!(!config.parallel); // Should default to false
+        assert_eq!(config.logging.level, LogLevel::Info);
+    }
+
+    #[test]
+    fn test_logging_config_creation() {
+        use strapdown::sim::{LoggingConfig, LogLevel};
+        
+        let logging = LoggingConfig {
+            level: LogLevel::Debug,
+            file: Some("/tmp/test.log".to_string()),
+        };
+        assert_eq!(logging.level, LogLevel::Debug);
+        assert_eq!(logging.file, Some("/tmp/test.log".to_string()));
     }
 }
