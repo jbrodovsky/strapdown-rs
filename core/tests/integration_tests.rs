@@ -26,7 +26,13 @@
 //! 2. Position errors remain within reasonable bounds
 //! 3. Velocity and orientation estimates are stable
 //! 4. The closed-loop filter outperforms dead reckoning
+//!
+//! ## Plotting
+//!
+//! Tests generate diagnostic performance plots saved to `test_plots/` at the repository root.
+//! These plots compare navigation results with GPS ground truth and can be reviewed by developers.
 use std::path::Path;
+use std::fs;
 
 use strapdown::earth::haversine_distance;
 use strapdown::kalman::{
@@ -38,6 +44,8 @@ use strapdown::messages::{
 use strapdown::sim::{NavigationResult, TestDataRecord, dead_reckoning, run_closed_loop};
 
 use nalgebra::{DMatrix, DVector};
+
+use strapdown_sim::plotting::plot_performance;
 
 /// Default process noise covariance for testing (15-state)
 const DEFAULT_PROCESS_NOISE: [f64; 15] = [
@@ -101,6 +109,38 @@ const ESKF_INITIAL_COVARIANCE: [f64; 15] = [
     0.08, 0.08, 0.08, // accelerometer bias covariance (m/s²) - 8x default
     0.008, 0.008, 0.008, // gyroscope bias covariance (rad/s) - 8x default
 ];
+
+/// Helper function to save performance plots to the test_plots directory
+///
+/// This function creates the test_plots directory at the repository root if it doesn't exist,
+/// and saves a diagnostic plot comparing navigation results with GPS ground truth.
+///
+/// # Arguments
+/// - `results` - Navigation results from filter
+/// - `records` - Test data records containing GPS measurements
+/// - `plot_name` - Name for the output plot file (e.g., "ukf_closed_loop.png")
+fn save_test_plot(results: &[NavigationResult], records: &[TestDataRecord], plot_name: &str) {
+    // Get the repository root (3 levels up from CARGO_MANIFEST_DIR/tests)
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let repo_root = Path::new(manifest_dir).parent().unwrap();
+    let plot_dir = repo_root.join("test_plots");
+
+    // Create the directory if it doesn't exist
+    if let Err(e) = fs::create_dir_all(&plot_dir) {
+        eprintln!("Warning: Failed to create plot directory: {}", e);
+        return;
+    }
+
+    let plot_path = plot_dir.join(plot_name);
+
+    // Generate the plot
+    if let Err(e) = plot_performance(results, records, &plot_path) {
+        eprintln!("Warning: Failed to generate plot {}: {}", plot_name, e);
+    } else {
+        println!("Generated diagnostic plot: {}", plot_path.display());
+    }
+}
+
 /// Error statistics for a navigation solution
 #[derive(Debug, Clone)]
 struct ErrorStats {
@@ -417,6 +457,9 @@ fn test_dead_reckoning_on_real_data() {
         stats.mean_velocity_vertical_error
     );
 
+    // Generate diagnostic plot
+    save_test_plot(&results, &records, "dead_reckoning.png");
+
     // Dead reckoning will drift over time, but should not produce NaN or infinite values
     for result in &results {
         assert!(
@@ -521,6 +564,9 @@ fn test_ukf_closed_loop_on_real_data() {
         stats.mean_velocity_east_error,
         stats.mean_velocity_vertical_error
     );
+
+    // Generate diagnostic plot
+    save_test_plot(&results, &records, "ukf_closed_loop.png");
 
     // Assert error bounds - these should be reasonable for a working filter with GNSS
     // With good GNSS, horizontal error should be within a few meters RMS
@@ -657,6 +703,9 @@ fn test_ukf_with_degraded_gnss() {
         stats.max_altitude_error,
         stats.rms_altitude_error
     );
+
+    // Generate diagnostic plot
+    save_test_plot(&results, &records, "ukf_degraded_gnss.png");
 
     // Error bounds should be looser than full-rate GNSS but still reasonable
     assert!(
@@ -844,6 +893,9 @@ fn test_ekf_closed_loop_on_real_data() {
         stats.mean_velocity_vertical_error
     );
 
+    // Generate diagnostic plot
+    save_test_plot(&results, &records, "ekf_closed_loop.png");
+
     // Assert error bounds - these should be reasonable for a working filter with GNSS
     // With good GNSS, horizontal error should be within a few meters RMS
     // EKF may have slightly higher errors than UKF due to linearization
@@ -972,6 +1024,9 @@ fn test_ekf_with_degraded_gnss() {
         stats.max_altitude_error,
         stats.rms_altitude_error
     );
+
+    // Generate diagnostic plot
+    save_test_plot(&results, &records, "ekf_degraded_gnss.png");
 
     // Error bounds should be looser than full-rate GNSS but still reasonable
     // EKF may have slightly higher errors than UKF due to linearization
@@ -1163,6 +1218,9 @@ fn test_eskf_closed_loop_on_real_data() {
         stats.mean_velocity_east_error,
         stats.mean_velocity_vertical_error
     );
+
+    // Generate diagnostic plot
+    save_test_plot(&results, &records, "eskf_closed_loop.png");
 
     // Assert error bounds - ESKF with 5x process noise tuning
     // Performance reflects trade-off between stability (no divergence) and accuracy

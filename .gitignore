@@ -1,5 +1,6 @@
 .vscode
 target
+test_plots/
 data/raw
 examples/strapdown-sim/out
 

@@ -6,6 +6,10 @@ edition = "2024"
 description = "Strapdown inertial navigation system simulation tool"
 license = "MIT"
 
+[lib]
+name = "strapdown_sim"
+path = "src/lib.rs"
+
 [features]
 default = ["plotting"]
 plotting = ["dep:plotters"]
