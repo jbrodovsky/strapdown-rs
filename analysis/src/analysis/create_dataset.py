@@ -237,7 +237,11 @@ def find_binary(bin_path: Path | None) -> Path:
 
 
 def build_cmd(
-    bin_path: Path, input_file: Path, output_file: Path, cfg_args: List[str], filter_type: str
+    bin_path: Path,
+    input_file: Path,
+    output_file: Path,
+    cfg_args: List[str],
+    filter_type: str,
 ) -> List[str]:
     # Use the same invocation style as the notebook: <bin> closed-loop --filter <filter> -i <input> -o <output> <cfg_args...>
     cmd = [
@@ -254,7 +258,12 @@ def build_cmd(
 
 
 def run_job(
-    bin_path: Path, input_path: Path, out_root: Path, cfg_name: str, cfg_args: List[str], filter_type: str
+    bin_path: Path,
+    input_path: Path,
+    out_root: Path,
+    cfg_name: str,
+    cfg_args: List[str],
+    filter_type: str,
 ) -> int:
     # Organize output: <out_root>/<filter_type>/<cfg_name>/<input_basename>.csv
     out_dir = out_root / filter_type / cfg_name
@@ -267,7 +276,9 @@ def run_job(
         res = subprocess.run(cmd, check=False)
         return res.returncode
     except Exception as e:
-        print(f"Error running job for {input_path} with config {cfg_name} and filter {filter_type}: {e}")
+        print(
+            f"Error running job for {input_path} with config {cfg_name} and filter {filter_type}: {e}"
+        )
         return 1
 
 
@@ -321,7 +332,9 @@ def main(argv: List[str] | None = None) -> int:
     if args.jobs <= 1:
         failures = 0
         for filter_type, cfg_name, input_path, cfg_args in jobs:
-            rc = run_job(bin_path, input_path, out_root, cfg_name, cfg_args, filter_type)
+            rc = run_job(
+                bin_path, input_path, out_root, cfg_name, cfg_args, filter_type
+            )
             if rc != 0:
                 print(f"Job failed (rc={rc}): {filter_type}/{cfg_name} {input_path}")
                 failures += 1
@@ -332,7 +345,13 @@ def main(argv: List[str] | None = None) -> int:
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as ex:
             future_to_job = {
                 ex.submit(
-                    run_job, bin_path, input_path, out_root, cfg_name, cfg_args, filter_type
+                    run_job,
+                    bin_path,
+                    input_path,
+                    out_root,
+                    cfg_name,
+                    cfg_args,
+                    filter_type,
                 ): (filter_type, cfg_name, input_path)
                 for (filter_type, cfg_name, input_path, cfg_args) in jobs
             }
@@ -341,10 +360,14 @@ def main(argv: List[str] | None = None) -> int:
                 try:
                     rc = fut.result()
                     if rc != 0:
-                        print(f"Job failed (rc={rc}): {filter_type}/{cfg_name} {input_path}")
+                        print(
+                            f"Job failed (rc={rc}): {filter_type}/{cfg_name} {input_path}"
+                        )
                         failures += 1
                 except Exception as e:
-                    print(f"Job raised exception: {filter_type}/{cfg_name} {input_path} -> {e}")
+                    print(
+                        f"Job raised exception: {filter_type}/{cfg_name} {input_path} -> {e}"
+                    )
                     failures += 1
         print(f"Finished parallel run. {failures} jobs failed.")
         return 0 if failures == 0 else 5

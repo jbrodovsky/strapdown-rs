@@ -3,12 +3,12 @@
 //! This module provides tools for simulating and evaluating strapdown inertial navigation systems.
 //! It is primarily designed to work with data produced from the [Sensor Logger](https://www.tszheichoi.com/sensorlogger)
 //! app, as such it makes assumptions about the data format and structure that that corresponds to
-//! how that app records data. 
+//! how that app records data.
 //!
 //! ## Data Formats
 //!
 //! The module supports both CSV and netCDF formats for input and output data:
-//! 
+//!
 //! - **CSV format**: Human-readable text format, suitable for quick inspection and editing
 //! - **netCDF format**: Binary format optimized for large datasets, better for archival and data interchange
 //!
@@ -317,33 +317,35 @@ impl TestDataRecord {
     /// ```
     pub fn to_hdf5<P: AsRef<Path>>(records: &[Self], path: P) -> Result<()> {
         use hdf5::File;
-        
+
         let file = File::create(path)?;
         let n = records.len();
-        
+
         // Handle empty datasets
         if n == 0 {
             // Create group to indicate structure even for empty datasets
             let _group = file.create_group("test_data")?;
             return Ok(());
         }
-        
+
         // Create a group for test data records
         let group = file.create_group("test_data")?;
-        
+
         // Write timestamps as strings
-        let timestamps: Result<Vec<hdf5::types::VarLenAscii>> = records.iter()
+        let timestamps: Result<Vec<hdf5::types::VarLenAscii>> = records
+            .iter()
             .map(|r| {
                 hdf5::types::VarLenAscii::from_ascii(&r.time.to_rfc3339())
                     .map_err(|e| anyhow::anyhow!("Failed to encode timestamp as ASCII: {}", e))
             })
             .collect();
         let timestamps = timestamps?;
-        let ds_time = group.new_dataset::<hdf5::types::VarLenAscii>()
+        let ds_time = group
+            .new_dataset::<hdf5::types::VarLenAscii>()
             .shape([n])
             .create("time")?;
         ds_time.write(&timestamps)?;
-        
+
         // Helper macro to write f64 arrays
         macro_rules! write_f64_field {
             ($field_name:literal, $field:ident) => {{
@@ -352,7 +354,7 @@ impl TestDataRecord {
                 ds.write(&data)?;
             }};
         }
-        
+
         write_f64_field!("bearing_accuracy", bearing_accuracy);
         write_f64_field!("speed_accuracy", speed_accuracy);
         write_f64_field!("vertical_accuracy", vertical_accuracy);
@@ -383,8 +385,8 @@ impl TestDataRecord {
         write_f64_field!("grav_z", grav_z);
         write_f64_field!("grav_y", grav_y);
         write_f64_field!("grav_x", grav_x);
-   Ok(())   
-  }
+        Ok(())
+    }
     /// Writes a vector of TestDataRecord structs to an MCAP file.
     ///
     /// **Note**: This method uses MessagePack encoding. Due to CSV-specific field deserializers  
@@ -398,37 +400,39 @@ impl TestDataRecord {
     /// # Returns
     /// * `io::Result<()>` - Ok if successful, Err otherwise
     pub fn to_mcap<P: AsRef<Path>>(records: &[Self], path: P) -> io::Result<()> {
-        use mcap::{Writer, records::MessageHeader, Schema};
+        use mcap::{Writer, records::MessageHeader};
         use std::collections::BTreeMap;
         use std::fs::File;
         use std::io::BufWriter;
 
         let file = File::create(path)?;
         let buf_writer = BufWriter::new(file);
-        let mut writer = Writer::new(buf_writer)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let mut writer = Writer::new(buf_writer).map_err(|e| io::Error::other(e))?;
 
         // Add schema for TestDataRecord (using MessagePack encoding)
         let schema_name = "TestDataRecord";
         let schema_encoding = "msgpack";
         let schema_data = b"TestDataRecord struct serialized with MessagePack";
-        
-        let schema_id = writer.add_schema(schema_name, schema_encoding, schema_data)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+        let schema_id = writer
+            .add_schema(schema_name, schema_encoding, schema_data)
+            .map_err(|e| io::Error::other(e))?;
 
         // Add channel for TestDataRecord messages
         let metadata = BTreeMap::new();
-        let channel_id = writer.add_channel(schema_id, "sensor_data", "msgpack", &metadata)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let channel_id = writer
+            .add_channel(schema_id, "sensor_data", "msgpack", &metadata)
+            .map_err(|e| io::Error::other(e))?;
 
         // Write each record as a message
         for (seq, record) in records.iter().enumerate() {
             let data = rmp_serde::to_vec(record)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            
-            let timestamp_nanos = record.time.timestamp_nanos_opt()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Timestamp out of range"))?;
-            
+
+            let timestamp_nanos = record.time.timestamp_nanos_opt().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "Timestamp out of range")
+            })?;
+
             let header = MessageHeader {
                 channel_id,
                 sequence: seq as u32,
@@ -436,13 +440,13 @@ impl TestDataRecord {
                 publish_time: timestamp_nanos as u64,
             };
 
-            writer.write_to_known_channel(&header, &data)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            writer
+                .write_to_known_channel(&header, &data)
+                .map_err(|e| io::Error::other(e))?;
         }
 
-        writer.finish()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-        
+        writer.finish().map_err(|e| io::Error::other(e))?;
+
         Ok(())
     }
 
@@ -465,108 +469,108 @@ impl TestDataRecord {
     /// ```
     pub fn from_hdf5<P: AsRef<Path>>(path: P) -> Result<Vec<Self>> {
         use hdf5::File;
-        
+
         let file = File::open(path)?;
         let group = file.group("test_data")?;
-        
+
         // Check if time dataset exists (might be empty dataset)
         if let Ok(ds_time) = group.dataset("time") {
             // Read timestamps
             let timestamps: Vec<hdf5::types::VarLenAscii> = ds_time.read_raw()?;
             let n = timestamps.len();
-            
+
             // Handle empty dataset
             if n == 0 {
                 return Ok(Vec::new());
             }
-        
-        // Helper macro to read f64 arrays
-        macro_rules! read_f64_field {
-            ($field_name:literal) => {{
-                let ds = group.dataset($field_name)?;
-                let data: Vec<f64> = ds.read_raw()?;
-                data
-            }};
-        }
-        
-        let bearing_accuracy = read_f64_field!("bearing_accuracy");
-        let speed_accuracy = read_f64_field!("speed_accuracy");
-        let vertical_accuracy = read_f64_field!("vertical_accuracy");
-        let horizontal_accuracy = read_f64_field!("horizontal_accuracy");
-        let speed = read_f64_field!("speed");
-        let bearing = read_f64_field!("bearing");
-        let altitude = read_f64_field!("altitude");
-        let longitude = read_f64_field!("longitude");
-        let latitude = read_f64_field!("latitude");
-        let qz = read_f64_field!("qz");
-        let qy = read_f64_field!("qy");
-        let qx = read_f64_field!("qx");
-        let qw = read_f64_field!("qw");
-        let roll = read_f64_field!("roll");
-        let pitch = read_f64_field!("pitch");
-        let yaw = read_f64_field!("yaw");
-        let acc_z = read_f64_field!("acc_z");
-        let acc_y = read_f64_field!("acc_y");
-        let acc_x = read_f64_field!("acc_x");
-        let gyro_z = read_f64_field!("gyro_z");
-        let gyro_y = read_f64_field!("gyro_y");
-        let gyro_x = read_f64_field!("gyro_x");
-        let mag_z = read_f64_field!("mag_z");
-        let mag_y = read_f64_field!("mag_y");
-        let mag_x = read_f64_field!("mag_x");
-        let relative_altitude = read_f64_field!("relative_altitude");
-        let pressure = read_f64_field!("pressure");
-        let grav_z = read_f64_field!("grav_z");
-        let grav_y = read_f64_field!("grav_y");
-        let grav_x = read_f64_field!("grav_x");
-        
-        let mut records = Vec::with_capacity(n);
-        for i in 0..n {
-            let time = DateTime::parse_from_rfc3339(timestamps[i].as_str())
-                .map_err(|e| anyhow::anyhow!("Failed to parse timestamp: {}", e))?
-                .with_timezone(&Utc);
-            
-            records.push(TestDataRecord {
-                time,
-                bearing_accuracy: bearing_accuracy[i],
-                speed_accuracy: speed_accuracy[i],
-                vertical_accuracy: vertical_accuracy[i],
-                horizontal_accuracy: horizontal_accuracy[i],
-                speed: speed[i],
-                bearing: bearing[i],
-                altitude: altitude[i],
-                longitude: longitude[i],
-                latitude: latitude[i],
-                qz: qz[i],
-                qy: qy[i],
-                qx: qx[i],
-                qw: qw[i],
-                roll: roll[i],
-                pitch: pitch[i],
-                yaw: yaw[i],
-                acc_z: acc_z[i],
-                acc_y: acc_y[i],
-                acc_x: acc_x[i],
-                gyro_z: gyro_z[i],
-                gyro_y: gyro_y[i],
-                gyro_x: gyro_x[i],
-                mag_z: mag_z[i],
-                mag_y: mag_y[i],
-                mag_x: mag_x[i],
-                relative_altitude: relative_altitude[i],
-                pressure: pressure[i],
-                grav_z: grav_z[i],
-                grav_y: grav_y[i],
-                grav_x: grav_x[i],
-            });
-        }
-        
-        Ok(records)
+
+            // Helper macro to read f64 arrays
+            macro_rules! read_f64_field {
+                ($field_name:literal) => {{
+                    let ds = group.dataset($field_name)?;
+                    let data: Vec<f64> = ds.read_raw()?;
+                    data
+                }};
+            }
+
+            let bearing_accuracy = read_f64_field!("bearing_accuracy");
+            let speed_accuracy = read_f64_field!("speed_accuracy");
+            let vertical_accuracy = read_f64_field!("vertical_accuracy");
+            let horizontal_accuracy = read_f64_field!("horizontal_accuracy");
+            let speed = read_f64_field!("speed");
+            let bearing = read_f64_field!("bearing");
+            let altitude = read_f64_field!("altitude");
+            let longitude = read_f64_field!("longitude");
+            let latitude = read_f64_field!("latitude");
+            let qz = read_f64_field!("qz");
+            let qy = read_f64_field!("qy");
+            let qx = read_f64_field!("qx");
+            let qw = read_f64_field!("qw");
+            let roll = read_f64_field!("roll");
+            let pitch = read_f64_field!("pitch");
+            let yaw = read_f64_field!("yaw");
+            let acc_z = read_f64_field!("acc_z");
+            let acc_y = read_f64_field!("acc_y");
+            let acc_x = read_f64_field!("acc_x");
+            let gyro_z = read_f64_field!("gyro_z");
+            let gyro_y = read_f64_field!("gyro_y");
+            let gyro_x = read_f64_field!("gyro_x");
+            let mag_z = read_f64_field!("mag_z");
+            let mag_y = read_f64_field!("mag_y");
+            let mag_x = read_f64_field!("mag_x");
+            let relative_altitude = read_f64_field!("relative_altitude");
+            let pressure = read_f64_field!("pressure");
+            let grav_z = read_f64_field!("grav_z");
+            let grav_y = read_f64_field!("grav_y");
+            let grav_x = read_f64_field!("grav_x");
+
+            let mut records = Vec::with_capacity(n);
+            for i in 0..n {
+                let time = DateTime::parse_from_rfc3339(timestamps[i].as_str())
+                    .map_err(|e| anyhow::anyhow!("Failed to parse timestamp: {}", e))?
+                    .with_timezone(&Utc);
+
+                records.push(TestDataRecord {
+                    time,
+                    bearing_accuracy: bearing_accuracy[i],
+                    speed_accuracy: speed_accuracy[i],
+                    vertical_accuracy: vertical_accuracy[i],
+                    horizontal_accuracy: horizontal_accuracy[i],
+                    speed: speed[i],
+                    bearing: bearing[i],
+                    altitude: altitude[i],
+                    longitude: longitude[i],
+                    latitude: latitude[i],
+                    qz: qz[i],
+                    qy: qy[i],
+                    qx: qx[i],
+                    qw: qw[i],
+                    roll: roll[i],
+                    pitch: pitch[i],
+                    yaw: yaw[i],
+                    acc_z: acc_z[i],
+                    acc_y: acc_y[i],
+                    acc_x: acc_x[i],
+                    gyro_z: gyro_z[i],
+                    gyro_y: gyro_y[i],
+                    gyro_x: gyro_x[i],
+                    mag_z: mag_z[i],
+                    mag_y: mag_y[i],
+                    mag_x: mag_x[i],
+                    relative_altitude: relative_altitude[i],
+                    pressure: pressure[i],
+                    grav_z: grav_z[i],
+                    grav_y: grav_y[i],
+                    grav_x: grav_x[i],
+                });
+            }
+
+            Ok(records)
         } else {
             // No time dataset means empty file
             Ok(Vec::new())
         }
-  }
+    }
     /// Reads an MCAP file and returns a vector of TestDataRecord structs.
     ///
     /// **Note**: Due to CSV-specific field deserializers in TestDataRecord, MCAP deserialization  
@@ -580,10 +584,10 @@ impl TestDataRecord {
         use std::fs::File;
 
         let file = File::open(path)?;
-        
+
         // Memory-map the file for efficient reading
         let mapped = unsafe { memmap2::Mmap::map(&file)? };
-        
+
         let message_stream = MessageStream::new(&mapped)?;
         let mut records = Vec::new();
 
@@ -798,33 +802,35 @@ impl NavigationResult {
     /// ```
     pub fn to_hdf5<P: AsRef<Path>>(records: &[Self], path: P) -> Result<()> {
         use hdf5::File;
-        
+
         let file = File::create(path)?;
         let n = records.len();
-        
+
         // Handle empty datasets
         if n == 0 {
             // Create group to indicate structure even for empty datasets
             let _group = file.create_group("navigation_results")?;
             return Ok(());
         }
-        
+
         // Create a group for navigation results
         let group = file.create_group("navigation_results")?;
-        
+
         // Write timestamps as strings
-        let timestamps: Result<Vec<hdf5::types::VarLenAscii>> = records.iter()
+        let timestamps: Result<Vec<hdf5::types::VarLenAscii>> = records
+            .iter()
             .map(|r| {
                 hdf5::types::VarLenAscii::from_ascii(&r.timestamp.to_rfc3339())
                     .map_err(|e| anyhow::anyhow!("Failed to encode timestamp as ASCII: {}", e))
             })
             .collect();
         let timestamps = timestamps?;
-        let ds_time = group.new_dataset::<hdf5::types::VarLenAscii>()
+        let ds_time = group
+            .new_dataset::<hdf5::types::VarLenAscii>()
             .shape([n])
             .create("timestamp")?;
         ds_time.write(&timestamps)?;
-        
+
         // Helper macro to write f64 arrays
         macro_rules! write_f64_field {
             ($field_name:literal, $field:ident) => {{
@@ -833,7 +839,7 @@ impl NavigationResult {
                 ds.write(&data)?;
             }};
         }
-        
+
         // Navigation solution states
         write_f64_field!("latitude", latitude);
         write_f64_field!("longitude", longitude);
@@ -850,7 +856,7 @@ impl NavigationResult {
         write_f64_field!("gyro_bias_x", gyro_bias_x);
         write_f64_field!("gyro_bias_y", gyro_bias_y);
         write_f64_field!("gyro_bias_z", gyro_bias_z);
-        
+
         // Covariance values
         write_f64_field!("latitude_cov", latitude_cov);
         write_f64_field!("longitude_cov", longitude_cov);
@@ -867,76 +873,9 @@ impl NavigationResult {
         write_f64_field!("gyro_bias_x_cov", gyro_bias_x_cov);
         write_f64_field!("gyro_bias_y_cov", gyro_bias_y_cov);
         write_f64_field!("gyro_bias_z_cov", gyro_bias_z_cov);
-  }
-    /// # Returns
-    /// * `Result<()>` - Ok if successful, Err otherwise
-    /// Writes a vector of NavigationResult structs to an MCAP file.
-    ///
-    /// # Arguments
-    /// * `records` - Vector of NavigationResult structs to write
-    /// * `path` - Path where the MCAP file will be saved
-    ///
-    /// # Returns
-    /// * `io::Result<()>` - Ok if successful, Err otherwise
-    /// use std::path::Path;
-    ///
-    /// let mut result = NavigationResult::default();
-    /// result.latitude = 37.0;
-    /// result.longitude = -122.0;
-    /// result.altitude = 100.0;
-    /// let results = vec![result];
-    /// NavigationResult::to_mcap(&results, "results.mcap")
-    ///    .expect("Failed to write navigation results to MCAP");
-    /// ```
-    pub fn to_mcap<P: AsRef<Path>>(records: &[Self], path: P) -> io::Result<()> {
-        use mcap::{Writer, records::MessageHeader, Schema};
-        use std::collections::BTreeMap;
-        use std::fs::File;
-        use std::io::BufWriter;
 
-        let file = File::create(path)?;
-        let buf_writer = BufWriter::new(file);
-        let mut writer = Writer::new(buf_writer)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
-        // Add schema for NavigationResult (using MessagePack encoding)
-        let schema_name = "NavigationResult";
-        let schema_encoding = "msgpack";
-        let schema_data = b"NavigationResult struct serialized with MessagePack";
-        
-        let schema_id = writer.add_schema(schema_name, schema_encoding, schema_data)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
-        // Add channel for NavigationResult messages
-        let metadata = BTreeMap::new();
-        let channel_id = writer.add_channel(schema_id, "navigation_results", "msgpack", &metadata)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
-        // Write each record as a message
-        for (seq, record) in records.iter().enumerate() {
-            let data = rmp_serde::to_vec(record)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            
-            let timestamp_nanos = record.timestamp.timestamp_nanos_opt()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Timestamp out of range"))?;
-            
-            let header = MessageHeader {
-                channel_id,
-                sequence: seq as u32,
-                log_time: timestamp_nanos as u64,
-                publish_time: timestamp_nanos as u64,
-            };
-
-            writer.write_to_known_channel(&header, &data)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-        }
-
-        writer.finish()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-        
         Ok(())
     }
-
     /// Reads an HDF5 file and returns a vector of NavigationResult structs.
     ///
     /// # Arguments
@@ -960,110 +899,183 @@ impl NavigationResult {
     /// ```
     pub fn from_hdf5<P: AsRef<Path>>(path: P) -> Result<Vec<Self>> {
         use hdf5::File;
-        
+
         let file = File::open(path)?;
         let group = file.group("navigation_results")?;
-        
+
         // Check if timestamp dataset exists (might be empty dataset)
         if let Ok(ds_time) = group.dataset("timestamp") {
             // Read timestamps
             let timestamps: Vec<hdf5::types::VarLenAscii> = ds_time.read_raw()?;
             let n = timestamps.len();
-            
+
             // Handle empty dataset
             if n == 0 {
                 return Ok(Vec::new());
             }
-        
-        // Helper macro to read f64 arrays
-        macro_rules! read_f64_field {
-            ($field_name:literal) => {{
-                let ds = group.dataset($field_name)?;
-                let data: Vec<f64> = ds.read_raw()?;
-                data
-            }};
-        }
-        
-        // Read navigation solution states
-        let latitude = read_f64_field!("latitude");
-        let longitude = read_f64_field!("longitude");
-        let altitude = read_f64_field!("altitude");
-        let velocity_north = read_f64_field!("velocity_north");
-        let velocity_east = read_f64_field!("velocity_east");
-        let velocity_vertical = read_f64_field!("velocity_vertical");
-        let roll = read_f64_field!("roll");
-        let pitch = read_f64_field!("pitch");
-        let yaw = read_f64_field!("yaw");
-        let acc_bias_x = read_f64_field!("acc_bias_x");
-        let acc_bias_y = read_f64_field!("acc_bias_y");
-        let acc_bias_z = read_f64_field!("acc_bias_z");
-        let gyro_bias_x = read_f64_field!("gyro_bias_x");
-        let gyro_bias_y = read_f64_field!("gyro_bias_y");
-        let gyro_bias_z = read_f64_field!("gyro_bias_z");
-        
-        // Read covariance values
-        let latitude_cov = read_f64_field!("latitude_cov");
-        let longitude_cov = read_f64_field!("longitude_cov");
-        let altitude_cov = read_f64_field!("altitude_cov");
-        let velocity_n_cov = read_f64_field!("velocity_n_cov");
-        let velocity_e_cov = read_f64_field!("velocity_e_cov");
-        let velocity_v_cov = read_f64_field!("velocity_v_cov");
-        let roll_cov = read_f64_field!("roll_cov");
-        let pitch_cov = read_f64_field!("pitch_cov");
-        let yaw_cov = read_f64_field!("yaw_cov");
-        let acc_bias_x_cov = read_f64_field!("acc_bias_x_cov");
-        let acc_bias_y_cov = read_f64_field!("acc_bias_y_cov");
-        let acc_bias_z_cov = read_f64_field!("acc_bias_z_cov");
-        let gyro_bias_x_cov = read_f64_field!("gyro_bias_x_cov");
-        let gyro_bias_y_cov = read_f64_field!("gyro_bias_y_cov");
-        let gyro_bias_z_cov = read_f64_field!("gyro_bias_z_cov");
-        
-        let mut records = Vec::with_capacity(n);
-        for i in 0..n {
-            let timestamp = DateTime::parse_from_rfc3339(timestamps[i].as_str())
-                .map_err(|e| anyhow::anyhow!("Failed to parse timestamp: {}", e))?
-                .with_timezone(&Utc);
-            
-            records.push(NavigationResult {
-                timestamp,
-                latitude: latitude[i],
-                longitude: longitude[i],
-                altitude: altitude[i],
-                velocity_north: velocity_north[i],
-                velocity_east: velocity_east[i],
-                velocity_vertical: velocity_vertical[i],
-                roll: roll[i],
-                pitch: pitch[i],
-                yaw: yaw[i],
-                acc_bias_x: acc_bias_x[i],
-                acc_bias_y: acc_bias_y[i],
-                acc_bias_z: acc_bias_z[i],
-                gyro_bias_x: gyro_bias_x[i],
-                gyro_bias_y: gyro_bias_y[i],
-                gyro_bias_z: gyro_bias_z[i],
-                latitude_cov: latitude_cov[i],
-                longitude_cov: longitude_cov[i],
-                altitude_cov: altitude_cov[i],
-                velocity_n_cov: velocity_n_cov[i],
-                velocity_e_cov: velocity_e_cov[i],
-                velocity_v_cov: velocity_v_cov[i],
-                roll_cov: roll_cov[i],
-                pitch_cov: pitch_cov[i],
-                yaw_cov: yaw_cov[i],
-                acc_bias_x_cov: acc_bias_x_cov[i],
-                acc_bias_y_cov: acc_bias_y_cov[i],
-                acc_bias_z_cov: acc_bias_z_cov[i],
-                gyro_bias_x_cov: gyro_bias_x_cov[i],
-                gyro_bias_y_cov: gyro_bias_y_cov[i],
-                gyro_bias_z_cov: gyro_bias_z_cov[i],
-            });
-        }
-        
-        Ok(records)
+
+            // Helper macro to read f64 arrays
+            macro_rules! read_f64_field {
+                ($field_name:literal) => {{
+                    let ds = group.dataset($field_name)?;
+                    let data: Vec<f64> = ds.read_raw()?;
+                    data
+                }};
+            }
+
+            // Read navigation solution states
+            let latitude = read_f64_field!("latitude");
+            let longitude = read_f64_field!("longitude");
+            let altitude = read_f64_field!("altitude");
+            let velocity_north = read_f64_field!("velocity_north");
+            let velocity_east = read_f64_field!("velocity_east");
+            let velocity_vertical = read_f64_field!("velocity_vertical");
+            let roll = read_f64_field!("roll");
+            let pitch = read_f64_field!("pitch");
+            let yaw = read_f64_field!("yaw");
+            let acc_bias_x = read_f64_field!("acc_bias_x");
+            let acc_bias_y = read_f64_field!("acc_bias_y");
+            let acc_bias_z = read_f64_field!("acc_bias_z");
+            let gyro_bias_x = read_f64_field!("gyro_bias_x");
+            let gyro_bias_y = read_f64_field!("gyro_bias_y");
+            let gyro_bias_z = read_f64_field!("gyro_bias_z");
+
+            // Read covariance values
+            let latitude_cov = read_f64_field!("latitude_cov");
+            let longitude_cov = read_f64_field!("longitude_cov");
+            let altitude_cov = read_f64_field!("altitude_cov");
+            let velocity_n_cov = read_f64_field!("velocity_n_cov");
+            let velocity_e_cov = read_f64_field!("velocity_e_cov");
+            let velocity_v_cov = read_f64_field!("velocity_v_cov");
+            let roll_cov = read_f64_field!("roll_cov");
+            let pitch_cov = read_f64_field!("pitch_cov");
+            let yaw_cov = read_f64_field!("yaw_cov");
+            let acc_bias_x_cov = read_f64_field!("acc_bias_x_cov");
+            let acc_bias_y_cov = read_f64_field!("acc_bias_y_cov");
+            let acc_bias_z_cov = read_f64_field!("acc_bias_z_cov");
+            let gyro_bias_x_cov = read_f64_field!("gyro_bias_x_cov");
+            let gyro_bias_y_cov = read_f64_field!("gyro_bias_y_cov");
+            let gyro_bias_z_cov = read_f64_field!("gyro_bias_z_cov");
+
+            let mut records = Vec::with_capacity(n);
+            for i in 0..n {
+                let timestamp = DateTime::parse_from_rfc3339(timestamps[i].as_str())
+                    .map_err(|e| anyhow::anyhow!("Failed to parse timestamp: {}", e))?
+                    .with_timezone(&Utc);
+
+                records.push(NavigationResult {
+                    timestamp,
+                    latitude: latitude[i],
+                    longitude: longitude[i],
+                    altitude: altitude[i],
+                    velocity_north: velocity_north[i],
+                    velocity_east: velocity_east[i],
+                    velocity_vertical: velocity_vertical[i],
+                    roll: roll[i],
+                    pitch: pitch[i],
+                    yaw: yaw[i],
+                    acc_bias_x: acc_bias_x[i],
+                    acc_bias_y: acc_bias_y[i],
+                    acc_bias_z: acc_bias_z[i],
+                    gyro_bias_x: gyro_bias_x[i],
+                    gyro_bias_y: gyro_bias_y[i],
+                    gyro_bias_z: gyro_bias_z[i],
+                    latitude_cov: latitude_cov[i],
+                    longitude_cov: longitude_cov[i],
+                    altitude_cov: altitude_cov[i],
+                    velocity_n_cov: velocity_n_cov[i],
+                    velocity_e_cov: velocity_e_cov[i],
+                    velocity_v_cov: velocity_v_cov[i],
+                    roll_cov: roll_cov[i],
+                    pitch_cov: pitch_cov[i],
+                    yaw_cov: yaw_cov[i],
+                    acc_bias_x_cov: acc_bias_x_cov[i],
+                    acc_bias_y_cov: acc_bias_y_cov[i],
+                    acc_bias_z_cov: acc_bias_z_cov[i],
+                    gyro_bias_x_cov: gyro_bias_x_cov[i],
+                    gyro_bias_y_cov: gyro_bias_y_cov[i],
+                    gyro_bias_z_cov: gyro_bias_z_cov[i],
+                });
+            }
+
+            Ok(records)
         } else {
             // No timestamp dataset means empty file
             Ok(Vec::new())
         }
+    }
+    /// # Returns
+    /// * `Result<()>` - Ok if successful, Err otherwise
+    /// Writes a vector of NavigationResult structs to an MCAP file.
+    ///
+    /// # Arguments
+    /// * `records` - Vector of NavigationResult structs to write
+    /// * `path` - Path where the MCAP file will be saved
+    ///
+    /// # Returns
+    /// * `io::Result<()>` - Ok if successful, Err otherwise
+    /// use std::path::Path;
+    ///
+    /// let mut result = NavigationResult::default();
+    /// result.latitude = 37.0;
+    /// result.longitude = -122.0;
+    /// result.altitude = 100.0;
+    /// let results = vec![result];
+    /// NavigationResult::to_mcap(&results, "results.mcap")
+    ///    .expect("Failed to write navigation results to MCAP");
+    /// ```
+    pub fn to_mcap<P: AsRef<Path>>(records: &[Self], path: P) -> io::Result<()> {
+        use mcap::{Writer, records::MessageHeader};
+        use std::collections::BTreeMap;
+        use std::fs::File;
+        use std::io::BufWriter;
+
+        let file = File::create(path)?;
+        let buf_writer = BufWriter::new(file);
+        let mut writer = Writer::new(buf_writer).map_err(|e| io::Error::other(e))?;
+
+        // Add schema for NavigationResult (using MessagePack encoding)
+        let schema_name = "NavigationResult";
+        let schema_encoding = "msgpack";
+        let schema_data = b"NavigationResult struct serialized with MessagePack";
+
+        let schema_id = writer
+            .add_schema(schema_name, schema_encoding, schema_data)
+            .map_err(|e| io::Error::other(e))?;
+
+        // Add channel for NavigationResult messages
+        let metadata = BTreeMap::new();
+        let channel_id = writer
+            .add_channel(schema_id, "navigation_results", "msgpack", &metadata)
+            .map_err(|e| io::Error::other(e))?;
+
+        // Write each record as a message
+        for (seq, record) in records.iter().enumerate() {
+            let data = rmp_serde::to_vec(record)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+            let timestamp_nanos = record.timestamp.timestamp_nanos_opt().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "Timestamp out of range")
+            })?;
+
+            let header = MessageHeader {
+                channel_id,
+                sequence: seq as u32,
+                log_time: timestamp_nanos as u64,
+                publish_time: timestamp_nanos as u64,
+            };
+
+            writer
+                .write_to_known_channel(&header, &data)
+                .map_err(|e| io::Error::other(e))?;
+        }
+
+        writer.finish().map_err(|e| io::Error::other(e))?;
+
+        Ok(())
+    }
+
+    /// Reads an MCAP file and returns a vector of NavigationResult structs.
     /// use std::path::Path;
     ///
     /// let results = NavigationResult::from_mcap("results.mcap")
@@ -1075,10 +1087,10 @@ impl NavigationResult {
         use std::fs::File;
 
         let file = File::open(path)?;
-        
+
         // Memory-map the file for efficient reading
         let mapped = unsafe { memmap2::Mmap::map(&file)? };
-        
+
         let message_stream = MessageStream::new(&mapped)?;
         let mut records = Vec::new();
 
@@ -3998,10 +4010,10 @@ mod tests {
     #[test]
     fn test_test_data_record_hdf5_roundtrip() {
         use tempfile::tempdir;
-        
+
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("test_data.h5");
-        
+
         // Create test records
         let mut records = Vec::new();
         records.push(TestDataRecord {
@@ -4074,38 +4086,63 @@ mod tests {
             grav_y: 0.01,
             grav_x: -0.01,
         });
-        
+
         // Write to HDF5
         TestDataRecord::to_hdf5(&records, &file_path).expect("Failed to write HDF5");
-        
+
         // Read back from HDF5
         let read_records = TestDataRecord::from_hdf5(&file_path).expect("Failed to read HDF5");
-        
+
         // Verify
         assert_eq!(read_records.len(), records.len());
         for (i, (original, read)) in records.iter().zip(read_records.iter()).enumerate() {
-            assert_eq!(original.time, read.time, "Timestamp mismatch at index {}", i);
-            assert!((original.latitude - read.latitude).abs() < 1e-10, "Latitude mismatch at index {}", i);
-            assert!((original.longitude - read.longitude).abs() < 1e-10, "Longitude mismatch at index {}", i);
-            assert!((original.altitude - read.altitude).abs() < 1e-10, "Altitude mismatch at index {}", i);
-            assert!((original.speed - read.speed).abs() < 1e-10, "Speed mismatch at index {}", i);
-            assert!((original.bearing - read.bearing).abs() < 1e-10, "Bearing mismatch at index {}", i);
+            assert_eq!(
+                original.time, read.time,
+                "Timestamp mismatch at index {}",
+                i
+            );
+            assert!(
+                (original.latitude - read.latitude).abs() < 1e-10,
+                "Latitude mismatch at index {}",
+                i
+            );
+            assert!(
+                (original.longitude - read.longitude).abs() < 1e-10,
+                "Longitude mismatch at index {}",
+                i
+            );
+            assert!(
+                (original.altitude - read.altitude).abs() < 1e-10,
+                "Altitude mismatch at index {}",
+                i
+            );
+            assert!(
+                (original.speed - read.speed).abs() < 1e-10,
+                "Speed mismatch at index {}",
+                i
+            );
+            assert!(
+                (original.bearing - read.bearing).abs() < 1e-10,
+                "Bearing mismatch at index {}",
+                i
+            );
         }
     }
 
     #[test]
     fn test_navigation_result_hdf5_roundtrip() {
         use tempfile::tempdir;
-        
+
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("nav_results.h5");
-        
+
         // Create test navigation results
         let mut results = Vec::new();
         let mut nav1 = NavigationResult::new();
-        nav1.timestamp = DateTime::parse_from_str("2023-01-01 00:00:00+00:00", "%Y-%m-%d %H:%M:%S%z")
-            .unwrap()
-            .with_timezone(&Utc);
+        nav1.timestamp =
+            DateTime::parse_from_str("2023-01-01 00:00:00+00:00", "%Y-%m-%d %H:%M:%S%z")
+                .unwrap()
+                .with_timezone(&Utc);
         nav1.latitude = 37.0;
         nav1.longitude = -122.0;
         nav1.altitude = 100.0;
@@ -4116,11 +4153,12 @@ mod tests {
         nav1.pitch = 0.02;
         nav1.yaw = 0.03;
         results.push(nav1);
-        
+
         let mut nav2 = NavigationResult::new();
-        nav2.timestamp = DateTime::parse_from_str("2023-01-01 00:00:01+00:00", "%Y-%m-%d %H:%M:%S%z")
-            .unwrap()
-            .with_timezone(&Utc);
+        nav2.timestamp =
+            DateTime::parse_from_str("2023-01-01 00:00:01+00:00", "%Y-%m-%d %H:%M:%S%z")
+                .unwrap()
+                .with_timezone(&Utc);
         nav2.latitude = 37.0001;
         nav2.longitude = -122.0001;
         nav2.altitude = 101.0;
@@ -4131,35 +4169,71 @@ mod tests {
         nav2.pitch = 0.03;
         nav2.yaw = 0.04;
         results.push(nav2);
-        
+
         // Write to HDF5
         NavigationResult::to_hdf5(&results, &file_path).expect("Failed to write HDF5");
-        
+
         // Read back from HDF5
         let read_results = NavigationResult::from_hdf5(&file_path).expect("Failed to read HDF5");
-        
+
         // Verify
         assert_eq!(read_results.len(), results.len());
         for (i, (original, read)) in results.iter().zip(read_results.iter()).enumerate() {
-            assert_eq!(original.timestamp, read.timestamp, "Timestamp mismatch at index {}", i);
-            assert!((original.latitude - read.latitude).abs() < 1e-10, "Latitude mismatch at index {}", i);
-            assert!((original.longitude - read.longitude).abs() < 1e-10, "Longitude mismatch at index {}", i);
-            assert!((original.altitude - read.altitude).abs() < 1e-10, "Altitude mismatch at index {}", i);
-            assert!((original.velocity_north - read.velocity_north).abs() < 1e-10, "Velocity north mismatch at index {}", i);
-            assert!((original.velocity_east - read.velocity_east).abs() < 1e-10, "Velocity east mismatch at index {}", i);
-            assert!((original.roll - read.roll).abs() < 1e-10, "Roll mismatch at index {}", i);
-            assert!((original.pitch - read.pitch).abs() < 1e-10, "Pitch mismatch at index {}", i);
-            assert!((original.yaw - read.yaw).abs() < 1e-10, "Yaw mismatch at index {}", i);
+            assert_eq!(
+                original.timestamp, read.timestamp,
+                "Timestamp mismatch at index {}",
+                i
+            );
+            assert!(
+                (original.latitude - read.latitude).abs() < 1e-10,
+                "Latitude mismatch at index {}",
+                i
+            );
+            assert!(
+                (original.longitude - read.longitude).abs() < 1e-10,
+                "Longitude mismatch at index {}",
+                i
+            );
+            assert!(
+                (original.altitude - read.altitude).abs() < 1e-10,
+                "Altitude mismatch at index {}",
+                i
+            );
+            assert!(
+                (original.velocity_north - read.velocity_north).abs() < 1e-10,
+                "Velocity north mismatch at index {}",
+                i
+            );
+            assert!(
+                (original.velocity_east - read.velocity_east).abs() < 1e-10,
+                "Velocity east mismatch at index {}",
+                i
+            );
+            assert!(
+                (original.roll - read.roll).abs() < 1e-10,
+                "Roll mismatch at index {}",
+                i
+            );
+            assert!(
+                (original.pitch - read.pitch).abs() < 1e-10,
+                "Pitch mismatch at index {}",
+                i
+            );
+            assert!(
+                (original.yaw - read.yaw).abs() < 1e-10,
+                "Yaw mismatch at index {}",
+                i
+            );
         }
     }
 
     #[test]
     fn test_test_data_record_hdf5_with_nan_values() {
         use tempfile::tempdir;
-        
+
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("test_data_nan.h5");
-        
+
         // Create a record with NaN values
         let mut record = TestDataRecord::default();
         record.time = Utc::now();
@@ -4168,19 +4242,25 @@ mod tests {
         record.altitude = f64::NAN;
         record.speed = f64::NAN;
         record.bearing = 90.0;
-        
+
         let records = vec![record.clone()];
-        
+
         // Write to HDF5
         TestDataRecord::to_hdf5(&records, &file_path).expect("Failed to write HDF5");
-        
+
         // Read back from HDF5
         let read_records = TestDataRecord::from_hdf5(&file_path).expect("Failed to read HDF5");
-        
+
         // Verify NaN values are preserved
         assert_eq!(read_records.len(), 1);
-        assert!(read_records[0].altitude.is_nan(), "NaN altitude should be preserved");
-        assert!(read_records[0].speed.is_nan(), "NaN speed should be preserved");
+        assert!(
+            read_records[0].altitude.is_nan(),
+            "NaN altitude should be preserved"
+        );
+        assert!(
+            read_records[0].speed.is_nan(),
+            "NaN speed should be preserved"
+        );
         assert!((read_records[0].latitude - record.latitude).abs() < 1e-10);
         assert!((read_records[0].longitude - record.longitude).abs() < 1e-10);
     }
@@ -4188,28 +4268,29 @@ mod tests {
     #[test]
     fn test_navigation_result_hdf5_empty() {
         use tempfile::tempdir;
-        
+
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("nav_results_empty.h5");
-        
+
         // Write empty results
         let results: Vec<NavigationResult> = Vec::new();
         NavigationResult::to_hdf5(&results, &file_path).expect("Failed to write empty HDF5");
-        
+
         // Read back
-        let read_results = NavigationResult::from_hdf5(&file_path).expect("Failed to read empty HDF5");
-        
+        let read_results =
+            NavigationResult::from_hdf5(&file_path).expect("Failed to read empty HDF5");
+
         // Verify it's empty
         assert_eq!(read_results.len(), 0);
-    // Note: TestDataRecord MCAP roundtrip test is disabled due to CSV-specific deserializers
-    // that conflict with binary serialization formats. TestDataRecord is optimized for CSV.
-    // For MCAP usage, convert TestDataRecord to NavigationResult.
-    
+        // Note: TestDataRecord MCAP roundtrip test is disabled due to CSV-specific deserializers
+        // that conflict with binary serialization formats. TestDataRecord is optimized for CSV.
+        // For MCAP usage, convert TestDataRecord to NavigationResult.
+    }
     #[test]
     #[ignore] // Disabled - see note above
     fn test_test_data_record_mcap_write_only() {
         let temp_file = std::env::temp_dir().join("test_data_mcap.mcap");
-        
+
         // Create test data
         let records = vec![
             TestDataRecord {
@@ -4300,7 +4381,7 @@ mod tests {
     #[test]
     fn test_navigation_result_mcap_roundtrip() {
         let temp_file = std::env::temp_dir().join("nav_results_mcap.mcap");
-        
+
         // Create test navigation results
         let mut result1 = NavigationResult::default();
         result1.timestamp = Utc::now();
@@ -4329,27 +4410,65 @@ mod tests {
         let results = vec![result1.clone(), result2.clone()];
 
         // Write to MCAP
-        NavigationResult::to_mcap(&results, &temp_file).expect("Failed to write navigation results to MCAP");
+        NavigationResult::to_mcap(&results, &temp_file)
+            .expect("Failed to write navigation results to MCAP");
 
         // Check file exists
         assert!(temp_file.exists(), "MCAP file should exist");
 
         // Read back from MCAP
-        let read_results = NavigationResult::from_mcap(&temp_file).expect("Failed to read navigation results from MCAP");
+        let read_results = NavigationResult::from_mcap(&temp_file)
+            .expect("Failed to read navigation results from MCAP");
 
         // Verify count
-        assert_eq!(read_results.len(), results.len(), "Result count should match");
+        assert_eq!(
+            read_results.len(),
+            results.len(),
+            "Result count should match"
+        );
 
         // Verify content
         for (i, (original, read)) in results.iter().zip(read_results.iter()).enumerate() {
-            assert_eq!(original.timestamp, read.timestamp, "Result {} timestamp should match", i);
-            assert!((original.latitude - read.latitude).abs() < 1e-6, "Result {} latitude should match", i);
-            assert!((original.longitude - read.longitude).abs() < 1e-6, "Result {} longitude should match", i);
-            assert!((original.altitude - read.altitude).abs() < 1e-6, "Result {} altitude should match", i);
-            assert!((original.velocity_north - read.velocity_north).abs() < 1e-6, "Result {} velocity_north should match", i);
-            assert!((original.roll - read.roll).abs() < 1e-6, "Result {} roll should match", i);
-            assert!((original.pitch - read.pitch).abs() < 1e-6, "Result {} pitch should match", i);
-            assert!((original.yaw - read.yaw).abs() < 1e-6, "Result {} yaw should match", i);
+            assert_eq!(
+                original.timestamp, read.timestamp,
+                "Result {} timestamp should match",
+                i
+            );
+            assert!(
+                (original.latitude - read.latitude).abs() < 1e-6,
+                "Result {} latitude should match",
+                i
+            );
+            assert!(
+                (original.longitude - read.longitude).abs() < 1e-6,
+                "Result {} longitude should match",
+                i
+            );
+            assert!(
+                (original.altitude - read.altitude).abs() < 1e-6,
+                "Result {} altitude should match",
+                i
+            );
+            assert!(
+                (original.velocity_north - read.velocity_north).abs() < 1e-6,
+                "Result {} velocity_north should match",
+                i
+            );
+            assert!(
+                (original.roll - read.roll).abs() < 1e-6,
+                "Result {} roll should match",
+                i
+            );
+            assert!(
+                (original.pitch - read.pitch).abs() < 1e-6,
+                "Result {} pitch should match",
+                i
+            );
+            assert!(
+                (original.yaw - read.yaw).abs() < 1e-6,
+                "Result {} yaw should match",
+                i
+            );
         }
 
         // Cleanup
