@@ -1,4 +1,5 @@
 from argparse import ArgumentParser
+
 from analysis.preprocess import preprocess_data
 
 __version__ = "0.1.0"
