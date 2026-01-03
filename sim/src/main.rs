@@ -28,8 +28,8 @@ use std::sync::Mutex;
 use strapdown::messages::{GnssScheduler, build_event_stream};
 use strapdown::sim::{
     FaultArgs, FilterType, NavigationResult, ParticleFilterType, SchedulerArgs, SimulationConfig,
-    SimulationMode, TestDataRecord, build_fault, build_scheduler, initialize_ekf, initialize_eskf,
-    initialize_ukf, run_closed_loop,
+    SimulationMode, TestDataRecord, build_fault, build_scheduler, dead_reckoning, initialize_ekf,
+    initialize_eskf, initialize_ukf, run_closed_loop,
 };
 
 const LONG_ABOUT: &str =
@@ -349,8 +349,20 @@ fn process_file(
     // Execute based on mode
     match config.mode {
         SimulationMode::DeadReckoning => {
-            info!("Dead reckoning mode is not yet fully implemented");
-            Err("Dead reckoning mode is not yet fully implemented".into())
+            info!("Running dead reckoning simulation");
+            let results = dead_reckoning(&records);
+            info!("Generated {} navigation results", results.len());
+
+            let output_file = output
+                .join(input_file.file_name().ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("Input file path '{}' has no filename", input_file.display()),
+                    )
+                })?);
+            NavigationResult::to_csv(&results, &output_file)?;
+            info!("Results written to {}", output_file.display());
+            Ok(())
         }
         SimulationMode::OpenLoop => {
             info!("Open-loop mode is not yet fully implemented");
@@ -542,6 +554,53 @@ fn run_single_closed_loop_simulation(
             Err(e.into())
         }
     }
+}
+
+/// Execute dead-reckoning simulation
+fn run_dead_reckoning(args: &SimArgs) -> Result<(), Box<dyn Error>> {
+    validate_input_path(&args.input)?;
+    validate_output_path(&args.output)?;
+
+    info!("Running in dead reckoning mode");
+
+    // Get all CSV files to process
+    let csv_files = get_csv_files(&args.input)?;
+    let is_multiple = csv_files.len() > 1;
+
+    if is_multiple {
+        info!("Processing {} CSV files from directory", csv_files.len());
+    }
+
+    // Process each CSV file
+    for input_file in &csv_files {
+        info!("Processing file: {}", input_file.display());
+
+        // Load sensor data records from CSV
+        let records = TestDataRecord::from_csv(input_file)?;
+        info!(
+            "Read {} records from {}",
+            records.len(),
+            input_file.display()
+        );
+
+        // Run dead reckoning simulation
+        info!("Running dead reckoning simulation on {} records", records.len());
+        let results = dead_reckoning(&records);
+        info!("Generated {} navigation results", results.len());
+
+        // Write results to CSV
+        let output_file = Path::new(&args.output)
+            .join(input_file.file_name().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("Input file path '{}' has no filename", input_file.display()),
+                )
+            })?);
+        NavigationResult::to_csv(&results, &output_file)?;
+        info!("Results written to {}", output_file.display());
+    }
+
+    Ok(())
 }
 
 /// Execute open-loop simulation
@@ -1170,12 +1229,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Otherwise, execute based on subcommand
     match cli.command {
         Some(Command::DeadReckoning(args)) => {
-            println!(
-                "Running in Dead Reckoning mode... {}",
-                &args.input.display()
-            );
-            eprintln!("Error: Dead Reckoning mode is not yet implemented.");
-            std::process::exit(1);
+            info!("Running in Dead Reckoning mode with input: {}", &args.input.display());
+            run_dead_reckoning(&args)
         }
         Some(Command::OpenLoop(args)) => run_open_loop(&args),
         Some(Command::ClosedLoop(args)) => run_closed_loop_cli(&args),
