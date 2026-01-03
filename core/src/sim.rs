@@ -2955,6 +2955,9 @@ pub struct SimulationConfig {
     /// Run simulations in parallel when processing multiple files
     #[serde(default)]
     pub parallel: bool,
+    /// Generate performance plot comparing navigation output to GPS measurements
+    #[serde(default)]
+    pub generate_plot: bool,
     /// Logging configuration
     #[serde(default)]
     pub logging: LoggingConfig,
@@ -2981,6 +2984,7 @@ impl Default for SimulationConfig {
             mode: SimulationMode::ClosedLoop,
             seed: default_seed(),
             parallel: false,
+            generate_plot: false,
             logging: LoggingConfig::default(),
             closed_loop: Some(ClosedLoopConfig::default()),
             particle_filter: None,
