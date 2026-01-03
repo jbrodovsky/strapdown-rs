@@ -3280,8 +3280,8 @@ impl NavigationFilter for ErrorStateKalmanFilter {
             .expect("ErrorStateKalmanFilter.predict expects an IMUData InputModel");
 
         // Compensate IMU measurements for biases
-        let corrected_accel = imu_data.accel - &self.nominal_accel_bias;
-        let corrected_gyro = imu_data.gyro - &self.nominal_gyro_bias;
+        let corrected_accel = imu_data.accel - self.nominal_accel_bias;
+        let corrected_gyro = imu_data.gyro - self.nominal_gyro_bias;
 
         // ===== Nominal State Propagation (Nonlinear) =====
 
@@ -3309,8 +3309,8 @@ impl NavigationFilter for ErrorStateKalmanFilter {
 
         // Propagate nominal state using full strapdown mechanization
         let corrected_imu = IMUData {
-            accel: corrected_accel.clone(),
-            gyro: corrected_gyro.clone(),
+            accel: corrected_accel,
+            gyro: corrected_gyro,
         };
         forward(&mut nominal_state, corrected_imu, dt);
 
