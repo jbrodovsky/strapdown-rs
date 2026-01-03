@@ -18,6 +18,8 @@
 //!
 //! For dataset format details, see the documentation or use --help with specific subcommands.
 
+mod plotting;
+
 use clap::{Args, Parser, Subcommand};
 use log::{error, info};
 use rayon::prelude::*;
@@ -77,6 +79,10 @@ struct Cli {
     /// Run simulations in parallel when processing multiple files
     #[arg(long, global = true)]
     parallel: bool,
+
+    /// Generate performance plot comparing navigation output to GPS measurements
+    #[arg(long, global = true)]
+    plot: bool,
 }
 
 /// Top-level commands
@@ -391,6 +397,23 @@ fn process_file(
                 Ok(ref nav_results) => {
                     NavigationResult::to_csv(nav_results, &output_file)?;
                     info!("Results written to {}", output_file.display());
+                    
+                    // Generate performance plot if requested
+                    if config.generate_plot {
+                        let plot_path = output_file.with_extension("png");
+                        info!("Generating performance plot at {}", plot_path.display());
+                        
+                        match plotting::plot_performance(nav_results, &records, &plot_path) {
+                            Ok(()) => {
+                                info!("Performance plot generated successfully");
+                            }
+                            Err(e) => {
+                                error!("Failed to generate performance plot: {}", e);
+                                // Don't fail the entire process if plotting fails
+                            }
+                        }
+                    }
+                    
                     Ok(())
                 }
                 Err(e) => {
@@ -407,7 +430,7 @@ fn process_file(
 }
 
 /// Execute simulation from a configuration file
-fn run_from_config(config_path: &Path, cli_parallel: bool) -> Result<(), Box<dyn Error>> {
+fn run_from_config(config_path: &Path, cli_parallel: bool, cli_plot: bool) -> Result<(), Box<dyn Error>> {
     info!("Loading configuration from {}", config_path.display());
 
     let mut config = SimulationConfig::from_file(config_path)?;
@@ -417,11 +440,17 @@ fn run_from_config(config_path: &Path, cli_parallel: bool) -> Result<(), Box<dyn
         config.parallel = true;
     }
     
+    // Override plot setting if CLI flag is set
+    if cli_plot {
+        config.generate_plot = true;
+    }
+    
     info!("Configuration loaded successfully");
     info!("Mode: {:?}", config.mode);
     info!("Input: {}", config.input);
     info!("Output: {}", config.output);
     info!("Parallel: {}", config.parallel);
+    info!("Generate plot: {}", config.generate_plot);
 
     // Validate paths
     let input = Path::new(&config.input);
@@ -1104,6 +1133,7 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
         mode,
         seed,
         parallel,
+        generate_plot: false,
         logging,
         closed_loop,
         particle_filter,
@@ -1147,7 +1177,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         // Initialize logger with resolved settings
         init_logger(log_level, log_file)?;
         
-        return run_from_config(config_path, cli.parallel);
+        return run_from_config(config_path, cli.parallel, cli.plot);
     }
 
     // Initialize logger with CLI settings for command-line mode
