@@ -360,13 +360,12 @@ fn process_file(
             let results = dead_reckoning(&records);
             info!("Generated {} navigation results", results.len());
 
-            let output_file = output
-                .join(input_file.file_name().ok_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        format!("Input file path '{}' has no filename", input_file.display()),
-                    )
-                })?);
+            let output_file = output.join(input_file.file_name().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("Input file path '{}' has no filename", input_file.display()),
+                )
+            })?);
             NavigationResult::to_csv(&results, &output_file)?;
             info!("Results written to {}", output_file.display());
             Ok(())
@@ -621,13 +620,16 @@ fn run_dead_reckoning(args: &SimArgs) -> Result<(), Box<dyn Error>> {
         );
 
         // Run dead reckoning simulation
-        info!("Running dead reckoning simulation on {} records", records.len());
+        info!(
+            "Running dead reckoning simulation on {} records",
+            records.len()
+        );
         let results = dead_reckoning(&records);
         info!("Generated {} navigation results", results.len());
 
         // Write results to CSV
-        let output_file = Path::new(&args.output)
-            .join(input_file.file_name().ok_or_else(|| {
+        let output_file =
+            Path::new(&args.output).join(input_file.file_name().ok_or_else(|| {
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     format!("Input file path '{}' has no filename", input_file.display()),
@@ -1267,7 +1269,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Otherwise, execute based on subcommand
     match cli.command {
         Some(Command::DeadReckoning(args)) => {
-            info!("Running in Dead Reckoning mode with input: {}", &args.input.display());
+            info!(
+                "Running in Dead Reckoning mode with input: {}",
+                &args.input.display()
+            );
             run_dead_reckoning(&args)
         }
         Some(Command::OpenLoop(args)) => run_open_loop(&args),
@@ -1298,7 +1303,7 @@ mod tests {
 
     #[test]
     fn test_simulation_mode_variants() {
-        let modes = vec![
+        let modes = [
             SimulationMode::OpenLoop,
             SimulationMode::ClosedLoop,
             SimulationMode::ParticleFilter,
@@ -1308,7 +1313,7 @@ mod tests {
 
     #[test]
     fn test_filter_type_variants() {
-        let filters = vec![FilterType::Ukf, FilterType::Ekf, FilterType::Eskf];
+        let filters = [FilterType::Ukf, FilterType::Ekf, FilterType::Eskf];
         assert_eq!(filters.len(), 3); // Updated to include ESKF
     }
 
