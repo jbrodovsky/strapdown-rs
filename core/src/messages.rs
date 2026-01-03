@@ -11,8 +11,8 @@ use std::path::Path;
 use crate::IMUData;
 use crate::earth::meters_ned_to_dlat_dlon;
 use crate::measurements::{
-    GPSPositionAndVelocityMeasurement, MagnetometerYawMeasurement, MeasurementModel,
-    RelativeAltitudeMeasurement, MAG_YAW_NOISE,
+    GPSPositionAndVelocityMeasurement, MAG_YAW_NOISE, MagnetometerYawMeasurement, MeasurementModel,
+    RelativeAltitudeMeasurement,
 };
 use crate::sim::TestDataRecord;
 /// Scheduler for controlling when GNSS measurements are emitted into the simulation.
