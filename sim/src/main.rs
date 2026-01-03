@@ -18,6 +18,7 @@
 //!
 //! For dataset format details, see the documentation or use --help with specific subcommands.
 
+#[cfg(feature = "plotting")]
 mod plotting;
 
 use clap::{Args, Parser, Subcommand};
@@ -411,12 +412,13 @@ fn process_file(
                 Ok(ref nav_results) => {
                     NavigationResult::to_csv(nav_results, &output_file)?;
                     info!("Results written to {}", output_file.display());
-                    
+
                     // Generate performance plot if requested
+                    #[cfg(feature = "plotting")]
                     if config.generate_plot {
                         let plot_path = output_file.with_extension("png");
                         info!("Generating performance plot at {}", plot_path.display());
-                        
+
                         match plotting::plot_performance(nav_results, &records, &plot_path) {
                             Ok(()) => {
                                 info!("Performance plot generated successfully");
@@ -427,7 +429,12 @@ fn process_file(
                             }
                         }
                     }
-                    
+
+                    #[cfg(not(feature = "plotting"))]
+                    if config.generate_plot {
+                        error!("Plotting requested but 'plotting' feature not enabled. Rebuild with --features plotting");
+                    }
+
                     Ok(())
                 }
                 Err(e) => {

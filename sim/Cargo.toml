@@ -7,6 +7,7 @@ description = "Strapdown inertial navigation system simulation tool"
 license = "MIT"
 
 [features]
+default = ["plotting"]
 plotting = ["dep:plotters"]
 
 [dependencies]
