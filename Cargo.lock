@@ -1290,6 +1290,7 @@ dependencies = [
  "log",
  "nalgebra 0.34.1",
  "nav-types",
+ "netcdf",
  "rand 0.9.2",
  "rand_distr 0.5.1",
  "serde",
