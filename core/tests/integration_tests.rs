@@ -96,7 +96,7 @@ const ESKF_PROCESS_NOISE: [f64; 15] = [
 /// Higher uncertainty (8x default) for stability
 const ESKF_INITIAL_COVARIANCE: [f64; 15] = [
     8e-6, 8e-6, 8.0, // position covariance (lat, lon, alt) - 8m altitude uncertainty
-    0.8, 0.8, 0.8,   // velocity covariance (m/s) - 8x default
+    0.8, 0.8, 0.8, // velocity covariance (m/s) - 8x default
     0.08, 0.08, 0.08, // attitude covariance (radians) - 8x default
     0.08, 0.08, 0.08, // accelerometer bias covariance (m/s²) - 8x default
     0.008, 0.008, 0.008, // gyroscope bias covariance (rad/s) - 8x default
@@ -1127,8 +1127,8 @@ fn test_eskf_closed_loop_on_real_data() {
     let stream = build_event_stream(&records, &cfg);
 
     // Run closed-loop filter
-    let results = run_closed_loop(&mut eskf, stream, None)
-        .expect("Closed-loop ESKF filter should complete");
+    let results =
+        run_closed_loop(&mut eskf, stream, None).expect("Closed-loop ESKF filter should complete");
 
     // Verify results
     assert!(
@@ -1231,7 +1231,7 @@ fn test_eskf_closed_loop_on_real_data() {
 /// Test ESKF with degraded GNSS (reduced update rate)
 ///
 /// This test simulates degraded GNSS conditions with reduced update rate (5s intervals).
-/// 
+///
 /// NOTE: Currently ignored - ESKF diverges with degraded GNSS conditions even with
 /// conservative tuning (8x process noise). The error-state formulation requires
 /// additional work to handle long intervals between GNSS updates. This is a known
@@ -1439,7 +1439,7 @@ fn test_eskf_stability_high_dynamics() {
     // Higher uncertainty values to accommodate rapid maneuvers and accelerations
     let initial_error_covariance = vec![
         1e-6, 1e-6, 1.0, // position error (same as default)
-        0.5, 0.5, 0.5,   // velocity error (5x default - allows for higher acceleration)
+        0.5, 0.5, 0.5, // velocity error (5x default - allows for higher acceleration)
         0.05, 0.05, 0.05, // attitude error (5x default - allows for rapid rotations)
         0.05, 0.05, 0.05, // accel bias error (5x default - less confident in bias)
         0.005, 0.005, 0.005, // gyro bias error (5x default - less confident in bias)
@@ -1473,8 +1473,8 @@ fn test_eskf_stability_high_dynamics() {
     let stream = build_event_stream(&records, &cfg);
 
     // Run closed-loop filter
-    let results = run_closed_loop(&mut eskf, stream, None)
-        .expect("ESKF with high dynamics should complete");
+    let results =
+        run_closed_loop(&mut eskf, stream, None).expect("ESKF with high dynamics should complete");
 
     // Verify all results are valid (no NaN or Inf)
     for (i, result) in results.iter().enumerate() {
@@ -1608,19 +1608,22 @@ fn test_filter_comparison() {
         process_noise,
     );
     let stream_eskf = build_event_stream(&records, &cfg);
-    let eskf_results =
-        run_closed_loop(&mut eskf, stream_eskf, None).expect("ESKF should complete");
+    let eskf_results = run_closed_loop(&mut eskf, stream_eskf, None).expect("ESKF should complete");
     let eskf_stats = compute_error_metrics(&eskf_results, &records);
 
     // Print comparison
     println!("\n=== Filter Performance Comparison ===");
     println!(
         "UKF  - RMS Horizontal: {:.2}m, RMS Altitude: {:.2}m, Max Horizontal: {:.2}m",
-        ukf_stats.rms_horizontal_error, ukf_stats.rms_altitude_error, ukf_stats.max_horizontal_error
+        ukf_stats.rms_horizontal_error,
+        ukf_stats.rms_altitude_error,
+        ukf_stats.max_horizontal_error
     );
     println!(
         "EKF  - RMS Horizontal: {:.2}m, RMS Altitude: {:.2}m, Max Horizontal: {:.2}m",
-        ekf_stats.rms_horizontal_error, ekf_stats.rms_altitude_error, ekf_stats.max_horizontal_error
+        ekf_stats.rms_horizontal_error,
+        ekf_stats.rms_altitude_error,
+        ekf_stats.max_horizontal_error
     );
     println!(
         "ESKF - RMS Horizontal: {:.2}m, RMS Altitude: {:.2}m, Max Horizontal: {:.2}m",
