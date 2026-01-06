@@ -1,7 +1,8 @@
 input = "data/input"
-output = "data/output/ukf_degraded"
+output = "data/output/ukf/degraded"
 mode = "closed-loop"
 seed = 42
+generate_plot = true
 
 [closed_loop]
 filter = "ukf"
