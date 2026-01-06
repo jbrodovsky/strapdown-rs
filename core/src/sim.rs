@@ -407,7 +407,7 @@ impl TestDataRecord {
 
         let file = File::create(path)?;
         let buf_writer = BufWriter::new(file);
-        let mut writer = Writer::new(buf_writer).map_err(|e| io::Error::other(e))?;
+        let mut writer = Writer::new(buf_writer).map_err(io::Error::other)?;
 
         // Add schema for TestDataRecord (using MessagePack encoding)
         let schema_name = "TestDataRecord";
@@ -416,13 +416,13 @@ impl TestDataRecord {
 
         let schema_id = writer
             .add_schema(schema_name, schema_encoding, schema_data)
-            .map_err(|e| io::Error::other(e))?;
+            .map_err(io::Error::other)?;
 
         // Add channel for TestDataRecord messages
         let metadata = BTreeMap::new();
         let channel_id = writer
             .add_channel(schema_id, "sensor_data", "msgpack", &metadata)
-            .map_err(|e| io::Error::other(e))?;
+            .map_err(io::Error::other)?;
 
         // Write each record as a message
         for (seq, record) in records.iter().enumerate() {
@@ -442,10 +442,10 @@ impl TestDataRecord {
 
             writer
                 .write_to_known_channel(&header, &data)
-                .map_err(|e| io::Error::other(e))?;
+                .map_err(io::Error::other)?;
         }
 
-        writer.finish().map_err(|e| io::Error::other(e))?;
+        writer.finish().map_err(io::Error::other)?;
 
         Ok(())
     }
@@ -680,7 +680,8 @@ impl TestDataRecord {
         let file = netcdf::open(path)?;
 
         // Read time variable
-        let time_var = file.variable("time")
+        let time_var = file
+            .variable("time")
             .ok_or_else(|| anyhow::anyhow!("time variable not found"))?;
         let times: Vec<f64> = time_var.get_values(..)?;
         let n = times.len();
@@ -688,7 +689,8 @@ impl TestDataRecord {
         // Helper macro to read a variable
         macro_rules! read_var {
             ($file:expr, $name:expr) => {{
-                let var = $file.variable($name)
+                let var = $file
+                    .variable($name)
                     .ok_or_else(|| anyhow::anyhow!(concat!($name, " variable not found")))?;
                 let data: Vec<f64> = var.get_values(..)?;
                 data
@@ -1234,7 +1236,10 @@ impl NavigationResult {
         }
 
         // Prepare all data arrays
-        let timestamps: Vec<f64> = records.iter().map(|r| r.timestamp.timestamp() as f64).collect();
+        let timestamps: Vec<f64> = records
+            .iter()
+            .map(|r| r.timestamp.timestamp() as f64)
+            .collect();
         let latitude: Vec<f64> = records.iter().map(|r| r.latitude).collect();
         let longitude: Vec<f64> = records.iter().map(|r| r.longitude).collect();
         let altitude: Vec<f64> = records.iter().map(|r| r.altitude).collect();
@@ -1314,7 +1319,8 @@ impl NavigationResult {
         let file = netcdf::open(path)?;
 
         // Read timestamp variable
-        let time_var = file.variable("timestamp")
+        let time_var = file
+            .variable("timestamp")
             .ok_or_else(|| anyhow::anyhow!("timestamp variable not found"))?;
         let timestamps: Vec<f64> = time_var.get_values(..)?;
         let n = timestamps.len();
@@ -1322,7 +1328,8 @@ impl NavigationResult {
         // Helper macro to read a variable
         macro_rules! read_var {
             ($file:expr, $name:expr) => {{
-                let var = $file.variable($name)
+                let var = $file
+                    .variable($name)
                     .ok_or_else(|| anyhow::anyhow!(concat!($name, " variable not found")))?;
                 let data: Vec<f64> = var.get_values(..)?;
                 data
@@ -1434,7 +1441,7 @@ impl NavigationResult {
 
         let file = File::create(path)?;
         let buf_writer = BufWriter::new(file);
-        let mut writer = Writer::new(buf_writer).map_err(|e| io::Error::other(e))?;
+        let mut writer = Writer::new(buf_writer).map_err(io::Error::other)?;
 
         // Add schema for NavigationResult (using MessagePack encoding)
         let schema_name = "NavigationResult";
@@ -1443,13 +1450,13 @@ impl NavigationResult {
 
         let schema_id = writer
             .add_schema(schema_name, schema_encoding, schema_data)
-            .map_err(|e| io::Error::other(e))?;
+            .map_err(io::Error::other)?;
 
         // Add channel for NavigationResult messages
         let metadata = BTreeMap::new();
         let channel_id = writer
             .add_channel(schema_id, "navigation_results", "msgpack", &metadata)
-            .map_err(|e| io::Error::other(e))?;
+            .map_err(io::Error::other)?;
 
         // Write each record as a message
         for (seq, record) in records.iter().enumerate() {
@@ -1469,10 +1476,10 @@ impl NavigationResult {
 
             writer
                 .write_to_known_channel(&header, &data)
-                .map_err(|e| io::Error::other(e))?;
+                .map_err(io::Error::other)?;
         }
 
-        writer.finish().map_err(|e| io::Error::other(e))?;
+        writer.finish().map_err(io::Error::other)?;
 
         Ok(())
     }
@@ -3075,23 +3082,20 @@ impl SimulationConfig {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "clap", derive(ValueEnum))]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum GeoMeasurementType {
     /// Gravity anomaly measurements
+    #[default]
     Gravity,
     /// Magnetic anomaly measurements
     Magnetic,
-}
-
-impl Default for GeoMeasurementType {
-    fn default() -> Self {
-        Self::Gravity
-    }
 }
 
 /// Geophysical map resolution configuration
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "clap", derive(ValueEnum))]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum GeoResolution {
     /// 1 degree resolution
     OneDegree,
@@ -3114,6 +3118,7 @@ pub enum GeoResolution {
     /// 2 arcminute resolution
     TwoMinutes,
     /// 1 arcminute resolution
+    #[default]
     OneMinute,
     /// 30 arcsecond resolution
     ThirtySeconds,
@@ -3125,36 +3130,30 @@ pub enum GeoResolution {
     OneSecond,
 }
 
-impl Default for GeoResolution {
-    fn default() -> Self {
-        Self::OneMinute
-    }
-}
-
 /// Geophysical measurement configuration for geonav simulations
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GeophysicalConfig {
     /// Type of geophysical measurement to use
     #[serde(default)]
     pub geo_type: GeoMeasurementType,
-    
+
     /// Map resolution for geophysical data
     #[serde(default)]
     pub geo_resolution: GeoResolution,
-    
+
     /// Bias for geophysical measurement noise (default: 0.0)
     #[serde(default)]
     pub geo_bias: f64,
-    
+
     /// Standard deviation for geophysical measurement noise (default: 100.0)
     #[serde(default = "default_geo_noise_std")]
     pub geo_noise_std: f64,
-    
+
     /// Frequency in seconds for geophysical measurements
     /// If not specified, uses every available measurement
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub geo_frequency_s: Option<f64>,
-    
+
     /// Custom map file path (optional - if not provided, auto-detects based on input directory)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub map_file: Option<String>,
