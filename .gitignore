@@ -51,3 +51,5 @@ book/book/
 
 # Generated performance plots
 data/output/*.png
+pixi.lock
+Cargo.lock

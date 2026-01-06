@@ -3066,7 +3066,7 @@
     <bcf:citekey order="2" intorder="2">underwater_survey</bcf:citekey>
     <bcf:citekey order="2" intorder="3">indoor_survey</bcf:citekey>
     <bcf:citekey order="3" intorder="1">9112619</bcf:citekey>
-    <bcf:citekey order="3" intorder="2">santamaria_global_nodate</bcf:citekey>
+    <bcf:citekey order="3" intorder="2">gnss_rf_interference</bcf:citekey>
     <bcf:citekey order="4" intorder="1">jircitano1991gravity</bcf:citekey>
     <bcf:citekey order="4" intorder="2">kamgar1999vehicle</bcf:citekey>
     <bcf:citekey order="4" intorder="3">gravnav</bcf:citekey>
