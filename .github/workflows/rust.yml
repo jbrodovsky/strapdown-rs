@@ -24,7 +24,9 @@ jobs:
           libhdf5-dev \
           libhdf5-openmpi-dev \
           libnetcdf-dev \
-          zlib1g-dev
+          zlib1g-dev \
+          libfreetype6 \
+          fontconfig \
         pkg-config --modversion hdf5
         pkg-config --modversion netcdf || true
     - uses: actions/cache@v4
