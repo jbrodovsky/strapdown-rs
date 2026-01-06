@@ -91,7 +91,7 @@ enum Command {
         about = "Run geophysical navigation simulation in closed-loop mode",
         long_about = "Run geophysical INS simulation in a closed-loop (feedback) mode. In this mode, GNSS measurements and geophysical measurements are incorporated to correct for IMU drift using either an Unscented Kalman Filter (UKF) or Extended Kalman Filter (EKF). Various GNSS degradation scenarios can be simulated, including jamming, reduced update rates, and spoofing."
     )]
-    ClosedLoop(ClosedLoopSimArgs),
+    ClosedLoop(Box<ClosedLoopSimArgs>),
 
     #[command(name = "conf", about = "Generate a template configuration file")]
     CreateConfig,
@@ -684,10 +684,10 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
 
     // Validate output location exists and write to file
     let config_output_path = Path::new(&save_path).join(&config_name);
-    if let Some(parent) = config_output_path.parent() {
-        if !parent.as_os_str().is_empty() && !parent.exists() {
-            std::fs::create_dir_all(parent)?;
-        }
+    if let Some(parent) = config_output_path.parent()
+        && !parent.as_os_str().is_empty() && !parent.exists()
+    {
+        std::fs::create_dir_all(parent)?;
     }
     config.to_file(&config_output_path)?;
 
