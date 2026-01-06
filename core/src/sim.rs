@@ -3071,6 +3071,236 @@ impl SimulationConfig {
     }
 }
 
+/// Geophysical measurement type configuration
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "clap", derive(ValueEnum))]
+#[serde(rename_all = "lowercase")]
+pub enum GeoMeasurementType {
+    /// Gravity anomaly measurements
+    Gravity,
+    /// Magnetic anomaly measurements
+    Magnetic,
+}
+
+impl Default for GeoMeasurementType {
+    fn default() -> Self {
+        Self::Gravity
+    }
+}
+
+/// Geophysical map resolution configuration
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "clap", derive(ValueEnum))]
+#[serde(rename_all = "snake_case")]
+pub enum GeoResolution {
+    /// 1 degree resolution
+    OneDegree,
+    /// 30 arcminute resolution
+    ThirtyMinutes,
+    /// 20 arcminute resolution
+    TwentyMinutes,
+    /// 15 arcminute resolution
+    FifteenMinutes,
+    /// 10 arcminute resolution
+    TenMinutes,
+    /// 6 arcminute resolution
+    SixMinutes,
+    /// 5 arcminute resolution
+    FiveMinutes,
+    /// 4 arcminute resolution
+    FourMinutes,
+    /// 3 arcminute resolution
+    ThreeMinutes,
+    /// 2 arcminute resolution
+    TwoMinutes,
+    /// 1 arcminute resolution
+    OneMinute,
+    /// 30 arcsecond resolution
+    ThirtySeconds,
+    /// 15 arcsecond resolution
+    FifteenSeconds,
+    /// 3 arcsecond resolution
+    ThreeSeconds,
+    /// 1 arcsecond resolution
+    OneSecond,
+}
+
+impl Default for GeoResolution {
+    fn default() -> Self {
+        Self::OneMinute
+    }
+}
+
+/// Geophysical measurement configuration for geonav simulations
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GeophysicalConfig {
+    /// Type of geophysical measurement to use
+    #[serde(default)]
+    pub geo_type: GeoMeasurementType,
+    
+    /// Map resolution for geophysical data
+    #[serde(default)]
+    pub geo_resolution: GeoResolution,
+    
+    /// Bias for geophysical measurement noise (default: 0.0)
+    #[serde(default)]
+    pub geo_bias: f64,
+    
+    /// Standard deviation for geophysical measurement noise (default: 100.0)
+    #[serde(default = "default_geo_noise_std")]
+    pub geo_noise_std: f64,
+    
+    /// Frequency in seconds for geophysical measurements
+    /// If not specified, uses every available measurement
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geo_frequency_s: Option<f64>,
+    
+    /// Custom map file path (optional - if not provided, auto-detects based on input directory)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map_file: Option<String>,
+}
+
+fn default_geo_noise_std() -> f64 {
+    100.0
+}
+
+impl Default for GeophysicalConfig {
+    fn default() -> Self {
+        Self {
+            geo_type: GeoMeasurementType::default(),
+            geo_resolution: GeoResolution::default(),
+            geo_bias: 0.0,
+            geo_noise_std: default_geo_noise_std(),
+            geo_frequency_s: None,
+            map_file: None,
+        }
+    }
+}
+
+/// Unified geophysical navigation simulation configuration
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GeonavSimulationConfig {
+    /// Input CSV file path (relative or absolute)
+    pub input: String,
+    /// Output CSV file path (relative or absolute)
+    pub output: String,
+    /// Filter type (UKF or EKF)
+    #[serde(default)]
+    pub filter: FilterType,
+    /// Random number generator seed
+    #[serde(default = "default_seed")]
+    pub seed: u64,
+    /// Run simulations in parallel when processing multiple files
+    #[serde(default)]
+    pub parallel: bool,
+    /// Generate performance plot comparing navigation output to GPS measurements
+    #[serde(default)]
+    pub generate_plot: bool,
+    /// Logging configuration
+    #[serde(default)]
+    pub logging: LoggingConfig,
+    /// Geophysical measurement configuration
+    #[serde(default)]
+    pub geophysical: GeophysicalConfig,
+    /// GNSS degradation configuration (scheduler + fault model)
+    #[serde(default)]
+    pub gnss_degradation: crate::messages::GnssDegradationConfig,
+}
+
+impl Default for GeonavSimulationConfig {
+    fn default() -> Self {
+        Self {
+            input: "input.csv".to_string(),
+            output: "output.csv".to_string(),
+            filter: FilterType::Ukf,
+            seed: default_seed(),
+            parallel: false,
+            generate_plot: false,
+            logging: LoggingConfig::default(),
+            geophysical: GeophysicalConfig::default(),
+            gnss_degradation: crate::messages::GnssDegradationConfig::default(),
+        }
+    }
+}
+
+impl GeonavSimulationConfig {
+    /// Write the configuration to a JSON file (pretty-printed)
+    pub fn to_json<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
+        let file = std::fs::File::create(path)?;
+        serde_json::to_writer_pretty(file, self).map_err(io::Error::other)
+    }
+
+    /// Read the configuration from a JSON file
+    pub fn from_json<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let file = std::fs::File::open(path)?;
+        serde_json::from_reader(file).map_err(io::Error::other)
+    }
+
+    /// Write the configuration as YAML
+    pub fn to_yaml<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
+        let mut file = std::fs::File::create(path)?;
+        let s = serde_yaml::to_string(self).map_err(io::Error::other)?;
+        file.write_all(s.as_bytes())
+    }
+
+    /// Read the configuration from YAML
+    pub fn from_yaml<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let file = std::fs::File::open(path)?;
+        serde_yaml::from_reader(file).map_err(io::Error::other)
+    }
+
+    /// Write the configuration as TOML
+    pub fn to_toml<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
+        let mut file = std::fs::File::create(path)?;
+        let s = toml::to_string_pretty(self).map_err(io::Error::other)?;
+        file.write_all(s.as_bytes())
+    }
+
+    /// Read the configuration from TOML
+    pub fn from_toml<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let mut s = String::new();
+        let mut file = std::fs::File::open(path)?;
+        file.read_to_string(&mut s)?;
+        toml::from_str(&s).map_err(io::Error::other)
+    }
+
+    /// Generic write: choose format by file extension (.json/.yaml/.yml/.toml)
+    pub fn to_file<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
+        let p = path.as_ref();
+        let ext = p
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_lowercase());
+        match ext.as_deref() {
+            Some("json") => self.to_json(p),
+            Some("yaml") | Some("yml") => self.to_yaml(p),
+            Some("toml") => self.to_toml(p),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unsupported file extension (expected .json, .yaml, .yml, or .toml)",
+            )),
+        }
+    }
+
+    /// Generic read: choose format by file extension (.json/.yaml/.yml/.toml)
+    pub fn from_file<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let p = path.as_ref();
+        let ext = p
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_lowercase());
+        match ext.as_deref() {
+            Some("json") => Self::from_json(p),
+            Some("yaml") | Some("yml") => Self::from_yaml(p),
+            Some("toml") => Self::from_toml(p),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unsupported file extension (expected .json, .yaml, .yml, or .toml)",
+            )),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
