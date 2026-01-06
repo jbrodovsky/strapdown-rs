@@ -110,8 +110,8 @@ use std::any::Any;
 use crate::measurements::MeasurementModel;
 
 use nalgebra::{DMatrix, DVector};
-use rand::prelude::*;
 use rand::SeedableRng;
+use rand::prelude::*;
 
 /// Trait defining the interface for particle state representation
 ///
