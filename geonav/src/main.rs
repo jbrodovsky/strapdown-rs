@@ -1,11 +1,11 @@
 //! GEONAV-SIM: A geophysical navigation simulation tool for strapdown inertial navigation systems.
 //!
-//! This program extends the basic strapdown simulation by incorporating geophysical measurements such as 
-//! gravity and magnetic anomalies for enhanced navigation accuracy. It loads geophysical maps (NetCDF format) 
+//! This program extends the basic strapdown simulation by incorporating geophysical measurements such as
+//! gravity and magnetic anomalies for enhanced navigation accuracy. It loads geophysical maps (NetCDF format)
 //! and simulates how these measurements can aid inertial navigation systems, particularly in GNSS-denied environments.
 //!
-//! The program operates in closed-loop mode, incorporating both GNSS measurements (when available) and geophysical 
-//! measurements from loaded maps. It can simulate various GNSS degradation scenarios while maintaining navigation 
+//! The program operates in closed-loop mode, incorporating both GNSS measurements (when available) and geophysical
+//! measurements from loaded maps. It can simulate various GNSS degradation scenarios while maintaining navigation
 //! accuracy through geophysical aiding.
 //!
 //! You can run simulations either by:
@@ -586,7 +586,11 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
             geo_bias: args.geo.geo_bias,
             geo_noise_std: args.geo.geo_noise_std,
             geo_frequency_s: args.geo.geo_frequency_s,
-            map_file: args.geo.map_file.as_ref().map(|p| p.to_string_lossy().to_string()),
+            map_file: args
+                .geo
+                .map_file
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string()),
         },
         gnss_degradation: strapdown::messages::GnssDegradationConfig {
             scheduler: build_scheduler(&args.scheduler),
@@ -668,8 +672,12 @@ fn prompt_config_path() -> String {
 /// Interactive configuration file creation wizard
 fn create_config_file() -> Result<(), Box<dyn Error>> {
     println!("\n=== Geonav Simulation Configuration Wizard ===\n");
-    println!("This wizard will help you create a configuration file for geophysical navigation simulations.");
-    println!("For now, we'll create a basic template. You can edit it to customize your simulation.\n");
+    println!(
+        "This wizard will help you create a configuration file for geophysical navigation simulations."
+    );
+    println!(
+        "For now, we'll create a basic template. You can edit it to customize your simulation.\n"
+    );
 
     let config_name = prompt_config_name();
     let save_path = prompt_config_path();
@@ -685,7 +693,8 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
     // Validate output location exists and write to file
     let config_output_path = Path::new(&save_path).join(&config_name);
     if let Some(parent) = config_output_path.parent()
-        && !parent.as_os_str().is_empty() && !parent.exists()
+        && !parent.as_os_str().is_empty()
+        && !parent.exists()
     {
         std::fs::create_dir_all(parent)?;
     }

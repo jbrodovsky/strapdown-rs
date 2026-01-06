@@ -405,7 +405,9 @@ fn process_file(
 
                     #[cfg(not(feature = "plotting"))]
                     if config.generate_plot {
-                        error!("Plotting requested but 'plotting' feature not enabled. Rebuild with --features plotting");
+                        error!(
+                            "Plotting requested but 'plotting' feature not enabled. Rebuild with --features plotting"
+                        );
                     }
 
                     Ok(())
@@ -424,7 +426,11 @@ fn process_file(
 }
 
 /// Execute simulation from a configuration file
-fn run_from_config(config_path: &Path, cli_parallel: bool, cli_plot: bool) -> Result<(), Box<dyn Error>> {
+fn run_from_config(
+    config_path: &Path,
+    cli_parallel: bool,
+    cli_plot: bool,
+) -> Result<(), Box<dyn Error>> {
     info!("Loading configuration from {}", config_path.display());
 
     let mut config = SimulationConfig::from_file(config_path)?;
@@ -433,12 +439,11 @@ fn run_from_config(config_path: &Path, cli_parallel: bool, cli_plot: bool) -> Re
     if cli_parallel {
         config.parallel = true;
     }
-    
+
     // Override plot setting if CLI flag is set
     if cli_plot {
         config.generate_plot = true;
     }
-    
 
     info!("Configuration loaded successfully");
     info!("Mode: {:?}", config.mode);
@@ -1233,7 +1238,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         // Initialize logger with resolved settings
         init_logger(log_level, log_file)?;
-        
+
         return run_from_config(config_path, cli.parallel, cli.plot);
     }
 
