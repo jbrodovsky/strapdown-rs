@@ -300,32 +300,6 @@ fn get_csv_files(input: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
     }
 }
 
-/// Generate output path for a specific input file
-/// If processing multiple files, appends input filename to output path
-fn generate_output_path(output: &Path, input_file: &Path, is_multiple: bool) -> PathBuf {
-    if !is_multiple {
-        return output.to_path_buf().join(input_file.file_name().unwrap());
-    }
-
-    let input_stem = input_file
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("output");
-    let output_stem = output
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("output");
-    let extension = output.extension().and_then(|s| s.to_str()).unwrap_or("csv");
-
-    let new_filename = format!("{}_{}.{}", output_stem, input_stem, extension);
-
-    if let Some(parent) = output.parent() {
-        parent.join(new_filename)
-    } else {
-        PathBuf::from(new_filename)
-    }
-}
-
 /// Validate output path and create parent directories if needed.
 /// If output ends with `.csv`, treat as a single file output and ensure its parent exists.
 /// Otherwise, treat as a directory and create it if needed.

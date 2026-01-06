@@ -111,7 +111,7 @@ use crate::measurements::MeasurementModel;
 
 use nalgebra::{DMatrix, DVector};
 use rand::prelude::*;
-use rand::{SeedableRng, thread_rng};
+use rand::SeedableRng;
 
 /// Trait defining the interface for particle state representation
 ///
@@ -223,7 +223,8 @@ pub struct ParticleFilter<P: Particle> {
     averaging_strategy: ParticleAveragingStrategy,
     /// Effective sample size threshold for triggering resampling (0.0 to 1.0)
     /// Resampling occurs when N_eff < threshold * N
-    resampling_threshold: f64,
+    /// Note: Currently stored but not used in resampling logic
+    _resampling_threshold: f64,
     /// Random number generator for resampling
     rng: StdRng,
 }
@@ -262,8 +263,8 @@ impl<P: Particle> ParticleFilter<P> {
             particles,
             resampling_strategy,
             averaging_strategy,
-            resampling_threshold,
-            rng: StdRng::seed_from_u64(thread_rng().random()),
+            _resampling_threshold: resampling_threshold,
+            rng: StdRng::seed_from_u64(rand::rng().random()),
         }
     }
 
