@@ -196,6 +196,10 @@ struct ParticleFilterSimArgs {
     #[arg(long, default_value_t = 0.01)]
     gyro_bias_std: f64,
 
+    /// Process noise standard deviation for velocity-based particle filter (meters)
+    #[arg(long, default_value_t = 1.0)]
+    process_noise_std: f64,
+
     /// GNSS scheduler settings (dropouts / reduced rate)
     #[command(flatten)]
     scheduler: SchedulerArgs,
