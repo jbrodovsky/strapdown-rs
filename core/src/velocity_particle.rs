@@ -38,8 +38,8 @@
 //! ```
 
 use nalgebra::{DMatrix, DVector};
-use rand::rngs::StdRng;
 use rand::SeedableRng;
+use rand::rngs::StdRng;
 use rand_distr::{Distribution, Normal};
 use std::any::Any;
 
@@ -233,8 +233,8 @@ impl VelocityParticle {
         self.state[5] = v_d + noise_v_d;
 
         // Ensure latitude is within [-pi/2, pi/2]
-        self.state[0] = self.state[0]
-            .clamp(-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2);
+        self.state[0] =
+            self.state[0].clamp(-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2);
 
         // Wrap longitude to [-pi, pi]
         while self.state[1] > std::f64::consts::PI {
@@ -295,11 +295,7 @@ impl VelocityParticleFilter {
     /// # Returns
     ///
     /// A new `VelocityParticleFilter` instance
-    pub fn new(
-        initial_state: DVector<f64>,
-        num_particles: usize,
-        process_noise_std: f64,
-    ) -> Self {
+    pub fn new(initial_state: DVector<f64>, num_particles: usize, process_noise_std: f64) -> Self {
         assert_eq!(
             initial_state.len(),
             6,
