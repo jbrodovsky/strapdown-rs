@@ -1083,10 +1083,6 @@ impl NavigationResult {
     ///
     /// # Arguments
     /// * `path` - Path to the HDF5 file to read.
-    /// Reads an MCAP file and returns a vector of NavigationResult structs.
-    ///
-    /// # Arguments
-    /// * `path` - Path to the MCAP file to read.
     ///
     /// # Returns
     /// * `Ok(Vec<NavigationResult>)` if successful.
@@ -1412,9 +1408,6 @@ impl NavigationResult {
 
         Ok(records)
     }
-
-    /// # Returns
-    /// * `Result<()>` - Ok if successful, Err otherwise
     /// Writes a vector of NavigationResult structs to an MCAP file.
     ///
     /// # Arguments
@@ -1423,6 +1416,10 @@ impl NavigationResult {
     ///
     /// # Returns
     /// * `io::Result<()>` - Ok if successful, Err otherwise
+    ///
+    /// # Example
+    /// ```
+    /// use strapdown::sim::NavigationResult;
     /// use std::path::Path;
     ///
     /// let mut result = NavigationResult::default();
