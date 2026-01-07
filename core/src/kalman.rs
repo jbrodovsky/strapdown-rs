@@ -3110,7 +3110,11 @@ impl ErrorStateKalmanFilter {
         let (roll, pitch, yaw) = if initial_state.in_degrees {
             (initial_state.roll, initial_state.pitch, initial_state.yaw)
         } else {
-            (initial_state.roll, initial_state.pitch, initial_state.yaw)
+            (
+                initial_state.roll.to_degrees(),
+                initial_state.pitch.to_degrees(),
+                initial_state.yaw.to_degrees(),
+            )
         };
 
         // Convert Euler angles to quaternion (XYZ sequence: roll, pitch, yaw)
