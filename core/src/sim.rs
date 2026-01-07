@@ -2813,6 +2813,8 @@ pub enum ParticleFilterType {
     Standard,
     /// Rao-Blackwellized particle filter (position as particles, velocity/attitude/biases as per-particle filters)
     RaoBlackwellized,
+    /// Velocity-based particle filter (position-only particles, velocities supplied externally)
+    Velocity,
 }
 
 /// Closed-loop specific configuration
@@ -2855,6 +2857,9 @@ pub struct ParticleFilterConfig {
     /// Gyroscope bias uncertainty standard deviation (rad/s)
     #[serde(default = "default_gyro_bias_std")]
     pub gyro_bias_std: f64,
+    /// Process noise standard deviation for velocity-based particle filter (meters)
+    #[serde(default = "default_process_noise_std")]
+    pub process_noise_std: f64,
 }
 
 fn default_num_particles() -> usize {
@@ -2875,6 +2880,9 @@ fn default_accel_bias_std() -> f64 {
 fn default_gyro_bias_std() -> f64 {
     0.01
 }
+fn default_process_noise_std() -> f64 {
+    1.0
+}
 
 impl Default for ParticleFilterConfig {
     fn default() -> Self {
@@ -2886,6 +2894,7 @@ impl Default for ParticleFilterConfig {
             attitude_std: default_attitude_std(),
             accel_bias_std: default_accel_bias_std(),
             gyro_bias_std: default_gyro_bias_std(),
+            process_noise_std: default_process_noise_std(),
         }
     }
 }
