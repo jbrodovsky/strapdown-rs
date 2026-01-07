@@ -1,10 +1,11 @@
 input = "data/input"
-output = "data/output"
+output = "data/output/ekf/truth"
 mode = "closed-loop"
 seed = 42
+generate_plot = true
 
 [closed_loop]
-filter = "ukf"
+filter = "ekf"
 
 [gnss_degradation]
 seed = 42
