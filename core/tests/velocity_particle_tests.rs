@@ -59,7 +59,8 @@ fn simulate_constant_velocity(
     ]);
 
     // Initialize particle filter
-    let mut pf = VelocityParticleFilter::new(initial_state.clone(), num_particles, process_noise_std);
+    let mut pf =
+        VelocityParticleFilter::new(initial_state.clone(), num_particles, process_noise_std);
 
     // Ground truth state for comparison
     let mut true_lat = initial_lat.to_radians();
@@ -88,11 +89,8 @@ fn simulate_constant_velocity(
 
         // GPS measurement update at specified interval
         if time - last_gps_time >= gps_interval {
-            let gps_meas = create_gps_measurement(
-                true_lat.to_degrees(),
-                true_lon.to_degrees(),
-                true_alt,
-            );
+            let gps_meas =
+                create_gps_measurement(true_lat.to_degrees(), true_lon.to_degrees(), true_alt);
 
             pf.update_weights(&gps_meas);
             pf.normalize_weights();
@@ -135,14 +133,17 @@ fn simulate_constant_velocity(
     // Final position error
     let dlat = est_lat - true_lat;
     let dlon = est_lon - true_lon;
-    let a = (dlat / 2.0).sin().powi(2) + true_lat.cos() * est_lat.cos() * (dlon / 2.0).sin().powi(2);
+    let a =
+        (dlat / 2.0).sin().powi(2) + true_lat.cos() * est_lat.cos() * (dlon / 2.0).sin().powi(2);
     let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
     let final_horizontal_error = r_earth * c;
     let final_vertical_error = (est_alt - true_alt).abs();
-    let final_position_error = (final_horizontal_error.powi(2) + final_vertical_error.powi(2)).sqrt();
+    let final_position_error =
+        (final_horizontal_error.powi(2) + final_vertical_error.powi(2)).sqrt();
 
     // Final velocity error
-    let velocity_error = ((est_v_n - v_n).powi(2) + (est_v_e - v_e).powi(2) + (est_v_d - v_d).powi(2)).sqrt();
+    let velocity_error =
+        ((est_v_n - v_n).powi(2) + (est_v_e - v_e).powi(2) + (est_v_d - v_d).powi(2)).sqrt();
 
     // Mean position error
     let mean_position_error = position_errors.iter().sum::<f64>() / position_errors.len() as f64;
@@ -451,11 +452,8 @@ fn test_particle_filter_convergence() {
 
         // GPS update
         if time - last_gps_time >= gps_interval {
-            let gps_meas = create_gps_measurement(
-                true_lat.to_degrees(),
-                true_lon.to_degrees(),
-                true_alt,
-            );
+            let gps_meas =
+                create_gps_measurement(true_lat.to_degrees(), true_lon.to_degrees(), true_alt);
 
             pf.update_weights(&gps_meas);
             pf.normalize_weights();
@@ -465,7 +463,8 @@ fn test_particle_filter_convergence() {
 
             // Track velocity error over time
             let estimate = pf.get_estimate();
-            let v_error = ((estimate[3] - true_v_n).powi(2) + (estimate[4] - true_v_e).powi(2)).sqrt();
+            let v_error =
+                ((estimate[3] - true_v_n).powi(2) + (estimate[4] - true_v_e).powi(2)).sqrt();
             velocity_errors.push((time, v_error));
         }
 
@@ -479,7 +478,10 @@ fn test_particle_filter_convergence() {
 
     println!("Initial velocity estimate: [0.0, 0.0] m/s (wrong)");
     println!("True velocity: [{:.1}, {:.1}] m/s", true_v_n, true_v_e);
-    println!("Final velocity estimate: [{:.2}, {:.2}] m/s", final_v_n, final_v_e);
+    println!(
+        "Final velocity estimate: [{:.2}, {:.2}] m/s",
+        final_v_n, final_v_e
+    );
 
     let final_v_error = ((final_v_n - true_v_n).powi(2) + (final_v_e - true_v_e).powi(2)).sqrt();
     println!("Final velocity error: {:.2} m/s", final_v_error);
@@ -503,8 +505,10 @@ fn test_particle_filter_convergence() {
     // Check that it at least moves in the right direction
     let initial_v_error = (true_v_n.powi(2) + true_v_e.powi(2)).sqrt();
     println!("\nInitial velocity error: {:.2} m/s", initial_v_error);
-    println!("Velocity estimate is within {:.1}% of initial error",
-             (final_v_error / initial_v_error) * 100.0);
+    println!(
+        "Velocity estimate is within {:.1}% of initial error",
+        (final_v_error / initial_v_error) * 100.0
+    );
 
     // More lenient check - just ensure filter doesn't diverge wildly
     assert!(
