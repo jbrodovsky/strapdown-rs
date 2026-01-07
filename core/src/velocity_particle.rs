@@ -296,6 +296,29 @@ impl VelocityParticleFilter {
     ///
     /// A new `VelocityParticleFilter` instance
     pub fn new(initial_state: DVector<f64>, num_particles: usize, process_noise_std: f64) -> Self {
+        Self::new_with_seed(initial_state, num_particles, process_noise_std, rand::random())
+    }
+
+    /// Create a new velocity particle filter with a specific random seed
+    ///
+    /// This is useful for reproducible tests.
+    ///
+    /// # Arguments
+    ///
+    /// * `initial_state` - Initial state [lat (rad), lon (rad), alt (m), v_n, v_e, v_d (m/s)]
+    /// * `num_particles` - Number of particles to use
+    /// * `process_noise_std` - Standard deviation of process noise in meters
+    /// * `seed` - Random seed for deterministic behavior
+    ///
+    /// # Returns
+    ///
+    /// A new `VelocityParticleFilter` instance
+    pub fn new_with_seed(
+        initial_state: DVector<f64>,
+        num_particles: usize,
+        process_noise_std: f64,
+        seed: u64,
+    ) -> Self {
         assert_eq!(
             initial_state.len(),
             6,
@@ -315,7 +338,7 @@ impl VelocityParticleFilter {
             0.5, // Resample when effective sample size < 50% of particles
         );
 
-        let rng = StdRng::seed_from_u64(rand::random());
+        let rng = StdRng::seed_from_u64(seed);
 
         VelocityParticleFilter {
             filter,
