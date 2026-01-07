@@ -155,7 +155,6 @@ pub mod measurements;
 pub mod messages;
 pub mod particle;
 pub mod sim;
-pub mod velocity_particle;
 
 use nalgebra::{DMatrix, DVector, Matrix3, Rotation3, Vector3, Vector6};
 

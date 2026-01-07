@@ -984,3 +984,420 @@ mod tests {
         assert!(n_eff < 10.0, "Expected N_eff < 10, got {}", n_eff);
     }
 }
+
+// ============= Velocity-based Particle Filter ===================================
+
+/// Position-only particle for velocity-based navigation
+///
+/// This particle represents only position states (latitude, longitude, altitude)
+/// and is propagated using velocity inputs from an external source (e.g., INS filter).
+/// This reduces dimensionality compared to full-state particles while still leveraging
+/// accurate velocity information.
+///
+/// # State Vector
+///
+/// The particle state is a 3-element vector: `[latitude (rad), longitude (rad), altitude (m)]`
+#[derive(Clone, Debug)]
+pub struct VelocityParticle {
+    /// State vector [lat, lon, alt]
+    state: DVector<f64>,
+    /// Particle weight for importance sampling
+    weight: f64,
+}
+
+impl Particle for VelocityParticle {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+
+    fn new(initial_state: &DVector<f64>, weight: f64) -> Self {
+        assert_eq!(
+            initial_state.len(),
+            3,
+            "VelocityParticle requires 3-state vector [lat, lon, alt]"
+        );
+        VelocityParticle {
+            state: initial_state.clone(),
+            weight,
+        }
+    }
+
+    fn state(&self) -> DVector<f64> {
+        self.state.clone()
+    }
+
+    fn update_weight<M: crate::measurements::MeasurementModel + ?Sized>(
+        &mut self,
+        measurement: &M,
+    ) {
+        // Compute expected measurement from particle's state
+        let expected = measurement.get_expected_measurement(&self.state);
+        let actual = measurement.get_measurement(&self.state);
+
+        // Measurement residual
+        let innovation = actual - expected;
+
+        // Measurement noise covariance
+        let noise_cov = measurement.get_noise();
+
+        // Compute Gaussian likelihood: exp(-0.5 * innovation^T * R^{-1} * innovation)
+        let mut log_likelihood = 0.0;
+        for i in 0..innovation.len() {
+            let variance = noise_cov[(i, i)];
+            if variance > 0.0 {
+                let std_dev = variance.sqrt();
+                let normalized_innovation = innovation[i] / std_dev;
+                log_likelihood += -0.5 * normalized_innovation.powi(2)
+                    - std_dev.ln()
+                    - 0.5 * (2.0 * std::f64::consts::PI).ln();
+            }
+        }
+
+        let likelihood = log_likelihood.exp();
+        self.weight *= likelihood;
+    }
+
+    fn weight(&self) -> f64 {
+        self.weight
+    }
+
+    fn set_weight(&mut self, weight: f64) {
+        self.weight = weight;
+    }
+}
+
+impl VelocityParticle {
+    /// Propagate particle state forward using supplied velocities
+    ///
+    /// Updates position based on supplied velocity: position += velocity * dt
+    /// Adds process noise for particle diversity.
+    ///
+    /// # Arguments
+    ///
+    /// * `v_n` - Northward velocity (m/s)
+    /// * `v_e` - Eastward velocity (m/s)
+    /// * `v_d` - Vertical velocity (m/s, positive down in NED)
+    /// * `dt` - Time step in seconds
+    /// * `process_noise_std` - Standard deviation of process noise (meters)
+    /// * `rng` - Random number generator
+    pub fn propagate(
+        &mut self,
+        v_n: f64,
+        v_e: f64,
+        v_d: f64,
+        dt: f64,
+        process_noise_std: f64,
+        rng: &mut StdRng,
+    ) {
+        use rand_distr::{Distribution, Normal};
+
+        // Extract current state
+        let lat = self.state[0]; // radians
+        let lon = self.state[1]; // radians
+        let alt = self.state[2]; // meters
+
+        // Get principal radii at current position
+        let lat_deg = lat.to_degrees();
+        let (r_n, r_e, _) = crate::earth::principal_radii(&lat_deg, &alt);
+
+        // Position update using supplied velocities
+        let delta_lat = (v_n * dt) / r_n;
+        let delta_lon = if lat.cos().abs() > 1e-8 {
+            (v_e * dt) / (r_e * lat.cos())
+        } else {
+            0.0
+        };
+        let delta_alt = -v_d * dt; // Negative because down is positive in NED frame
+
+        // Generate process noise for position
+        let normal = Normal::new(0.0, 1.0).unwrap();
+        let noise_lat_m = if process_noise_std > 0.0 {
+            normal.sample(rng) * process_noise_std
+        } else {
+            0.0
+        };
+        let noise_lon_m = if process_noise_std > 0.0 {
+            normal.sample(rng) * process_noise_std
+        } else {
+            0.0
+        };
+        let noise_alt = if process_noise_std > 0.0 {
+            normal.sample(rng) * process_noise_std
+        } else {
+            0.0
+        };
+
+        // Convert position noise from meters to radians
+        let noise_lat_rad = noise_lat_m / r_n;
+        let noise_lon_rad = if lat.cos().abs() > 1e-8 {
+            noise_lon_m / (r_e * lat.cos())
+        } else {
+            0.0
+        };
+
+        // Update state with propagation and noise
+        self.state[0] = lat + delta_lat + noise_lat_rad;
+        self.state[1] = lon + delta_lon + noise_lon_rad;
+        self.state[2] = alt + delta_alt + noise_alt;
+
+        // Ensure latitude is within [-pi/2, pi/2]
+        self.state[0] =
+            self.state[0].clamp(-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2);
+
+        // Wrap longitude to [-pi, pi]
+        self.state[1] = crate::wrap_to_pi(self.state[1]);
+    }
+}
+
+/// Velocity input model for particle filter prediction
+///
+/// Represents 3-axis velocity inputs [v_north, v_east, v_vertical] in m/s
+#[derive(Clone, Debug)]
+pub struct VelocityInput {
+    /// Northward velocity (m/s)
+    pub v_north: f64,
+    /// Eastward velocity (m/s)
+    pub v_east: f64,
+    /// Vertical velocity (m/s, positive down in NED)
+    pub v_vertical: f64,
+}
+
+impl crate::InputModel for VelocityInput {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+
+    fn get_dimension(&self) -> usize {
+        3
+    }
+
+    fn get_vector(&self) -> DVector<f64> {
+        DVector::from_vec(vec![self.v_north, self.v_east, self.v_vertical])
+    }
+}
+
+/// Velocity-based particle filter for GPS-aided navigation
+///
+/// A particle filter that tracks position-only using supplied velocity inputs.
+/// Designed for scenarios where velocity is provided by an external source
+/// (e.g., an INS/GNSS filter) and we want position estimation with GPS aiding.
+///
+/// # Features
+///
+/// - 3-state position representation [lat, lon, alt]
+/// - Velocity-driven prediction (velocities supplied as input)
+/// - GPS position measurement updates
+/// - Configurable process noise for drift rate tuning
+///
+/// # Example
+///
+/// ```rust
+/// use strapdown::particle::{VelocityParticleFilter, VelocityInput};
+/// use strapdown::NavigationFilter;
+/// use nalgebra::DVector;
+///
+/// let initial_state = DVector::from_vec(vec![0.0, 0.0, 0.0]); // [lat, lon, alt] in rad, rad, m
+/// let mut pf = VelocityParticleFilter::new(initial_state, 1000, 1.0);
+///
+/// // Propagate with velocity input
+/// let vel_input = VelocityInput { v_north: 10.0, v_east: 5.0, v_vertical: 0.0 };
+/// pf.predict(&vel_input, 0.1); // dt = 0.1s
+///
+/// // Update with GPS measurement
+/// // pf.update(&gps_measurement);
+/// ```
+pub struct VelocityParticleFilter {
+    /// Underlying particle filter
+    filter: ParticleFilter<VelocityParticle>,
+    /// Process noise standard deviation (meters)
+    process_noise_std: f64,
+    /// Random number generator for particle propagation
+    rng: StdRng,
+}
+
+impl VelocityParticleFilter {
+    /// Create a new velocity-based particle filter
+    ///
+    /// # Arguments
+    ///
+    /// * `initial_state` - Initial state [lat (rad), lon (rad), alt (m)]
+    /// * `num_particles` - Number of particles to use
+    /// * `process_noise_std` - Standard deviation of process noise in meters
+    ///
+    /// # Returns
+    ///
+    /// A new `VelocityParticleFilter` instance
+    pub fn new(initial_state: DVector<f64>, num_particles: usize, process_noise_std: f64) -> Self {
+        Self::new_with_seed(
+            initial_state,
+            num_particles,
+            process_noise_std,
+            rand::random(),
+        )
+    }
+
+    /// Create a new velocity-based particle filter with a specific random seed
+    ///
+    /// This is useful for reproducible tests.
+    ///
+    /// # Arguments
+    ///
+    /// * `initial_state` - Initial state [lat (rad), lon (rad), alt (m)]
+    /// * `num_particles` - Number of particles to use
+    /// * `process_noise_std` - Standard deviation of process noise in meters
+    /// * `seed` - Random seed for deterministic behavior
+    ///
+    /// # Returns
+    ///
+    /// A new `VelocityParticleFilter` instance
+    pub fn new_with_seed(
+        initial_state: DVector<f64>,
+        num_particles: usize,
+        process_noise_std: f64,
+        seed: u64,
+    ) -> Self {
+        assert_eq!(
+            initial_state.len(),
+            3,
+            "Initial state must be 3-element vector [lat, lon, alt]"
+        );
+        assert!(num_particles > 0, "Number of particles must be positive");
+        assert!(
+            process_noise_std >= 0.0,
+            "Process noise standard deviation must be non-negative"
+        );
+
+        let filter = ParticleFilter::<VelocityParticle>::new(
+            &initial_state,
+            num_particles,
+            ParticleResamplingStrategy::Systematic,
+            ParticleAveragingStrategy::WeightedMean,
+            0.5,
+        );
+
+        let rng = StdRng::seed_from_u64(seed);
+
+        VelocityParticleFilter {
+            filter,
+            process_noise_std,
+            rng,
+        }
+    }
+
+    /// Get effective sample size
+    pub fn effective_sample_size(&self) -> f64 {
+        self.filter.effective_sample_size()
+    }
+
+    /// Get the number of particles
+    pub fn num_particles(&self) -> usize {
+        self.filter.num_particles()
+    }
+
+    /// Get the configured process noise standard deviation
+    pub fn process_noise_std(&self) -> f64 {
+        self.process_noise_std
+    }
+
+    /// Set the process noise standard deviation
+    ///
+    /// # Arguments
+    ///
+    /// * `std_dev` - New process noise standard deviation in meters
+    pub fn set_process_noise_std(&mut self, std_dev: f64) {
+        assert!(
+            std_dev >= 0.0,
+            "Process noise standard deviation must be non-negative"
+        );
+        self.process_noise_std = std_dev;
+    }
+
+    /// Normalize particle weights to sum to 1.0
+    pub fn normalize_weights(&mut self) {
+        self.filter.normalize_weights();
+    }
+
+    /// Resample particles if needed (based on effective sample size)
+    ///
+    /// Returns true if resampling was performed
+    pub fn resample_if_needed(&mut self) -> bool {
+        let n_eff = self.filter.effective_sample_size();
+        let threshold = 0.5 * self.filter.num_particles() as f64;
+
+        if n_eff < threshold {
+            self.filter.resample();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Resample particles unconditionally
+    pub fn resample(&mut self) {
+        self.filter.resample();
+    }
+}
+
+impl crate::NavigationFilter for VelocityParticleFilter {
+    /// Predict step: propagate all particles using supplied velocities
+    ///
+    /// # Arguments
+    ///
+    /// * `control_input` - VelocityInput containing [v_north, v_east, v_vertical]
+    /// * `dt` - Time step in seconds
+    fn predict<C: crate::InputModel>(&mut self, control_input: &C, dt: f64) {
+        let vel_input = control_input
+            .as_any()
+            .downcast_ref::<VelocityInput>()
+            .expect("VelocityParticleFilter.predict expects a VelocityInput InputModel");
+
+        assert!(dt > 0.0, "Time step must be positive");
+
+        // Propagate each particle
+        for particle in self.filter.particles_mut() {
+            particle.propagate(
+                vel_input.v_north,
+                vel_input.v_east,
+                vel_input.v_vertical,
+                dt,
+                self.process_noise_std,
+                &mut self.rng,
+            );
+        }
+    }
+
+    /// Update particle weights based on measurement
+    ///
+    /// # Arguments
+    ///
+    /// * `measurement` - Measurement model (e.g., GPS position)
+    fn update<M: crate::measurements::MeasurementModel + ?Sized>(&mut self, measurement: &M) {
+        for particle in self.filter.particles_mut() {
+            particle.update_weight(measurement);
+        }
+        self.normalize_weights();
+        self.resample_if_needed();
+    }
+
+    /// Get the current state estimate (weighted mean)
+    ///
+    /// Returns state vector [lat (rad), lon (rad), alt (m)]
+    fn get_estimate(&self) -> DVector<f64> {
+        self.filter.get_estimate()
+    }
+
+    /// Get the state covariance estimate
+    ///
+    /// Returns 3x3 covariance matrix
+    fn get_certainty(&self) -> DMatrix<f64> {
+        self.filter.get_certainty()
+    }
+}
