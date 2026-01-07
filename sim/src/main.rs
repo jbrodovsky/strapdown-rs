@@ -300,32 +300,6 @@ fn get_csv_files(input: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
     }
 }
 
-/// Generate output path for a specific input file
-/// If processing multiple files, appends input filename to output path
-fn generate_output_path(output: &Path, input_file: &Path, is_multiple: bool) -> PathBuf {
-    if !is_multiple {
-        return output.to_path_buf().join(input_file.file_name().unwrap());
-    }
-
-    let input_stem = input_file
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("output");
-    let output_stem = output
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("output");
-    let extension = output.extension().and_then(|s| s.to_str()).unwrap_or("csv");
-
-    let new_filename = format!("{}_{}.{}", output_stem, input_stem, extension);
-
-    if let Some(parent) = output.parent() {
-        parent.join(new_filename)
-    } else {
-        PathBuf::from(new_filename)
-    }
-}
-
 /// Validate output path and create parent directories if needed.
 /// If output ends with `.csv`, treat as a single file output and ensure its parent exists.
 /// Otherwise, treat as a directory and create it if needed.
@@ -431,7 +405,9 @@ fn process_file(
 
                     #[cfg(not(feature = "plotting"))]
                     if config.generate_plot {
-                        error!("Plotting requested but 'plotting' feature not enabled. Rebuild with --features plotting");
+                        error!(
+                            "Plotting requested but 'plotting' feature not enabled. Rebuild with --features plotting"
+                        );
                     }
 
                     Ok(())
@@ -450,7 +426,11 @@ fn process_file(
 }
 
 /// Execute simulation from a configuration file
-fn run_from_config(config_path: &Path, cli_parallel: bool, cli_plot: bool) -> Result<(), Box<dyn Error>> {
+fn run_from_config(
+    config_path: &Path,
+    cli_parallel: bool,
+    cli_plot: bool,
+) -> Result<(), Box<dyn Error>> {
     info!("Loading configuration from {}", config_path.display());
 
     let mut config = SimulationConfig::from_file(config_path)?;
@@ -459,12 +439,11 @@ fn run_from_config(config_path: &Path, cli_parallel: bool, cli_plot: bool) -> Re
     if cli_parallel {
         config.parallel = true;
     }
-    
+
     // Override plot setting if CLI flag is set
     if cli_plot {
         config.generate_plot = true;
     }
-    
 
     info!("Configuration loaded successfully");
     info!("Mode: {:?}", config.mode);
@@ -1259,7 +1238,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         // Initialize logger with resolved settings
         init_logger(log_level, log_file)?;
-        
+
         return run_from_config(config_path, cli.parallel, cli.plot);
     }
 

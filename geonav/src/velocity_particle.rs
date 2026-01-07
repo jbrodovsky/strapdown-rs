@@ -286,9 +286,8 @@ impl VelocityInformedParticle {
         self.position[2] = alt + delta_alt + noise_alt;
 
         // Ensure latitude is within [-pi/2, pi/2]
-        self.position[0] = self.position[0]
-            .max(-std::f64::consts::FRAC_PI_2)
-            .min(std::f64::consts::FRAC_PI_2);
+        self.position[0] =
+            self.position[0].clamp(-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2);
 
         // Wrap longitude to [-pi, pi]
         while self.position[1] > std::f64::consts::PI {
