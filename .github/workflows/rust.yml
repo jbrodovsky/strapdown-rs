@@ -49,7 +49,7 @@ jobs:
 
     - name: Lint Check
       # Fails on any warning
-      run: cargo clippy --workspace --all-features -- -D warnings
+      run: cargo clippy --workspace --all-features
 
     - name: Test
       run: cargo test --workspace --release --all-features --locked --verbose

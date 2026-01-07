@@ -629,7 +629,7 @@ fn ar1_step(x: &mut f64, rho: f64, sigma: f64, rng: &mut rand::rngs::StdRng) {
 ///     t, dt,
 ///     lat_deg, lon_deg, alt_m,
 ///     vn_mps, ve_mps,
-///     horiz_std_m, vert_std_m, vel_std_mps,
+///     horiz_std_m, vert_std_m,
 /// );
 /// ```
 #[allow(clippy::too_many_arguments)]
@@ -644,7 +644,6 @@ pub fn apply_fault(
     vn_mps: f64,
     ve_mps: f64,
     horiz_std_m: f64,
-    vert_std_m: f64,
     vel_std_mps: f64,
 ) -> (f64, f64, f64, f64, f64, f64, f64) /* lat, lon, alt, vn, ve, horiz_std, vel_std */ {
     match fault {
@@ -768,7 +767,7 @@ pub fn apply_fault(
             );
             for m in models {
                 out = apply_fault(
-                    m, st, t, dt, out.0, out.1, out.2, out.3, out.4, out.5, vert_std_m, out.6,
+                    m, st, t, dt, out.0, out.1, out.2, out.3, out.4, out.5, out.6,
                 );
             }
             out
@@ -951,8 +950,7 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
                 };
 
                 let (lat_c, lon_c, alt_c, vn_c, ve_c, horiz_c, vel_c) = apply_fault(
-                    &cfg.fault, &mut st, *t1, dt, lat, lon, alt, vn, ve, horiz_std, vert_std,
-                    vel_std,
+                    &cfg.fault, &mut st, *t1, dt, lat, lon, alt, vn, ve, horiz_std, vel_std,
                 );
 
                 let meas = GPSPositionAndVelocityMeasurement {
@@ -1256,7 +1254,7 @@ mod tests {
         let (_lat, _lon, _alt, vn_c, ve_c, _hstd, _vstd) = apply_fault(
             &fault, &mut st, /*t*/ 10.0, /*dt*/ 1.0, /*lat_deg*/ 40.0,
             /*lon_deg*/ -75.0, /*alt_m*/ 0.0, /*vn_mps*/ 0.0, /*ve_mps*/ 0.0,
-            /*horiz_std_m*/ 3.0, /*vert_std_m*/ 5.0, /*vel_std_mps*/ 0.2,
+            /*horiz_std_m*/ 3.0, /*vert_std_m*/ /*vel_std_mps*/ 0.2,
         );
 
         assert_approx_eq!(vn_c, 0.02, 0.001);
