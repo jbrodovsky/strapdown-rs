@@ -14,19 +14,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
+    
     - uses: dtolnay/rust-toolchain@stable
       with:
-        components: clippy rustfmt
+        components: clippy, rustfmt
+
     - name: Install system dependencies
       run: |
         sudo apt update
-        sudo apt install -y  pkg-config \
+        sudo apt install -y pkg-config \
           libhdf5-dev \
           libhdf5-openmpi-dev \
           libnetcdf-dev \
-          zlib1g-dev
+          zlib1g-dev \
+          libfreetype6-dev \
+          libfontconfig1-dev
+        
+        # Verify installations (Optional debugging)
         pkg-config --modversion hdf5
-        pkg-config --modversion netcdf || true
+        pkg-config --modversion fontconfig
+
     - uses: actions/cache@v4
       with:
         path: |
@@ -36,20 +43,13 @@ jobs:
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
         restore-keys: ${{ runner.os }}-cargo-
 
+    - name: Format Check
+      # Fails if code is not formatted
+      run: cargo fmt --all -- --check
+
+    - name: Lint Check
+      # Fails on any warning
+      run: cargo clippy --workspace --all-features
+
     - name: Test
       run: cargo test --workspace --release --all-features --locked --verbose
-
-    - name: Lint
-      run: cargo clippy --workspace --all-features --fix
-    - name: Format
-      run: cargo fmt --all
-      
-    # - name: lint
-    #   run: cargo clippy --fix
-    # - name: format
-    #   run: cargo fmt --all
-    # - name: Build
-    #   run: cargo build
-    # - name: Run tests
-    #   run: cargo test
-

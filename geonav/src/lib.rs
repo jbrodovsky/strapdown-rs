@@ -857,8 +857,7 @@ pub fn build_event_stream(
                 };
 
                 let (lat_c, lon_c, alt_c, vn_c, ve_c, horiz_c, vel_c) = apply_fault(
-                    &cfg.fault, &mut st, *t1, dt, lat, lon, alt, vn, ve, horiz_std, vert_std,
-                    vel_std,
+                    &cfg.fault, &mut st, *t1, dt, lat, lon, alt, vn, ve, horiz_std, vel_std,
                 );
 
                 let meas = GPSPositionAndVelocityMeasurement {
