@@ -3139,46 +3139,190 @@ pub enum GeoResolution {
 /// Geophysical measurement configuration for geonav simulations
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GeophysicalConfig {
-    /// Type of geophysical measurement to use
-    #[serde(default)]
-    pub geo_type: GeoMeasurementType,
+    // Gravity measurement configuration (all optional)
+    /// Gravity map resolution (None = gravity not used)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gravity_resolution: Option<GeoResolution>,
 
-    /// Map resolution for geophysical data
-    #[serde(default)]
-    pub geo_resolution: GeoResolution,
+    /// Gravity measurement bias (mGal)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gravity_bias: Option<f64>,
 
-    /// Bias for geophysical measurement noise (default: 0.0)
-    #[serde(default)]
-    pub geo_bias: f64,
+    /// Gravity measurement noise std dev (mGal)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gravity_noise_std: Option<f64>,
 
-    /// Standard deviation for geophysical measurement noise (default: 100.0)
-    #[serde(default = "default_geo_noise_std")]
-    pub geo_noise_std: f64,
+    /// Gravity map file path (auto-detected if None)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gravity_map_file: Option<String>,
 
+    // Magnetic measurement configuration (all optional)
+    /// Magnetic map resolution (None = magnetic not used)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub magnetic_resolution: Option<GeoResolution>,
+
+    /// Magnetic measurement bias (nT)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub magnetic_bias: Option<f64>,
+
+    /// Magnetic measurement noise std dev (nT)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub magnetic_noise_std: Option<f64>,
+
+    /// Magnetic map file path (auto-detected if None)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub magnetic_map_file: Option<String>,
+
+    // Common configuration
     /// Frequency in seconds for geophysical measurements
-    /// If not specified, uses every available measurement
+    /// Applies to both measurement types if both are enabled
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub geo_frequency_s: Option<f64>,
 
-    /// Custom map file path (optional - if not provided, auto-detects based on input directory)
+    // Backwards compatibility fields (deprecated)
+    /// (Deprecated) Type of geophysical measurement to use
+    /// Use gravity_resolution or magnetic_resolution instead
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[deprecated(since = "0.2.0", note = "Use gravity_resolution or magnetic_resolution instead")]
+    pub geo_type: Option<GeoMeasurementType>,
+
+    /// (Deprecated) Map resolution for geophysical data
+    /// Use gravity_resolution or magnetic_resolution instead
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[deprecated(since = "0.2.0", note = "Use gravity_resolution or magnetic_resolution instead")]
+    pub geo_resolution: Option<GeoResolution>,
+
+    /// (Deprecated) Bias for geophysical measurement noise
+    /// Use gravity_bias or magnetic_bias instead
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[deprecated(since = "0.2.0", note = "Use gravity_bias or magnetic_bias instead")]
+    pub geo_bias: Option<f64>,
+
+    /// (Deprecated) Standard deviation for geophysical measurement noise
+    /// Use gravity_noise_std or magnetic_noise_std instead
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[deprecated(since = "0.2.0", note = "Use gravity_noise_std or magnetic_noise_std instead")]
+    pub geo_noise_std: Option<f64>,
+
+    /// (Deprecated) Custom map file path
+    /// Use gravity_map_file or magnetic_map_file instead
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[deprecated(since = "0.2.0", note = "Use gravity_map_file or magnetic_map_file instead")]
     pub map_file: Option<String>,
 }
 
-fn default_geo_noise_std() -> f64 {
+fn default_gravity_noise_std() -> f64 {
     100.0
+}
+
+fn default_magnetic_noise_std() -> f64 {
+    150.0
 }
 
 impl Default for GeophysicalConfig {
     fn default() -> Self {
         Self {
-            geo_type: GeoMeasurementType::default(),
-            geo_resolution: GeoResolution::default(),
-            geo_bias: 0.0,
-            geo_noise_std: default_geo_noise_std(),
+            // New fields (all None by default for flexibility)
+            gravity_resolution: None,
+            gravity_bias: None,
+            gravity_noise_std: None,
+            gravity_map_file: None,
+            magnetic_resolution: None,
+            magnetic_bias: None,
+            magnetic_noise_std: None,
+            magnetic_map_file: None,
             geo_frequency_s: None,
+            // Deprecated fields
+            geo_type: None,
+            geo_resolution: None,
+            geo_bias: None,
+            geo_noise_std: None,
             map_file: None,
         }
+    }
+}
+
+impl GeophysicalConfig {
+    /// Apply backwards compatibility migration
+    /// If old-style fields are set, convert them to new-style fields
+    pub fn migrate_legacy_fields(&mut self) {
+        #[allow(deprecated)]
+        if let Some(geo_type) = self.geo_type {
+            match geo_type {
+                GeoMeasurementType::Gravity => {
+                    if self.gravity_resolution.is_none() {
+                        #[allow(deprecated)]
+                        if let Some(res) = self.geo_resolution {
+                            self.gravity_resolution = Some(res);
+                        }
+                    }
+                    if self.gravity_bias.is_none() {
+                        #[allow(deprecated)]
+                        if let Some(bias) = self.geo_bias {
+                            self.gravity_bias = Some(bias);
+                        }
+                    }
+                    if self.gravity_noise_std.is_none() {
+                        #[allow(deprecated)]
+                        if let Some(noise) = self.geo_noise_std {
+                            self.gravity_noise_std = Some(noise);
+                        }
+                    }
+                    if self.gravity_map_file.is_none() {
+                        #[allow(deprecated)]
+                        if let Some(ref file) = self.map_file {
+                            self.gravity_map_file = Some(file.clone());
+                        }
+                    }
+                }
+                GeoMeasurementType::Magnetic => {
+                    if self.magnetic_resolution.is_none() {
+                        #[allow(deprecated)]
+                        if let Some(res) = self.geo_resolution {
+                            self.magnetic_resolution = Some(res);
+                        }
+                    }
+                    if self.magnetic_bias.is_none() {
+                        #[allow(deprecated)]
+                        if let Some(bias) = self.geo_bias {
+                            self.magnetic_bias = Some(bias);
+                        }
+                    }
+                    if self.magnetic_noise_std.is_none() {
+                        #[allow(deprecated)]
+                        if let Some(noise) = self.geo_noise_std {
+                            self.magnetic_noise_std = Some(noise);
+                        }
+                    }
+                    if self.magnetic_map_file.is_none() {
+                        #[allow(deprecated)]
+                        if let Some(ref file) = self.map_file {
+                            self.magnetic_map_file = Some(file.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Get default gravity noise std if not set
+    pub fn get_gravity_noise_std(&self) -> f64 {
+        self.gravity_noise_std.unwrap_or_else(default_gravity_noise_std)
+    }
+
+    /// Get default magnetic noise std if not set
+    pub fn get_magnetic_noise_std(&self) -> f64 {
+        self.magnetic_noise_std.unwrap_or_else(default_magnetic_noise_std)
+    }
+
+    /// Get gravity bias with default of 0.0
+    pub fn get_gravity_bias(&self) -> f64 {
+        self.gravity_bias.unwrap_or(0.0)
+    }
+
+    /// Get magnetic bias with default of 0.0
+    pub fn get_magnetic_bias(&self) -> f64 {
+        self.magnetic_bias.unwrap_or(0.0)
     }
 }
 
