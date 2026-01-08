@@ -38,15 +38,15 @@ use strapdown::messages::{GnssScheduler, build_event_stream};
 // Geophysical navigation imports (feature-gated)
 #[cfg(feature = "geonav")]
 use geonav::{
-    GeoMap, GeophysicalMeasurementType, GravityResolution, MagneticResolution, build_event_stream as geo_build_event_stream,
-    geo_closed_loop_ekf, geo_closed_loop_ukf,
+    GeoMap, GeophysicalMeasurementType, GravityResolution, MagneticResolution,
+    build_event_stream as geo_build_event_stream, geo_closed_loop_ekf, geo_closed_loop_ukf,
 };
 #[cfg(feature = "geonav")]
 use std::rc::Rc;
 #[cfg(feature = "geonav")]
-use strapdown::kalman::{ExtendedKalmanFilter, InitialState};
-#[cfg(feature = "geonav")]
 use strapdown::NavigationFilter;
+#[cfg(feature = "geonav")]
+use strapdown::kalman::{ExtendedKalmanFilter, InitialState};
 #[cfg(feature = "geonav")]
 use strapdown::sim::{DEFAULT_PROCESS_NOISE, GeoResolution};
 use strapdown::sim::{
@@ -967,21 +967,21 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                 let imu_biases = vec![0.0; 6];
 
                 let mut covariance_diagonal = vec![
-                    1e-6, 1e-6, 1.0,    // Position uncertainty
-                    0.1, 0.1, 0.1,      // Velocity uncertainty
-                    1e-4, 1e-4, 1e-4,   // Attitude uncertainty
-                    1e-6, 1e-6, 1e-6,   // Accel bias uncertainty
-                    1e-8, 1e-8, 1e-8,   // Gyro bias uncertainty
+                    1e-6, 1e-6, 1.0, // Position uncertainty
+                    0.1, 0.1, 0.1, // Velocity uncertainty
+                    1e-4, 1e-4, 1e-4, // Attitude uncertainty
+                    1e-6, 1e-6, 1e-6, // Accel bias uncertainty
+                    1e-8, 1e-8, 1e-8, // Gyro bias uncertainty
                 ];
                 covariance_diagonal.extend(vec![1.0; num_geo_states]);
 
                 use nalgebra::DMatrix;
                 let mut process_noise_vec = vec![
-                    1e-9, 1e-9, 1e-6,   // Position process noise
-                    1e-6, 1e-6, 1e-6,   // Velocity process noise
-                    1e-9, 1e-9, 1e-9,   // Attitude process noise
-                    1e-9, 1e-9, 1e-9,   // Accel bias process noise
-                    1e-9, 1e-9, 1e-9,   // Gyro bias process noise
+                    1e-9, 1e-9, 1e-6, // Position process noise
+                    1e-6, 1e-6, 1e-6, // Velocity process noise
+                    1e-9, 1e-9, 1e-9, // Attitude process noise
+                    1e-9, 1e-9, 1e-9, // Accel bias process noise
+                    1e-9, 1e-9, 1e-9, // Gyro bias process noise
                 ];
                 process_noise_vec.extend(vec![1e-9; num_geo_states]);
                 let process_noise =
