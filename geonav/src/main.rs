@@ -351,8 +351,6 @@ fn find_magnetic_map(input_path: &Path) -> Result<PathBuf, Box<dyn Error>> {
 
 /// Convert GeophysicalArgs to GeophysicalConfig
 fn geophysical_args_to_config(args: &GeophysicalArgs) -> strapdown::sim::GeophysicalConfig {
-    
-
     strapdown::sim::GeophysicalConfig {
         gravity_resolution: args.gravity_resolution,
         gravity_bias: args.gravity_bias,
