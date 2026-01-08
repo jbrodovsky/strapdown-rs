@@ -912,48 +912,48 @@ pub fn build_event_stream(
         // Create geophysical measurements based on loaded maps
         if should_emit_geo {
             // Process gravity measurements if gravity map is loaded
-            if let Some(ref g_map) = gravity_map {
-                if gravity_present {
-                    // Calculate observed gravity magnitude
-                    let observed_gravity =
-                        (r1.grav_x.powi(2) + r1.grav_y.powi(2) + r1.grav_z.powi(2)).sqrt();
-                    let meas = GravityMeasurement {
-                        map: g_map.clone(),
-                        noise_std: gravity_noise_std.unwrap_or(100.0), // Use provided or default value
-                        gravity_observed: observed_gravity,
-                        latitude: f64::NAN, // to be set in closed-loop using state
-                        altitude: f64::NAN, // to be set in closed-loop using state
-                        north_velocity: f64::NAN, // to be set in closed-loop using state
-                        east_velocity: f64::NAN, // to be set in closed-loop using state
-                    };
-                    events.push(Event::Measurement {
-                        meas: Box::new(meas),
-                        elapsed_s: *t1,
-                    });
-                }
+            if let Some(ref g_map) = gravity_map
+                && gravity_present
+            {
+                // Calculate observed gravity magnitude
+                let observed_gravity =
+                    (r1.grav_x.powi(2) + r1.grav_y.powi(2) + r1.grav_z.powi(2)).sqrt();
+                let meas = GravityMeasurement {
+                    map: g_map.clone(),
+                    noise_std: gravity_noise_std.unwrap_or(100.0), // Use provided or default value
+                    gravity_observed: observed_gravity,
+                    latitude: f64::NAN, // to be set in closed-loop using state
+                    altitude: f64::NAN, // to be set in closed-loop using state
+                    north_velocity: f64::NAN, // to be set in closed-loop using state
+                    east_velocity: f64::NAN, // to be set in closed-loop using state
+                };
+                events.push(Event::Measurement {
+                    meas: Box::new(meas),
+                    elapsed_s: *t1,
+                });
             }
 
             // Process magnetic measurements if magnetic map is loaded
-            if let Some(ref m_map) = magnetic_map {
-                if magnetic_present {
-                    let datetime = r1.time;
-                    let observed_magnetic =
-                        (r1.mag_x.powi(2) + r1.mag_y.powi(2) + r1.mag_z.powi(2)).sqrt();
-                    let meas = MagneticAnomalyMeasurement {
-                        map: m_map.clone(),
-                        noise_std: magnetic_noise_std.unwrap_or(150.0), // Use provided or default value
-                        mag_obs: observed_magnetic,
-                        latitude: f64::NAN, // to be set in closed-loop using state
-                        longitude: f64::NAN, // to be set in closed-loop using state
-                        altitude: f64::NAN, // to be set in closed-loop using state
-                        year: datetime.year(),
-                        day: datetime.ordinal() as u16,
-                    };
-                    events.push(Event::Measurement {
-                        meas: Box::new(meas),
-                        elapsed_s: *t1,
-                    });
-                }
+            if let Some(ref m_map) = magnetic_map
+                && magnetic_present
+            {
+                let datetime = r1.time;
+                let observed_magnetic =
+                    (r1.mag_x.powi(2) + r1.mag_y.powi(2) + r1.mag_z.powi(2)).sqrt();
+                let meas = MagneticAnomalyMeasurement {
+                    map: m_map.clone(),
+                    noise_std: magnetic_noise_std.unwrap_or(150.0), // Use provided or default value
+                    mag_obs: observed_magnetic,
+                    latitude: f64::NAN, // to be set in closed-loop using state
+                    longitude: f64::NAN, // to be set in closed-loop using state
+                    altitude: f64::NAN, // to be set in closed-loop using state
+                    year: datetime.year(),
+                    day: datetime.ordinal() as u16,
+                };
+                events.push(Event::Measurement {
+                    meas: Box::new(meas),
+                    elapsed_s: *t1,
+                });
             }
         }
     }
@@ -1088,7 +1088,7 @@ pub fn geo_closed_loop(
 /// use geonav::{build_event_stream, geo_closed_loop_ekf};
 ///
 /// let mut ekf = ExtendedKalmanFilter::new(initial_state, biases, cov_diag, process_noise, true);
-/// let stream = build_event_stream(&records, &config, geomap, Some(100.0), None);
+/// let stream = build_event_stream(&records, &config, Some(geomap), Some(100.0), None, None, None);
 /// let results = geo_closed_loop_ekf(&mut ekf, stream)?;
 /// ```
 pub fn geo_closed_loop_ekf(
@@ -1446,7 +1446,7 @@ mod tests {
         };
         let geomap = Rc::new(create_test_gravity_map());
 
-        let event_stream = build_event_stream(&records, &config, geomap, None, None);
+        let event_stream = build_event_stream(&records, &config, Some(geomap), None, None, None, None);
 
         assert_eq!(event_stream.start_time, records[0].time);
         assert!(!event_stream.events.is_empty());
@@ -1478,7 +1478,7 @@ mod tests {
         };
         let geomap = Rc::new(create_test_magnetic_map());
 
-        let event_stream = build_event_stream(&records, &config, geomap, None, None);
+        let event_stream = build_event_stream(&records, &config, None, None, Some(geomap), None, None);
 
         assert_eq!(event_stream.start_time, records[0].time);
         assert!(!event_stream.events.is_empty());
@@ -1585,7 +1585,7 @@ mod tests {
         let geomap = Rc::new(create_test_gravity_map());
 
         // Test with custom noise standard deviation
-        let event_stream = build_event_stream(&records, &config, geomap, Some(25.0), None);
+        let event_stream = build_event_stream(&records, &config, Some(geomap), Some(25.0), None, None, None);
 
         // Find a gravity measurement event and verify its noise
         let has_gravity_with_custom_noise = event_stream.events.iter().any(|event| {
@@ -1618,7 +1618,7 @@ mod tests {
 
         // Test with geophysical measurement frequency of 2 seconds
         let event_stream =
-            build_event_stream(&records, &config, geomap.clone(), Some(25.0), Some(2.0));
+            build_event_stream(&records, &config, Some(geomap.clone()), Some(25.0), None, None, Some(2.0));
 
         // Count gravity measurement events
         let gravity_events: Vec<_> = event_stream
@@ -1634,7 +1634,7 @@ mod tests {
             .collect();
 
         // Test with no frequency limit (should have more measurements)
-        let event_stream_no_limit = build_event_stream(&records, &config, geomap, Some(25.0), None);
+        let event_stream_no_limit = build_event_stream(&records, &config, Some(geomap), Some(25.0), None, None, None);
 
         let gravity_events_no_limit: Vec<_> = event_stream_no_limit
             .events
