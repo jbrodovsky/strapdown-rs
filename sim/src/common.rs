@@ -372,7 +372,10 @@ mod tests {
         let result = get_csv_files(dir.path()).unwrap();
         assert_eq!(result.len(), 2);
         // Should be sorted
-        assert!(result[0].file_name().unwrap().to_str().unwrap() < result[1].file_name().unwrap().to_str().unwrap());
+        assert!(
+            result[0].file_name().unwrap().to_str().unwrap()
+                < result[1].file_name().unwrap().to_str().unwrap()
+        );
     }
 
     #[test]
