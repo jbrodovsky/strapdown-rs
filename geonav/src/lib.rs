@@ -16,6 +16,10 @@
 //! using the vehicle velocity (Eötvös correction) and the reference gravity at the current position (from a gravity map) to
 //! calculate the free air anomaly.
 
+// NOTE: The `velocity_particle` module is temporarily disabled while the particle-based
+// velocity navigation algorithms are being refactored and validated. It will be
+// re-enabled once the API is stabilized and comprehensive tests are in place.
+// See core/src/particle.rs for the new implementation.
 // pub mod velocity_particle;
 
 use std::any::Any;

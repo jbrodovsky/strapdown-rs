@@ -3178,6 +3178,40 @@ pub struct GeophysicalConfig {
     /// Applies to both measurement types if both are enabled
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub geo_frequency_s: Option<f64>,
+
+    // Legacy fields for backwards compatibility (deserialization only)
+    /// (Deprecated) Type of geophysical measurement to use - migrated to gravity_resolution or magnetic_resolution
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "geo_type")]
+    #[serde(skip_serializing)]
+    legacy_geo_type: Option<GeoMeasurementType>,
+
+    /// (Deprecated) Map resolution - migrated to gravity_resolution or magnetic_resolution
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "geo_resolution"
+    )]
+    #[serde(skip_serializing)]
+    legacy_geo_resolution: Option<GeoResolution>,
+
+    /// (Deprecated) Measurement bias - migrated to gravity_bias or magnetic_bias
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "geo_bias")]
+    #[serde(skip_serializing)]
+    legacy_geo_bias: Option<f64>,
+
+    /// (Deprecated) Measurement noise std - migrated to gravity_noise_std or magnetic_noise_std
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "geo_noise_std"
+    )]
+    #[serde(skip_serializing)]
+    legacy_geo_noise_std: Option<f64>,
+
+    /// (Deprecated) Map file path - migrated to gravity_map_file or magnetic_map_file
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "map_file")]
+    #[serde(skip_serializing)]
+    legacy_map_file: Option<String>,
 }
 
 fn default_gravity_noise_std() -> f64 {
@@ -3189,6 +3223,50 @@ fn default_magnetic_noise_std() -> f64 {
 }
 
 impl GeophysicalConfig {
+    /// Migrate legacy fields to new format for backwards compatibility
+    /// Call this after deserializing to convert old configuration files
+    pub fn migrate_legacy_fields(&mut self) {
+        // Only migrate if legacy fields are present and new fields are not
+        if let Some(geo_type) = self.legacy_geo_type {
+            match geo_type {
+                GeoMeasurementType::Gravity => {
+                    if self.gravity_resolution.is_none() {
+                        self.gravity_resolution = self.legacy_geo_resolution;
+                    }
+                    if self.gravity_bias.is_none() {
+                        self.gravity_bias = self.legacy_geo_bias;
+                    }
+                    if self.gravity_noise_std.is_none() {
+                        self.gravity_noise_std = self.legacy_geo_noise_std;
+                    }
+                    if self.gravity_map_file.is_none() {
+                        self.gravity_map_file = self.legacy_map_file.clone();
+                    }
+                }
+                GeoMeasurementType::Magnetic => {
+                    if self.magnetic_resolution.is_none() {
+                        self.magnetic_resolution = self.legacy_geo_resolution;
+                    }
+                    if self.magnetic_bias.is_none() {
+                        self.magnetic_bias = self.legacy_geo_bias;
+                    }
+                    if self.magnetic_noise_std.is_none() {
+                        self.magnetic_noise_std = self.legacy_geo_noise_std;
+                    }
+                    if self.magnetic_map_file.is_none() {
+                        self.magnetic_map_file = self.legacy_map_file.clone();
+                    }
+                }
+            }
+        }
+        // Clear legacy fields after migration
+        self.legacy_geo_type = None;
+        self.legacy_geo_resolution = None;
+        self.legacy_geo_bias = None;
+        self.legacy_geo_noise_std = None;
+        self.legacy_map_file = None;
+    }
+
     /// Get default gravity noise std if not set
     pub fn get_gravity_noise_std(&self) -> f64 {
         self.gravity_noise_std
