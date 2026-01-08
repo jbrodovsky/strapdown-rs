@@ -21,7 +21,7 @@ use std::rc::Rc;
 
 use geonav::{
     GeoMap, GeophysicalMeasurementType, GravityResolution, MagneticResolution, build_event_stream,
-    geo_closed_loop_ukf, geo_closed_loop_ekf,
+    geo_closed_loop_ekf, geo_closed_loop_ukf,
 };
 use strapdown::NavigationFilter;
 use strapdown::kalman::{ExtendedKalmanFilter, InitialState};
