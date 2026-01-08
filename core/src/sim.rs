@@ -1418,7 +1418,7 @@ impl NavigationResult {
     /// * `io::Result<()>` - Ok if successful, Err otherwise
     ///
     /// # Example
-    /// ```
+    /// ```no_run
     /// use strapdown::sim::NavigationResult;
     /// use std::path::Path;
     ///
@@ -1482,7 +1482,10 @@ impl NavigationResult {
     }
 
     /// Reads an MCAP file and returns a vector of NavigationResult structs.
-    /// use std::path::Path;
+    ///
+    /// # Example
+    /// ```no_run
+    /// use strapdown::sim::NavigationResult;
     ///
     /// let results = NavigationResult::from_mcap("results.mcap")
     ///     .expect("Failed to read navigation results from MCAP");

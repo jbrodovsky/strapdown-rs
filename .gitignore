@@ -6,6 +6,9 @@ examples/strapdown-sim/out
 # Map files
 *.nc
 
+# MCAP test output files
+*.mcap
+
 # Ignore latex junk
 *.aux
 *.fdb_latexmk
