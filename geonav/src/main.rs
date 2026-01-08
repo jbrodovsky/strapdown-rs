@@ -21,7 +21,7 @@ use std::rc::Rc;
 
 use geonav::{
     GeoMap, GeophysicalMeasurementType, GravityResolution, MagneticResolution, build_event_stream,
-    geo_closed_loop, geo_closed_loop_ekf,
+    geo_closed_loop_ukf, geo_closed_loop_ekf,
 };
 use strapdown::NavigationFilter;
 use strapdown::kalman::{ExtendedKalmanFilter, InitialState};
@@ -498,7 +498,7 @@ fn process_file(
             );
 
             info!("Running UKF geophysical navigation simulation...");
-            geo_closed_loop(&mut ukf, events)
+            geo_closed_loop_ukf(&mut ukf, events)
         }
         FilterType::Ekf => {
             info!("Initializing EKF...");
