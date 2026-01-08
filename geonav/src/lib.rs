@@ -944,9 +944,9 @@ pub fn build_event_stream(
                     map: m_map.clone(),
                     noise_std: magnetic_noise_std.unwrap_or(150.0), // Use provided or default value
                     mag_obs: observed_magnetic,
-                    latitude: f64::NAN, // to be set in closed-loop using state
+                    latitude: f64::NAN,  // to be set in closed-loop using state
                     longitude: f64::NAN, // to be set in closed-loop using state
-                    altitude: f64::NAN, // to be set in closed-loop using state
+                    altitude: f64::NAN,  // to be set in closed-loop using state
                     year: datetime.year(),
                     day: datetime.ordinal() as u16,
                 };
@@ -1446,7 +1446,8 @@ mod tests {
         };
         let geomap = Rc::new(create_test_gravity_map());
 
-        let event_stream = build_event_stream(&records, &config, Some(geomap), None, None, None, None);
+        let event_stream =
+            build_event_stream(&records, &config, Some(geomap), None, None, None, None);
 
         assert_eq!(event_stream.start_time, records[0].time);
         assert!(!event_stream.events.is_empty());
@@ -1478,7 +1479,8 @@ mod tests {
         };
         let geomap = Rc::new(create_test_magnetic_map());
 
-        let event_stream = build_event_stream(&records, &config, None, None, Some(geomap), None, None);
+        let event_stream =
+            build_event_stream(&records, &config, None, None, Some(geomap), None, None);
 
         assert_eq!(event_stream.start_time, records[0].time);
         assert!(!event_stream.events.is_empty());
@@ -1585,7 +1587,15 @@ mod tests {
         let geomap = Rc::new(create_test_gravity_map());
 
         // Test with custom noise standard deviation
-        let event_stream = build_event_stream(&records, &config, Some(geomap), Some(25.0), None, None, None);
+        let event_stream = build_event_stream(
+            &records,
+            &config,
+            Some(geomap),
+            Some(25.0),
+            None,
+            None,
+            None,
+        );
 
         // Find a gravity measurement event and verify its noise
         let has_gravity_with_custom_noise = event_stream.events.iter().any(|event| {
@@ -1617,8 +1627,15 @@ mod tests {
         let geomap = Rc::new(create_test_gravity_map());
 
         // Test with geophysical measurement frequency of 2 seconds
-        let event_stream =
-            build_event_stream(&records, &config, Some(geomap.clone()), Some(25.0), None, None, Some(2.0));
+        let event_stream = build_event_stream(
+            &records,
+            &config,
+            Some(geomap.clone()),
+            Some(25.0),
+            None,
+            None,
+            Some(2.0),
+        );
 
         // Count gravity measurement events
         let gravity_events: Vec<_> = event_stream
@@ -1634,7 +1651,15 @@ mod tests {
             .collect();
 
         // Test with no frequency limit (should have more measurements)
-        let event_stream_no_limit = build_event_stream(&records, &config, Some(geomap), Some(25.0), None, None, None);
+        let event_stream_no_limit = build_event_stream(
+            &records,
+            &config,
+            Some(geomap),
+            Some(25.0),
+            None,
+            None,
+            None,
+        );
 
         let gravity_events_no_limit: Vec<_> = event_stream_no_limit
             .events

@@ -26,9 +26,8 @@ use geonav::{
 use strapdown::NavigationFilter;
 use strapdown::kalman::{ExtendedKalmanFilter, InitialState};
 use strapdown::sim::{
-    DEFAULT_PROCESS_NOISE, FaultArgs, FilterType, GeoMeasurementType, GeoResolution,
-    GeonavSimulationConfig, NavigationResult, SchedulerArgs, TestDataRecord, build_fault,
-    build_scheduler, initialize_ukf,
+    DEFAULT_PROCESS_NOISE, FaultArgs, FilterType, GeoResolution, GeonavSimulationConfig,
+    NavigationResult, SchedulerArgs, TestDataRecord, build_fault, build_scheduler, initialize_ukf,
 };
 
 const LONG_ABOUT: &str = "GEONAV-SIM: A geophysical navigation simulation tool for strapdown inertial navigation systems.
@@ -152,27 +151,6 @@ struct GeophysicalArgs {
     /// Geophysical measurement frequency (seconds)
     #[arg(long)]
     geo_frequency_s: Option<f64>,
-
-    // Deprecated backwards compatibility parameters
-    /// (Deprecated) Type of geophysical measurement to use
-    #[arg(long, value_enum)]
-    geo_type: Option<GeoMeasurementType>,
-
-    /// (Deprecated) Map resolution for geophysical data
-    #[arg(long, value_enum)]
-    geo_resolution: Option<GeoResolution>,
-
-    /// (Deprecated) Bias for geophysical measurement noise
-    #[arg(long)]
-    geo_bias: Option<f64>,
-
-    /// (Deprecated) Standard deviation for geophysical measurement noise
-    #[arg(long)]
-    geo_noise_std_legacy: Option<f64>,
-
-    /// (Deprecated) Custom map file path
-    #[arg(long)]
-    map_file: Option<PathBuf>,
 }
 
 /// Closed-loop simulation arguments
@@ -371,7 +349,7 @@ fn find_magnetic_map(input_path: &Path) -> Result<PathBuf, Box<dyn Error>> {
     }
 }
 
-/// Convert GeophysicalArgs to GeophysicalConfig with backwards compatibility
+/// Convert GeophysicalArgs to GeophysicalConfig
 fn geophysical_args_to_config(args: &GeophysicalArgs) -> strapdown::sim::GeophysicalConfig {
     let mut config = strapdown::sim::GeophysicalConfig {
         gravity_resolution: args.gravity_resolution,
@@ -389,26 +367,9 @@ fn geophysical_args_to_config(args: &GeophysicalArgs) -> strapdown::sim::Geophys
             .as_ref()
             .map(|p| p.to_string_lossy().to_string()),
         geo_frequency_s: args.geo_frequency_s,
-        // Deprecated fields for backwards compatibility
-        #[allow(deprecated)]
-        geo_type: args.geo_type,
-        #[allow(deprecated)]
-        geo_resolution: args.geo_resolution,
-        #[allow(deprecated)]
-        geo_bias: args.geo_bias,
-        #[allow(deprecated)]
-        geo_noise_std: args.geo_noise_std_legacy,
-        #[allow(deprecated)]
-        map_file: args
-            .map_file
-            .as_ref()
-            .map(|p| p.to_string_lossy().to_string()),
     };
 
-    // Apply backwards compatibility migration
-    config.migrate_legacy_fields();
-
-    // If neither gravity nor magnetic resolution is set, default to gravity for backwards compatibility
+    // If neither gravity nor magnetic resolution is set, default to gravity
     if config.gravity_resolution.is_none() && config.magnetic_resolution.is_none() {
         config.gravity_resolution = Some(GeoResolution::OneMinute);
     }
@@ -638,9 +599,6 @@ fn run_from_config(
     info!("Loading configuration from {}", config_path.display());
 
     let mut config = GeonavSimulationConfig::from_file(config_path)?;
-
-    // Apply backwards compatibility migration for geophysical config
-    config.geophysical.migrate_legacy_fields();
 
     // Override parallel setting if CLI flag is set
     if cli_parallel {
