@@ -369,11 +369,6 @@ fn geophysical_args_to_config(args: &GeophysicalArgs) -> strapdown::sim::Geophys
         geo_frequency_s: args.geo_frequency_s,
     };
 
-    // If neither gravity nor magnetic resolution is set, default to gravity
-    if config.gravity_resolution.is_none() && config.magnetic_resolution.is_none() {
-        config.gravity_resolution = Some(GeoResolution::OneMinute);
-    }
-
     config
 }
 
@@ -470,6 +465,9 @@ fn process_file(
             // Extend for geophysical states
             process_noise.extend(vec![1e-9; num_geo_states]);
 
+            // Order is critical: gravity first, then magnetic
+            // This must match the state vector layout and measurement processing order
+            // State vector: [base states (9)..., gravity_bias?, magnetic_bias?]
             let mut geo_biases = Vec::new();
             let mut geo_noise_stds = Vec::new();
 
@@ -599,6 +597,9 @@ fn run_from_config(
     info!("Loading configuration from {}", config_path.display());
 
     let mut config = GeonavSimulationConfig::from_file(config_path)?;
+
+    // Migrate legacy fields for backwards compatibility
+    config.geophysical.migrate_legacy_fields();
 
     // Override parallel setting if CLI flag is set
     if cli_parallel {
@@ -810,7 +811,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     // If --config is provided, load config
     if let Some(ref config_path) = cli.config {
         // Load config first to get logging preferences
-        let config = GeonavSimulationConfig::from_file(config_path)?;
+        let mut config = GeonavSimulationConfig::from_file(config_path)?;
+
+        // Migrate legacy fields for backwards compatibility
+        config.geophysical.migrate_legacy_fields();
 
         // Determine log level
         let log_level = config.logging.level.as_str();
