@@ -9,16 +9,21 @@ license = "MIT"
 [features]
 default = ["plotting"]
 plotting = ["dep:plotters"]
+geonav = ["dep:strapdown-geonav"]
 
 [dependencies]
 clap = { version = "4.5.4", features = ["derive"] }
 strapdown-core = { path = "../core", features = ["clap"] }
+strapdown-geonav = { path = "../geonav", optional = true }
 log = "0.4"
 env_logger = "0.11"
 chrono = "0.4"
 nalgebra = "0.34.1"
 rayon = "1.10"
 plotters = { version = "0.3.7", optional = true }
+
+[dev-dependencies]
+tempfile = "3.15"
 
 [[bin]]
 name = "strapdown-sim"
