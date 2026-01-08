@@ -16,7 +16,8 @@
 //! using the vehicle velocity (Eötvös correction) and the reference gravity at the current position (from a gravity map) to
 //! calculate the free air anomaly.
 
-pub mod velocity_particle;
+// pub mod velocity_particle;
+
 use std::any::Any;
 use std::fmt::{Debug, Display};
 use std::path::PathBuf;
@@ -574,22 +575,6 @@ impl MeasurementModel for GravityMeasurement {
             .unwrap_or(f64::NAN);
         DVector::from_vec(vec![map_value])
     }
-    // fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
-    //     let num_sigma_points = state_sigma_points.ncols();
-    //     let mut measurement_sigma_points = DMatrix::zeros(1, num_sigma_points);
-    //
-    //     for i in 0..num_sigma_points {
-    //         let state = state_sigma_points.column(i);
-    //         let lat = state[0];
-    //         let lon = state[1];
-    //
-    //         measurement_sigma_points[(0, i)] = self
-    //             .map
-    //             .get_point(&lat.to_degrees(), &lon.to_degrees())
-    //             .unwrap_or(f64::NAN);
-    //     }
-    //     measurement_sigma_points
-    // }
 }
 
 impl GravityMeasurement {
@@ -690,22 +675,6 @@ impl MeasurementModel for MagneticAnomalyMeasurement {
             .unwrap_or(f64::NAN);
         DVector::from_vec(vec![map_value])
     }
-    // fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
-    //     let num_sigma_points = state_sigma_points.ncols();
-    //     let mut measurement_sigma_points = DMatrix::zeros(1, num_sigma_points);
-    //
-    //     for i in 0..num_sigma_points {
-    //         let state = state_sigma_points.column(i);
-    //         let lat = state[0];
-    //         let lon = state[1];
-    //
-    //         measurement_sigma_points[(0, i)] = self
-    //             .map
-    //             .get_point(&lat.to_degrees(), &lon.to_degrees())
-    //             .unwrap_or(f64::NAN);
-    //     }
-    //     measurement_sigma_points
-    // }
 }
 
 impl MagneticAnomalyMeasurement {
@@ -969,7 +938,7 @@ pub fn build_event_stream(
 /// * `records` - Vector of test data records containing IMU measurements and GPS data.
 /// # Returns
 /// * `Vec<NavigationResult>` - A vector of navigation results containing the state estimates and covariances at each timestamp.
-pub fn geo_closed_loop(
+pub fn geo_closed_loop_ukf(
     ukf: &mut UnscentedKalmanFilter,
     stream: EventStream,
 ) -> anyhow::Result<Vec<NavigationResult>> {
