@@ -351,7 +351,9 @@ fn find_magnetic_map(input_path: &Path) -> Result<PathBuf, Box<dyn Error>> {
 
 /// Convert GeophysicalArgs to GeophysicalConfig
 fn geophysical_args_to_config(args: &GeophysicalArgs) -> strapdown::sim::GeophysicalConfig {
-    let mut config = strapdown::sim::GeophysicalConfig {
+    
+
+    strapdown::sim::GeophysicalConfig {
         gravity_resolution: args.gravity_resolution,
         gravity_bias: args.gravity_bias,
         gravity_noise_std: Some(args.gravity_noise_std),
@@ -367,9 +369,7 @@ fn geophysical_args_to_config(args: &GeophysicalArgs) -> strapdown::sim::Geophys
             .as_ref()
             .map(|p| p.to_string_lossy().to_string()),
         geo_frequency_s: args.geo_frequency_s,
-    };
-
-    config
+    }
 }
 
 /// Process a single CSV file with geophysical navigation
@@ -598,9 +598,6 @@ fn run_from_config(
 
     let mut config = GeonavSimulationConfig::from_file(config_path)?;
 
-    // Migrate legacy fields for backwards compatibility
-    config.geophysical.migrate_legacy_fields();
-
     // Override parallel setting if CLI flag is set
     if cli_parallel {
         config.parallel = true;
@@ -811,10 +808,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // If --config is provided, load config
     if let Some(ref config_path) = cli.config {
         // Load config first to get logging preferences
-        let mut config = GeonavSimulationConfig::from_file(config_path)?;
-
-        // Migrate legacy fields for backwards compatibility
-        config.geophysical.migrate_legacy_fields();
+        let config = GeonavSimulationConfig::from_file(config_path)?;
 
         // Determine log level
         let log_level = config.logging.level.as_str();
