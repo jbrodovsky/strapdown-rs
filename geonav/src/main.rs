@@ -294,50 +294,6 @@ fn validate_output_path(output: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Convert CLI geo measurement type to library type
-fn build_measurement_type(
-    geo_type: GeoMeasurementType,
-    resolution: GeoResolution,
-) -> GeophysicalMeasurementType {
-    match geo_type {
-        GeoMeasurementType::Gravity => {
-            let gravity_res = match resolution {
-                GeoResolution::OneDegree => GravityResolution::OneDegree,
-                GeoResolution::ThirtyMinutes => GravityResolution::ThirtyMinutes,
-                GeoResolution::TwentyMinutes => GravityResolution::TwentyMinutes,
-                GeoResolution::FifteenMinutes => GravityResolution::FifteenMinutes,
-                GeoResolution::TenMinutes => GravityResolution::TenMinutes,
-                GeoResolution::SixMinutes => GravityResolution::SixMinutes,
-                GeoResolution::FiveMinutes => GravityResolution::FiveMinutes,
-                GeoResolution::FourMinutes => GravityResolution::FourMinutes,
-                GeoResolution::ThreeMinutes => GravityResolution::ThreeMinutes,
-                GeoResolution::TwoMinutes => GravityResolution::TwoMinutes,
-                GeoResolution::OneMinute => GravityResolution::OneMinute,
-                // For gravity, highest resolution available is 1 minute
-                _ => GravityResolution::OneMinute,
-            };
-            GeophysicalMeasurementType::Gravity(gravity_res)
-        }
-        GeoMeasurementType::Magnetic => {
-            let magnetic_res = match resolution {
-                GeoResolution::OneDegree => MagneticResolution::OneDegree,
-                GeoResolution::ThirtyMinutes => MagneticResolution::ThirtyMinutes,
-                GeoResolution::TwentyMinutes => MagneticResolution::TwentyMinutes,
-                GeoResolution::FifteenMinutes => MagneticResolution::FifteenMinutes,
-                GeoResolution::TenMinutes => MagneticResolution::TenMinutes,
-                GeoResolution::SixMinutes => MagneticResolution::SixMinutes,
-                GeoResolution::FiveMinutes => MagneticResolution::FiveMinutes,
-                GeoResolution::FourMinutes => MagneticResolution::FourMinutes,
-                GeoResolution::ThreeMinutes => MagneticResolution::ThreeMinutes,
-                GeoResolution::TwoMinutes => MagneticResolution::TwoMinutes,
-                // For magnetic, highest resolution available is 2 minutes
-                _ => MagneticResolution::TwoMinutes,
-            };
-            GeophysicalMeasurementType::Magnetic(magnetic_res)
-        }
-    }
-}
-
 /// Convert GeoResolution to GravityResolution
 fn convert_resolution_gravity(resolution: GeoResolution) -> GravityResolution {
     match resolution {
@@ -415,28 +371,23 @@ fn find_magnetic_map(input_path: &Path) -> Result<PathBuf, Box<dyn Error>> {
     }
 }
 
-/// Auto-detect map file based on input directory and measurement type (deprecated)
-fn find_map_file(
-    input_path: &Path,
-    geo_type: GeoMeasurementType,
-) -> Result<PathBuf, Box<dyn Error>> {
-    match geo_type {
-        GeoMeasurementType::Gravity => find_gravity_map(input_path),
-        GeoMeasurementType::Magnetic => find_magnetic_map(input_path),
-    }
-}
-
 /// Convert GeophysicalArgs to GeophysicalConfig with backwards compatibility
 fn geophysical_args_to_config(args: &GeophysicalArgs) -> strapdown::sim::GeophysicalConfig {
     let mut config = strapdown::sim::GeophysicalConfig {
         gravity_resolution: args.gravity_resolution,
         gravity_bias: args.gravity_bias,
         gravity_noise_std: Some(args.gravity_noise_std),
-        gravity_map_file: args.gravity_map_file.as_ref().map(|p| p.to_string_lossy().to_string()),
+        gravity_map_file: args
+            .gravity_map_file
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string()),
         magnetic_resolution: args.magnetic_resolution,
         magnetic_bias: args.magnetic_bias,
         magnetic_noise_std: Some(args.magnetic_noise_std),
-        magnetic_map_file: args.magnetic_map_file.as_ref().map(|p| p.to_string_lossy().to_string()),
+        magnetic_map_file: args
+            .magnetic_map_file
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string()),
         geo_frequency_s: args.geo_frequency_s,
         // Deprecated fields for backwards compatibility
         #[allow(deprecated)]
@@ -448,7 +399,10 @@ fn geophysical_args_to_config(args: &GeophysicalArgs) -> strapdown::sim::Geophys
         #[allow(deprecated)]
         geo_noise_std: args.geo_noise_std_legacy,
         #[allow(deprecated)]
-        map_file: args.map_file.as_ref().map(|p| p.to_string_lossy().to_string()),
+        map_file: args
+            .map_file
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string()),
     };
 
     // Apply backwards compatibility migration
@@ -460,34 +414,6 @@ fn geophysical_args_to_config(args: &GeophysicalArgs) -> strapdown::sim::Geophys
     }
 
     config
-}
-
-/// Auto-detect map file based on input directory and measurement type
-fn find_map_file(
-    input_path: &Path,
-    geo_type: GeoMeasurementType,
-) -> Result<PathBuf, Box<dyn Error>> {
-    let input_dir = input_path
-        .parent()
-        .ok_or("Cannot determine input directory")?;
-
-    let input_stem = input_path
-        .file_stem()
-        .ok_or("Cannot determine input file stem")?
-        .to_string_lossy();
-
-    let suffix = match geo_type {
-        GeoMeasurementType::Gravity => "_gravity.nc",
-        GeoMeasurementType::Magnetic => "_magnetic.nc",
-    };
-
-    let map_file = input_dir.join(format!("{}{}", input_stem, suffix));
-
-    if map_file.exists() {
-        Ok(map_file)
-    } else {
-        Err(format!("Map file not found: {}", map_file.display()).into())
-    }
 }
 
 /// Process a single CSV file with geophysical navigation
@@ -534,7 +460,8 @@ fn process_file(
         };
 
         info!("Loading magnetic map from: {}", map_path.display());
-        let measurement_type = GeophysicalMeasurementType::Magnetic(convert_resolution_magnetic(res));
+        let measurement_type =
+            GeophysicalMeasurementType::Magnetic(convert_resolution_magnetic(res));
         let map = Rc::new(GeoMap::load_geomap(map_path, measurement_type)?);
         info!(
             "Loaded magnetic map with {} x {} grid points",
@@ -584,7 +511,7 @@ fn process_file(
 
             let mut geo_biases = Vec::new();
             let mut geo_noise_stds = Vec::new();
-            
+
             if gravity_map.is_some() {
                 geo_biases.push(config.geophysical.get_gravity_bias());
                 geo_noise_stds.push(config.geophysical.get_gravity_noise_std());
@@ -655,7 +582,8 @@ fn process_file(
             ];
             // Add geophysical process noise
             process_noise_vec.extend(vec![1e-9; num_geo_states]);
-            let process_noise = DMatrix::from_diagonal(&nalgebra::DVector::from_vec(process_noise_vec));
+            let process_noise =
+                DMatrix::from_diagonal(&nalgebra::DVector::from_vec(process_noise_vec));
 
             let mut ekf = ExtendedKalmanFilter::new(
                 initial_state,
