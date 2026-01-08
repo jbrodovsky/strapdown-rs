@@ -34,6 +34,21 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use strapdown::messages::{GnssScheduler, build_event_stream};
+
+// Geophysical navigation imports (feature-gated)
+#[cfg(feature = "geonav")]
+use geonav::{
+    GeoMap, GeophysicalMeasurementType, GravityResolution, MagneticResolution, build_event_stream as geo_build_event_stream,
+    geo_closed_loop_ekf, geo_closed_loop_ukf,
+};
+#[cfg(feature = "geonav")]
+use std::rc::Rc;
+#[cfg(feature = "geonav")]
+use strapdown::kalman::{ExtendedKalmanFilter, InitialState};
+#[cfg(feature = "geonav")]
+use strapdown::NavigationFilter;
+#[cfg(feature = "geonav")]
+use strapdown::sim::{DEFAULT_PROCESS_NOISE, GeoResolution};
 use strapdown::sim::{
     FaultArgs, FilterType, NavigationResult, ParticleFilterType, SchedulerArgs, SimulationConfig,
     SimulationMode, TestDataRecord, build_fault, build_scheduler, dead_reckoning, initialize_ekf,
@@ -138,6 +153,56 @@ struct SimArgs {
     output: PathBuf,
 }
 
+/// Geophysical measurement arguments (feature-gated)
+#[cfg(feature = "geonav")]
+#[derive(Args, Clone, Debug)]
+struct GeophysicalArgs {
+    /// Enable geophysical navigation
+    #[arg(long)]
+    geo: bool,
+
+    /// Gravity map resolution
+    #[arg(long, value_enum, requires = "geo")]
+    gravity_resolution: Option<GeoResolution>,
+
+    /// Gravity measurement bias (mGal)
+    #[arg(long, requires = "geo")]
+    gravity_bias: Option<f64>,
+
+    /// Gravity measurement noise std dev (mGal)
+    #[arg(long, default_value_t = 100.0, requires = "geo")]
+    gravity_noise_std: f64,
+
+    /// Gravity map file path
+    #[arg(long, requires = "geo")]
+    gravity_map_file: Option<PathBuf>,
+
+    /// Magnetic map resolution
+    #[arg(long, value_enum, requires = "geo")]
+    magnetic_resolution: Option<GeoResolution>,
+
+    /// Magnetic measurement bias (nT)
+    #[arg(long, requires = "geo")]
+    magnetic_bias: Option<f64>,
+
+    /// Magnetic measurement noise std dev (nT)
+    #[arg(long, default_value_t = 150.0, requires = "geo")]
+    magnetic_noise_std: f64,
+
+    /// Magnetic map file path
+    #[arg(long, requires = "geo")]
+    magnetic_map_file: Option<PathBuf>,
+
+    /// Geophysical measurement frequency (seconds)
+    #[arg(long, requires = "geo")]
+    geo_frequency_s: Option<f64>,
+}
+
+/// Empty stub when geonav feature is disabled
+#[cfg(not(feature = "geonav"))]
+#[derive(Args, Clone, Debug, Default)]
+struct GeophysicalArgs {}
+
 /// Closed-loop simulation arguments
 #[derive(Args, Clone, Debug)]
 struct ClosedLoopSimArgs {
@@ -160,6 +225,10 @@ struct ClosedLoopSimArgs {
     /// Fault model settings (corrupt measurement content)
     #[command(flatten)]
     fault: FaultArgs,
+
+    /// Geophysical navigation options (optional, requires --features geonav)
+    #[command(flatten)]
+    geo: GeophysicalArgs,
 }
 
 /// Particle filter simulation arguments
@@ -566,6 +635,12 @@ fn run_open_loop(args: &SimArgs) -> Result<(), Box<dyn Error>> {
 
 /// Execute closed-loop simulation
 fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
+    // Check if geophysical navigation is enabled
+    #[cfg(feature = "geonav")]
+    if args.geo.geo {
+        return run_geo_closed_loop_cli(args);
+    }
+
     validate_input_path(&args.sim.input)?;
     validate_output_path(&args.sim.output)?;
 
@@ -627,6 +702,336 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
                     return Err(e);
                 }
                 // For multiple files, continue processing remaining files
+                error!(
+                    "Error processing {}: {}. Continuing with remaining files...",
+                    input_file.display(),
+                    e
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// ============================================================================
+// Geophysical Navigation Functions (feature-gated)
+// ============================================================================
+
+/// Convert GeoResolution to GravityResolution
+#[cfg(feature = "geonav")]
+fn convert_resolution_gravity(resolution: GeoResolution) -> GravityResolution {
+    match resolution {
+        GeoResolution::OneDegree => GravityResolution::OneDegree,
+        GeoResolution::ThirtyMinutes => GravityResolution::ThirtyMinutes,
+        GeoResolution::TwentyMinutes => GravityResolution::TwentyMinutes,
+        GeoResolution::FifteenMinutes => GravityResolution::FifteenMinutes,
+        GeoResolution::TenMinutes => GravityResolution::TenMinutes,
+        GeoResolution::SixMinutes => GravityResolution::SixMinutes,
+        GeoResolution::FiveMinutes => GravityResolution::FiveMinutes,
+        GeoResolution::FourMinutes => GravityResolution::FourMinutes,
+        GeoResolution::ThreeMinutes => GravityResolution::ThreeMinutes,
+        GeoResolution::TwoMinutes => GravityResolution::TwoMinutes,
+        GeoResolution::OneMinute => GravityResolution::OneMinute,
+        _ => GravityResolution::OneMinute,
+    }
+}
+
+/// Convert GeoResolution to MagneticResolution
+#[cfg(feature = "geonav")]
+fn convert_resolution_magnetic(resolution: GeoResolution) -> MagneticResolution {
+    match resolution {
+        GeoResolution::OneDegree => MagneticResolution::OneDegree,
+        GeoResolution::ThirtyMinutes => MagneticResolution::ThirtyMinutes,
+        GeoResolution::TwentyMinutes => MagneticResolution::TwentyMinutes,
+        GeoResolution::FifteenMinutes => MagneticResolution::FifteenMinutes,
+        GeoResolution::TenMinutes => MagneticResolution::TenMinutes,
+        GeoResolution::SixMinutes => MagneticResolution::SixMinutes,
+        GeoResolution::FiveMinutes => MagneticResolution::FiveMinutes,
+        GeoResolution::FourMinutes => MagneticResolution::FourMinutes,
+        GeoResolution::ThreeMinutes => MagneticResolution::ThreeMinutes,
+        GeoResolution::TwoMinutes => MagneticResolution::TwoMinutes,
+        _ => MagneticResolution::TwoMinutes,
+    }
+}
+
+/// Auto-detect gravity map file based on input directory
+#[cfg(feature = "geonav")]
+fn find_gravity_map(input_path: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    let input_dir = input_path
+        .parent()
+        .ok_or("Cannot determine input directory")?;
+
+    let input_stem = input_path
+        .file_stem()
+        .ok_or("Cannot determine input file stem")?
+        .to_string_lossy();
+
+    let map_file = input_dir.join(format!("{}_gravity.nc", input_stem));
+
+    if map_file.exists() {
+        Ok(map_file)
+    } else {
+        Err(format!("Gravity map file not found: {}", map_file.display()).into())
+    }
+}
+
+/// Auto-detect magnetic map file based on input directory
+#[cfg(feature = "geonav")]
+fn find_magnetic_map(input_path: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    let input_dir = input_path
+        .parent()
+        .ok_or("Cannot determine input directory")?;
+
+    let input_stem = input_path
+        .file_stem()
+        .ok_or("Cannot determine input file stem")?
+        .to_string_lossy();
+
+    let map_file = input_dir.join(format!("{}_magnetic.nc", input_stem));
+
+    if map_file.exists() {
+        Ok(map_file)
+    } else {
+        Err(format!("Magnetic map file not found: {}", map_file.display()).into())
+    }
+}
+
+/// Execute geophysical closed-loop simulation
+#[cfg(feature = "geonav")]
+fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
+    validate_input_path(&args.sim.input)?;
+    validate_output_path(&args.sim.output)?;
+
+    let filter_name = match args.filter {
+        FilterType::Ukf => "Unscented Kalman Filter (UKF)",
+        FilterType::Ekf => "Extended Kalman Filter (EKF)",
+        FilterType::Eskf => "Error-State Kalman Filter (ESKF)",
+    };
+    info!(
+        "Running geophysical navigation in closed-loop mode with {}",
+        filter_name
+    );
+
+    // Validate that at least one geophysical map is configured
+    if args.geo.gravity_resolution.is_none() && args.geo.magnetic_resolution.is_none() {
+        return Err("At least one of --gravity-resolution or --magnetic-resolution must be specified when using --geo".into());
+    }
+
+    // Get all CSV files to process
+    let csv_files = get_csv_files(&args.sim.input)?;
+    let is_multiple = csv_files.len() > 1;
+
+    if is_multiple {
+        info!("Processing {} CSV files from directory", csv_files.len());
+    }
+
+    // Process each CSV file
+    for input_file in &csv_files {
+        info!("Processing file: {}", input_file.display());
+
+        // Load sensor data records from CSV
+        let records = TestDataRecord::from_csv(input_file)?;
+        info!(
+            "Read {} records from {}",
+            records.len(),
+            input_file.display()
+        );
+
+        // Load gravity map if configured
+        let gravity_map = if let Some(res) = args.geo.gravity_resolution {
+            let map_path = match &args.geo.gravity_map_file {
+                Some(path) => path.clone(),
+                None => find_gravity_map(input_file)?,
+            };
+
+            info!("Loading gravity map from: {}", map_path.display());
+            let measurement_type =
+                GeophysicalMeasurementType::Gravity(convert_resolution_gravity(res));
+            let map = Rc::new(GeoMap::load_geomap(map_path, measurement_type)?);
+            info!(
+                "Loaded gravity map with {} x {} grid points",
+                map.get_lats().len(),
+                map.get_lons().len()
+            );
+            Some(map)
+        } else {
+            None
+        };
+
+        // Load magnetic map if configured
+        let magnetic_map = if let Some(res) = args.geo.magnetic_resolution {
+            let map_path = match &args.geo.magnetic_map_file {
+                Some(path) => path.clone(),
+                None => find_magnetic_map(input_file)?,
+            };
+
+            info!("Loading magnetic map from: {}", map_path.display());
+            let measurement_type =
+                GeophysicalMeasurementType::Magnetic(convert_resolution_magnetic(res));
+            let map = Rc::new(GeoMap::load_geomap(map_path, measurement_type)?);
+            info!(
+                "Loaded magnetic map with {} x {} grid points",
+                map.get_lats().len(),
+                map.get_lons().len()
+            );
+            Some(map)
+        } else {
+            None
+        };
+
+        // Build GNSS degradation config from CLI args
+        let gnss_degradation = strapdown::messages::GnssDegradationConfig {
+            scheduler: build_scheduler(&args.scheduler),
+            fault: build_fault(&args.fault),
+            seed: args.seed,
+        };
+
+        // Build event stream with geophysical measurements
+        let events = geo_build_event_stream(
+            &records,
+            &gnss_degradation,
+            gravity_map.clone(),
+            if gravity_map.is_some() {
+                Some(args.geo.gravity_noise_std)
+            } else {
+                None
+            },
+            magnetic_map.clone(),
+            if magnetic_map.is_some() {
+                Some(args.geo.magnetic_noise_std)
+            } else {
+                None
+            },
+            args.geo.geo_frequency_s,
+        );
+        info!("Built event stream with {} events", events.events.len());
+
+        // Determine number of geophysical states
+        let num_geo_states = gravity_map.is_some() as usize + magnetic_map.is_some() as usize;
+
+        // Run simulation based on filter type
+        let results = match args.filter {
+            FilterType::Ukf => {
+                info!("Initializing UKF...");
+                let mut process_noise: Vec<f64> = DEFAULT_PROCESS_NOISE.into();
+                process_noise.extend(vec![1e-9; num_geo_states]);
+
+                let mut geo_biases = Vec::new();
+                let mut geo_noise_stds = Vec::new();
+
+                if gravity_map.is_some() {
+                    geo_biases.push(args.geo.gravity_bias.unwrap_or(0.0));
+                    geo_noise_stds.push(args.geo.gravity_noise_std);
+                }
+                if magnetic_map.is_some() {
+                    geo_biases.push(args.geo.magnetic_bias.unwrap_or(0.0));
+                    geo_noise_stds.push(args.geo.magnetic_noise_std);
+                }
+
+                let mut ukf = initialize_ukf(
+                    records[0].clone(),
+                    None,
+                    None,
+                    None,
+                    Some(geo_biases),
+                    Some(geo_noise_stds),
+                    Some(process_noise),
+                );
+                info!(
+                    "Initialized UKF with state dimension {} (base: 9, geo: {})",
+                    ukf.get_estimate().len(),
+                    num_geo_states
+                );
+
+                info!("Running UKF geophysical navigation simulation...");
+                geo_closed_loop_ukf(&mut ukf, events)
+            }
+            FilterType::Ekf => {
+                info!("Initializing EKF...");
+
+                let initial_state = InitialState {
+                    latitude: records[0].latitude,
+                    longitude: records[0].longitude,
+                    altitude: records[0].altitude,
+                    northward_velocity: records[0].speed * records[0].bearing.to_radians().cos(),
+                    eastward_velocity: records[0].speed * records[0].bearing.to_radians().sin(),
+                    vertical_velocity: 0.0,
+                    roll: 0.0,
+                    pitch: 0.0,
+                    yaw: records[0].bearing.to_radians(),
+                    in_degrees: true,
+                    is_enu: true,
+                };
+
+                let imu_biases = vec![0.0; 6];
+
+                let mut covariance_diagonal = vec![
+                    1e-6, 1e-6, 1.0,    // Position uncertainty
+                    0.1, 0.1, 0.1,      // Velocity uncertainty
+                    1e-4, 1e-4, 1e-4,   // Attitude uncertainty
+                    1e-6, 1e-6, 1e-6,   // Accel bias uncertainty
+                    1e-8, 1e-8, 1e-8,   // Gyro bias uncertainty
+                ];
+                covariance_diagonal.extend(vec![1.0; num_geo_states]);
+
+                use nalgebra::DMatrix;
+                let mut process_noise_vec = vec![
+                    1e-9, 1e-9, 1e-6,   // Position process noise
+                    1e-6, 1e-6, 1e-6,   // Velocity process noise
+                    1e-9, 1e-9, 1e-9,   // Attitude process noise
+                    1e-9, 1e-9, 1e-9,   // Accel bias process noise
+                    1e-9, 1e-9, 1e-9,   // Gyro bias process noise
+                ];
+                process_noise_vec.extend(vec![1e-9; num_geo_states]);
+                let process_noise =
+                    DMatrix::from_diagonal(&nalgebra::DVector::from_vec(process_noise_vec));
+
+                let mut ekf = ExtendedKalmanFilter::new(
+                    initial_state,
+                    imu_biases,
+                    covariance_diagonal,
+                    process_noise,
+                    true,
+                );
+
+                info!(
+                    "Initialized EKF with state dimension {} (base: 15, geo: {})",
+                    ekf.get_estimate().len(),
+                    num_geo_states
+                );
+
+                info!("Running EKF geophysical navigation simulation...");
+                geo_closed_loop_ekf(&mut ekf, events)
+            }
+            FilterType::Eskf => {
+                error!("ESKF is not yet implemented for geophysical navigation");
+                return Err("ESKF is not yet implemented for geophysical navigation".into());
+            }
+        };
+
+        // Write results
+        let output_file = args.sim.output.join(input_file.file_name().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Input file path '{}' has no filename", input_file.display()),
+            )
+        })?);
+
+        match results {
+            Ok(ref nav_results) => {
+                NavigationResult::to_csv(nav_results, &output_file)?;
+                info!("Results written to {}", output_file.display());
+            }
+            Err(e) => {
+                error!(
+                    "Error running geophysical navigation on {}: {}",
+                    input_file.display(),
+                    e
+                );
+                if !is_multiple {
+                    return Err(e.into());
+                }
                 error!(
                     "Error processing {}: {}. Continuing with remaining files...",
                     input_file.display(),
