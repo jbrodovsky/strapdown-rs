@@ -18,14 +18,19 @@
 //!
 //! For dataset format details, see the documentation or use --help with specific subcommands.
 
+mod common;
 #[cfg(feature = "plotting")]
 mod plotting;
 
 use clap::{Args, Parser, Subcommand};
+use common::{
+    get_csv_files, init_logger, prompt_config_name, prompt_config_path, prompt_f64_with_default,
+    prompt_input_path, prompt_output_path, read_user_input, validate_input_path,
+    validate_output_path,
+};
 use log::{error, info};
 use rayon::prelude::*;
 use std::error::Error;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use strapdown::messages::{GnssScheduler, build_event_stream};
@@ -220,99 +225,6 @@ struct CreateConfigArgs {
     /// Simulation mode for the template
     #[arg(short, long, value_enum, default_value_t = SimulationMode::ClosedLoop)]
     mode: SimulationMode,
-}
-
-/// Initialize the logger with the specified configuration
-fn init_logger(log_level: &str, log_file: Option<&PathBuf>) -> Result<(), Box<dyn Error>> {
-    use std::io::Write;
-
-    let level = log_level.parse::<log::LevelFilter>().unwrap_or_else(|_| {
-        eprintln!("Invalid log level '{}', defaulting to 'info'", log_level);
-        log::LevelFilter::Info
-    });
-
-    let mut builder = env_logger::Builder::new();
-    builder.filter_level(level);
-    builder.format(|buf, record| {
-        writeln!(
-            buf,
-            "{} [{}] - {}",
-            chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
-            record.level(),
-            record.args()
-        )
-    });
-
-    if let Some(log_path) = log_file {
-        let target = Box::new(
-            std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(log_path)?,
-        );
-        builder.target(env_logger::Target::Pipe(target));
-    }
-
-    builder.try_init()?;
-    Ok(())
-}
-
-/// Validate input path exists and is either a file or directory
-fn validate_input_path(input: &Path) -> Result<(), Box<dyn Error>> {
-    if !input.exists() {
-        return Err(format!("Input path '{}' does not exist.", input.display()).into());
-    }
-    if !input.is_file() && !input.is_dir() {
-        return Err(format!(
-            "Input path '{}' is neither a file nor a directory.",
-            input.display()
-        )
-        .into());
-    }
-    Ok(())
-}
-
-/// Get all CSV files from a path (either single file or all CSVs in directory)
-fn get_csv_files(input: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
-    if input.is_file() {
-        if input.extension().and_then(|s| s.to_str()) != Some("csv") {
-            return Err(format!("Input file '{}' is not a CSV file.", input.display()).into());
-        }
-        Ok(vec![input.to_path_buf()])
-    } else if input.is_dir() {
-        let mut csv_files: Vec<PathBuf> = std::fs::read_dir(input)?
-            .filter_map(|entry| entry.ok())
-            .map(|entry| entry.path())
-            .filter(|path| {
-                path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("csv")
-            })
-            .collect();
-
-        if csv_files.is_empty() {
-            return Err(format!("No CSV files found in directory '{}'.", input.display()).into());
-        }
-
-        // Sort for consistent ordering
-        csv_files.sort();
-        Ok(csv_files)
-    } else {
-        Err(format!(
-            "Input path '{}' is neither a file nor a directory.",
-            input.display()
-        )
-        .into())
-    }
-}
-
-/// Validate output path and create parent directories if needed.
-/// If output ends with `.csv`, treat as a single file output and ensure its parent exists.
-/// Otherwise, treat as a directory and create it if needed.
-fn validate_output_path(output: &Path) -> Result<(), Box<dyn Error>> {
-    // Output is a directory, create it if it doesn't exist
-    if !output.exists() {
-        std::fs::create_dir_all(output)?;
-    }
-    Ok(())
 }
 
 /// Process a single CSV file with the given configuration
@@ -755,73 +667,6 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
     Ok(())
 }
 
-/// Read a line from stdin, trimming whitespace and checking for quit command
-/// Returns None if user enters 'q', otherwise returns the trimmed input
-fn read_user_input() -> Option<String> {
-    let mut input = String::new();
-    io::stdin()
-        .read_line(&mut input)
-        .expect("Failed to read line");
-    let input = input.trim();
-
-    if input.eq_ignore_ascii_case("q") {
-        std::process::exit(0);
-    }
-
-    if input.is_empty() {
-        None
-    } else {
-        Some(input.to_string())
-    }
-}
-
-/// Prompt for configuration name with validation
-fn prompt_config_name() -> String {
-    loop {
-        println!(
-            "Please name your configuration file with extension (.toml, .json, .yaml) or 'q' to quit:"
-        );
-        if let Some(input) = read_user_input() {
-            return input;
-        }
-        println!("Error: Configuration path cannot be empty. Please try again.\n");
-    }
-}
-/// Prompt for configuration file path with validation
-fn prompt_config_path() -> String {
-    loop {
-        println!("Please specify the output configuration file path (or 'q' to quit):");
-        if let Some(input) = read_user_input() {
-            return input;
-        }
-        println!("Error: Configuration path cannot be empty. Please try again.\n");
-    }
-}
-
-/// Prompt for input CSV file or directory path with validation
-fn prompt_input_path() -> String {
-    loop {
-        println!(
-            "Please specify the input location, either a single CSV file or a directory containing them. ('q' to quit):"
-        );
-        if let Some(input) = read_user_input() {
-            return input;
-        }
-        println!("Error: Input path cannot be empty. Please try again.\n");
-    }
-}
-
-/// Prompt for output CSV file path with validation
-fn prompt_output_path() -> String {
-    loop {
-        println!("Please specify the output location to save output data. ('q' to quit):");
-        if let Some(input) = read_user_input() {
-            return input;
-        }
-        println!("Error: Output path cannot be empty. Please try again.\n");
-    }
-}
-
 /// Prompt for simulation mode with validation
 fn prompt_simulation_mode() -> SimulationMode {
     loop {
@@ -1053,27 +898,6 @@ fn prompt_hijack_fault_model() -> strapdown::messages::GnssFaultModel {
         offset_e_m,
         start_s,
         duration_s,
-    }
-}
-
-/// Helper function to prompt for f64 with default value and range validation
-fn prompt_f64_with_default(prompt_text: &str, default: f64, min_val: f64, max_val: f64) -> f64 {
-    loop {
-        println!(
-            "{} (press Enter for {}, or 'q' to quit):",
-            prompt_text, default
-        );
-        match read_user_input() {
-            None => return default,
-            Some(input) => match input.parse::<f64>() {
-                Ok(val) if val >= min_val && val <= max_val => return val,
-                Ok(_) => println!(
-                    "Error: Value must be between {} and {}.\n",
-                    min_val, max_val
-                ),
-                Err(_) => println!("Error: Please enter a valid number.\n"),
-            },
-        }
     }
 }
 
