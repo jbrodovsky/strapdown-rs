@@ -1,168 +1,134 @@
-# Geonav-Sim Usage Guide
+# Strapdown Geonav - Geophysical Navigation Library
 
-This guide demonstrates how to use the `geonav-sim` program for geophysical navigation simulations.
+This crate provides geophysical navigation capabilities for strapdown inertial navigation systems, enabling gravity and magnetic anomaly aiding for improved navigation accuracy, particularly in GNSS-denied environments.
 
 ## Overview
 
-`geonav-sim` extends the basic strapdown navigation simulation by incorporating geophysical measurements (gravity and magnetic anomalies) to aid navigation, particularly in GNSS-denied environments.
+`strapdown-geonav` is a library crate that extends the basic strapdown navigation simulation by incorporating geophysical measurements (gravity and magnetic anomalies) to aid navigation.
 
-## Basic Usage
+**Note**: The standalone `geonav-sim` binary has been consolidated into `strapdown-sim`. Use `strapdown-sim` with the `--features geonav` flag to access geophysical navigation capabilities.
+
+## Usage
+
+### As a Simulation Tool
+
+Build and run with geophysical navigation support:
 
 ```bash
-# Basic gravity-aided navigation simulation
-geonav-sim -i data/input.csv -o results/output.csv --geo-type gravity
+# Build strapdown-sim with geonav feature
+cargo build --release --package strapdown-sim --features geonav
 
-# Magnetic-aided navigation simulation with higher resolution
-geonav-sim -i data/input.csv -o results/output.csv \
-    --geo-type magnetic \
-    --geo-resolution two-minutes \
-    --geo-noise-std 50.0
+# Run geophysical navigation simulation
+strapdown-sim cl --input data.csv --output out/ \
+    --geo \
+    --gravity-resolution one-minute \
+    --filter ukf
 
-# Custom map file specification
-geonav-sim -i data/input.csv -o results/output.csv \
-    --geo-type gravity \
-    --map-file data/custom_gravity_map.nc
+# Magnetic navigation
+strapdown-sim cl --input data.csv --output out/ \
+    --geo \
+    --magnetic-resolution two-minutes \
+    --magnetic-noise-std 150.0
 ```
 
-## Input File Requirements
+### As a Library
 
-### CSV Data File
-The input CSV must contain standard IMU/GNSS data with the following columns:
-- `time` - ISO UTC timestamp (YYYY-MM-DD HH:mm:ss.ssss+HH:MM)
-- `latitude`, `longitude`, `altitude` - Position measurements
-- `speed`, `bearing` - Velocity measurements  
-- `acc_x`, `acc_y`, `acc_z` - Accelerometer data (m/s²)
-- `gyro_x`, `gyro_y`, `gyro_z` - Gyroscope data (rad/s)
-- `grav_x`, `grav_y`, `grav_z` - Gravity measurements (m/s²) [for gravity-aided navigation]
-- `mag_x`, `mag_y`, `mag_z` - Magnetometer data (μT) [for magnetic-aided navigation]
+Add to your `Cargo.toml`:
 
-### Geophysical Map Files
-Maps should be in NetCDF format with specific naming conventions:
+```toml
+[dependencies]
+strapdown-geonav = { path = "../geonav" }
+```
 
-- **Gravity maps**: `{input_name}_gravity.nc`
-- **Magnetic maps**: `{input_name}_magnetic.nc`
+Use in your code:
 
-For example, if your input CSV is `flight_data.csv`, the program will look for:
-- `flight_data_gravity.nc` (for gravity-aided navigation)
-- `flight_data_magnetic.nc` (for magnetic-aided navigation)
+```rust
+use geonav::{GeoMap, GeophysicalMeasurementType, GravityResolution};
+use geonav::{build_event_stream, geo_closed_loop_ukf};
 
-#### Map File Structure
-Maps should contain:
-- `lat` variable: latitude coordinates (degrees)
-- `lon` variable: longitude coordinates (degrees)  
-- `z` variable: anomaly data (mGal for gravity, nT for magnetic)
+// Load a gravity map
+let measurement_type = GeophysicalMeasurementType::Gravity(GravityResolution::OneMinute);
+let map = GeoMap::load_geomap("gravity_map.nc", measurement_type)?;
+
+// Build event stream with geophysical measurements
+let events = build_event_stream(
+    &records,
+    &gnss_config,
+    Some(Rc::new(map)),
+    Some(100.0),  // gravity noise std (mGal)
+    None,         // no magnetic map
+    None,
+    None,
+);
+
+// Run simulation
+let results = geo_closed_loop_ukf(&mut ukf, events)?;
+```
 
 ## Command Line Options
 
-### Geophysical Measurement Configuration
-- `--geo-type`: Choose between `gravity` or `magnetic` measurements
-- `--geo-resolution`: Map resolution (from `one-degree` to `one-second`)
-- `--geo-noise-std`: Measurement noise standard deviation
-- `--map-file`: Custom map file path (overrides auto-detection)
+When using `strapdown-sim --features geonav`:
 
-### GNSS Degradation Configuration
-The program inherits all GNSS degradation options from `strapdown-sim`:
+### Enabling Geophysical Navigation
+- `--geo`: Enable geophysical navigation mode (required)
 
-#### Scheduler Options (controls GNSS availability)
-- `--sched passthrough`: Use all available GNSS measurements
-- `--sched fixed --interval-s 10`: GNSS fixes every 10 seconds
-- `--sched duty --on-s 30 --off-s 60`: 30s ON, 60s OFF cycles
+### Gravity Configuration
+- `--gravity-resolution`: Map resolution (one-degree to one-minute)
+- `--gravity-bias`: Measurement bias in mGal
+- `--gravity-noise-std`: Noise standard deviation in mGal (default: 100)
+- `--gravity-map-file`: Custom map file path
 
-#### Fault Models (corrupts GNSS measurements)
-- `--fault none`: No GNSS corruption
-- `--fault degraded`: AR(1) correlated errors
-- `--fault slowbias`: Slow-drifting bias
-- `--fault hijack`: Position spoofing attack
+### Magnetic Configuration
+- `--magnetic-resolution`: Map resolution (one-degree to two-minutes)
+- `--magnetic-bias`: Measurement bias in nT
+- `--magnetic-noise-std`: Noise standard deviation in nT (default: 150)
+- `--magnetic-map-file`: Custom map file path
+
+### Common Options
+- `--geo-frequency-s`: Geophysical measurement frequency in seconds
+
+## Geophysical Map Files
+
+Maps should be in NetCDF format:
+
+- **Gravity maps**: `{input_name}_gravity.nc` or specified via `--gravity-map-file`
+- **Magnetic maps**: `{input_name}_magnetic.nc` or specified via `--magnetic-map-file`
+
+### Map File Structure
+Maps should contain:
+- `lat` variable: latitude coordinates (degrees)
+- `lon` variable: longitude coordinates (degrees)
+- `z` variable: anomaly data (mGal for gravity, nT for magnetic)
 
 ## Example Scenarios
 
-### 1. GNSS-Denied Navigation with Gravity Aiding
+### GNSS-Denied Navigation with Gravity Aiding
 ```bash
-# Simulate complete GNSS denial with gravity measurements
-geonav-sim -i urban_canyon.csv -o gravity_aided.csv \
-    --geo-type gravity \
-    --geo-noise-std 50.0 \
-    --sched fixed --interval-s 999999  # Effectively no GNSS
+strapdown-sim cl --input urban_canyon.csv --output out/ \
+    --geo --gravity-resolution one-minute \
+    --dropout-start-s 0 --dropout-duration-s 999999
 ```
 
-### 2. Intermittent GNSS with Magnetic Aiding
+### Intermittent GNSS with Magnetic Aiding
 ```bash
-# GNSS available 20% of the time, magnetic aiding throughout
-geonav-sim -i flight_data.csv -o magnetic_aided.csv \
-    --geo-type magnetic \
-    --geo-resolution five-minutes \
+strapdown-sim cl --input flight_data.csv --output out/ \
+    --geo --magnetic-resolution five-minutes \
     --sched duty --on-s 10 --off-s 40
 ```
 
-### 3. GNSS Spoofing with Geophysical Validation
-```bash
-# Simulate spoofing attack with gravity measurements for validation
-geonav-sim -i test_route.csv -o spoofing_test.csv \
-    --geo-type gravity \
-    --fault hijack --hijack-offset-n-m 100 --hijack-start-s 300
-```
+## API Documentation
 
-### 4. High-Precision Survey with Multiple Aiding
-```bash
-# High-resolution gravity aiding with minimal GNSS degradation
-geonav-sim -i survey_data.csv -o high_precision.csv \
-    --geo-type gravity \
-    --geo-resolution one-minute \
-    --geo-noise-std 10.0 \
-    --fault degraded --sigma-pos-m 1.0
-```
+See the Rust API documentation for detailed information on:
+- `GeoMap` - Geophysical map loading and interpolation
+- `GravityMeasurement` - Gravity anomaly measurement model
+- `MagneticAnomalyMeasurement` - Magnetic anomaly measurement model
+- `build_event_stream` - Event stream construction with geophysical measurements
+- `geo_closed_loop_ukf` / `geo_closed_loop_ekf` - Simulation functions
 
-## Output
+## Performance Notes
 
-The program generates a CSV file with navigation results including:
-- Estimated position, velocity, and attitude
-- Covariance diagonal elements  
-- Input measurements and derived quantities
-- Geophysical anomaly values used for aiding
-
-## Performance Considerations
-
-- **Map Resolution**: Higher resolution maps provide better accuracy but require more memory and computation
-- **Noise Levels**: Typical values:
+- **Map Resolution**: Higher resolution maps provide better accuracy but require more memory
+- **Typical Noise Levels**:
   - Gravity: 10-100 mGal standard deviation
   - Magnetic: 50-200 nT standard deviation
 - **Coverage**: Ensure geophysical maps cover the entire trajectory area
-
-## Troubleshooting
-
-### Common Issues
-1. **Map file not found**: Ensure proper naming convention or use `--map-file`
-2. **Out of bounds errors**: Trajectory extends beyond map coverage
-3. **Memory issues**: Very high-resolution maps may require significant RAM
-
-### Error Messages
-- `"Map file not found"`: Check file naming and paths
-- `"Latitude out of bounds"`: Trajectory extends beyond map area
-- `"Failed to read config"`: GNSS config file format issues
-
-## Integration with Analysis Tools
-
-Output CSV files are compatible with standard navigation analysis tools and can be processed with:
-- Python pandas/numpy for analysis
-- MATLAB navigation toolboxes
-- R for statistical analysis
-- Excel for basic visualization
-
-Example Python analysis:
-```python
-import pandas as pd
-import matplotlib.pyplot as plt
-
-# Load results
-results = pd.read_csv('output.csv')
-
-# Plot trajectory
-plt.figure(figsize=(10, 8))
-plt.scatter(results['longitude'], results['latitude'], 
-           c=results['timestamp'], cmap='viridis')
-plt.xlabel('Longitude (degrees)')
-plt.ylabel('Latitude (degrees)')
-plt.title('Geophysical Navigation Trajectory')
-plt.colorbar(label='Time')
-plt.show()
-```
