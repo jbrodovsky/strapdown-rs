@@ -135,7 +135,7 @@ enum Command {
     )]
     ParticleFilter(ParticleFilterSimArgs),
 
-    #[command(name = "conf", about = "Generate a template configuration file")]
+    #[command(name = "config", about = "Generate a template configuration file")]
     CreateConfig, //(CreateConfigArgs),
 }
 
