@@ -6,10 +6,11 @@ __version__ = "0.1.0"
 
 
 def main() -> None:
-    # print("Hello from analysis!")
+    print("Hello from analysis!")
 
     parser = ArgumentParser(
-        description="Data analysis and simulation orchestration tools for use with Strapdown-sim."
+        description="Data analysis and simulation orchestration tools for use with Strapdown-sim.",
+        epilog="For more information, visit the Strapdown-sim documentation."
     )
     parser.add_argument(
         "--version",
@@ -17,7 +18,7 @@ def main() -> None:
         version=f"strapdown-analysis package version {__version__}",
     )
 
-    commands = parser.add_subparsers(title="command", dest="command")
+    commands = parser.add_subparsers(title="commands", dest="commands")
 
     preprocess = commands.add_parser(
         "preprocess", help="Preprocess raw trajectory data."
