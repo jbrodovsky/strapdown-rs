@@ -2983,6 +2983,9 @@ pub struct SimulationConfig {
     /// Particle filter specific settings (only used if mode is ParticleFilter)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub particle_filter: Option<ParticleFilterConfig>,
+    /// Geophysical measurement configuration (optional, requires --features geonav)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geophysical: Option<GeophysicalConfig>,
     /// GNSS degradation configuration (scheduler + fault model)
     #[serde(default)]
     pub gnss_degradation: crate::messages::GnssDegradationConfig,
@@ -3004,6 +3007,7 @@ impl Default for SimulationConfig {
             logging: LoggingConfig::default(),
             closed_loop: Some(ClosedLoopConfig::default()),
             particle_filter: None,
+            geophysical: None,
             gnss_degradation: crate::messages::GnssDegradationConfig::default(),
         }
     }
