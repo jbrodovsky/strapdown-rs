@@ -35,7 +35,7 @@ jobs:
                 libhdf5-dev \
                 libnetcdf-dev \
                 libfreetype6-dev \
-                libfontconfig1-dev \
+                libfontconfig-dev \
                 gmt
                 
       - name: Install rust
