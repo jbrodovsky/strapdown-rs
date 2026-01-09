@@ -1368,7 +1368,7 @@ fn prompt_log_file() -> Option<String> {
 /// Prompt for whether to enable geophysical navigation
 fn prompt_enable_geophysical() -> bool {
     use std::io::{self, Write};
-    
+
     loop {
         println!("\nEnable geophysical navigation (gravity/magnetic anomaly measurements)?");
         println!("  (y)es");
@@ -1401,7 +1401,7 @@ fn prompt_enable_geophysical() -> bool {
 fn prompt_geo_resolution(measurement_type: &str) -> strapdown::sim::GeoResolution {
     use std::io::{self, Write};
     use strapdown::sim::GeoResolution;
-    
+
     loop {
         println!("\nSelect {} map resolution:", measurement_type);
         println!("  1. One Degree");
@@ -1445,7 +1445,9 @@ fn prompt_geo_resolution(measurement_type: &str) -> strapdown::sim::GeoResolutio
                     std::process::exit(0);
                 }
                 _ => {
-                    println!("Invalid choice. Please enter a number between 1 and 15, or 'q' to quit.");
+                    println!(
+                        "Invalid choice. Please enter a number between 1 and 15, or 'q' to quit."
+                    );
                     continue;
                 }
             },
@@ -1455,9 +1457,14 @@ fn prompt_geo_resolution(measurement_type: &str) -> strapdown::sim::GeoResolutio
 }
 
 /// Prompt for gravity measurement configuration
-fn prompt_gravity_config() -> Option<(strapdown::sim::GeoResolution, Option<f64>, Option<f64>, Option<String>)> {
+fn prompt_gravity_config() -> Option<(
+    strapdown::sim::GeoResolution,
+    Option<f64>,
+    Option<f64>,
+    Option<String>,
+)> {
     use std::io::{self, Write};
-    
+
     loop {
         println!("\nEnable gravity anomaly measurements?");
         println!("  (y)es");
@@ -1469,7 +1476,7 @@ fn prompt_gravity_config() -> Option<(strapdown::sim::GeoResolution, Option<f64>
             Some(input) => match input.to_lowercase().as_str() {
                 "y" | "yes" => {
                     let resolution = prompt_geo_resolution("gravity");
-                    
+
                     println!("\nGravity measurement bias (mGal) [0.0]: ");
                     let bias = match read_user_input() {
                         Some(input) if !input.is_empty() => match input.parse::<f64>() {
@@ -1516,9 +1523,14 @@ fn prompt_gravity_config() -> Option<(strapdown::sim::GeoResolution, Option<f64>
 }
 
 /// Prompt for magnetic measurement configuration
-fn prompt_magnetic_config() -> Option<(strapdown::sim::GeoResolution, Option<f64>, Option<f64>, Option<String>)> {
+fn prompt_magnetic_config() -> Option<(
+    strapdown::sim::GeoResolution,
+    Option<f64>,
+    Option<f64>,
+    Option<String>,
+)> {
     use std::io::{self, Write};
-    
+
     loop {
         println!("\nEnable magnetic anomaly measurements?");
         println!("  (y)es");
@@ -1530,7 +1542,7 @@ fn prompt_magnetic_config() -> Option<(strapdown::sim::GeoResolution, Option<f64
             Some(input) => match input.to_lowercase().as_str() {
                 "y" | "yes" => {
                     let resolution = prompt_geo_resolution("magnetic");
-                    
+
                     println!("\nMagnetic measurement bias (nT) [0.0]: ");
                     let bias = match read_user_input() {
                         Some(input) if !input.is_empty() => match input.parse::<f64>() {
@@ -1579,7 +1591,7 @@ fn prompt_magnetic_config() -> Option<(strapdown::sim::GeoResolution, Option<f64
 /// Prompt for geophysical measurement frequency
 fn prompt_geo_measurement_frequency() -> Option<f64> {
     println!("\nGeophysical measurement frequency (seconds) [auto]: ");
-    
+
     match read_user_input() {
         Some(input) if !input.is_empty() => match input.parse::<f64>() {
             Ok(freq) if freq > 0.0 => Some(freq),
@@ -1655,25 +1667,27 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
     let geophysical = if prompt_enable_geophysical() {
         let gravity_config = prompt_gravity_config();
         let magnetic_config = prompt_magnetic_config();
-        
+
         // Validate that at least one measurement type is enabled
         if gravity_config.is_none() && magnetic_config.is_none() {
-            println!("\nWarning: Geophysical navigation enabled but no measurement types selected.");
+            println!(
+                "\nWarning: Geophysical navigation enabled but no measurement types selected."
+            );
             println!("Disabling geophysical navigation.");
             None
         } else {
             let geo_frequency_s = prompt_geo_measurement_frequency();
-            
-            let (gravity_resolution, gravity_bias, gravity_noise_std, gravity_map_file) = 
-                gravity_config.map(|(res, bias, noise, map)| {
-                    (Some(res), bias, noise, map)
-                }).unwrap_or((None, None, None, None));
-            
-            let (magnetic_resolution, magnetic_bias, magnetic_noise_std, magnetic_map_file) = 
-                magnetic_config.map(|(res, bias, noise, map)| {
-                    (Some(res), bias, noise, map)
-                }).unwrap_or((None, None, None, None));
-            
+
+            let (gravity_resolution, gravity_bias, gravity_noise_std, gravity_map_file) =
+                gravity_config
+                    .map(|(res, bias, noise, map)| (Some(res), bias, noise, map))
+                    .unwrap_or((None, None, None, None));
+
+            let (magnetic_resolution, magnetic_bias, magnetic_noise_std, magnetic_map_file) =
+                magnetic_config
+                    .map(|(res, bias, noise, map)| (Some(res), bias, noise, map))
+                    .unwrap_or((None, None, None, None));
+
             Some(strapdown::sim::GeophysicalConfig {
                 gravity_resolution,
                 gravity_bias,
