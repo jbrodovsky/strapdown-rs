@@ -35,7 +35,6 @@ __pycache__
 .pixi
 *.egg-info
 .python-version
-pyproject.toml
 uv.lock
 batch_process.nu
 .pixi/*
