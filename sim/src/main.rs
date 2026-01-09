@@ -1397,6 +1397,21 @@ fn prompt_enable_geophysical() -> bool {
     }
 }
 
+/// Type alias for geophysical measurement configuration returned by prompt functions.
+///
+/// Represents the configuration for a single geophysical measurement type (gravity or magnetic).
+/// Contains:
+/// - `GeoResolution`: The map resolution to use
+/// - `Option<f64>`: Measurement bias (mGal for gravity, nT for magnetic)
+/// - `Option<f64>`: Measurement noise standard deviation (mGal for gravity, nT for magnetic)
+/// - `Option<String>`: Map file path (auto-detected if None)
+type GeoMeasurementConfig = (
+    strapdown::sim::GeoResolution,
+    Option<f64>,
+    Option<f64>,
+    Option<String>,
+);
+
 /// Prompt for GeoResolution with validation
 fn prompt_geo_resolution(measurement_type: &str) -> strapdown::sim::GeoResolution {
     use std::io::{self, Write};
@@ -1457,12 +1472,7 @@ fn prompt_geo_resolution(measurement_type: &str) -> strapdown::sim::GeoResolutio
 }
 
 /// Prompt for gravity measurement configuration
-fn prompt_gravity_config() -> Option<(
-    strapdown::sim::GeoResolution,
-    Option<f64>,
-    Option<f64>,
-    Option<String>,
-)> {
+fn prompt_gravity_config() -> Option<GeoMeasurementConfig> {
     use std::io::{self, Write};
 
     loop {
@@ -1523,12 +1533,7 @@ fn prompt_gravity_config() -> Option<(
 }
 
 /// Prompt for magnetic measurement configuration
-fn prompt_magnetic_config() -> Option<(
-    strapdown::sim::GeoResolution,
-    Option<f64>,
-    Option<f64>,
-    Option<String>,
-)> {
+fn prompt_magnetic_config() -> Option<GeoMeasurementConfig> {
     use std::io::{self, Write};
 
     loop {
