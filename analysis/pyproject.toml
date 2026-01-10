@@ -14,9 +14,14 @@ dependencies = [
     "numpy>=2.4.0",
     "pandas>=2.3.3",
     "pygmt>=0.17.0",
+    "scipy>=1.16.3",
     "tqdm>=4.67.1",
 ]
 
 [build-system]
 requires = ["uv_build>=0.9.21,<0.10.0"]
 build-backend = "uv_build"
+
+[project.scripts]
+analyze = "analysis.__init__:main"
+# generate-report = "analysis.scripts.report:generate"
