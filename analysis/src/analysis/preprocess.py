@@ -13,6 +13,8 @@ from pygmt.datasets import (
     load_earth_magnetic_anomaly,
     load_earth_relief,
 )
+from tqdm import tqdm
+import matplotlib.pyplot as plt
 
 from analysis.plotting import inflate_bounds, plot_street_map
 
@@ -191,24 +193,23 @@ def preprocess_data(args):
     )
     output_path.mkdir(parents=True, exist_ok=True)
 
-    def process_dataset(dataset: Path):
-        # for dataset in datasets:
+    #def process_dataset(dataset: Path):
+    for dataset in tqdm(datasets):
         # dataset_path = os.path.join(args.input_dir, dataset)
         cleaned_data = pd.DataFrame()
-        print(f"Processing: {dataset}")
+        # print(f"Processing: {dataset}")
         try:
             cleaned_data = clean_phone_data(dataset)
         except Exception as e:
             print(f"Error processing {dataset}: {e}")
-            return
+            continue
         cleaned_csv_path = output_path / f"{dataset.name}.csv"
-        print(f"Saving data to: {cleaned_csv_path}")
+        # print(f"Saving data to: {cleaned_csv_path}")
         cleaned_data.to_csv(cleaned_csv_path)
-        print(f"Cleaned data for {dataset} saved to {cleaned_csv_path}.")
+        # print(f"Cleaned data for {dataset} saved to {cleaned_csv_path}.")
 
         street_map = plot_street_map(
-            cleaned_data["latitude"].tolist(),
-            cleaned_data["longitude"].tolist(),
+            cleaned_data,
             margin=0.01,
             title=dataset.name,
         )
@@ -217,46 +218,45 @@ def preprocess_data(args):
         #    args.output_dir, f"{dataset.name}_street_map.png"
         # )
         street_map.savefig(street_map_path, dpi=300)
-        print(f"Street map for {dataset.name} saved to {street_map_path}.")
+        # Close the figure to avoid accumulating open figures and memory usage
+        plt.close(street_map)
+        # print(f"Street map for {dataset.name} saved to {street_map_path}.")
 
-        if not args.getmaps:
-            return
-        lon_min = cleaned_data["longitude"].min()
-        lon_max = cleaned_data["longitude"].max()
-        lat_min = cleaned_data["latitude"].min()
-        lat_max = cleaned_data["latitude"].max()
-        lon_min, lon_max, lat_min, lat_max = inflate_bounds(
-            lon_min, lon_max, lat_min, lat_max, args.buffer
-        )
+        if args.getmaps:
+        
+            lon_min = cleaned_data["longitude"].min()
+            lon_max = cleaned_data["longitude"].max()
+            lat_min = cleaned_data["latitude"].min()
+            lat_max = cleaned_data["latitude"].max()
+            lon_min, lon_max, lat_min, lat_max = inflate_bounds(
+                lon_min, lon_max, lat_min, lat_max, args.buffer
+            )
 
-        # Download the maps
-        relief = load_earth_relief(
-            resolution="15s", region=[lon_min, lon_max, lat_min, lat_max]
-        )
-        relief.to_netcdf(
-            os.path.join(args.output_dir, dataset.name.replace(".csv", "_relief.nc"))
-        )
-        # print(f"  Downloaded relief map: {relief.data.shape}.")
+            # Download the maps
+            relief = load_earth_relief(
+                resolution="15s", region=[lon_min, lon_max, lat_min, lat_max]
+            )
+            relief.to_netcdf(
+                output_path / f"{dataset.name}_relief.nc"            )
+            # print(f"  Downloaded relief map: {relief.data.shape}.")
 
-        gravity = load_earth_free_air_anomaly(
-            resolution="01m", region=[lon_min, lon_max, lat_min, lat_max]
-        )
-        gravity.to_netcdf(
-            os.path.join(args.output_dir, dataset.name.replace(".csv", "_gravity.nc"))
-        )
-        # print(f"  Downloaded gravity map: {gravity.data.shape}.")
+            gravity = load_earth_free_air_anomaly(
+                resolution="01m", region=[lon_min, lon_max, lat_min, lat_max]
+            )
+            gravity.to_netcdf(
+                output_path / f"{dataset.name}_gravity.nc"
+            )
+            # print(f"  Downloaded gravity map: {gravity.data.shape}.")
 
-        magnetic = load_earth_magnetic_anomaly(
-            resolution="03m",
-            region=[lon_min, lon_max, lat_min, lat_max],
-            data_source="wdmam",
-        )
-        magnetic.to_netcdf(
-            os.path.join(args.output_dir, dataset.name.replace(".csv", "_magnetic.nc"))
-        )
+            magnetic = load_earth_magnetic_anomaly(
+                resolution="03m",
+                region=[lon_min, lon_max, lat_min, lat_max],
+                data_source="wdmam",
+            )
+            magnetic.to_netcdf(
+                output_path / f"{dataset.name}_magnetic.nc"
+            )
 
-    with futures.ThreadPoolExecutor() as executor:
-        executor.map(process_dataset, datasets)
 
 
 def main() -> None:
