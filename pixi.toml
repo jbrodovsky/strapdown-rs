@@ -19,34 +19,17 @@ PKG_CONFIG_PATH = "${PIXI_PROJECT_ROOT}/.pixi/envs/default/lib/pkgconfig"
 build = "cargo build --workspace --release"
 lint = "ruff check --select I --fix && cargo clippy --all-targets --all-features --fix --allow-dirty -- -D warnings"
 fmt = "ruff format . && cargo fmt"
-preprocess = "python scripts/preprocess.py --input_dir data/raw/ --output_dir data/input/"
 code = "code ."
 coverage = "cargo tarpaulin --workspace --timeout 600"
-# analysis = "analysis"
-#test = "pytest --cov=geophysical_nav --cov-report=xml --cov-report=html"
 
-[tasks.getmaps]
+[tasks.postprocess]
 args = [
-    {"arg" = "input", "default" = "data/input/"},
-    {"arg" = "buffer", "default" = "0.75"},
-    {"arg" = "output", "default" = "data/input/"}
+    {"arg" = "filter", "default" = "ukf"},
+    {"arg" = "config", "default" = "truth"},
+    {"arg" = "output", "default" = "performance"}
 ]
-cmd = "python scripts/get_maps.py --input {{ input }} --buffer {{ buffer }} --output {{ output }}"
+cmd = "analyze performance --processed data/output/{{ filter }}/{{ config }} --reference data/input/ --output data/output/{{ filter }}/{{ config }}/{{ output}} "
 
-[tasks.create_dataset]
-args = [
-    {"arg" = "bin", "default" = "target/release/strapdown-sim"},
-    {"arg" = "input", "default" = "data/input/"},
-    {"arg" = "output_root", "default" = "data/"}
-]
-cmd = "python scripts/create_dataset.py --bin {{ bin }} --input {{ input }} --output-root {{ output_root }}"
-
-[tasks.truth]
-args = [
-    {"arg" = "input", "default" = "data/input/"},
-    {"arg" = "output", "default" = "data/baseline/"}
-]
-cmd = "python scripts/truth.py --input-dir {{ input }} --output-dir {{ output }}"
 
 [dependencies]
 python = ">=3.12,<3.14"
