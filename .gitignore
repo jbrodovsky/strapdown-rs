@@ -43,6 +43,7 @@ batch_process.nu
 # Data output
 examples/geonav-sim/ukf
 examples/geonav-sim/pf
+data/output/*
 
 # Ignore ruff
 .ruff_cache/
@@ -51,5 +52,3 @@ papers/anomaly_ukf/data/combined_statistics_error.csv
 # mdBook output
 book/book/
 
-# Generated performance plots
-data/output/*.png

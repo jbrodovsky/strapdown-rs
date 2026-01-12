@@ -21,14 +21,27 @@ lint = "ruff check --select I --fix && cargo clippy --all-targets --all-features
 fmt = "ruff format . && cargo fmt"
 code = "code ."
 coverage = "cargo tarpaulin --workspace --timeout 600"
+sim = """
+./target/release/strapdown-sim --config conf/ukf_truth.toml && \
+./target/release/strapdown-sim --config conf/ukf_both.toml && \
+./target/release/strapdown-sim --config conf/ukf_grav.toml && \
+./target/release/strapdown-sim --config conf/ukf_mag.toml && \
+./target/release/strapdown-sim --config conf/ekf_truth.toml && \
+./target/release/strapdown-sim --config conf/ekf_both.toml && \
+./target/release/strapdown-sim --config conf/ekf_grav.toml && \
+./target/release/strapdown-sim --config conf/ekf_mag.toml
+"""
 
-[tasks.postprocess]
-args = [
-    {"arg" = "filter", "default" = "ukf"},
-    {"arg" = "config", "default" = "truth"},
-    {"arg" = "output", "default" = "performance"}
-]
-cmd = "analyze performance --processed data/output/{{ filter }}/{{ config }} --reference data/input/ --output data/output/{{ filter }}/{{ config }}/{{ output}} "
+postprocess = """
+analyze performance --processed data/output/ukf/truth --reference data/input/ --output data/output/ukf/truth/performance && \
+analyze performance --processed data/output/ukf/both --reference data/input/ --output data/output/ukf/both/performance && \
+analyze performance --processed data/output/ukf/grav --reference data/input/ --output data/output/ukf/grav/performance && \
+analyze performance --processed data/output/ukf/mag --reference data/input/ --output data/output/ukf/mag/performance && \
+analyze performance --processed data/output/ekf/truth --reference data/input/ --output data/output/ekf/truth/performance && \
+analyze performance --processed data/output/ekf/both --reference data/input/ --output data/output/ekf/both/performance && \
+analyze performance --processed data/output/ekf/grav --reference data/input/ --output data/output/ekf/grav/performance && \
+analyze performance --processed data/output/ekf/mag --reference data/input/ --output data/output/ekf/mag/performance
+"""
 
 
 [dependencies]

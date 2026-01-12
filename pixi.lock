@@ -416,7 +416,7 @@ packages:
 - pypi: ./analysis
   name: analysis
   version: 0.1.0
-  sha256: 2b1a495ae1aa89ddbec24a2b20e8b44b1ed8c8c3e2e8500e1bcced4dfab6cbf9
+  sha256: 7169a48f66e73e9d6eb72043b6dfc9d6836e5ea39286c2f4b0d24399210a6263
   requires_dist:
   - cartopy>=0.25.0
   - haversine>=2.9.0

@@ -6,6 +6,7 @@ generate_plot = true
 
 [closed_loop]
 filter = "ukf"
+file = "log/ukf_degraded.log"
 
 [gnss_degradation]
 seed = 42
