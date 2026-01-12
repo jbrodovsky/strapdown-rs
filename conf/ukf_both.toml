@@ -1,0 +1,43 @@
+# UKF with both gravity and magnetic anomaly measurements
+input = "data/input"
+output = "data/output/ukf/both"
+mode = "closed-loop"
+seed = 42
+parallel = true
+
+[logging]
+level = "info"
+file = "log/ukf_both.log"
+
+[closed_loop]
+filter = "ukf"
+
+[geophysical]
+# Gravity anomaly measurements
+gravity_resolution = "one_minute"
+gravity_bias = 0.0
+gravity_noise_std = 100.0
+
+# Magnetic anomaly measurements
+magnetic_resolution = "two_minutes"
+magnetic_bias = 0.0
+magnetic_noise_std = 150.0
+
+# Measurement frequency (seconds)
+geo_frequency_s = 1.0
+
+[gnss_degradation]
+seed = 42
+
+[gnss_degradation.scheduler]
+kind = "fixed_interval"
+interval_s = 60.0
+phase_s = 0.0
+
+[gnss_degradation.fault]
+kind = "degraded"
+rho_pos = 0.99
+sigma_pos_m = 15.0
+rho_vel = 0.95
+sigma_vel_mps = 5.0
+r_scale = 15.0
