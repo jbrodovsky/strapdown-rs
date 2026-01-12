@@ -1,0 +1,37 @@
+# EKF with magnetic anomaly measurements only
+input = "data/input"
+output = "data/output/ekf/mag"
+mode = "closed-loop"
+seed = 42
+parallel = true
+
+[logging]
+level = "info"
+file = "log/ekf_mag.log"
+
+[closed_loop]
+filter = "ekf"
+
+[geophysical]
+# Magnetic anomaly measurements
+magnetic_resolution = "two_minutes"
+magnetic_bias = 0.0
+magnetic_noise_std = 150.0
+# magnetic_map_file will be auto-detected if not specified
+
+# Gravity anomaly disabled for this config
+# gravity_resolution = ""
+# gravity_bias = 0.0
+# gravity_noise_std = 100.0
+
+# Measurement frequency (seconds)
+geo_frequency_s = 1.0
+
+[gnss_degradation]
+seed = 42
+
+[gnss_degradation.scheduler]
+kind = "pass_through"
+
+[gnss_degradation.fault]
+kind = "none"

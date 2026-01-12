@@ -138,7 +138,7 @@ def plot_performance(nav: DataFrame, gps: DataFrame, output_path: Path | str):
         linestyle="--",
     )
     ax.set_xlim(left=0)
-    ax.set_ylim((0, 50))
+    #ax.set_ylim((0, 50))
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("2D Haversine Error (m)")
     ax.set_title(
@@ -150,6 +150,82 @@ def plot_performance(nav: DataFrame, gps: DataFrame, output_path: Path | str):
     plt.close(fig)
 
 
+def plot_relative_performance(
+    geo: DataFrame,
+    deg: DataFrame, # degraded/baseline navigation
+    nav: DataFrame, # GPS-aided truth
+    output_path: Path | str,
+):
+    """Plot relative performance: geophysical-aided nav w.r.t. degraded nav.
+
+    This mirrors the geonav-sim notebook visualization by plotting the
+    difference of the cumulative root-mean-squared error series:
+
+        root_mean_geo_cum_error - root_mean_deg_cum_error
+
+    Positive values are filled red, negative values green.
+    """
+    output_path = Path(output_path)
+
+    distance_traveled = haversine_vector(
+        nav[["latitude", "longitude"]].to_numpy()[:-1, :],
+        nav[["latitude", "longitude"]].to_numpy()[1:, :],
+        Unit.METERS,
+    )
+    distance_traveled = np.hstack(([0], distance_traveled))
+    distance_traveled = np.nancumsum(distance_traveled)
+
+    geo_error = haversine_vector(
+        geo[["latitude", "longitude"]].to_numpy(dtype=np.float64, copy=False),
+        nav[["latitude", "longitude"]].to_numpy(),
+        Unit.METERS,
+    )
+
+    deg_error = haversine_vector(
+        deg[["latitude", "longitude"]].to_numpy(),
+        nav[["latitude", "longitude"]].to_numpy(),
+        Unit.METERS,
+    )
+
+    time = (nav.index - nav.index[0]).total_seconds() / 3600
+
+    err_diff = geo_error - deg_error
+    geo_rmse = np.sqrt(np.nanmean(geo_error**2))
+    deg_rmse = np.sqrt(np.nanmean(deg_error**2))
+    # General errors
+    fig, ax = plt.subplots(1, 1, figsize=(24, 6), layout="tight")
+    ax.plot(time, err_diff, label="Error Difference", color="black", linewidth=1)
+    ax.fill_between(
+        time,
+        err_diff,
+        0,
+        where=err_diff > 0,
+        alpha=0.4,
+        color="red",
+        label="Geo INS > Degraded INS",
+    )
+    ax.fill_between(
+        time,
+        err_diff,
+        0,
+        where=err_diff < 0,
+        alpha=0.4,
+        color="green",
+        label="Degraded INS > Geo INS",
+    )
+    ax.set_xlim(left=0)
+    # ax[0].set_ylim((-0.1, 0.1))
+    ax.set_xlabel("Time (h)")
+    ax.set_ylabel("Distance (m)")
+    ax.set_title(
+        f"Geophysical Navigation Performance | RMSE difference: {geo_rmse - deg_rmse:0.2f}",
+        fontsize=16,
+    )
+    ax.grid()
+    ax.legend()
+    fig.savefig(output_path, dpi=300)
+    plt.close(fig)
+    
 
 def plot_street_map(
     nav: DataFrame,

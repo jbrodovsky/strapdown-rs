@@ -10,7 +10,7 @@ from pandas import read_csv, DataFrame
 from pathlib import Path
 
 from analysis.preprocess import preprocess_data
-from analysis.plotting import plot_performance
+from analysis.plotting import plot_performance, plot_relative_performance
 from haversine import haversine_vector, Unit
 
 __version__ = "0.1.0"
@@ -85,12 +85,46 @@ def main() -> None:
         default="data/output"
     )
 
+    geoperformance = command.add_parser(
+        "geoperformance", help="Generate geophysical performance plots."
+    )
+    geoperformance.add_argument(
+        "-p",
+        "--processed",
+        type=str,
+        help="Input directory containing the processed navigation result CSV files.",
+    )
+    geoperformance.add_argument(
+        "-r",
+        "--reference",
+        type=str,
+        help="Input directory containing the reference GPS CSV files.",
+        default="data/input"
+    )
+    geoperformance.add_argument(
+        "-d",
+        "--degraded",
+        type=str,
+        help="Input directory containing the degraded navigation result CSV files.",
+    )
+    geoperformance.add_argument(
+        "-o",
+        "--output",
+        type=str,
+        help="Output directory for the geophysical performance plots.",
+        default="data/output"
+    )
+
     args = parser.parse_args()
 
     if args.command == "preprocess":
         preprocess_data(args)
     elif args.command == "performance":
         performance_analysis(args)
+    elif args.command == "geoperformance":
+        geophysical_performance_analysis(args)
+    else:
+        parser.print_help()
 
 
 def performance_analysis(args):
@@ -158,6 +192,52 @@ def performance_analysis(args):
     summary_df.to_csv(summary_file)
     print("Performance analysis completed.")
 
+def geophysical_performance_analysis(args):
+    """Generate geophysical performance plots."""
+    input_dir = args.processed
+    print(f"Generating geophysical performance plots from data in: {input_dir}")
+    
+    datasets = list(Path(input_dir).glob("*.csv"))
+    print(f"Found {len(datasets)} datasets to process.")
+
+    print(f"Comparing to reference data in: {args.reference}")
+    references = list(Path(args.reference).glob("*.csv"))
+    print(f"Found {len(references)} reference datasets.")
+
+    print(f"Comparing to degraded data in: {args.degraded}")
+    degradeds = list(Path(args.degraded).glob("*.csv"))
+    print(f"Found {len(degradeds)} degraded datasets.")
+
+    output_path = Path(args.output)
+    output_path.mkdir(parents=True, exist_ok=True)
+    print(f"Saving geophysical performance plots to: {args.output}")
+
+    reference_path = Path(args.reference)
+    degraded_path = Path(args.degraded)
+
+    for dataset in datasets:
+        geo = read_csv(dataset, parse_dates=True, index_col=0)
+        try:
+            reference_file = reference_path / dataset.name
+            nav = read_csv(reference_file, parse_dates=True, index_col=0)
+        except FileNotFoundError:
+            print(f"Reference file for {dataset.name} not found in {reference_path}. Skipping.")
+            continue
+        try:
+            degraded_file = degraded_path / dataset.name
+            degraded_nav = read_csv(degraded_file, parse_dates=True, index_col=0)
+        except FileNotFoundError:
+            print(f"Degraded file for {dataset.name} not found in {degraded_path}. Skipping.")
+            continue
+        output_plot = output_path / f"{dataset.stem}_geophysical_performance.png"
+        print(f"Processing dataset {dataset} ({len(nav)}) with reference {reference_file.name} ({len(nav)}) and degraded {degraded_file.name} ({len(degraded_nav)})")
+        try:
+            plot_relative_performance(geo, degraded_nav, nav, output_plot)
+        except Exception as e:
+            print(f"Error plotting geophysical performance for {dataset.name}, possible dimension mismatch or missing data: {e}")
+            continue
+
+    print("Geophysical performance analysis completed.")
 
 if __name__ == "__main__":
     main()
