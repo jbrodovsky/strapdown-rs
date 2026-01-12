@@ -252,7 +252,7 @@ pub enum ParticleResamplingStrategy {
 ///
 /// # Arguments
 /// * `weights` - Non-negative weights for each particle. Callers are responsible
-///               for ensuring the weights sum to 1.0 before calling this function.
+///   for ensuring the weights sum to 1.0 before calling this function.
 /// * `num_samples` - Number of samples to draw
 /// * `rng` - Random number generator
 ///
@@ -302,7 +302,7 @@ pub fn multinomial_resample<R: Rng>(
 ///
 /// # Arguments
 /// * `weights` - Non-negative weights for each particle. Callers are responsible
-///               for ensuring the weights sum to 1.0 before calling this function.
+///   for ensuring the weights sum to 1.0 before calling this function.
 /// * `num_samples` - Number of samples to draw
 /// * `rng` - Random number generator
 ///
@@ -319,11 +319,7 @@ pub fn multinomial_resample<R: Rng>(
 /// let indices = systematic_resample(&weights, 4, &mut rng);
 /// assert_eq!(indices.len(), 4);
 /// ```
-pub fn systematic_resample<R: Rng>(
-    weights: &[f64],
-    num_samples: usize,
-    rng: &mut R,
-) -> Vec<usize> {
+pub fn systematic_resample<R: Rng>(weights: &[f64], num_samples: usize, rng: &mut R) -> Vec<usize> {
     let mut indices = Vec::with_capacity(num_samples);
     let step = 1.0 / num_samples as f64;
     let start: f64 = rng.random::<f64>() * step;
@@ -355,7 +351,7 @@ pub fn systematic_resample<R: Rng>(
 ///
 /// # Arguments
 /// * `weights` - Non-negative weights for each particle. Callers are responsible
-///               for ensuring the weights sum to 1.0 before calling this function.
+///   for ensuring the weights sum to 1.0 before calling this function.
 /// * `num_samples` - Number of samples to draw
 /// * `rng` - Random number generator
 ///
@@ -372,11 +368,7 @@ pub fn systematic_resample<R: Rng>(
 /// let indices = stratified_resample(&weights, 4, &mut rng);
 /// assert_eq!(indices.len(), 4);
 /// ```
-pub fn stratified_resample<R: Rng>(
-    weights: &[f64],
-    num_samples: usize,
-    rng: &mut R,
-) -> Vec<usize> {
+pub fn stratified_resample<R: Rng>(weights: &[f64], num_samples: usize, rng: &mut R) -> Vec<usize> {
     let mut indices = Vec::with_capacity(num_samples);
     let step = 1.0 / num_samples as f64;
 
@@ -407,7 +399,7 @@ pub fn stratified_resample<R: Rng>(
 ///
 /// # Arguments
 /// * `weights` - Non-negative weights for each particle. Callers are responsible
-///               for ensuring the weights sum to 1.0 before calling this function.
+///   for ensuring the weights sum to 1.0 before calling this function.
 /// * `num_samples` - Number of samples to draw
 /// * `rng` - Random number generator
 ///
@@ -424,11 +416,7 @@ pub fn stratified_resample<R: Rng>(
 /// let indices = residual_resample(&weights, 4, &mut rng);
 /// assert_eq!(indices.len(), 4);
 /// ```
-pub fn residual_resample<R: Rng>(
-    weights: &[f64],
-    num_samples: usize,
-    rng: &mut R,
-) -> Vec<usize> {
+pub fn residual_resample<R: Rng>(weights: &[f64], num_samples: usize, rng: &mut R) -> Vec<usize> {
     let mut indices = Vec::with_capacity(num_samples);
 
     // Calculate expected number of copies for each particle
@@ -1226,20 +1214,20 @@ mod tests {
         let weights = vec![0.1, 0.3, 0.4, 0.2];
         let mut rng = rand::rngs::StdRng::seed_from_u64(42);
         let indices = multinomial_resample(&weights, 100, &mut rng);
-        
+
         assert_eq!(indices.len(), 100);
-        
+
         // All indices should be valid
         for &idx in &indices {
             assert!(idx < weights.len());
         }
-        
+
         // With 100 samples, distribution should roughly match weights
         let mut counts = vec![0; weights.len()];
         for &idx in &indices {
             counts[idx] += 1;
         }
-        
+
         // Check that higher weight particles are sampled more often
         assert!(counts[2] > counts[0]); // 0.4 > 0.1
         assert!(counts[1] > counts[0]); // 0.3 > 0.1
@@ -1250,15 +1238,15 @@ mod tests {
         let weights = vec![0.25, 0.25, 0.25, 0.25]; // Uniform weights
         let mut rng = rand::rngs::StdRng::seed_from_u64(42);
         let indices = systematic_resample(&weights, 100, &mut rng);
-        
+
         assert_eq!(indices.len(), 100);
-        
+
         // With uniform weights, each particle should be selected roughly equally
         let mut counts = vec![0; weights.len()];
         for &idx in &indices {
             counts[idx] += 1;
         }
-        
+
         // Each should be selected about 25 times
         for count in counts {
             let diff = if count > 25 { count - 25 } else { 25 - count };
@@ -1271,9 +1259,9 @@ mod tests {
         let weights = vec![0.1, 0.2, 0.3, 0.4];
         let mut rng = rand::rngs::StdRng::seed_from_u64(42);
         let indices = stratified_resample(&weights, 50, &mut rng);
-        
+
         assert_eq!(indices.len(), 50);
-        
+
         // All indices should be valid
         for &idx in &indices {
             assert!(idx < weights.len());
@@ -1285,15 +1273,15 @@ mod tests {
         let weights = vec![0.1, 0.3, 0.4, 0.2];
         let mut rng = rand::rngs::StdRng::seed_from_u64(42);
         let indices = residual_resample(&weights, 10, &mut rng);
-        
+
         assert_eq!(indices.len(), 10);
-        
+
         // Count occurrences
         let mut counts = vec![0; weights.len()];
         for &idx in &indices {
             counts[idx] += 1;
         }
-        
+
         // Particle with weight 0.4 should appear at least 4 times (deterministic part)
         // Particle with weight 0.3 should appear at least 3 times
         assert!(counts[2] >= 4); // 0.4 * 10 = 4.0
@@ -1305,17 +1293,17 @@ mod tests {
         let weights = vec![0.1, 0.2, 0.3, 0.4];
         let num_samples = 100;
         let mut rng = rand::rngs::StdRng::seed_from_u64(42);
-        
+
         // Test all resampling methods
         let multinomial_indices = multinomial_resample(&weights, num_samples, &mut rng);
         assert_eq!(multinomial_indices.len(), num_samples);
-        
+
         let systematic_indices = systematic_resample(&weights, num_samples, &mut rng);
         assert_eq!(systematic_indices.len(), num_samples);
-        
+
         let stratified_indices = stratified_resample(&weights, num_samples, &mut rng);
         assert_eq!(stratified_indices.len(), num_samples);
-        
+
         let residual_indices = residual_resample(&weights, num_samples, &mut rng);
         assert_eq!(residual_indices.len(), num_samples);
     }
@@ -1331,10 +1319,10 @@ mod tests {
             ParticleAveragingStrategy::WeightedMean,
             0.5,
         );
-        
+
         // Call resample directly
         pf.resample();
-        
+
         // Should still have 100 particles
         assert_eq!(pf.num_particles(), 100);
     }
