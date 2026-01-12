@@ -2829,73 +2829,6 @@ impl Default for ClosedLoopConfig {
         }
     }
 }
-
-/// Particle filter specific configuration
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ParticleFilterConfig {
-    /// Particle filter type
-    #[serde(default)]
-    pub filter_type: ParticleFilterType,
-    /// Number of particles
-    #[serde(default = "default_num_particles")]
-    pub num_particles: usize,
-    /// Position uncertainty standard deviation (meters)
-    #[serde(default = "default_position_std")]
-    pub position_std: f64,
-    /// Velocity uncertainty standard deviation (m/s)
-    #[serde(default = "default_velocity_std")]
-    pub velocity_std: f64,
-    /// Attitude uncertainty standard deviation (radians)
-    #[serde(default = "default_attitude_std")]
-    pub attitude_std: f64,
-    /// Accelerometer bias uncertainty standard deviation (m/s²)
-    #[serde(default = "default_accel_bias_std")]
-    pub accel_bias_std: f64,
-    /// Gyroscope bias uncertainty standard deviation (rad/s)
-    #[serde(default = "default_gyro_bias_std")]
-    pub gyro_bias_std: f64,
-    /// Process noise standard deviation for velocity-based particle filter (meters)
-    #[serde(default = "default_process_noise_std")]
-    pub process_noise_std: f64,
-}
-
-fn default_num_particles() -> usize {
-    100
-}
-fn default_position_std() -> f64 {
-    10.0
-}
-fn default_velocity_std() -> f64 {
-    1.0
-}
-fn default_attitude_std() -> f64 {
-    0.1
-}
-fn default_accel_bias_std() -> f64 {
-    0.1
-}
-fn default_gyro_bias_std() -> f64 {
-    0.01
-}
-fn default_process_noise_std() -> f64 {
-    1.0
-}
-
-impl Default for ParticleFilterConfig {
-    fn default() -> Self {
-        Self {
-            filter_type: ParticleFilterType::default(),
-            num_particles: default_num_particles(),
-            position_std: default_position_std(),
-            velocity_std: default_velocity_std(),
-            attitude_std: default_attitude_std(),
-            accel_bias_std: default_accel_bias_std(),
-            gyro_bias_std: default_gyro_bias_std(),
-            process_noise_std: default_process_noise_std(),
-        }
-    }
-}
-
 /// Log level options for simulation logging.
 ///
 /// This enum is serialized/deserialized as lowercase strings to match existing
@@ -2974,9 +2907,6 @@ pub struct SimulationConfig {
     /// Closed-loop specific settings (only used if mode is ClosedLoop)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closed_loop: Option<ClosedLoopConfig>,
-    /// Particle filter specific settings (only used if mode is ParticleFilter)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub particle_filter: Option<ParticleFilterConfig>,
     /// Geophysical measurement configuration (optional, requires --features geonav)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub geophysical: Option<GeophysicalConfig>,
@@ -3000,7 +2930,6 @@ impl Default for SimulationConfig {
             generate_plot: false,
             logging: LoggingConfig::default(),
             closed_loop: Some(ClosedLoopConfig::default()),
-            particle_filter: None,
             geophysical: None,
             gnss_degradation: crate::messages::GnssDegradationConfig::default(),
         }
@@ -3258,7 +3187,6 @@ impl Default for GeonavSimulationConfig {
         }
     }
 }
-
 impl GeonavSimulationConfig {
     /// Write the configuration to a JSON file (pretty-printed)
     pub fn to_json<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
