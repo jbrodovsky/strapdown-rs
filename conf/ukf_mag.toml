@@ -1,0 +1,45 @@
+# UKF with magnetic anomaly measurements only
+input = "data/input"
+output = "data/output/ukf/mag"
+mode = "closed-loop"
+seed = 42
+parallel = true
+
+[logging]
+level = "info"
+file = "log/ukf_mag.log"
+
+[closed_loop]
+filter = "ukf"
+file = "log/ukf_mag.log"
+
+[geophysical]
+# Magnetic anomaly measurements
+magnetic_resolution = "one_minute"
+magnetic_bias = 0.0
+magnetic_noise_std = 150.0
+# magnetic_map_file will be auto-detected if not specified
+
+# Gravity anomaly disabled for this config
+# gravity_resolution = ""
+# gravity_bias = 0.0
+# gravity_noise_std = 100.0
+
+# Measurement frequency (seconds)
+geo_frequency_s = 1.0
+
+[gnss_degradation]
+seed = 42
+
+[gnss_degradation.scheduler]
+kind = "fixed_interval"
+interval_s = 60.0
+phase_s = 0.0
+
+[gnss_degradation.fault]
+kind = "degraded"
+rho_pos = 0.99
+sigma_pos_m = 15.0
+rho_vel = 0.95
+sigma_vel_mps = 5.0
+r_scale = 15.0

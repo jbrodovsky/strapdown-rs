@@ -4,6 +4,10 @@ mode = "closed-loop"
 seed = 42
 generate_plot = true
 
+[logging]
+level = "info"
+file = "log/ekf_truth.log"
+
 [closed_loop]
 filter = "ekf"
 

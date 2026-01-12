@@ -1940,9 +1940,8 @@ pub fn run_closed_loop<F: NavigationFilter>(
 
             // Compute RMS of position covariance
             let pos_rms = (pos_std_lat.powi(2) + pos_std_lon.powi(2) + pos_std_alt.powi(2)).sqrt();
-
-            print!(
-                "\r[{:.1}%] Event {}/{} | Pos: ({:.6}°, {:.6}°, {:.1}m) | σ: ({:.2e}°, {:.2e}°, {:.2}m) | RMS: {:.2e}",
+            debug!(
+                "[{:.1}%] Event {}/{} | Pos: ({:.6}°, {:.6}°, {:.1}m) | σ: ({:.2e}°, {:.2e}°, {:.2}m) | RMS: {:.2e}",
                 (i as f64 / total as f64) * 100.0,
                 i,
                 total,
@@ -1954,8 +1953,6 @@ pub fn run_closed_loop<F: NavigationFilter>(
                 pos_std_alt,
                 pos_rms
             );
-            use std::io::Write;
-            std::io::stdout().flush().ok();
         }
 
         // Compute wall-clock time for this event
@@ -2006,7 +2003,6 @@ pub fn run_closed_loop<F: NavigationFilter>(
             results.push(NavigationResult::from((&ts, &mean, &cov)));
         }
     }
-    println!(); // Print newline after progress indicator
     debug!("Closed-loop simulation complete");
     Ok(results)
 }
@@ -2520,12 +2516,10 @@ pub fn print_sim_status<F: NavigationFilter>(filter: &F) {
     // Compute RMS of position covariance
     let pos_rms = (pos_std_lat.powi(2) + pos_std_lon.powi(2) + pos_std_alt.powi(2)).sqrt();
 
-    print!(
+    debug!(
         "\rPos: ({:.6}°, {:.6}°, {:.1}m) | σ: ({:.2e}°, {:.2e}°, {:.2}m) | RMS: {:.2e}",
         lat, lon, alt, pos_std_lat, pos_std_lon, pos_std_alt, pos_rms
     );
-    use std::io::Write;
-    std::io::stdout().flush().ok();
 }
 
 pub mod health {
