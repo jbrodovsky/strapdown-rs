@@ -675,6 +675,9 @@ impl<P: Particle> BasicParticleFilter<P> {
     ///
     /// This method now wraps the generic resampling functions provided
     /// by this module.
+    ///
+    /// Note: Weights should be normalized before resampling so that they
+    /// sum to 1.0. Call [`Self::normalize_weights`] first if needed.
     pub fn resample(&mut self) {
         let num_particles = self.particles.len();
         let weights: Vec<f64> = self.particles.iter().map(|p| p.weight()).collect();
