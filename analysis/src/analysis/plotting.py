@@ -25,19 +25,20 @@ References
 - PyGMT: https://www.pygmt.org
 """
 
+from enum import Enum
+from pathlib import Path
+from typing import Union
+
+import numpy as np
+import pygmt
+import xarray as xr
 from cartopy import crs as ccrs
 from cartopy.io import img_tiles as cimgt
 from haversine import Unit, haversine_vector
 from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
-import numpy as np
-from pathlib import Path
 from pandas import DataFrame
 from pygmt.io import load_dataarray
-from enum import Enum
-from typing import Union
-import pygmt
-import xarray as xr
 
 
 def inflate_bounds(

@@ -7,6 +7,7 @@ from argparse import ArgumentParser
 from concurrent import futures
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import pandas as pd
 from pygmt.datasets import (
     load_earth_free_air_anomaly,
@@ -14,7 +15,6 @@ from pygmt.datasets import (
     load_earth_relief,
 )
 from tqdm import tqdm
-import matplotlib.pyplot as plt
 
 from analysis.plotting import inflate_bounds, plot_street_map
 
