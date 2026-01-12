@@ -17,17 +17,31 @@
 //! while using Kalman filters for the remaining states (e.g., attitude and sensor biases), reducing
 //! the dimensionality of the particle filter and improving efficiency.
 //!
-//! # Key Components
+//! # Library Design Philosophy
+//!
+//! This module is designed as a **template-style library** that provides building blocks for
+//! implementing custom particle filter-based navigation systems. Since there is no canonical
+//! form of a particle filter-based INS, we provide generic components that users can adapt:
+//!
+//! ## Key Components
 //!
 //! - [`Particle`]: A trait defining the required methods for particle state representation
-//! - [`ParticleFilter`]: The main particle filter struct managing particles and weights
+//! - [`ParticleFilterTrait`]: A trait for marking navigation systems as particle filter-based
+//! - **Standalone resampling functions**: Generic algorithms that operate on particle weights
+//!   - [`multinomial_resample`]: Independent sampling from weighted distribution
+//!   - [`systematic_resample`]: Deterministic selection with random offset
+//!   - [`stratified_resample`]: Stratified sampling for lower variance
+//!   - [`residual_resample`]: Hybrid deterministic/random sampling
+//! - [`ParticleFilter`]: A complete implementation using the library components
 //! - [`ParticleAveragingStrategy`]: Methods for extracting state estimates from particles
-//! - [`ParticleResamplingStrategy`]: Algorithms for combating particle degeneracy
+//! - [`ParticleResamplingStrategy`]: Configuration for resampling algorithms
 //!
-//! # Usage Example
+//! # Usage Patterns
 //!
-//! To use the particle filter, you must first implement the `Particle` trait for your custom
-//! particle type:
+//! ## Using the Complete Implementation
+//!
+//! For most use cases, the provided [`ParticleFilter`] struct offers a complete, working
+//! particle filter implementation:
 //!
 //! ```rust
 //! use strapdown::particle::{Particle, ParticleFilter, ParticleResamplingStrategy, ParticleAveragingStrategy};
@@ -87,12 +101,6 @@
 //!     // particle.propagate(imu_data, dt);
 //! }
 //!
-//! // Update particle weights based on measurements
-//! // for particle in pf.particles_mut() {
-//! //     particle.update_weight(&gps_measurement);
-//! // }
-//! // pf.normalize_weights();
-//!
 //! // Resample if needed
 //! // let n_eff = pf.effective_sample_size();
 //! // if n_eff < threshold {
@@ -102,6 +110,52 @@
 //! // Get state estimate
 //! let state_estimate = pf.get_estimate();
 //! let covariance = pf.get_certainty();
+//! ```
+//!
+//! ## Building Custom Implementations
+//!
+//! For specialized applications, use the library components to build custom filters:
+//!
+//! ```rust
+//! use strapdown::particle::{Particle, ParticleFilterTrait, systematic_resample};
+//! use nalgebra::DVector;
+//! use std::any::Any;
+//! use rand::SeedableRng;
+//!
+//! struct MyParticle { state: DVector<f64>, weight: f64 }
+//!
+//! impl Particle for MyParticle {
+//!     fn as_any(&self) -> &dyn Any { self }
+//!     fn as_any_mut(&mut self) -> &mut dyn Any { self }
+//!     fn new(initial_state: &DVector<f64>, weight: f64) -> Self {
+//!         MyParticle { state: initial_state.clone(), weight }
+//!     }
+//!     fn state(&self) -> DVector<f64> { self.state.clone() }
+//!     fn update_weight<M: strapdown::measurements::MeasurementModel + ?Sized>(&mut self, _: &M) {}
+//!     fn weight(&self) -> f64 { self.weight }
+//!     fn set_weight(&mut self, weight: f64) { self.weight = weight; }
+//! }
+//!
+//! struct MyCustomFilter {
+//!     particles: Vec<MyParticle>,
+//!     rng: rand::rngs::StdRng,
+//! }
+//!
+//! impl ParticleFilterTrait for MyCustomFilter {
+//!     fn resample(&mut self) {
+//!         // Use the generic resampling function
+//!         let weights: Vec<f64> = self.particles.iter().map(|p| p.weight()).collect();
+//!         let indices = systematic_resample(&weights, self.particles.len(), &mut self.rng);
+//!         
+//!         let new_particles: Vec<MyParticle> = indices.iter()
+//!             .map(|&idx| {
+//!                 let state = self.particles[idx].state();
+//!                 MyParticle::new(&state, 1.0 / self.particles.len() as f64)
+//!             })
+//!             .collect();
+//!         self.particles = new_particles;
+//!     }
+//! }
 //! ```
 //!
 
@@ -183,6 +237,297 @@ pub enum ParticleResamplingStrategy {
     Stratified,
     /// Residual resampling: deterministic selection of high-weight particles, then random sampling for remainder
     Residual,
+}
+
+// ============= Generic Resampling Functions ===================================
+
+/// Multinomial resampling algorithm
+///
+/// Draws N independent samples from the weighted particle distribution.
+/// This is the simplest resampling method but has highest variance.
+///
+/// # Arguments
+/// * `weights` - Normalized weights for each particle (must sum to 1.0)
+/// * `num_samples` - Number of samples to draw
+/// * `rng` - Random number generator
+///
+/// # Returns
+/// Vector of indices representing which particles to keep/duplicate
+///
+/// # Example
+/// ```
+/// use strapdown::particle::multinomial_resample;
+/// use rand::SeedableRng;
+///
+/// let weights = vec![0.1, 0.3, 0.4, 0.2];
+/// let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+/// let indices = multinomial_resample(&weights, 4, &mut rng);
+/// assert_eq!(indices.len(), 4);
+/// ```
+pub fn multinomial_resample<R: Rng>(
+    weights: &[f64],
+    num_samples: usize,
+    rng: &mut R,
+) -> Vec<usize> {
+    let mut indices = Vec::with_capacity(num_samples);
+    let cumsum: Vec<f64> = weights
+        .iter()
+        .scan(0.0, |acc, &w| {
+            *acc += w;
+            Some(*acc)
+        })
+        .collect();
+
+    for _ in 0..num_samples {
+        let u: f64 = rng.random();
+        let idx = cumsum
+            .iter()
+            .position(|&c| c >= u)
+            .unwrap_or(weights.len() - 1);
+        indices.push(idx);
+    }
+
+    indices
+}
+
+/// Systematic resampling algorithm
+///
+/// More efficient and lower variance than multinomial resampling.
+/// Uses a single random number and deterministic spacing to select particles.
+///
+/// # Arguments
+/// * `weights` - Normalized weights for each particle (must sum to 1.0)
+/// * `num_samples` - Number of samples to draw
+/// * `rng` - Random number generator
+///
+/// # Returns
+/// Vector of indices representing which particles to keep/duplicate
+///
+/// # Example
+/// ```
+/// use strapdown::particle::systematic_resample;
+/// use rand::SeedableRng;
+///
+/// let weights = vec![0.1, 0.3, 0.4, 0.2];
+/// let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+/// let indices = systematic_resample(&weights, 4, &mut rng);
+/// assert_eq!(indices.len(), 4);
+/// ```
+pub fn systematic_resample<R: Rng>(
+    weights: &[f64],
+    num_samples: usize,
+    rng: &mut R,
+) -> Vec<usize> {
+    let mut indices = Vec::with_capacity(num_samples);
+    let step = 1.0 / num_samples as f64;
+    let start: f64 = rng.random::<f64>() * step;
+
+    let mut cumsum = 0.0;
+    let mut i = 0;
+
+    for j in 0..num_samples {
+        let u = start + (j as f64) * step;
+
+        while cumsum < u && i < weights.len() {
+            cumsum += weights[i];
+            i += 1;
+        }
+
+        // Ensure i is at least 1 before subtracting, and clamp to valid range
+        let idx = if i > 0 { i - 1 } else { 0 };
+        indices.push(idx.min(weights.len() - 1));
+    }
+
+    indices
+}
+
+/// Stratified resampling algorithm
+///
+/// Divides [0,1] into N equal strata and samples once per stratum.
+/// Provides lower variance than multinomial resampling while maintaining
+/// randomness compared to systematic resampling.
+///
+/// # Arguments
+/// * `weights` - Normalized weights for each particle (must sum to 1.0)
+/// * `num_samples` - Number of samples to draw
+/// * `rng` - Random number generator
+///
+/// # Returns
+/// Vector of indices representing which particles to keep/duplicate
+///
+/// # Example
+/// ```
+/// use strapdown::particle::stratified_resample;
+/// use rand::SeedableRng;
+///
+/// let weights = vec![0.1, 0.3, 0.4, 0.2];
+/// let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+/// let indices = stratified_resample(&weights, 4, &mut rng);
+/// assert_eq!(indices.len(), 4);
+/// ```
+pub fn stratified_resample<R: Rng>(
+    weights: &[f64],
+    num_samples: usize,
+    rng: &mut R,
+) -> Vec<usize> {
+    let mut indices = Vec::with_capacity(num_samples);
+    let step = 1.0 / num_samples as f64;
+
+    let mut cumsum = 0.0;
+    let mut i = 0;
+
+    for j in 0..num_samples {
+        let u = (j as f64 + rng.random::<f64>()) * step;
+
+        while cumsum < u && i < weights.len() {
+            cumsum += weights[i];
+            i += 1;
+        }
+
+        // Ensure i is at least 1 before subtracting, and clamp to valid range
+        let idx = if i > 0 { i - 1 } else { 0 };
+        indices.push(idx.min(weights.len() - 1));
+    }
+
+    indices
+}
+
+/// Residual resampling algorithm
+///
+/// Deterministically selects particles based on integer parts of N*weights,
+/// then randomly samples remaining particles. This minimizes variance while
+/// ensuring particles with high weights are always included.
+///
+/// # Arguments
+/// * `weights` - Normalized weights for each particle (must sum to 1.0)
+/// * `num_samples` - Number of samples to draw
+/// * `rng` - Random number generator
+///
+/// # Returns
+/// Vector of indices representing which particles to keep/duplicate
+///
+/// # Example
+/// ```
+/// use strapdown::particle::residual_resample;
+/// use rand::SeedableRng;
+///
+/// let weights = vec![0.1, 0.3, 0.4, 0.2];
+/// let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+/// let indices = residual_resample(&weights, 4, &mut rng);
+/// assert_eq!(indices.len(), 4);
+/// ```
+pub fn residual_resample<R: Rng>(
+    weights: &[f64],
+    num_samples: usize,
+    rng: &mut R,
+) -> Vec<usize> {
+    let mut indices = Vec::with_capacity(num_samples);
+
+    // Calculate expected number of copies for each particle
+    let n_weights: Vec<f64> = weights.iter().map(|&w| w * num_samples as f64).collect();
+
+    // Deterministic selection: take integer part of each weight
+    let mut residual_weights = Vec::with_capacity(weights.len());
+    for (i, &nw) in n_weights.iter().enumerate() {
+        let n_copies = nw.floor() as usize;
+        for _ in 0..n_copies {
+            indices.push(i);
+        }
+        // Store fractional part for residual sampling
+        residual_weights.push(nw - nw.floor());
+    }
+
+    // Normalize residual weights
+    let residual_sum: f64 = residual_weights.iter().sum();
+    if residual_sum > 0.0 {
+        for w in &mut residual_weights {
+            *w /= residual_sum;
+        }
+    }
+
+    // Random sampling for remaining particles
+    let remaining = num_samples - indices.len();
+    if remaining > 0 {
+        // Use systematic resampling for the residuals
+        let step = 1.0 / remaining as f64;
+        let start: f64 = rng.random::<f64>() * step;
+
+        let mut cumsum = 0.0;
+        let mut i = 0;
+
+        for j in 0..remaining {
+            let u = start + (j as f64) * step;
+
+            while cumsum < u && i < residual_weights.len() {
+                cumsum += residual_weights[i];
+                i += 1;
+            }
+
+            let idx = if i > 0 { i - 1 } else { 0 };
+            indices.push(idx.min(weights.len() - 1));
+        }
+    }
+
+    indices
+}
+
+// ============= ParticleFilter Trait ==========================================
+
+/// Trait for marking a navigation system as particle filter-based
+///
+/// This trait provides a common interface for all particle filter implementations.
+/// It is designed to be a thin wrapper around the generic resampling functions
+/// provided by this module.
+///
+/// # Example
+///
+/// ```
+/// use strapdown::particle::{Particle, ParticleFilterTrait, systematic_resample};
+/// use nalgebra::DVector;
+/// use std::any::Any;
+/// use rand::SeedableRng;
+///
+/// struct MyParticle { state: DVector<f64>, weight: f64 }
+///
+/// impl Particle for MyParticle {
+///     fn as_any(&self) -> &dyn Any { self }
+///     fn as_any_mut(&mut self) -> &mut dyn Any { self }
+///     fn new(initial_state: &DVector<f64>, weight: f64) -> Self {
+///         MyParticle { state: initial_state.clone(), weight }
+///     }
+///     fn state(&self) -> DVector<f64> { self.state.clone() }
+///     fn update_weight<M: strapdown::measurements::MeasurementModel + ?Sized>(&mut self, _: &M) {}
+///     fn weight(&self) -> f64 { self.weight }
+///     fn set_weight(&mut self, weight: f64) { self.weight = weight; }
+/// }
+///
+/// struct MyParticleFilter {
+///     particles: Vec<MyParticle>,
+///     rng: rand::rngs::StdRng,
+/// }
+///
+/// impl ParticleFilterTrait for MyParticleFilter {
+///     fn resample(&mut self) {
+///         let weights: Vec<f64> = self.particles.iter().map(|p| p.weight()).collect();
+///         let indices = systematic_resample(&weights, self.particles.len(), &mut self.rng);
+///         
+///         let new_particles: Vec<MyParticle> = indices.iter()
+///             .map(|&idx| {
+///                 let state = self.particles[idx].state();
+///                 MyParticle::new(&state, 1.0 / self.particles.len() as f64)
+///             })
+///             .collect();
+///         self.particles = new_particles;
+///     }
+/// }
+/// ```
+pub trait ParticleFilterTrait {
+    /// Resample particles based on their weights
+    ///
+    /// This method should implement resampling logic to combat particle degeneracy.
+    /// Implementations should use the generic resampling functions provided by this
+    /// module (systematic_resample, multinomial_resample, etc.) as appropriate.
+    fn resample(&mut self);
 }
 
 /// Generic particle filter for Bayesian state estimation
@@ -311,22 +656,27 @@ impl<P: Particle> ParticleFilter<P> {
     /// This creates a new set of particles by sampling from the current
     /// set according to their weights. High-weight particles are likely
     /// to be duplicated, while low-weight particles may be eliminated.
+    ///
+    /// This method now wraps the generic resampling functions provided
+    /// by this module.
     pub fn resample(&mut self) {
         let num_particles = self.particles.len();
         let weights: Vec<f64> = self.particles.iter().map(|p| p.weight()).collect();
 
-        // Get indices of resampled particles
+        // Get indices of resampled particles using standalone functions
         let indices = match self.resampling_strategy {
             ParticleResamplingStrategy::Multinomial => {
-                self.multinomial_resample(&weights, num_particles)
+                multinomial_resample(&weights, num_particles, &mut self.rng)
             }
             ParticleResamplingStrategy::Systematic => {
-                self.systematic_resample(&weights, num_particles)
+                systematic_resample(&weights, num_particles, &mut self.rng)
             }
             ParticleResamplingStrategy::Stratified => {
-                self.stratified_resample(&weights, num_particles)
+                stratified_resample(&weights, num_particles, &mut self.rng)
             }
-            ParticleResamplingStrategy::Residual => self.residual_resample(&weights, num_particles),
+            ParticleResamplingStrategy::Residual => {
+                residual_resample(&weights, num_particles, &mut self.rng)
+            }
         };
 
         // Create new particle set from resampled indices
@@ -339,140 +689,6 @@ impl<P: Particle> ParticleFilter<P> {
             .collect();
 
         self.particles = new_particles;
-    }
-
-    /// Multinomial resampling
-    ///
-    /// Draw N independent samples from the weighted distribution
-    fn multinomial_resample(&mut self, weights: &[f64], num_samples: usize) -> Vec<usize> {
-        let mut indices = Vec::with_capacity(num_samples);
-        let cumsum: Vec<f64> = weights
-            .iter()
-            .scan(0.0, |acc, &w| {
-                *acc += w;
-                Some(*acc)
-            })
-            .collect();
-
-        for _ in 0..num_samples {
-            let u: f64 = self.rng.random();
-            let idx = cumsum
-                .iter()
-                .position(|&c| c >= u)
-                .unwrap_or(weights.len() - 1);
-            indices.push(idx);
-        }
-
-        indices
-    }
-
-    /// Systematic resampling
-    ///
-    /// More efficient and lower variance than multinomial
-    fn systematic_resample(&mut self, weights: &[f64], num_samples: usize) -> Vec<usize> {
-        let mut indices = Vec::with_capacity(num_samples);
-        let step = 1.0 / num_samples as f64;
-        let start: f64 = self.rng.random::<f64>() * step;
-
-        let mut cumsum = 0.0;
-        let mut i = 0;
-
-        for j in 0..num_samples {
-            let u = start + (j as f64) * step;
-
-            while cumsum < u && i < weights.len() {
-                cumsum += weights[i];
-                i += 1;
-            }
-
-            // Ensure i is at least 1 before subtracting, and clamp to valid range
-            let idx = if i > 0 { i - 1 } else { 0 };
-            indices.push(idx.min(weights.len() - 1));
-        }
-
-        indices
-    }
-
-    /// Stratified resampling
-    ///
-    /// Divide [0,1] into N strata and sample once per stratum
-    fn stratified_resample(&mut self, weights: &[f64], num_samples: usize) -> Vec<usize> {
-        let mut indices = Vec::with_capacity(num_samples);
-        let step = 1.0 / num_samples as f64;
-
-        let mut cumsum = 0.0;
-        let mut i = 0;
-
-        for j in 0..num_samples {
-            let u = (j as f64 + self.rng.random::<f64>()) * step;
-
-            while cumsum < u && i < weights.len() {
-                cumsum += weights[i];
-                i += 1;
-            }
-
-            // Ensure i is at least 1 before subtracting, and clamp to valid range
-            let idx = if i > 0 { i - 1 } else { 0 };
-            indices.push(idx.min(weights.len() - 1));
-        }
-
-        indices
-    }
-
-    /// Residual resampling
-    ///
-    /// Deterministically selects particles based on integer parts of N*weights,
-    /// then randomly samples remaining particles. This minimizes variance while
-    /// ensuring particles with high weights are always included.
-    fn residual_resample(&mut self, weights: &[f64], num_samples: usize) -> Vec<usize> {
-        let mut indices = Vec::with_capacity(num_samples);
-
-        // Calculate expected number of copies for each particle
-        let n_weights: Vec<f64> = weights.iter().map(|&w| w * num_samples as f64).collect();
-
-        // Deterministic selection: take integer part of each weight
-        let mut residual_weights = Vec::with_capacity(weights.len());
-        for (i, &nw) in n_weights.iter().enumerate() {
-            let n_copies = nw.floor() as usize;
-            for _ in 0..n_copies {
-                indices.push(i);
-            }
-            // Store fractional part for residual sampling
-            residual_weights.push(nw - nw.floor());
-        }
-
-        // Normalize residual weights
-        let residual_sum: f64 = residual_weights.iter().sum();
-        if residual_sum > 0.0 {
-            for w in &mut residual_weights {
-                *w /= residual_sum;
-            }
-        }
-
-        // Random sampling for remaining particles
-        let remaining = num_samples - indices.len();
-        if remaining > 0 {
-            // Use systematic resampling for the residuals
-            let step = 1.0 / remaining as f64;
-            let start: f64 = self.rng.random::<f64>() * step;
-
-            let mut cumsum = 0.0;
-            let mut i = 0;
-
-            for j in 0..remaining {
-                let u = start + (j as f64) * step;
-
-                while cumsum < u && i < residual_weights.len() {
-                    cumsum += residual_weights[i];
-                    i += 1;
-                }
-
-                let idx = if i > 0 { i - 1 } else { 0 };
-                indices.push(idx.min(weights.len() - 1));
-            }
-        }
-
-        indices
     }
 
     /// Compute state estimate from particles using the configured averaging strategy
@@ -563,6 +779,14 @@ impl<P: Particle> ParticleFilter<P> {
     /// Returns the sample covariance computed from the particles around their mean.
     pub fn get_certainty(&self) -> DMatrix<f64> {
         self.compute_covariance()
+    }
+}
+
+// Implement ParticleFilterTrait for ParticleFilter
+impl<P: Particle> ParticleFilterTrait for ParticleFilter<P> {
+    fn resample(&mut self) {
+        // Delegate to the existing resample method
+        self.resample();
     }
 }
 
@@ -982,6 +1206,126 @@ mod tests {
 
         // N_eff should be much less than N for degenerate distribution
         assert!(n_eff < 10.0, "Expected N_eff < 10, got {}", n_eff);
+    }
+
+    // ============= Tests for standalone resampling functions ==================
+
+    #[test]
+    fn test_standalone_multinomial_resample() {
+        let weights = vec![0.1, 0.3, 0.4, 0.2];
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        let indices = multinomial_resample(&weights, 100, &mut rng);
+        
+        assert_eq!(indices.len(), 100);
+        
+        // All indices should be valid
+        for &idx in &indices {
+            assert!(idx < weights.len());
+        }
+        
+        // With 100 samples, distribution should roughly match weights
+        let mut counts = vec![0; weights.len()];
+        for &idx in &indices {
+            counts[idx] += 1;
+        }
+        
+        // Check that higher weight particles are sampled more often
+        assert!(counts[2] > counts[0]); // 0.4 > 0.1
+        assert!(counts[1] > counts[0]); // 0.3 > 0.1
+    }
+
+    #[test]
+    fn test_standalone_systematic_resample() {
+        let weights = vec![0.25, 0.25, 0.25, 0.25]; // Uniform weights
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        let indices = systematic_resample(&weights, 100, &mut rng);
+        
+        assert_eq!(indices.len(), 100);
+        
+        // With uniform weights, each particle should be selected roughly equally
+        let mut counts = vec![0; weights.len()];
+        for &idx in &indices {
+            counts[idx] += 1;
+        }
+        
+        // Each should be selected about 25 times
+        for count in counts {
+            let diff = if count > 25 { count - 25 } else { 25 - count };
+            assert!(diff <= 5); // Allow some variance
+        }
+    }
+
+    #[test]
+    fn test_standalone_stratified_resample() {
+        let weights = vec![0.1, 0.2, 0.3, 0.4];
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        let indices = stratified_resample(&weights, 50, &mut rng);
+        
+        assert_eq!(indices.len(), 50);
+        
+        // All indices should be valid
+        for &idx in &indices {
+            assert!(idx < weights.len());
+        }
+    }
+
+    #[test]
+    fn test_standalone_residual_resample() {
+        let weights = vec![0.1, 0.3, 0.4, 0.2];
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        let indices = residual_resample(&weights, 10, &mut rng);
+        
+        assert_eq!(indices.len(), 10);
+        
+        // Count occurrences
+        let mut counts = vec![0; weights.len()];
+        for &idx in &indices {
+            counts[idx] += 1;
+        }
+        
+        // Particle with weight 0.4 should appear at least 4 times (deterministic part)
+        // Particle with weight 0.3 should appear at least 3 times
+        assert!(counts[2] >= 3); // 0.4 * 10 = 4.0
+        assert!(counts[1] >= 2); // 0.3 * 10 = 3.0
+    }
+
+    #[test]
+    fn test_resampling_functions_preserve_particle_count() {
+        let weights = vec![0.1, 0.2, 0.3, 0.4];
+        let num_samples = 100;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        
+        // Test all resampling methods
+        let multinomial_indices = multinomial_resample(&weights, num_samples, &mut rng);
+        assert_eq!(multinomial_indices.len(), num_samples);
+        
+        let systematic_indices = systematic_resample(&weights, num_samples, &mut rng);
+        assert_eq!(systematic_indices.len(), num_samples);
+        
+        let stratified_indices = stratified_resample(&weights, num_samples, &mut rng);
+        assert_eq!(stratified_indices.len(), num_samples);
+        
+        let residual_indices = residual_resample(&weights, num_samples, &mut rng);
+        assert_eq!(residual_indices.len(), num_samples);
+    }
+
+    #[test]
+    fn test_particle_filter_trait_implementation() {
+        // Test that ParticleFilter implements ParticleFilterTrait
+        let initial_state = DVector::from_vec(vec![0.0, 0.0, 0.0]);
+        let mut pf = ParticleFilter::<SimpleParticle>::new(
+            &initial_state,
+            100,
+            ParticleResamplingStrategy::Systematic,
+            ParticleAveragingStrategy::WeightedMean,
+            0.5,
+        );
+        
+        // Call through the trait
+        <ParticleFilter<SimpleParticle> as ParticleFilterTrait>::resample(&mut pf);
+        
+        // Should still have 100 particles
+        assert_eq!(pf.num_particles(), 100);
     }
 }
 
