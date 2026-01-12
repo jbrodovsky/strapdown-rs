@@ -26,13 +26,13 @@
 //! ## Key Components
 //!
 //! - [`Particle`]: A trait defining the required methods for particle state representation
-//! - [`ParticleFilterTrait`]: A trait for marking navigation systems as particle filter-based
+//! - [`ParticleFilter`]: A trait for marking navigation systems as particle filter-based
 //! - **Standalone resampling functions**: Generic algorithms that operate on particle weights
 //!   - [`multinomial_resample`]: Independent sampling from weighted distribution
 //!   - [`systematic_resample`]: Deterministic selection with random offset
 //!   - [`stratified_resample`]: Stratified sampling for lower variance
 //!   - [`residual_resample`]: Hybrid deterministic/random sampling
-//! - [`ParticleFilter`]: A complete implementation using the library components
+//! - [`BasicParticleFilter`]: A complete implementation using the library components
 //! - [`ParticleAveragingStrategy`]: Methods for extracting state estimates from particles
 //! - [`ParticleResamplingStrategy`]: Configuration for resampling algorithms
 //!
@@ -40,11 +40,11 @@
 //!
 //! ## Using the Complete Implementation
 //!
-//! For most use cases, the provided [`ParticleFilter`] struct offers a complete, working
+//! For most use cases, the provided [`BasicParticleFilter`] struct offers a complete, working
 //! particle filter implementation:
 //!
 //! ```rust
-//! use strapdown::particle::{Particle, ParticleFilter, ParticleResamplingStrategy, ParticleAveragingStrategy};
+//! use strapdown::particle::{Particle, BasicParticleFilter, ParticleResamplingStrategy, ParticleAveragingStrategy};
 //! use strapdown::measurements::MeasurementModel;
 //! use nalgebra::DVector;
 //! use std::any::Any;
@@ -87,7 +87,7 @@
 //!
 //! // Create and use the particle filter
 //! let initial_state = DVector::from_vec(vec![0.0; 9]);
-//! let mut pf = ParticleFilter::<MyParticle>::new(
+//! let mut pf = BasicParticleFilter::<MyParticle>::new(
 //!     &initial_state,
 //!     1000,  // number of particles
 //!     ParticleResamplingStrategy::Systematic,
@@ -117,7 +117,7 @@
 //! For specialized applications, use the library components to build custom filters:
 //!
 //! ```rust
-//! use strapdown::particle::{Particle, ParticleFilterTrait, systematic_resample};
+//! use strapdown::particle::{Particle, ParticleFilter, systematic_resample};
 //! use nalgebra::DVector;
 //! use std::any::Any;
 //! use rand::SeedableRng;
@@ -141,10 +141,14 @@
 //!     rng: rand::rngs::StdRng,
 //! }
 //!
-//! impl ParticleFilterTrait for MyCustomFilter {
+//! impl ParticleFilter for MyCustomFilter {
 //!     fn resample(&mut self) {
-//!         // Use the generic resampling function
-//!         let weights: Vec<f64> = self.particles.iter().map(|p| p.weight()).collect();
+//!         // Extract and normalize weights
+//!         let mut weights: Vec<f64> = self.particles.iter().map(|p| p.weight()).collect();
+//!         let sum: f64 = weights.iter().sum();
+//!         if sum > 0.0 {
+//!             weights.iter_mut().for_each(|w| *w /= sum);
+//!         }
 //!         let indices = systematic_resample(&weights, self.particles.len(), &mut self.rng);
 //!         
 //!         let new_particles: Vec<MyParticle> = indices.iter()
@@ -247,7 +251,8 @@ pub enum ParticleResamplingStrategy {
 /// This is the simplest resampling method but has highest variance.
 ///
 /// # Arguments
-/// * `weights` - Normalized weights for each particle (must sum to 1.0)
+/// * `weights` - Non-negative weights for each particle. Callers are responsible
+///               for ensuring the weights sum to 1.0 before calling this function.
 /// * `num_samples` - Number of samples to draw
 /// * `rng` - Random number generator
 ///
@@ -296,7 +301,8 @@ pub fn multinomial_resample<R: Rng>(
 /// Uses a single random number and deterministic spacing to select particles.
 ///
 /// # Arguments
-/// * `weights` - Normalized weights for each particle (must sum to 1.0)
+/// * `weights` - Non-negative weights for each particle. Callers are responsible
+///               for ensuring the weights sum to 1.0 before calling this function.
 /// * `num_samples` - Number of samples to draw
 /// * `rng` - Random number generator
 ///
@@ -348,7 +354,8 @@ pub fn systematic_resample<R: Rng>(
 /// randomness compared to systematic resampling.
 ///
 /// # Arguments
-/// * `weights` - Normalized weights for each particle (must sum to 1.0)
+/// * `weights` - Non-negative weights for each particle. Callers are responsible
+///               for ensuring the weights sum to 1.0 before calling this function.
 /// * `num_samples` - Number of samples to draw
 /// * `rng` - Random number generator
 ///
@@ -399,7 +406,8 @@ pub fn stratified_resample<R: Rng>(
 /// ensuring particles with high weights are always included.
 ///
 /// # Arguments
-/// * `weights` - Normalized weights for each particle (must sum to 1.0)
+/// * `weights` - Non-negative weights for each particle. Callers are responsible
+///               for ensuring the weights sum to 1.0 before calling this function.
 /// * `num_samples` - Number of samples to draw
 /// * `rng` - Random number generator
 ///
@@ -482,7 +490,7 @@ pub fn residual_resample<R: Rng>(
 /// # Example
 ///
 /// ```
-/// use strapdown::particle::{Particle, ParticleFilterTrait, systematic_resample};
+/// use strapdown::particle::{Particle, ParticleFilter, systematic_resample};
 /// use nalgebra::DVector;
 /// use std::any::Any;
 /// use rand::SeedableRng;
@@ -506,9 +514,14 @@ pub fn residual_resample<R: Rng>(
 ///     rng: rand::rngs::StdRng,
 /// }
 ///
-/// impl ParticleFilterTrait for MyParticleFilter {
+/// impl ParticleFilter for MyParticleFilter {
 ///     fn resample(&mut self) {
-///         let weights: Vec<f64> = self.particles.iter().map(|p| p.weight()).collect();
+///         // Extract and normalize weights
+///         let mut weights: Vec<f64> = self.particles.iter().map(|p| p.weight()).collect();
+///         let sum: f64 = weights.iter().sum();
+///         if sum > 0.0 {
+///             weights.iter_mut().for_each(|w| *w /= sum);
+///         }
 ///         let indices = systematic_resample(&weights, self.particles.len(), &mut self.rng);
 ///         
 ///         let new_particles: Vec<MyParticle> = indices.iter()
@@ -521,12 +534,15 @@ pub fn residual_resample<R: Rng>(
 ///     }
 /// }
 /// ```
-pub trait ParticleFilterTrait {
+pub trait ParticleFilter {
     /// Resample particles based on their weights
     ///
     /// This method should implement resampling logic to combat particle degeneracy.
     /// Implementations should use the generic resampling functions provided by this
     /// module (systematic_resample, multinomial_resample, etc.) as appropriate.
+    ///
+    /// Note: Weights should be normalized before resampling so that they
+    /// sum to 1.0. Call weight normalization first if needed.
     fn resample(&mut self);
 }
 
@@ -551,7 +567,7 @@ pub trait ParticleFilterTrait {
 ///
 /// // Create particle filter
 /// let initial_state = DVector::from_vec(vec![0.0; 9]);
-/// let pf = ParticleFilter::<MyParticle>::new(
+/// let pf = BasicParticleFilter::<MyParticle>::new(
 ///     &initial_state,
 ///     1000, // number of particles
 ///     ParticleResamplingStrategy::Systematic,
@@ -559,7 +575,7 @@ pub trait ParticleFilterTrait {
 ///     0.5, // resampling threshold
 /// );
 /// ```
-pub struct ParticleFilter<P: Particle> {
+pub struct BasicParticleFilter<P: Particle> {
     /// Collection of particles
     particles: Vec<P>,
     /// Resampling strategy
@@ -574,7 +590,7 @@ pub struct ParticleFilter<P: Particle> {
     rng: StdRng,
 }
 
-impl<P: Particle> ParticleFilter<P> {
+impl<P: Particle> BasicParticleFilter<P> {
     /// Create a new particle filter
     ///
     /// # Arguments
@@ -782,14 +798,6 @@ impl<P: Particle> ParticleFilter<P> {
     }
 }
 
-// Implement ParticleFilterTrait for ParticleFilter
-impl<P: Particle> ParticleFilterTrait for ParticleFilter<P> {
-    fn resample(&mut self) {
-        // Delegate to the existing resample method
-        self.resample();
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -853,7 +861,7 @@ mod tests {
     #[test]
     fn test_particle_filter_construction() {
         let initial_state = DVector::from_vec(vec![0.0, 0.0, 0.0]);
-        let pf = ParticleFilter::<SimpleParticle>::new(
+        let pf = BasicParticleFilter::<SimpleParticle>::new(
             &initial_state,
             100,
             ParticleResamplingStrategy::Systematic,
@@ -874,7 +882,7 @@ mod tests {
     #[should_panic(expected = "Number of particles must be positive")]
     fn test_particle_filter_zero_particles() {
         let initial_state = DVector::from_vec(vec![0.0, 0.0, 0.0]);
-        let _pf = ParticleFilter::<SimpleParticle>::new(
+        let _pf = BasicParticleFilter::<SimpleParticle>::new(
             &initial_state,
             0,
             ParticleResamplingStrategy::Systematic,
@@ -887,7 +895,7 @@ mod tests {
     #[should_panic(expected = "Resampling threshold must be between 0.0 and 1.0")]
     fn test_particle_filter_invalid_threshold() {
         let initial_state = DVector::from_vec(vec![0.0, 0.0, 0.0]);
-        let _pf = ParticleFilter::<SimpleParticle>::new(
+        let _pf = BasicParticleFilter::<SimpleParticle>::new(
             &initial_state,
             100,
             ParticleResamplingStrategy::Systematic,
@@ -899,7 +907,7 @@ mod tests {
     #[test]
     fn test_effective_sample_size() {
         let initial_state = DVector::from_vec(vec![0.0, 0.0, 0.0]);
-        let pf = ParticleFilter::<SimpleParticle>::new(
+        let pf = BasicParticleFilter::<SimpleParticle>::new(
             &initial_state,
             100,
             ParticleResamplingStrategy::Systematic,
@@ -915,7 +923,7 @@ mod tests {
     #[test]
     fn test_normalize_weights() {
         let initial_state = DVector::from_vec(vec![0.0, 0.0, 0.0]);
-        let mut pf = ParticleFilter::<SimpleParticle>::new(
+        let mut pf = BasicParticleFilter::<SimpleParticle>::new(
             &initial_state,
             10,
             ParticleResamplingStrategy::Systematic,
@@ -938,7 +946,7 @@ mod tests {
     #[test]
     fn test_normalize_weights_all_zero() {
         let initial_state = DVector::from_vec(vec![0.0, 0.0, 0.0]);
-        let mut pf = ParticleFilter::<SimpleParticle>::new(
+        let mut pf = BasicParticleFilter::<SimpleParticle>::new(
             &initial_state,
             10,
             ParticleResamplingStrategy::Systematic,
@@ -963,7 +971,7 @@ mod tests {
     #[test]
     fn test_multinomial_resampling() {
         let initial_state = DVector::from_vec(vec![0.0, 0.0, 0.0]);
-        let mut pf = ParticleFilter::<SimpleParticle>::new(
+        let mut pf = BasicParticleFilter::<SimpleParticle>::new(
             &initial_state,
             100,
             ParticleResamplingStrategy::Multinomial,
@@ -984,7 +992,7 @@ mod tests {
     #[test]
     fn test_systematic_resampling() {
         let initial_state = DVector::from_vec(vec![0.0, 0.0, 0.0]);
-        let mut pf = ParticleFilter::<SimpleParticle>::new(
+        let mut pf = BasicParticleFilter::<SimpleParticle>::new(
             &initial_state,
             100,
             ParticleResamplingStrategy::Systematic,
@@ -1000,7 +1008,7 @@ mod tests {
     #[test]
     fn test_stratified_resampling() {
         let initial_state = DVector::from_vec(vec![0.0, 0.0, 0.0]);
-        let mut pf = ParticleFilter::<SimpleParticle>::new(
+        let mut pf = BasicParticleFilter::<SimpleParticle>::new(
             &initial_state,
             100,
             ParticleResamplingStrategy::Stratified,
@@ -1016,7 +1024,7 @@ mod tests {
     #[test]
     fn test_residual_resampling() {
         let initial_state = DVector::from_vec(vec![0.0, 0.0, 0.0]);
-        let mut pf = ParticleFilter::<SimpleParticle>::new(
+        let mut pf = BasicParticleFilter::<SimpleParticle>::new(
             &initial_state,
             100,
             ParticleResamplingStrategy::Residual,
@@ -1032,7 +1040,7 @@ mod tests {
     #[test]
     fn test_compute_state_estimate_mean() {
         let initial_state = DVector::from_vec(vec![1.0, 2.0, 3.0]);
-        let pf = ParticleFilter::<SimpleParticle>::new(
+        let pf = BasicParticleFilter::<SimpleParticle>::new(
             &initial_state,
             10,
             ParticleResamplingStrategy::Systematic,
@@ -1051,7 +1059,7 @@ mod tests {
     #[test]
     fn test_compute_state_estimate_weighted_mean() {
         let initial_state = DVector::from_vec(vec![1.0, 2.0, 3.0]);
-        let pf = ParticleFilter::<SimpleParticle>::new(
+        let pf = BasicParticleFilter::<SimpleParticle>::new(
             &initial_state,
             10,
             ParticleResamplingStrategy::Systematic,
@@ -1070,7 +1078,7 @@ mod tests {
     #[test]
     fn test_compute_state_estimate_highest_weight() {
         let initial_state = DVector::from_vec(vec![1.0, 2.0, 3.0]);
-        let mut pf = ParticleFilter::<SimpleParticle>::new(
+        let mut pf = BasicParticleFilter::<SimpleParticle>::new(
             &initial_state,
             10,
             ParticleResamplingStrategy::Systematic,
@@ -1100,7 +1108,7 @@ mod tests {
     #[test]
     fn test_compute_covariance() {
         let initial_state = DVector::from_vec(vec![0.0, 0.0, 0.0]);
-        let pf = ParticleFilter::<SimpleParticle>::new(
+        let pf = BasicParticleFilter::<SimpleParticle>::new(
             &initial_state,
             100,
             ParticleResamplingStrategy::Systematic,
@@ -1123,7 +1131,7 @@ mod tests {
     #[test]
     fn test_weight_update_and_normalization() {
         let initial_state = DVector::from_vec(vec![0.0, 0.0, 0.0]);
-        let mut pf = ParticleFilter::<SimpleParticle>::new(
+        let mut pf = BasicParticleFilter::<SimpleParticle>::new(
             &initial_state,
             50,
             ParticleResamplingStrategy::Systematic,
@@ -1169,7 +1177,7 @@ mod tests {
     fn test_particle_filter_with_different_state_dimensions() {
         // Test with 9-state vector
         let initial_state = DVector::from_vec(vec![0.0; 9]);
-        let pf = ParticleFilter::<SimpleParticle>::new(
+        let pf = BasicParticleFilter::<SimpleParticle>::new(
             &initial_state,
             50,
             ParticleResamplingStrategy::Systematic,
@@ -1185,7 +1193,7 @@ mod tests {
     #[test]
     fn test_effective_sample_size_degeneracy() {
         let initial_state = DVector::from_vec(vec![0.0, 0.0, 0.0]);
-        let mut pf = ParticleFilter::<SimpleParticle>::new(
+        let mut pf = BasicParticleFilter::<SimpleParticle>::new(
             &initial_state,
             100,
             ParticleResamplingStrategy::Systematic,
@@ -1285,8 +1293,8 @@ mod tests {
         
         // Particle with weight 0.4 should appear at least 4 times (deterministic part)
         // Particle with weight 0.3 should appear at least 3 times
-        assert!(counts[2] >= 3); // 0.4 * 10 = 4.0
-        assert!(counts[1] >= 2); // 0.3 * 10 = 3.0
+        assert!(counts[2] >= 4); // 0.4 * 10 = 4.0
+        assert!(counts[1] >= 3); // 0.3 * 10 = 3.0
     }
 
     #[test]
@@ -1311,9 +1319,9 @@ mod tests {
 
     #[test]
     fn test_particle_filter_trait_implementation() {
-        // Test that ParticleFilter implements ParticleFilterTrait
+        // Test that ParticleFilter struct's resample method works correctly
         let initial_state = DVector::from_vec(vec![0.0, 0.0, 0.0]);
-        let mut pf = ParticleFilter::<SimpleParticle>::new(
+        let mut pf = BasicParticleFilter::<SimpleParticle>::new(
             &initial_state,
             100,
             ParticleResamplingStrategy::Systematic,
@@ -1321,8 +1329,8 @@ mod tests {
             0.5,
         );
         
-        // Call through the trait
-        <ParticleFilter<SimpleParticle> as ParticleFilterTrait>::resample(&mut pf);
+        // Call resample directly
+        pf.resample();
         
         // Should still have 100 particles
         assert_eq!(pf.num_particles(), 100);
@@ -1560,7 +1568,7 @@ impl crate::InputModel for VelocityInput {
 /// ```
 pub struct VelocityParticleFilter {
     /// Underlying particle filter
-    filter: ParticleFilter<VelocityParticle>,
+    filter: BasicParticleFilter<VelocityParticle>,
     /// Process noise standard deviation (meters)
     process_noise_std: f64,
     /// Random number generator for particle propagation
@@ -1619,7 +1627,7 @@ impl VelocityParticleFilter {
             "Process noise standard deviation must be non-negative"
         );
 
-        let filter = ParticleFilter::<VelocityParticle>::new(
+        let filter = BasicParticleFilter::<VelocityParticle>::new(
             &initial_state,
             num_particles,
             ParticleResamplingStrategy::Systematic,
