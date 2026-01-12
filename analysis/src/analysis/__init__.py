@@ -1,18 +1,19 @@
-from numpy.char import index
 import os
+
+from numpy.char import index
 
 # Ensure non-interactive backend for matplotlib to avoid Tkinter GUI usage
 os.environ.setdefault("MPLBACKEND", "Agg")
 
-import numpy as np
-
 from argparse import ArgumentParser
-from pandas import read_csv, DataFrame
 from pathlib import Path
 
-from analysis.preprocess import preprocess_data
+import numpy as np
+from haversine import Unit, haversine_vector
+from pandas import DataFrame, read_csv
+
 from analysis.plotting import plot_performance, plot_relative_performance
-from haversine import haversine_vector, Unit
+from analysis.preprocess import preprocess_data
 
 __version__ = "0.1.0"
 
