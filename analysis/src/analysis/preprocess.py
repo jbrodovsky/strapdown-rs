@@ -193,7 +193,7 @@ def preprocess_data(args):
     )
     output_path.mkdir(parents=True, exist_ok=True)
 
-    #def process_dataset(dataset: Path):
+    # def process_dataset(dataset: Path):
     for dataset in tqdm(datasets):
         # dataset_path = os.path.join(args.input_dir, dataset)
         cleaned_data = pd.DataFrame()
@@ -223,7 +223,6 @@ def preprocess_data(args):
         # print(f"Street map for {dataset.name} saved to {street_map_path}.")
 
         if args.getmaps:
-        
             lon_min = cleaned_data["longitude"].min()
             lon_max = cleaned_data["longitude"].max()
             lat_min = cleaned_data["latitude"].min()
@@ -236,16 +235,13 @@ def preprocess_data(args):
             relief = load_earth_relief(
                 resolution="15s", region=[lon_min, lon_max, lat_min, lat_max]
             )
-            relief.to_netcdf(
-                output_path / f"{dataset.name}_relief.nc"            )
+            relief.to_netcdf(output_path / f"{dataset.name}_relief.nc")
             # print(f"  Downloaded relief map: {relief.data.shape}.")
 
             gravity = load_earth_free_air_anomaly(
                 resolution="01m", region=[lon_min, lon_max, lat_min, lat_max]
             )
-            gravity.to_netcdf(
-                output_path / f"{dataset.name}_gravity.nc"
-            )
+            gravity.to_netcdf(output_path / f"{dataset.name}_gravity.nc")
             # print(f"  Downloaded gravity map: {gravity.data.shape}.")
 
             magnetic = load_earth_magnetic_anomaly(
@@ -253,10 +249,7 @@ def preprocess_data(args):
                 region=[lon_min, lon_max, lat_min, lat_max],
                 data_source="wdmam",
             )
-            magnetic.to_netcdf(
-                output_path / f"{dataset.name}_magnetic.nc"
-            )
-
+            magnetic.to_netcdf(output_path / f"{dataset.name}_magnetic.nc")
 
 
 def main() -> None:
