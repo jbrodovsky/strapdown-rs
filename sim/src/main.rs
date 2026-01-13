@@ -270,9 +270,14 @@ struct ParticleFilterSimArgs {
     #[arg(long, default_value_t = 0.01)]
     gyro_bias_std: f64,
 
-    /// Process noise standard deviation for velocity-based particle filter (meters)
-    #[arg(long, default_value_t = 1.0)]
-    process_noise_std: f64,
+    /// Process noise standard deviation for the velocity-based particle filter (meters)
+    /// as `[lat_m, lon_m, alt_m]`.
+    ///
+    /// Examples:
+    /// - `--process-noise-std-m 1 1 2`
+    /// - `--process-noise-std-m 1,1,2`
+    #[arg(long, value_delimiter = ',', num_args = 3, default_value = "1,1,1")]
+    process_noise_std_m: Vec<f64>,
 
     /// GNSS scheduler settings (dropouts / reduced rate)
     #[command(flatten)]
@@ -1649,13 +1654,13 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
         None
     };
 
-    let particle_filter = if matches!(mode, SimulationMode::ParticleFilter) {
-        println!("\nParticle filter configuration uses default values.");
-        println!("Edit the generated config file to customize particle filter settings.");
-        Some(strapdown::sim::ParticleFilterConfig::default())
-    } else {
-        None
-    };
+    // let particle_filter = if matches!(mode, SimulationMode::ParticleFilter) {
+    //     println!("\nParticle filter configuration uses default values.");
+    //     println!("Edit the generated config file to customize particle filter settings.");
+    //     Some(strapdown::sim::ParticleFilterConfig::default())
+    // } else {
+    //     None
+    // };
 
     // GNSS degradation configuration
     let scheduler = prompt_gnss_scheduler();
@@ -1719,7 +1724,6 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
         generate_plot: false,
         logging,
         closed_loop,
-        particle_filter,
         geophysical,
         gnss_degradation,
     };

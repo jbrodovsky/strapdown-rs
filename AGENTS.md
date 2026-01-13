@@ -1,6 +1,6 @@
 # Repository Guidelines
 
-When asked to execute on an issue or new high-level feature request, ask the user if this should be completed on the current branch or to create a new branch
+When asked to execute on an issue or new high-level feature request, ask the user if this should be completed on the current branch or to create a new branch. This project is still in pre-1.0 development, so breaking changes may be introduced at any time and backwards compatibility need not be maintained.
 
 ## Project Structure & Module Organization
 This is a Cargo workspace with three primary crates plus supporting data/scripts.

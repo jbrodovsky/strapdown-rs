@@ -1,26 +1,27 @@
-from numpy.char import index
 import os
+
+from numpy.char import index
+
 # Ensure non-interactive backend for matplotlib to avoid Tkinter GUI usage
 os.environ.setdefault("MPLBACKEND", "Agg")
 
-import numpy as np
-
 from argparse import ArgumentParser
-from pandas import read_csv, DataFrame
 from pathlib import Path
 
-from analysis.preprocess import preprocess_data
+import numpy as np
+from haversine import Unit, haversine_vector
+from pandas import DataFrame, read_csv
+
 from analysis.plotting import plot_performance, plot_relative_performance
-from haversine import haversine_vector, Unit
+from analysis.preprocess import preprocess_data
 
 __version__ = "0.1.0"
 
 
 def main() -> None:
-
     parser = ArgumentParser(
         description="Data analysis and simulation orchestration tools for use with Strapdown-sim.",
-        epilog="For more information, visit the Strapdown-sim documentation."
+        epilog="For more information, visit the Strapdown-sim documentation.",
     )
     parser.add_argument(
         "--version",
@@ -75,14 +76,14 @@ def main() -> None:
         "--reference",
         type=str,
         help="Input directory containing the reference GPS CSV files.",
-        default="data/input"
+        default="data/input",
     )
     performance.add_argument(
         "-o",
         "--output",
         type=str,
         help="Output directory for the performance plots.",
-        default="data/output"
+        default="data/output",
     )
 
     geoperformance = command.add_parser(
@@ -99,7 +100,7 @@ def main() -> None:
         "--reference",
         type=str,
         help="Input directory containing the reference GPS CSV files.",
-        default="data/input"
+        default="data/input",
     )
     geoperformance.add_argument(
         "-d",
@@ -112,7 +113,7 @@ def main() -> None:
         "--output",
         type=str,
         help="Output directory for the geophysical performance plots.",
-        default="data/output"
+        default="data/output",
     )
 
     args = parser.parse_args()
@@ -131,7 +132,7 @@ def performance_analysis(args):
     """Generate performance plots from mechanization results."""
     input_dir = args.processed
     print(f"Generating performance plots from data in: {input_dir}")
-    
+
     datasets = list(Path(input_dir).glob("*.csv"))
     print(f"Found {len(datasets)} datasets to process.")
 
@@ -146,10 +147,23 @@ def performance_analysis(args):
     reference_path = Path(args.reference)
 
     summary_df = DataFrame(
-        columns=["Min Horizontal Error (m)", "Max Horizontal Error (m)", "Mean Horizontal Error (m)", "RMSE Horizontal Error (m)", "Min Vertical Error (m)", "Max Vertical Error (m)", "Mean Vertical Error (m)", "RMSE Vertical Error (m)", "Min 3D Error (m)", "Max 3D Error (m)", "Mean 3D Error (m)", "RMSE 3D Error (m)"],  # ty:ignore[invalid-argument-type]
+        columns=[
+            "Min Horizontal Error (m)",
+            "Max Horizontal Error (m)",
+            "Mean Horizontal Error (m)",
+            "RMSE Horizontal Error (m)",
+            "Min Vertical Error (m)",
+            "Max Vertical Error (m)",
+            "Mean Vertical Error (m)",
+            "RMSE Vertical Error (m)",
+            "Min 3D Error (m)",
+            "Max 3D Error (m)",
+            "Mean 3D Error (m)",
+            "RMSE 3D Error (m)",
+        ],  # ty:ignore[invalid-argument-type]
         index=[dataset.stem for dataset in datasets],  # ty:ignore[invalid-argument-type]
-        #index.name = "Dataset"  # ty:ignore[unknown-argument]
-        )
+        # index.name = "Dataset"  # ty:ignore[unknown-argument]
+    )
 
     for dataset in datasets:
         nav = read_csv(dataset, parse_dates=True, index_col=0)
@@ -157,21 +171,30 @@ def performance_analysis(args):
             reference_file = reference_path / dataset.name
             gps = read_csv(reference_file, parse_dates=True, index_col=0)
         except FileNotFoundError:
-            print(f"Reference file for {dataset.name} not found in {reference_path}. Skipping.")
+            print(
+                f"Reference file for {dataset.name} not found in {reference_path}. Skipping."
+            )
             continue
         output_plot = output_path / f"{dataset.stem}_performance.png"
-        print(f"Processing dataset {dataset} ({len(nav)}) with reference {reference_file.name} ({len(gps)})")
+        print(
+            f"Processing dataset {dataset} ({len(nav)}) with reference {reference_file.name} ({len(gps)})"
+        )
         try:
             plot_performance(nav, gps, output_plot)
         except Exception as e:
-            print(f"Error plotting performance for {dataset.name}, possible dimension mismatch or missing data: {e}")
+            print(
+                f"Error plotting performance for {dataset.name}, possible dimension mismatch or missing data: {e}"
+            )
             continue
         two_d_error = haversine_vector(
             gps[["latitude", "longitude"]].to_numpy()[1:, :],
             nav[["latitude", "longitude"]].to_numpy(),
             Unit.METERS,
         )
-        three_d_error = np.sqrt(two_d_error**2 + (gps["altitude"].to_numpy()[1:] - nav["altitude"].to_numpy())**2)
+        three_d_error = np.sqrt(
+            two_d_error**2
+            + (gps["altitude"].to_numpy()[1:] - nav["altitude"].to_numpy()) ** 2
+        )
         summary_df.loc[dataset.stem] = [
             np.nanmin(two_d_error),
             np.nanmax(two_d_error),
@@ -180,23 +203,27 @@ def performance_analysis(args):
             np.nanmin(gps["altitude"].to_numpy()[1:] - nav["altitude"].to_numpy()),
             np.nanmax(gps["altitude"].to_numpy()[1:] - nav["altitude"].to_numpy()),
             np.nanmean(gps["altitude"].to_numpy()[1:] - nav["altitude"].to_numpy()),
-            np.sqrt(np.nanmean((gps["altitude"].to_numpy()[1:] - nav["altitude"].to_numpy())**2)),
+            np.sqrt(
+                np.nanmean(
+                    (gps["altitude"].to_numpy()[1:] - nav["altitude"].to_numpy()) ** 2
+                )
+            ),
             np.nanmin(three_d_error),
             np.nanmax(three_d_error),
             np.nanmean(three_d_error),
             np.sqrt(np.nanmean(three_d_error**2)),
         ]
 
-
     summary_file = output_path / "performance_summary.csv"
     summary_df.to_csv(summary_file)
     print("Performance analysis completed.")
+
 
 def geophysical_performance_analysis(args):
     """Generate geophysical performance plots."""
     input_dir = args.processed
     print(f"Generating geophysical performance plots from data in: {input_dir}")
-    
+
     datasets = list(Path(input_dir).glob("*.csv"))
     print(f"Found {len(datasets)} datasets to process.")
 
@@ -221,23 +248,32 @@ def geophysical_performance_analysis(args):
             reference_file = reference_path / dataset.name
             nav = read_csv(reference_file, parse_dates=True, index_col=0)
         except FileNotFoundError:
-            print(f"Reference file for {dataset.name} not found in {reference_path}. Skipping.")
+            print(
+                f"Reference file for {dataset.name} not found in {reference_path}. Skipping."
+            )
             continue
         try:
             degraded_file = degraded_path / dataset.name
             degraded_nav = read_csv(degraded_file, parse_dates=True, index_col=0)
         except FileNotFoundError:
-            print(f"Degraded file for {dataset.name} not found in {degraded_path}. Skipping.")
+            print(
+                f"Degraded file for {dataset.name} not found in {degraded_path}. Skipping."
+            )
             continue
         output_plot = output_path / f"{dataset.stem}_geophysical_performance.png"
-        print(f"Processing dataset {dataset} ({len(nav)}) with reference {reference_file.name} ({len(nav)}) and degraded {degraded_file.name} ({len(degraded_nav)})")
+        print(
+            f"Processing dataset {dataset} ({len(nav)}) with reference {reference_file.name} ({len(nav)}) and degraded {degraded_file.name} ({len(degraded_nav)})"
+        )
         try:
             plot_relative_performance(geo, degraded_nav, nav, output_plot)
         except Exception as e:
-            print(f"Error plotting geophysical performance for {dataset.name}, possible dimension mismatch or missing data: {e}")
+            print(
+                f"Error plotting geophysical performance for {dataset.name}, possible dimension mismatch or missing data: {e}"
+            )
             continue
 
     print("Geophysical performance analysis completed.")
+
 
 if __name__ == "__main__":
     main()
