@@ -45,22 +45,18 @@ analyze performance --processed data/output/ekf/mag --reference data/input/ --ou
 
 # Particle filter simulation with post-processing
 pf-gravity = """
-pf-sim --ins-dir data/output/ukf/truth --imu-dir data/input --output-dir data/output/pf/gravity --geo-type gravity --postprocess
+pf-sim --ins-dir data/output/ukf/degraded --imu-dir data/input --output-dir data/output/pf/gravity_ukf --geo-type gravity --gravity-noise-std 48.93 --num-particles 5000 && \
+pf-sim --ins-dir data/output/ekf/degraded --imu-dir data/input --output-dir data/output/pf/gravity_ekf --geo-type gravity --gravity-noise-std 48.93 --num-particles 5000
 """
 
 pf-magnetic = """
-pf-sim --ins-dir data/output/ukf/truth --imu-dir data/input --output-dir data/output/pf/magnetic --geo-type magnetic --postprocess
+pf-sim --ins-dir data/output/ukf/degraded --imu-dir data/input --output-dir data/output/pf/magnetic_ukf --geo-type magnetic --magnetic-noise-std 42303 --num-particles 5000 && \
+pf-sim --ins-dir data/output/ekf/degraded --imu-dir data/input --output-dir data/output/pf/magnetic_ekf --geo-type magnetic --magnetic-noise-std 42303 --num-particles 5000
 """
 
 pf-combined = """
-pf-sim --ins-dir data/output/ukf/truth --imu-dir data/input --output-dir data/output/pf/combined --geo-type combined --postprocess
-"""
-
-# Run all PF simulations
-pf-all = """
-pf-sim --ins-dir data/output/ukf/truth --imu-dir data/input --output-dir data/output/pf/gravity --geo-type gravity --postprocess && \
-pf-sim --ins-dir data/output/ukf/truth --imu-dir data/input --output-dir data/output/pf/magnetic --geo-type magnetic --postprocess && \
-pf-sim --ins-dir data/output/ukf/truth --imu-dir data/input --output-dir data/output/pf/combined --geo-type combined --postprocess
+pf-sim --ins-dir data/output/ukf/degraded --imu-dir data/input --output-dir data/output/pf/combined_ukf --geo-type combined --gravity-noise-std 48.93 --magnetic-noise-std 42303 --num-particles 5000 && \
+pf-sim --ins-dir data/output/ekf/degraded --imu-dir data/input --output-dir data/output/pf/combined_ekf --geo-type combined --gravity-noise-std 48.93 --magnetic-noise-std 42303 --num-particles 5000
 """
 
 # Standalone post-processing for existing PF results
@@ -69,6 +65,8 @@ pf-postprocess -i data/output/pf/gravity && \
 pf-postprocess -i data/output/pf/magnetic && \
 pf-postprocess -i data/output/pf/combined
 """
+
+
 
 
 [dependencies]
