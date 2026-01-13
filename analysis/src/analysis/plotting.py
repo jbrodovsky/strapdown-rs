@@ -25,19 +25,21 @@ References
 - PyGMT: https://www.pygmt.org
 """
 
+from enum import Enum
+from pathlib import Path
+from typing import Union
+
+import numpy as np
+import pygmt
+import xarray as xr
 from cartopy import crs as ccrs
 from cartopy.io import img_tiles as cimgt
 from haversine import Unit, haversine_vector
 from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
-import numpy as np
-from pathlib import Path
 from pandas import DataFrame
 from pygmt.io import load_dataarray
-from enum import Enum
-from typing import Union
-import pygmt
-import xarray as xr
+
 
 def inflate_bounds(
     x_min: int | float,
@@ -138,7 +140,7 @@ def plot_performance(nav: DataFrame, gps: DataFrame, output_path: Path | str):
         linestyle="--",
     )
     ax.set_xlim(left=0)
-    #ax.set_ylim((0, 50))
+    # ax.set_ylim((0, 50))
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("2D Haversine Error (m)")
     ax.set_title(
@@ -152,8 +154,8 @@ def plot_performance(nav: DataFrame, gps: DataFrame, output_path: Path | str):
 
 def plot_relative_performance(
     geo: DataFrame,
-    deg: DataFrame, # degraded/baseline navigation
-    nav: DataFrame, # GPS-aided truth
+    deg: DataFrame,  # degraded/baseline navigation
+    nav: DataFrame,  # GPS-aided truth
     output_path: Path | str,
 ):
     """Plot relative performance: geophysical-aided nav w.r.t. degraded nav.
@@ -225,7 +227,7 @@ def plot_relative_performance(
     ax.legend()
     fig.savefig(output_path, dpi=300)
     plt.close(fig)
-    
+
 
 def plot_street_map(
     nav: DataFrame,
@@ -265,14 +267,26 @@ def plot_street_map(
     osm_tiles = cimgt.OSM()
 
     # Create a figure using Cartopy with OpenStreetMap background
-    fig, ax = plt.subplots(figsize=(12, 10), subplot_kw={"projection": ccrs.PlateCarree()})
-    ax.set_extent([lon_min - margin, lon_max + margin, lat_min - margin, lat_max + margin], crs=ccrs.PlateCarree())  # ty:ignore[unresolved-attribute]
+    fig, ax = plt.subplots(
+        figsize=(12, 10), subplot_kw={"projection": ccrs.PlateCarree()}
+    )
+    ax.set_extent(
+        [lon_min - margin, lon_max + margin, lat_min - margin, lat_max + margin],
+        crs=ccrs.PlateCarree(),
+    )  # ty:ignore[unresolved-attribute]
 
     # Add the OSM tiles to the map
     ax.add_image(osm_tiles, 12)  # ty:ignore[invalid-argument-type, too-many-positional-arguments]
 
     # Plot the trajectory (nav) using a distinct color
-    ax.plot(lon_clean, lat_clean, "-", color=nav_color, transform=ccrs.PlateCarree(), label="Nav")
+    ax.plot(
+        lon_clean,
+        lat_clean,
+        "-",
+        color=nav_color,
+        transform=ccrs.PlateCarree(),
+        label="Nav",
+    )
 
     # Optionally plot GPS/Truth in black if provided
     if gps is not None:
@@ -281,7 +295,13 @@ def plot_street_map(
             gps_lon = gps["longitude"].to_numpy(dtype=float)
             gps_mask = np.isfinite(gps_lat) & np.isfinite(gps_lon)
             if np.any(gps_mask):
-                ax.plot(gps_lon[gps_mask], gps_lat[gps_mask], "k--", transform=ccrs.PlateCarree(), label="GPS/Truth")
+                ax.plot(
+                    gps_lon[gps_mask],
+                    gps_lat[gps_mask],
+                    "k--",
+                    transform=ccrs.PlateCarree(),
+                    label="GPS/Truth",
+                )
         except Exception:
             pass
 
@@ -324,7 +344,9 @@ def plot_geo_map(
     else:
         # expect a sequence [lat_list, lon_list]
         if not isinstance(nav, (list, tuple)) or len(nav) != 2:
-            raise ValueError("If `nav` is not a DataFrame, provide (lat_list, lon_list)")
+            raise ValueError(
+                "If `nav` is not a DataFrame, provide (lat_list, lon_list)"
+            )
         lat_arr = np.asarray(nav[0], dtype=float)
         lon_arr = np.asarray(nav[1], dtype=float)
 
@@ -390,8 +412,11 @@ def plot_geo_map(
             pass
 
     if title is not None:
-        fig.text(x=region[0] + 0.02 * (region[1] - region[0]), y=region[3] - 0.02 * (region[3] - region[2]), text=title, font="14p,Helvetica-Bold")
+        fig.text(
+            x=region[0] + 0.02 * (region[1] - region[0]),
+            y=region[3] - 0.02 * (region[3] - region[2]),
+            text=title,
+            font="14p,Helvetica-Bold",
+        )
 
     return fig
-
-    
