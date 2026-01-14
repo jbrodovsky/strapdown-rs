@@ -31,6 +31,7 @@
 //! - [linearize]: Contains analytic Jacobians for strapdown mechanization and measurement models (for EKF/ESKF/RBPF-EKF).
 //! - [measurements]: Contains measurement models and utilities for processing sensor data in the context of navigation filters.
 //! - [messages]: Contains message definitions for sensor data and filter outputs used in constructing simulations.
+//! - [particle]: Contains the implementation of particle filter navigation methods.
 //! - [sim]: Contains simulation utilities for running and testing filters.
 //!
 //! ## Strapdown mechanization data and equations
@@ -798,6 +799,7 @@ pub fn position_update(state: &StrapdownState, velocity: Vector3<f64>, dt: f64) 
         alt_1,
     )
 }
+
 // --- Miscellaneous functions for wrapping angles ---
 /// Wrap an angle to the range -180 to 180 degrees
 ///

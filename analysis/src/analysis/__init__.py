@@ -260,9 +260,13 @@ def geophysical_performance_analysis(args):
                 f"Degraded file for {dataset.name} not found in {degraded_path}. Skipping."
             )
             continue
-        output_plot = output_path / f"{dataset.stem}_geophysical_performance.png"
+
+        output_plot = dataset.parent / f"{dataset.stem}_geophysical_performance.png"
+        # geo = geo.iloc[1:].copy()
+        nav = nav.iloc[1:].copy()
+        # degraded_nav = degraded_nav.iloc[1:].copy()
         print(
-            f"Processing dataset {dataset} ({len(nav)}) with reference {reference_file.name} ({len(nav)}) and degraded {degraded_file.name} ({len(degraded_nav)})"
+            f"Processing dataset {dataset} ({len(geo)}) with reference {reference_file.name} ({len(nav)}) and degraded {degraded_file.name} ({len(degraded_nav)})"
         )
         try:
             plot_relative_performance(geo, degraded_nav, nav, output_plot)
