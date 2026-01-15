@@ -886,7 +886,11 @@ impl NavigationFilter for ExtendedKalmanFilter {
         };
 
         // Compute measurement Jacobian for 9-state system
-        let h_9state = if measurement
+        // First check if the measurement provides its own Jacobian (for geophysical measurements)
+        let h_9state = if let Some(jacobian) = measurement.get_jacobian(&self.mean_state) {
+            // Measurement provides its own Jacobian (e.g., geophysical anomaly measurements)
+            jacobian
+        } else if measurement
             .as_any()
             .downcast_ref::<GPSPositionMeasurement>()
             .is_some()
