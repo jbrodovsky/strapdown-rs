@@ -115,9 +115,11 @@ impl MeasurementModel for GPSPositionMeasurement {
         ])
     }
     fn get_noise(&self) -> DMatrix<f64> {
+        // Convert horizontal noise from meters to radians for position covariance
+        let horizontal_noise_rad = (self.horizontal_noise_std * METERS_TO_DEGREES).to_radians();
         DMatrix::from_diagonal(&DVector::from_vec(vec![
-            (self.horizontal_noise_std * METERS_TO_DEGREES).powi(2),
-            (self.horizontal_noise_std * METERS_TO_DEGREES).powi(2),
+            horizontal_noise_rad.powi(2),
+            horizontal_noise_rad.powi(2),
             self.vertical_noise_std.powi(2),
         ]))
     }
@@ -209,9 +211,11 @@ impl MeasurementModel for GPSPositionAndVelocityMeasurement {
         ])
     }
     fn get_noise(&self) -> DMatrix<f64> {
+        // Convert horizontal noise from meters to radians for position covariance
+        let horizontal_noise_rad = (self.horizontal_noise_std * METERS_TO_DEGREES).to_radians();
         DMatrix::from_diagonal(&DVector::from_vec(vec![
-            (self.horizontal_noise_std * METERS_TO_DEGREES).powi(2),
-            (self.horizontal_noise_std * METERS_TO_DEGREES).powi(2),
+            horizontal_noise_rad.powi(2),
+            horizontal_noise_rad.powi(2),
             self.vertical_noise_std.powi(2),
             self.velocity_noise_std.powi(2),
             self.velocity_noise_std.powi(2),
@@ -512,9 +516,9 @@ mod tests {
         assert!((vec[1] - (-122.0_f64).to_radians()).abs() < EPS);
         assert!((vec[2] - 12.34).abs() < EPS);
 
-        // Noise diagonal entries
+        // Noise diagonal entries - should be in radians squared for lat/lon
         let noise = meas.get_noise();
-        let expected_h = (3.0 * METERS_TO_DEGREES).powi(2);
+        let expected_h = (3.0 * METERS_TO_DEGREES).to_radians().powi(2);
         let expected_v = 2.0_f64.powi(2);
         assert_eq!(noise.nrows(), 3);
         assert!((noise[(0, 0)] - expected_h).abs() < EPS);
