@@ -72,6 +72,42 @@ pub trait MeasurementModel: Any {
     ///
     /// Expected measurement given the state
     fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64>;
+
+    /// Optionally provide the measurement Jacobian for EKF updates.
+    ///
+    /// This method allows measurements to provide their own linearized measurement
+    /// model (Jacobian matrix H) for Extended Kalman Filter updates. If not provided
+    /// (returns None), the EKF will fall back to using a default Jacobian based on
+    /// the measurement type.
+    ///
+    /// For geophysical measurements (gravity anomaly, magnetic anomaly), this method
+    /// computes numerical gradients from the geophysical map to create the Jacobian.
+    ///
+    /// # Arguments
+    ///
+    /// * `state` - Current state estimate vector [lat, lon, alt, v_n, v_e, v_d, roll, pitch, yaw]
+    ///
+    /// # Returns
+    ///
+    /// Optional Jacobian matrix H (measurement_dim × 9) for EKF updates. Returns None
+    /// if the measurement does not provide its own Jacobian.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use strapdown::measurements::MeasurementModel;
+    /// use nalgebra::{DVector, DMatrix};
+    ///
+    /// // For a measurement that provides its own Jacobian:
+    /// // let h_matrix = measurement.get_jacobian(&state).unwrap();
+    ///
+    /// // For a measurement that doesn't provide a Jacobian:
+    /// // let h_matrix_opt = measurement.get_jacobian(&state);
+    /// // assert!(h_matrix_opt.is_none());
+    /// ```
+    fn get_jacobian(&self, _state: &DVector<f64>) -> Option<DMatrix<f64>> {
+        None  // Default implementation returns None
+    }
 }
 
 /// GPS position measurement model
