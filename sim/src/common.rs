@@ -38,6 +38,11 @@ pub fn init_logger(log_level: &str, log_file: Option<&PathBuf>) -> Result<(), Bo
     });
 
     if let Some(log_path) = log_file {
+        if let Some(parent) = log_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
         let target = Box::new(
             std::fs::OpenOptions::new()
                 .create(true)

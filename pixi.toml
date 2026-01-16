@@ -66,9 +66,6 @@ pf-postprocess -i data/output/pf/magnetic && \
 pf-postprocess -i data/output/pf/combined
 """
 
-
-
-
 [dependencies]
 python = ">=3.12,<3.14"
 rust = ">=1.91.0,<1.92"

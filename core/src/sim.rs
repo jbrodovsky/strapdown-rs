@@ -2836,6 +2836,33 @@ impl Default for ClosedLoopConfig {
 /// Particle filter configuration (RBPF defaults).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ParticleFilterConfig {
+    /// Number of particles in the filter.
+    #[serde(default = "default_num_particles")]
+    pub num_particles: usize,
+    /// Initial position standard deviation [lat_m, lon_m, alt_m].
+    #[serde(default = "default_position_init_std_m")]
+    pub position_init_std_m: Vec<f64>,
+    /// Initial velocity standard deviation (m/s).
+    #[serde(default = "default_velocity_init_std_mps")]
+    pub velocity_init_std_mps: f64,
+    /// Initial attitude standard deviation (rad).
+    #[serde(default = "default_attitude_init_std_rad")]
+    pub attitude_init_std_rad: f64,
+    /// Position process noise standard deviation [lat_m, lon_m, alt_m].
+    #[serde(default = "default_position_process_noise_std_m")]
+    pub position_process_noise_std_m: Vec<f64>,
+    /// Velocity process noise standard deviation (m/s).
+    #[serde(default = "default_velocity_process_noise_std_mps")]
+    pub velocity_process_noise_std_mps: f64,
+    /// Attitude process noise standard deviation (rad).
+    #[serde(default = "default_attitude_process_noise_std_rad")]
+    pub attitude_process_noise_std_rad: f64,
+    /// Initial standard deviation for geophysical bias states.
+    #[serde(default = "default_geo_bias_init_std")]
+    pub geo_bias_init_std: f64,
+    /// Random-walk process noise standard deviation for geophysical bias states.
+    #[serde(default = "default_geo_bias_process_noise_std")]
+    pub geo_bias_process_noise_std: f64,
     /// Apply zero-vertical-velocity pseudo-measurement.
     #[serde(default = "default_zero_vertical_velocity")]
     pub zero_vertical_velocity: bool,
@@ -2852,9 +2879,54 @@ fn default_zero_vertical_velocity_std_mps() -> f64 {
     0.1
 }
 
+fn default_num_particles() -> usize {
+    100
+}
+
+fn default_position_init_std_m() -> Vec<f64> {
+    vec![10.0, 10.0, 5.0]
+}
+
+fn default_velocity_init_std_mps() -> f64 {
+    1.0
+}
+
+fn default_attitude_init_std_rad() -> f64 {
+    0.1
+}
+
+fn default_position_process_noise_std_m() -> Vec<f64> {
+    vec![1.0, 1.0, 1.0]
+}
+
+fn default_velocity_process_noise_std_mps() -> f64 {
+    1e-3
+}
+
+fn default_attitude_process_noise_std_rad() -> f64 {
+    0.01
+}
+
+fn default_geo_bias_init_std() -> f64 {
+    1.0
+}
+
+fn default_geo_bias_process_noise_std() -> f64 {
+    1e-3
+}
+
 impl Default for ParticleFilterConfig {
     fn default() -> Self {
         Self {
+            num_particles: default_num_particles(),
+            position_init_std_m: default_position_init_std_m(),
+            velocity_init_std_mps: default_velocity_init_std_mps(),
+            attitude_init_std_rad: default_attitude_init_std_rad(),
+            position_process_noise_std_m: default_position_process_noise_std_m(),
+            velocity_process_noise_std_mps: default_velocity_process_noise_std_mps(),
+            attitude_process_noise_std_rad: default_attitude_process_noise_std_rad(),
+            geo_bias_init_std: default_geo_bias_init_std(),
+            geo_bias_process_noise_std: default_geo_bias_process_noise_std(),
             zero_vertical_velocity: default_zero_vertical_velocity(),
             zero_vertical_velocity_std_mps: default_zero_vertical_velocity_std_mps(),
         }

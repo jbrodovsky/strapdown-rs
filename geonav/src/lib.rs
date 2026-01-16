@@ -528,6 +528,8 @@ pub struct GravityMeasurement {
     north_velocity: f64,
     /// Current east velocity (m/s)
     east_velocity: f64,
+    /// Optional bias state index from the end of the state vector.
+    pub bias_from_end: Option<usize>,
 }
 /// Geophysical anomaly measurement model implementation for gravity. This trait provides a method to compute
 /// the gravity anomaly given the current state. Free air anomaly correction needs knowledge of the vehicle
@@ -559,10 +561,15 @@ impl MeasurementModel for GravityMeasurement {
     fn get_dimension(&self) -> usize {
         1 // Single measurement: map value at current position
     }
-    fn get_measurement(&self, _state: &DVector<f64>) -> DVector<f64> {
-        // Return the observed gravity anomaly as the measurement vector
-        // Gravity measurement is state-independent (computed from sensor data)
-        DVector::from_vec(vec![self.get_anomaly()])
+    fn get_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
+        // Return the observed gravity anomaly as the measurement vector.
+        // Use provided state if available (for per-particle updates), otherwise fallback to stored state.
+        let anomaly = if let Some((lat, alt, v_n, v_e)) = self.extract_state_inputs(state) {
+            gravity_anomaly(&lat, &alt, &v_n, &v_e, &self.gravity_observed)
+        } else {
+            self.get_anomaly()
+        };
+        DVector::from_vec(vec![anomaly])
     }
     fn get_noise(&self) -> DMatrix<f64> {
         DMatrix::from_diagonal(&DVector::from_element(
@@ -577,7 +584,14 @@ impl MeasurementModel for GravityMeasurement {
             .map
             .get_point(&lat.to_degrees(), &lon.to_degrees())
             .unwrap_or(f64::NAN);
-        DVector::from_vec(vec![map_value])
+        let bias = self.bias_from_end.and_then(|offset| {
+            if offset == 0 || state.len() < offset {
+                None
+            } else {
+                Some(state[state.len() - offset])
+            }
+        });
+        DVector::from_vec(vec![map_value + bias.unwrap_or(0.0)])
     }
 
     fn get_jacobian(&self, state: &DVector<f64>) -> Option<DMatrix<f64>> {
@@ -586,6 +600,18 @@ impl MeasurementModel for GravityMeasurement {
 }
 
 impl GravityMeasurement {
+    fn extract_state_inputs(&self, state: &DVector<f64>) -> Option<(f64, f64, f64, f64)> {
+        if state.len() >= 5
+            && state[0].is_finite()
+            && state[2].is_finite()
+            && state[3].is_finite()
+            && state[4].is_finite()
+        {
+            Some((state[0], state[2], state[3], state[4]))
+        } else {
+            None
+        }
+    }
     /// Compute measurement Jacobian for EKF
     ///
     /// Returns 1×9 Jacobian matrix where only the first two columns (∂z/∂lat, ∂z/∂lon)
@@ -635,6 +661,8 @@ pub struct MagneticAnomalyMeasurement {
     pub longitude: f64,
     /// Altitude (meters)
     pub altitude: f64,
+    /// Optional bias state index from the end of the state vector.
+    pub bias_from_end: Option<usize>,
 }
 impl GeophysicalAnomalyMeasurementModel for MagneticAnomalyMeasurement {
     fn get_anomaly(&self) -> f64 {
@@ -663,10 +691,22 @@ impl MeasurementModel for MagneticAnomalyMeasurement {
     fn get_dimension(&self) -> usize {
         1 // Single measurement: map value at current position
     }
-    fn get_measurement(&self, _state: &DVector<f64>) -> DVector<f64> {
-        // Return the observed magnetic anomaly as the measurement vector
-        // Magnetic anomaly measurement is state-independent (computed from sensor data)
-        DVector::from_vec(vec![self.get_anomaly()])
+    fn get_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
+        // Return the observed magnetic anomaly as the measurement vector.
+        // Use provided state if available (for per-particle updates), otherwise fallback to stored state.
+        let anomaly = if let Some((lat_deg, lon_deg, alt)) = self.extract_state_inputs(state) {
+            let magnetic_field = GeomagneticField::new(
+                Length::new::<meter>(alt as f32),
+                Angle::new::<degree>(lat_deg as f32),
+                Angle::new::<degree>(lon_deg as f32),
+                Date::from_ordinal_date(self.year, self.day).unwrap(),
+            )
+            .expect("Failed to create GeomagneticField");
+            self.mag_obs - magnetic_field.f().value as f64
+        } else {
+            self.get_anomaly()
+        };
+        DVector::from_vec(vec![anomaly])
     }
     fn get_noise(&self) -> DMatrix<f64> {
         DMatrix::from_diagonal(&DVector::from_element(
@@ -681,7 +721,14 @@ impl MeasurementModel for MagneticAnomalyMeasurement {
             .map
             .get_point(&lat.to_degrees(), &lon.to_degrees())
             .unwrap_or(f64::NAN);
-        DVector::from_vec(vec![map_value])
+        let bias = self.bias_from_end.and_then(|offset| {
+            if offset == 0 || state.len() < offset {
+                None
+            } else {
+                Some(state[state.len() - offset])
+            }
+        });
+        DVector::from_vec(vec![map_value + bias.unwrap_or(0.0)])
     }
 
     fn get_jacobian(&self, state: &DVector<f64>) -> Option<DMatrix<f64>> {
@@ -690,6 +737,14 @@ impl MeasurementModel for MagneticAnomalyMeasurement {
 }
 
 impl MagneticAnomalyMeasurement {
+    fn extract_state_inputs(&self, state: &DVector<f64>) -> Option<(f64, f64, f64)> {
+        if state.len() >= 3 && state[0].is_finite() && state[1].is_finite() && state[2].is_finite()
+        {
+            Some((state[0].to_degrees(), state[1].to_degrees(), state[2]))
+        } else {
+            None
+        }
+    }
     /// Compute measurement Jacobian for EKF
     ///
     /// Returns 1×9 Jacobian matrix where only the first two columns (∂z/∂lat, ∂z/∂lon)
@@ -745,6 +800,7 @@ pub fn build_event_stream(
     geo_frequency_s: Option<f64>,
 ) -> EventStream {
     let start_time = records[0].time;
+    let bias_count = gravity_map.is_some() as usize + magnetic_map.is_some() as usize;
     let records_with_elapsed: Vec<(f64, &TestDataRecord)> = records
         .iter()
         .map(|r| ((r.time - start_time).num_milliseconds() as f64 / 1000.0, r))
@@ -907,6 +963,11 @@ pub fn build_event_stream(
                     altitude: f64::NAN, // to be set in closed-loop using state
                     north_velocity: f64::NAN, // to be set in closed-loop using state
                     east_velocity: f64::NAN, // to be set in closed-loop using state
+                    bias_from_end: if bias_count > 0 {
+                        Some(bias_count)
+                    } else {
+                        None
+                    },
                 };
                 events.push(Event::Measurement {
                     meas: Box::new(meas),
@@ -930,6 +991,7 @@ pub fn build_event_stream(
                     altitude: f64::NAN,  // to be set in closed-loop using state
                     year: datetime.year(),
                     day: datetime.ordinal() as u16,
+                    bias_from_end: if bias_count > 0 { Some(1) } else { None },
                 };
                 events.push(Event::Measurement {
                     meas: Box::new(meas),
@@ -1307,15 +1369,16 @@ mod tests {
             altitude: 0.0,
             north_velocity: 3.5, // cos(45°) * 5 m/s
             east_velocity: 3.5,  // sin(45°) * 5 m/s
+            bias_from_end: None,
         };
 
         assert_eq!(measurement.get_dimension(), 1);
 
-        // Dummy state for get_measurement (gravity anomaly is state-independent)
-        let dummy_state = DVector::from_vec(vec![0.0; 9]);
+        // Dummy state for get_measurement (forces fallback to stored state)
+        let dummy_state = DVector::from_vec(vec![f64::NAN; 9]);
         let measurement_vector = measurement.get_measurement(&dummy_state);
         assert_eq!(measurement_vector.len(), 1);
-        assert_approx_eq!(measurement_vector[0], 0.00, 0.1);
+        assert_approx_eq!(measurement_vector[0], measurement.get_anomaly(), 1e-6);
 
         let noise_matrix = measurement.get_noise();
         assert_eq!(noise_matrix.nrows(), 1);
@@ -1335,19 +1398,17 @@ mod tests {
             altitude: 100.0,
             year: 2023,
             day: 216, // August 4th
+            bias_from_end: None,
         };
 
         assert_eq!(measurement.get_dimension(), 1);
 
-        // Dummy state for get_measurement (magnetic anomaly is state-independent)
-        let dummy_state = DVector::from_vec(vec![0.0; 9]);
+        // Dummy state for get_measurement (forces fallback to stored state)
+        let dummy_state = DVector::from_vec(vec![f64::NAN; 9]);
         let measurement_vector = measurement.get_measurement(&dummy_state);
         assert_eq!(measurement_vector.len(), 1);
 
-        // Should compute magnitude: sqrt(20000^2 + 5000^2 + 45000^2)
-        let expected_magnitude =
-            (20000.0_f64.powi(2) + 5000.0_f64.powi(2) + 45000.0_f64.powi(2)).sqrt();
-        assert_approx_eq!(measurement_vector[0], expected_magnitude, 1e-4);
+        assert_approx_eq!(measurement_vector[0], measurement.get_anomaly(), 1e-6);
 
         let noise_matrix = measurement.get_noise();
         assert_eq!(noise_matrix.nrows(), 1);
@@ -1366,6 +1427,7 @@ mod tests {
             altitude: f64::NAN,
             north_velocity: 3.5,
             east_velocity: 3.5,
+            bias_from_end: None,
         };
 
         // Create mock sigma points (position states in radians and meters)
@@ -1537,6 +1599,7 @@ mod tests {
             altitude: f64::NAN,
             north_velocity: 3.5,
             east_velocity: 3.5,
+            bias_from_end: None,
         };
 
         let measurement2 = GravityMeasurement {
@@ -1547,6 +1610,7 @@ mod tests {
             altitude: f64::NAN,
             north_velocity: 3.5,
             east_velocity: 3.5,
+            bias_from_end: None,
         };
 
         let noise1 = measurement1.get_noise();
@@ -1690,6 +1754,7 @@ mod tests {
             altitude: 100.0,
             north_velocity: 0.0,
             east_velocity: 0.0,
+            bias_from_end: None,
         };
 
         // Create a state vector for Jacobian computation
@@ -1730,6 +1795,7 @@ mod tests {
             altitude: 100.0,
             year: 2023,
             day: 216,
+            bias_from_end: None,
         };
 
         // Create a state vector for Jacobian computation
@@ -1771,6 +1837,7 @@ mod tests {
                 altitude: 100.0,
                 north_velocity: 0.0,
                 east_velocity: 0.0,
+                bias_from_end: None,
             });
 
         let state = DVector::from_vec(vec![
@@ -1811,6 +1878,7 @@ mod tests {
                 altitude: 100.0,
                 year: 2023,
                 day: 216,
+                bias_from_end: None,
             });
 
         let state = DVector::from_vec(vec![

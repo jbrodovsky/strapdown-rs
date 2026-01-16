@@ -57,6 +57,8 @@ use strapdown::sim::{
     SimulationMode, TestDataRecord, build_fault, build_scheduler, dead_reckoning, initialize_ekf,
     initialize_eskf, initialize_ukf, run_closed_loop,
 };
+use strapdown::sim::health::HealthMonitor;
+use strapdown::sim::HealthLimits;
 
 const LONG_ABOUT: &str =
     "STRAPDOWN SIM: A simulation and analysis tool for strapdown inertial navigation systems.
@@ -282,6 +284,14 @@ struct ParticleFilterSimArgs {
     #[arg(long, value_delimiter = ',', num_args = 3, default_value = "1,1,1")]
     process_noise_std_m: Vec<f64>,
 
+    /// Velocity process noise standard deviation (m/s).
+    #[arg(long, default_value_t = 1e-3)]
+    velocity_process_noise_std_mps: f64,
+
+    /// Attitude process noise standard deviation (rad).
+    #[arg(long, default_value_t = 0.01)]
+    attitude_process_noise_std_rad: f64,
+
     /// GNSS scheduler settings (dropouts / reduced rate)
     #[command(flatten)]
     scheduler: SchedulerArgs,
@@ -301,6 +311,14 @@ struct ParticleFilterSimArgs {
     /// Std dev for zero-vertical-velocity pseudo-measurement (m/s).
     #[arg(long, default_value_t = 0.1)]
     zero_vertical_velocity_std_mps: f64,
+
+    /// Initial standard deviation for geophysical bias states.
+    #[arg(long, default_value_t = 1.0)]
+    geo_bias_init_std: f64,
+
+    /// Random-walk process noise standard deviation for geophysical bias states.
+    #[arg(long, default_value_t = 1e-3)]
+    geo_bias_process_noise_std: f64,
 }
 
 /// Arguments for create-config command
@@ -502,19 +520,61 @@ fn process_file(
             };
 
             let pf_cfg = config.particle_filter.clone().unwrap_or_default();
+            let rbpf_defaults = RbpfConfig::default();
+            let position_init_std_m = if pf_cfg.position_init_std_m.len() == 3 {
+                Vector3::new(
+                    pf_cfg.position_init_std_m[0],
+                    pf_cfg.position_init_std_m[1],
+                    pf_cfg.position_init_std_m[2],
+                )
+            } else {
+                rbpf_defaults.position_init_std_m
+            };
+            let position_process_noise_std_m = if pf_cfg.position_process_noise_std_m.len() == 3 {
+                Vector3::new(
+                    pf_cfg.position_process_noise_std_m[0],
+                    pf_cfg.position_process_noise_std_m[1],
+                    pf_cfg.position_process_noise_std_m[2],
+                )
+            } else {
+                rbpf_defaults.position_process_noise_std_m
+            };
+            #[cfg(feature = "geonav")]
+            let geo_bias_dim = gravity_map.is_some() as usize + magnetic_map.is_some() as usize;
+            #[cfg(not(feature = "geonav"))]
+            let geo_bias_dim = 0usize;
             let mut rbpf = RaoBlackwellizedParticleFilter::new(
                 nominal,
                 RbpfConfig {
+                    num_particles: pf_cfg.num_particles,
+                    position_init_std_m,
+                    velocity_init_std_mps: pf_cfg.velocity_init_std_mps,
+                    attitude_init_std_rad: pf_cfg.attitude_init_std_rad,
+                    position_process_noise_std_m,
+                    velocity_process_noise_std_mps: pf_cfg.velocity_process_noise_std_mps,
+                    attitude_process_noise_std_rad: pf_cfg.attitude_process_noise_std_rad,
+                    extra_state_dim: geo_bias_dim,
+                    extra_state_init_std: if geo_bias_dim > 0 {
+                        pf_cfg.geo_bias_init_std
+                    } else {
+                        0.0
+                    },
+                    extra_state_process_noise_std: if geo_bias_dim > 0 {
+                        pf_cfg.geo_bias_process_noise_std
+                    } else {
+                        0.0
+                    },
                     seed: config.seed,
                     zero_vertical_velocity: pf_cfg.zero_vertical_velocity,
                     zero_vertical_velocity_std_mps: pf_cfg.zero_vertical_velocity_std_mps,
-                    ..RbpfConfig::default()
+                    ..rbpf_defaults
                 },
             );
 
             let start_time = event_stream.start_time;
             let mut results = Vec::with_capacity(event_stream.events.len());
             let mut last_ts: Option<chrono::DateTime<chrono::Utc>> = None;
+            let mut monitor = HealthMonitor::new(HealthLimits::default());
 
             for event in event_stream.events.into_iter() {
                 let elapsed_s = match &event {
@@ -549,9 +609,13 @@ fn process_file(
                     }
                 }
 
+                let (mean, cov) = rbpf.estimate();
+                if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
+                    return Err(e.into());
+                }
+
                 if Some(ts) != last_ts {
                     if let Some(prev_ts) = last_ts {
-                        let (mean, cov) = rbpf.estimate();
                         results.push(NavigationResult::from_particle_filter(
                             &prev_ts, &mean, &cov,
                         ));
@@ -563,6 +627,28 @@ fn process_file(
             let output_file = output.join(input_file.file_name().unwrap());
             NavigationResult::to_csv(&results, &output_file)?;
             info!("Results written to {}", output_file.display());
+
+            #[cfg(feature = "plotting")]
+            if config.generate_plot {
+                let plot_path = output_file.with_extension("png");
+                info!("Generating performance plot at {}", plot_path.display());
+
+                match plotting::plot_performance(&results, &records, &plot_path) {
+                    Ok(()) => {
+                        info!("Performance plot generated successfully");
+                    }
+                    Err(e) => {
+                        error!("Failed to generate performance plot: {}", e);
+                    }
+                }
+            }
+
+            #[cfg(not(feature = "plotting"))]
+            if config.generate_plot {
+                error!(
+                    "Plotting requested but 'plotting' feature not enabled. Rebuild with --features plotting"
+                );
+            }
 
             Ok(())
         }
@@ -1292,6 +1378,11 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
             build_event_stream(&records, &gnss_degradation)
         };
 
+        #[cfg(feature = "geonav")]
+        let geo_bias_dim = gravity_map.is_some() as usize + magnetic_map.is_some() as usize;
+        #[cfg(not(feature = "geonav"))]
+        let geo_bias_dim = 0usize;
+
         let first = &records[0];
         let attitude = Rotation3::from_euler_angles(first.roll, first.pitch, first.yaw);
         let nominal = strapdown::StrapdownState {
@@ -1321,8 +1412,19 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
             velocity_init_std_mps: args.velocity_std,
             attitude_init_std_rad: args.attitude_std,
             position_process_noise_std_m: process_noise_std_m,
-            velocity_process_noise_std_mps: args.velocity_std,
-            attitude_process_noise_std_rad: args.attitude_std,
+            velocity_process_noise_std_mps: args.velocity_process_noise_std_mps,
+            attitude_process_noise_std_rad: args.attitude_process_noise_std_rad,
+            extra_state_dim: geo_bias_dim,
+            extra_state_init_std: if geo_bias_dim > 0 {
+                args.geo_bias_init_std
+            } else {
+                0.0
+            },
+            extra_state_process_noise_std: if geo_bias_dim > 0 {
+                args.geo_bias_process_noise_std
+            } else {
+                0.0
+            },
             seed: args.seed,
             zero_vertical_velocity: args.zero_vertical_velocity,
             zero_vertical_velocity_std_mps: args.zero_vertical_velocity_std_mps,
@@ -1334,6 +1436,7 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
         let start_time = event_stream.start_time;
         let mut results = Vec::with_capacity(event_stream.events.len());
         let mut last_ts: Option<chrono::DateTime<chrono::Utc>> = None;
+        let mut monitor = HealthMonitor::new(HealthLimits::default());
 
         for event in event_stream.events.into_iter() {
             let elapsed_s = match &event {
@@ -1368,9 +1471,13 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
                 }
             }
 
+            let (mean, cov) = rbpf.estimate();
+            if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
+                return Err(e.into());
+            }
+
             if Some(ts) != last_ts {
                 if let Some(prev_ts) = last_ts {
-                    let (mean, cov) = rbpf.estimate();
                     results.push(NavigationResult::from_particle_filter(
                         &prev_ts, &mean, &cov,
                     ));
