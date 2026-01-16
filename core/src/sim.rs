@@ -1914,13 +1914,19 @@ pub fn run_closed_loop<F: NavigationFilter>(
     let start_time = stream.start_time;
     let mut results: Vec<NavigationResult> = Vec::with_capacity(stream.events.len());
     let total = stream.events.len();
-    let mut last_ts: Option<DateTime<Utc>> = None;
     let mut monitor = HealthMonitor::new(health_limits.unwrap_or_default());
 
     info!(
         "Starting closed-loop navigation filter with {} events",
         total
     );
+
+    // Store the initial state (before processing any events)
+    let mean = filter.get_estimate();
+    let cov = filter.get_certainty();
+    results.push(NavigationResult::from((&start_time, &mean, &cov)));
+    debug!("Initial filter state at {}: {:?}", start_time, mean);
+    let mut last_ts = start_time;
 
     for (i, event) in stream.events.into_iter().enumerate() {
         // Print detailed progress every 100 iterations or at key milestones
@@ -1987,23 +1993,13 @@ pub fn run_closed_loop<F: NavigationFilter>(
             }
         }
 
-        // If timestamp changed, or it's the last event, record the previous state
-        if Some(ts) != last_ts {
-            if let Some(prev_ts) = last_ts {
-                let mean = filter.get_estimate();
-                let cov = filter.get_certainty();
-                results.push(NavigationResult::from((&prev_ts, &mean, &cov)));
-                debug!("Filter state at {}: {:?}", ts, mean);
-            }
-            last_ts = Some(ts);
-        }
-
-        // If this is the last event, also push
-        if i == total - 1 {
+        // Store state when timestamp changes
+        if ts != last_ts {
             let mean = filter.get_estimate();
             let cov = filter.get_certainty();
-            debug!("Filter state at {}: {:?}", ts, mean);
             results.push(NavigationResult::from((&ts, &mean, &cov)));
+            debug!("Filter state at {}: {:?}", ts, mean);
+            last_ts = ts;
         }
     }
     debug!("Closed-loop simulation complete");
