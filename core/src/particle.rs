@@ -33,16 +33,11 @@
 //!   - [`stratified_resample`]: Stratified sampling for lower variance
 //!   - [`residual_resample`]: Hybrid deterministic/random sampling
 
-
 use std::any::Any;
-use std::vec;
 
-use crate::{StrapdownState, NavigationFilter, forward, IMUData};
-use crate::measurements::MeasurementModel;
 
-use nalgebra::{DMatrix, DVector, Rotation3, Vector3};
+use nalgebra::DVector;
 use rand::prelude::*;
-use rand_distr::Normal;
 
 /// Trait defining the interface for particle state representation
 ///

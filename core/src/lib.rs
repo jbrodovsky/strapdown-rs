@@ -155,6 +155,7 @@ pub mod linearize;
 pub mod measurements;
 pub mod messages;
 pub mod particle;
+pub mod rbpf;
 pub mod sim;
 
 use nalgebra::{DMatrix, DVector, Matrix3, Rotation3, Vector3, Vector6};
@@ -163,9 +164,9 @@ use std::any::Any;
 use std::convert::{From, Into, TryFrom};
 use std::fmt::{self, Debug, Display};
 
-use crate::measurements::MeasurementModel;
 #[cfg(test)]
 use crate::measurements::GPSPositionMeasurement;
+use crate::measurements::MeasurementModel;
 
 /// Generic Bayesian Navigation filter trait that provides the generic
 /// interface used across all types of Bayesian based filters
@@ -976,13 +977,18 @@ pub(crate) fn calculate_constant_velocity_acceleration(
     ));
 
     // Get Earth rotation rate in local-level frame
-    let rotation_rate = earth::vector_to_skew_symmetric(&earth::earth_rate_lla(&state.latitude.to_degrees()));
+    let rotation_rate =
+        earth::vector_to_skew_symmetric(&earth::earth_rate_lla(&state.latitude.to_degrees()));
 
     // Get geocentric radius factor
     let r = earth::ecef_to_lla(&state.latitude.to_degrees(), &state.longitude.to_degrees());
 
     // Get gravity in local-level frame
-    let mut gravity = Vector3::new(0.0, 0.0, earth::gravity(&state.latitude.to_degrees(), &state.altitude));
+    let mut gravity = Vector3::new(
+        0.0,
+        0.0,
+        earth::gravity(&state.latitude.to_degrees(), &state.altitude),
+    );
     gravity = if state.is_enu { -gravity } else { gravity };
 
     // For constant velocity: specific_force + gravity - r*(transport_rate + 2*rotation_rate)*velocity = 0
@@ -1022,16 +1028,20 @@ pub fn generate_scenario_data(
     geosynchronous: bool,
     constant_velocity: bool,
     _coords_in_degrees: bool, // DEPRECATED: GPS always outputs degrees, kept for backwards compatibility
-) -> (Vec<IMUData>, Vec<GPSPositionMeasurement>, Vec<StrapdownState>) {
+) -> (
+    Vec<IMUData>,
+    Vec<GPSPositionMeasurement>,
+    Vec<StrapdownState>,
+) {
     let num_samples = duration_seconds * sample_rate_hz;
     let dt = 1.0 / sample_rate_hz as f64;
-    
+
     let mut imu_data = Vec::with_capacity(num_samples);
     let mut gps_measurements = Vec::with_capacity(num_samples);
     let mut true_states = Vec::with_capacity(num_samples);
-    
+
     let mut current_state = initial_state;
-    
+
     for i in 0..num_samples {
         // Store current true state (lat/lon in radians)
         true_states.push(current_state);
@@ -1089,14 +1099,24 @@ pub fn generate_scenario_data(
         let f = 0.5 * (c_0.matrix() + c_1) * accel_body_actual;
         let velocity = velocity_update(&current_state, f, dt);
         let (lat_1, lon_1, alt_1) = position_update(&current_state, velocity, dt);
-        
+
         if i % (60 * sample_rate_hz) == 0 {
-            println!("Time: {}s, IMU Accel: ({:.4}, {:.4}, {:.4}) m/s² | Gyro: ({:.4}, {:.4}, {:.4}) rad/s | GPS Pos: ({:.3}°, {:.3}°, {:.1}m) | Velocities: N: {:.3} m/s, E: {:.3} m/s, V: {:.3} m/s", 
+            println!(
+                "Time: {}s, IMU Accel: ({:.4}, {:.4}, {:.4}) m/s² | Gyro: ({:.4}, {:.4}, {:.4}) rad/s | GPS Pos: ({:.3}°, {:.3}°, {:.1}m) | Velocities: N: {:.3} m/s, E: {:.3} m/s, V: {:.3} m/s",
                 i / sample_rate_hz,
-                imu.accel[0], imu.accel[1], imu.accel[2],
-                imu.gyro[0], imu.gyro[1], imu.gyro[2],
-                gps_meas.latitude, gps_meas.longitude, gps_meas.altitude,
-                velocity[0], velocity[1], velocity[2]);
+                imu.accel[0],
+                imu.accel[1],
+                imu.accel[2],
+                imu.gyro[0],
+                imu.gyro[1],
+                imu.gyro[2],
+                gps_meas.latitude,
+                gps_meas.longitude,
+                gps_meas.altitude,
+                velocity[0],
+                velocity[1],
+                velocity[2]
+            );
         }
 
         current_state.latitude = lat_1;
@@ -1107,7 +1127,7 @@ pub fn generate_scenario_data(
         current_state.velocity_vertical = velocity[2];
         current_state.attitude = Rotation3::from_matrix(&c_1);
     }
-    
+
     (imu_data, gps_measurements, true_states)
 }
 
@@ -1587,7 +1607,7 @@ mod tests {
             longitude: 0.0_f64.to_radians(), // Already in radians
             altitude: 1000.0,
             velocity_north: 0.0,
-            velocity_east: vel.clone(),  // 10 m/s eastward
+            velocity_east: vel.clone(), // 10 m/s eastward
             velocity_vertical: 0.0,
             attitude: Rotation3::identity(),
             is_enu: true,
@@ -1598,9 +1618,9 @@ mod tests {
         // - In ENU with identity attitude (body frame = nav frame), this is [0, 0, +g]
         // - Geosynchronous = true because vehicle maintains fixed attitude relative to local-level frame
         //   (the vehicle rotates WITH Earth even though it's moving across Earth's surface)
-        let g = earth::gravity(&0.0, &1000.0);  // Use equator gravity for consistency with initial_state
-        let accel_body = Vector3::new(0.0, 0.0, g);  // Normal force counteracting gravity
-        let gyro_body = Vector3::new(0.0, 0.0, 0.0);  // No rotation beyond Earth's rotation
+        let g = earth::gravity(&0.0, &1000.0); // Use equator gravity for consistency with initial_state
+        let accel_body = Vector3::new(0.0, 0.0, g); // Normal force counteracting gravity
+        let gyro_body = Vector3::new(0.0, 0.0, 0.0); // No rotation beyond Earth's rotation
 
         // Note: Use short duration to minimize Coriolis drift.
         // For passive flight (no thrust), Coriolis forces will cause ~1.5mm/s² acceleration
@@ -1614,9 +1634,9 @@ mod tests {
             sample_rate_hz,
             accel_body,
             gyro_body,
-            true,  // Geosynchronous - maintains fixed attitude relative to local-level frame
-            true,  // Constant velocity - calculate exact acceleration needed
-            false
+            true, // Geosynchronous - maintains fixed attitude relative to local-level frame
+            true, // Constant velocity - calculate exact acceleration needed
+            false,
         );
 
         // Verify we generated the expected number of samples
@@ -1629,37 +1649,68 @@ mod tests {
         let final_gps = gps_measurements.last().unwrap();
 
         // Verify GPS measurements are in degrees
-        assert!(final_gps.latitude.abs() < 90.0, "GPS latitude should be in degrees");
-        assert!(final_gps.longitude.abs() < 180.0, "GPS longitude should be in degrees");
-        
+        assert!(
+            final_gps.latitude.abs() < 90.0,
+            "GPS latitude should be in degrees"
+        );
+        assert!(
+            final_gps.longitude.abs() < 180.0,
+            "GPS longitude should be in degrees"
+        );
+
         // Verify true_states are in radians
-        assert!(final_state.latitude.abs() < std::f64::consts::PI, "State latitude should be in radians");
-        assert!(final_state.longitude.abs() < std::f64::consts::PI, "State longitude should be in radians");
+        assert!(
+            final_state.latitude.abs() < std::f64::consts::PI,
+            "State latitude should be in radians"
+        );
+        assert!(
+            final_state.longitude.abs() < std::f64::consts::PI,
+            "State longitude should be in radians"
+        );
 
         // With constant_velocity mode, we should maintain EXACTLY constant velocity
         // Only numerical integration errors should cause drift
-        println!("Initial altitude: {:.2} m, Final altitude: {:.2} m (drift: {:.3} m)",
-                 initial_state.altitude, final_state.altitude,
-                 final_state.altitude - initial_state.altitude);
-        println!("Initial velocities: N={:.3} m/s, E={:.3} m/s, V={:.3} m/s",
-                 initial_state.velocity_north, initial_state.velocity_east, initial_state.velocity_vertical);
-        println!("Final velocities: N={:.3} m/s, E={:.3} m/s, V={:.3} m/s",
-                 final_state.velocity_north, final_state.velocity_east, final_state.velocity_vertical);
+        println!(
+            "Initial altitude: {:.2} m, Final altitude: {:.2} m (drift: {:.3} m)",
+            initial_state.altitude,
+            final_state.altitude,
+            final_state.altitude - initial_state.altitude
+        );
+        println!(
+            "Initial velocities: N={:.3} m/s, E={:.3} m/s, V={:.3} m/s",
+            initial_state.velocity_north,
+            initial_state.velocity_east,
+            initial_state.velocity_vertical
+        );
+        println!(
+            "Final velocities: N={:.3} m/s, E={:.3} m/s, V={:.3} m/s",
+            final_state.velocity_north, final_state.velocity_east, final_state.velocity_vertical
+        );
 
         // Tolerances are tight since we're compensating for all physics
         // Small drift is only from numerical integration (Euler method)
         assert_approx_eq!(final_state.altitude, initial_state.altitude, 1.0);
         assert_approx_eq!(final_state.velocity_east, initial_state.velocity_east, 0.01);
-        assert_approx_eq!(final_state.velocity_north, initial_state.velocity_north, 0.01);
-        assert_approx_eq!(final_state.velocity_vertical, initial_state.velocity_vertical, 0.01);
+        assert_approx_eq!(
+            final_state.velocity_north,
+            initial_state.velocity_north,
+            0.01
+        );
+        assert_approx_eq!(
+            final_state.velocity_vertical,
+            initial_state.velocity_vertical,
+            0.01
+        );
 
         // Position should have changed according to velocity (eastward motion)
         // Approximate distance = velocity * time = 10 m/s * 3600 s = 36000 m
         let distance_approx = vel * duration_seconds as f64; // m
         let lon_change_approx = distance_approx * earth::METERS_TO_DEGREES;
-        println!("Expected lon change: {:.6}°, Actual lon change: {:.6}°",
-                 lon_change_approx,
-                 (final_state.longitude - initial_state.longitude).to_degrees());
+        println!(
+            "Expected lon change: {:.6}°, Actual lon change: {:.6}°",
+            lon_change_approx,
+            (final_state.longitude - initial_state.longitude).to_degrees()
+        );
     }
 
     /// Test synthetic trajectory generation for stationary vehicle at rest in ENU frame
@@ -1669,7 +1720,7 @@ mod tests {
         // AND Earth's rotation rate (geosynchronous - stationary relative to Earth's surface)
         // StrapdownState stores lat/lon in radians internally
         let initial_state = StrapdownState {
-            latitude: 40.0_f64.to_radians(),  // Already in radians
+            latitude: 40.0_f64.to_radians(),    // Already in radians
             longitude: -105.0_f64.to_radians(), // Already in radians
             altitude: 1000.0,
             velocity_north: 0.0,
@@ -1683,8 +1734,8 @@ mod tests {
         // - Accelerometer senses normal force (not free-fall)
         // - Gyro senses Earth's rotation (added automatically with geosynchronous=true)
         let g = earth::gravity(&40.0, &1000.0);
-        let accel_body = Vector3::new(0.0, 0.0, g);  // Normal force counteracting gravity
-        let gyro_body = Vector3::new(0.0, 0.0, 0.0);  // No additional rotation beyond Earth
+        let accel_body = Vector3::new(0.0, 0.0, g); // Normal force counteracting gravity
+        let gyro_body = Vector3::new(0.0, 0.0, 0.0); // No additional rotation beyond Earth
 
         let duration_seconds = 3600; // 1 hour
         let sample_rate_hz = 1;
@@ -1695,9 +1746,9 @@ mod tests {
             sample_rate_hz,
             accel_body,
             gyro_body,
-            true,  // Geosynchronous - stationary on Earth's surface
-            true,  // Constant velocity (zero) - calculate exact acceleration needed
-            false
+            true, // Geosynchronous - stationary on Earth's surface
+            true, // Constant velocity (zero) - calculate exact acceleration needed
+            false,
         );
 
         // Check final state - everything should remain constant
@@ -1705,17 +1756,27 @@ mod tests {
         let final_gps = _gps_measurements.last().unwrap();
 
         // Verify GPS measurements are in degrees
-        assert!(final_gps.latitude.abs() < 90.0, "GPS latitude should be in degrees");
+        assert!(
+            final_gps.latitude.abs() < 90.0,
+            "GPS latitude should be in degrees"
+        );
         assert_approx_eq!(final_gps.latitude, 40.0, 0.01); // Should be ~40° N
-        
+
         // Verify true_states are in radians
-        assert!(final_state.latitude.abs() < std::f64::consts::PI, "State latitude should be in radians");
+        assert!(
+            final_state.latitude.abs() < std::f64::consts::PI,
+            "State latitude should be in radians"
+        );
         assert_approx_eq!(final_state.latitude, 40.0_f64.to_radians(), 1e-6);
 
-        println!("Initial altitude: {:.2} m, Final altitude: {:.2} m",
-                 initial_state.altitude, final_state.altitude);
-        println!("Final velocities: N={:.4}, E={:.4}, V={:.4}",
-                 final_state.velocity_north, final_state.velocity_east, final_state.velocity_vertical);
+        println!(
+            "Initial altitude: {:.2} m, Final altitude: {:.2} m",
+            initial_state.altitude, final_state.altitude
+        );
+        println!(
+            "Final velocities: N={:.4}, E={:.4}, V={:.4}",
+            final_state.velocity_north, final_state.velocity_east, final_state.velocity_vertical
+        );
 
         // Position and velocity should remain approximately constant
         assert_approx_eq!(final_state.altitude, initial_state.altitude, 0.1);
