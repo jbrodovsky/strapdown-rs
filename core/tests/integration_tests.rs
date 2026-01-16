@@ -1918,3 +1918,112 @@ fn test_rbpf_with_degraded_gnss() {
         assert!(result.altitude.is_finite());
     }
 }
+
+
+/// Test that filter output length matches input data length
+///
+/// This test verifies that all filter implementations (UKF, EKF, ESKF, dead reckoning)
+/// produce output with the same number of records as the input data. This is critical for
+/// downstream analysis tools that expect aligned data streams.
+#[test]
+fn test_filter_output_length_matches_input() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let test_data_path = Path::new(manifest_dir).join("tests/test_data.csv");
+    let records = load_test_data(&test_data_path);
+
+    assert!(
+        !records.is_empty(),
+        "Test data should contain at least one record"
+    );
+
+    let input_length = records.len();
+    println!("Testing with {} input records", input_length);
+
+    // Test dead reckoning
+    let dr_results = dead_reckoning(&records);
+    assert_eq!(
+        dr_results.len(),
+        input_length,
+        "Dead reckoning output length {} should match input length {}",
+        dr_results.len(),
+        input_length
+    );
+    println!("✓ Dead reckoning: {} outputs for {} inputs", dr_results.len(), input_length);
+
+    // Create initial state from first record
+    let initial_state = create_initial_state(&records[0]);
+    let imu_biases = vec![0.0; 6]; // Zero initial bias estimates
+    let initial_covariance = DEFAULT_INITIAL_COVARIANCE.to_vec();
+    let process_noise = DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec()));
+    let degradation = GnssDegradationConfig::default();
+
+    // Test UKF
+    let mut ukf = UnscentedKalmanFilter::new(
+        initial_state.clone(),
+        imu_biases.clone(),
+        None, // No measurement bias
+        initial_covariance.clone(),
+        process_noise.clone(),
+        1e-3, // alpha
+        2.0,  // beta
+        0.0,  // kappa
+    );
+
+    let event_stream = build_event_stream(&records, &degradation);
+    let ukf_results = run_closed_loop(&mut ukf, event_stream, None)
+        .expect("UKF closed loop should complete successfully");
+
+    assert_eq!(
+        ukf_results.len(),
+        input_length,
+        "UKF output length {} should match input length {}",
+        ukf_results.len(),
+        input_length
+    );
+    println!("✓ UKF: {} outputs for {} inputs", ukf_results.len(), input_length);
+
+    // Test EKF
+    let mut ekf = ExtendedKalmanFilter::new(
+        initial_state.clone(),
+        imu_biases.clone(),
+        initial_covariance.clone(),
+        process_noise.clone(),
+        true,
+    );
+
+    let event_stream = build_event_stream(&records, &degradation);
+    let ekf_results = run_closed_loop(&mut ekf, event_stream, None)
+        .expect("EKF closed loop should complete successfully");
+
+    assert_eq!(
+        ekf_results.len(),
+        input_length,
+        "EKF output length {} should match input length {}",
+        ekf_results.len(),
+        input_length
+    );
+    println!("✓ EKF: {} outputs for {} inputs", ekf_results.len(), input_length);
+
+    // Test ESKF
+    let mut eskf = ErrorStateKalmanFilter::new(
+        initial_state,
+        imu_biases,
+        initial_covariance,
+        process_noise,
+    );
+
+    let event_stream = build_event_stream(&records, &degradation);
+    let eskf_results = run_closed_loop(&mut eskf, event_stream, None)
+        .expect("ESKF closed loop should complete successfully");
+
+    assert_eq!(
+        eskf_results.len(),
+        input_length,
+        "ESKF output length {} should match input length {}",
+        eskf_results.len(),
+        input_length
+    );
+    println!("✓ ESKF: {} outputs for {} inputs", eskf_results.len(), input_length);
+
+    println!("\n✅ All filters produce output length matching input length: {}", input_length);
+}
