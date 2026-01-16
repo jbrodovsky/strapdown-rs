@@ -5,10 +5,7 @@
 //! provided in the top-level [lib] module.
 
 use crate::linalg::{matrix_square_root, robust_spd_solve, symmetrize};
-use crate::measurements::{
-    GPSPositionAndVelocityMeasurement, GPSPositionMeasurement, GPSVelocityMeasurement,
-    MagnetometerYawMeasurement, MeasurementModel, RelativeAltitudeMeasurement,
-};
+use crate::measurements::MeasurementModel;
 use crate::{
     IMUData, NavigationFilter, StrapdownState, forward, wrap_to_2pi, wrap_to_180, wrap_to_360,
 };
@@ -865,71 +862,9 @@ impl NavigationFilter for ExtendedKalmanFilter {
         // Get expected measurement from current state
         let z_hat = measurement.get_expected_measurement(&self.mean_state);
 
-        // Get measurement Jacobian H based on measurement type
-        // We need to determine which type of measurement this is
-
-        // Extract the 9-state navigation state for Jacobian computation
-        let nav_state = StrapdownState {
-            latitude: self.mean_state[0],
-            longitude: self.mean_state[1],
-            altitude: self.mean_state[2],
-            velocity_north: self.mean_state[3],
-            velocity_east: self.mean_state[4],
-            velocity_vertical: self.mean_state[5],
-            attitude: Rotation3::from_euler_angles(
-                self.mean_state[6],
-                self.mean_state[7],
-                self.mean_state[8],
-            ),
-            is_enu: self.is_enu,
-        };
-
-        // Compute measurement Jacobian for 9-state system
-        // First check if the measurement provides its own Jacobian (for geophysical measurements)
-        let h_9state = if let Some(jacobian) = measurement.get_jacobian(&self.mean_state) {
-            // Measurement provides its own Jacobian (e.g., geophysical anomaly measurements)
-            jacobian
-        } else if measurement
-            .as_any()
-            .downcast_ref::<GPSPositionMeasurement>()
-            .is_some()
-        {
-            crate::linearize::gps_position_jacobian(&nav_state)
-        } else if measurement
-            .as_any()
-            .downcast_ref::<GPSVelocityMeasurement>()
-            .is_some()
-        {
-            crate::linearize::gps_velocity_jacobian(&nav_state)
-        } else if measurement
-            .as_any()
-            .downcast_ref::<GPSPositionAndVelocityMeasurement>()
-            .is_some()
-        {
-            crate::linearize::gps_position_velocity_jacobian(&nav_state)
-        } else if measurement
-            .as_any()
-            .downcast_ref::<RelativeAltitudeMeasurement>()
-            .is_some()
-        {
-            crate::linearize::relative_altitude_jacobian(&nav_state)
-        } else if let Some(mag_meas) = measurement
-            .as_any()
-            .downcast_ref::<MagnetometerYawMeasurement>()
-        {
-            crate::linearize::magnetometer_yaw_jacobian(
-                &nav_state,
-                mag_meas.mag_x,
-                mag_meas.mag_y,
-                mag_meas.mag_z,
-            )
-        } else {
-            // Fallback: assume direct position measurement
-            // crate::linearize::gps_position_jacobian(&nav_state)
-            todo!(
-                "Unsupported measurement type for EKF update! Need to implement geophysical measurement jacobians for the EKF"
-            );
-        };
+        // Get measurement Jacobian from the measurement model
+        // All measurements implement get_jacobian() which returns the H matrix
+        let h_9state = measurement.get_jacobian(&self.mean_state);
 
         // Extend H to full state size if using biases
         let h_matrix = if self.use_biases && self.state_size == 15 {

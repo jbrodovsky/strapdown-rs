@@ -73,15 +73,18 @@ pub trait MeasurementModel: Any {
     /// Expected measurement given the state
     fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64>;
 
-    /// Optionally provide the measurement Jacobian for EKF updates.
+    /// Provide the measurement Jacobian (H matrix) for EKF updates.
     ///
-    /// This method allows measurements to provide their own linearized measurement
-    /// model (Jacobian matrix H) for Extended Kalman Filter updates. If not provided
-    /// (returns None), the EKF will fall back to using a default Jacobian based on
-    /// the measurement type.
+    /// This method returns the linearized measurement model (Jacobian matrix H) for
+    /// Extended Kalman Filter updates. All measurements must implement this method
+    /// to support EKF-based navigation filters.
     ///
-    /// For geophysical measurements (gravity anomaly, magnetic anomaly), this method
-    /// computes numerical gradients from the geophysical map to create the Jacobian.
+    /// The Jacobian H is the partial derivative of the measurement function with respect
+    /// to the state: H = ∂h/∂x, where h(x) maps state to expected measurement.
+    ///
+    /// For standard measurements (GPS, barometric altitude), the Jacobian is typically
+    /// sparse with identity elements. For geophysical measurements (gravity/magnetic
+    /// anomaly), the Jacobian includes numerical gradients from the geophysical map.
     ///
     /// # Arguments
     ///
@@ -89,25 +92,28 @@ pub trait MeasurementModel: Any {
     ///
     /// # Returns
     ///
-    /// Optional Jacobian matrix H (measurement_dim × 9) for EKF updates. Returns None
-    /// if the measurement does not provide its own Jacobian.
+    /// Jacobian matrix H (measurement_dim × state_dim) for EKF updates
     ///
     /// # Example
     ///
     /// ```rust
-    /// use strapdown::measurements::MeasurementModel;
-    /// use nalgebra::{DVector, DMatrix};
+    /// use strapdown::measurements::{MeasurementModel, GPSPositionMeasurement};
+    /// use nalgebra::DVector;
     ///
-    /// // For a measurement that provides its own Jacobian:
-    /// // let h_matrix = measurement.get_jacobian(&state).unwrap();
+    /// let gps_meas = GPSPositionMeasurement {
+    ///     latitude: 45.0,
+    ///     longitude: -122.0,
+    ///     altitude: 100.0,
+    ///     horizontal_noise_std: 5.0,
+    ///     vertical_noise_std: 10.0,
+    /// };
     ///
-    /// // For a measurement that doesn't provide a Jacobian:
-    /// // let h_matrix_opt = measurement.get_jacobian(&state);
-    /// // assert!(h_matrix_opt.is_none());
+    /// let state = DVector::from_vec(vec![0.7854, -2.1293, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+    /// let h_matrix = gps_meas.get_jacobian(&state);
+    /// assert_eq!(h_matrix.nrows(), 3);
+    /// assert_eq!(h_matrix.ncols(), 9);
     /// ```
-    fn get_jacobian(&self, _state: &DVector<f64>) -> Option<DMatrix<f64>> {
-        None // Default implementation returns None
-    }
+    fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64>;
 }
 
 /// GPS position measurement model
@@ -162,6 +168,12 @@ impl MeasurementModel for GPSPositionMeasurement {
     fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
         DVector::from_vec(vec![state[0], state[1], state[2]])
     }
+
+    fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64> {
+        // Convert state slice to StrapdownState for linearize function
+        let nav_state = crate::StrapdownState::try_from(&state.as_slice()[..9]).unwrap();
+        crate::linearize::gps_position_jacobian(&nav_state)
+    }
 }
 /// GPS Velocity measurement model
 #[derive(Clone, Debug, Default)]
@@ -213,6 +225,12 @@ impl MeasurementModel for GPSVelocityMeasurement {
     fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
         DVector::from_vec(vec![state[3], state[4], state[5]])
     }
+
+    fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64> {
+        // Convert state slice to StrapdownState for linearize function
+        let nav_state = crate::StrapdownState::try_from(&state.as_slice()[..9]).unwrap();
+        crate::linearize::gps_velocity_jacobian(&nav_state)
+    }
 }
 /// GPS Position and Velocity measurement model
 #[derive(Clone, Debug, Default)]
@@ -262,6 +280,12 @@ impl MeasurementModel for GPSPositionAndVelocityMeasurement {
         // (five elements). Do not include vertical velocity here.
         DVector::from_vec(vec![state[0], state[1], state[2], state[3], state[4]])
     }
+
+    fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64> {
+        // Convert state slice to StrapdownState for linearize function
+        let nav_state = crate::StrapdownState::try_from(&state.as_slice()[..9]).unwrap();
+        crate::linearize::gps_position_velocity_jacobian(&nav_state)
+    }
     //fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
     //    let mut measurement_sigma_points = DMatrix::<f64>::zeros(5, state_sigma_points.ncols());
     //    for (i, sigma_point) in state_sigma_points.column_iter().enumerate() {
@@ -309,6 +333,12 @@ impl MeasurementModel for RelativeAltitudeMeasurement {
     }
     fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
         DVector::from_vec(vec![state[2]])
+    }
+
+    fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64> {
+        // Convert state slice to StrapdownState for linearize function
+        let nav_state = crate::StrapdownState::try_from(&state.as_slice()[..9]).unwrap();
+        crate::linearize::relative_altitude_jacobian(&nav_state)
     }
     // fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
     //     let mut measurement_sigma_points = DMatrix::<f64>::zeros(self.get_dimension(), state_sigma_points.ncols());
@@ -522,6 +552,17 @@ impl MeasurementModel for MagnetometerYawMeasurement {
         // Expected measurement is the yaw from the state (index 8)
         let yaw = if state.len() > 8 { state[8] } else { 0.0 };
         DVector::from_vec(vec![yaw])
+    }
+
+    fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64> {
+        // Convert state slice to StrapdownState for linearize function
+        let nav_state = crate::StrapdownState::try_from(&state.as_slice()[..9]).unwrap();
+        crate::linearize::magnetometer_yaw_jacobian(
+            &nav_state,
+            self.mag_x,
+            self.mag_y,
+            self.mag_z,
+        )
     }
 }
 

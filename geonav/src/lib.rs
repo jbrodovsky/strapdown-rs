@@ -594,8 +594,8 @@ impl MeasurementModel for GravityMeasurement {
         DVector::from_vec(vec![map_value + bias.unwrap_or(0.0)])
     }
 
-    fn get_jacobian(&self, state: &DVector<f64>) -> Option<DMatrix<f64>> {
-        Some(self.get_jacobian_internal(state))
+    fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64> {
+        self.get_jacobian_internal(state)
     }
 }
 
@@ -731,8 +731,8 @@ impl MeasurementModel for MagneticAnomalyMeasurement {
         DVector::from_vec(vec![map_value + bias.unwrap_or(0.0)])
     }
 
-    fn get_jacobian(&self, state: &DVector<f64>) -> Option<DMatrix<f64>> {
-        Some(self.get_jacobian_internal(state))
+    fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64> {
+        self.get_jacobian_internal(state)
     }
 }
 
