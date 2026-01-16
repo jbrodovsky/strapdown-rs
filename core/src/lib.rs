@@ -993,9 +993,9 @@ pub(crate) fn calculate_constant_velocity_acceleration(
 
     // For constant velocity: specific_force + gravity - r*(transport_rate + 2*rotation_rate)*velocity = 0
     // Therefore: specific_force = r*(transport_rate + 2*rotation_rate)*velocity - gravity
-    let specific_force = r * (transport_rate + 2.0 * rotation_rate) * target_velocity - gravity;
+    
 
-    specific_force
+    r * (transport_rate + 2.0 * rotation_rate) * target_velocity - gravity
 }
 
 /// Helper function to generate IMU data and GPS measurements for a given scenario
@@ -1607,7 +1607,7 @@ mod tests {
             longitude: 0.0_f64.to_radians(), // Already in radians
             altitude: 1000.0,
             velocity_north: 0.0,
-            velocity_east: vel.clone(), // 10 m/s eastward
+            velocity_east: vel, // 10 m/s eastward
             velocity_vertical: 0.0,
             attitude: Rotation3::identity(),
             is_enu: true,

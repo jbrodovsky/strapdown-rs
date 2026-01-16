@@ -3345,7 +3345,7 @@ mod tests {
         for _ in 0..20 {
             let imu_data = IMUData {
                 accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)) + true_accel_bias,
-                gyro: true_gyro_bias.clone(),
+                gyro: true_gyro_bias,
             };
             eskf.predict(&imu_data, 0.1);
 

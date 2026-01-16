@@ -1064,7 +1064,7 @@ mod tests {
         let x0: Vec<f64> = state.into();
 
         // Evaluate nominal dynamics
-        let mut state_nominal = state.clone();
+        let mut state_nominal = *state;
         crate::forward(
             &mut state_nominal,
             crate::IMUData {
