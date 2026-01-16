@@ -1940,14 +1940,17 @@ pub fn run_closed_loop<F: NavigationFilter>(
 
             // Compute RMS of position covariance
             let pos_rms = (pos_std_lat.powi(2) + pos_std_lon.powi(2) + pos_std_alt.powi(2)).sqrt();
-            debug!(
-                "[{:.1}%] Event {}/{} | Pos: ({:.6}°, {:.6}°, {:.1}m) | σ: ({:.2e}°, {:.2e}°, {:.2}m) | RMS: {:.2e}",
+            info!(
+                "[{:.1}%] Event {}/{} | Pos: ({:.6}°, {:.6}°, {:.1}m) | Vel: ({:.2} m/s, {:.2} m/s, {:.2} m/s) | σ: ({:.2e}°, {:.2e}°, {:.2}m) | RMS: {:.2e}",
                 (i as f64 / total as f64) * 100.0,
                 i,
                 total,
                 lat,
                 lon,
                 alt,
+                mean[3],
+                mean[4],
+                mean[5],
                 pos_std_lat,
                 pos_std_lon,
                 pos_std_alt,
@@ -2829,6 +2832,34 @@ impl Default for ClosedLoopConfig {
         }
     }
 }
+
+/// Particle filter configuration (RBPF defaults).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ParticleFilterConfig {
+    /// Apply zero-vertical-velocity pseudo-measurement.
+    #[serde(default = "default_zero_vertical_velocity")]
+    pub zero_vertical_velocity: bool,
+    /// Standard deviation for zero-vertical-velocity pseudo-measurement (m/s).
+    #[serde(default = "default_zero_vertical_velocity_std_mps")]
+    pub zero_vertical_velocity_std_mps: f64,
+}
+
+fn default_zero_vertical_velocity() -> bool {
+    true
+}
+
+fn default_zero_vertical_velocity_std_mps() -> f64 {
+    0.1
+}
+
+impl Default for ParticleFilterConfig {
+    fn default() -> Self {
+        Self {
+            zero_vertical_velocity: default_zero_vertical_velocity(),
+            zero_vertical_velocity_std_mps: default_zero_vertical_velocity_std_mps(),
+        }
+    }
+}
 /// Log level options for simulation logging.
 ///
 /// This enum is serialized/deserialized as lowercase strings to match existing
@@ -2907,6 +2938,9 @@ pub struct SimulationConfig {
     /// Closed-loop specific settings (only used if mode is ClosedLoop)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closed_loop: Option<ClosedLoopConfig>,
+    /// Particle filter settings (only used if mode is ParticleFilter)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub particle_filter: Option<ParticleFilterConfig>,
     /// Geophysical measurement configuration (optional, requires --features geonav)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub geophysical: Option<GeophysicalConfig>,
@@ -2930,6 +2964,7 @@ impl Default for SimulationConfig {
             generate_plot: false,
             logging: LoggingConfig::default(),
             closed_loop: Some(ClosedLoopConfig::default()),
+            particle_filter: None,
             geophysical: None,
             gnss_degradation: crate::messages::GnssDegradationConfig::default(),
         }
@@ -3509,7 +3544,7 @@ mod tests {
         let timestamp = chrono::Utc::now();
         let nav = NavigationResult::from((
             &timestamp,
-            &state_vector.into(),
+            &state_vector,
             &DMatrix::from_diagonal(&DVector::from_element(15, 0.0)), // dummy covariance
         ));
         assert_eq!(nav.latitude, (1.0_f64).to_degrees());
@@ -4886,98 +4921,6 @@ mod tests {
         // that conflict with binary serialization formats. TestDataRecord is optimized for CSV.
         // For MCAP usage, convert TestDataRecord to NavigationResult.
     }
-    #[test]
-    #[ignore] // Disabled - see note above
-    fn test_test_data_record_mcap_write_only() {
-        let temp_file = std::env::temp_dir().join("test_data_mcap.mcap");
-
-        // Create test data
-        let records = vec![
-            TestDataRecord {
-                time: DateTime::parse_from_str("2023-01-01 00:00:00+00:00", "%Y-%m-%d %H:%M:%S%z")
-                    .unwrap()
-                    .with_timezone(&Utc),
-                bearing_accuracy: 0.1,
-                speed_accuracy: 0.1,
-                vertical_accuracy: 0.1,
-                horizontal_accuracy: 0.1,
-                speed: 1.0,
-                bearing: 90.0,
-                altitude: 100.0,
-                longitude: -122.0,
-                latitude: 37.0,
-                qz: 0.0,
-                qy: 0.0,
-                qx: 0.0,
-                qw: 1.0,
-                roll: 0.0,
-                pitch: 0.0,
-                yaw: 0.0,
-                acc_z: 9.81,
-                acc_y: 0.0,
-                acc_x: 0.0,
-                gyro_z: 0.01,
-                gyro_y: 0.01,
-                gyro_x: 0.01,
-                mag_z: 50.0,
-                mag_y: -30.0,
-                mag_x: -20.0,
-                relative_altitude: 5.0,
-                pressure: 1013.25,
-                grav_z: 9.81,
-                grav_y: 0.0,
-                grav_x: 0.0,
-            },
-            TestDataRecord {
-                time: DateTime::parse_from_str("2023-01-01 00:01:00+00:00", "%Y-%m-%d %H:%M:%S%z")
-                    .unwrap()
-                    .with_timezone(&Utc),
-                bearing_accuracy: 0.1,
-                speed_accuracy: 0.1,
-                vertical_accuracy: 0.1,
-                horizontal_accuracy: 0.1,
-                speed: 2.0,
-                bearing: 180.0,
-                altitude: 200.0,
-                longitude: -121.0,
-                latitude: 38.0,
-                qz: 0.0,
-                qy: 0.0,
-                qx: 0.0,
-                qw: 1.0,
-                roll: 0.1,
-                pitch: 0.1,
-                yaw: 0.1,
-                acc_z: 9.81,
-                acc_y: 0.01,
-                acc_x: -0.01,
-                gyro_z: 0.02,
-                gyro_y: -0.02,
-                gyro_x: 0.02,
-                mag_z: 55.0,
-                mag_y: -25.0,
-                mag_x: -15.0,
-                relative_altitude: 10.0,
-                pressure: 1012.25,
-                grav_z: 9.81,
-                grav_y: 0.01,
-                grav_x: -0.01,
-            },
-        ];
-
-        // Write to MCAP (writing works fine)
-        TestDataRecord::to_mcap(&records, &temp_file).expect("Failed to write to MCAP");
-
-        // Check file exists
-        assert!(temp_file.exists(), "MCAP file should exist");
-
-        // Note: Reading back would fail due to CSV-specific deserializers
-        // In production, convert TestDataRecord to NavigationResult for MCAP storage
-
-        // Cleanup
-        let _ = std::fs::remove_file(&temp_file);
-    }
-
     #[test]
     fn test_navigation_result_mcap_roundtrip() {
         let temp_file = std::env::temp_dir().join("nav_results_mcap.mcap");
