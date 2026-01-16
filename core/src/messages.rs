@@ -1222,15 +1222,17 @@ mod tests {
 
                 // Check if positions vary between measurements
                 if let Some(prev_lat) = prev_lat
-                    && (meas.latitude - prev_lat).abs() > 1e-10 {
-                        all_same = false;
-                    }
+                    && (meas.latitude - prev_lat).abs() > 1e-10
+                {
+                    all_same = false;
+                }
                 prev_lat = Some(meas.latitude);
 
                 if let Some(prev_lon) = prev_lon
-                    && (meas.longitude - prev_lon).abs() > 1e-10 {
-                        all_same = false;
-                    }
+                    && (meas.longitude - prev_lon).abs() > 1e-10
+                {
+                    all_same = false;
+                }
                 prev_lon = Some(meas.longitude);
             }
         }
@@ -1285,9 +1287,9 @@ mod tests {
                 && let Some(gps) = meas
                     .as_any()
                     .downcast_ref::<GPSPositionAndVelocityMeasurement>()
-                {
-                    gnss_by_time.push((*elapsed_s, gps));
-                }
+            {
+                gnss_by_time.push((*elapsed_s, gps));
+            }
         }
         gnss_by_time.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
 
