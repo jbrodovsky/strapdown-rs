@@ -585,16 +585,6 @@ mod tests {
         let mut rbpf = RaoBlackwellizedParticleFilter::new(nominal, config);
 
         for (imu, gps) in imu_data.iter().zip(gps_measurements.iter()) {
-            // print state
-            println!(
-                "Nominal pos: lat {:.6} deg, lon {:.6} deg, alt {:.2} m  || Vel: N {:.2} m/s, E {:.2} m/s, V {:.2} m/s",
-                rbpf.nominal.latitude.to_degrees(),
-                rbpf.nominal.longitude.to_degrees(),
-                rbpf.nominal.altitude,
-                rbpf.nominal.velocity_north,
-                rbpf.nominal.velocity_east,
-                rbpf.nominal.velocity_vertical
-            );
             rbpf.predict(imu, dt);
             rbpf.update(gps);
         }

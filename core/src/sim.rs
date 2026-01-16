@@ -1940,7 +1940,7 @@ pub fn run_closed_loop<F: NavigationFilter>(
 
             // Compute RMS of position covariance
             let pos_rms = (pos_std_lat.powi(2) + pos_std_lon.powi(2) + pos_std_alt.powi(2)).sqrt();
-            println!(
+            info!(
                 "[{:.1}%] Event {}/{} | Pos: ({:.6}°, {:.6}°, {:.1}m) | Vel: ({:.2} m/s, {:.2} m/s, {:.2} m/s) | σ: ({:.2e}°, {:.2e}°, {:.2}m) | RMS: {:.2e}",
                 (i as f64 / total as f64) * 100.0,
                 i,
