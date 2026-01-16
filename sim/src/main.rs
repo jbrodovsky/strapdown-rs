@@ -573,8 +573,16 @@ fn process_file(
 
             let start_time = event_stream.start_time;
             let mut results = Vec::with_capacity(event_stream.events.len());
-            let mut last_ts: Option<chrono::DateTime<chrono::Utc>> = None;
             let mut monitor = HealthMonitor::new(HealthLimits::default());
+
+            // Store the initial state (before processing any events)
+            let (mean, cov) = rbpf.estimate();
+            results.push(NavigationResult::from_particle_filter(
+                &start_time,
+                &mean,
+                &cov,
+            ));
+            let mut last_ts = start_time;
 
             for event in event_stream.events.into_iter() {
                 let elapsed_s = match &event {
@@ -614,13 +622,10 @@ fn process_file(
                     return Err(e.into());
                 }
 
-                if Some(ts) != last_ts {
-                    if let Some(prev_ts) = last_ts {
-                        results.push(NavigationResult::from_particle_filter(
-                            &prev_ts, &mean, &cov,
-                        ));
-                    }
-                    last_ts = Some(ts);
+                // Store state when timestamp changes
+                if ts != last_ts {
+                    results.push(NavigationResult::from_particle_filter(&ts, &mean, &cov));
+                    last_ts = ts;
                 }
             }
 
@@ -1435,8 +1440,16 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
 
         let start_time = event_stream.start_time;
         let mut results = Vec::with_capacity(event_stream.events.len());
-        let mut last_ts: Option<chrono::DateTime<chrono::Utc>> = None;
         let mut monitor = HealthMonitor::new(HealthLimits::default());
+
+        // Store the initial state (before processing any events)
+        let (mean, cov) = rbpf.estimate();
+        results.push(NavigationResult::from_particle_filter(
+            &start_time,
+            &mean,
+            &cov,
+        ));
+        let mut last_ts = start_time;
 
         for event in event_stream.events.into_iter() {
             let elapsed_s = match &event {
@@ -1476,13 +1489,10 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
                 return Err(e.into());
             }
 
-            if Some(ts) != last_ts {
-                if let Some(prev_ts) = last_ts {
-                    results.push(NavigationResult::from_particle_filter(
-                        &prev_ts, &mean, &cov,
-                    ));
-                }
-                last_ts = Some(ts);
+            // Store state when timestamp changes
+            if ts != last_ts {
+                results.push(NavigationResult::from_particle_filter(&ts, &mean, &cov));
+                last_ts = ts;
             }
         }
 
