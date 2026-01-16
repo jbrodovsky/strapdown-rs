@@ -645,6 +645,7 @@ fn process_file(
                     return Err(e.into());
                 }
                 execution_monitor.check("particle-filter")?;
+                execution_monitor.mark_progress();
 
                 if Some(ts) != last_ts {
                     if let Some(prev_ts) = last_ts {
@@ -1528,6 +1529,7 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
                 return Err(e.into());
             }
             execution_monitor.check("particle-filter")?;
+            execution_monitor.mark_progress();
 
             if Some(ts) != last_ts {
                 if let Some(prev_ts) = last_ts {

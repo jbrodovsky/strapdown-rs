@@ -2005,6 +2005,12 @@ pub fn run_closed_loop<F: NavigationFilter>(
             }
         }
 
+        // Check execution timeouts and mark progress
+        if let Some(ref mut monitor) = execution_monitor {
+            monitor.check("closed-loop")?;
+            monitor.mark_progress();
+        }
+
         // If timestamp changed, or it's the last event, record the previous state
         if Some(ts) != last_ts {
             if let Some(prev_ts) = last_ts {
@@ -2022,10 +2028,6 @@ pub fn run_closed_loop<F: NavigationFilter>(
             let cov = filter.get_certainty();
             debug!("Filter state at {}: {:?}", ts, mean);
             results.push(NavigationResult::from((&ts, &mean, &cov)));
-        }
-
-        if let Some(ref mut monitor) = execution_monitor {
-            monitor.check("closed-loop")?;
         }
     }
     debug!("Closed-loop simulation complete");
@@ -2635,8 +2637,13 @@ pub mod execution {
                     );
                 }
             }
-            self.last_progress = now;
             Ok(())
+        }
+
+        /// Mark that progress has been made in the simulation.
+        /// This should be called after successfully processing each event.
+        pub fn mark_progress(&mut self) {
+            self.last_progress = Instant::now();
         }
     }
 
