@@ -44,6 +44,7 @@ use log::{debug, info, warn};
 use std::fmt::{Debug, Display};
 use std::io::{self, Read, Write};
 use std::path::Path;
+use std::time::{Duration as StdDuration, Instant};
 
 use anyhow::{Result, bail};
 use chrono::{DateTime, Duration, Utc};
@@ -61,7 +62,8 @@ use crate::messages::{Event, EventStream, GnssFaultModel, GnssScheduler};
 use crate::{IMUData, StrapdownState, forward};
 use health::HealthMonitor;
 
-// Re-export HealthLimits for easier access in tests and external users
+// Re-export execution and health types for easier access in tests and external users
+pub use execution::{ExecutionLimits, ExecutionMonitor};
 pub use health::HealthLimits;
 
 pub const DEFAULT_PROCESS_NOISE: [f64; 15] = [
@@ -82,6 +84,10 @@ pub const DEFAULT_PROCESS_NOISE: [f64; 15] = [
     1e-8, // gyro bias y noise
     1e-8, // gyro bias z noise
 ];
+
+pub const DEFAULT_MAX_WALL_CLOCK_RATIO: f64 = 0.25;
+pub const DEFAULT_MAX_WALL_CLOCK_S: f64 = 1200.0;
+pub const DEFAULT_MAX_NO_PROGRESS_S: f64 = 600.0;
 
 fn de_f64_nan<'de, D>(deserializer: D) -> Result<f64, D::Error>
 where
@@ -1903,6 +1909,7 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
 /// * `filter` - Mutable reference to a type implementing NavigationFilter
 /// * `stream` - Event stream containing IMU and measurement events
 /// * `health_limits` - Optional health limits for monitoring
+/// * `execution_limits` - Optional wall-clock and no-progress limits
 ///
 /// # Returns
 /// * `Vec<NavigationResult>` - A vector of navigation results
@@ -1910,12 +1917,23 @@ pub fn run_closed_loop<F: NavigationFilter>(
     filter: &mut F,
     stream: EventStream,
     health_limits: Option<HealthLimits>,
+    execution_limits: Option<ExecutionLimits>,
 ) -> anyhow::Result<Vec<NavigationResult>> {
     let start_time = stream.start_time;
     let mut results: Vec<NavigationResult> = Vec::with_capacity(stream.events.len());
     let total = stream.events.len();
     let mut last_ts: Option<DateTime<Utc>> = None;
     let mut monitor = HealthMonitor::new(health_limits.unwrap_or_default());
+    let sim_duration_s = stream
+        .events
+        .last()
+        .map(|event| match event {
+            Event::Imu { elapsed_s, .. } => *elapsed_s,
+            Event::Measurement { elapsed_s, .. } => *elapsed_s,
+        })
+        .unwrap_or(0.0);
+    let mut execution_monitor =
+        execution_limits.map(|limits| ExecutionMonitor::new(limits, sim_duration_s));
 
     info!(
         "Starting closed-loop navigation filter with {} events",
@@ -1985,6 +2003,12 @@ pub fn run_closed_loop<F: NavigationFilter>(
                     bail!(e);
                 }
             }
+        }
+
+        // Check execution timeouts and mark progress
+        if let Some(ref mut monitor) = execution_monitor {
+            monitor.check("closed-loop")?;
+            monitor.mark_progress();
         }
 
         // If timestamp changed, or it's the last event, record the previous state
@@ -2525,6 +2549,130 @@ pub fn print_sim_status<F: NavigationFilter>(filter: &F) {
     );
 }
 
+pub mod execution {
+    use super::*;
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub struct ExecutionLimits {
+        /// Max wall-clock time as a ratio of simulated duration (<= 0 disables).
+        #[serde(default = "default_max_wall_clock_ratio")]
+        pub max_wall_clock_ratio: f64,
+        /// Max wall-clock time per trajectory in seconds (<= 0 disables).
+        #[serde(default = "default_max_wall_clock_s")]
+        pub max_wall_clock_s: f64,
+        /// Max wall-clock time without progress in seconds (<= 0 disables).
+        #[serde(default = "default_max_no_progress_s")]
+        pub max_no_progress_s: f64,
+    }
+
+    fn default_max_wall_clock_ratio() -> f64 {
+        DEFAULT_MAX_WALL_CLOCK_RATIO
+    }
+
+    fn default_max_wall_clock_s() -> f64 {
+        DEFAULT_MAX_WALL_CLOCK_S
+    }
+
+    fn default_max_no_progress_s() -> f64 {
+        DEFAULT_MAX_NO_PROGRESS_S
+    }
+
+    impl Default for ExecutionLimits {
+        fn default() -> Self {
+            Self {
+                max_wall_clock_ratio: default_max_wall_clock_ratio(),
+                max_wall_clock_s: default_max_wall_clock_s(),
+                max_no_progress_s: default_max_no_progress_s(),
+            }
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct ExecutionMonitor {
+        start_time: Instant,
+        last_progress: Instant,
+        max_wall_clock: Option<StdDuration>,
+        max_no_progress: Option<StdDuration>,
+    }
+
+    impl ExecutionMonitor {
+        pub fn new(limits: ExecutionLimits, sim_duration_s: f64) -> Self {
+            let max_wall_clock = compute_max_wall_clock(
+                sim_duration_s,
+                limits.max_wall_clock_ratio,
+                limits.max_wall_clock_s,
+            );
+            let max_no_progress = if limits.max_no_progress_s > 0.0 {
+                Some(StdDuration::from_secs_f64(limits.max_no_progress_s))
+            } else {
+                None
+            };
+            let now = Instant::now();
+
+            Self {
+                start_time: now,
+                last_progress: now,
+                max_wall_clock,
+                max_no_progress,
+            }
+        }
+
+        pub fn check(&mut self, context: &str) -> Result<()> {
+            let now = Instant::now();
+            if let Some(max_wall_clock) = self.max_wall_clock
+                && now.duration_since(self.start_time) > max_wall_clock
+            {
+                bail!(
+                    "Execution timeout ({context}): exceeded wall-clock limit of {:.2} s",
+                    max_wall_clock.as_secs_f64()
+                );
+            }
+            if let Some(max_no_progress) = self.max_no_progress {
+                let since_progress = now.duration_since(self.last_progress);
+                if since_progress > max_no_progress {
+                    bail!(
+                        "Execution timeout ({context}): no progress for {:.2} s (limit {:.2} s)",
+                        since_progress.as_secs_f64(),
+                        max_no_progress.as_secs_f64()
+                    );
+                }
+            }
+            Ok(())
+        }
+
+        /// Mark that progress has been made in the simulation.
+        /// This should be called after successfully processing each event.
+        pub fn mark_progress(&mut self) {
+            self.last_progress = Instant::now();
+        }
+    }
+
+    fn compute_max_wall_clock(
+        sim_duration_s: f64,
+        max_ratio: f64,
+        max_wall_clock_s: f64,
+    ) -> Option<StdDuration> {
+        let mut max_s = None;
+        if sim_duration_s > 0.0 && max_ratio > 0.0 {
+            max_s = Some(sim_duration_s * max_ratio);
+        }
+        if max_wall_clock_s > 0.0 {
+            max_s = Some(match max_s {
+                Some(current) => current.min(max_wall_clock_s),
+                None => max_wall_clock_s,
+            });
+        }
+
+        max_s.and_then(|s| {
+            if s > 0.0 {
+                Some(StdDuration::from_secs_f64(s))
+            } else {
+                None
+            }
+        })
+    }
+}
+
 pub mod health {
     use super::*;
 
@@ -3004,6 +3152,9 @@ pub struct SimulationConfig {
     /// Generate performance plot comparing navigation output to GPS measurements
     #[serde(default)]
     pub generate_plot: bool,
+    /// Execution time limits (wall-clock and no-progress)
+    #[serde(default)]
+    pub execution_limits: ExecutionLimits,
     /// Logging configuration
     #[serde(default)]
     pub logging: LoggingConfig,
@@ -3034,6 +3185,7 @@ impl Default for SimulationConfig {
             seed: default_seed(),
             parallel: false,
             generate_plot: false,
+            execution_limits: ExecutionLimits::default(),
             logging: LoggingConfig::default(),
             closed_loop: Some(ClosedLoopConfig::default()),
             particle_filter: None,
@@ -3704,7 +3856,7 @@ mod tests {
             events: vec![event],
         };
 
-        let res = run_closed_loop(&mut ukf, stream, None);
+        let res = run_closed_loop(&mut ukf, stream, None, None);
         assert!(!res.unwrap().is_empty());
     }
     #[test]
@@ -4082,6 +4234,20 @@ mod tests {
         assert!(limits.lat_rad.1 > 0.0);
         assert!(limits.speed_mps_max > 0.0);
         assert!(limits.cov_diag_max > 0.0);
+    }
+
+    #[test]
+    fn test_execution_monitor_no_progress_timeout() {
+        let limits = ExecutionLimits {
+            max_wall_clock_ratio: 0.0,
+            max_wall_clock_s: 0.0,
+            max_no_progress_s: 0.01,
+        };
+        let mut monitor = ExecutionMonitor::new(limits, 1.0);
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let result = monitor.check("test");
+        assert!(result.is_err());
     }
 
     #[test]
@@ -4574,7 +4740,7 @@ mod tests {
         };
 
         let health_limits = HealthLimits::default();
-        let result = run_closed_loop(&mut ukf, stream, Some(health_limits));
+        let result = run_closed_loop(&mut ukf, stream, Some(health_limits), None);
         assert!(result.is_ok());
     }
 

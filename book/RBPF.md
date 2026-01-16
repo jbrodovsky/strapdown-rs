@@ -460,7 +460,7 @@ fn test_rbpf_closed_loop_on_real_data() {
     let stream = build_event_stream(&records, &cfg);
 
     // Run closed-loop
-    let results = run_closed_loop(&mut rbpf, stream, None)
+    let results = run_closed_loop(&mut rbpf, stream, None, None)
         .expect("RBPF closed-loop should complete");
 
     // Compute error metrics

@@ -50,15 +50,15 @@ use std::rc::Rc;
 use strapdown::NavigationFilter;
 #[cfg(feature = "geonav")]
 use strapdown::kalman::{ExtendedKalmanFilter, InitialState};
+use strapdown::sim::HealthLimits;
+use strapdown::sim::health::HealthMonitor;
 #[cfg(feature = "geonav")]
 use strapdown::sim::{DEFAULT_PROCESS_NOISE, GeoResolution};
 use strapdown::sim::{
-    FaultArgs, FilterType, NavigationResult, ParticleFilterType, SchedulerArgs, SimulationConfig,
-    SimulationMode, TestDataRecord, build_fault, build_scheduler, dead_reckoning, initialize_ekf,
-    initialize_eskf, initialize_ukf, run_closed_loop,
+    ExecutionLimits, ExecutionMonitor, FaultArgs, FilterType, NavigationResult, ParticleFilterType,
+    SchedulerArgs, SimulationConfig, SimulationMode, TestDataRecord, build_fault, build_scheduler,
+    dead_reckoning, initialize_ekf, initialize_eskf, initialize_ukf, run_closed_loop,
 };
-use strapdown::sim::health::HealthMonitor;
-use strapdown::sim::HealthLimits;
 
 const LONG_ABOUT: &str =
     "STRAPDOWN SIM: A simulation and analysis tool for strapdown inertial navigation systems.
@@ -156,6 +156,18 @@ struct SimArgs {
     /// When processing multiple files, output filenames will be generated as: {output_stem}_{input_stem}.csv
     #[arg(short, long, value_parser)]
     output: PathBuf,
+
+    /// Max wall-clock time as a ratio of simulated duration (<= 0 disables)
+    #[arg(long, default_value_t = strapdown::sim::DEFAULT_MAX_WALL_CLOCK_RATIO)]
+    max_wall_clock_ratio: f64,
+
+    /// Max wall-clock time per trajectory in seconds (<= 0 disables)
+    #[arg(long, default_value_t = strapdown::sim::DEFAULT_MAX_WALL_CLOCK_S)]
+    max_wall_clock_s: f64,
+
+    /// Max wall-clock time without progress in seconds (<= 0 disables)
+    #[arg(long, default_value_t = strapdown::sim::DEFAULT_MAX_NO_PROGRESS_S)]
+    max_no_progress_s: f64,
 }
 
 /// Geophysical measurement arguments (feature-gated)
@@ -334,6 +346,14 @@ struct CreateConfigArgs {
     mode: SimulationMode,
 }
 
+fn execution_limits_from_args(args: &SimArgs) -> ExecutionLimits {
+    ExecutionLimits {
+        max_wall_clock_ratio: args.max_wall_clock_ratio,
+        max_wall_clock_s: args.max_wall_clock_s,
+        max_no_progress_s: args.max_no_progress_s,
+    }
+}
+
 /// Process a single CSV file with the given configuration
 fn process_file(
     input_file: &Path,
@@ -383,23 +403,24 @@ fn process_file(
                 "Initialized event stream with {} events",
                 event_stream.events.len()
             );
+            let execution_limits = config.execution_limits.clone();
 
             let results = match filter_config.filter {
                 FilterType::Ukf => {
                     let mut ukf =
                         initialize_ukf(records[0].clone(), None, None, None, None, None, None);
                     info!("Initialized UKF");
-                    run_closed_loop(&mut ukf, event_stream, None)
+                    run_closed_loop(&mut ukf, event_stream, None, Some(execution_limits.clone()))
                 }
                 FilterType::Ekf => {
                     let mut ekf = initialize_ekf(records[0].clone(), None, None, None, None, true);
                     info!("Initialized EKF");
-                    run_closed_loop(&mut ekf, event_stream, None)
+                    run_closed_loop(&mut ekf, event_stream, None, Some(execution_limits.clone()))
                 }
                 FilterType::Eskf => {
                     let mut eskf = initialize_eskf(records[0].clone(), None, None, None, None);
                     info!("Initialized ESKF");
-                    run_closed_loop(&mut eskf, event_stream, None)
+                    run_closed_loop(&mut eskf, event_stream, None, Some(execution_limits))
                 }
             };
 
@@ -575,6 +596,16 @@ fn process_file(
             let mut results = Vec::with_capacity(event_stream.events.len());
             let mut last_ts: Option<chrono::DateTime<chrono::Utc>> = None;
             let mut monitor = HealthMonitor::new(HealthLimits::default());
+            let sim_duration_s = event_stream
+                .events
+                .last()
+                .map(|event| match event {
+                    Event::Imu { elapsed_s, .. } => *elapsed_s,
+                    Event::Measurement { elapsed_s, .. } => *elapsed_s,
+                })
+                .unwrap_or(0.0);
+            let mut execution_monitor =
+                ExecutionMonitor::new(config.execution_limits.clone(), sim_duration_s);
 
             for event in event_stream.events.into_iter() {
                 let elapsed_s = match &event {
@@ -613,6 +644,8 @@ fn process_file(
                 if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
                     return Err(e.into());
                 }
+                execution_monitor.check("particle-filter")?;
+                execution_monitor.mark_progress();
 
                 if Some(ts) != last_ts {
                     if let Some(prev_ts) = last_ts {
@@ -681,6 +714,12 @@ fn run_from_config(
     info!("Output: {}", config.output);
     info!("Parallel: {}", config.parallel);
     info!("Generate plot: {}", config.generate_plot);
+    info!(
+        "Execution limits: ratio {:.2}, wall-clock {:.1}s, no-progress {:.1}s",
+        config.execution_limits.max_wall_clock_ratio,
+        config.execution_limits.max_wall_clock_s,
+        config.execution_limits.max_no_progress_s
+    );
 
     // Validate paths
     let input = Path::new(&config.input);
@@ -760,6 +799,7 @@ fn run_single_closed_loop_simulation(
     records: &[TestDataRecord],
     gnss_degradation: &strapdown::messages::GnssDegradationConfig,
     output_file: &Path,
+    execution_limits: ExecutionLimits,
 ) -> Result<(), Box<dyn Error>> {
     // Build event stream from records and GNSS degradation config
     let event_stream = build_event_stream(records, gnss_degradation);
@@ -773,17 +813,17 @@ fn run_single_closed_loop_simulation(
         FilterType::Ukf => {
             let mut ukf = initialize_ukf(records[0].clone(), None, None, None, None, None, None);
             info!("Initialized UKF");
-            run_closed_loop(&mut ukf, event_stream, None)
+            run_closed_loop(&mut ukf, event_stream, None, Some(execution_limits.clone()))
         }
         FilterType::Ekf => {
             let mut ekf = initialize_ekf(records[0].clone(), None, None, None, None, true);
             info!("Initialized EKF");
-            run_closed_loop(&mut ekf, event_stream, None)
+            run_closed_loop(&mut ekf, event_stream, None, Some(execution_limits.clone()))
         }
         FilterType::Eskf => {
             let mut eskf = initialize_eskf(records[0].clone(), None, None, None, None);
             info!("Initialized ESKF");
-            run_closed_loop(&mut eskf, event_stream, None)
+            run_closed_loop(&mut eskf, event_stream, None, Some(execution_limits))
         }
     };
 
@@ -899,6 +939,7 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
     // Get all CSV files to process
     let csv_files = get_csv_files(&args.sim.input)?;
     let is_multiple = csv_files.len() > 1;
+    let execution_limits = execution_limits_from_args(&args.sim);
 
     if is_multiple {
         info!("Processing {} CSV files from directory", csv_files.len());
@@ -933,6 +974,7 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
             &records,
             &gnss_degradation,
             &output_file,
+            execution_limits.clone(),
         ) {
             Ok(()) => {
                 // Success - result logging is handled by the helper function
@@ -1066,6 +1108,7 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
     // Get all CSV files to process
     let csv_files = get_csv_files(&args.sim.input)?;
     let is_multiple = csv_files.len() > 1;
+    let _execution_limits = execution_limits_from_args(&args.sim);
 
     if is_multiple {
         info!("Processing {} CSV files from directory", csv_files.len());
@@ -1300,6 +1343,7 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
 
     let csv_files = get_csv_files(&args.sim.input)?;
     let is_multiple = csv_files.len() > 1;
+    let execution_limits = execution_limits_from_args(&args.sim);
 
     if is_multiple {
         info!("Processing {} CSV files from directory", csv_files.len());
@@ -1437,6 +1481,15 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
         let mut results = Vec::with_capacity(event_stream.events.len());
         let mut last_ts: Option<chrono::DateTime<chrono::Utc>> = None;
         let mut monitor = HealthMonitor::new(HealthLimits::default());
+        let sim_duration_s = event_stream
+            .events
+            .last()
+            .map(|event| match event {
+                Event::Imu { elapsed_s, .. } => *elapsed_s,
+                Event::Measurement { elapsed_s, .. } => *elapsed_s,
+            })
+            .unwrap_or(0.0);
+        let mut execution_monitor = ExecutionMonitor::new(execution_limits.clone(), sim_duration_s);
 
         for event in event_stream.events.into_iter() {
             let elapsed_s = match &event {
@@ -1475,6 +1528,8 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
             if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
                 return Err(e.into());
             }
+            execution_monitor.check("particle-filter")?;
+            execution_monitor.mark_progress();
 
             if Some(ts) != last_ts {
                 if let Some(prev_ts) = last_ts {
@@ -2061,6 +2116,7 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
     let mode = prompt_simulation_mode();
     let seed = prompt_seed();
     let parallel = prompt_parallel();
+    let execution_limits = ExecutionLimits::default();
 
     // Logging configuration
     println!("\n--- Logging Configuration ---");
@@ -2147,6 +2203,7 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
         seed,
         parallel,
         generate_plot: false,
+        execution_limits,
         logging,
         closed_loop,
         particle_filter,
