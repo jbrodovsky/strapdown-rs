@@ -917,8 +917,8 @@ fn test_ekf_closed_loop_on_real_data() {
     let stream = build_event_stream(&records, &cfg);
 
     // Run closed-loop filter
-    let results =
-        run_closed_loop(&mut ekf, stream, None, None).expect("Closed-loop EKF filter should complete");
+    let results = run_closed_loop(&mut ekf, stream, None, None)
+        .expect("Closed-loop EKF filter should complete");
 
     // Verify results
     assert!(
@@ -1255,8 +1255,8 @@ fn test_eskf_closed_loop_on_real_data() {
     let stream = build_event_stream(&records, &cfg);
 
     // Run closed-loop filter
-    let results =
-        run_closed_loop(&mut eskf, stream, None, None).expect("Closed-loop ESKF filter should complete");
+    let results = run_closed_loop(&mut eskf, stream, None, None)
+        .expect("Closed-loop ESKF filter should complete");
 
     // Verify results
     assert!(
@@ -1505,7 +1505,8 @@ fn test_eskf_outperforms_dead_reckoning() {
     };
     let stream = build_event_stream(&records, &cfg);
 
-    let eskf_results = run_closed_loop(&mut eskf, stream, None, None).expect("ESKF should complete");
+    let eskf_results =
+        run_closed_loop(&mut eskf, stream, None, None).expect("ESKF should complete");
     let eskf_stats = compute_error_metrics(&eskf_results, &records);
 
     // Print comparison
@@ -1595,8 +1596,8 @@ fn test_eskf_stability_high_dynamics() {
     let stream = build_event_stream(&records, &cfg);
 
     // Run closed-loop filter
-    let results =
-        run_closed_loop(&mut eskf, stream, None, None).expect("ESKF with high dynamics should complete");
+    let results = run_closed_loop(&mut eskf, stream, None, None)
+        .expect("ESKF with high dynamics should complete");
 
     // Verify all results are valid (no NaN or Inf)
     for (i, result) in results.iter().enumerate() {
@@ -1709,7 +1710,8 @@ fn test_filter_comparison() {
         0.0,
     );
     let stream_ukf = build_event_stream(&records, &cfg);
-    let ukf_results = run_closed_loop(&mut ukf, stream_ukf, None, None).expect("UKF should complete");
+    let ukf_results =
+        run_closed_loop(&mut ukf, stream_ukf, None, None).expect("UKF should complete");
     let ukf_stats = compute_error_metrics(&ukf_results, &records);
 
     // Run EKF
@@ -1721,7 +1723,8 @@ fn test_filter_comparison() {
         true,
     );
     let stream_ekf = build_event_stream(&records, &cfg);
-    let ekf_results = run_closed_loop(&mut ekf, stream_ekf, None, None).expect("EKF should complete");
+    let ekf_results =
+        run_closed_loop(&mut ekf, stream_ekf, None, None).expect("EKF should complete");
     let ekf_stats = compute_error_metrics(&ekf_results, &records);
 
     // Run ESKF
@@ -1736,7 +1739,8 @@ fn test_filter_comparison() {
     );
 
     let stream_eskf = build_event_stream(&records, &cfg);
-    let eskf_results = run_closed_loop(&mut eskf, stream_eskf, None, None).expect("ESKF should complete");
+    let eskf_results =
+        run_closed_loop(&mut eskf, stream_eskf, None, None).expect("ESKF should complete");
     let eskf_stats = compute_error_metrics(&eskf_results, &records);
 
     // Print comparison

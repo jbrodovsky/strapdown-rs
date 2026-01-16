@@ -61,11 +61,10 @@ use crate::messages::{Event, EventStream, GnssFaultModel, GnssScheduler};
 
 use crate::{IMUData, StrapdownState, forward};
 use health::HealthMonitor;
-use execution::ExecutionMonitor;
 
-// Re-export HealthLimits for easier access in tests and external users
-pub use health::HealthLimits;
+// Re-export execution and health types for easier access in tests and external users
 pub use execution::{ExecutionLimits, ExecutionMonitor};
+pub use health::HealthLimits;
 
 pub const DEFAULT_PROCESS_NOISE: [f64; 15] = [
     // Default process noise if not provided
@@ -2006,6 +2005,12 @@ pub fn run_closed_loop<F: NavigationFilter>(
             }
         }
 
+        // Check execution timeouts and mark progress
+        if let Some(ref mut monitor) = execution_monitor {
+            monitor.check("closed-loop")?;
+            monitor.mark_progress();
+        }
+
         // If timestamp changed, or it's the last event, record the previous state
         if Some(ts) != last_ts {
             if let Some(prev_ts) = last_ts {
@@ -2023,10 +2028,6 @@ pub fn run_closed_loop<F: NavigationFilter>(
             let cov = filter.get_certainty();
             debug!("Filter state at {}: {:?}", ts, mean);
             results.push(NavigationResult::from((&ts, &mean, &cov)));
-        }
-
-        if let Some(ref mut monitor) = execution_monitor {
-            monitor.check("closed-loop")?;
         }
     }
     debug!("Closed-loop simulation complete");
@@ -2618,13 +2619,13 @@ pub mod execution {
 
         pub fn check(&mut self, context: &str) -> Result<()> {
             let now = Instant::now();
-            if let Some(max_wall_clock) = self.max_wall_clock {
-                if now.duration_since(self.start_time) > max_wall_clock {
-                    bail!(
-                        "Execution timeout ({context}): exceeded wall-clock limit of {:.2} s",
-                        max_wall_clock.as_secs_f64()
-                    );
-                }
+            if let Some(max_wall_clock) = self.max_wall_clock
+                && now.duration_since(self.start_time) > max_wall_clock
+            {
+                bail!(
+                    "Execution timeout ({context}): exceeded wall-clock limit of {:.2} s",
+                    max_wall_clock.as_secs_f64()
+                );
             }
             if let Some(max_no_progress) = self.max_no_progress {
                 let since_progress = now.duration_since(self.last_progress);
@@ -2636,8 +2637,13 @@ pub mod execution {
                     );
                 }
             }
-            self.last_progress = now;
             Ok(())
+        }
+
+        /// Mark that progress has been made in the simulation.
+        /// This should be called after successfully processing each event.
+        pub fn mark_progress(&mut self) {
+            self.last_progress = Instant::now();
         }
     }
 
