@@ -35,7 +35,6 @@
 
 use std::any::Any;
 
-
 use nalgebra::DVector;
 use rand::prelude::*;
 
@@ -354,9 +353,9 @@ pub trait ParticleFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::measurements::GPSPositionMeasurement;
-    use crate::{IMUData, StrapdownState, earth, generate_scenario_data};
-    use nalgebra::Rotation3;
+    
+    
+    
 
     // ============= Tests for standalone resampling functions ==================
 

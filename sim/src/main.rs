@@ -40,9 +40,9 @@ use strapdown::rbpf::{RaoBlackwellizedParticleFilter, RbpfConfig};
 // Geophysical navigation imports (feature-gated)
 #[cfg(feature = "geonav")]
 use geonav::{
-    GeoMap, GeophysicalMeasurementType, GravityMeasurement, GravityResolution,
-    MagneticAnomalyMeasurement, MagneticResolution, build_event_stream as geo_build_event_stream,
-    geo_closed_loop_ekf, geo_closed_loop_ukf,
+    GeoMap, GeophysicalAnomalyMeasurementModel, GeophysicalMeasurementType, GravityMeasurement,
+    GravityResolution, MagneticAnomalyMeasurement, MagneticResolution,
+    build_event_stream as geo_build_event_stream, geo_closed_loop_ekf, geo_closed_loop_ukf,
 };
 #[cfg(feature = "geonav")]
 use std::rc::Rc;
@@ -504,7 +504,7 @@ fn process_file(
             let pf_cfg = config
                 .particle_filter
                 .clone()
-                .unwrap_or_else(strapdown::sim::ParticleFilterConfig::default);
+                .unwrap_or_default();
             let mut rbpf = RaoBlackwellizedParticleFilter::new(
                 nominal,
                 RbpfConfig {
@@ -519,7 +519,7 @@ fn process_file(
             let mut results = Vec::with_capacity(event_stream.events.len());
             let mut last_ts: Option<chrono::DateTime<chrono::Utc>> = None;
 
-            for (idx, event) in event_stream.events.into_iter().enumerate() {
+            for event in event_stream.events.into_iter() {
                 let elapsed_s = match &event {
                     Event::Imu { elapsed_s, .. } => *elapsed_s,
                     Event::Measurement { elapsed_s, .. } => *elapsed_s,
@@ -1343,7 +1343,7 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
         let mut results = Vec::with_capacity(event_stream.events.len());
         let mut last_ts: Option<chrono::DateTime<chrono::Utc>> = None;
 
-        for (idx, event) in event_stream.events.into_iter().enumerate() {
+        for event in event_stream.events.into_iter() {
             let elapsed_s = match &event {
                 Event::Imu { elapsed_s, .. } => *elapsed_s,
                 Event::Measurement { elapsed_s, .. } => *elapsed_s,

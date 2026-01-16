@@ -3544,7 +3544,7 @@ mod tests {
         let timestamp = chrono::Utc::now();
         let nav = NavigationResult::from((
             &timestamp,
-            &state_vector.into(),
+            &state_vector,
             &DMatrix::from_diagonal(&DVector::from_element(15, 0.0)), // dummy covariance
         ));
         assert_eq!(nav.latitude, (1.0_f64).to_degrees());

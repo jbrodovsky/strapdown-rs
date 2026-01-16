@@ -409,7 +409,6 @@ impl GnssDegradationConfig {
 /// };
 /// let gnss_event = Event::Measurement { meas: Box::new(gnss_meas), elapsed_s: 2.0 };
 /// ```
-
 pub enum Event {
     /// IMU prediction step.
     ///
@@ -1208,8 +1207,8 @@ mod tests {
         let original_lon = -122.0;
 
         let mut all_same = true;
-        let mut prev_lat = None;
-        let mut prev_lon = None;
+        let mut prev_lat: Option<f64> = None;
+        let mut prev_lon: Option<f64> = None;
 
         for event in &gnss_events {
             if let Event::Measurement { meas, .. } = event {
@@ -1223,17 +1222,15 @@ mod tests {
 
                 // Check if positions vary between measurements
                 if let Some(prev_lat) = prev_lat
-                    && (meas.latitude - prev_lat as f64).abs() > 1e-10
-                {
-                    all_same = false;
-                }
-                prev_lat = Some(meas.latitude);
-
-                if let Some(prev_lon) = prev_lon {
-                    if (meas.longitude - prev_lon as f64).abs() > 1e-10 {
+                    && (meas.latitude - prev_lat).abs() > 1e-10 {
                         all_same = false;
                     }
-                }
+                prev_lat = Some(meas.latitude);
+
+                if let Some(prev_lon) = prev_lon
+                    && (meas.longitude - prev_lon).abs() > 1e-10 {
+                        all_same = false;
+                    }
                 prev_lon = Some(meas.longitude);
             }
         }
@@ -1284,14 +1281,13 @@ mod tests {
         // Find GNSS events and group by time
         let mut gnss_by_time: Vec<(f64, &GPSPositionAndVelocityMeasurement)> = Vec::new();
         for event in &events.events {
-            if let Event::Measurement { meas, elapsed_s } = event {
-                if let Some(gps) = meas
+            if let Event::Measurement { meas, elapsed_s } = event
+                && let Some(gps) = meas
                     .as_any()
                     .downcast_ref::<GPSPositionAndVelocityMeasurement>()
                 {
                     gnss_by_time.push((*elapsed_s, gps));
                 }
-            }
         }
         gnss_by_time.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
 
@@ -1301,7 +1297,7 @@ mod tests {
 
         // Check measurements before, during, and after hijack
         for (time, meas) in gnss_by_time {
-            if time < 1.0 - 1e-6 || time > 2.0 + 1e-6 {
+            if !(1.0 - 1e-6..=2.0 + 1e-6).contains(&time) {
                 // Before hijack or after hijack: positions should be near original
                 assert!((meas.latitude - original_lat).abs() < 1e-6);
                 assert!((meas.longitude - original_lon).abs() < 1e-6);
@@ -1327,7 +1323,7 @@ mod tests {
 
         // This should at least not crash
         let events = build_event_stream(&records, &config);
-        assert!(events.events.len() > 0);
+        assert!(!events.events.is_empty());
     }
 
     #[test]
@@ -1369,7 +1365,7 @@ mod tests {
 
         let events = build_event_stream(&records, &config);
         // Should have events
-        assert!(events.events.len() > 0);
+        assert!(!events.events.is_empty());
 
         // Check that some GNSS measurements exist
         let gnss_count = events
@@ -1397,7 +1393,7 @@ mod tests {
 
         let events = build_event_stream(&records, &config);
         // Should have events
-        assert!(events.events.len() > 0);
+        assert!(!events.events.is_empty());
 
         // Check that some GNSS measurements exist
         let gnss_count = events
@@ -1493,7 +1489,7 @@ mod tests {
         let events = build_event_stream(&records, &config);
 
         // Should have events even with NaN accuracies
-        assert!(events.events.len() > 0);
+        assert!(!events.events.is_empty());
 
         // Check that GNSS measurements were created
         let gnss_count = events
@@ -1520,7 +1516,7 @@ mod tests {
 
         let events = build_event_stream(&records, &config);
         // Should have events
-        assert!(events.events.len() > 0);
+        assert!(!events.events.is_empty());
     }
 }
 #[cfg(test)]
