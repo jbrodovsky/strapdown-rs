@@ -63,7 +63,7 @@
 
 use crate::StrapdownState;
 use crate::earth::{self, vector_to_skew_symmetric};
-use nalgebra::{DMatrix, Vector3};
+use nalgebra::{DMatrix, DVector, Rotation3, Vector3};
 
 /// Compute the state transition Jacobian (F) for strapdown mechanization
 ///
@@ -347,7 +347,6 @@ pub fn error_state_transition_jacobian(
     let h = state.altitude;
     let lat_deg = lat.to_degrees();
     let (r_n, r_e, _r_p) = earth::principal_radii(&lat_deg, &h);
-    let g = earth::gravity(&lat, &h);
 
     // ===== Position Error Block (rows 0-2) =====
 
@@ -364,10 +363,20 @@ pub fn error_state_transition_jacobian(
     // ===== Velocity Error Block (rows 3-5) =====
 
     // ∂(δv̇)/∂(δp): Velocity error rate depends on position error (gravity gradient, Coriolis)
-    // These terms are typically small and often neglected in practice
-    // For now, we include the primary gravity gradient effect
-    let gravity_gradient = -2.0 * g / (r_n + h); // Simplified
-    f[(5, 2)] = dt * gravity_gradient; // ∂(δv_d)/∂(δp_d) - altitude affects gravity
+    //
+    // NOTE: The gravity gradient term (∂g/∂h ≈ -3.08e-6) creates unstable or marginally stable
+    // dynamics in the vertical channel when used alone:
+    // - ENU: +3.08e-6 coupling → exponentially growing eigenvalues (UNSTABLE)
+    // - NED: -3.08e-6 coupling → purely imaginary eigenvalues (undamped oscillations)
+    //
+    // In practice, this term is often omitted in error-state EKF formulations because:
+    // 1. The magnitude is very small (~3e-6) and negligible over short time steps
+    // 2. Measurement updates (GPS, baro) provide the necessary stabilization
+    // 3. Including it can cause numerical issues in particle filters with sparse updates
+    //
+    // For the RBPF conditional EKF, we omit this term to avoid vertical channel instability.
+    // The position-altitude coupling is handled implicitly through measurement updates.
+    // f[(5, 2)] = 0.0; // Gravity gradient term omitted for stability
 
     // ∂(δv̇)/∂(δv): Velocity error damping due to Coriolis and centrifugal effects
     // These coupling terms are small for low dynamics and often approximated as zero
@@ -802,6 +811,238 @@ pub fn magnetometer_yaw_jacobian(
     h
 }
 
+/// Apply an error-state correction to a StrapdownState
+///
+/// This function implements the ESKF correction step, applying a computed error-state
+/// vector to correct the nominal navigation state. The correction is additive for
+/// position and velocity, and uses small-angle rotation composition for attitude.
+///
+/// # Error State Layout
+///
+/// The error state vector can be either 9-element or 15-element:
+///
+/// **9-state (navigation only):**
+/// ```text
+/// δx = [δlat, δlon, δalt, δv_n, δv_e, δv_d, δroll, δpitch, δyaw]
+/// ```
+///
+/// **15-state (with IMU biases):**
+/// ```text
+/// δx = [δlat, δlon, δalt, δv_n, δv_e, δv_d, δroll, δpitch, δyaw, δb_ax, δb_ay, δb_az, δb_gx, δb_gy, δb_gz]
+/// ```
+///
+/// # Attitude Correction
+///
+/// For small attitude errors, the correction is applied as:
+/// ```text
+/// C_corrected = (I - [δθ]×) * C_nominal ≈ C_error * C_nominal
+/// ```
+/// where [δθ]× is the skew-symmetric matrix of the attitude error angles.
+///
+/// # Arguments
+///
+/// * `state` - Mutable reference to the navigation state to correct
+/// * `delta_x` - Error-state correction vector (9 or 15 elements)
+///
+/// # Panics
+///
+/// Panics if `delta_x` has fewer than 9 elements.
+///
+/// # Example
+///
+/// ```rust
+/// use strapdown::linearize::apply_eskf_correction;
+/// use strapdown::StrapdownState;
+/// use nalgebra::{DVector, Rotation3};
+///
+/// let mut state = StrapdownState::new(
+///     45.0, -122.0, 100.0,
+///     10.0, 5.0, 0.0,
+///     Rotation3::identity(),
+///     true,
+///     None,
+/// );
+///
+/// // Apply a small correction
+/// let delta_x = DVector::from_vec(vec![
+///     0.0001,  // δlat (rad)
+///     0.0001,  // δlon (rad)
+///     1.0,     // δalt (m)
+///     0.1,     // δv_n (m/s)
+///     0.1,     // δv_e (m/s)
+///     0.0,     // δv_d (m/s)
+///     0.01,    // δroll (rad)
+///     0.01,    // δpitch (rad)
+///     0.01,    // δyaw (rad)
+/// ]);
+///
+/// apply_eskf_correction(&mut state, &delta_x);
+/// ```
+///
+/// # References
+///
+/// - Sola, J. "Quaternion kinematics for the error-state Kalman filter" (2017), Section 6.4
+/// - Groves 2nd ed., Section 14.2.6 (state correction)
+pub fn apply_eskf_correction(state: &mut StrapdownState, delta_x: &DVector<f64>) {
+    assert!(
+        delta_x.len() >= 9,
+        "Error state must have at least 9 elements, got {}",
+        delta_x.len()
+    );
+
+    // Apply position correction (additive)
+    state.latitude += delta_x[0];
+    state.longitude += delta_x[1];
+    state.altitude += delta_x[2];
+
+    // Apply velocity correction (additive)
+    state.velocity_north += delta_x[3];
+    state.velocity_east += delta_x[4];
+    state.velocity_vertical += delta_x[5];
+
+    // Apply attitude correction using small-angle approximation
+    // For small angles: C_corrected ≈ (I + [δθ]×) * C_nominal
+    // or equivalently: C_corrected = Rotation3::from_euler_angles(δroll, δpitch, δyaw) * C_nominal
+    let delta_roll = delta_x[6];
+    let delta_pitch = delta_x[7];
+    let delta_yaw = delta_x[8];
+
+    // Create small-angle rotation correction
+    // Using Rodrigues formula for small angles: R ≈ I + [θ]×
+    let delta_rotation = Rotation3::from_euler_angles(delta_roll, delta_pitch, delta_yaw);
+
+    // Apply correction: C_new = δC * C_old
+    state.attitude = delta_rotation * state.attitude;
+
+    // Note: IMU bias corrections (elements 9-14) are not stored in StrapdownState.
+    // If needed, they should be handled separately by the filter.
+}
+
+/// Apply an error-state correction with optional bias state output
+///
+/// Extended version of [`apply_eskf_correction`] that also returns the bias
+/// corrections for filters that track IMU biases separately.
+///
+/// # Arguments
+///
+/// * `state` - Mutable reference to the navigation state to correct
+/// * `delta_x` - Error-state correction vector (9 or 15 elements)
+///
+/// # Returns
+///
+/// Optional tuple of (accel_bias_correction, gyro_bias_correction) if delta_x has 15 elements.
+/// Returns `None` if delta_x has only 9 elements.
+///
+/// # Example
+///
+/// ```rust
+/// use strapdown::linearize::apply_eskf_correction_with_biases;
+/// use strapdown::StrapdownState;
+/// use nalgebra::{DVector, Rotation3};
+///
+/// let mut state = StrapdownState::default();
+///
+/// // 15-state correction including biases
+/// let delta_x = DVector::from_vec(vec![
+///     0.0, 0.0, 0.0,    // position
+///     0.0, 0.0, 0.0,    // velocity
+///     0.0, 0.0, 0.0,    // attitude
+///     0.01, 0.01, 0.01, // accel bias
+///     0.001, 0.001, 0.001, // gyro bias
+/// ]);
+///
+/// if let Some((accel_bias, gyro_bias)) = apply_eskf_correction_with_biases(&mut state, &delta_x) {
+///     // Apply bias corrections to IMU preprocessing
+///     println!("Accel bias correction: {:?}", accel_bias);
+///     println!("Gyro bias correction: {:?}", gyro_bias);
+/// }
+/// ```
+pub fn apply_eskf_correction_with_biases(
+    state: &mut StrapdownState,
+    delta_x: &DVector<f64>,
+) -> Option<(Vector3<f64>, Vector3<f64>)> {
+    // Apply the navigation state correction
+    apply_eskf_correction(state, delta_x);
+
+    // Extract bias corrections if present
+    if delta_x.len() >= 15 {
+        let accel_bias = Vector3::new(delta_x[9], delta_x[10], delta_x[11]);
+        let gyro_bias = Vector3::new(delta_x[12], delta_x[13], delta_x[14]);
+        Some((accel_bias, gyro_bias))
+    } else {
+        None
+    }
+}
+
+/// Construct a 15-state error vector from position error, conditional mean, and biases
+///
+/// This helper function assembles a full 15-state error vector from the RBPF
+/// components: position error (from particles), and conditional state (velocity
+/// error, attitude error, and bias errors from the per-particle EKF).
+///
+/// # Arguments
+///
+/// * `position_error` - Position error [δlat, δlon, δalt] in (rad, rad, m)
+/// * `conditional_mean` - 12-element conditional EKF mean [δv, δθ, δb_g, δb_a]
+///
+/// # Returns
+///
+/// 15-element error state vector suitable for [`apply_eskf_correction`]
+///
+/// # Example
+///
+/// ```rust
+/// use strapdown::linearize::assemble_error_state;
+/// use nalgebra::{Vector3, DVector};
+///
+/// let dr = Vector3::new(0.0001, 0.0001, 1.0);
+/// let mu = DVector::from_vec(vec![0.0; 12]);
+///
+/// let delta_x = assemble_error_state(&dr, &mu);
+/// assert_eq!(delta_x.len(), 15);
+/// ```
+pub fn assemble_error_state(
+    position_error: &Vector3<f64>,
+    conditional_mean: &DVector<f64>,
+) -> DVector<f64> {
+    assert_eq!(
+        conditional_mean.len(),
+        12,
+        "Conditional mean must have 12 elements, got {}",
+        conditional_mean.len()
+    );
+
+    // Conditional mean layout (matches F15 extraction via view((3,3), (12,12))):
+    // [0-2]: δv (velocity error)
+    // [3-5]: δθ (attitude error)
+    // [6-8]: δb_a (accelerometer bias error)
+    // [9-11]: δb_g (gyroscope bias error)
+    //
+    // 15-state error layout:
+    // [0-2]: δr (position error)
+    // [3-5]: δv (velocity error)
+    // [6-8]: δθ (attitude error)
+    // [9-11]: δb_a (accelerometer bias error)
+    // [12-14]: δb_g (gyroscope bias error)
+    DVector::from_vec(vec![
+        position_error[0],    // δlat
+        position_error[1],    // δlon
+        position_error[2],    // δalt
+        conditional_mean[0],  // δv_n
+        conditional_mean[1],  // δv_e
+        conditional_mean[2],  // δv_d
+        conditional_mean[3],  // δroll
+        conditional_mean[4],  // δpitch
+        conditional_mean[5],  // δyaw
+        conditional_mean[6],  // δb_ax
+        conditional_mean[7],  // δb_ay
+        conditional_mean[8],  // δb_az
+        conditional_mean[9],  // δb_gx
+        conditional_mean[10], // δb_gy
+        conditional_mean[11], // δb_gz
+    ])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -822,7 +1063,7 @@ mod tests {
         let x0: Vec<f64> = state.into();
 
         // Evaluate nominal dynamics
-        let mut state_nominal = state.clone();
+        let mut state_nominal = *state;
         crate::forward(
             &mut state_nominal,
             crate::IMUData {
@@ -1182,5 +1423,183 @@ mod tests {
                 assert_approx_eq!(h_combined[(3 + i, j)], h_vel[(i, j)], 1e-10);
             }
         }
+    }
+
+    #[test]
+    fn test_apply_eskf_correction_position() {
+        let mut state = StrapdownState::new(
+            45.0,
+            -122.0,
+            100.0,
+            0.0,
+            0.0,
+            0.0,
+            Rotation3::identity(),
+            true,
+            Some(true),
+        );
+
+        let initial_lat = state.latitude;
+        let initial_lon = state.longitude;
+        let initial_alt = state.altitude;
+
+        let delta_x = DVector::from_vec(vec![
+            0.0001, // δlat (rad)
+            0.0002, // δlon (rad)
+            5.0,    // δalt (m)
+            0.0, 0.0, 0.0, // velocity
+            0.0, 0.0, 0.0, // attitude
+        ]);
+
+        apply_eskf_correction(&mut state, &delta_x);
+
+        assert_approx_eq!(state.latitude, initial_lat + 0.0001, 1e-10);
+        assert_approx_eq!(state.longitude, initial_lon + 0.0002, 1e-10);
+        assert_approx_eq!(state.altitude, initial_alt + 5.0, 1e-10);
+    }
+
+    #[test]
+    fn test_apply_eskf_correction_velocity() {
+        let mut state = StrapdownState::new(
+            45.0,
+            -122.0,
+            100.0,
+            10.0,
+            5.0,
+            -1.0,
+            Rotation3::identity(),
+            true,
+            Some(true),
+        );
+
+        let delta_x = DVector::from_vec(vec![
+            0.0, 0.0, 0.0, // position
+            0.5, -0.3, 0.1, // velocity correction
+            0.0, 0.0, 0.0, // attitude
+        ]);
+
+        apply_eskf_correction(&mut state, &delta_x);
+
+        assert_approx_eq!(state.velocity_north, 10.5, 1e-10);
+        assert_approx_eq!(state.velocity_east, 4.7, 1e-10);
+        assert_approx_eq!(state.velocity_vertical, -0.9, 1e-10);
+    }
+
+    #[test]
+    fn test_apply_eskf_correction_attitude() {
+        let mut state = StrapdownState::new(
+            45.0,
+            -122.0,
+            100.0,
+            0.0,
+            0.0,
+            0.0,
+            Rotation3::identity(),
+            true,
+            Some(true),
+        );
+
+        // Apply small attitude correction
+        let delta_roll = 0.01; // rad
+        let delta_pitch = 0.02;
+        let delta_yaw = 0.03;
+
+        let delta_x = DVector::from_vec(vec![
+            0.0,
+            0.0,
+            0.0, // position
+            0.0,
+            0.0,
+            0.0, // velocity
+            delta_roll,
+            delta_pitch,
+            delta_yaw,
+        ]);
+
+        apply_eskf_correction(&mut state, &delta_x);
+
+        // Check that attitude has been updated
+        let (roll, pitch, yaw) = state.attitude.euler_angles();
+        assert_approx_eq!(roll, delta_roll, 1e-6);
+        assert_approx_eq!(pitch, delta_pitch, 1e-6);
+        assert_approx_eq!(yaw, delta_yaw, 1e-6);
+    }
+
+    #[test]
+    fn test_apply_eskf_correction_with_biases() {
+        let mut state = StrapdownState::default();
+
+        let delta_x = DVector::from_vec(vec![
+            0.0, 0.0, 0.0, // position
+            0.0, 0.0, 0.0, // velocity
+            0.0, 0.0, 0.0, // attitude
+            0.01, 0.02, 0.03, // accel bias
+            0.001, 0.002, 0.003, // gyro bias
+        ]);
+
+        let biases = apply_eskf_correction_with_biases(&mut state, &delta_x);
+        assert!(biases.is_some());
+
+        let (accel_bias, gyro_bias) = biases.unwrap();
+        assert_approx_eq!(accel_bias[0], 0.01, 1e-10);
+        assert_approx_eq!(accel_bias[1], 0.02, 1e-10);
+        assert_approx_eq!(accel_bias[2], 0.03, 1e-10);
+        assert_approx_eq!(gyro_bias[0], 0.001, 1e-10);
+        assert_approx_eq!(gyro_bias[1], 0.002, 1e-10);
+        assert_approx_eq!(gyro_bias[2], 0.003, 1e-10);
+    }
+
+    #[test]
+    fn test_apply_eskf_correction_with_biases_returns_none_for_9_state() {
+        let mut state = StrapdownState::default();
+
+        let delta_x = DVector::from_vec(vec![
+            0.0, 0.0, 0.0, // position
+            0.0, 0.0, 0.0, // velocity
+            0.0, 0.0, 0.0, // attitude
+        ]);
+
+        let biases = apply_eskf_correction_with_biases(&mut state, &delta_x);
+        assert!(biases.is_none());
+    }
+
+    #[test]
+    fn test_assemble_error_state() {
+        let dr = Vector3::new(0.0001, 0.0002, 5.0);
+        let mu = DVector::from_vec(vec![
+            0.1, 0.2, 0.3, // δv
+            0.01, 0.02, 0.03, // δθ
+            0.001, 0.002, 0.003, // δb_g
+            0.0001, 0.0002, 0.0003, // δb_a
+        ]);
+
+        let delta_x = assemble_error_state(&dr, &mu);
+
+        assert_eq!(delta_x.len(), 15);
+
+        // Position
+        assert_approx_eq!(delta_x[0], 0.0001, 1e-10);
+        assert_approx_eq!(delta_x[1], 0.0002, 1e-10);
+        assert_approx_eq!(delta_x[2], 5.0, 1e-10);
+
+        // Velocity
+        assert_approx_eq!(delta_x[3], 0.1, 1e-10);
+        assert_approx_eq!(delta_x[4], 0.2, 1e-10);
+        assert_approx_eq!(delta_x[5], 0.3, 1e-10);
+
+        // Attitude
+        assert_approx_eq!(delta_x[6], 0.01, 1e-10);
+        assert_approx_eq!(delta_x[7], 0.02, 1e-10);
+        assert_approx_eq!(delta_x[8], 0.03, 1e-10);
+
+        // Accel bias (from conditional positions 9-11)
+        assert_approx_eq!(delta_x[9], 0.001, 1e-10);
+        assert_approx_eq!(delta_x[10], 0.002, 1e-10);
+        assert_approx_eq!(delta_x[11], 0.003, 1e-10);
+
+        // Gyro bias (from conditional positions 6-8)
+        assert_approx_eq!(delta_x[12], 0.0001, 1e-10);
+        assert_approx_eq!(delta_x[13], 0.0002, 1e-10);
+        assert_approx_eq!(delta_x[14], 0.0003, 1e-10);
     }
 }

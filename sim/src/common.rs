@@ -5,12 +5,9 @@
 //! - Path validation and file discovery
 //! - User input prompts
 
-use log::error;
-use rayon::prelude::*;
 use std::error::Error;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 /// Initialize the logger with the specified configuration.
 ///
@@ -132,69 +129,6 @@ pub fn validate_output_path(output: &Path) -> Result<(), Box<dyn Error>> {
     if !output.exists() {
         std::fs::create_dir_all(output)?;
     }
-    Ok(())
-}
-
-/// Process multiple files with optional parallel execution.
-///
-/// # Arguments
-/// * `csv_files` - Vector of CSV files to process
-/// * `parallel` - Whether to process files in parallel
-/// * `processor` - Function to process each file, returns Result
-///
-/// # Errors
-/// Returns an error if any files fail to process (after all attempts).
-pub fn process_files<F>(
-    csv_files: &[PathBuf],
-    parallel: bool,
-    processor: F,
-) -> Result<(), Box<dyn Error>>
-where
-    F: Fn(&Path) -> Result<(), Box<dyn Error>> + Send + Sync,
-{
-    let is_multiple = csv_files.len() > 1;
-
-    if parallel && is_multiple {
-        // Parallel processing
-        let errors = Mutex::new(Vec::new());
-
-        csv_files.par_iter().for_each(|input_file| {
-            if let Err(e) = processor(input_file) {
-                error!("Error processing {}: {}", input_file.display(), e);
-                errors
-                    .lock()
-                    .expect("Failed to acquire lock on error collection")
-                    .push((input_file.clone(), e.to_string()));
-            }
-        });
-
-        let errors = errors
-            .into_inner()
-            .expect("Failed to extract errors from mutex");
-        if !errors.is_empty() {
-            error!("{} file(s) failed to process", errors.len());
-            for (file, err) in &errors {
-                error!("  {}: {}", file.display(), err);
-            }
-            return Err(format!("{} file(s) failed to process", errors.len()).into());
-        }
-    } else {
-        // Sequential processing
-        let mut failures = 0usize;
-        for input_file in csv_files {
-            if let Err(e) = processor(input_file) {
-                if !is_multiple {
-                    return Err(e);
-                }
-                failures += 1;
-                error!("Error processing {}: {}", input_file.display(), e);
-            }
-        }
-        if failures > 0 {
-            error!("{} file(s) failed to process", failures);
-        }
-    }
-
     Ok(())
 }
 
