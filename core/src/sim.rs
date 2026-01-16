@@ -2832,6 +2832,34 @@ impl Default for ClosedLoopConfig {
         }
     }
 }
+
+/// Particle filter configuration (RBPF defaults).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ParticleFilterConfig {
+    /// Apply zero-vertical-velocity pseudo-measurement.
+    #[serde(default = "default_zero_vertical_velocity")]
+    pub zero_vertical_velocity: bool,
+    /// Standard deviation for zero-vertical-velocity pseudo-measurement (m/s).
+    #[serde(default = "default_zero_vertical_velocity_std_mps")]
+    pub zero_vertical_velocity_std_mps: f64,
+}
+
+fn default_zero_vertical_velocity() -> bool {
+    true
+}
+
+fn default_zero_vertical_velocity_std_mps() -> f64 {
+    0.1
+}
+
+impl Default for ParticleFilterConfig {
+    fn default() -> Self {
+        Self {
+            zero_vertical_velocity: default_zero_vertical_velocity(),
+            zero_vertical_velocity_std_mps: default_zero_vertical_velocity_std_mps(),
+        }
+    }
+}
 /// Log level options for simulation logging.
 ///
 /// This enum is serialized/deserialized as lowercase strings to match existing
@@ -2910,6 +2938,9 @@ pub struct SimulationConfig {
     /// Closed-loop specific settings (only used if mode is ClosedLoop)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closed_loop: Option<ClosedLoopConfig>,
+    /// Particle filter settings (only used if mode is ParticleFilter)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub particle_filter: Option<ParticleFilterConfig>,
     /// Geophysical measurement configuration (optional, requires --features geonav)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub geophysical: Option<GeophysicalConfig>,
@@ -2933,6 +2964,7 @@ impl Default for SimulationConfig {
             generate_plot: false,
             logging: LoggingConfig::default(),
             closed_loop: Some(ClosedLoopConfig::default()),
+            particle_filter: None,
             geophysical: None,
             gnss_degradation: crate::messages::GnssDegradationConfig::default(),
         }

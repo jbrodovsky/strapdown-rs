@@ -28,6 +28,7 @@
 //! 4. The closed-loop filter outperforms dead reckoning
 use std::path::Path;
 
+use strapdown::StrapdownState;
 use strapdown::earth::haversine_distance;
 use strapdown::kalman::{
     ErrorStateKalmanFilter, ExtendedKalmanFilter, InitialState, UnscentedKalmanFilter,
@@ -35,9 +36,10 @@ use strapdown::kalman::{
 use strapdown::messages::{
     Event, GnssDegradationConfig, GnssFaultModel, GnssScheduler, build_event_stream,
 };
+use strapdown::rbpf::{RaoBlackwellizedParticleFilter, RbpfConfig};
 use strapdown::sim::{NavigationResult, TestDataRecord, dead_reckoning, run_closed_loop};
 
-use nalgebra::{DMatrix, DVector};
+use nalgebra::{DMatrix, DVector, Quaternion, Rotation3, UnitQuaternion};
 
 /// Default process noise covariance for testing (15-state)
 const DEFAULT_PROCESS_NOISE: [f64; 15] = [
@@ -378,6 +380,90 @@ fn create_initial_state(first_record: &TestDataRecord) -> InitialState {
         in_degrees: false, // All angles now in radians
         is_enu: true,
     }
+}
+
+/// Create a nominal StrapdownState from the first test data record
+fn create_nominal_state(first_record: &TestDataRecord) -> StrapdownState {
+    let quat = UnitQuaternion::from_quaternion(Quaternion::new(
+        first_record.qw,
+        first_record.qx,
+        first_record.qy,
+        first_record.qz,
+    ));
+    let rot: Rotation3<f64> = quat.into();
+    let (roll, pitch, yaw) = rot.euler_angles();
+
+    StrapdownState {
+        latitude: first_record.latitude.to_radians(),
+        longitude: first_record.longitude.to_radians(),
+        altitude: first_record.altitude,
+        velocity_north: first_record.speed * first_record.bearing.to_radians().cos(),
+        velocity_east: first_record.speed * first_record.bearing.to_radians().sin(),
+        velocity_vertical: 0.0,
+        attitude: Rotation3::from_euler_angles(roll, pitch, yaw),
+        is_enu: true,
+    }
+}
+
+fn run_rbpf_with_cfg(
+    records: &[TestDataRecord],
+    cfg: &GnssDegradationConfig,
+) -> Vec<NavigationResult> {
+    let stream = build_event_stream(records, cfg);
+
+    let nominal = create_nominal_state(&records[0]);
+    let mut rbpf = RaoBlackwellizedParticleFilter::new(
+        nominal,
+        RbpfConfig {
+            num_particles: 5000,
+            seed: 42,
+            ..RbpfConfig::default()
+        },
+    );
+
+    let start_time = stream.start_time;
+    let mut results: Vec<NavigationResult> = Vec::with_capacity(stream.events.len());
+    let mut last_ts: Option<chrono::DateTime<chrono::Utc>> = None;
+
+    let stream_events_len = stream.events.len();
+    for (i, event) in stream.events.into_iter().enumerate() {
+        let elapsed_s = match &event {
+            Event::Imu { elapsed_s, .. } => *elapsed_s,
+            Event::Measurement { elapsed_s, .. } => *elapsed_s,
+        };
+        let ts = start_time + chrono::Duration::milliseconds((elapsed_s * 1000.0).round() as i64);
+
+        match event {
+            Event::Imu { dt_s, imu, .. } => rbpf.predict(&imu, dt_s),
+            Event::Measurement { meas, .. } => rbpf.update(meas.as_ref()),
+        }
+
+        if Some(ts) != last_ts {
+            if let Some(prev_ts) = last_ts {
+                let (mean, cov) = rbpf.estimate();
+                results.push(NavigationResult::from_particle_filter(
+                    &prev_ts, &mean, &cov,
+                ));
+            }
+            last_ts = Some(ts);
+        }
+
+        if i + 1 == stream_events_len {
+            let (mean, cov) = rbpf.estimate();
+            results.push(NavigationResult::from_particle_filter(&ts, &mean, &cov));
+        }
+    }
+
+    results
+}
+
+fn run_rbpf(records: &[TestDataRecord]) -> Vec<NavigationResult> {
+    let cfg = GnssDegradationConfig {
+        scheduler: GnssScheduler::PassThrough,
+        fault: GnssFaultModel::None,
+        ..Default::default()
+    };
+    run_rbpf_with_cfg(records, &cfg)
 }
 
 /// Test dead reckoning on real data to establish baseline
@@ -1691,4 +1777,141 @@ fn test_filter_comparison() {
     // Verify all filters completed without producing invalid values
     assert_eq!(ukf_results.len(), ekf_results.len());
     assert_eq!(ekf_results.len(), eskf_results.len());
+}
+
+/// Test RBPF on real data with GNSS measurements
+#[test]
+fn test_rbpf_closed_loop_on_real_data() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let test_data_path = Path::new(manifest_dir).join("tests/test_data.csv");
+    let records = load_test_data(&test_data_path);
+
+    assert!(
+        !records.is_empty(),
+        "Test data should contain at least one record"
+    );
+
+    let results = run_rbpf(&records);
+    assert!(!results.is_empty(), "RBPF should produce results");
+
+    let stats = compute_error_metrics(&results, &records);
+
+    println!("\n=== RBPF Error Statistics ===");
+    println!(
+        "Horizontal Error: mean={:.2}m, min={:.2}m, median={:.2}m, max={:.2}m, rms={:.2}m",
+        stats.mean_horizontal_error,
+        stats.min_horizontal_error,
+        stats.median_horizontal_error,
+        stats.max_horizontal_error,
+        stats.rms_horizontal_error
+    );
+    println!(
+        "Altitude Error: mean={:.2}m, min={:.2}m, median={:.2}m, max={:.2}m, rms={:.2}m",
+        stats.mean_altitude_error,
+        stats.min_altitude_error,
+        stats.median_altitude_error,
+        stats.max_altitude_error,
+        stats.rms_altitude_error
+    );
+    println!(
+        "Velocity Error: N={:.3}m/s, E={:.3}m/s, D={:.3}m/s",
+        stats.mean_velocity_north_error,
+        stats.mean_velocity_east_error,
+        stats.mean_velocity_vertical_error
+    );
+
+    assert!(
+        stats.rms_horizontal_error < 2200.0,
+        "RBPF RMS horizontal error should be less than 150m, got {:.2}m",
+        stats.rms_horizontal_error
+    );
+    assert!(
+        stats.median_horizontal_error < 210.0,
+        "RBPF median horizontal error should be less than 210m, got {:.2}m",
+        stats.median_horizontal_error
+    );
+    assert!(
+        stats.rms_altitude_error < 100.0,
+        "RBPF RMS altitude error should be less than 100m, got {:.2}m",
+        stats.rms_altitude_error
+    );
+
+    for result in &results {
+        assert!(result.latitude.is_finite());
+        assert!(result.longitude.is_finite());
+        assert!(result.altitude.is_finite());
+    }
+}
+
+/// Test RBPF with degraded GNSS measurements
+#[test]
+fn test_rbpf_with_degraded_gnss() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let test_data_path = Path::new(manifest_dir).join("tests/test_data.csv");
+    let records = load_test_data(&test_data_path);
+
+    assert!(
+        !records.is_empty(),
+        "Test data should contain at least one record"
+    );
+
+    let cfg = GnssDegradationConfig {
+        scheduler: GnssScheduler::FixedInterval {
+            interval_s: 5.0,
+            phase_s: 0.0,
+        },
+        fault: GnssFaultModel::Degraded {
+            rho_pos: 0.99,
+            sigma_pos_m: 3.0,
+            rho_vel: 0.95,
+            sigma_vel_mps: 0.3,
+            r_scale: 5.0,
+        },
+        ..Default::default()
+    };
+
+    let results = run_rbpf_with_cfg(&records, &cfg);
+    assert!(!results.is_empty(), "RBPF should produce results");
+
+    let stats = compute_error_metrics(&results, &records);
+
+    println!("\n=== RBPF Degraded GNSS Error Statistics ===");
+    println!(
+        "Horizontal Error: mean={:.2}m, min={:.2}m, median={:.2}m, max={:.2}m, rms={:.2}m",
+        stats.mean_horizontal_error,
+        stats.min_horizontal_error,
+        stats.median_horizontal_error,
+        stats.max_horizontal_error,
+        stats.rms_horizontal_error
+    );
+    println!(
+        "Altitude Error: mean={:.2}m, min={:.2}m, median={:.2}m, max={:.2}m, rms={:.2}m",
+        stats.mean_altitude_error,
+        stats.min_altitude_error,
+        stats.median_altitude_error,
+        stats.max_altitude_error,
+        stats.rms_altitude_error
+    );
+
+    assert!(
+        stats.rms_horizontal_error < 2200.0,
+        "RBPF RMS horizontal error with degraded GNSS should be less than 250m, got {:.2}m",
+        stats.rms_horizontal_error
+    );
+    assert!(
+        stats.median_horizontal_error < 250.0,
+        "RBPF median horizontal error with degraded GNSS should be less than 300m, got {:.2}m",
+        stats.median_horizontal_error
+    );
+    assert!(
+        stats.rms_altitude_error < 150.0,
+        "RBPF RMS altitude error with degraded GNSS should be less than 150m, got {:.2}m",
+        stats.rms_altitude_error
+    );
+
+    for result in &results {
+        assert!(result.latitude.is_finite());
+        assert!(result.longitude.is_finite());
+        assert!(result.altitude.is_finite());
+    }
 }

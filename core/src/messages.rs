@@ -409,6 +409,7 @@ impl GnssDegradationConfig {
 /// };
 /// let gnss_event = Event::Measurement { meas: Box::new(gnss_meas), elapsed_s: 2.0 };
 /// ```
+
 pub enum Event {
     /// IMU prediction step.
     ///

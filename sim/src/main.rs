@@ -29,17 +29,20 @@ use common::{
     validate_output_path,
 };
 use log::{error, info};
+use nalgebra::{Rotation3, Vector3};
 use rayon::prelude::*;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use strapdown::messages::{GnssScheduler, build_event_stream};
+use strapdown::messages::{Event, GnssScheduler, build_event_stream};
+use strapdown::rbpf::{RaoBlackwellizedParticleFilter, RbpfConfig};
 
 // Geophysical navigation imports (feature-gated)
 #[cfg(feature = "geonav")]
 use geonav::{
-    GeoMap, GeophysicalMeasurementType, GravityResolution, MagneticResolution,
-    build_event_stream as geo_build_event_stream, geo_closed_loop_ekf, geo_closed_loop_ukf,
+    GeoMap, GeophysicalMeasurementType, GravityMeasurement, GravityResolution,
+    MagneticAnomalyMeasurement, MagneticResolution, build_event_stream as geo_build_event_stream,
+    geo_closed_loop_ekf, geo_closed_loop_ukf,
 };
 #[cfg(feature = "geonav")]
 use std::rc::Rc;
@@ -286,6 +289,18 @@ struct ParticleFilterSimArgs {
     /// Fault model settings (corrupt measurement content)
     #[command(flatten)]
     fault: FaultArgs,
+
+    /// Geophysical navigation options (optional, requires --features geonav)
+    #[command(flatten)]
+    geo: GeophysicalArgs,
+
+    /// Apply zero-vertical-velocity pseudo-measurement (RBPF only).
+    #[arg(long, default_value_t = true)]
+    zero_vertical_velocity: bool,
+
+    /// Std dev for zero-vertical-velocity pseudo-measurement (m/s).
+    #[arg(long, default_value_t = 0.1)]
+    zero_vertical_velocity_std_mps: f64,
 }
 
 /// Arguments for create-config command
@@ -409,8 +424,155 @@ fn process_file(
             }
         }
         SimulationMode::ParticleFilter => {
-            info!("Particle filter mode is not yet fully implemented");
-            Err("Particle filter mode is not yet fully implemented".into())
+            info!("Running particle filter simulation");
+
+            #[cfg(feature = "geonav")]
+            let (gravity_map, magnetic_map, geo_frequency_s, gravity_noise_std, magnetic_noise_std) = {
+                if let Some(geo_cfg) = &config.geophysical {
+                    let gravity_map = if let Some(res) = geo_cfg.gravity_resolution {
+                        let map_path = match &geo_cfg.gravity_map_file {
+                            Some(path) => PathBuf::from(path),
+                            None => find_gravity_map(input_file)?,
+                        };
+                        let measurement_type =
+                            GeophysicalMeasurementType::Gravity(convert_resolution_gravity(res));
+                        Some(Rc::new(GeoMap::load_geomap(map_path, measurement_type)?))
+                    } else {
+                        None
+                    };
+
+                    let magnetic_map = if let Some(res) = geo_cfg.magnetic_resolution {
+                        let map_path = match &geo_cfg.magnetic_map_file {
+                            Some(path) => PathBuf::from(path),
+                            None => find_magnetic_map(input_file)?,
+                        };
+                        let measurement_type =
+                            GeophysicalMeasurementType::Magnetic(convert_resolution_magnetic(res));
+                        Some(Rc::new(GeoMap::load_geomap(map_path, measurement_type)?))
+                    } else {
+                        None
+                    };
+
+                    (
+                        gravity_map,
+                        magnetic_map,
+                        geo_cfg.geo_frequency_s,
+                        geo_cfg.gravity_noise_std.unwrap_or(100.0),
+                        geo_cfg.magnetic_noise_std.unwrap_or(150.0),
+                    )
+                } else {
+                    (None, None, None, 100.0, 150.0)
+                }
+            };
+
+            #[cfg(not(feature = "geonav"))]
+            if config.geophysical.is_some() {
+                return Err("Geophysical configuration requires the geonav feature".into());
+            }
+
+            #[cfg(feature = "geonav")]
+            let event_stream = if gravity_map.is_some() || magnetic_map.is_some() {
+                geo_build_event_stream(
+                    &records,
+                    &config.gnss_degradation,
+                    gravity_map.clone(),
+                    gravity_map.as_ref().map(|_| gravity_noise_std),
+                    magnetic_map.clone(),
+                    magnetic_map.as_ref().map(|_| magnetic_noise_std),
+                    geo_frequency_s,
+                )
+            } else {
+                build_event_stream(&records, &config.gnss_degradation)
+            };
+
+            #[cfg(not(feature = "geonav"))]
+            let event_stream = build_event_stream(&records, &config.gnss_degradation);
+
+            let first = &records[0];
+            let attitude = Rotation3::from_euler_angles(first.roll, first.pitch, first.yaw);
+            let nominal = strapdown::StrapdownState {
+                latitude: first.latitude.to_radians(),
+                longitude: first.longitude.to_radians(),
+                altitude: first.altitude,
+                velocity_north: first.speed * first.bearing.to_radians().cos(),
+                velocity_east: first.speed * first.bearing.to_radians().sin(),
+                velocity_vertical: 0.0,
+                attitude,
+                is_enu: true,
+            };
+
+            let pf_cfg = config
+                .particle_filter
+                .clone()
+                .unwrap_or_else(strapdown::sim::ParticleFilterConfig::default);
+            let mut rbpf = RaoBlackwellizedParticleFilter::new(
+                nominal,
+                RbpfConfig {
+                    seed: config.seed,
+                    zero_vertical_velocity: pf_cfg.zero_vertical_velocity,
+                    zero_vertical_velocity_std_mps: pf_cfg.zero_vertical_velocity_std_mps,
+                    ..RbpfConfig::default()
+                },
+            );
+
+            let start_time = event_stream.start_time;
+            let mut results = Vec::with_capacity(event_stream.events.len());
+            let mut last_ts: Option<chrono::DateTime<chrono::Utc>> = None;
+
+            for (idx, event) in event_stream.events.into_iter().enumerate() {
+                let elapsed_s = match &event {
+                    Event::Imu { elapsed_s, .. } => *elapsed_s,
+                    Event::Measurement { elapsed_s, .. } => *elapsed_s,
+                };
+                let ts = start_time
+                    + chrono::Duration::milliseconds((elapsed_s * 1000.0).round() as i64);
+
+                match event {
+                    Event::Imu { dt_s, imu, .. } => {
+                        rbpf.predict(&imu, dt_s);
+                    }
+                    Event::Measurement { mut meas, .. } => {
+                        #[cfg(feature = "geonav")]
+                        if gravity_map.is_some() || magnetic_map.is_some() {
+                            let (mean, _) = rbpf.estimate();
+                            let strapdown: strapdown::StrapdownState =
+                                mean.as_slice().try_into().unwrap();
+                            if let Some(gravity) =
+                                meas.as_any_mut().downcast_mut::<GravityMeasurement>()
+                            {
+                                gravity.set_state(&strapdown);
+                            } else if let Some(magnetic) =
+                                meas.as_any_mut()
+                                    .downcast_mut::<MagneticAnomalyMeasurement>()
+                            {
+                                magnetic.set_state(&strapdown);
+                            }
+                        }
+                        rbpf.update(meas.as_ref());
+                    }
+                }
+
+                if Some(ts) != last_ts {
+                    if let Some(prev_ts) = last_ts {
+                        let (mean, cov) = rbpf.estimate();
+                        results.push(NavigationResult::from_particle_filter(
+                            &prev_ts, &mean, &cov,
+                        ));
+                    }
+                    last_ts = Some(ts);
+                }
+
+                // if idx + 1 == event_stream.events.len() {
+                //     let (mean, cov) = rbpf.estimate();
+                //     results.push(NavigationResult::from_particle_filter(&ts, &mean, &cov));
+                // }
+            }
+
+            let output_file = output.join(input_file.file_name().unwrap());
+            NavigationResult::to_csv(&results, &output_file)?;
+            info!("Results written to {}", output_file.display());
+
+            Ok(())
         }
     }
 }
@@ -1054,6 +1216,10 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
     validate_input_path(&args.sim.input)?;
     validate_output_path(&args.sim.output)?;
 
+    if !matches!(args.filter_type, ParticleFilterType::RaoBlackwellized) {
+        return Err("Only Rao-Blackwellized particle filter is implemented in this mode".into());
+    }
+
     let csv_files = get_csv_files(&args.sim.input)?;
     let is_multiple = csv_files.len() > 1;
 
@@ -1064,15 +1230,180 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
     for input_file in &csv_files {
         info!("Processing file: {}", input_file.display());
 
-        // TODO: Implement particle filter processing here
-        // let records = TestDataRecord::from_csv(input_file)?;
-        // let output_file = generate_output_path(&args.sim.output, input_file, is_multiple);
-        // ... process and write results ...
+        let records = TestDataRecord::from_csv(input_file)?;
+        info!(
+            "Read {} records from {}",
+            records.len(),
+            input_file.display()
+        );
+
+        let gnss_degradation = strapdown::messages::GnssDegradationConfig {
+            scheduler: build_scheduler(&args.scheduler),
+            fault: build_fault(&args.fault),
+            seed: args.seed,
+        };
+
+        #[cfg(feature = "geonav")]
+        let (gravity_map, magnetic_map) = {
+            if args.geo.geo {
+                if args.geo.gravity_resolution.is_none() && args.geo.magnetic_resolution.is_none() {
+                    return Err("At least one of --gravity-resolution or --magnetic-resolution must be specified when using --geo".into());
+                }
+
+                let gravity_map = if let Some(res) = args.geo.gravity_resolution {
+                    let map_path = match &args.geo.gravity_map_file {
+                        Some(path) => path.clone(),
+                        None => find_gravity_map(input_file)?,
+                    };
+                    info!("Loading gravity map from: {}", map_path.display());
+                    let measurement_type =
+                        GeophysicalMeasurementType::Gravity(convert_resolution_gravity(res));
+                    Some(Rc::new(GeoMap::load_geomap(map_path, measurement_type)?))
+                } else {
+                    None
+                };
+
+                let magnetic_map = if let Some(res) = args.geo.magnetic_resolution {
+                    let map_path = match &args.geo.magnetic_map_file {
+                        Some(path) => path.clone(),
+                        None => find_magnetic_map(input_file)?,
+                    };
+                    info!("Loading magnetic map from: {}", map_path.display());
+                    let measurement_type =
+                        GeophysicalMeasurementType::Magnetic(convert_resolution_magnetic(res));
+                    Some(Rc::new(GeoMap::load_geomap(map_path, measurement_type)?))
+                } else {
+                    None
+                };
+
+                (gravity_map, magnetic_map)
+            } else {
+                (None, None)
+            }
+        };
+
+        #[cfg(not(feature = "geonav"))]
+        let event_stream = build_event_stream(&records, &gnss_degradation);
+
+        #[cfg(feature = "geonav")]
+        let event_stream = if args.geo.geo {
+            geo_build_event_stream(
+                &records,
+                &gnss_degradation,
+                gravity_map.clone(),
+                gravity_map.as_ref().map(|_| args.geo.gravity_noise_std),
+                magnetic_map.clone(),
+                magnetic_map.as_ref().map(|_| args.geo.magnetic_noise_std),
+                args.geo.geo_frequency_s,
+            )
+        } else {
+            build_event_stream(&records, &gnss_degradation)
+        };
+
+        let first = &records[0];
+        let attitude = Rotation3::from_euler_angles(first.roll, first.pitch, first.yaw);
+        let nominal = strapdown::StrapdownState {
+            latitude: first.latitude.to_radians(),
+            longitude: first.longitude.to_radians(),
+            altitude: first.altitude,
+            velocity_north: first.speed * first.bearing.to_radians().cos(),
+            velocity_east: first.speed * first.bearing.to_radians().sin(),
+            velocity_vertical: 0.0,
+            attitude,
+            is_enu: true,
+        };
+
+        let process_noise_std_m = Vector3::new(
+            args.process_noise_std_m[0],
+            args.process_noise_std_m[1],
+            args.process_noise_std_m[2],
+        );
+
+        let config = RbpfConfig {
+            num_particles: args.num_particles,
+            position_init_std_m: Vector3::new(
+                args.position_std,
+                args.position_std,
+                args.position_std,
+            ),
+            velocity_init_std_mps: args.velocity_std,
+            attitude_init_std_rad: args.attitude_std,
+            position_process_noise_std_m: process_noise_std_m,
+            velocity_process_noise_std_mps: args.velocity_std,
+            attitude_process_noise_std_rad: args.attitude_std,
+            seed: args.seed,
+            zero_vertical_velocity: args.zero_vertical_velocity,
+            zero_vertical_velocity_std_mps: args.zero_vertical_velocity_std_mps,
+            ..RbpfConfig::default()
+        };
+
+        let mut rbpf = RaoBlackwellizedParticleFilter::new(nominal, config);
+
+        let start_time = event_stream.start_time;
+        let mut results = Vec::with_capacity(event_stream.events.len());
+        let mut last_ts: Option<chrono::DateTime<chrono::Utc>> = None;
+
+        for (idx, event) in event_stream.events.into_iter().enumerate() {
+            let elapsed_s = match &event {
+                Event::Imu { elapsed_s, .. } => *elapsed_s,
+                Event::Measurement { elapsed_s, .. } => *elapsed_s,
+            };
+            let ts =
+                start_time + chrono::Duration::milliseconds((elapsed_s * 1000.0).round() as i64);
+
+            match event {
+                Event::Imu { dt_s, imu, .. } => {
+                    rbpf.predict(&imu, dt_s);
+                }
+                Event::Measurement { mut meas, .. } => {
+                    #[cfg(feature = "geonav")]
+                    if args.geo.geo {
+                        let (mean, _) = rbpf.estimate();
+                        let strapdown: strapdown::StrapdownState =
+                            mean.as_slice().try_into().unwrap();
+                        if let Some(gravity) =
+                            meas.as_any_mut().downcast_mut::<GravityMeasurement>()
+                        {
+                            gravity.set_state(&strapdown);
+                        } else if let Some(magnetic) = meas
+                            .as_any_mut()
+                            .downcast_mut::<MagneticAnomalyMeasurement>()
+                        {
+                            magnetic.set_state(&strapdown);
+                        }
+                    }
+                    rbpf.update(meas.as_ref());
+                }
+            }
+
+            if Some(ts) != last_ts {
+                if let Some(prev_ts) = last_ts {
+                    let (mean, cov) = rbpf.estimate();
+                    results.push(NavigationResult::from_particle_filter(
+                        &prev_ts, &mean, &cov,
+                    ));
+                }
+                last_ts = Some(ts);
+            }
+
+            // if idx + 1 == event_stream.events.len() {
+            //     let (mean, cov) = rbpf.estimate();
+            //     results.push(NavigationResult::from_particle_filter(&ts, &mean, &cov));
+            // }
+        }
+
+        let output_file = args.sim.output.join(input_file.file_name().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Input file path '{}' has no filename", input_file.display()),
+            )
+        })?);
+
+        NavigationResult::to_csv(&results, &output_file)?;
+        info!("Results written to {}", output_file.display());
     }
 
-    info!("Particle filter mode is not yet fully implemented");
-    println!("Particle filter mode is not yet fully implemented");
-    // Note: Implementation would go here once particle filter is ready
+    info!("Particle filter simulation complete");
 
     Ok(())
 }
@@ -1654,13 +1985,13 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
         None
     };
 
-    // let particle_filter = if matches!(mode, SimulationMode::ParticleFilter) {
-    //     println!("\nParticle filter configuration uses default values.");
-    //     println!("Edit the generated config file to customize particle filter settings.");
-    //     Some(strapdown::sim::ParticleFilterConfig::default())
-    // } else {
-    //     None
-    // };
+    let particle_filter = if matches!(mode, SimulationMode::ParticleFilter) {
+        println!("\nParticle filter configuration uses default values.");
+        println!("Edit the generated config file to customize particle filter settings.");
+        Some(strapdown::sim::ParticleFilterConfig::default())
+    } else {
+        None
+    };
 
     // GNSS degradation configuration
     let scheduler = prompt_gnss_scheduler();
@@ -1724,6 +2055,7 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
         generate_plot: false,
         logging,
         closed_loop,
+        particle_filter,
         geophysical,
         gnss_degradation,
     };

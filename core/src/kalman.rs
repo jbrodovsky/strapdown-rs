@@ -922,7 +922,9 @@ impl NavigationFilter for ExtendedKalmanFilter {
         } else {
             // Fallback: assume direct position measurement
             // crate::linearize::gps_position_jacobian(&nav_state)
-            todo!("Unsupported measurement type for EKF update! Need to implement geophysical measurement jacobians for the EKF");
+            todo!(
+                "Unsupported measurement type for EKF update! Need to implement geophysical measurement jacobians for the EKF"
+            );
         };
 
         // Extend H to full state size if using biases
@@ -1739,7 +1741,6 @@ impl NavigationFilter for ErrorStateKalmanFilter {
         self.error_covariance.clone()
     }
 }
-
 
 #[cfg(test)]
 mod tests {
