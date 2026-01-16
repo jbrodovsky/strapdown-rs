@@ -50,6 +50,8 @@ use std::rc::Rc;
 use strapdown::NavigationFilter;
 #[cfg(feature = "geonav")]
 use strapdown::kalman::{ExtendedKalmanFilter, InitialState};
+use strapdown::sim::HealthLimits;
+use strapdown::sim::health::HealthMonitor;
 #[cfg(feature = "geonav")]
 use strapdown::sim::{DEFAULT_PROCESS_NOISE, GeoResolution};
 use strapdown::sim::{
@@ -57,8 +59,6 @@ use strapdown::sim::{
     SchedulerArgs, SimulationConfig, SimulationMode, TestDataRecord, build_fault, build_scheduler,
     dead_reckoning, initialize_ekf, initialize_eskf, initialize_ukf, run_closed_loop,
 };
-use strapdown::sim::health::HealthMonitor;
-use strapdown::sim::HealthLimits;
 
 const LONG_ABOUT: &str =
     "STRAPDOWN SIM: A simulation and analysis tool for strapdown inertial navigation systems.
@@ -645,6 +645,7 @@ fn process_file(
                     return Err(e.into());
                 }
                 execution_monitor.check("particle-filter")?;
+                execution_monitor.mark_progress();
 
                 if Some(ts) != last_ts {
                     if let Some(prev_ts) = last_ts {
@@ -1107,7 +1108,7 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
     // Get all CSV files to process
     let csv_files = get_csv_files(&args.sim.input)?;
     let is_multiple = csv_files.len() > 1;
-    let execution_limits = execution_limits_from_args(&args.sim);
+    let _execution_limits = execution_limits_from_args(&args.sim);
 
     if is_multiple {
         info!("Processing {} CSV files from directory", csv_files.len());
@@ -1342,6 +1343,7 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
 
     let csv_files = get_csv_files(&args.sim.input)?;
     let is_multiple = csv_files.len() > 1;
+    let execution_limits = execution_limits_from_args(&args.sim);
 
     if is_multiple {
         info!("Processing {} CSV files from directory", csv_files.len());
@@ -1487,8 +1489,7 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
                 Event::Measurement { elapsed_s, .. } => *elapsed_s,
             })
             .unwrap_or(0.0);
-        let mut execution_monitor =
-            ExecutionMonitor::new(execution_limits.clone(), sim_duration_s);
+        let mut execution_monitor = ExecutionMonitor::new(execution_limits.clone(), sim_duration_s);
 
         for event in event_stream.events.into_iter() {
             let elapsed_s = match &event {
@@ -1528,6 +1529,7 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
                 return Err(e.into());
             }
             execution_monitor.check("particle-filter")?;
+            execution_monitor.mark_progress();
 
             if Some(ts) != last_ts {
                 if let Some(prev_ts) = last_ts {
