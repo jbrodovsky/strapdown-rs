@@ -632,21 +632,26 @@ pub fn relative_altitude_jacobian(_state: &StrapdownState) -> DMatrix<f64> {
 
 /// Compute measurement Jacobian (H) for gravity anomaly measurement
 ///
-/// **Note**: This is a placeholder function for future use. Currently, the EKF computes
-/// measurement Jacobians internally during the update step. This function provides a
-/// template structure for when custom Jacobian computation is integrated into the EKF.
+/// **Note**: This is a placeholder function that returns zeros. Geophysical measurements
+/// (gravity anomaly and magnetic anomaly) now provide their own Jacobians via the
+/// `MeasurementModel::get_jacobian()` trait method. The EKF update function automatically
+/// detects and uses these measurement-provided Jacobians.
 ///
 /// Gravity anomaly measurements depend on latitude and longitude (position) to query the
-/// geophysical map. The partial derivatives ∂z/∂lat and ∂z/∂lon would be computed
-/// numerically by the measurement model based on map gradients.
+/// geophysical map. The partial derivatives ∂z/∂lat and ∂z/∂lon are computed numerically
+/// by the `GravityMeasurement` struct in the `strapdown-geonav` crate based on map gradients.
 ///
 /// # Arguments
 ///
-/// * `_state` - Current navigation state (reserved for future use)
+/// * `_state` - Current navigation state (unused, this is a placeholder)
 ///
 /// # Returns
 ///
-/// 1×9 measurement Jacobian matrix H template for gravity anomaly (currently zeros)
+/// 1×9 measurement Jacobian matrix H filled with zeros (placeholder)
+///
+/// # See Also
+///
+/// For actual gravity anomaly Jacobian computation, see `geonav::GravityMeasurement::get_jacobian_internal()`.
 ///
 /// # Example
 ///
@@ -660,34 +665,35 @@ pub fn relative_altitude_jacobian(_state: &StrapdownState) -> DMatrix<f64> {
 /// assert_eq!(h.ncols(), 9);
 /// ```
 pub fn gravity_anomaly_jacobian(_state: &StrapdownState) -> DMatrix<f64> {
-    // Gravity anomaly depends on position (lat, lon) through map lookup
-    // The partial derivatives ∂z/∂lat and ∂z/∂lon are computed numerically
-    // by the measurement model based on map gradients
-
-    // These will be filled in by the measurement model with numerical derivatives
-    // from the geophysical map interpolation
-    // h[(0, 0)] = ∂(anomaly)/∂(lat) - computed from map gradient
-    // h[(0, 1)] = ∂(anomaly)/∂(lon) - computed from map gradient
+    // NOTE: This is a placeholder. Real gravity anomaly Jacobians are provided
+    // by the GravityMeasurement struct in the geonav crate via the
+    // MeasurementModel::get_jacobian() trait method. The EKF will automatically
+    // use the measurement-provided Jacobian when available.
     DMatrix::<f64>::zeros(1, 9)
 }
 
 /// Compute measurement Jacobian (H) for magnetic anomaly measurement
 ///
-/// **Note**: This is a placeholder function for future use. Currently, the EKF computes
-/// measurement Jacobians internally during the update step. This function provides a
-/// template structure for when custom Jacobian computation is integrated into the EKF.
+/// **Note**: This is a placeholder function that returns zeros. Geophysical measurements
+/// (gravity anomaly and magnetic anomaly) now provide their own Jacobians via the
+/// `MeasurementModel::get_jacobian()` trait method. The EKF update function automatically
+/// detects and uses these measurement-provided Jacobians.
 ///
 /// Magnetic anomaly measurements depend on latitude and longitude (position) to query the
-/// geophysical map. The partial derivatives ∂z/∂lat and ∂z/∂lon would be computed
-/// numerically by the measurement model based on map gradients.
+/// geophysical map. The partial derivatives ∂z/∂lat and ∂z/∂lon are computed numerically
+/// by the `MagneticAnomalyMeasurement` struct in the `strapdown-geonav` crate based on map gradients.
 ///
 /// # Arguments
 ///
-/// * `_state` - Current navigation state (reserved for future use)
+/// * `_state` - Current navigation state (unused, this is a placeholder)
 ///
 /// # Returns
 ///
-/// 1×9 measurement Jacobian matrix H template for magnetic anomaly (currently zeros)
+/// 1×9 measurement Jacobian matrix H filled with zeros (placeholder)
+///
+/// # See Also
+///
+/// For actual magnetic anomaly Jacobian computation, see `geonav::MagneticAnomalyMeasurement::get_jacobian_internal()`.
 ///
 /// # Example
 ///
@@ -701,14 +707,10 @@ pub fn gravity_anomaly_jacobian(_state: &StrapdownState) -> DMatrix<f64> {
 /// assert_eq!(h.ncols(), 9);
 /// ```
 pub fn magnetic_anomaly_jacobian(_state: &StrapdownState) -> DMatrix<f64> {
-    // Magnetic anomaly depends on position (lat, lon) through map lookup
-    // The partial derivatives ∂z/∂lat and ∂z/∂lon are computed numerically
-    // by the measurement model based on map gradients
-
-    // These will be filled in by the measurement model with numerical derivatives
-    // from the geophysical map interpolation
-    // h[(0, 0)] = ∂(anomaly)/∂(lat) - computed from map gradient
-    // h[(0, 1)] = ∂(anomaly)/∂(lon) - computed from map gradient
+    // NOTE: This is a placeholder. Real magnetic anomaly Jacobians are provided
+    // by the MagneticAnomalyMeasurement struct in the geonav crate via the
+    // MeasurementModel::get_jacobian() trait method. The EKF will automatically
+    // use the measurement-provided Jacobian when available.
     DMatrix::<f64>::zeros(1, 9)
 }
 

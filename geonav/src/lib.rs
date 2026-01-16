@@ -579,6 +579,10 @@ impl MeasurementModel for GravityMeasurement {
             .unwrap_or(f64::NAN);
         DVector::from_vec(vec![map_value])
     }
+
+    fn get_jacobian(&self, state: &DVector<f64>) -> Option<DMatrix<f64>> {
+        Some(self.get_jacobian_internal(state))
+    }
 }
 
 impl GravityMeasurement {
@@ -594,7 +598,7 @@ impl GravityMeasurement {
     /// # Returns
     ///
     /// 1×9 Jacobian matrix H for gravity anomaly measurement
-    pub fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64> {
+    pub fn get_jacobian_internal(&self, state: &DVector<f64>) -> DMatrix<f64> {
         let mut h = DMatrix::<f64>::zeros(1, 9);
 
         let lat = state[0];
@@ -679,6 +683,10 @@ impl MeasurementModel for MagneticAnomalyMeasurement {
             .unwrap_or(f64::NAN);
         DVector::from_vec(vec![map_value])
     }
+
+    fn get_jacobian(&self, state: &DVector<f64>) -> Option<DMatrix<f64>> {
+        Some(self.get_jacobian_internal(state))
+    }
 }
 
 impl MagneticAnomalyMeasurement {
@@ -694,7 +702,7 @@ impl MagneticAnomalyMeasurement {
     /// # Returns
     ///
     /// 1×9 Jacobian matrix H for magnetic anomaly measurement
-    pub fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64> {
+    pub fn get_jacobian_internal(&self, state: &DVector<f64>) -> DMatrix<f64> {
         let mut h = DMatrix::<f64>::zeros(1, 9);
 
         let lat = state[0];
@@ -1697,7 +1705,7 @@ mod tests {
             0.0, // attitude
         ]);
 
-        let jacobian = measurement.get_jacobian(&state);
+        let jacobian = measurement.get_jacobian_internal(&state);
 
         // Jacobian should be 1x9
         assert_eq!(jacobian.nrows(), 1);
@@ -1737,7 +1745,7 @@ mod tests {
             0.0, // attitude
         ]);
 
-        let jacobian = measurement.get_jacobian(&state);
+        let jacobian = measurement.get_jacobian_internal(&state);
 
         // Jacobian should be 1x9
         assert_eq!(jacobian.nrows(), 1);
@@ -1748,5 +1756,84 @@ mod tests {
         for j in 2..9 {
             assert_approx_eq!(jacobian[(0, j)], 0.0, 1e-10);
         }
+    }
+
+    #[test]
+    fn test_gravity_measurement_trait_jacobian() {
+        // Test that the MeasurementModel trait method works correctly
+        let map = Rc::new(create_test_gravity_map());
+        let measurement: Box<dyn strapdown::measurements::MeasurementModel> =
+            Box::new(GravityMeasurement {
+                map: map.clone(),
+                noise_std: 100.0,
+                gravity_observed: 9.8,
+                latitude: 41.0_f64.to_radians(),
+                altitude: 100.0,
+                north_velocity: 0.0,
+                east_velocity: 0.0,
+            });
+
+        let state = DVector::from_vec(vec![
+            41.0_f64.to_radians(),
+            -73.0_f64.to_radians(),
+            100.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        ]);
+
+        // Test that get_jacobian returns Some
+        let jacobian_opt = measurement.get_jacobian(&state);
+        assert!(
+            jacobian_opt.is_some(),
+            "Gravity measurement should provide Jacobian via trait"
+        );
+
+        let jacobian = jacobian_opt.unwrap();
+        assert_eq!(jacobian.nrows(), 1);
+        assert_eq!(jacobian.ncols(), 9);
+    }
+
+    #[test]
+    fn test_magnetic_measurement_trait_jacobian() {
+        // Test that the MeasurementModel trait method works correctly
+        let map = Rc::new(create_test_magnetic_map());
+        let measurement: Box<dyn strapdown::measurements::MeasurementModel> =
+            Box::new(MagneticAnomalyMeasurement {
+                map: map.clone(),
+                noise_std: 100.0,
+                mag_obs: 48000.0,
+                latitude: 41.0,
+                longitude: -73.0,
+                altitude: 100.0,
+                year: 2023,
+                day: 216,
+            });
+
+        let state = DVector::from_vec(vec![
+            41.0_f64.to_radians(),
+            -73.0_f64.to_radians(),
+            100.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        ]);
+
+        // Test that get_jacobian returns Some
+        let jacobian_opt = measurement.get_jacobian(&state);
+        assert!(
+            jacobian_opt.is_some(),
+            "Magnetic measurement should provide Jacobian via trait"
+        );
+
+        let jacobian = jacobian_opt.unwrap();
+        assert_eq!(jacobian.nrows(), 1);
+        assert_eq!(jacobian.ncols(), 9);
     }
 }
