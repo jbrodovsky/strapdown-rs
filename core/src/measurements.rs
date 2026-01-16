@@ -106,7 +106,7 @@ pub trait MeasurementModel: Any {
     /// // assert!(h_matrix_opt.is_none());
     /// ```
     fn get_jacobian(&self, _state: &DVector<f64>) -> Option<DMatrix<f64>> {
-        None  // Default implementation returns None
+        None // Default implementation returns None
     }
 }
 
