@@ -36,59 +36,35 @@ def clean_phone_data(dataset_path: Path | str) -> pd.DataFrame:
     assert os.path.exists(dataset_path), f"File {dataset_path} does not exist."
     # Assert the needed .csv files exist
     # assert os.path.exists(os.path.join(dataset_path, "Accelerometer.csv")), "Accelerometer.csv does not exist."
-    assert os.path.exists(os.path.join(dataset_path, "Gyroscope.csv")), (
-        "Gyroscope.csv does not exist."
-    )
+    assert os.path.exists(os.path.join(dataset_path, "Gyroscope.csv")), "Gyroscope.csv does not exist."
     # Check to make sure that the trajectory is of sufficient length (>=300 seconds)
     gyro = pd.read_csv(os.path.join(dataset_path, "Gyroscope.csv"), index_col=0)
     assert gyro["seconds_elapsed"].max() >= 300, (
         f"Trajectory is too short. Minimum required is 300 seconds. Trajectory is {gyro['seconds_elapsed'].max()} seconds."
     )
-    assert os.path.exists(os.path.join(dataset_path, "Magnetometer.csv")), (
-        "Magnetometer.csv does not exist."
-    )
-    assert os.path.exists(os.path.join(dataset_path, "Barometer.csv")), (
-        "Barometer.csv does not exist."
-    )
-    assert os.path.exists(os.path.join(dataset_path, "Gravity.csv")), (
-        "Gravity.csv does not exist."
-    )
+    assert os.path.exists(os.path.join(dataset_path, "Magnetometer.csv")), "Magnetometer.csv does not exist."
+    assert os.path.exists(os.path.join(dataset_path, "Barometer.csv")), "Barometer.csv does not exist."
+    assert os.path.exists(os.path.join(dataset_path, "Gravity.csv")), "Gravity.csv does not exist."
     try:
-        assert os.path.exists(os.path.join(dataset_path, "LocationGps.csv")), (
-            "LocationGps.csv does not exist."
-        )
+        assert os.path.exists(os.path.join(dataset_path, "LocationGps.csv")), "LocationGps.csv does not exist."
     except AssertionError:
-        assert os.path.exists(os.path.join(dataset_path, "Location.csv")), (
-            "Location.csv does not exist."
-        )
-    assert os.path.exists(os.path.join(dataset_path, "Orientation.csv")), (
-        "Orientation.csv does not exist."
-    )
+        assert os.path.exists(os.path.join(dataset_path, "Location.csv")), "Location.csv does not exist."
+    assert os.path.exists(os.path.join(dataset_path, "Orientation.csv")), "Orientation.csv does not exist."
     # Read in raw data
     gyroscope = pd.read_csv(os.path.join(dataset_path, "Gyroscope.csv"), index_col=0)
-    magnetometer = pd.read_csv(
-        os.path.join(dataset_path, "Magnetometer.csv"), index_col=0
-    )
+    magnetometer = pd.read_csv(os.path.join(dataset_path, "Magnetometer.csv"), index_col=0)
     barometer = pd.read_csv(os.path.join(dataset_path, "Barometer.csv"), index_col=0)
     gravity = pd.read_csv(os.path.join(dataset_path, "Gravity.csv"), index_col=0)
-    orientation = pd.read_csv(
-        os.path.join(dataset_path, "Orientation.csv"), index_col=0
-    )
+    orientation = pd.read_csv(os.path.join(dataset_path, "Orientation.csv"), index_col=0)
     try:
-        location = pd.read_csv(
-            os.path.join(dataset_path, "LocationGps.csv"), index_col=0
-        )
+        location = pd.read_csv(os.path.join(dataset_path, "LocationGps.csv"), index_col=0)
     except FileNotFoundError:
         location = pd.read_csv(os.path.join(dataset_path, "Location.csv"), index_col=0)
     try:
-        accelerometer = pd.read_csv(
-            os.path.join(dataset_path, "TotalAcceleration.csv"), index_col=0
-        )
+        accelerometer = pd.read_csv(os.path.join(dataset_path, "TotalAcceleration.csv"), index_col=0)
     except FileNotFoundError as e:
         print(f"TotalAcceleration.csv not found, using Accelerometer.csv instead: {e}")
-        accelerometer = pd.read_csv(
-            os.path.join(dataset_path, "Accelerometer.csv"), index_col=0
-        )
+        accelerometer = pd.read_csv(os.path.join(dataset_path, "Accelerometer.csv"), index_col=0)
         accelerometer["x"] += gravity["x"]
         accelerometer["y"] += gravity["y"]
         accelerometer["z"] += gravity["z"]
@@ -109,12 +85,8 @@ def clean_phone_data(dataset_path: Path | str) -> pd.DataFrame:
     location.drop(columns=["seconds_elapsed"], inplace=True)
     orientation.drop(columns=["seconds_elapsed"], inplace=True)
     # Rename columns
-    magnetometer = magnetometer.rename(
-        columns={"x": "mag_x", "y": "mag_y", "z": "mag_z"}
-    )
-    accelerometer = accelerometer.rename(
-        columns={"x": "acc_x", "y": "acc_y", "z": "acc_z"}
-    )
+    magnetometer = magnetometer.rename(columns={"x": "mag_x", "y": "mag_y", "z": "mag_z"})
+    accelerometer = accelerometer.rename(columns={"x": "acc_x", "y": "acc_y", "z": "acc_z"})
     gyroscope = gyroscope.rename(columns={"x": "gyro_x", "y": "gyro_y", "z": "gyro_z"})
     gravity = gravity.rename(columns={"x": "grav_x", "y": "grav_y", "z": "grav_z"})
     # Merge dataframes
@@ -160,13 +132,12 @@ def convert_hz_to_time_str(frequency: int) -> str:
 
 def preprocess_data(args):
     """Preprocess the data based on the provided arguments."""
-    # datasets = Path(args.input_dir).glob("**/*.csv")
-    input_path = Path(args.input_dir)
-    output_path = Path(args.output_dir)
+    input_path = Path(args.input)
+    output_path = Path(args.output)
     # Find all CSV files under the input directory
     all_csv = list(input_path.rglob("*.csv"))
 
-    # Check for folders directly under input_dir that contain CSV files.
+    # Check for folders directly under input that contain CSV files.
     datasets = [d for d in input_path.iterdir() if d.is_dir() and any(d.glob("*.csv"))]
 
     print("found the following folders with data: ")
@@ -175,9 +146,7 @@ def preprocess_data(args):
 
     # Check to see if datasets in empty, if true ask if the user would lke to download the dataset
     if not datasets:
-        download = input(
-            "No datasets found. Would you like to download the dataset? (y/n): "
-        )
+        download = input("No datasets found. Would you like to download the dataset? (y/n): ")
         if download.lower() == "y":
             # Code to download the dataset goes here
             print("Fetch script is currently not implemented")
@@ -186,16 +155,11 @@ def preprocess_data(args):
             print("No datasets found. Exiting.")
             return
 
-    # os.makedirs(os.path.join("data", "cleaned"), exist_ok=True)
-    # os.makedirs(args.output_dir, exist_ok=True)
-    print(
-        f"Preprocessing data from {args.input_dir}. Output will be saved to {args.output_dir}."
-    )
+    print(f"Preprocessing data from {args.input}. Output will be saved to {args.output}.")
     output_path.mkdir(parents=True, exist_ok=True)
 
     # def process_dataset(dataset: Path):
     for dataset in tqdm(datasets):
-        # dataset_path = os.path.join(args.input_dir, dataset)
         cleaned_data = pd.DataFrame()
         # print(f"Processing: {dataset}")
         try:
@@ -214,9 +178,6 @@ def preprocess_data(args):
             title=dataset.name,
         )
         street_map_path = output_path / f"{dataset.name}_street_map.png"
-        # os.path.join(
-        #    args.output_dir, f"{dataset.name}_street_map.png"
-        # )
         street_map.savefig(street_map_path, dpi=300)
         # Close the figure to avoid accumulating open figures and memory usage
         plt.close(street_map)
@@ -227,20 +188,14 @@ def preprocess_data(args):
             lon_max = cleaned_data["longitude"].max()
             lat_min = cleaned_data["latitude"].min()
             lat_max = cleaned_data["latitude"].max()
-            lon_min, lon_max, lat_min, lat_max = inflate_bounds(
-                lon_min, lon_max, lat_min, lat_max, args.buffer
-            )
+            lon_min, lon_max, lat_min, lat_max = inflate_bounds(lon_min, lon_max, lat_min, lat_max, args.buffer)
 
             # Download the maps
-            relief = load_earth_relief(
-                resolution="15s", region=[lon_min, lon_max, lat_min, lat_max]
-            )
+            relief = load_earth_relief(resolution="15s", region=[lon_min, lon_max, lat_min, lat_max])
             relief.to_netcdf(output_path / f"{dataset.name}_relief.nc")
             # print(f"  Downloaded relief map: {relief.data.shape}.")
 
-            gravity = load_earth_free_air_anomaly(
-                resolution="01m", region=[lon_min, lon_max, lat_min, lat_max]
-            )
+            gravity = load_earth_free_air_anomaly(resolution="01m", region=[lon_min, lon_max, lat_min, lat_max])
             gravity.to_netcdf(output_path / f"{dataset.name}_gravity.nc")
             # print(f"  Downloaded gravity map: {gravity.data.shape}.")
 
@@ -258,13 +213,13 @@ def main() -> None:
     """
     parser = ArgumentParser(description="Clean sensor logger app data or plot routes.")
     parser.add_argument(
-        "--input_dir",
+        "--input",
         type=str,
         default="data/raw",
         help="Base directory for the sensor logger app data.",
     )
     parser.add_argument(
-        "--output_dir",
+        "--output",
         type=str,
         default="data",
         help="Output directory for the cleaned data.",
@@ -281,9 +236,7 @@ def main() -> None:
         help="Whether to download geophysical maps for each trajectory.",
     )
     args = parser.parse_args()
-    assert os.path.exists(args.input_dir), (
-        f"Input directory {args.input_dir} does not exist."
-    )
+    assert os.path.exists(args.input), f"Input directory {args.input} does not exist."
     preprocess_data(args)
 
 
