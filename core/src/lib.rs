@@ -993,7 +993,6 @@ pub(crate) fn calculate_constant_velocity_acceleration(
 
     // For constant velocity: specific_force + gravity - r*(transport_rate + 2*rotation_rate)*velocity = 0
     // Therefore: specific_force = r*(transport_rate + 2*rotation_rate)*velocity - gravity
-    
 
     r * (transport_rate + 2.0 * rotation_rate) * target_velocity - gravity
 }
