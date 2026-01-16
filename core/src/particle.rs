@@ -62,7 +62,16 @@ pub trait Particle: Any {
     fn state(&self) -> DVector<f64>;
 
     /// Sets the state vector of the particle
-    fn set_state(&mut self, state: DVector<f64>);
+    ///
+    /// The default implementation will panic if called. Implementors of this
+    /// trait should override this method to update their internal state
+    /// representation.
+    fn set_state(&mut self, _state: DVector<f64>) {
+        panic!(
+            "Particle::set_state is not implemented for this type. \
+             Please provide an implementation in your Particle impl."
+        );
+    }
 
     /// Returns the current weight of the particle
     fn weight(&self) -> f64;
@@ -353,9 +362,6 @@ pub trait ParticleFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
-    
-    
 
     // ============= Tests for standalone resampling functions ==================
 

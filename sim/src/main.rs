@@ -501,10 +501,7 @@ fn process_file(
                 is_enu: true,
             };
 
-            let pf_cfg = config
-                .particle_filter
-                .clone()
-                .unwrap_or_default();
+            let pf_cfg = config.particle_filter.clone().unwrap_or_default();
             let mut rbpf = RaoBlackwellizedParticleFilter::new(
                 nominal,
                 RbpfConfig {
@@ -561,11 +558,6 @@ fn process_file(
                     }
                     last_ts = Some(ts);
                 }
-
-                // if idx + 1 == event_stream.events.len() {
-                //     let (mean, cov) = rbpf.estimate();
-                //     results.push(NavigationResult::from_particle_filter(&ts, &mean, &cov));
-                // }
             }
 
             let output_file = output.join(input_file.file_name().unwrap());
@@ -1385,11 +1377,6 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
                 }
                 last_ts = Some(ts);
             }
-
-            // if idx + 1 == event_stream.events.len() {
-            //     let (mean, cov) = rbpf.estimate();
-            //     results.push(NavigationResult::from_particle_filter(&ts, &mean, &cov));
-            // }
         }
 
         let output_file = args.sim.output.join(input_file.file_name().ok_or_else(|| {

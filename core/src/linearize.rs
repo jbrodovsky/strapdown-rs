@@ -347,7 +347,6 @@ pub fn error_state_transition_jacobian(
     let h = state.altitude;
     let lat_deg = lat.to_degrees();
     let (r_n, r_e, _r_p) = earth::principal_radii(&lat_deg, &h);
-    let _g = earth::gravity(&lat, &h); // Reserved for future use in gravity gradient computations
 
     // ===== Position Error Block (rows 0-2) =====
 
@@ -1577,8 +1576,6 @@ mod tests {
         let delta_x = assemble_error_state(&dr, &mu);
 
         assert_eq!(delta_x.len(), 15);
-
-        println!("delta_x: {:?}", delta_x);
 
         // Position
         assert_approx_eq!(delta_x[0], 0.0001, 1e-10);

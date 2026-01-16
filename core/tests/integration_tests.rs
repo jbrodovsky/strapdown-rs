@@ -1769,6 +1769,9 @@ fn test_filter_comparison() {
         ekf_stats.rms_horizontal_error < 30.0,
         "EKF RMS horizontal error should be reasonable"
     );
+    // Note: ESKF has a significantly larger tolerance (1905.0m) compared to UKF (25.0m) and EKF (30.0m)
+    // due to the current implementation's handling of error state corrections. This is acceptable for
+    // the current test scenario but may warrant further investigation for production use.
     assert!(
         eskf_stats.rms_horizontal_error < 1905.0,
         "ESKF RMS horizontal error should be reasonable"

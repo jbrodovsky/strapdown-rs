@@ -262,9 +262,7 @@ def geophysical_performance_analysis(args):
             continue
 
         output_plot = dataset.parent / f"{dataset.stem}_geophysical_performance.png"
-        # geo = geo.iloc[1:].copy()
         nav = nav.iloc[1:].copy()
-        # degraded_nav = degraded_nav.iloc[1:].copy()
         print(
             f"Processing dataset {dataset} ({len(geo)}) with reference {reference_file.name} ({len(nav)}) and degraded {degraded_file.name} ({len(degraded_nav)})"
         )
