@@ -219,8 +219,7 @@ impl RaoBlackwellizedParticleFilter {
         if self.config.extra_state_dim > 0 {
             let extra_noise = self.config.extra_state_process_noise_std * dt;
             for i in 0..self.config.extra_state_dim {
-                q_l[(LINEAR_STATE_DIM_BASE + i, LINEAR_STATE_DIM_BASE + i)] =
-                    extra_noise.powi(2);
+                q_l[(LINEAR_STATE_DIM_BASE + i, LINEAR_STATE_DIM_BASE + i)] = extra_noise.powi(2);
             }
         }
 
@@ -241,8 +240,7 @@ impl RaoBlackwellizedParticleFilter {
                 .try_inverse()
                 .unwrap_or_else(|| DMatrix::identity(POSITION_STATE_DIM, POSITION_STATE_DIM));
             let l = &f_ll_full * &particle.linear_cov * f_nl_full.transpose() * n_inv;
-            let mut p_new = &f_ll_full * &particle.linear_cov * f_ll_full.transpose()
-                + &q_l
+            let mut p_new = &f_ll_full * &particle.linear_cov * f_ll_full.transpose() + &q_l
                 - &l * &n * l.transpose();
             p_new = symmetrize(&p_new);
             for i in 0..linear_dim {
