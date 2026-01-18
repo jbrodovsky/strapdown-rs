@@ -143,7 +143,9 @@ def plot_performance(nav: DataFrame, gps: DataFrame, output_path: Path | str):
     # ax.set_ylim((0, 50))
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("2D Haversine Error (m)")
-    ax.set_title("Strapdown INS Simulation Performance with GPS Comparison", fontsize=16)
+    ax.set_title(
+        "Strapdown INS Simulation Performance with GPS Comparison", fontsize=16
+    )
     ax.grid()
     ax.legend()
     fig.savefig(output_path, dpi=300)
@@ -272,7 +274,9 @@ def plot_street_map(
     osm_tiles = cimgt.OSM()
 
     # Create a figure using Cartopy with OpenStreetMap background
-    fig, ax = plt.subplots(figsize=(12, 10), subplot_kw={"projection": ccrs.PlateCarree()})
+    fig, ax = plt.subplots(
+        figsize=(12, 10), subplot_kw={"projection": ccrs.PlateCarree()}
+    )
     ax.set_extent(
         [lon_min - margin, lon_max + margin, lat_min - margin, lat_max + margin],
         crs=ccrs.PlateCarree(),
@@ -347,7 +351,9 @@ def plot_geo_map(
     else:
         # expect a sequence [lat_list, lon_list]
         if not isinstance(nav, (list, tuple)) or len(nav) != 2:
-            raise ValueError("If `nav` is not a DataFrame, provide (lat_list, lon_list)")
+            raise ValueError(
+                "If `nav` is not a DataFrame, provide (lat_list, lon_list)"
+            )
         lat_arr = np.asarray(nav[0], dtype=float)
         lon_arr = np.asarray(nav[1], dtype=float)
 
