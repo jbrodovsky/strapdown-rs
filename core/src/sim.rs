@@ -3718,7 +3718,18 @@ mod tests {
             });
 
         // Initialize UKF
-        let mut ukf = initialize_ukf(rec.clone(), None, None, None, None, None, None, None, None, None);
+        let mut ukf = initialize_ukf(
+            rec.clone(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
 
         // Create a minimal EventStream with one IMU event
         let imu_data = IMUData {
@@ -3773,7 +3784,18 @@ mod tests {
             grav_y: 0.0,
             grav_x: 0.0,
         };
-        let ukf = initialize_ukf(rec.clone(), None, None, None, None, None, None, None, None, None);
+        let ukf = initialize_ukf(
+            rec.clone(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
         assert!(!ukf.get_estimate().is_empty());
         let ukf2 = initialize_ukf(
             rec,
@@ -3975,7 +3997,18 @@ mod tests {
             yaw: 0.3,
             ..Default::default()
         };
-        let ukf = initialize_ukf(rec.clone(), None, None, None, None, None, None, None, None, None);
+        let ukf = initialize_ukf(
+            rec.clone(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
         let timestamp = Utc::now();
         let nav_result = NavigationResult::from((&timestamp, &ukf));
 
@@ -4029,7 +4062,18 @@ mod tests {
             yaw: 0.3,
             ..Default::default()
         };
-        let ukf = initialize_ukf(rec.clone(), None, None, None, None, None, None, None, None, None);
+        let ukf = initialize_ukf(
+            rec.clone(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
         // Just ensure it doesn't panic
         print_ukf(&ukf, &rec);
     }
@@ -4109,7 +4153,18 @@ mod tests {
             ..Default::default()
         };
         let custom_noise = vec![1e-5; 15];
-        let ukf = initialize_ukf(rec, None, None, None, None, None, Some(custom_noise), None, None, None);
+        let ukf = initialize_ukf(
+            rec,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(custom_noise),
+            None,
+            None,
+            None,
+        );
         assert!(!ukf.get_estimate().is_empty());
     }
     #[test]
@@ -4596,7 +4651,18 @@ mod tests {
             ..Default::default()
         };
 
-        let mut ukf = initialize_ukf(rec.clone(), None, None, None, None, None, None, None, None, None);
+        let mut ukf = initialize_ukf(
+            rec.clone(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
 
         let stream = EventStream {
             start_time: rec.time,

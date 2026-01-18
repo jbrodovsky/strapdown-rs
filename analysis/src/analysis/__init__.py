@@ -32,7 +32,9 @@ def main() -> None:
 
     command = parser.add_subparsers(title="command", dest="command")
 
-    preprocess = command.add_parser("preprocess", help="Preprocess raw trajectory data.")
+    preprocess = command.add_parser(
+        "preprocess", help="Preprocess raw trajectory data."
+    )
 
     preprocess.add_argument(
         "-i",
@@ -61,7 +63,9 @@ def main() -> None:
         help="Download geophysical maps for each trajectory.",
     )
 
-    performance = command.add_parser("performance", help="Generate performance plots from mechanization results.")
+    performance = command.add_parser(
+        "performance", help="Generate performance plots from mechanization results."
+    )
     performance.add_argument(
         "-p",
         "--processed",
@@ -83,7 +87,9 @@ def main() -> None:
         default="data/output",
     )
 
-    geoperformance = command.add_parser("geoperformance", help="Generate geophysical performance plots.")
+    geoperformance = command.add_parser(
+        "geoperformance", help="Generate geophysical performance plots."
+    )
     geoperformance.add_argument(
         "-p",
         "--processed",
@@ -166,21 +172,30 @@ def performance_analysis(args):
             reference_file = reference_path / dataset.name
             gps = read_csv(reference_file, parse_dates=True, index_col=0)
         except FileNotFoundError:
-            print(f"Reference file for {dataset.name} not found in {reference_path}. Skipping.")
+            print(
+                f"Reference file for {dataset.name} not found in {reference_path}. Skipping."
+            )
             continue
         output_plot = output_path / f"{dataset.stem}_performance.png"
-        print(f"Processing dataset {dataset} ({len(nav)}) with reference {reference_file.name} ({len(gps)})")
+        print(
+            f"Processing dataset {dataset} ({len(nav)}) with reference {reference_file.name} ({len(gps)})"
+        )
         try:
             plot_performance(nav, gps, output_plot)
         except Exception as e:
-            print(f"Error plotting performance for {dataset.name}, possible dimension mismatch or missing data: {e}")
+            print(
+                f"Error plotting performance for {dataset.name}, possible dimension mismatch or missing data: {e}"
+            )
             continue
         two_d_error = haversine_vector(
             gps[["latitude", "longitude"]].to_numpy()[1:, :],
             nav[["latitude", "longitude"]].to_numpy(),
             Unit.METERS,
         )
-        three_d_error = np.sqrt(two_d_error**2 + (gps["altitude"].to_numpy()[1:] - nav["altitude"].to_numpy()) ** 2)
+        three_d_error = np.sqrt(
+            two_d_error**2
+            + (gps["altitude"].to_numpy()[1:] - nav["altitude"].to_numpy()) ** 2
+        )
         summary_df.loc[dataset.stem] = [
             np.nanmin(two_d_error),
             np.nanmax(two_d_error),
@@ -189,7 +204,11 @@ def performance_analysis(args):
             np.nanmin(gps["altitude"].to_numpy()[1:] - nav["altitude"].to_numpy()),
             np.nanmax(gps["altitude"].to_numpy()[1:] - nav["altitude"].to_numpy()),
             np.nanmean(gps["altitude"].to_numpy()[1:] - nav["altitude"].to_numpy()),
-            np.sqrt(np.nanmean((gps["altitude"].to_numpy()[1:] - nav["altitude"].to_numpy()) ** 2)),
+            np.sqrt(
+                np.nanmean(
+                    (gps["altitude"].to_numpy()[1:] - nav["altitude"].to_numpy()) ** 2
+                )
+            ),
             np.nanmin(three_d_error),
             np.nanmax(three_d_error),
             np.nanmean(three_d_error),
@@ -230,13 +249,17 @@ def geophysical_performance_analysis(args):
             reference_file = reference_path / dataset.name
             nav = read_csv(reference_file, parse_dates=True, index_col=0)
         except FileNotFoundError:
-            print(f"Reference file for {dataset.name} not found in {reference_path}. Skipping.")
+            print(
+                f"Reference file for {dataset.name} not found in {reference_path}. Skipping."
+            )
             continue
         try:
             degraded_file = degraded_path / dataset.name
             degraded_nav = read_csv(degraded_file, parse_dates=True, index_col=0)
         except FileNotFoundError:
-            print(f"Degraded file for {dataset.name} not found in {degraded_path}. Skipping.")
+            print(
+                f"Degraded file for {dataset.name} not found in {degraded_path}. Skipping."
+            )
             continue
 
         output_plot = output_path / f"{dataset.stem}_geophysical_performance.png"
@@ -265,7 +288,10 @@ def geophysical_performance_analysis(args):
             # print(geo.head(10))
             # print(nav.head(10))
             # print(degraded_nav.head(10))
-        if np.all(degraded_nav.iloc[0][["latitude", "longitude", "altitude"]].to_numpy() == np.nan):
+        if np.all(
+            degraded_nav.iloc[0][["latitude", "longitude", "altitude"]].to_numpy()
+            == np.nan
+        ):
             degraded_nav.iloc[0][["latitude", "longitude", "altitude"]] = nav.iloc[0][
                 ["latitude", "longitude", "altitude"]
             ]

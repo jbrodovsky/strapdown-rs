@@ -388,7 +388,7 @@ fn process_file(
 
             // Check if geophysical configuration is present
             #[cfg(feature = "geonav")]
-            let has_geophysical = config.geophysical.as_ref().map_or(false, |geo| {
+            let has_geophysical = config.geophysical.as_ref().is_some_and(|geo| {
                 geo.gravity_resolution.is_some() || geo.magnetic_resolution.is_some()
             });
 
@@ -399,7 +399,7 @@ fn process_file(
             #[cfg(feature = "geonav")]
             let results = if has_geophysical {
                 let geo_cfg = config.geophysical.as_ref().unwrap();
-                
+
                 info!(
                     "Running geophysical navigation in closed-loop mode with {:?} filter",
                     filter_config.filter
@@ -463,13 +463,19 @@ fn process_file(
                     },
                     geo_cfg.geo_frequency_s,
                 );
-                info!("Built event stream with {} events", event_stream.events.len());
+                info!(
+                    "Built event stream with {} events",
+                    event_stream.events.len()
+                );
 
                 // Determine number of geophysical states
-                let num_geo_states = gravity_map.is_some() as usize + magnetic_map.is_some() as usize;
+                let num_geo_states =
+                    gravity_map.is_some() as usize + magnetic_map.is_some() as usize;
 
                 // Run simulation based on filter type
-                let results = match filter_config.filter {
+                
+
+                match filter_config.filter {
                     FilterType::Ukf => {
                         info!("Initializing UKF...");
                         let mut process_noise: Vec<f64> = DEFAULT_PROCESS_NOISE.into();
@@ -516,8 +522,10 @@ fn process_file(
                             latitude: records[0].latitude,
                             longitude: records[0].longitude,
                             altitude: records[0].altitude,
-                            northward_velocity: records[0].speed * records[0].bearing.to_radians().cos(),
-                            eastward_velocity: records[0].speed * records[0].bearing.to_radians().sin(),
+                            northward_velocity: records[0].speed
+                                * records[0].bearing.to_radians().cos(),
+                            eastward_velocity: records[0].speed
+                                * records[0].bearing.to_radians().sin(),
                             vertical_velocity: 0.0,
                             roll: 0.0,
                             pitch: 0.0,
@@ -571,9 +579,7 @@ fn process_file(
                         error!("ESKF is not yet implemented for geophysical navigation");
                         return Err("ESKF is not yet implemented for geophysical navigation".into());
                     }
-                };
-
-                results
+                }
             } else {
                 // Standard closed-loop without geophysical measurements
                 info!(
@@ -605,7 +611,8 @@ fn process_file(
                         run_closed_loop(&mut ukf, event_stream, None)
                     }
                     FilterType::Ekf => {
-                        let mut ekf = initialize_ekf(records[0].clone(), None, None, None, None, true);
+                        let mut ekf =
+                            initialize_ekf(records[0].clone(), None, None, None, None, true);
                         info!("Initialized EKF");
                         run_closed_loop(&mut ekf, event_stream, None)
                     }
@@ -648,7 +655,8 @@ fn process_file(
                         run_closed_loop(&mut ukf, event_stream, None)
                     }
                     FilterType::Ekf => {
-                        let mut ekf = initialize_ekf(records[0].clone(), None, None, None, None, true);
+                        let mut ekf =
+                            initialize_ekf(records[0].clone(), None, None, None, None, true);
                         info!("Initialized EKF");
                         run_closed_loop(&mut ekf, event_stream, None)
                     }

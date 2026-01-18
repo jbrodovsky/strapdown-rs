@@ -362,7 +362,12 @@ impl GeoMap {
             );
         }
         if lon < &self.lons[0] || lon > &self.lons[self.lons.len() - 1] {
-            panic!("Longitude out of bounds: {} not in [{}, {}]", lon, self.lons[0], self.lons[self.lons.len() - 1]);
+            panic!(
+                "Longitude out of bounds: {} not in [{}, {}]",
+                lon,
+                self.lons[0],
+                self.lons[self.lons.len() - 1]
+            );
         }
         // Check if the lat/lon are at the origin or the end of the map
         if lat == &self.lats[0] && lon == &self.lons[0] {
