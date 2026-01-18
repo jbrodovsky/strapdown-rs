@@ -473,7 +473,6 @@ fn process_file(
                     gravity_map.is_some() as usize + magnetic_map.is_some() as usize;
 
                 // Run simulation based on filter type
-                
 
                 match filter_config.filter {
                     FilterType::Ukf => {
