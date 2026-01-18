@@ -362,7 +362,7 @@ impl GeoMap {
             );
         }
         if lon < &self.lons[0] || lon > &self.lons[self.lons.len() - 1] {
-            panic!("Longitude out of bounds");
+            panic!("Longitude out of bounds: {} not in [{}, {}]", lon, self.lons[0], self.lons[self.lons.len() - 1]);
         }
         // Check if the lat/lon are at the origin or the end of the map
         if lat == &self.lats[0] && lon == &self.lons[0] {
@@ -701,7 +701,12 @@ impl MeasurementModel for MagneticAnomalyMeasurement {
                 Angle::new::<degree>(lon_deg as f32),
                 Date::from_ordinal_date(self.year, self.day).unwrap(),
             )
-            .expect("Failed to create GeomagneticField");
+            .unwrap_or_else(|e| {
+                panic!(
+                    "Failed to create GeomagneticField at lat={}, lon={}, alt={}: {:?}",
+                    lat_deg, lon_deg, alt, e
+                )
+            });
             self.mag_obs - magnetic_field.f().value as f64
         } else {
             self.get_anomaly()
@@ -1852,14 +1857,8 @@ mod tests {
             0.0,
         ]);
 
-        // Test that get_jacobian returns Some
-        let jacobian_opt = measurement.get_jacobian(&state);
-        assert!(
-            jacobian_opt.is_some(),
-            "Gravity measurement should provide Jacobian via trait"
-        );
-
-        let jacobian = jacobian_opt.unwrap();
+        // Test that get_jacobian returns a valid Jacobian
+        let jacobian = measurement.get_jacobian(&state);
         assert_eq!(jacobian.nrows(), 1);
         assert_eq!(jacobian.ncols(), 9);
     }
@@ -1893,14 +1892,8 @@ mod tests {
             0.0,
         ]);
 
-        // Test that get_jacobian returns Some
-        let jacobian_opt = measurement.get_jacobian(&state);
-        assert!(
-            jacobian_opt.is_some(),
-            "Magnetic measurement should provide Jacobian via trait"
-        );
-
-        let jacobian = jacobian_opt.unwrap();
+        // Test that get_jacobian returns a valid Jacobian
+        let jacobian = measurement.get_jacobian(&state);
         assert_eq!(jacobian.nrows(), 1);
         assert_eq!(jacobian.ncols(), 9);
     }

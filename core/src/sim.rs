@@ -2078,6 +2078,9 @@ pub fn print_ukf(ukf: &UnscentedKalmanFilter, record: &TestDataRecord) {
 /// * `attitude_covariance` - Optional vector of f64 representing the initial attitude covariance (default is a small value).
 /// * `imu_biases` - Optional vector of f64 representing the initial IMU biases (default is a small value).
 /// * `other_states` - Optional vector of f64 for any additional states (not used in the canonical UKF, but can be useful for custom implementations).
+/// * `ukf_alpha` - Optional UKF alpha parameter (sigma-point spread).
+/// * `ukf_beta` - Optional UKF beta parameter (prior distribution).
+/// * `ukf_kappa` - Optional UKF kappa parameter (secondary spread control).
 ///
 /// # Returns
 ///
@@ -2090,6 +2093,9 @@ pub fn initialize_ukf(
     other_states: Option<Vec<f64>>,
     other_states_covariance: Option<Vec<f64>>,
     process_noise_diagonal: Option<Vec<f64>>,
+    ukf_alpha: Option<f64>,
+    ukf_beta: Option<f64>,
+    ukf_kappa: Option<f64>,
 ) -> UnscentedKalmanFilter {
     let initial_state = InitialState {
         latitude: initial_pose.latitude,
@@ -2122,9 +2128,10 @@ pub fn initialize_ukf(
     };
     // Covariance parameters
     let position_accuracy = initial_pose.horizontal_accuracy; //.sqrt();
+    let position_std_rad = (position_accuracy * METERS_TO_DEGREES).to_radians();
     let mut covariance_diagonal = vec![
-        (position_accuracy * METERS_TO_DEGREES).powf(2.0),
-        (position_accuracy * METERS_TO_DEGREES).powf(2.0),
+        position_std_rad.powf(2.0),
+        position_std_rad.powf(2.0),
         initial_pose.vertical_accuracy.powf(2.0),
         initial_pose.speed_accuracy.powf(2.0),
         initial_pose.speed_accuracy.powf(2.0),
@@ -2186,9 +2193,9 @@ pub fn initialize_ukf(
         other_states,
         covariance_diagonal,
         process_noise,
-        1e-3, // Use a scalar for measurement noise as expected by UKF::new
-        2.0,
-        0.0,
+        ukf_alpha.unwrap_or(1e-3),
+        ukf_beta.unwrap_or(2.0),
+        ukf_kappa.unwrap_or(0.0),
     )
 }
 
@@ -2823,12 +2830,24 @@ pub struct ClosedLoopConfig {
     /// Filter type (UKF or EKF)
     #[serde(default)]
     pub filter: FilterType,
+    /// UKF alpha parameter (spread of sigma points)
+    #[serde(default = "default_ukf_alpha")]
+    pub ukf_alpha: f64,
+    /// UKF beta parameter (prior knowledge of distribution, 2.0 is optimal for Gaussian)
+    #[serde(default = "default_ukf_beta")]
+    pub ukf_beta: f64,
+    /// UKF kappa parameter (secondary spread control)
+    #[serde(default = "default_ukf_kappa")]
+    pub ukf_kappa: f64,
 }
 
 impl Default for ClosedLoopConfig {
     fn default() -> Self {
         Self {
             filter: FilterType::Ukf,
+            ukf_alpha: default_ukf_alpha(),
+            ukf_beta: default_ukf_beta(),
+            ukf_kappa: default_ukf_kappa(),
         }
     }
 }
@@ -2877,6 +2896,18 @@ fn default_zero_vertical_velocity() -> bool {
 
 fn default_zero_vertical_velocity_std_mps() -> f64 {
     0.1
+}
+
+fn default_ukf_alpha() -> f64 {
+    1e-3
+}
+
+fn default_ukf_beta() -> f64 {
+    2.0
+}
+
+fn default_ukf_kappa() -> f64 {
+    0.0
 }
 
 fn default_num_particles() -> usize {
@@ -3687,7 +3718,7 @@ mod tests {
             });
 
         // Initialize UKF
-        let mut ukf = initialize_ukf(rec.clone(), None, None, None, None, None, None);
+        let mut ukf = initialize_ukf(rec.clone(), None, None, None, None, None, None, None, None, None);
 
         // Create a minimal EventStream with one IMU event
         let imu_data = IMUData {
@@ -3742,12 +3773,15 @@ mod tests {
             grav_y: 0.0,
             grav_x: 0.0,
         };
-        let ukf = initialize_ukf(rec.clone(), None, None, None, None, None, None);
+        let ukf = initialize_ukf(rec.clone(), None, None, None, None, None, None, None, None, None);
         assert!(!ukf.get_estimate().is_empty());
         let ukf2 = initialize_ukf(
             rec,
             Some(vec![0.1, 0.2, 0.3]),
             Some(vec![0.4, 0.5, 0.6, 0.7, 0.8, 0.9]),
+            None,
+            None,
+            None,
             None,
             None,
             None,
@@ -3941,7 +3975,7 @@ mod tests {
             yaw: 0.3,
             ..Default::default()
         };
-        let ukf = initialize_ukf(rec.clone(), None, None, None, None, None, None);
+        let ukf = initialize_ukf(rec.clone(), None, None, None, None, None, None, None, None, None);
         let timestamp = Utc::now();
         let nav_result = NavigationResult::from((&timestamp, &ukf));
 
@@ -3995,7 +4029,7 @@ mod tests {
             yaw: 0.3,
             ..Default::default()
         };
-        let ukf = initialize_ukf(rec.clone(), None, None, None, None, None, None);
+        let ukf = initialize_ukf(rec.clone(), None, None, None, None, None, None, None, None, None);
         // Just ensure it doesn't panic
         print_ukf(&ukf, &rec);
     }
@@ -4016,7 +4050,7 @@ mod tests {
             yaw: f64::NAN,
             ..Default::default()
         };
-        let ukf = initialize_ukf(rec, None, None, None, None, None, None);
+        let ukf = initialize_ukf(rec, None, None, None, None, None, None, None, None, None);
         let estimate = ukf.get_estimate();
         // Should default NaN angles to 0.0
         assert!(estimate[6].abs() < 1e-6); // roll
@@ -4049,6 +4083,9 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
+            None,
         );
         let estimate = ukf.get_estimate();
         assert_eq!(estimate.len(), 15);
@@ -4072,7 +4109,7 @@ mod tests {
             ..Default::default()
         };
         let custom_noise = vec![1e-5; 15];
-        let ukf = initialize_ukf(rec, None, None, None, None, None, Some(custom_noise));
+        let ukf = initialize_ukf(rec, None, None, None, None, None, Some(custom_noise), None, None, None);
         assert!(!ukf.get_estimate().is_empty());
     }
     #[test]
@@ -4559,7 +4596,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut ukf = initialize_ukf(rec.clone(), None, None, None, None, None, None);
+        let mut ukf = initialize_ukf(rec.clone(), None, None, None, None, None, None, None, None, None);
 
         let stream = EventStream {
             start_time: rec.time,
