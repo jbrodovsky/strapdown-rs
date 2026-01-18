@@ -50,6 +50,8 @@ use std::rc::Rc;
 use strapdown::NavigationFilter;
 #[cfg(feature = "geonav")]
 use strapdown::kalman::{ExtendedKalmanFilter, InitialState};
+use strapdown::sim::HealthLimits;
+use strapdown::sim::health::HealthMonitor;
 #[cfg(feature = "geonav")]
 use strapdown::sim::{DEFAULT_PROCESS_NOISE, GeoResolution};
 use strapdown::sim::{
@@ -57,8 +59,6 @@ use strapdown::sim::{
     SimulationMode, TestDataRecord, build_fault, build_scheduler, dead_reckoning, initialize_ekf,
     initialize_eskf, initialize_ukf, run_closed_loop,
 };
-use strapdown::sim::health::HealthMonitor;
-use strapdown::sim::HealthLimits;
 
 const LONG_ABOUT: &str =
     "STRAPDOWN SIM: A simulation and analysis tool for strapdown inertial navigation systems.
@@ -219,6 +219,18 @@ struct ClosedLoopSimArgs {
     #[arg(long, value_enum, default_value_t = FilterType::Ukf)]
     filter: FilterType,
 
+    /// UKF alpha parameter (sigma point spread)
+    #[arg(long, default_value_t = 1e-3)]
+    ukf_alpha: f64,
+
+    /// UKF beta parameter (prior distribution)
+    #[arg(long, default_value_t = 2.0)]
+    ukf_beta: f64,
+
+    /// UKF kappa parameter (secondary spread control)
+    #[arg(long, default_value_t = 0.0)]
+    ukf_kappa: f64,
+
     /// RNG seed for stochastic processes
     #[arg(long, default_value_t = 42)]
     seed: u64,
@@ -373,33 +385,278 @@ fn process_file(
         }
         SimulationMode::ClosedLoop => {
             let filter_config = config.closed_loop.clone().unwrap_or_default();
-            info!(
-                "Running closed-loop mode with {:?} filter",
-                filter_config.filter
-            );
 
-            let event_stream = build_event_stream(&records, &config.gnss_degradation);
-            info!(
-                "Initialized event stream with {} events",
-                event_stream.events.len()
-            );
+            // Check if geophysical configuration is present
+            #[cfg(feature = "geonav")]
+            let has_geophysical = config.geophysical.as_ref().map_or(false, |geo| {
+                geo.gravity_resolution.is_some() || geo.magnetic_resolution.is_some()
+            });
 
-            let results = match filter_config.filter {
-                FilterType::Ukf => {
-                    let mut ukf =
-                        initialize_ukf(records[0].clone(), None, None, None, None, None, None);
-                    info!("Initialized UKF");
-                    run_closed_loop(&mut ukf, event_stream, None)
+            #[cfg(not(feature = "geonav"))]
+            let has_geophysical = false;
+
+            // If geophysical measurements are configured, use geonav path
+            #[cfg(feature = "geonav")]
+            let results = if has_geophysical {
+                let geo_cfg = config.geophysical.as_ref().unwrap();
+                
+                info!(
+                    "Running geophysical navigation in closed-loop mode with {:?} filter",
+                    filter_config.filter
+                );
+
+                // Load gravity map if configured
+                let gravity_map = if let Some(res) = geo_cfg.gravity_resolution {
+                    let map_path = match &geo_cfg.gravity_map_file {
+                        Some(path) => PathBuf::from(path),
+                        None => find_gravity_map(input_file)?,
+                    };
+                    info!("Loading gravity map from: {}", map_path.display());
+                    let measurement_type =
+                        GeophysicalMeasurementType::Gravity(convert_resolution_gravity(res));
+                    let map = Rc::new(GeoMap::load_geomap(map_path, measurement_type)?);
+                    info!(
+                        "Loaded gravity map with {} x {} grid points",
+                        map.get_lats().len(),
+                        map.get_lons().len()
+                    );
+                    Some(map)
+                } else {
+                    None
+                };
+
+                // Load magnetic map if configured
+                let magnetic_map = if let Some(res) = geo_cfg.magnetic_resolution {
+                    let map_path = match &geo_cfg.magnetic_map_file {
+                        Some(path) => PathBuf::from(path),
+                        None => find_magnetic_map(input_file)?,
+                    };
+                    info!("Loading magnetic map from: {}", map_path.display());
+                    let measurement_type =
+                        GeophysicalMeasurementType::Magnetic(convert_resolution_magnetic(res));
+                    let map = Rc::new(GeoMap::load_geomap(map_path, measurement_type)?);
+                    info!(
+                        "Loaded magnetic map with {} x {} grid points",
+                        map.get_lats().len(),
+                        map.get_lons().len()
+                    );
+                    Some(map)
+                } else {
+                    None
+                };
+
+                // Build event stream with geophysical measurements
+                let event_stream = geo_build_event_stream(
+                    &records,
+                    &config.gnss_degradation,
+                    gravity_map.clone(),
+                    if gravity_map.is_some() {
+                        geo_cfg.gravity_noise_std
+                    } else {
+                        None
+                    },
+                    magnetic_map.clone(),
+                    if magnetic_map.is_some() {
+                        geo_cfg.magnetic_noise_std
+                    } else {
+                        None
+                    },
+                    geo_cfg.geo_frequency_s,
+                );
+                info!("Built event stream with {} events", event_stream.events.len());
+
+                // Determine number of geophysical states
+                let num_geo_states = gravity_map.is_some() as usize + magnetic_map.is_some() as usize;
+
+                // Run simulation based on filter type
+                let results = match filter_config.filter {
+                    FilterType::Ukf => {
+                        info!("Initializing UKF...");
+                        let mut process_noise: Vec<f64> = DEFAULT_PROCESS_NOISE.into();
+                        process_noise.extend(vec![1e-9; num_geo_states]);
+
+                        let mut geo_biases = Vec::new();
+                        let mut geo_noise_stds = Vec::new();
+
+                        if gravity_map.is_some() {
+                            geo_biases.push(geo_cfg.gravity_bias.unwrap_or(0.0));
+                            geo_noise_stds.push(geo_cfg.gravity_noise_std.unwrap_or(100.0));
+                        }
+                        if magnetic_map.is_some() {
+                            geo_biases.push(geo_cfg.magnetic_bias.unwrap_or(0.0));
+                            geo_noise_stds.push(geo_cfg.magnetic_noise_std.unwrap_or(150.0));
+                        }
+
+                        let mut ukf = initialize_ukf(
+                            records[0].clone(),
+                            None,
+                            None,
+                            None,
+                            Some(geo_biases),
+                            Some(geo_noise_stds),
+                            Some(process_noise),
+                            Some(filter_config.ukf_alpha),
+                            Some(filter_config.ukf_beta),
+                            Some(filter_config.ukf_kappa),
+                        );
+                        info!(
+                            "Initialized UKF with state dimension {} (base: 9, geo: {})",
+                            ukf.get_estimate().len(),
+                            num_geo_states
+                        );
+
+                        info!("Running UKF geophysical navigation simulation...");
+                        geo_closed_loop_ukf(&mut ukf, event_stream)
+                    }
+                    FilterType::Ekf => {
+                        info!("Initializing EKF...");
+
+                        use strapdown::kalman::InitialState;
+                        let initial_state = InitialState {
+                            latitude: records[0].latitude,
+                            longitude: records[0].longitude,
+                            altitude: records[0].altitude,
+                            northward_velocity: records[0].speed * records[0].bearing.to_radians().cos(),
+                            eastward_velocity: records[0].speed * records[0].bearing.to_radians().sin(),
+                            vertical_velocity: 0.0,
+                            roll: 0.0,
+                            pitch: 0.0,
+                            yaw: records[0].bearing.to_radians(),
+                            in_degrees: true,
+                            is_enu: true,
+                        };
+
+                        let imu_biases = vec![0.0; 6];
+
+                        let mut covariance_diagonal = vec![
+                            1e-6, 1e-6, 1.0, // Position uncertainty
+                            0.1, 0.1, 0.1, // Velocity uncertainty
+                            1e-4, 1e-4, 1e-4, // Attitude uncertainty
+                            1e-6, 1e-6, 1e-6, // Accel bias uncertainty
+                            1e-8, 1e-8, 1e-8, // Gyro bias uncertainty
+                        ];
+                        covariance_diagonal.extend(vec![1.0; num_geo_states]);
+
+                        use nalgebra::DMatrix;
+                        let mut process_noise_vec = vec![
+                            1e-9, 1e-9, 1e-6, // Position process noise
+                            1e-6, 1e-6, 1e-6, // Velocity process noise
+                            1e-9, 1e-9, 1e-9, // Attitude process noise
+                            1e-9, 1e-9, 1e-9, // Accel bias process noise
+                            1e-9, 1e-9, 1e-9, // Gyro bias process noise
+                        ];
+                        process_noise_vec.extend(vec![1e-9; num_geo_states]);
+                        let process_noise =
+                            DMatrix::from_diagonal(&nalgebra::DVector::from_vec(process_noise_vec));
+
+                        use strapdown::kalman::ExtendedKalmanFilter;
+                        let mut ekf = ExtendedKalmanFilter::new(
+                            initial_state,
+                            imu_biases,
+                            covariance_diagonal,
+                            process_noise,
+                            true,
+                        );
+
+                        info!(
+                            "Initialized EKF with state dimension {} (base: 15, geo: {})",
+                            ekf.get_estimate().len(),
+                            num_geo_states
+                        );
+
+                        info!("Running EKF geophysical navigation simulation...");
+                        geo_closed_loop_ekf(&mut ekf, event_stream)
+                    }
+                    FilterType::Eskf => {
+                        error!("ESKF is not yet implemented for geophysical navigation");
+                        return Err("ESKF is not yet implemented for geophysical navigation".into());
+                    }
+                };
+
+                results
+            } else {
+                // Standard closed-loop without geophysical measurements
+                info!(
+                    "Running closed-loop mode with {:?} filter",
+                    filter_config.filter
+                );
+
+                let event_stream = build_event_stream(&records, &config.gnss_degradation);
+                info!(
+                    "Initialized event stream with {} events",
+                    event_stream.events.len()
+                );
+
+                match filter_config.filter {
+                    FilterType::Ukf => {
+                        let mut ukf = initialize_ukf(
+                            records[0].clone(),
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            Some(filter_config.ukf_alpha),
+                            Some(filter_config.ukf_beta),
+                            Some(filter_config.ukf_kappa),
+                        );
+                        info!("Initialized UKF");
+                        run_closed_loop(&mut ukf, event_stream, None)
+                    }
+                    FilterType::Ekf => {
+                        let mut ekf = initialize_ekf(records[0].clone(), None, None, None, None, true);
+                        info!("Initialized EKF");
+                        run_closed_loop(&mut ekf, event_stream, None)
+                    }
+                    FilterType::Eskf => {
+                        let mut eskf = initialize_eskf(records[0].clone(), None, None, None, None);
+                        info!("Initialized ESKF");
+                        run_closed_loop(&mut eskf, event_stream, None)
+                    }
                 }
-                FilterType::Ekf => {
-                    let mut ekf = initialize_ekf(records[0].clone(), None, None, None, None, true);
-                    info!("Initialized EKF");
-                    run_closed_loop(&mut ekf, event_stream, None)
-                }
-                FilterType::Eskf => {
-                    let mut eskf = initialize_eskf(records[0].clone(), None, None, None, None);
-                    info!("Initialized ESKF");
-                    run_closed_loop(&mut eskf, event_stream, None)
+            };
+
+            #[cfg(not(feature = "geonav"))]
+            let results = {
+                info!(
+                    "Running closed-loop mode with {:?} filter",
+                    filter_config.filter
+                );
+
+                let event_stream = build_event_stream(&records, &config.gnss_degradation);
+                info!(
+                    "Initialized event stream with {} events",
+                    event_stream.events.len()
+                );
+
+                match filter_config.filter {
+                    FilterType::Ukf => {
+                        let mut ukf = initialize_ukf(
+                            records[0].clone(),
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            Some(filter_config.ukf_alpha),
+                            Some(filter_config.ukf_beta),
+                            Some(filter_config.ukf_kappa),
+                        );
+                        info!("Initialized UKF");
+                        run_closed_loop(&mut ukf, event_stream, None)
+                    }
+                    FilterType::Ekf => {
+                        let mut ekf = initialize_ekf(records[0].clone(), None, None, None, None, true);
+                        info!("Initialized EKF");
+                        run_closed_loop(&mut ekf, event_stream, None)
+                    }
+                    FilterType::Eskf => {
+                        let mut eskf = initialize_eskf(records[0].clone(), None, None, None, None);
+                        info!("Initialized ESKF");
+                        run_closed_loop(&mut eskf, event_stream, None)
+                    }
                 }
             };
 
@@ -760,6 +1017,9 @@ fn run_single_closed_loop_simulation(
     records: &[TestDataRecord],
     gnss_degradation: &strapdown::messages::GnssDegradationConfig,
     output_file: &Path,
+    ukf_alpha: f64,
+    ukf_beta: f64,
+    ukf_kappa: f64,
 ) -> Result<(), Box<dyn Error>> {
     // Build event stream from records and GNSS degradation config
     let event_stream = build_event_stream(records, gnss_degradation);
@@ -771,7 +1031,18 @@ fn run_single_closed_loop_simulation(
     // Initialize and run filter based on type
     let results = match filter_type {
         FilterType::Ukf => {
-            let mut ukf = initialize_ukf(records[0].clone(), None, None, None, None, None, None);
+            let mut ukf = initialize_ukf(
+                records[0].clone(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(ukf_alpha),
+                Some(ukf_beta),
+                Some(ukf_kappa),
+            );
             info!("Initialized UKF");
             run_closed_loop(&mut ukf, event_stream, None)
         }
@@ -933,6 +1204,9 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
             &records,
             &gnss_degradation,
             &output_file,
+            args.ukf_alpha,
+            args.ukf_beta,
+            args.ukf_kappa,
         ) {
             Ok(()) => {
                 // Success - result logging is handled by the helper function
@@ -1182,6 +1456,9 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                     Some(geo_biases),
                     Some(geo_noise_stds),
                     Some(process_noise),
+                    Some(args.ukf_alpha),
+                    Some(args.ukf_beta),
+                    Some(args.ukf_kappa),
                 );
                 info!(
                     "Initialized UKF with state dimension {} (base: 9, geo: {})",
@@ -2074,7 +2351,9 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
     // Mode-specific configuration
     let closed_loop = if matches!(mode, SimulationMode::ClosedLoop) {
         let filter = prompt_filter_type();
-        Some(strapdown::sim::ClosedLoopConfig { filter })
+        let mut closed_loop_cfg = strapdown::sim::ClosedLoopConfig::default();
+        closed_loop_cfg.filter = filter;
+        Some(closed_loop_cfg)
     } else {
         None
     };

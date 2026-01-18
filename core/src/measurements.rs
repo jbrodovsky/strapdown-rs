@@ -557,12 +557,7 @@ impl MeasurementModel for MagnetometerYawMeasurement {
     fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64> {
         // Convert state slice to StrapdownState for linearize function
         let nav_state = crate::StrapdownState::try_from(&state.as_slice()[..9]).unwrap();
-        crate::linearize::magnetometer_yaw_jacobian(
-            &nav_state,
-            self.mag_x,
-            self.mag_y,
-            self.mag_z,
-        )
+        crate::linearize::magnetometer_yaw_jacobian(&nav_state, self.mag_x, self.mag_y, self.mag_z)
     }
 }
 
