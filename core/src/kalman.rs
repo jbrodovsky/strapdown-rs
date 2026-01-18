@@ -5,10 +5,7 @@
 //! provided in the top-level [lib] module.
 
 use crate::linalg::{matrix_square_root, robust_spd_solve, symmetrize};
-use crate::measurements::{
-    GPSPositionAndVelocityMeasurement, GPSPositionMeasurement, GPSVelocityMeasurement,
-    MagnetometerYawMeasurement, MeasurementModel, RelativeAltitudeMeasurement,
-};
+use crate::measurements::MeasurementModel;
 use crate::{
     IMUData, NavigationFilter, StrapdownState, forward, wrap_to_2pi, wrap_to_180, wrap_to_360,
 };
@@ -670,6 +667,13 @@ impl ExtendedKalmanFilter {
             mean.extend(imu_biases);
         }
 
+        // Check if we have augmented states (covariance_diagonal longer than current mean)
+        // If so, initialize augmented states to zero
+        let expected_state_size = covariance_diagonal.len();
+        while mean.len() < expected_state_size {
+            mean.push(0.0);
+        }
+
         let state_size = mean.len();
         let mean_state = DVector::from_vec(mean);
         let covariance = DMatrix::<f64>::from_diagonal(&DVector::from_vec(covariance_diagonal));
@@ -778,11 +782,16 @@ impl NavigationFilter for ExtendedKalmanFilter {
             dt,
         );
 
-        // Extend F to full state size if using biases
-        let f_full = if self.use_biases && self.state_size == 15 {
-            let mut f_ext = DMatrix::<f64>::identity(15, 15);
+        // Extend F to full state size if using biases or augmented states
+        let f_full = if self.use_biases && self.state_size >= 15 {
+            let mut f_ext = DMatrix::<f64>::identity(self.state_size, self.state_size);
             f_ext.view_mut((0, 0), (9, 9)).copy_from(&f_matrix);
-            // Bias states have identity dynamics (random walk)
+            // Bias states and any augmented states have identity dynamics (random walk)
+            f_ext
+        } else if self.state_size > 9 {
+            // Handle augmented states without biases (should not happen, but be defensive)
+            let mut f_ext = DMatrix::<f64>::identity(self.state_size, self.state_size);
+            f_ext.view_mut((0, 0), (9, 9)).copy_from(&f_matrix);
             f_ext
         } else {
             f_matrix
@@ -865,78 +874,23 @@ impl NavigationFilter for ExtendedKalmanFilter {
         // Get expected measurement from current state
         let z_hat = measurement.get_expected_measurement(&self.mean_state);
 
-        // Get measurement Jacobian H based on measurement type
-        // We need to determine which type of measurement this is
+        // Get measurement Jacobian from the measurement model
+        // All measurements implement get_jacobian() which returns the H matrix
+        let h_9state = measurement.get_jacobian(&self.mean_state);
 
-        // Extract the 9-state navigation state for Jacobian computation
-        let nav_state = StrapdownState {
-            latitude: self.mean_state[0],
-            longitude: self.mean_state[1],
-            altitude: self.mean_state[2],
-            velocity_north: self.mean_state[3],
-            velocity_east: self.mean_state[4],
-            velocity_vertical: self.mean_state[5],
-            attitude: Rotation3::from_euler_angles(
-                self.mean_state[6],
-                self.mean_state[7],
-                self.mean_state[8],
-            ),
-            is_enu: self.is_enu,
-        };
-
-        // Compute measurement Jacobian for 9-state system
-        // First check if the measurement provides its own Jacobian (for geophysical measurements)
-        let h_9state = if let Some(jacobian) = measurement.get_jacobian(&self.mean_state) {
-            // Measurement provides its own Jacobian (e.g., geophysical anomaly measurements)
-            jacobian
-        } else if measurement
-            .as_any()
-            .downcast_ref::<GPSPositionMeasurement>()
-            .is_some()
-        {
-            crate::linearize::gps_position_jacobian(&nav_state)
-        } else if measurement
-            .as_any()
-            .downcast_ref::<GPSVelocityMeasurement>()
-            .is_some()
-        {
-            crate::linearize::gps_velocity_jacobian(&nav_state)
-        } else if measurement
-            .as_any()
-            .downcast_ref::<GPSPositionAndVelocityMeasurement>()
-            .is_some()
-        {
-            crate::linearize::gps_position_velocity_jacobian(&nav_state)
-        } else if measurement
-            .as_any()
-            .downcast_ref::<RelativeAltitudeMeasurement>()
-            .is_some()
-        {
-            crate::linearize::relative_altitude_jacobian(&nav_state)
-        } else if let Some(mag_meas) = measurement
-            .as_any()
-            .downcast_ref::<MagnetometerYawMeasurement>()
-        {
-            crate::linearize::magnetometer_yaw_jacobian(
-                &nav_state,
-                mag_meas.mag_x,
-                mag_meas.mag_y,
-                mag_meas.mag_z,
-            )
-        } else {
-            // Fallback: assume direct position measurement
-            // crate::linearize::gps_position_jacobian(&nav_state)
-            todo!(
-                "Unsupported measurement type for EKF update! Need to implement geophysical measurement jacobians for the EKF"
-            );
-        };
-
-        // Extend H to full state size if using biases
-        let h_matrix = if self.use_biases && self.state_size == 15 {
+        // Extend H to full state size if using biases or augmented states
+        let h_matrix = if self.use_biases && self.state_size >= 15 {
             let meas_dim = measurement.get_dimension();
-            let mut h_ext = DMatrix::<f64>::zeros(meas_dim, 15);
+            let mut h_ext = DMatrix::<f64>::zeros(meas_dim, self.state_size);
             h_ext.view_mut((0, 0), (meas_dim, 9)).copy_from(&h_9state);
-            // Measurement doesn't depend on biases (zero columns for bias states)
+            // Measurement typically doesn't depend on biases or augmented states
+            // (zero columns for those states)
+            h_ext
+        } else if self.state_size > 9 {
+            // Handle augmented states without biases (should not happen, but be defensive)
+            let meas_dim = measurement.get_dimension();
+            let mut h_ext = DMatrix::<f64>::zeros(meas_dim, self.state_size);
+            h_ext.view_mut((0, 0), (meas_dim, 9)).copy_from(&h_9state);
             h_ext
         } else {
             h_9state

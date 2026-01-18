@@ -2,7 +2,9 @@ input = "data/input"
 output = "data/output/ekf/degraded"
 mode = "closed-loop"
 seed = 42
+parallel = true
 generate_plot = true
+
 
 [logging]
 level = "info"

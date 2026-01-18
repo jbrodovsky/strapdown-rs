@@ -169,6 +169,12 @@ def plot_relative_performance(
     """
     output_path = Path(output_path)
 
+    # Check that dataframes are all the same length
+    if not (len(geo) == len(deg) == len(nav)):
+        raise ValueError(
+            f"Input DataFrames must be the same length for relative performance plotting.\nGot lengths: geo={len(geo)}, deg={len(deg)}, nav={len(nav)}"
+        )
+
     distance_traveled = haversine_vector(
         nav[["latitude", "longitude"]].to_numpy()[:-1, :],
         nav[["latitude", "longitude"]].to_numpy()[1:, :],
@@ -227,6 +233,7 @@ def plot_relative_performance(
     ax.legend()
     fig.savefig(output_path, dpi=300)
     plt.close(fig)
+    print(f"Saved relative performance plot to: {output_path}")
 
 
 def plot_street_map(

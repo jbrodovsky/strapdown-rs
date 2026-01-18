@@ -2,6 +2,7 @@ input = "data/input"
 output = "data/output/ukf/degraded"
 mode = "closed-loop"
 seed = 42
+parallel = true
 generate_plot = true
 
 [closed_loop]
