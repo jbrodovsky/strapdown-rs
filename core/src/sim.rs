@@ -2106,10 +2106,7 @@ pub struct UkfConfig {
 /// # Returns
 ///
 /// * `UnscentedKalmanFilter` - An instance of the Unscented Kalman Filter initialized with the provided parameters.
-pub fn initialize_ukf(
-    initial_pose: TestDataRecord,
-    config: UkfConfig,
-) -> UnscentedKalmanFilter {
+pub fn initialize_ukf(initial_pose: TestDataRecord, config: UkfConfig) -> UnscentedKalmanFilter {
     let initial_state = InitialState {
         latitude: initial_pose.latitude,
         longitude: initial_pose.longitude,
@@ -3731,10 +3728,7 @@ mod tests {
             });
 
         // Initialize UKF
-        let mut ukf = initialize_ukf(
-            rec.clone(),
-            UkfConfig::default(),
-        );
+        let mut ukf = initialize_ukf(rec.clone(), UkfConfig::default());
 
         // Create a minimal EventStream with one IMU event
         let imu_data = IMUData {
@@ -3789,10 +3783,7 @@ mod tests {
             grav_y: 0.0,
             grav_x: 0.0,
         };
-        let ukf = initialize_ukf(
-            rec.clone(),
-            UkfConfig::default(),
-        );
+        let ukf = initialize_ukf(rec.clone(), UkfConfig::default());
         assert!(!ukf.get_estimate().is_empty());
         let ukf2 = initialize_ukf(
             rec,
@@ -3990,10 +3981,7 @@ mod tests {
             yaw: 0.3,
             ..Default::default()
         };
-        let ukf = initialize_ukf(
-            rec.clone(),
-            UkfConfig::default(),
-        );
+        let ukf = initialize_ukf(rec.clone(), UkfConfig::default());
         let timestamp = Utc::now();
         let nav_result = NavigationResult::from((&timestamp, &ukf));
 
@@ -4047,10 +4035,7 @@ mod tests {
             yaw: 0.3,
             ..Default::default()
         };
-        let ukf = initialize_ukf(
-            rec.clone(),
-            UkfConfig::default(),
-        );
+        let ukf = initialize_ukf(rec.clone(), UkfConfig::default());
         // Just ensure it doesn't panic
         print_ukf(&ukf, &rec);
     }
@@ -4620,10 +4605,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut ukf = initialize_ukf(
-            rec.clone(),
-            UkfConfig::default(),
-        );
+        let mut ukf = initialize_ukf(rec.clone(), UkfConfig::default());
 
         let stream = EventStream {
             start_time: rec.time,
