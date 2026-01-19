@@ -7,12 +7,14 @@ from argparse import ArgumentParser
 from concurrent import futures
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import pandas as pd
 from pygmt.datasets import (
     load_earth_free_air_anomaly,
     load_earth_magnetic_anomaly,
     load_earth_relief,
 )
+from tqdm import tqdm
 
 from analysis.plotting import inflate_bounds, plot_street_map
 
@@ -158,13 +160,12 @@ def convert_hz_to_time_str(frequency: int) -> str:
 
 def preprocess_data(args):
     """Preprocess the data based on the provided arguments."""
-    # datasets = Path(args.input_dir).glob("**/*.csv")
-    input_path = Path(args.input_dir)
-    output_path = Path(args.output_dir)
+    input_path = Path(args.input)
+    output_path = Path(args.output)
     # Find all CSV files under the input directory
     all_csv = list(input_path.rglob("*.csv"))
 
-    # Check for folders directly under input_dir that contain CSV files.
+    # Check for folders directly under input that contain CSV files.
     datasets = [d for d in input_path.iterdir() if d.is_dir() and any(d.glob("*.csv"))]
 
     print("found the following folders with data: ")
@@ -184,79 +185,64 @@ def preprocess_data(args):
             print("No datasets found. Exiting.")
             return
 
-    # os.makedirs(os.path.join("data", "cleaned"), exist_ok=True)
-    # os.makedirs(args.output_dir, exist_ok=True)
     print(
-        f"Preprocessing data from {args.input_dir}. Output will be saved to {args.output_dir}."
+        f"Preprocessing data from {args.input}. Output will be saved to {args.output}."
     )
     output_path.mkdir(parents=True, exist_ok=True)
 
-    def process_dataset(dataset: Path):
-        # for dataset in datasets:
-        # dataset_path = os.path.join(args.input_dir, dataset)
+    # def process_dataset(dataset: Path):
+    for dataset in tqdm(datasets):
         cleaned_data = pd.DataFrame()
-        print(f"Processing: {dataset}")
+        # print(f"Processing: {dataset}")
         try:
             cleaned_data = clean_phone_data(dataset)
         except Exception as e:
             print(f"Error processing {dataset}: {e}")
-            return
+            continue
         cleaned_csv_path = output_path / f"{dataset.name}.csv"
-        print(f"Saving data to: {cleaned_csv_path}")
+        # print(f"Saving data to: {cleaned_csv_path}")
         cleaned_data.to_csv(cleaned_csv_path)
-        print(f"Cleaned data for {dataset} saved to {cleaned_csv_path}.")
+        # print(f"Cleaned data for {dataset} saved to {cleaned_csv_path}.")
 
         street_map = plot_street_map(
-            cleaned_data["latitude"].tolist(),
-            cleaned_data["longitude"].tolist(),
+            cleaned_data,
             margin=0.01,
             title=dataset.name,
         )
         street_map_path = output_path / f"{dataset.name}_street_map.png"
-        # os.path.join(
-        #    args.output_dir, f"{dataset.name}_street_map.png"
-        # )
         street_map.savefig(street_map_path, dpi=300)
-        print(f"Street map for {dataset.name} saved to {street_map_path}.")
+        # Close the figure to avoid accumulating open figures and memory usage
+        plt.close(street_map)
+        # print(f"Street map for {dataset.name} saved to {street_map_path}.")
 
-        if not args.getmaps:
-            return
-        lon_min = cleaned_data["longitude"].min()
-        lon_max = cleaned_data["longitude"].max()
-        lat_min = cleaned_data["latitude"].min()
-        lat_max = cleaned_data["latitude"].max()
-        lon_min, lon_max, lat_min, lat_max = inflate_bounds(
-            lon_min, lon_max, lat_min, lat_max, args.buffer
-        )
+        if args.getmaps:
+            lon_min = cleaned_data["longitude"].min()
+            lon_max = cleaned_data["longitude"].max()
+            lat_min = cleaned_data["latitude"].min()
+            lat_max = cleaned_data["latitude"].max()
+            lon_min, lon_max, lat_min, lat_max = inflate_bounds(
+                lon_min, lon_max, lat_min, lat_max, args.buffer
+            )
 
-        # Download the maps
-        relief = load_earth_relief(
-            resolution="15s", region=[lon_min, lon_max, lat_min, lat_max]
-        )
-        relief.to_netcdf(
-            os.path.join(args.output_dir, dataset.name.replace(".csv", "_relief.nc"))
-        )
-        # print(f"  Downloaded relief map: {relief.data.shape}.")
+            # Download the maps
+            relief = load_earth_relief(
+                resolution="15s", region=[lon_min, lon_max, lat_min, lat_max]
+            )
+            relief.to_netcdf(output_path / f"{dataset.name}_relief.nc")
+            # print(f"  Downloaded relief map: {relief.data.shape}.")
 
-        gravity = load_earth_free_air_anomaly(
-            resolution="01m", region=[lon_min, lon_max, lat_min, lat_max]
-        )
-        gravity.to_netcdf(
-            os.path.join(args.output_dir, dataset.name.replace(".csv", "_gravity.nc"))
-        )
-        # print(f"  Downloaded gravity map: {gravity.data.shape}.")
+            gravity = load_earth_free_air_anomaly(
+                resolution="01m", region=[lon_min, lon_max, lat_min, lat_max]
+            )
+            gravity.to_netcdf(output_path / f"{dataset.name}_gravity.nc")
+            # print(f"  Downloaded gravity map: {gravity.data.shape}.")
 
-        magnetic = load_earth_magnetic_anomaly(
-            resolution="03m",
-            region=[lon_min, lon_max, lat_min, lat_max],
-            data_source="wdmam",
-        )
-        magnetic.to_netcdf(
-            os.path.join(args.output_dir, dataset.name.replace(".csv", "_magnetic.nc"))
-        )
-
-    with futures.ThreadPoolExecutor() as executor:
-        executor.map(process_dataset, datasets)
+            magnetic = load_earth_magnetic_anomaly(
+                resolution="03m",
+                region=[lon_min, lon_max, lat_min, lat_max],
+                data_source="wdmam",
+            )
+            magnetic.to_netcdf(output_path / f"{dataset.name}_magnetic.nc")
 
 
 def main() -> None:
@@ -265,13 +251,13 @@ def main() -> None:
     """
     parser = ArgumentParser(description="Clean sensor logger app data or plot routes.")
     parser.add_argument(
-        "--input_dir",
+        "--input",
         type=str,
         default="data/raw",
         help="Base directory for the sensor logger app data.",
     )
     parser.add_argument(
-        "--output_dir",
+        "--output",
         type=str,
         default="data",
         help="Output directory for the cleaned data.",
@@ -288,9 +274,7 @@ def main() -> None:
         help="Whether to download geophysical maps for each trajectory.",
     )
     args = parser.parse_args()
-    assert os.path.exists(args.input_dir), (
-        f"Input directory {args.input_dir} does not exist."
-    )
+    assert os.path.exists(args.input), f"Input directory {args.input} does not exist."
     preprocess_data(args)
 
 

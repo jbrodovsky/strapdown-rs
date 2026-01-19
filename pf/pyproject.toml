@@ -1,0 +1,48 @@
+[project]
+name = "pf"
+version = "0.1.0"
+description = "Geophysical particle filter for velocity-based navigation"
+readme = "README.md"
+authors = [
+    { name = "James Brodovsky", email = "james.brodovsky@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "cartopy>=0.25.0",
+    "filterpy>=1.4.5",
+    "haversine>=2.9.0",
+    "matplotlib>=3.10.8",
+    "netCDF4>=1.7.0",
+    "numpy>=2.4.1",
+    "pandas>=2.3.3",
+    "pygmt>=0.18.0",
+    "scipy>=1.17.0",
+    "tqdm>=4.67.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.4.0",
+]
+
+[project.scripts]
+pf-sim = "pf.cli:main"
+pf-postprocess = "pf.cli:postprocess_main"
+
+[build-system]
+requires = ["uv_build>=0.9.21,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM"]
+ignore = ["E501"]  # Line length handled by formatter
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"

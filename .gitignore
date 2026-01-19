@@ -6,6 +6,9 @@ examples/strapdown-sim/out
 # Map files
 *.nc
 
+# MCAP test output files
+*.mcap
+
 # Ignore latex junk
 *.aux
 *.fdb_latexmk
@@ -32,7 +35,6 @@ __pycache__
 .pixi
 *.egg-info
 .python-version
-pyproject.toml
 uv.lock
 batch_process.nu
 .pixi/*
@@ -41,6 +43,7 @@ batch_process.nu
 # Data output
 examples/geonav-sim/ukf
 examples/geonav-sim/pf
+data/output/*
 
 # Ignore ruff
 .ruff_cache/

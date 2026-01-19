@@ -16,7 +16,12 @@
 //! using the vehicle velocity (Eötvös correction) and the reference gravity at the current position (from a gravity map) to
 //! calculate the free air anomaly.
 
-pub mod velocity_particle;
+// NOTE: The `velocity_particle` module is temporarily disabled while the particle-based
+// velocity navigation algorithms are being refactored and validated. It will be
+// re-enabled once the API is stabilized and comprehensive tests are in place.
+// See core/src/particle.rs for the new implementation.
+// pub mod velocity_particle;
+
 use std::any::Any;
 use std::fmt::{Debug, Display};
 use std::path::PathBuf;
@@ -46,6 +51,11 @@ use strapdown::{IMUData, NavigationFilter, StrapdownState};
 
 /// Conversion factor from radians to degrees (180/π)
 const RAD_TO_DEG: f64 = 180.0 / std::f64::consts::PI;
+
+/// World Magnetic Model valid altitude range (meters)
+/// The WMM is typically valid from -1km below sea level to ~850km above
+const WMM_MIN_ALTITUDE_M: f64 = -1000.0;
+const WMM_MAX_ALTITUDE_M: f64 = 850000.0;
 
 //================= Map Information ========================================================================
 /// Resolution values for bathymetric or terrain relief maps
@@ -357,7 +367,12 @@ impl GeoMap {
             );
         }
         if lon < &self.lons[0] || lon > &self.lons[self.lons.len() - 1] {
-            panic!("Longitude out of bounds");
+            panic!(
+                "Longitude out of bounds: {} not in [{}, {}]",
+                lon,
+                self.lons[0],
+                self.lons[self.lons.len() - 1]
+            );
         }
         // Check if the lat/lon are at the origin or the end of the map
         if lat == &self.lats[0] && lon == &self.lons[0] {
@@ -523,6 +538,8 @@ pub struct GravityMeasurement {
     north_velocity: f64,
     /// Current east velocity (m/s)
     east_velocity: f64,
+    /// Optional bias state index from the end of the state vector.
+    pub bias_from_end: Option<usize>,
 }
 /// Geophysical anomaly measurement model implementation for gravity. This trait provides a method to compute
 /// the gravity anomaly given the current state. Free air anomaly correction needs knowledge of the vehicle
@@ -554,10 +571,15 @@ impl MeasurementModel for GravityMeasurement {
     fn get_dimension(&self) -> usize {
         1 // Single measurement: map value at current position
     }
-    fn get_measurement(&self, _state: &DVector<f64>) -> DVector<f64> {
-        // Return the observed gravity anomaly as the measurement vector
-        // Gravity measurement is state-independent (computed from sensor data)
-        DVector::from_vec(vec![self.get_anomaly()])
+    fn get_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
+        // Return the observed gravity anomaly as the measurement vector.
+        // Use provided state if available (for per-particle updates), otherwise fallback to stored state.
+        let anomaly = if let Some((lat, alt, v_n, v_e)) = self.extract_state_inputs(state) {
+            gravity_anomaly(&lat, &alt, &v_n, &v_e, &self.gravity_observed)
+        } else {
+            self.get_anomaly()
+        };
+        DVector::from_vec(vec![anomaly])
     }
     fn get_noise(&self) -> DMatrix<f64> {
         DMatrix::from_diagonal(&DVector::from_element(
@@ -572,27 +594,34 @@ impl MeasurementModel for GravityMeasurement {
             .map
             .get_point(&lat.to_degrees(), &lon.to_degrees())
             .unwrap_or(f64::NAN);
-        DVector::from_vec(vec![map_value])
+        let bias = self.bias_from_end.and_then(|offset| {
+            if offset == 0 || state.len() < offset {
+                None
+            } else {
+                Some(state[state.len() - offset])
+            }
+        });
+        DVector::from_vec(vec![map_value + bias.unwrap_or(0.0)])
     }
-    // fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
-    //     let num_sigma_points = state_sigma_points.ncols();
-    //     let mut measurement_sigma_points = DMatrix::zeros(1, num_sigma_points);
-    //
-    //     for i in 0..num_sigma_points {
-    //         let state = state_sigma_points.column(i);
-    //         let lat = state[0];
-    //         let lon = state[1];
-    //
-    //         measurement_sigma_points[(0, i)] = self
-    //             .map
-    //             .get_point(&lat.to_degrees(), &lon.to_degrees())
-    //             .unwrap_or(f64::NAN);
-    //     }
-    //     measurement_sigma_points
-    // }
+
+    fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64> {
+        self.get_jacobian_internal(state)
+    }
 }
 
 impl GravityMeasurement {
+    fn extract_state_inputs(&self, state: &DVector<f64>) -> Option<(f64, f64, f64, f64)> {
+        if state.len() >= 5
+            && state[0].is_finite()
+            && state[2].is_finite()
+            && state[3].is_finite()
+            && state[4].is_finite()
+        {
+            Some((state[0], state[2], state[3], state[4]))
+        } else {
+            None
+        }
+    }
     /// Compute measurement Jacobian for EKF
     ///
     /// Returns 1×9 Jacobian matrix where only the first two columns (∂z/∂lat, ∂z/∂lon)
@@ -605,7 +634,7 @@ impl GravityMeasurement {
     /// # Returns
     ///
     /// 1×9 Jacobian matrix H for gravity anomaly measurement
-    pub fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64> {
+    pub fn get_jacobian_internal(&self, state: &DVector<f64>) -> DMatrix<f64> {
         let mut h = DMatrix::<f64>::zeros(1, 9);
 
         let lat = state[0];
@@ -642,11 +671,16 @@ pub struct MagneticAnomalyMeasurement {
     pub longitude: f64,
     /// Altitude (meters)
     pub altitude: f64,
+    /// Optional bias state index from the end of the state vector.
+    pub bias_from_end: Option<usize>,
 }
 impl GeophysicalAnomalyMeasurementModel for MagneticAnomalyMeasurement {
     fn get_anomaly(&self) -> f64 {
+        // Clamp altitude to valid WMM range to prevent errors
+        let alt_clamped = self.altitude.clamp(WMM_MIN_ALTITUDE_M, WMM_MAX_ALTITUDE_M);
+
         let magnetic_field = GeomagneticField::new(
-            Length::new::<meter>(self.altitude as f32),
+            Length::new::<meter>(alt_clamped as f32),
             Angle::new::<degree>(self.latitude as f32),
             Angle::new::<degree>(self.longitude as f32),
             Date::from_ordinal_date(self.year, self.day).unwrap(),
@@ -670,10 +704,38 @@ impl MeasurementModel for MagneticAnomalyMeasurement {
     fn get_dimension(&self) -> usize {
         1 // Single measurement: map value at current position
     }
-    fn get_measurement(&self, _state: &DVector<f64>) -> DVector<f64> {
-        // Return the observed magnetic anomaly as the measurement vector
-        // Magnetic anomaly measurement is state-independent (computed from sensor data)
-        DVector::from_vec(vec![self.get_anomaly()])
+    fn get_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
+        // Return the observed magnetic anomaly as the measurement vector.
+        // Use provided state if available (for per-particle updates), otherwise fallback to stored state.
+        let anomaly = if let Some((lat_deg, lon_deg, alt)) = self.extract_state_inputs(state) {
+            // Clamp altitude to valid WMM range to prevent errors
+            let alt_clamped = alt.clamp(WMM_MIN_ALTITUDE_M, WMM_MAX_ALTITUDE_M);
+
+            if (alt - alt_clamped).abs() > 1.0 {
+                log::warn!(
+                    "Altitude {} m out of WMM bounds, clamped to {} m",
+                    alt,
+                    alt_clamped
+                );
+            }
+
+            let magnetic_field = GeomagneticField::new(
+                Length::new::<meter>(alt_clamped as f32),
+                Angle::new::<degree>(lat_deg as f32),
+                Angle::new::<degree>(lon_deg as f32),
+                Date::from_ordinal_date(self.year, self.day).unwrap(),
+            )
+            .unwrap_or_else(|e| {
+                panic!(
+                    "Failed to create GeomagneticField at lat={}, lon={}, alt={} (clamped: {}): {:?}",
+                    lat_deg, lon_deg, alt, alt_clamped, e
+                )
+            });
+            self.mag_obs - magnetic_field.f().value as f64
+        } else {
+            self.get_anomaly()
+        };
+        DVector::from_vec(vec![anomaly])
     }
     fn get_noise(&self) -> DMatrix<f64> {
         DMatrix::from_diagonal(&DVector::from_element(
@@ -688,27 +750,30 @@ impl MeasurementModel for MagneticAnomalyMeasurement {
             .map
             .get_point(&lat.to_degrees(), &lon.to_degrees())
             .unwrap_or(f64::NAN);
-        DVector::from_vec(vec![map_value])
+        let bias = self.bias_from_end.and_then(|offset| {
+            if offset == 0 || state.len() < offset {
+                None
+            } else {
+                Some(state[state.len() - offset])
+            }
+        });
+        DVector::from_vec(vec![map_value + bias.unwrap_or(0.0)])
     }
-    // fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
-    //     let num_sigma_points = state_sigma_points.ncols();
-    //     let mut measurement_sigma_points = DMatrix::zeros(1, num_sigma_points);
-    //
-    //     for i in 0..num_sigma_points {
-    //         let state = state_sigma_points.column(i);
-    //         let lat = state[0];
-    //         let lon = state[1];
-    //
-    //         measurement_sigma_points[(0, i)] = self
-    //             .map
-    //             .get_point(&lat.to_degrees(), &lon.to_degrees())
-    //             .unwrap_or(f64::NAN);
-    //     }
-    //     measurement_sigma_points
-    // }
+
+    fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64> {
+        self.get_jacobian_internal(state)
+    }
 }
 
 impl MagneticAnomalyMeasurement {
+    fn extract_state_inputs(&self, state: &DVector<f64>) -> Option<(f64, f64, f64)> {
+        if state.len() >= 3 && state[0].is_finite() && state[1].is_finite() && state[2].is_finite()
+        {
+            Some((state[0].to_degrees(), state[1].to_degrees(), state[2]))
+        } else {
+            None
+        }
+    }
     /// Compute measurement Jacobian for EKF
     ///
     /// Returns 1×9 Jacobian matrix where only the first two columns (∂z/∂lat, ∂z/∂lon)
@@ -721,7 +786,7 @@ impl MagneticAnomalyMeasurement {
     /// # Returns
     ///
     /// 1×9 Jacobian matrix H for magnetic anomaly measurement
-    pub fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64> {
+    pub fn get_jacobian_internal(&self, state: &DVector<f64>) -> DMatrix<f64> {
         let mut h = DMatrix::<f64>::zeros(1, 9);
 
         let lat = state[0];
@@ -743,22 +808,28 @@ impl MagneticAnomalyMeasurement {
 /// Builds and initializes an event stream that also contains geophysical measurements
 ///
 /// This function builds a generic geophysical measurement model and adds it to the event stream.
-/// The geophysical measurement model is initialized with the provided map and noise standard deviation.
+/// The geophysical measurement models are initialized with the provided maps and noise standard deviations.
+/// Supports gravity-only, magnetic-only, combined (both), or no geophysical measurements.
 ///
 /// # Arguments
 /// * `records` - Vector of test data records
 /// * `cfg` - GNSS degradation configuration
-/// * `geomap` - Geophysical map for measurements
-/// * `geo_noise_std` - Standard deviation for geophysical measurement noise
+/// * `gravity_map` - Optional gravity map for measurements
+/// * `gravity_noise_std` - Standard deviation for gravity measurement noise (if gravity_map is Some)
+/// * `magnetic_map` - Optional magnetic map for measurements
+/// * `magnetic_noise_std` - Standard deviation for magnetic measurement noise (if magnetic_map is Some)
 /// * `geo_frequency_s` - Frequency in seconds for geophysical measurements (None for every available measurement)
 pub fn build_event_stream(
     records: &[TestDataRecord],
     cfg: &GnssDegradationConfig,
-    geomap: Rc<GeoMap>,
-    geo_noise_std: Option<f64>,
+    gravity_map: Option<Rc<GeoMap>>,
+    gravity_noise_std: Option<f64>,
+    magnetic_map: Option<Rc<GeoMap>>,
+    magnetic_noise_std: Option<f64>,
     geo_frequency_s: Option<f64>,
 ) -> EventStream {
     let start_time = records[0].time;
+    let bias_count = gravity_map.is_some() as usize + magnetic_map.is_some() as usize;
     let records_with_elapsed: Vec<(f64, &TestDataRecord)> = records
         .iter()
         .map(|r| ((r.time - start_time).num_milliseconds() as f64 / 1000.0, r))
@@ -846,7 +917,7 @@ pub fn build_event_stream(
                     r1.horizontal_accuracy.max(1e-3)
                 };
                 let vert_std = if r1.vertical_accuracy.is_nan() {
-                    1000.0
+                    20.0
                 } else {
                     r1.vertical_accuracy.max(1e-3)
                 };
@@ -857,8 +928,7 @@ pub fn build_event_stream(
                 };
 
                 let (lat_c, lon_c, alt_c, vn_c, ve_c, horiz_c, vel_c) = apply_fault(
-                    &cfg.fault, &mut st, *t1, dt, lat, lon, alt, vn, ve, horiz_std, vert_std,
-                    vel_std,
+                    &cfg.fault, &mut st, *t1, dt, lat, lon, alt, vn, ve, horiz_std, vel_std,
                 );
 
                 let meas = GPSPositionAndVelocityMeasurement {
@@ -905,54 +975,57 @@ pub fn build_event_stream(
             None => true, // Emit for every available measurement if no frequency specified
         };
 
-        // Create geophysical measurements based on the map type
+        // Create geophysical measurements based on loaded maps
         if should_emit_geo {
-            match &geomap.map_type {
-                GeophysicalMeasurementType::Relief(_) => {
-                    // Relief maps don't currently have specific measurements
-                    // Could potentially be used for terrain-aided navigation
-                }
-                GeophysicalMeasurementType::Gravity(_) => {
-                    if gravity_present {
-                        // Calculate observed gravity magnitude
-                        let observed_gravity =
-                            (r1.grav_x.powi(2) + r1.grav_y.powi(2) + r1.grav_z.powi(2)).sqrt();
-                        let meas = GravityMeasurement {
-                            map: geomap.clone(),
-                            noise_std: geo_noise_std.unwrap_or(100.0), // Use provided or default value
-                            gravity_observed: observed_gravity,
-                            latitude: f64::NAN, // to be set in closed-loop using state
-                            altitude: f64::NAN, // to be set in closed-loop using state
-                            north_velocity: f64::NAN, // to be set in closed-loop using state
-                            east_velocity: f64::NAN, // to be set in closed-loop using state
-                        };
-                        events.push(Event::Measurement {
-                            meas: Box::new(meas),
-                            elapsed_s: *t1,
-                        });
-                    }
-                }
-                GeophysicalMeasurementType::Magnetic(_) => {
-                    if magnetic_present {
-                        let datetime = r1.time;
-                        let observed_magnetic =
-                            (r1.mag_x.powi(2) + r1.mag_y.powi(2) + r1.mag_z.powi(2)).sqrt();
-                        let meas = MagneticAnomalyMeasurement {
-                            map: geomap.clone(),
-                            noise_std: geo_noise_std.unwrap_or(100.0), // Use provided or default value
-                            mag_obs: observed_magnetic,
-                            latitude: f64::NAN, // to be set in closed-loop using state
-                            longitude: f64::NAN, // to be set in closed-loop using state
-                            altitude: f64::NAN, // to be set in closed-loop using state
-                            year: datetime.year(),
-                            day: datetime.ordinal() as u16,
-                        };
-                        events.push(Event::Measurement {
-                            meas: Box::new(meas),
-                            elapsed_s: *t1,
-                        });
-                    }
-                }
+            // Process gravity measurements if gravity map is loaded
+            if let Some(ref g_map) = gravity_map
+                && gravity_present
+            {
+                // Calculate observed gravity magnitude
+                let observed_gravity =
+                    (r1.grav_x.powi(2) + r1.grav_y.powi(2) + r1.grav_z.powi(2)).sqrt();
+                let meas = GravityMeasurement {
+                    map: g_map.clone(),
+                    noise_std: gravity_noise_std.unwrap_or(100.0), // Use provided or default value
+                    gravity_observed: observed_gravity,
+                    latitude: f64::NAN, // to be set in closed-loop using state
+                    altitude: f64::NAN, // to be set in closed-loop using state
+                    north_velocity: f64::NAN, // to be set in closed-loop using state
+                    east_velocity: f64::NAN, // to be set in closed-loop using state
+                    bias_from_end: if bias_count > 0 {
+                        Some(bias_count)
+                    } else {
+                        None
+                    },
+                };
+                events.push(Event::Measurement {
+                    meas: Box::new(meas),
+                    elapsed_s: *t1,
+                });
+            }
+
+            // Process magnetic measurements if magnetic map is loaded
+            if let Some(ref m_map) = magnetic_map
+                && magnetic_present
+            {
+                let datetime = r1.time;
+                let observed_magnetic =
+                    (r1.mag_x.powi(2) + r1.mag_y.powi(2) + r1.mag_z.powi(2)).sqrt();
+                let meas = MagneticAnomalyMeasurement {
+                    map: m_map.clone(),
+                    noise_std: magnetic_noise_std.unwrap_or(150.0), // Use provided or default value
+                    mag_obs: observed_magnetic,
+                    latitude: f64::NAN,  // to be set in closed-loop using state
+                    longitude: f64::NAN, // to be set in closed-loop using state
+                    altitude: f64::NAN,  // to be set in closed-loop using state
+                    year: datetime.year(),
+                    day: datetime.ordinal() as u16,
+                    bias_from_end: if bias_count > 0 { Some(1) } else { None },
+                };
+                events.push(Event::Measurement {
+                    meas: Box::new(meas),
+                    elapsed_s: *t1,
+                });
             }
         }
     }
@@ -968,7 +1041,7 @@ pub fn build_event_stream(
 /// * `records` - Vector of test data records containing IMU measurements and GPS data.
 /// # Returns
 /// * `Vec<NavigationResult>` - A vector of navigation results containing the state estimates and covariances at each timestamp.
-pub fn geo_closed_loop(
+pub fn geo_closed_loop_ukf(
     ukf: &mut UnscentedKalmanFilter,
     stream: EventStream,
 ) -> anyhow::Result<Vec<NavigationResult>> {
@@ -1087,7 +1160,7 @@ pub fn geo_closed_loop(
 /// use geonav::{build_event_stream, geo_closed_loop_ekf};
 ///
 /// let mut ekf = ExtendedKalmanFilter::new(initial_state, biases, cov_diag, process_noise, true);
-/// let stream = build_event_stream(&records, &config, geomap, Some(100.0), None);
+/// let stream = build_event_stream(&records, &config, Some(geomap), Some(100.0), None, None, None);
 /// let results = geo_closed_loop_ekf(&mut ekf, stream)?;
 /// ```
 pub fn geo_closed_loop_ekf(
@@ -1325,15 +1398,16 @@ mod tests {
             altitude: 0.0,
             north_velocity: 3.5, // cos(45°) * 5 m/s
             east_velocity: 3.5,  // sin(45°) * 5 m/s
+            bias_from_end: None,
         };
 
         assert_eq!(measurement.get_dimension(), 1);
 
-        // Dummy state for get_measurement (gravity anomaly is state-independent)
-        let dummy_state = DVector::from_vec(vec![0.0; 9]);
+        // Dummy state for get_measurement (forces fallback to stored state)
+        let dummy_state = DVector::from_vec(vec![f64::NAN; 9]);
         let measurement_vector = measurement.get_measurement(&dummy_state);
         assert_eq!(measurement_vector.len(), 1);
-        assert_approx_eq!(measurement_vector[0], 0.00, 0.1);
+        assert_approx_eq!(measurement_vector[0], measurement.get_anomaly(), 1e-6);
 
         let noise_matrix = measurement.get_noise();
         assert_eq!(noise_matrix.nrows(), 1);
@@ -1353,19 +1427,17 @@ mod tests {
             altitude: 100.0,
             year: 2023,
             day: 216, // August 4th
+            bias_from_end: None,
         };
 
         assert_eq!(measurement.get_dimension(), 1);
 
-        // Dummy state for get_measurement (magnetic anomaly is state-independent)
-        let dummy_state = DVector::from_vec(vec![0.0; 9]);
+        // Dummy state for get_measurement (forces fallback to stored state)
+        let dummy_state = DVector::from_vec(vec![f64::NAN; 9]);
         let measurement_vector = measurement.get_measurement(&dummy_state);
         assert_eq!(measurement_vector.len(), 1);
 
-        // Should compute magnitude: sqrt(20000^2 + 5000^2 + 45000^2)
-        let expected_magnitude =
-            (20000.0_f64.powi(2) + 5000.0_f64.powi(2) + 45000.0_f64.powi(2)).sqrt();
-        assert_approx_eq!(measurement_vector[0], expected_magnitude, 1e-4);
+        assert_approx_eq!(measurement_vector[0], measurement.get_anomaly(), 1e-6);
 
         let noise_matrix = measurement.get_noise();
         assert_eq!(noise_matrix.nrows(), 1);
@@ -1384,6 +1456,7 @@ mod tests {
             altitude: f64::NAN,
             north_velocity: 3.5,
             east_velocity: 3.5,
+            bias_from_end: None,
         };
 
         // Create mock sigma points (position states in radians and meters)
@@ -1445,7 +1518,8 @@ mod tests {
         };
         let geomap = Rc::new(create_test_gravity_map());
 
-        let event_stream = build_event_stream(&records, &config, geomap, None, None);
+        let event_stream =
+            build_event_stream(&records, &config, Some(geomap), None, None, None, None);
 
         assert_eq!(event_stream.start_time, records[0].time);
         assert!(!event_stream.events.is_empty());
@@ -1477,7 +1551,8 @@ mod tests {
         };
         let geomap = Rc::new(create_test_magnetic_map());
 
-        let event_stream = build_event_stream(&records, &config, geomap, None, None);
+        let event_stream =
+            build_event_stream(&records, &config, None, None, Some(geomap), None, None);
 
         assert_eq!(event_stream.start_time, records[0].time);
         assert!(!event_stream.events.is_empty());
@@ -1553,6 +1628,7 @@ mod tests {
             altitude: f64::NAN,
             north_velocity: 3.5,
             east_velocity: 3.5,
+            bias_from_end: None,
         };
 
         let measurement2 = GravityMeasurement {
@@ -1563,6 +1639,7 @@ mod tests {
             altitude: f64::NAN,
             north_velocity: 3.5,
             east_velocity: 3.5,
+            bias_from_end: None,
         };
 
         let noise1 = measurement1.get_noise();
@@ -1584,7 +1661,15 @@ mod tests {
         let geomap = Rc::new(create_test_gravity_map());
 
         // Test with custom noise standard deviation
-        let event_stream = build_event_stream(&records, &config, geomap, Some(25.0), None);
+        let event_stream = build_event_stream(
+            &records,
+            &config,
+            Some(geomap),
+            Some(25.0),
+            None,
+            None,
+            None,
+        );
 
         // Find a gravity measurement event and verify its noise
         let has_gravity_with_custom_noise = event_stream.events.iter().any(|event| {
@@ -1616,8 +1701,15 @@ mod tests {
         let geomap = Rc::new(create_test_gravity_map());
 
         // Test with geophysical measurement frequency of 2 seconds
-        let event_stream =
-            build_event_stream(&records, &config, geomap.clone(), Some(25.0), Some(2.0));
+        let event_stream = build_event_stream(
+            &records,
+            &config,
+            Some(geomap.clone()),
+            Some(25.0),
+            None,
+            None,
+            Some(2.0),
+        );
 
         // Count gravity measurement events
         let gravity_events: Vec<_> = event_stream
@@ -1633,7 +1725,15 @@ mod tests {
             .collect();
 
         // Test with no frequency limit (should have more measurements)
-        let event_stream_no_limit = build_event_stream(&records, &config, geomap, Some(25.0), None);
+        let event_stream_no_limit = build_event_stream(
+            &records,
+            &config,
+            Some(geomap),
+            Some(25.0),
+            None,
+            None,
+            None,
+        );
 
         let gravity_events_no_limit: Vec<_> = event_stream_no_limit
             .events
@@ -1683,6 +1783,7 @@ mod tests {
             altitude: 100.0,
             north_velocity: 0.0,
             east_velocity: 0.0,
+            bias_from_end: None,
         };
 
         // Create a state vector for Jacobian computation
@@ -1698,7 +1799,7 @@ mod tests {
             0.0, // attitude
         ]);
 
-        let jacobian = measurement.get_jacobian(&state);
+        let jacobian = measurement.get_jacobian_internal(&state);
 
         // Jacobian should be 1x9
         assert_eq!(jacobian.nrows(), 1);
@@ -1723,6 +1824,7 @@ mod tests {
             altitude: 100.0,
             year: 2023,
             day: 216,
+            bias_from_end: None,
         };
 
         // Create a state vector for Jacobian computation
@@ -1738,7 +1840,7 @@ mod tests {
             0.0, // attitude
         ]);
 
-        let jacobian = measurement.get_jacobian(&state);
+        let jacobian = measurement.get_jacobian_internal(&state);
 
         // Jacobian should be 1x9
         assert_eq!(jacobian.nrows(), 1);
@@ -1749,5 +1851,74 @@ mod tests {
         for j in 2..9 {
             assert_approx_eq!(jacobian[(0, j)], 0.0, 1e-10);
         }
+    }
+
+    #[test]
+    fn test_gravity_measurement_trait_jacobian() {
+        // Test that the MeasurementModel trait method works correctly
+        let map = Rc::new(create_test_gravity_map());
+        let measurement: Box<dyn strapdown::measurements::MeasurementModel> =
+            Box::new(GravityMeasurement {
+                map: map.clone(),
+                noise_std: 100.0,
+                gravity_observed: 9.8,
+                latitude: 41.0_f64.to_radians(),
+                altitude: 100.0,
+                north_velocity: 0.0,
+                east_velocity: 0.0,
+                bias_from_end: None,
+            });
+
+        let state = DVector::from_vec(vec![
+            41.0_f64.to_radians(),
+            -73.0_f64.to_radians(),
+            100.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        ]);
+
+        // Test that get_jacobian returns a valid Jacobian
+        let jacobian = measurement.get_jacobian(&state);
+        assert_eq!(jacobian.nrows(), 1);
+        assert_eq!(jacobian.ncols(), 9);
+    }
+
+    #[test]
+    fn test_magnetic_measurement_trait_jacobian() {
+        // Test that the MeasurementModel trait method works correctly
+        let map = Rc::new(create_test_magnetic_map());
+        let measurement: Box<dyn strapdown::measurements::MeasurementModel> =
+            Box::new(MagneticAnomalyMeasurement {
+                map: map.clone(),
+                noise_std: 100.0,
+                mag_obs: 48000.0,
+                latitude: 41.0,
+                longitude: -73.0,
+                altitude: 100.0,
+                year: 2023,
+                day: 216,
+                bias_from_end: None,
+            });
+
+        let state = DVector::from_vec(vec![
+            41.0_f64.to_radians(),
+            -73.0_f64.to_radians(),
+            100.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        ]);
+
+        // Test that get_jacobian returns a valid Jacobian
+        let jacobian = measurement.get_jacobian(&state);
+        assert_eq!(jacobian.nrows(), 1);
+        assert_eq!(jacobian.ncols(), 9);
     }
 }
