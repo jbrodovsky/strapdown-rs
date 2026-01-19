@@ -231,6 +231,18 @@ struct ClosedLoopSimArgs {
     #[arg(long, value_enum, default_value_t = FilterType::Ukf)]
     filter: FilterType,
 
+    /// UKF alpha parameter (sigma point spread)
+    #[arg(long, default_value_t = 1e-3)]
+    ukf_alpha: f64,
+
+    /// UKF beta parameter (prior distribution)
+    #[arg(long, default_value_t = 2.0)]
+    ukf_beta: f64,
+
+    /// UKF kappa parameter (secondary spread control)
+    #[arg(long, default_value_t = 0.0)]
+    ukf_kappa: f64,
+
     /// RNG seed for stochastic processes
     #[arg(long, default_value_t = 42)]
     seed: u64,
@@ -393,10 +405,6 @@ fn process_file(
         }
         SimulationMode::ClosedLoop => {
             let filter_config = config.closed_loop.clone().unwrap_or_default();
-            info!(
-                "Running closed-loop mode with {:?} filter",
-                filter_config.filter
-            );
 
             let event_stream = build_event_stream(&records, &config.gnss_degradation);
             info!(
@@ -594,7 +602,6 @@ fn process_file(
 
             let start_time = event_stream.start_time;
             let mut results = Vec::with_capacity(event_stream.events.len());
-            let mut last_ts: Option<chrono::DateTime<chrono::Utc>> = None;
             let mut monitor = HealthMonitor::new(HealthLimits::default());
             let sim_duration_s = event_stream
                 .events
@@ -606,6 +613,15 @@ fn process_file(
                 .unwrap_or(0.0);
             let mut execution_monitor =
                 ExecutionMonitor::new(config.execution_limits.clone(), sim_duration_s);
+
+            // Store the initial state (before processing any events)
+            let (mean, cov) = rbpf.estimate();
+            results.push(NavigationResult::from_particle_filter(
+                &start_time,
+                &mean,
+                &cov,
+            ));
+            let mut last_ts = start_time;
 
             for event in event_stream.events.into_iter() {
                 let elapsed_s = match &event {
@@ -647,13 +663,10 @@ fn process_file(
                 execution_monitor.check("particle-filter")?;
                 execution_monitor.mark_progress();
 
-                if Some(ts) != last_ts {
-                    if let Some(prev_ts) = last_ts {
-                        results.push(NavigationResult::from_particle_filter(
-                            &prev_ts, &mean, &cov,
-                        ));
-                    }
-                    last_ts = Some(ts);
+                // Store state when timestamp changes
+                if ts != last_ts {
+                    results.push(NavigationResult::from_particle_filter(&ts, &mean, &cov));
+                    last_ts = ts;
                 }
             }
 
@@ -800,6 +813,9 @@ fn run_single_closed_loop_simulation(
     gnss_degradation: &strapdown::messages::GnssDegradationConfig,
     output_file: &Path,
     execution_limits: ExecutionLimits,
+    ukf_alpha: f64,
+    ukf_beta: f64,
+    ukf_kappa: f64,
 ) -> Result<(), Box<dyn Error>> {
     // Build event stream from records and GNSS degradation config
     let event_stream = build_event_stream(records, gnss_degradation);
@@ -811,7 +827,15 @@ fn run_single_closed_loop_simulation(
     // Initialize and run filter based on type
     let results = match filter_type {
         FilterType::Ukf => {
-            let mut ukf = initialize_ukf(records[0].clone(), None, None, None, None, None, None);
+            let mut ukf = initialize_ukf(
+                records[0].clone(),
+                UkfConfig {
+                    ukf_alpha: Some(ukf_alpha),
+                    ukf_beta: Some(ukf_beta),
+                    ukf_kappa: Some(ukf_kappa),
+                    ..Default::default()
+                },
+            );
             info!("Initialized UKF");
             run_closed_loop(&mut ukf, event_stream, None, Some(execution_limits.clone()))
         }
@@ -975,6 +999,9 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
             &gnss_degradation,
             &output_file,
             execution_limits.clone(),
+            args.ukf_alpha,
+            args.ukf_beta,
+            args.ukf_kappa,
         ) {
             Ok(()) => {
                 // Success - result logging is handled by the helper function
@@ -1219,12 +1246,17 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
 
                 let mut ukf = initialize_ukf(
                     records[0].clone(),
-                    None,
-                    None,
-                    None,
-                    Some(geo_biases),
-                    Some(geo_noise_stds),
-                    Some(process_noise),
+                    UkfConfig {
+                        attitude_covariance: None,
+                        imu_biases: None,
+                        imu_biases_covariance: None,
+                        other_states: Some(geo_biases),
+                        other_states_covariance: Some(geo_noise_stds),
+                        process_noise_diagonal: Some(process_noise),
+                        ukf_alpha: Some(args.ukf_alpha),
+                        ukf_beta: Some(args.ukf_beta),
+                        ukf_kappa: Some(args.ukf_kappa),
+                    },
                 );
                 info!(
                     "Initialized UKF with state dimension {} (base: 9, geo: {})",
@@ -1479,7 +1511,6 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
 
         let start_time = event_stream.start_time;
         let mut results = Vec::with_capacity(event_stream.events.len());
-        let mut last_ts: Option<chrono::DateTime<chrono::Utc>> = None;
         let mut monitor = HealthMonitor::new(HealthLimits::default());
         let sim_duration_s = event_stream
             .events
@@ -1490,6 +1521,15 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
             })
             .unwrap_or(0.0);
         let mut execution_monitor = ExecutionMonitor::new(execution_limits.clone(), sim_duration_s);
+
+        // Store the initial state (before processing any events)
+        let (mean, cov) = rbpf.estimate();
+        results.push(NavigationResult::from_particle_filter(
+            &start_time,
+            &mean,
+            &cov,
+        ));
+        let mut last_ts = start_time;
 
         for event in event_stream.events.into_iter() {
             let elapsed_s = match &event {
@@ -1531,13 +1571,10 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
             execution_monitor.check("particle-filter")?;
             execution_monitor.mark_progress();
 
-            if Some(ts) != last_ts {
-                if let Some(prev_ts) = last_ts {
-                    results.push(NavigationResult::from_particle_filter(
-                        &prev_ts, &mean, &cov,
-                    ));
-                }
-                last_ts = Some(ts);
+            // Store state when timestamp changes
+            if ts != last_ts {
+                results.push(NavigationResult::from_particle_filter(&ts, &mean, &cov));
+                last_ts = ts;
             }
         }
 
@@ -2130,7 +2167,11 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
     // Mode-specific configuration
     let closed_loop = if matches!(mode, SimulationMode::ClosedLoop) {
         let filter = prompt_filter_type();
-        Some(strapdown::sim::ClosedLoopConfig { filter })
+        let closed_loop_cfg = strapdown::sim::ClosedLoopConfig {
+            filter,
+            ..Default::default()
+        };
+        Some(closed_loop_cfg)
     } else {
         None
     };

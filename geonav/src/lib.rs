@@ -52,6 +52,11 @@ use strapdown::{IMUData, NavigationFilter, StrapdownState};
 /// Conversion factor from radians to degrees (180/π)
 const RAD_TO_DEG: f64 = 180.0 / std::f64::consts::PI;
 
+/// World Magnetic Model valid altitude range (meters)
+/// The WMM is typically valid from -1km below sea level to ~850km above
+const WMM_MIN_ALTITUDE_M: f64 = -1000.0;
+const WMM_MAX_ALTITUDE_M: f64 = 850000.0;
+
 //================= Map Information ========================================================================
 /// Resolution values for bathymetric or terrain relief maps
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -362,7 +367,12 @@ impl GeoMap {
             );
         }
         if lon < &self.lons[0] || lon > &self.lons[self.lons.len() - 1] {
-            panic!("Longitude out of bounds");
+            panic!(
+                "Longitude out of bounds: {} not in [{}, {}]",
+                lon,
+                self.lons[0],
+                self.lons[self.lons.len() - 1]
+            );
         }
         // Check if the lat/lon are at the origin or the end of the map
         if lat == &self.lats[0] && lon == &self.lons[0] {
@@ -594,8 +604,8 @@ impl MeasurementModel for GravityMeasurement {
         DVector::from_vec(vec![map_value + bias.unwrap_or(0.0)])
     }
 
-    fn get_jacobian(&self, state: &DVector<f64>) -> Option<DMatrix<f64>> {
-        Some(self.get_jacobian_internal(state))
+    fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64> {
+        self.get_jacobian_internal(state)
     }
 }
 
@@ -666,8 +676,11 @@ pub struct MagneticAnomalyMeasurement {
 }
 impl GeophysicalAnomalyMeasurementModel for MagneticAnomalyMeasurement {
     fn get_anomaly(&self) -> f64 {
+        // Clamp altitude to valid WMM range to prevent errors
+        let alt_clamped = self.altitude.clamp(WMM_MIN_ALTITUDE_M, WMM_MAX_ALTITUDE_M);
+
         let magnetic_field = GeomagneticField::new(
-            Length::new::<meter>(self.altitude as f32),
+            Length::new::<meter>(alt_clamped as f32),
             Angle::new::<degree>(self.latitude as f32),
             Angle::new::<degree>(self.longitude as f32),
             Date::from_ordinal_date(self.year, self.day).unwrap(),
@@ -695,13 +708,29 @@ impl MeasurementModel for MagneticAnomalyMeasurement {
         // Return the observed magnetic anomaly as the measurement vector.
         // Use provided state if available (for per-particle updates), otherwise fallback to stored state.
         let anomaly = if let Some((lat_deg, lon_deg, alt)) = self.extract_state_inputs(state) {
+            // Clamp altitude to valid WMM range to prevent errors
+            let alt_clamped = alt.clamp(WMM_MIN_ALTITUDE_M, WMM_MAX_ALTITUDE_M);
+
+            if (alt - alt_clamped).abs() > 1.0 {
+                log::warn!(
+                    "Altitude {} m out of WMM bounds, clamped to {} m",
+                    alt,
+                    alt_clamped
+                );
+            }
+
             let magnetic_field = GeomagneticField::new(
-                Length::new::<meter>(alt as f32),
+                Length::new::<meter>(alt_clamped as f32),
                 Angle::new::<degree>(lat_deg as f32),
                 Angle::new::<degree>(lon_deg as f32),
                 Date::from_ordinal_date(self.year, self.day).unwrap(),
             )
-            .expect("Failed to create GeomagneticField");
+            .unwrap_or_else(|e| {
+                panic!(
+                    "Failed to create GeomagneticField at lat={}, lon={}, alt={} (clamped: {}): {:?}",
+                    lat_deg, lon_deg, alt, alt_clamped, e
+                )
+            });
             self.mag_obs - magnetic_field.f().value as f64
         } else {
             self.get_anomaly()
@@ -731,8 +760,8 @@ impl MeasurementModel for MagneticAnomalyMeasurement {
         DVector::from_vec(vec![map_value + bias.unwrap_or(0.0)])
     }
 
-    fn get_jacobian(&self, state: &DVector<f64>) -> Option<DMatrix<f64>> {
-        Some(self.get_jacobian_internal(state))
+    fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64> {
+        self.get_jacobian_internal(state)
     }
 }
 
@@ -888,7 +917,7 @@ pub fn build_event_stream(
                     r1.horizontal_accuracy.max(1e-3)
                 };
                 let vert_std = if r1.vertical_accuracy.is_nan() {
-                    1000.0
+                    20.0
                 } else {
                     r1.vertical_accuracy.max(1e-3)
                 };
@@ -1852,14 +1881,8 @@ mod tests {
             0.0,
         ]);
 
-        // Test that get_jacobian returns Some
-        let jacobian_opt = measurement.get_jacobian(&state);
-        assert!(
-            jacobian_opt.is_some(),
-            "Gravity measurement should provide Jacobian via trait"
-        );
-
-        let jacobian = jacobian_opt.unwrap();
+        // Test that get_jacobian returns a valid Jacobian
+        let jacobian = measurement.get_jacobian(&state);
         assert_eq!(jacobian.nrows(), 1);
         assert_eq!(jacobian.ncols(), 9);
     }
@@ -1893,14 +1916,8 @@ mod tests {
             0.0,
         ]);
 
-        // Test that get_jacobian returns Some
-        let jacobian_opt = measurement.get_jacobian(&state);
-        assert!(
-            jacobian_opt.is_some(),
-            "Magnetic measurement should provide Jacobian via trait"
-        );
-
-        let jacobian = jacobian_opt.unwrap();
+        // Test that get_jacobian returns a valid Jacobian
+        let jacobian = measurement.get_jacobian(&state);
         assert_eq!(jacobian.nrows(), 1);
         assert_eq!(jacobian.ncols(), 9);
     }

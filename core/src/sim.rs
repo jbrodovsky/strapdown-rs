@@ -1922,7 +1922,6 @@ pub fn run_closed_loop<F: NavigationFilter>(
     let start_time = stream.start_time;
     let mut results: Vec<NavigationResult> = Vec::with_capacity(stream.events.len());
     let total = stream.events.len();
-    let mut last_ts: Option<DateTime<Utc>> = None;
     let mut monitor = HealthMonitor::new(health_limits.unwrap_or_default());
     let sim_duration_s = stream
         .events
@@ -1939,6 +1938,13 @@ pub fn run_closed_loop<F: NavigationFilter>(
         "Starting closed-loop navigation filter with {} events",
         total
     );
+
+    // Store the initial state (before processing any events)
+    let mean = filter.get_estimate();
+    let cov = filter.get_certainty();
+    results.push(NavigationResult::from((&start_time, &mean, &cov)));
+    debug!("Initial filter state at {}: {:?}", start_time, mean);
+    let mut last_ts = start_time;
 
     for (i, event) in stream.events.into_iter().enumerate() {
         // Print detailed progress every 100 iterations or at key milestones
@@ -2026,8 +2032,9 @@ pub fn run_closed_loop<F: NavigationFilter>(
         if i == total - 1 {
             let mean = filter.get_estimate();
             let cov = filter.get_certainty();
-            debug!("Filter state at {}: {:?}", ts, mean);
             results.push(NavigationResult::from((&ts, &mean, &cov)));
+            debug!("Filter state at {}: {:?}", ts, mean);
+            last_ts = ts;
         }
     }
     debug!("Closed-loop simulation complete");
@@ -2090,31 +2097,47 @@ pub fn print_ukf(ukf: &UnscentedKalmanFilter, record: &TestDataRecord) {
         ukf.get_certainty()[(14, 14)]
     );
 }
+
+/// Configuration parameters for UKF initialization.
+///
+/// This struct groups together optional parameters for initializing an Unscented Kalman Filter,
+/// reducing the number of function arguments and making it easier to specify custom configurations.
+#[derive(Debug, Clone, Default)]
+pub struct UkfConfig {
+    /// Optional vector of f64 representing the initial attitude covariance (default is a small value).
+    pub attitude_covariance: Option<Vec<f64>>,
+    /// Optional vector of f64 representing the initial IMU biases (default is a small value).
+    pub imu_biases: Option<Vec<f64>>,
+    /// Optional vector of f64 representing the IMU biases covariance.
+    pub imu_biases_covariance: Option<Vec<f64>>,
+    /// Optional vector of f64 for any additional states (not used in the canonical UKF, but can be useful for custom implementations).
+    pub other_states: Option<Vec<f64>>,
+    /// Optional vector of f64 for other states covariance.
+    pub other_states_covariance: Option<Vec<f64>>,
+    /// Optional process noise diagonal vector.
+    pub process_noise_diagonal: Option<Vec<f64>>,
+    /// Optional UKF alpha parameter (sigma-point spread).
+    pub ukf_alpha: Option<f64>,
+    /// Optional UKF beta parameter (prior distribution).
+    pub ukf_beta: Option<f64>,
+    /// Optional UKF kappa parameter (secondary spread control).
+    pub ukf_kappa: Option<f64>,
+}
+
 /// Helper function to initialize a UKF for closed-loop mode.
 ///
-/// This function sets up the Unscented Kalman Filter (UKF) with initial pose, attitude covariance, and IMU biases based on
-/// the provided `TestDataRecord`. It initializes the UKF with position, velocity, attitude, and covariance matrices.
-/// Optional parameters for attitude covariance and IMU biases can be provided to customize the filter's initial state.
+/// This function sets up the Unscented Kalman Filter (UKF) with initial pose and configuration parameters.
+/// It initializes the UKF with position, velocity, attitude, and covariance matrices.
 ///
 /// # Arguments
 ///
 /// * `initial_pose` - A `TestDataRecord` containing the initial pose information.
-/// * `attitude_covariance` - Optional vector of f64 representing the initial attitude covariance (default is a small value).
-/// * `imu_biases` - Optional vector of f64 representing the initial IMU biases (default is a small value).
-/// * `other_states` - Optional vector of f64 for any additional states (not used in the canonical UKF, but can be useful for custom implementations).
+/// * `config` - A `UkfConfig` struct containing optional configuration parameters.
 ///
 /// # Returns
 ///
-/// * `UKF` - An instance of the Unscented Kalman Filter initialized with the provided parameters.
-pub fn initialize_ukf(
-    initial_pose: TestDataRecord,
-    attitude_covariance: Option<Vec<f64>>,
-    imu_biases: Option<Vec<f64>>,
-    imu_biases_covariance: Option<Vec<f64>>,
-    other_states: Option<Vec<f64>>,
-    other_states_covariance: Option<Vec<f64>>,
-    process_noise_diagonal: Option<Vec<f64>>,
-) -> UnscentedKalmanFilter {
+/// * `UnscentedKalmanFilter` - An instance of the Unscented Kalman Filter initialized with the provided parameters.
+pub fn initialize_ukf(initial_pose: TestDataRecord, config: UkfConfig) -> UnscentedKalmanFilter {
     let initial_state = InitialState {
         latitude: initial_pose.latitude,
         longitude: initial_pose.longitude,
@@ -2140,29 +2163,30 @@ pub fn initialize_ukf(
         in_degrees: true,
         is_enu: true,
     };
-    let process_noise_diagonal = match process_noise_diagonal {
+    let process_noise_diagonal = match config.process_noise_diagonal {
         Some(pn) => pn,
         None => DEFAULT_PROCESS_NOISE.to_vec(),
     };
     // Covariance parameters
     let position_accuracy = initial_pose.horizontal_accuracy; //.sqrt();
+    let position_std_rad = (position_accuracy * METERS_TO_DEGREES).to_radians();
     let mut covariance_diagonal = vec![
-        (position_accuracy * METERS_TO_DEGREES).powf(2.0),
-        (position_accuracy * METERS_TO_DEGREES).powf(2.0),
+        position_std_rad.powf(2.0),
+        position_std_rad.powf(2.0),
         initial_pose.vertical_accuracy.powf(2.0),
         initial_pose.speed_accuracy.powf(2.0),
         initial_pose.speed_accuracy.powf(2.0),
         initial_pose.speed_accuracy.powf(2.0),
     ];
     // extend the covariance diagonal if attitude covariance is provided
-    match attitude_covariance {
+    match config.attitude_covariance {
         Some(att_cov) => covariance_diagonal.extend(att_cov),
         None => covariance_diagonal.extend(vec![1e-9; 3]), // Default values if not provided
     }
     // extend the covariance diagonal if imu biases are provided
-    let imu_biases = match imu_biases {
+    let imu_biases = match config.imu_biases {
         Some(imu_biases) => {
-            covariance_diagonal.extend(match imu_biases_covariance {
+            covariance_diagonal.extend(match config.imu_biases_covariance {
                 Some(imu_cov) => imu_cov,
                 None => vec![1e-3; 6], // Default covariance if not provided
             });
@@ -2174,9 +2198,9 @@ pub fn initialize_ukf(
         }
     };
     // extend the covariance diagonal if other states are provided
-    let other_states = match other_states {
+    let other_states = match config.other_states {
         Some(other_states) => {
-            covariance_diagonal.extend(match other_states_covariance {
+            covariance_diagonal.extend(match config.other_states_covariance {
                 Some(other_cov) => other_cov,
                 None => vec![1e-3; other_states.len()], // Default covariance if not provided
             });
@@ -2210,9 +2234,9 @@ pub fn initialize_ukf(
         other_states,
         covariance_diagonal,
         process_noise,
-        1e-3, // Use a scalar for measurement noise as expected by UKF::new
-        2.0,
-        0.0,
+        config.ukf_alpha.unwrap_or(1e-3),
+        config.ukf_beta.unwrap_or(2.0),
+        config.ukf_kappa.unwrap_or(0.0),
     )
 }
 
@@ -2971,12 +2995,24 @@ pub struct ClosedLoopConfig {
     /// Filter type (UKF or EKF)
     #[serde(default)]
     pub filter: FilterType,
+    /// UKF alpha parameter (spread of sigma points)
+    #[serde(default = "default_ukf_alpha")]
+    pub ukf_alpha: f64,
+    /// UKF beta parameter (prior knowledge of distribution, 2.0 is optimal for Gaussian)
+    #[serde(default = "default_ukf_beta")]
+    pub ukf_beta: f64,
+    /// UKF kappa parameter (secondary spread control)
+    #[serde(default = "default_ukf_kappa")]
+    pub ukf_kappa: f64,
 }
 
 impl Default for ClosedLoopConfig {
     fn default() -> Self {
         Self {
             filter: FilterType::Ukf,
+            ukf_alpha: default_ukf_alpha(),
+            ukf_beta: default_ukf_beta(),
+            ukf_kappa: default_ukf_kappa(),
         }
     }
 }
@@ -3025,6 +3061,18 @@ fn default_zero_vertical_velocity() -> bool {
 
 fn default_zero_vertical_velocity_std_mps() -> f64 {
     0.1
+}
+
+fn default_ukf_alpha() -> f64 {
+    1e-3
+}
+
+fn default_ukf_beta() -> f64 {
+    2.0
+}
+
+fn default_ukf_kappa() -> f64 {
+    0.0
 }
 
 fn default_num_particles() -> usize {
@@ -3839,7 +3887,7 @@ mod tests {
             });
 
         // Initialize UKF
-        let mut ukf = initialize_ukf(rec.clone(), None, None, None, None, None, None);
+        let mut ukf = initialize_ukf(rec.clone(), UkfConfig::default());
 
         // Create a minimal EventStream with one IMU event
         let imu_data = IMUData {
@@ -3894,16 +3942,15 @@ mod tests {
             grav_y: 0.0,
             grav_x: 0.0,
         };
-        let ukf = initialize_ukf(rec.clone(), None, None, None, None, None, None);
+        let ukf = initialize_ukf(rec.clone(), UkfConfig::default());
         assert!(!ukf.get_estimate().is_empty());
         let ukf2 = initialize_ukf(
             rec,
-            Some(vec![0.1, 0.2, 0.3]),
-            Some(vec![0.4, 0.5, 0.6, 0.7, 0.8, 0.9]),
-            None,
-            None,
-            None,
-            None,
+            UkfConfig {
+                attitude_covariance: Some(vec![0.1, 0.2, 0.3]),
+                imu_biases: Some(vec![0.4, 0.5, 0.6, 0.7, 0.8, 0.9]),
+                ..Default::default()
+            },
         );
         assert!(!ukf2.get_estimate().is_empty());
     }
@@ -4093,7 +4140,7 @@ mod tests {
             yaw: 0.3,
             ..Default::default()
         };
-        let ukf = initialize_ukf(rec.clone(), None, None, None, None, None, None);
+        let ukf = initialize_ukf(rec.clone(), UkfConfig::default());
         let timestamp = Utc::now();
         let nav_result = NavigationResult::from((&timestamp, &ukf));
 
@@ -4147,7 +4194,7 @@ mod tests {
             yaw: 0.3,
             ..Default::default()
         };
-        let ukf = initialize_ukf(rec.clone(), None, None, None, None, None, None);
+        let ukf = initialize_ukf(rec.clone(), UkfConfig::default());
         // Just ensure it doesn't panic
         print_ukf(&ukf, &rec);
     }
@@ -4168,7 +4215,7 @@ mod tests {
             yaw: f64::NAN,
             ..Default::default()
         };
-        let ukf = initialize_ukf(rec, None, None, None, None, None, None);
+        let ukf = initialize_ukf(rec, UkfConfig::default());
         let estimate = ukf.get_estimate();
         // Should default NaN angles to 0.0
         assert!(estimate[6].abs() < 1e-6); // roll
@@ -4195,12 +4242,12 @@ mod tests {
         };
         let ukf = initialize_ukf(
             rec,
-            Some(vec![1e-4, 2e-4, 3e-4]),
-            Some(vec![0.01, 0.02, 0.03, 0.001, 0.002, 0.003]),
-            Some(vec![1e-5; 6]),
-            None,
-            None,
-            None,
+            UkfConfig {
+                attitude_covariance: Some(vec![1e-4, 2e-4, 3e-4]),
+                imu_biases: Some(vec![0.01, 0.02, 0.03, 0.001, 0.002, 0.003]),
+                imu_biases_covariance: Some(vec![1e-5; 6]),
+                ..Default::default()
+            },
         );
         let estimate = ukf.get_estimate();
         assert_eq!(estimate.len(), 15);
@@ -4224,7 +4271,13 @@ mod tests {
             ..Default::default()
         };
         let custom_noise = vec![1e-5; 15];
-        let ukf = initialize_ukf(rec, None, None, None, None, None, Some(custom_noise));
+        let ukf = initialize_ukf(
+            rec,
+            UkfConfig {
+                process_noise_diagonal: Some(custom_noise),
+                ..Default::default()
+            },
+        );
         assert!(!ukf.get_estimate().is_empty());
     }
     #[test]
@@ -4725,7 +4778,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut ukf = initialize_ukf(rec.clone(), None, None, None, None, None, None);
+        let mut ukf = initialize_ukf(rec.clone(), UkfConfig::default());
 
         let stream = EventStream {
             start_time: rec.time,
