@@ -56,8 +56,8 @@ use strapdown::sim::health::HealthMonitor;
 use strapdown::sim::{DEFAULT_PROCESS_NOISE, GeoResolution};
 use strapdown::sim::{
     FaultArgs, FilterType, NavigationResult, ParticleFilterType, SchedulerArgs, SimulationConfig,
-    SimulationMode, TestDataRecord, UkfConfig, build_fault, build_scheduler, dead_reckoning, initialize_ekf,
-    initialize_eskf, initialize_ukf, run_closed_loop,
+    SimulationMode, TestDataRecord, UkfConfig, build_fault, build_scheduler, dead_reckoning,
+    initialize_ekf, initialize_eskf, initialize_ukf, run_closed_loop,
 };
 
 const LONG_ABOUT: &str =
