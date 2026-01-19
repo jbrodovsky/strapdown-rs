@@ -1,0 +1,419 @@
+\documentclass{beamer}
+\usetheme{Madrid}
+%\usecolortheme{crane}
+
+% Temple University Color Scheme
+\definecolor{TempleCherry}{RGB}{164,30,53}
+\definecolor{TempleWhite}{RGB}{255,255,255}
+\definecolor{TempleGray}{RGB}{100,100,100}
+
+\setbeamercolor{structure}{fg=TempleCherry}
+\setbeamercolor{palette primary}{bg=TempleCherry,fg=TempleWhite}
+\setbeamercolor{palette secondary}{bg=TempleCherry!80,fg=TempleWhite}
+\setbeamercolor{palette tertiary}{bg=TempleCherry!60,fg=black}
+\setbeamercolor{titlelike}{parent=palette primary}
+\setbeamercolor{frametitle}{bg=TempleCherry,fg=TempleWhite}
+\setbeamercolor{block title}{bg=TempleCherry,fg=TempleWhite}
+\setbeamercolor{block body}{bg=TempleCherry!10,fg=black}
+
+% Packages
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{subcaption}
+\usepackage{tikz}
+\usetikzlibrary{positioning,shapes.geometric,arrows.meta}
+
+% Graphics path
+\graphicspath{{figures/}}
+
+% Bibliography
+\usepackage[style=apa,natbib=true]{biblatex}
+\addbibresource{references.bib}
+
+% Presentation metadata
+\title[MEMS-GeoNav: UKF]{Navigation in GNSS-Denied Environments Using MEMS-Grade Sensors and Geophysical Anomalies}
+\subtitle{A UKF Approach}
+\author{James Brodovsky \and Philip Dames}
+\institute{Temple University}
+\date{January 6, 2026}
+
+% Logo placeholder - uncomment when available
+ \titlegraphic{\includegraphics[width=2cm]{example-image-a}}
+
+\begin{document}
+
+% ============================================================
+% TITLE SLIDE
+% ============================================================
+\begin{frame}
+\titlepage
+\end{frame}
+
+% ============================================================
+% MOTIVATION: GNSS VULNERABILITIES
+% ============================================================
+\begin{frame}{The GNSS Dependency Problem}
+\begin{columns}
+\begin{column}{0.5\textwidth}
+\textbf{Modern navigation is critically dependent on GNSS}
+\pause
+\vspace{0.5cm}
+
+\textbf{Vulnerabilities:}
+\begin{itemize}
+    \item Urban canyons \& multipath
+    \item Indoor/underground environments
+    \item Underwater operations
+    \item Electronic warfare (jamming/spoofing)
+\end{itemize}
+\end{column}
+\begin{column}{0.5\textwidth}
+\centering
+% Placeholder for GNSS vulnerability illustration
+\fbox{\parbox{0.9\textwidth}{\centering\vspace{2cm}\textit{[GNSS Vulnerability\\Illustration]}\vspace{2cm}}}
+\end{column}
+\end{columns}
+\end{frame}
+
+% ============================================================
+% MOTIVATION: COST GAP
+% ============================================================
+\begin{frame}{The Cost-Performance Gap}
+\begin{block}{Historical Geophysical Navigation}
+High-grade systems only:
+\begin{itemize}
+    \item Navigation/Tactical-grade IMUs (\$10K - \$100K+)
+    \item Dedicated gravimeters and magnetometers
+    \item Military \& aerospace applications
+\end{itemize}
+\end{block}
+\pause
+
+\begin{block}{The Opportunity}
+Consumer platforms need GNSS-independent navigation:
+\begin{itemize}
+    \item Smartphones, drones, small autonomous vehicles
+    \item MEMS-grade IMUs (\$10 - \$1K)
+    \item Low SWaP constraints
+\end{itemize}
+\end{block}
+\pause
+
+\vspace{0.3cm}
+\centering
+\textbf{\color{TempleCherry}Can geophysical navigation work with low-cost sensors?}
+\end{frame}
+
+% ============================================================
+% DATASET
+% ============================================================
+\begin{frame}{MEMS-Nav Dataset}
+\begin{columns}
+\begin{column}{0.55\textwidth}
+\textbf{Data Collection:}
+\begin{itemize}
+    \item Smartphone-grade MEMS sensors
+    \item Sensor Logger application
+    \item Long-duration highway trajectories
+    \item 30 min - several hours each
+    \item Tens to hundreds of kilometers
+\end{itemize}
+\pause
+
+\vspace{0.3cm}
+\textbf{Sensors:}
+\begin{itemize}
+    \item 3-axis accelerometer
+    \item 3-axis gyroscope
+    \item 3-axis magnetometer
+    \item Barometer
+    \item GNSS receiver
+\end{itemize}
+\end{column}
+\begin{column}{0.45\textwidth}
+\centering
+% Placeholder for trajectory map
+\fbox{\parbox{0.9\textwidth}{\centering\vspace{2.5cm}\textit{[Sample Trajectory\\Map]}\vspace{2.5cm}}}
+
+\vspace{0.3cm}
+\small
+\textit{13 trajectories evaluated}
+\end{column}
+\end{columns}
+\end{frame}
+
+% ============================================================
+% SYSTEM ARCHITECTURE
+% ============================================================
+\begin{frame}{System Architecture}
+\centering
+\includegraphics[width=0.95\textwidth]{system_architecture.png}
+
+\vspace{0.5cm}
+\begin{itemize}
+    \item \textbf{Standard INS:} 15-state UKF (9 navigation + 6 IMU bias states)
+    \item \textbf{Geophysical-Aided:} +1 anomaly bias state per measurement
+\end{itemize}
+\end{frame}
+
+% ============================================================
+% GNSS DEGRADATION SCENARIO
+% ============================================================
+\begin{frame}{GNSS Degradation Scenario}
+\begin{block}{Simulated GNSS Interference}
+Realistic model of low-quality GNSS (urban canyons, multipath, jamming):
+\end{block}
+
+\begin{columns}
+\begin{column}{0.5\textwidth}
+\textbf{AR(1) Correlated Errors:}
+\begin{itemize}
+    \item Position: $\rho = 0.99$, $\sigma = 5$ m
+    \item Velocity: $\rho = 0.95$, $\sigma = 5$ m/s
+    \item Slowly drifting biases
+\end{itemize}
+\pause
+
+\vspace{0.3cm}
+\textbf{Covariance Inflation:}
+\begin{itemize}
+    \item $15\times$ advertised accuracy
+    \item Simulates poor DOP reporting
+\end{itemize}
+\end{column}
+\begin{column}{0.5\textwidth}
+\centering
+% Placeholder for degradation visualization
+\fbox{\parbox{0.9\textwidth}{\centering\vspace{2cm}\textit{[AR(1) Error\\Visualization]}\vspace{2cm}}}
+\end{column}
+\end{columns}
+\end{frame}
+
+% ============================================================
+% GEOPHYSICAL AIDING
+% ============================================================
+\begin{frame}{Geophysical Measurement Integration}
+\begin{columns}
+\begin{column}{0.5\textwidth}
+\textbf{Gravity Anomaly Aiding:}
+\begin{itemize}
+    \item IGPP Earth Free-air Anomaly Map
+    \item 1 arc-minute resolution ($\sim$1.8 km)
+    \item Mean residual: 5.97 mGal
+    \item Std: 48.93 mGal
+\end{itemize}
+\pause
+
+\vspace{0.5cm}
+\textbf{Magnetic Anomaly Aiding:}
+\begin{itemize}
+    \item World Digital Magnetic Anomaly Map (WDMAM)
+    \item 3 arc-minute resolution ($\sim$5.6 km)
+    \item Mean residual: 40,364 nT
+    \item Std: 41,303 nT
+\end{itemize}
+\end{column}
+\begin{column}{0.5\textwidth}
+\centering
+\includegraphics[width=\textwidth]{anomaly_differences.png}
+
+\small
+\textit{Measurement residual distributions}
+\end{column}
+\end{columns}
+\end{frame}
+
+% ============================================================
+% RESULTS: BEST GRAVITY PERFORMER
+% ============================================================
+\begin{frame}{Results: Gravity Aiding Success}
+\centering
+\textbf{Trajectory 2023-08-04\_214758}
+
+\includegraphics[width=0.8\textwidth]{gravity/2023-08-04_214758_rmse.png}
+
+\vspace{0.3cm}
+\textbf{\color{TempleCherry}RMSE Improvement: -1,170 meters}
+\end{frame}
+
+% ============================================================
+% RESULTS: BEST MAGNETIC PERFORMER
+% ============================================================
+\begin{frame}{Results: Magnetic Aiding Success}
+\centering
+\textbf{Trajectory 2025-06-27\_11-54-35}
+
+\includegraphics[width=0.8\textwidth]{magnetic/2025-06-27_11-54-35_rmse.png}
+
+\vspace{0.3cm}
+\textbf{\color{TempleCherry}RMSE Improvement: -550 meters}
+\end{frame}
+
+% ============================================================
+% RESULTS: DUAL-MODAL SUCCESS
+% ============================================================
+\begin{frame}{Results: Dual-Modal Performance}
+\centering
+\textbf{Trajectory 2025-07-31\_23-36-03}
+
+\begin{columns}
+\begin{column}{0.5\textwidth}
+\centering
+\includegraphics[width=\textwidth]{gravity/2025-07-31_23-36-03_rmse.png}
+\small
+Gravity: -688m RMSE
+\end{column}
+\begin{column}{0.5\textwidth}
+\centering
+\includegraphics[width=\textwidth]{magnetic/2025-07-31_23-36-03_rmse.png}
+\small
+Magnetic: -632m RMSE
+\end{column}
+\end{columns}
+
+\vspace{0.3cm}
+\textbf{\color{TempleCherry}Both modalities provide substantial improvements}
+\end{frame}
+
+% ============================================================
+% RESULTS: FAILURE CASE ANALYSIS
+% ============================================================
+\begin{frame}{Results: Failure Mode Analysis}
+\centering
+\textbf{Trajectory 2023-08-09\_163741 (Outlier)}
+
+\begin{columns}
+\begin{column}{0.5\textwidth}
+\centering
+\includegraphics[width=\textwidth]{gravity/2023-08-09_163741_rmse.png}
+\small
+Gravity: +8,659m error
+\end{column}
+\begin{column}{0.5\textwidth}
+\centering
+\includegraphics[width=\textwidth]{magnetic/2023-08-09_163741_rmse.png}
+\small
+Magnetic: +8,635m error
+\end{column}
+\end{columns}
+
+\vspace{0.2cm}
+\begin{itemize}
+    \item Catastrophic initial divergence
+    \item Indicates need for integrity monitoring and robust initialization
+\end{itemize}
+\end{frame}
+
+% ============================================================
+% SUMMARY STATISTICS
+% ============================================================
+\begin{frame}{Summary Statistics Across All Trajectories}
+\centering
+\includegraphics[width=0.9\textwidth]{summary_statistics.png}
+
+\vspace{0.3cm}
+\begin{itemize}
+    \item \textbf{Median Improvement:} Gravity -3.47m, Magnetic -10.34m
+    \item \textbf{6-8 trajectories} showed improvement with gravity aiding
+    \item \textbf{4-11 trajectories} showed improvement with magnetic aiding (metric-dependent)
+\end{itemize}
+\end{frame}
+
+% ============================================================
+% KEY TAKEAWAYS
+% ============================================================
+\begin{frame}{Key Findings}
+\begin{block}{Primary Achievement}
+\textbf{First demonstration} of geophysical navigation feasibility using only:
+\begin{itemize}
+    \item MEMS-grade sensors (\$10-\$1K)
+    \item Open-source geophysical maps
+    \item Smartphone-class hardware
+\end{itemize}
+\end{block}
+\pause
+
+\begin{block}{Performance Highlights}
+\begin{itemize}
+    \item Error reductions: tens to hundreds of meters on favorable trajectories
+    \item Best case: >1,100m RMSE improvement
+    \item Median improvements: 3-10 meters across all trajectories
+    \item Despite MEMS noise and limited map resolution
+\end{itemize}
+\end{block}
+\pause
+
+\begin{block}{Significance}
+Opens pathway from niche military/aerospace applications to \textbf{mass-market consumer and commercial platforms}
+\end{block}
+\end{frame}
+
+% ============================================================
+% FUTURE WORK
+% ============================================================
+\begin{frame}{Future Directions}
+\begin{enumerate}
+    \item \textbf{Integrity Monitoring}
+    \begin{itemize}
+        \item Detect and mitigate failure modes
+        \item Adaptive measurement weighting
+        \item Innovation-based outlier rejection
+    \end{itemize}
+    \pause
+    
+    \item \textbf{Observability Analysis}
+    \begin{itemize}
+        \item Characterize which regions/trajectories benefit most
+        \item Map-matching performance metrics
+        \item Geophysical gradient requirements
+    \end{itemize}
+    \pause
+    
+    \item \textbf{Multi-Modal Fusion}
+    \begin{itemize}
+        \item Combine gravity + magnetic measurements
+        \item Terrain-based aiding
+        \item Enhanced map resolutions
+    \end{itemize}
+    \pause
+    
+    \item \textbf{Real-Time Implementation}
+    \begin{itemize}
+        \item On-device processing
+        \item Computational efficiency
+        \item Battery/power constraints
+    \end{itemize}
+\end{enumerate}
+\end{frame}
+
+% ============================================================
+% REFERENCES
+% ============================================================
+\begin{frame}[allowframebreaks]{References}
+\printbibliography
+\end{frame}
+
+% ============================================================
+% ACKNOWLEDGMENTS
+% ============================================================
+\begin{frame}{Acknowledgments}
+\begin{itemize}
+    \item MEMS-Nav Dataset: \url{https://doi.org/10.5281/zenodo.17582434}
+    \item Strapdown-rs Software: \url{https://github.com/jbrodovsky/strapdown-rs}
+    \item IGPP Gravity Anomaly Maps (EGM2008)
+    \item World Digital Magnetic Anomaly Map (WDMAM)
+    \item Generic Mapping Tools (GMT)
+\end{itemize}
+
+\vspace{0.5cm}
+\centering
+\textbf{Questions?}
+
+\vspace{0.3cm}
+\small
+James Brodovsky: james.brodovsky@temple.edu
+\end{frame}
+
+\end{document}
