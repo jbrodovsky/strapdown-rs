@@ -714,7 +714,8 @@ impl MeasurementModel for MagneticAnomalyMeasurement {
             if (alt - alt_clamped).abs() > 1.0 {
                 log::warn!(
                     "Altitude {} m out of WMM bounds, clamped to {} m",
-                    alt, alt_clamped
+                    alt,
+                    alt_clamped
                 );
             }
 
