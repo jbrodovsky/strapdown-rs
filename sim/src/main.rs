@@ -56,8 +56,8 @@ use strapdown::sim::health::HealthMonitor;
 use strapdown::sim::{DEFAULT_PROCESS_NOISE, GeoResolution};
 use strapdown::sim::{
     FaultArgs, FilterType, NavigationResult, ParticleFilterType, SchedulerArgs, SimulationConfig,
-    SimulationMode, TestDataRecord, build_fault, build_scheduler, dead_reckoning, initialize_ekf,
-    initialize_eskf, initialize_ukf, run_closed_loop,
+    SimulationMode, TestDataRecord, UkfConfig, build_fault, build_scheduler, dead_reckoning,
+    initialize_ekf, initialize_eskf, initialize_ukf, run_closed_loop,
 };
 
 const LONG_ABOUT: &str =
@@ -494,15 +494,17 @@ fn process_file(
 
                         let mut ukf = initialize_ukf(
                             records[0].clone(),
-                            None,
-                            None,
-                            None,
-                            Some(geo_biases),
-                            Some(geo_noise_stds),
-                            Some(process_noise),
-                            Some(filter_config.ukf_alpha),
-                            Some(filter_config.ukf_beta),
-                            Some(filter_config.ukf_kappa),
+                            UkfConfig {
+                                attitude_covariance: None,
+                                imu_biases: None,
+                                imu_biases_covariance: None,
+                                other_states: Some(geo_biases),
+                                other_states_covariance: Some(geo_noise_stds),
+                                process_noise_diagonal: Some(process_noise),
+                                ukf_alpha: Some(filter_config.ukf_alpha),
+                                ukf_beta: Some(filter_config.ukf_beta),
+                                ukf_kappa: Some(filter_config.ukf_kappa),
+                            },
                         );
                         info!(
                             "Initialized UKF with state dimension {} (base: 9, geo: {})",
@@ -596,15 +598,12 @@ fn process_file(
                     FilterType::Ukf => {
                         let mut ukf = initialize_ukf(
                             records[0].clone(),
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            Some(filter_config.ukf_alpha),
-                            Some(filter_config.ukf_beta),
-                            Some(filter_config.ukf_kappa),
+                            UkfConfig {
+                                ukf_alpha: Some(filter_config.ukf_alpha),
+                                ukf_beta: Some(filter_config.ukf_beta),
+                                ukf_kappa: Some(filter_config.ukf_kappa),
+                                ..Default::default()
+                            },
                         );
                         info!("Initialized UKF");
                         run_closed_loop(&mut ukf, event_stream, None)
@@ -640,15 +639,12 @@ fn process_file(
                     FilterType::Ukf => {
                         let mut ukf = initialize_ukf(
                             records[0].clone(),
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            Some(filter_config.ukf_alpha),
-                            Some(filter_config.ukf_beta),
-                            Some(filter_config.ukf_kappa),
+                            UkfConfig {
+                                ukf_alpha: Some(filter_config.ukf_alpha),
+                                ukf_beta: Some(filter_config.ukf_beta),
+                                ukf_kappa: Some(filter_config.ukf_kappa),
+                                ..Default::default()
+                            },
                         );
                         info!("Initialized UKF");
                         run_closed_loop(&mut ukf, event_stream, None)
@@ -1040,15 +1036,12 @@ fn run_single_closed_loop_simulation(
         FilterType::Ukf => {
             let mut ukf = initialize_ukf(
                 records[0].clone(),
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                Some(ukf_alpha),
-                Some(ukf_beta),
-                Some(ukf_kappa),
+                UkfConfig {
+                    ukf_alpha: Some(ukf_alpha),
+                    ukf_beta: Some(ukf_beta),
+                    ukf_kappa: Some(ukf_kappa),
+                    ..Default::default()
+                },
             );
             info!("Initialized UKF");
             run_closed_loop(&mut ukf, event_stream, None)
@@ -1457,15 +1450,17 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
 
                 let mut ukf = initialize_ukf(
                     records[0].clone(),
-                    None,
-                    None,
-                    None,
-                    Some(geo_biases),
-                    Some(geo_noise_stds),
-                    Some(process_noise),
-                    Some(args.ukf_alpha),
-                    Some(args.ukf_beta),
-                    Some(args.ukf_kappa),
+                    UkfConfig {
+                        attitude_covariance: None,
+                        imu_biases: None,
+                        imu_biases_covariance: None,
+                        other_states: Some(geo_biases),
+                        other_states_covariance: Some(geo_noise_stds),
+                        process_noise_diagonal: Some(process_noise),
+                        ukf_alpha: Some(args.ukf_alpha),
+                        ukf_beta: Some(args.ukf_beta),
+                        ukf_kappa: Some(args.ukf_kappa),
+                    },
                 );
                 info!(
                     "Initialized UKF with state dimension {} (base: 9, geo: {})",
@@ -2358,8 +2353,10 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
     // Mode-specific configuration
     let closed_loop = if matches!(mode, SimulationMode::ClosedLoop) {
         let filter = prompt_filter_type();
-        let mut closed_loop_cfg = strapdown::sim::ClosedLoopConfig::default();
-        closed_loop_cfg.filter = filter;
+        let closed_loop_cfg = strapdown::sim::ClosedLoopConfig {
+            filter,
+            ..Default::default()
+        };
         Some(closed_loop_cfg)
     } else {
         None
