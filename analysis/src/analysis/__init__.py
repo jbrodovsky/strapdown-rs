@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 from haversine import Unit, haversine_vector
 from pandas import DataFrame, read_csv
+from tqdm import tqdm
 
 from analysis.plotting import plot_performance, plot_relative_performance
 from analysis.preprocess import preprocess_data
@@ -242,7 +243,7 @@ def geophysical_performance_analysis(args):
     reference_path = Path(args.reference)
     degraded_path = Path(args.degraded)
 
-    for dataset in datasets:
+    for dataset in tqdm(datasets):
         geo = read_csv(dataset, parse_dates=True, index_col=0)
         try:
             reference_file = reference_path / dataset.name
@@ -261,11 +262,39 @@ def geophysical_performance_analysis(args):
             )
             continue
 
-        output_plot = dataset.parent / f"{dataset.stem}_geophysical_performance.png"
+        output_plot = output_path / f"{dataset.stem}_geophysical_performance.png"
         nav = nav.iloc[1:].copy()
-        print(
-            f"Processing dataset {dataset} ({len(geo)}) with reference {reference_file.name} ({len(nav)}) and degraded {degraded_file.name} ({len(degraded_nav)})"
-        )
+        # print(
+        #     f"Processing dataset {dataset} ({len(geo)}) with reference {reference_file.name} ({len(nav)}) and degraded {degraded_file.name} ({len(degraded_nav)})"
+        # )
+
+        # Check to make sure all three datasets have the same length. If geo is shorter than add the first row of reference to geo to align.
+        # Merge in via index to ensure proper alignment.
+        if not (len(geo) == len(nav) == len(degraded_nav)):
+            # print(
+            #     f"Dataset length mismatch for {dataset.name}: geo({len(geo)}), nav({len(nav)}), degraded_nav({len(degraded_nav)}). Attempting to align."
+            # )
+            # Check if the first index of reference is in geo, if not add it.
+            if nav.index[0] not in geo.index:
+                first_row = geo.iloc[[0]][["latitude", "longitude", "altitude"]].copy()
+                first_row.index = [nav.index[0]]
+                geo.loc[first_row.index] = first_row
+                geo = geo.sort_index()
+            # Now reindex geo to match nav
+            geo = geo.reindex(nav.index)
+            # print(
+            #     f"After alignment, dataset lengths: geo({len(geo)}), nav({len(nav)}), degraded_nav({len(degraded_nav)})"
+            # )
+            # print(geo.head(10))
+            # print(nav.head(10))
+            # print(degraded_nav.head(10))
+        if np.all(
+            degraded_nav.iloc[0][["latitude", "longitude", "altitude"]].to_numpy()
+            == np.nan
+        ):
+            degraded_nav.iloc[0][["latitude", "longitude", "altitude"]] = nav.iloc[0][
+                ["latitude", "longitude", "altitude"]
+            ]
         try:
             plot_relative_performance(geo, degraded_nav, nav, output_plot)
         except Exception as e:
