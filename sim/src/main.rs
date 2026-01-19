@@ -50,6 +50,8 @@ use std::rc::Rc;
 use strapdown::NavigationFilter;
 #[cfg(feature = "geonav")]
 use strapdown::kalman::{ExtendedKalmanFilter, InitialState};
+use strapdown::sim::HealthLimits;
+use strapdown::sim::health::HealthMonitor;
 #[cfg(feature = "geonav")]
 use strapdown::sim::{DEFAULT_PROCESS_NOISE, GeoResolution};
 use strapdown::sim::{
@@ -57,8 +59,6 @@ use strapdown::sim::{
     SimulationMode, TestDataRecord, build_fault, build_scheduler, dead_reckoning, initialize_ekf,
     initialize_eskf, initialize_ukf, run_closed_loop,
 };
-use strapdown::sim::health::HealthMonitor;
-use strapdown::sim::HealthLimits;
 
 const LONG_ABOUT: &str =
     "STRAPDOWN SIM: A simulation and analysis tool for strapdown inertial navigation systems.

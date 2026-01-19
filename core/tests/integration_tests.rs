@@ -1919,7 +1919,6 @@ fn test_rbpf_with_degraded_gnss() {
     }
 }
 
-
 /// Test that filter output length matches input data length
 ///
 /// This test verifies that all filter implementations (UKF, EKF, ESKF, dead reckoning)
@@ -1948,7 +1947,11 @@ fn test_filter_output_length_matches_input() {
         dr_results.len(),
         input_length
     );
-    println!("✓ Dead reckoning: {} outputs for {} inputs", dr_results.len(), input_length);
+    println!(
+        "✓ Dead reckoning: {} outputs for {} inputs",
+        dr_results.len(),
+        input_length
+    );
 
     // Create initial state from first record
     let initial_state = create_initial_state(&records[0]);
@@ -1980,7 +1983,11 @@ fn test_filter_output_length_matches_input() {
         ukf_results.len(),
         input_length
     );
-    println!("✓ UKF: {} outputs for {} inputs", ukf_results.len(), input_length);
+    println!(
+        "✓ UKF: {} outputs for {} inputs",
+        ukf_results.len(),
+        input_length
+    );
 
     // Test EKF
     let mut ekf = ExtendedKalmanFilter::new(
@@ -2002,15 +2009,15 @@ fn test_filter_output_length_matches_input() {
         ekf_results.len(),
         input_length
     );
-    println!("✓ EKF: {} outputs for {} inputs", ekf_results.len(), input_length);
+    println!(
+        "✓ EKF: {} outputs for {} inputs",
+        ekf_results.len(),
+        input_length
+    );
 
     // Test ESKF
-    let mut eskf = ErrorStateKalmanFilter::new(
-        initial_state,
-        imu_biases,
-        initial_covariance,
-        process_noise,
-    );
+    let mut eskf =
+        ErrorStateKalmanFilter::new(initial_state, imu_biases, initial_covariance, process_noise);
 
     let event_stream = build_event_stream(&records, &degradation);
     let eskf_results = run_closed_loop(&mut eskf, event_stream, None)
@@ -2023,7 +2030,14 @@ fn test_filter_output_length_matches_input() {
         eskf_results.len(),
         input_length
     );
-    println!("✓ ESKF: {} outputs for {} inputs", eskf_results.len(), input_length);
+    println!(
+        "✓ ESKF: {} outputs for {} inputs",
+        eskf_results.len(),
+        input_length
+    );
 
-    println!("\n✅ All filters produce output length matching input length: {}", input_length);
+    println!(
+        "\n✅ All filters produce output length matching input length: {}",
+        input_length
+    );
 }
