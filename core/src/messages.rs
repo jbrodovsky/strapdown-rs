@@ -629,7 +629,7 @@ fn ar1_step(x: &mut f64, rho: f64, sigma: f64, rng: &mut rand::rngs::StdRng) {
 ///     t, dt,
 ///     lat_deg, lon_deg, alt_m,
 ///     vn_mps, ve_mps,
-///     horiz_std_m, vert_std_m, vel_std_mps,
+///     horiz_std_m, vert_std_m,
 /// );
 /// ```
 #[allow(clippy::too_many_arguments)]
@@ -644,7 +644,6 @@ pub fn apply_fault(
     vn_mps: f64,
     ve_mps: f64,
     horiz_std_m: f64,
-    vert_std_m: f64,
     vel_std_mps: f64,
 ) -> (f64, f64, f64, f64, f64, f64, f64) /* lat, lon, alt, vn, ve, horiz_std, vel_std */ {
     match fault {
@@ -768,7 +767,7 @@ pub fn apply_fault(
             );
             for m in models {
                 out = apply_fault(
-                    m, st, t, dt, out.0, out.1, out.2, out.3, out.4, out.5, vert_std_m, out.6,
+                    m, st, t, dt, out.0, out.1, out.2, out.3, out.4, out.5, out.6,
                 );
             }
             out
@@ -951,8 +950,7 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
                 };
 
                 let (lat_c, lon_c, alt_c, vn_c, ve_c, horiz_c, vel_c) = apply_fault(
-                    &cfg.fault, &mut st, *t1, dt, lat, lon, alt, vn, ve, horiz_std, vert_std,
-                    vel_std,
+                    &cfg.fault, &mut st, *t1, dt, lat, lon, alt, vn, ve, horiz_std, vel_std,
                 );
 
                 let meas = GPSPositionAndVelocityMeasurement {
@@ -1209,8 +1207,8 @@ mod tests {
         let original_lon = -122.0;
 
         let mut all_same = true;
-        let mut prev_lat = None;
-        let mut prev_lon = None;
+        let mut prev_lat: Option<f64> = None;
+        let mut prev_lon: Option<f64> = None;
 
         for event in &gnss_events {
             if let Event::Measurement { meas, .. } = event {
@@ -1224,16 +1222,16 @@ mod tests {
 
                 // Check if positions vary between measurements
                 if let Some(prev_lat) = prev_lat
-                    && (meas.latitude - prev_lat as f64).abs() > 1e-10
+                    && (meas.latitude - prev_lat).abs() > 1e-10
                 {
                     all_same = false;
                 }
                 prev_lat = Some(meas.latitude);
 
-                if let Some(prev_lon) = prev_lon {
-                    if (meas.longitude - prev_lon as f64).abs() > 1e-10 {
-                        all_same = false;
-                    }
+                if let Some(prev_lon) = prev_lon
+                    && (meas.longitude - prev_lon).abs() > 1e-10
+                {
+                    all_same = false;
                 }
                 prev_lon = Some(meas.longitude);
             }
@@ -1256,7 +1254,7 @@ mod tests {
         let (_lat, _lon, _alt, vn_c, ve_c, _hstd, _vstd) = apply_fault(
             &fault, &mut st, /*t*/ 10.0, /*dt*/ 1.0, /*lat_deg*/ 40.0,
             /*lon_deg*/ -75.0, /*alt_m*/ 0.0, /*vn_mps*/ 0.0, /*ve_mps*/ 0.0,
-            /*horiz_std_m*/ 3.0, /*vert_std_m*/ 5.0, /*vel_std_mps*/ 0.2,
+            /*horiz_std_m*/ 3.0, /*vert_std_m*/ /*vel_std_mps*/ 0.2,
         );
 
         assert_approx_eq!(vn_c, 0.02, 0.001);
@@ -1285,13 +1283,12 @@ mod tests {
         // Find GNSS events and group by time
         let mut gnss_by_time: Vec<(f64, &GPSPositionAndVelocityMeasurement)> = Vec::new();
         for event in &events.events {
-            if let Event::Measurement { meas, elapsed_s } = event {
-                if let Some(gps) = meas
+            if let Event::Measurement { meas, elapsed_s } = event
+                && let Some(gps) = meas
                     .as_any()
                     .downcast_ref::<GPSPositionAndVelocityMeasurement>()
-                {
-                    gnss_by_time.push((*elapsed_s, gps));
-                }
+            {
+                gnss_by_time.push((*elapsed_s, gps));
             }
         }
         gnss_by_time.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
@@ -1302,7 +1299,7 @@ mod tests {
 
         // Check measurements before, during, and after hijack
         for (time, meas) in gnss_by_time {
-            if time < 1.0 - 1e-6 || time > 2.0 + 1e-6 {
+            if !(1.0 - 1e-6..=2.0 + 1e-6).contains(&time) {
                 // Before hijack or after hijack: positions should be near original
                 assert!((meas.latitude - original_lat).abs() < 1e-6);
                 assert!((meas.longitude - original_lon).abs() < 1e-6);
@@ -1328,7 +1325,7 @@ mod tests {
 
         // This should at least not crash
         let events = build_event_stream(&records, &config);
-        assert!(events.events.len() > 0);
+        assert!(!events.events.is_empty());
     }
 
     #[test]
@@ -1370,7 +1367,7 @@ mod tests {
 
         let events = build_event_stream(&records, &config);
         // Should have events
-        assert!(events.events.len() > 0);
+        assert!(!events.events.is_empty());
 
         // Check that some GNSS measurements exist
         let gnss_count = events
@@ -1398,7 +1395,7 @@ mod tests {
 
         let events = build_event_stream(&records, &config);
         // Should have events
-        assert!(events.events.len() > 0);
+        assert!(!events.events.is_empty());
 
         // Check that some GNSS measurements exist
         let gnss_count = events
@@ -1494,7 +1491,7 @@ mod tests {
         let events = build_event_stream(&records, &config);
 
         // Should have events even with NaN accuracies
-        assert!(events.events.len() > 0);
+        assert!(!events.events.is_empty());
 
         // Check that GNSS measurements were created
         let gnss_count = events
@@ -1521,7 +1518,7 @@ mod tests {
 
         let events = build_event_stream(&records, &config);
         // Should have events
-        assert!(events.events.len() > 0);
+        assert!(!events.events.is_empty());
     }
 }
 #[cfg(test)]

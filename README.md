@@ -38,4 +38,10 @@ The toolbox is designed for research, teaching, and development purposes and aim
 
 The simulation program provides a simple command line interface for running various configurations of the INS. In can run in open-loop (dead reckoning) mode or closed-loop (full state loosely couple UKF or EKF) mode. It can simulate various scenarios such as intermittent GPS, GPS degradation, and more. The simulation is designed to be easy to use and provides a simple API for generating datsets for further navigation processing or research.
 
-Both `strapdown-sim` and `geonav-sim` include built-in logging capabilities using the Rust `log` crate with `env_logger`. You can control log output via command-line options (`--log-level` and `--log-file`) for monitoring simulation progress, debugging issues, and recording detailed execution information. See [LOGGING.md](LOGGING.md) for detailed usage instructions.
+`strapdown-sim` includes built-in logging capabilities using the Rust `log` crate with `env_logger`. You can control log output via command-line options (`--log-level` and `--log-file`) for monitoring simulation progress, debugging issues, and recording detailed execution information. See [LOGGING.md](LOGGING.md) for detailed usage instructions.
+
+**Geophysical Navigation**: To enable geophysical navigation capabilities (gravity/magnetic anomaly aiding), build with `--features geonav` and use the `--geo` flag:
+```bash
+cargo build --release --package strapdown-sim --features geonav
+strapdown-sim cl --input data.csv --output out/ --geo --gravity-resolution one-minute
+```

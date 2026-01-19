@@ -407,7 +407,7 @@ impl TestDataRecord {
 
         let file = File::create(path)?;
         let buf_writer = BufWriter::new(file);
-        let mut writer = Writer::new(buf_writer).map_err(|e| io::Error::other(e))?;
+        let mut writer = Writer::new(buf_writer).map_err(io::Error::other)?;
 
         // Add schema for TestDataRecord (using MessagePack encoding)
         let schema_name = "TestDataRecord";
@@ -416,13 +416,13 @@ impl TestDataRecord {
 
         let schema_id = writer
             .add_schema(schema_name, schema_encoding, schema_data)
-            .map_err(|e| io::Error::other(e))?;
+            .map_err(io::Error::other)?;
 
         // Add channel for TestDataRecord messages
         let metadata = BTreeMap::new();
         let channel_id = writer
             .add_channel(schema_id, "sensor_data", "msgpack", &metadata)
-            .map_err(|e| io::Error::other(e))?;
+            .map_err(io::Error::other)?;
 
         // Write each record as a message
         for (seq, record) in records.iter().enumerate() {
@@ -442,10 +442,10 @@ impl TestDataRecord {
 
             writer
                 .write_to_known_channel(&header, &data)
-                .map_err(|e| io::Error::other(e))?;
+                .map_err(io::Error::other)?;
         }
 
-        writer.finish().map_err(|e| io::Error::other(e))?;
+        writer.finish().map_err(io::Error::other)?;
 
         Ok(())
     }
@@ -680,7 +680,8 @@ impl TestDataRecord {
         let file = netcdf::open(path)?;
 
         // Read time variable
-        let time_var = file.variable("time")
+        let time_var = file
+            .variable("time")
             .ok_or_else(|| anyhow::anyhow!("time variable not found"))?;
         let times: Vec<f64> = time_var.get_values(..)?;
         let n = times.len();
@@ -688,7 +689,8 @@ impl TestDataRecord {
         // Helper macro to read a variable
         macro_rules! read_var {
             ($file:expr, $name:expr) => {{
-                let var = $file.variable($name)
+                let var = $file
+                    .variable($name)
                     .ok_or_else(|| anyhow::anyhow!(concat!($name, " variable not found")))?;
                 let data: Vec<f64> = var.get_values(..)?;
                 data
@@ -1081,10 +1083,6 @@ impl NavigationResult {
     ///
     /// # Arguments
     /// * `path` - Path to the HDF5 file to read.
-    /// Reads an MCAP file and returns a vector of NavigationResult structs.
-    ///
-    /// # Arguments
-    /// * `path` - Path to the MCAP file to read.
     ///
     /// # Returns
     /// * `Ok(Vec<NavigationResult>)` if successful.
@@ -1234,7 +1232,10 @@ impl NavigationResult {
         }
 
         // Prepare all data arrays
-        let timestamps: Vec<f64> = records.iter().map(|r| r.timestamp.timestamp() as f64).collect();
+        let timestamps: Vec<f64> = records
+            .iter()
+            .map(|r| r.timestamp.timestamp() as f64)
+            .collect();
         let latitude: Vec<f64> = records.iter().map(|r| r.latitude).collect();
         let longitude: Vec<f64> = records.iter().map(|r| r.longitude).collect();
         let altitude: Vec<f64> = records.iter().map(|r| r.altitude).collect();
@@ -1314,7 +1315,8 @@ impl NavigationResult {
         let file = netcdf::open(path)?;
 
         // Read timestamp variable
-        let time_var = file.variable("timestamp")
+        let time_var = file
+            .variable("timestamp")
             .ok_or_else(|| anyhow::anyhow!("timestamp variable not found"))?;
         let timestamps: Vec<f64> = time_var.get_values(..)?;
         let n = timestamps.len();
@@ -1322,7 +1324,8 @@ impl NavigationResult {
         // Helper macro to read a variable
         macro_rules! read_var {
             ($file:expr, $name:expr) => {{
-                let var = $file.variable($name)
+                let var = $file
+                    .variable($name)
                     .ok_or_else(|| anyhow::anyhow!(concat!($name, " variable not found")))?;
                 let data: Vec<f64> = var.get_values(..)?;
                 data
@@ -1405,9 +1408,6 @@ impl NavigationResult {
 
         Ok(records)
     }
-
-    /// # Returns
-    /// * `Result<()>` - Ok if successful, Err otherwise
     /// Writes a vector of NavigationResult structs to an MCAP file.
     ///
     /// # Arguments
@@ -1416,6 +1416,10 @@ impl NavigationResult {
     ///
     /// # Returns
     /// * `io::Result<()>` - Ok if successful, Err otherwise
+    ///
+    /// # Example
+    /// ```no_run
+    /// use strapdown::sim::NavigationResult;
     /// use std::path::Path;
     ///
     /// let mut result = NavigationResult::default();
@@ -1434,7 +1438,7 @@ impl NavigationResult {
 
         let file = File::create(path)?;
         let buf_writer = BufWriter::new(file);
-        let mut writer = Writer::new(buf_writer).map_err(|e| io::Error::other(e))?;
+        let mut writer = Writer::new(buf_writer).map_err(io::Error::other)?;
 
         // Add schema for NavigationResult (using MessagePack encoding)
         let schema_name = "NavigationResult";
@@ -1443,13 +1447,13 @@ impl NavigationResult {
 
         let schema_id = writer
             .add_schema(schema_name, schema_encoding, schema_data)
-            .map_err(|e| io::Error::other(e))?;
+            .map_err(io::Error::other)?;
 
         // Add channel for NavigationResult messages
         let metadata = BTreeMap::new();
         let channel_id = writer
             .add_channel(schema_id, "navigation_results", "msgpack", &metadata)
-            .map_err(|e| io::Error::other(e))?;
+            .map_err(io::Error::other)?;
 
         // Write each record as a message
         for (seq, record) in records.iter().enumerate() {
@@ -1469,16 +1473,19 @@ impl NavigationResult {
 
             writer
                 .write_to_known_channel(&header, &data)
-                .map_err(|e| io::Error::other(e))?;
+                .map_err(io::Error::other)?;
         }
 
-        writer.finish().map_err(|e| io::Error::other(e))?;
+        writer.finish().map_err(io::Error::other)?;
 
         Ok(())
     }
 
     /// Reads an MCAP file and returns a vector of NavigationResult structs.
-    /// use std::path::Path;
+    ///
+    /// # Example
+    /// ```no_run
+    /// use strapdown::sim::NavigationResult;
     ///
     /// let results = NavigationResult::from_mcap("results.mcap")
     ///     .expect("Failed to read navigation results from MCAP");
@@ -1907,13 +1914,19 @@ pub fn run_closed_loop<F: NavigationFilter>(
     let start_time = stream.start_time;
     let mut results: Vec<NavigationResult> = Vec::with_capacity(stream.events.len());
     let total = stream.events.len();
-    let mut last_ts: Option<DateTime<Utc>> = None;
     let mut monitor = HealthMonitor::new(health_limits.unwrap_or_default());
 
     info!(
         "Starting closed-loop navigation filter with {} events",
         total
     );
+
+    // Store the initial state (before processing any events)
+    let mean = filter.get_estimate();
+    let cov = filter.get_certainty();
+    results.push(NavigationResult::from((&start_time, &mean, &cov)));
+    debug!("Initial filter state at {}: {:?}", start_time, mean);
+    let mut last_ts = start_time;
 
     for (i, event) in stream.events.into_iter().enumerate() {
         // Print detailed progress every 100 iterations or at key milestones
@@ -1933,22 +1946,22 @@ pub fn run_closed_loop<F: NavigationFilter>(
 
             // Compute RMS of position covariance
             let pos_rms = (pos_std_lat.powi(2) + pos_std_lon.powi(2) + pos_std_alt.powi(2)).sqrt();
-
-            print!(
-                "\r[{:.1}%] Event {}/{} | Pos: ({:.6}°, {:.6}°, {:.1}m) | σ: ({:.2e}°, {:.2e}°, {:.2}m) | RMS: {:.2e}",
+            info!(
+                "[{:.1}%] Event {}/{} | Pos: ({:.6}°, {:.6}°, {:.1}m) | Vel: ({:.2} m/s, {:.2} m/s, {:.2} m/s) | σ: ({:.2e}°, {:.2e}°, {:.2}m) | RMS: {:.2e}",
                 (i as f64 / total as f64) * 100.0,
                 i,
                 total,
                 lat,
                 lon,
                 alt,
+                mean[3],
+                mean[4],
+                mean[5],
                 pos_std_lat,
                 pos_std_lon,
                 pos_std_alt,
                 pos_rms
             );
-            use std::io::Write;
-            std::io::stdout().flush().ok();
         }
 
         // Compute wall-clock time for this event
@@ -1980,26 +1993,15 @@ pub fn run_closed_loop<F: NavigationFilter>(
             }
         }
 
-        // If timestamp changed, or it's the last event, record the previous state
-        if Some(ts) != last_ts {
-            if let Some(prev_ts) = last_ts {
-                let mean = filter.get_estimate();
-                let cov = filter.get_certainty();
-                results.push(NavigationResult::from((&prev_ts, &mean, &cov)));
-                debug!("Filter state at {}: {:?}", ts, mean);
-            }
-            last_ts = Some(ts);
-        }
-
-        // If this is the last event, also push
-        if i == total - 1 {
+        // Store state when timestamp changes
+        if ts != last_ts {
             let mean = filter.get_estimate();
             let cov = filter.get_certainty();
-            debug!("Filter state at {}: {:?}", ts, mean);
             results.push(NavigationResult::from((&ts, &mean, &cov)));
+            debug!("Filter state at {}: {:?}", ts, mean);
+            last_ts = ts;
         }
     }
-    println!(); // Print newline after progress indicator
     debug!("Closed-loop simulation complete");
     Ok(results)
 }
@@ -2060,31 +2062,47 @@ pub fn print_ukf(ukf: &UnscentedKalmanFilter, record: &TestDataRecord) {
         ukf.get_certainty()[(14, 14)]
     );
 }
+
+/// Configuration parameters for UKF initialization.
+///
+/// This struct groups together optional parameters for initializing an Unscented Kalman Filter,
+/// reducing the number of function arguments and making it easier to specify custom configurations.
+#[derive(Debug, Clone, Default)]
+pub struct UkfConfig {
+    /// Optional vector of f64 representing the initial attitude covariance (default is a small value).
+    pub attitude_covariance: Option<Vec<f64>>,
+    /// Optional vector of f64 representing the initial IMU biases (default is a small value).
+    pub imu_biases: Option<Vec<f64>>,
+    /// Optional vector of f64 representing the IMU biases covariance.
+    pub imu_biases_covariance: Option<Vec<f64>>,
+    /// Optional vector of f64 for any additional states (not used in the canonical UKF, but can be useful for custom implementations).
+    pub other_states: Option<Vec<f64>>,
+    /// Optional vector of f64 for other states covariance.
+    pub other_states_covariance: Option<Vec<f64>>,
+    /// Optional process noise diagonal vector.
+    pub process_noise_diagonal: Option<Vec<f64>>,
+    /// Optional UKF alpha parameter (sigma-point spread).
+    pub ukf_alpha: Option<f64>,
+    /// Optional UKF beta parameter (prior distribution).
+    pub ukf_beta: Option<f64>,
+    /// Optional UKF kappa parameter (secondary spread control).
+    pub ukf_kappa: Option<f64>,
+}
+
 /// Helper function to initialize a UKF for closed-loop mode.
 ///
-/// This function sets up the Unscented Kalman Filter (UKF) with initial pose, attitude covariance, and IMU biases based on
-/// the provided `TestDataRecord`. It initializes the UKF with position, velocity, attitude, and covariance matrices.
-/// Optional parameters for attitude covariance and IMU biases can be provided to customize the filter's initial state.
+/// This function sets up the Unscented Kalman Filter (UKF) with initial pose and configuration parameters.
+/// It initializes the UKF with position, velocity, attitude, and covariance matrices.
 ///
 /// # Arguments
 ///
 /// * `initial_pose` - A `TestDataRecord` containing the initial pose information.
-/// * `attitude_covariance` - Optional vector of f64 representing the initial attitude covariance (default is a small value).
-/// * `imu_biases` - Optional vector of f64 representing the initial IMU biases (default is a small value).
-/// * `other_states` - Optional vector of f64 for any additional states (not used in the canonical UKF, but can be useful for custom implementations).
+/// * `config` - A `UkfConfig` struct containing optional configuration parameters.
 ///
 /// # Returns
 ///
-/// * `UKF` - An instance of the Unscented Kalman Filter initialized with the provided parameters.
-pub fn initialize_ukf(
-    initial_pose: TestDataRecord,
-    attitude_covariance: Option<Vec<f64>>,
-    imu_biases: Option<Vec<f64>>,
-    imu_biases_covariance: Option<Vec<f64>>,
-    other_states: Option<Vec<f64>>,
-    other_states_covariance: Option<Vec<f64>>,
-    process_noise_diagonal: Option<Vec<f64>>,
-) -> UnscentedKalmanFilter {
+/// * `UnscentedKalmanFilter` - An instance of the Unscented Kalman Filter initialized with the provided parameters.
+pub fn initialize_ukf(initial_pose: TestDataRecord, config: UkfConfig) -> UnscentedKalmanFilter {
     let initial_state = InitialState {
         latitude: initial_pose.latitude,
         longitude: initial_pose.longitude,
@@ -2110,29 +2128,30 @@ pub fn initialize_ukf(
         in_degrees: true,
         is_enu: true,
     };
-    let process_noise_diagonal = match process_noise_diagonal {
+    let process_noise_diagonal = match config.process_noise_diagonal {
         Some(pn) => pn,
         None => DEFAULT_PROCESS_NOISE.to_vec(),
     };
     // Covariance parameters
     let position_accuracy = initial_pose.horizontal_accuracy; //.sqrt();
+    let position_std_rad = (position_accuracy * METERS_TO_DEGREES).to_radians();
     let mut covariance_diagonal = vec![
-        (position_accuracy * METERS_TO_DEGREES).powf(2.0),
-        (position_accuracy * METERS_TO_DEGREES).powf(2.0),
+        position_std_rad.powf(2.0),
+        position_std_rad.powf(2.0),
         initial_pose.vertical_accuracy.powf(2.0),
         initial_pose.speed_accuracy.powf(2.0),
         initial_pose.speed_accuracy.powf(2.0),
         initial_pose.speed_accuracy.powf(2.0),
     ];
     // extend the covariance diagonal if attitude covariance is provided
-    match attitude_covariance {
+    match config.attitude_covariance {
         Some(att_cov) => covariance_diagonal.extend(att_cov),
         None => covariance_diagonal.extend(vec![1e-9; 3]), // Default values if not provided
     }
     // extend the covariance diagonal if imu biases are provided
-    let imu_biases = match imu_biases {
+    let imu_biases = match config.imu_biases {
         Some(imu_biases) => {
-            covariance_diagonal.extend(match imu_biases_covariance {
+            covariance_diagonal.extend(match config.imu_biases_covariance {
                 Some(imu_cov) => imu_cov,
                 None => vec![1e-3; 6], // Default covariance if not provided
             });
@@ -2144,9 +2163,9 @@ pub fn initialize_ukf(
         }
     };
     // extend the covariance diagonal if other states are provided
-    let other_states = match other_states {
+    let other_states = match config.other_states {
         Some(other_states) => {
-            covariance_diagonal.extend(match other_states_covariance {
+            covariance_diagonal.extend(match config.other_states_covariance {
                 Some(other_cov) => other_cov,
                 None => vec![1e-3; other_states.len()], // Default covariance if not provided
             });
@@ -2180,9 +2199,9 @@ pub fn initialize_ukf(
         other_states,
         covariance_diagonal,
         process_noise,
-        1e-3, // Use a scalar for measurement noise as expected by UKF::new
-        2.0,
-        0.0,
+        config.ukf_alpha.unwrap_or(1e-3),
+        config.ukf_beta.unwrap_or(2.0),
+        config.ukf_kappa.unwrap_or(0.0),
     )
 }
 
@@ -2513,12 +2532,10 @@ pub fn print_sim_status<F: NavigationFilter>(filter: &F) {
     // Compute RMS of position covariance
     let pos_rms = (pos_std_lat.powi(2) + pos_std_lon.powi(2) + pos_std_alt.powi(2)).sqrt();
 
-    print!(
+    debug!(
         "\rPos: ({:.6}°, {:.6}°, {:.1}m) | σ: ({:.2e}°, {:.2e}°, {:.2}m) | RMS: {:.2e}",
         lat, lon, alt, pos_std_lat, pos_std_lon, pos_std_alt, pos_rms
     );
-    use std::io::Write;
-    std::io::stdout().flush().ok();
 }
 
 pub mod health {
@@ -2809,6 +2826,8 @@ pub enum ParticleFilterType {
     Standard,
     /// Rao-Blackwellized particle filter (position as particles, velocity/attitude/biases as per-particle filters)
     RaoBlackwellized,
+    /// Velocity-based particle filter (position-only particles, velocities supplied externally)
+    Velocity,
 }
 
 /// Closed-loop specific configuration
@@ -2817,75 +2836,139 @@ pub struct ClosedLoopConfig {
     /// Filter type (UKF or EKF)
     #[serde(default)]
     pub filter: FilterType,
+    /// UKF alpha parameter (spread of sigma points)
+    #[serde(default = "default_ukf_alpha")]
+    pub ukf_alpha: f64,
+    /// UKF beta parameter (prior knowledge of distribution, 2.0 is optimal for Gaussian)
+    #[serde(default = "default_ukf_beta")]
+    pub ukf_beta: f64,
+    /// UKF kappa parameter (secondary spread control)
+    #[serde(default = "default_ukf_kappa")]
+    pub ukf_kappa: f64,
 }
 
 impl Default for ClosedLoopConfig {
     fn default() -> Self {
         Self {
             filter: FilterType::Ukf,
+            ukf_alpha: default_ukf_alpha(),
+            ukf_beta: default_ukf_beta(),
+            ukf_kappa: default_ukf_kappa(),
         }
     }
 }
 
-/// Particle filter specific configuration
+/// Particle filter configuration (RBPF defaults).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ParticleFilterConfig {
-    /// Particle filter type
-    #[serde(default)]
-    pub filter_type: ParticleFilterType,
-    /// Number of particles
+    /// Number of particles in the filter.
     #[serde(default = "default_num_particles")]
     pub num_particles: usize,
-    /// Position uncertainty standard deviation (meters)
-    #[serde(default = "default_position_std")]
-    pub position_std: f64,
-    /// Velocity uncertainty standard deviation (m/s)
-    #[serde(default = "default_velocity_std")]
-    pub velocity_std: f64,
-    /// Attitude uncertainty standard deviation (radians)
-    #[serde(default = "default_attitude_std")]
-    pub attitude_std: f64,
-    /// Accelerometer bias uncertainty standard deviation (m/s²)
-    #[serde(default = "default_accel_bias_std")]
-    pub accel_bias_std: f64,
-    /// Gyroscope bias uncertainty standard deviation (rad/s)
-    #[serde(default = "default_gyro_bias_std")]
-    pub gyro_bias_std: f64,
+    /// Initial position standard deviation [lat_m, lon_m, alt_m].
+    #[serde(default = "default_position_init_std_m")]
+    pub position_init_std_m: Vec<f64>,
+    /// Initial velocity standard deviation (m/s).
+    #[serde(default = "default_velocity_init_std_mps")]
+    pub velocity_init_std_mps: f64,
+    /// Initial attitude standard deviation (rad).
+    #[serde(default = "default_attitude_init_std_rad")]
+    pub attitude_init_std_rad: f64,
+    /// Position process noise standard deviation [lat_m, lon_m, alt_m].
+    #[serde(default = "default_position_process_noise_std_m")]
+    pub position_process_noise_std_m: Vec<f64>,
+    /// Velocity process noise standard deviation (m/s).
+    #[serde(default = "default_velocity_process_noise_std_mps")]
+    pub velocity_process_noise_std_mps: f64,
+    /// Attitude process noise standard deviation (rad).
+    #[serde(default = "default_attitude_process_noise_std_rad")]
+    pub attitude_process_noise_std_rad: f64,
+    /// Initial standard deviation for geophysical bias states.
+    #[serde(default = "default_geo_bias_init_std")]
+    pub geo_bias_init_std: f64,
+    /// Random-walk process noise standard deviation for geophysical bias states.
+    #[serde(default = "default_geo_bias_process_noise_std")]
+    pub geo_bias_process_noise_std: f64,
+    /// Apply zero-vertical-velocity pseudo-measurement.
+    #[serde(default = "default_zero_vertical_velocity")]
+    pub zero_vertical_velocity: bool,
+    /// Standard deviation for zero-vertical-velocity pseudo-measurement (m/s).
+    #[serde(default = "default_zero_vertical_velocity_std_mps")]
+    pub zero_vertical_velocity_std_mps: f64,
+}
+
+fn default_zero_vertical_velocity() -> bool {
+    true
+}
+
+fn default_zero_vertical_velocity_std_mps() -> f64 {
+    0.1
+}
+
+fn default_ukf_alpha() -> f64 {
+    1e-3
+}
+
+fn default_ukf_beta() -> f64 {
+    2.0
+}
+
+fn default_ukf_kappa() -> f64 {
+    0.0
 }
 
 fn default_num_particles() -> usize {
     100
 }
-fn default_position_std() -> f64 {
-    10.0
+
+fn default_position_init_std_m() -> Vec<f64> {
+    vec![10.0, 10.0, 5.0]
 }
-fn default_velocity_std() -> f64 {
+
+fn default_velocity_init_std_mps() -> f64 {
     1.0
 }
-fn default_attitude_std() -> f64 {
+
+fn default_attitude_init_std_rad() -> f64 {
     0.1
 }
-fn default_accel_bias_std() -> f64 {
-    0.1
+
+fn default_position_process_noise_std_m() -> Vec<f64> {
+    vec![1.0, 1.0, 1.0]
 }
-fn default_gyro_bias_std() -> f64 {
+
+fn default_velocity_process_noise_std_mps() -> f64 {
+    1e-3
+}
+
+fn default_attitude_process_noise_std_rad() -> f64 {
     0.01
+}
+
+fn default_geo_bias_init_std() -> f64 {
+    1.0
+}
+
+fn default_geo_bias_process_noise_std() -> f64 {
+    1e-3
 }
 
 impl Default for ParticleFilterConfig {
     fn default() -> Self {
         Self {
-            filter_type: ParticleFilterType::default(),
             num_particles: default_num_particles(),
-            position_std: default_position_std(),
-            velocity_std: default_velocity_std(),
-            attitude_std: default_attitude_std(),
-            accel_bias_std: default_accel_bias_std(),
-            gyro_bias_std: default_gyro_bias_std(),
+            position_init_std_m: default_position_init_std_m(),
+            velocity_init_std_mps: default_velocity_init_std_mps(),
+            attitude_init_std_rad: default_attitude_init_std_rad(),
+            position_process_noise_std_m: default_position_process_noise_std_m(),
+            velocity_process_noise_std_mps: default_velocity_process_noise_std_mps(),
+            attitude_process_noise_std_rad: default_attitude_process_noise_std_rad(),
+            geo_bias_init_std: default_geo_bias_init_std(),
+            geo_bias_process_noise_std: default_geo_bias_process_noise_std(),
+            zero_vertical_velocity: default_zero_vertical_velocity(),
+            zero_vertical_velocity_std_mps: default_zero_vertical_velocity_std_mps(),
         }
     }
 }
-
 /// Log level options for simulation logging.
 ///
 /// This enum is serialized/deserialized as lowercase strings to match existing
@@ -2964,9 +3047,12 @@ pub struct SimulationConfig {
     /// Closed-loop specific settings (only used if mode is ClosedLoop)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closed_loop: Option<ClosedLoopConfig>,
-    /// Particle filter specific settings (only used if mode is ParticleFilter)
+    /// Particle filter settings (only used if mode is ParticleFilter)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub particle_filter: Option<ParticleFilterConfig>,
+    /// Geophysical measurement configuration (optional, requires --features geonav)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geophysical: Option<GeophysicalConfig>,
     /// GNSS degradation configuration (scheduler + fault model)
     #[serde(default)]
     pub gnss_degradation: crate::messages::GnssDegradationConfig,
@@ -2988,12 +3074,264 @@ impl Default for SimulationConfig {
             logging: LoggingConfig::default(),
             closed_loop: Some(ClosedLoopConfig::default()),
             particle_filter: None,
+            geophysical: None,
             gnss_degradation: crate::messages::GnssDegradationConfig::default(),
         }
     }
 }
 
 impl SimulationConfig {
+    /// Write the configuration to a JSON file (pretty-printed)
+    pub fn to_json<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
+        let file = std::fs::File::create(path)?;
+        serde_json::to_writer_pretty(file, self).map_err(io::Error::other)
+    }
+
+    /// Read the configuration from a JSON file
+    pub fn from_json<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let file = std::fs::File::open(path)?;
+        serde_json::from_reader(file).map_err(io::Error::other)
+    }
+
+    /// Write the configuration as YAML
+    pub fn to_yaml<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
+        let mut file = std::fs::File::create(path)?;
+        let s = serde_yaml::to_string(self).map_err(io::Error::other)?;
+        file.write_all(s.as_bytes())
+    }
+
+    /// Read the configuration from YAML
+    pub fn from_yaml<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let file = std::fs::File::open(path)?;
+        serde_yaml::from_reader(file).map_err(io::Error::other)
+    }
+
+    /// Write the configuration as TOML
+    pub fn to_toml<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
+        let mut file = std::fs::File::create(path)?;
+        let s = toml::to_string_pretty(self).map_err(io::Error::other)?;
+        file.write_all(s.as_bytes())
+    }
+
+    /// Read the configuration from TOML
+    pub fn from_toml<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let mut s = String::new();
+        let mut file = std::fs::File::open(path)?;
+        file.read_to_string(&mut s)?;
+        toml::from_str(&s).map_err(io::Error::other)
+    }
+
+    /// Generic write: choose format by file extension (.json/.yaml/.yml/.toml)
+    pub fn to_file<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
+        let p = path.as_ref();
+        let ext = p
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_lowercase());
+        match ext.as_deref() {
+            Some("json") => self.to_json(p),
+            Some("yaml") | Some("yml") => self.to_yaml(p),
+            Some("toml") => self.to_toml(p),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unsupported file extension (expected .json, .yaml, .yml, or .toml)",
+            )),
+        }
+    }
+
+    /// Generic read: choose format by file extension (.json/.yaml/.yml/.toml)
+    pub fn from_file<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let p = path.as_ref();
+        let ext = p
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_lowercase());
+        match ext.as_deref() {
+            Some("json") => Self::from_json(p),
+            Some("yaml") | Some("yml") => Self::from_yaml(p),
+            Some("toml") => Self::from_toml(p),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unsupported file extension (expected .json, .yaml, .yml, or .toml)",
+            )),
+        }
+    }
+}
+
+/// Geophysical measurement type configuration
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "clap", derive(ValueEnum))]
+#[serde(rename_all = "lowercase")]
+#[derive(Default)]
+pub enum GeoMeasurementType {
+    /// Gravity anomaly measurements
+    #[default]
+    Gravity,
+    /// Magnetic anomaly measurements
+    Magnetic,
+}
+
+/// Geophysical map resolution configuration
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "clap", derive(ValueEnum))]
+#[serde(rename_all = "snake_case")]
+#[derive(Default)]
+pub enum GeoResolution {
+    /// 1 degree resolution
+    OneDegree,
+    /// 30 arcminute resolution
+    ThirtyMinutes,
+    /// 20 arcminute resolution
+    TwentyMinutes,
+    /// 15 arcminute resolution
+    FifteenMinutes,
+    /// 10 arcminute resolution
+    TenMinutes,
+    /// 6 arcminute resolution
+    SixMinutes,
+    /// 5 arcminute resolution
+    FiveMinutes,
+    /// 4 arcminute resolution
+    FourMinutes,
+    /// 3 arcminute resolution
+    ThreeMinutes,
+    /// 2 arcminute resolution
+    TwoMinutes,
+    /// 1 arcminute resolution
+    #[default]
+    OneMinute,
+    /// 30 arcsecond resolution
+    ThirtySeconds,
+    /// 15 arcsecond resolution
+    FifteenSeconds,
+    /// 3 arcsecond resolution
+    ThreeSeconds,
+    /// 1 arcsecond resolution
+    OneSecond,
+}
+
+/// Geophysical measurement configuration for geonav simulations
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct GeophysicalConfig {
+    // Gravity measurement configuration (all optional)
+    /// Gravity map resolution (None = gravity not used)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gravity_resolution: Option<GeoResolution>,
+
+    /// Gravity measurement bias (mGal)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gravity_bias: Option<f64>,
+
+    /// Gravity measurement noise std dev (mGal)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gravity_noise_std: Option<f64>,
+
+    /// Gravity map file path (auto-detected if None)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gravity_map_file: Option<String>,
+
+    // Magnetic measurement configuration (all optional)
+    /// Magnetic map resolution (None = magnetic not used)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub magnetic_resolution: Option<GeoResolution>,
+
+    /// Magnetic measurement bias (nT)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub magnetic_bias: Option<f64>,
+
+    /// Magnetic measurement noise std dev (nT)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub magnetic_noise_std: Option<f64>,
+
+    /// Magnetic map file path (auto-detected if None)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub magnetic_map_file: Option<String>,
+
+    // Common configuration
+    /// Frequency in seconds for geophysical measurements
+    /// Applies to both measurement types if both are enabled
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geo_frequency_s: Option<f64>,
+}
+
+fn default_gravity_noise_std() -> f64 {
+    100.0
+}
+
+fn default_magnetic_noise_std() -> f64 {
+    150.0
+}
+
+impl GeophysicalConfig {
+    /// Get default gravity noise std if not set
+    pub fn get_gravity_noise_std(&self) -> f64 {
+        self.gravity_noise_std
+            .unwrap_or_else(default_gravity_noise_std)
+    }
+
+    /// Get default magnetic noise std if not set
+    pub fn get_magnetic_noise_std(&self) -> f64 {
+        self.magnetic_noise_std
+            .unwrap_or_else(default_magnetic_noise_std)
+    }
+
+    /// Get gravity bias with default of 0.0
+    pub fn get_gravity_bias(&self) -> f64 {
+        self.gravity_bias.unwrap_or(0.0)
+    }
+
+    /// Get magnetic bias with default of 0.0
+    pub fn get_magnetic_bias(&self) -> f64 {
+        self.magnetic_bias.unwrap_or(0.0)
+    }
+}
+
+/// Unified geophysical navigation simulation configuration
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GeonavSimulationConfig {
+    /// Input CSV file path (relative or absolute)
+    pub input: String,
+    /// Output CSV file path (relative or absolute)
+    pub output: String,
+    /// Filter type (UKF or EKF)
+    #[serde(default)]
+    pub filter: FilterType,
+    /// Random number generator seed
+    #[serde(default = "default_seed")]
+    pub seed: u64,
+    /// Run simulations in parallel when processing multiple files
+    #[serde(default)]
+    pub parallel: bool,
+    /// Generate performance plot comparing navigation output to GPS measurements
+    #[serde(default)]
+    pub generate_plot: bool,
+    /// Logging configuration
+    #[serde(default)]
+    pub logging: LoggingConfig,
+    /// Geophysical measurement configuration
+    #[serde(default)]
+    pub geophysical: GeophysicalConfig,
+    /// GNSS degradation configuration (scheduler + fault model)
+    #[serde(default)]
+    pub gnss_degradation: crate::messages::GnssDegradationConfig,
+}
+
+impl Default for GeonavSimulationConfig {
+    fn default() -> Self {
+        Self {
+            input: "input.csv".to_string(),
+            output: "output.csv".to_string(),
+            filter: FilterType::Ukf,
+            seed: default_seed(),
+            parallel: false,
+            generate_plot: false,
+            logging: LoggingConfig::default(),
+            geophysical: GeophysicalConfig::default(),
+            gnss_degradation: crate::messages::GnssDegradationConfig::default(),
+        }
+    }
+}
+impl GeonavSimulationConfig {
     /// Write the configuration to a JSON file (pretty-printed)
     pub fn to_json<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
         let file = std::fs::File::create(path)?;
@@ -3315,7 +3653,7 @@ mod tests {
         let timestamp = chrono::Utc::now();
         let nav = NavigationResult::from((
             &timestamp,
-            &state_vector.into(),
+            &state_vector,
             &DMatrix::from_diagonal(&DVector::from_element(15, 0.0)), // dummy covariance
         ));
         assert_eq!(nav.latitude, (1.0_f64).to_degrees());
@@ -3386,7 +3724,7 @@ mod tests {
             });
 
         // Initialize UKF
-        let mut ukf = initialize_ukf(rec.clone(), None, None, None, None, None, None);
+        let mut ukf = initialize_ukf(rec.clone(), UkfConfig::default());
 
         // Create a minimal EventStream with one IMU event
         let imu_data = IMUData {
@@ -3441,16 +3779,15 @@ mod tests {
             grav_y: 0.0,
             grav_x: 0.0,
         };
-        let ukf = initialize_ukf(rec.clone(), None, None, None, None, None, None);
+        let ukf = initialize_ukf(rec.clone(), UkfConfig::default());
         assert!(!ukf.get_estimate().is_empty());
         let ukf2 = initialize_ukf(
             rec,
-            Some(vec![0.1, 0.2, 0.3]),
-            Some(vec![0.4, 0.5, 0.6, 0.7, 0.8, 0.9]),
-            None,
-            None,
-            None,
-            None,
+            UkfConfig {
+                attitude_covariance: Some(vec![0.1, 0.2, 0.3]),
+                imu_biases: Some(vec![0.4, 0.5, 0.6, 0.7, 0.8, 0.9]),
+                ..Default::default()
+            },
         );
         assert!(!ukf2.get_estimate().is_empty());
     }
@@ -3640,7 +3977,7 @@ mod tests {
             yaw: 0.3,
             ..Default::default()
         };
-        let ukf = initialize_ukf(rec.clone(), None, None, None, None, None, None);
+        let ukf = initialize_ukf(rec.clone(), UkfConfig::default());
         let timestamp = Utc::now();
         let nav_result = NavigationResult::from((&timestamp, &ukf));
 
@@ -3694,7 +4031,7 @@ mod tests {
             yaw: 0.3,
             ..Default::default()
         };
-        let ukf = initialize_ukf(rec.clone(), None, None, None, None, None, None);
+        let ukf = initialize_ukf(rec.clone(), UkfConfig::default());
         // Just ensure it doesn't panic
         print_ukf(&ukf, &rec);
     }
@@ -3715,7 +4052,7 @@ mod tests {
             yaw: f64::NAN,
             ..Default::default()
         };
-        let ukf = initialize_ukf(rec, None, None, None, None, None, None);
+        let ukf = initialize_ukf(rec, UkfConfig::default());
         let estimate = ukf.get_estimate();
         // Should default NaN angles to 0.0
         assert!(estimate[6].abs() < 1e-6); // roll
@@ -3742,12 +4079,12 @@ mod tests {
         };
         let ukf = initialize_ukf(
             rec,
-            Some(vec![1e-4, 2e-4, 3e-4]),
-            Some(vec![0.01, 0.02, 0.03, 0.001, 0.002, 0.003]),
-            Some(vec![1e-5; 6]),
-            None,
-            None,
-            None,
+            UkfConfig {
+                attitude_covariance: Some(vec![1e-4, 2e-4, 3e-4]),
+                imu_biases: Some(vec![0.01, 0.02, 0.03, 0.001, 0.002, 0.003]),
+                imu_biases_covariance: Some(vec![1e-5; 6]),
+                ..Default::default()
+            },
         );
         let estimate = ukf.get_estimate();
         assert_eq!(estimate.len(), 15);
@@ -3771,7 +4108,13 @@ mod tests {
             ..Default::default()
         };
         let custom_noise = vec![1e-5; 15];
-        let ukf = initialize_ukf(rec, None, None, None, None, None, Some(custom_noise));
+        let ukf = initialize_ukf(
+            rec,
+            UkfConfig {
+                process_noise_diagonal: Some(custom_noise),
+                ..Default::default()
+            },
+        );
         assert!(!ukf.get_estimate().is_empty());
     }
     #[test]
@@ -4258,7 +4601,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut ukf = initialize_ukf(rec.clone(), None, None, None, None, None, None);
+        let mut ukf = initialize_ukf(rec.clone(), UkfConfig::default());
 
         let stream = EventStream {
             start_time: rec.time,
@@ -4692,98 +5035,6 @@ mod tests {
         // that conflict with binary serialization formats. TestDataRecord is optimized for CSV.
         // For MCAP usage, convert TestDataRecord to NavigationResult.
     }
-    #[test]
-    #[ignore] // Disabled - see note above
-    fn test_test_data_record_mcap_write_only() {
-        let temp_file = std::env::temp_dir().join("test_data_mcap.mcap");
-
-        // Create test data
-        let records = vec![
-            TestDataRecord {
-                time: DateTime::parse_from_str("2023-01-01 00:00:00+00:00", "%Y-%m-%d %H:%M:%S%z")
-                    .unwrap()
-                    .with_timezone(&Utc),
-                bearing_accuracy: 0.1,
-                speed_accuracy: 0.1,
-                vertical_accuracy: 0.1,
-                horizontal_accuracy: 0.1,
-                speed: 1.0,
-                bearing: 90.0,
-                altitude: 100.0,
-                longitude: -122.0,
-                latitude: 37.0,
-                qz: 0.0,
-                qy: 0.0,
-                qx: 0.0,
-                qw: 1.0,
-                roll: 0.0,
-                pitch: 0.0,
-                yaw: 0.0,
-                acc_z: 9.81,
-                acc_y: 0.0,
-                acc_x: 0.0,
-                gyro_z: 0.01,
-                gyro_y: 0.01,
-                gyro_x: 0.01,
-                mag_z: 50.0,
-                mag_y: -30.0,
-                mag_x: -20.0,
-                relative_altitude: 5.0,
-                pressure: 1013.25,
-                grav_z: 9.81,
-                grav_y: 0.0,
-                grav_x: 0.0,
-            },
-            TestDataRecord {
-                time: DateTime::parse_from_str("2023-01-01 00:01:00+00:00", "%Y-%m-%d %H:%M:%S%z")
-                    .unwrap()
-                    .with_timezone(&Utc),
-                bearing_accuracy: 0.1,
-                speed_accuracy: 0.1,
-                vertical_accuracy: 0.1,
-                horizontal_accuracy: 0.1,
-                speed: 2.0,
-                bearing: 180.0,
-                altitude: 200.0,
-                longitude: -121.0,
-                latitude: 38.0,
-                qz: 0.0,
-                qy: 0.0,
-                qx: 0.0,
-                qw: 1.0,
-                roll: 0.1,
-                pitch: 0.1,
-                yaw: 0.1,
-                acc_z: 9.81,
-                acc_y: 0.01,
-                acc_x: -0.01,
-                gyro_z: 0.02,
-                gyro_y: -0.02,
-                gyro_x: 0.02,
-                mag_z: 55.0,
-                mag_y: -25.0,
-                mag_x: -15.0,
-                relative_altitude: 10.0,
-                pressure: 1012.25,
-                grav_z: 9.81,
-                grav_y: 0.01,
-                grav_x: -0.01,
-            },
-        ];
-
-        // Write to MCAP (writing works fine)
-        TestDataRecord::to_mcap(&records, &temp_file).expect("Failed to write to MCAP");
-
-        // Check file exists
-        assert!(temp_file.exists(), "MCAP file should exist");
-
-        // Note: Reading back would fail due to CSV-specific deserializers
-        // In production, convert TestDataRecord to NavigationResult for MCAP storage
-
-        // Cleanup
-        let _ = std::fs::remove_file(&temp_file);
-    }
-
     #[test]
     fn test_navigation_result_mcap_roundtrip() {
         let temp_file = std::env::temp_dir().join("nav_results_mcap.mcap");

@@ -2008,6 +2008,8 @@ dependencies = [
  "plotters",
  "rayon",
  "strapdown-core",
+ "strapdown-geonav",
+ "tempfile",
 ]
 
 [[package]]

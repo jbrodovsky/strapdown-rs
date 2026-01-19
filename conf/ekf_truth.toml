@@ -1,10 +1,16 @@
 input = "data/input"
-output = "data/output"
+output = "data/output/ekf/truth"
 mode = "closed-loop"
 seed = 42
+parallel = true
+generate_plot = true
+
+[logging]
+level = "info"
+file = "log/ekf_truth.log"
 
 [closed_loop]
-filter = "ukf"
+filter = "ekf"
 
 [gnss_degradation]
 seed = 42
