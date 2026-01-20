@@ -56,8 +56,9 @@ use strapdown::sim::health::HealthMonitor;
 use strapdown::sim::{DEFAULT_PROCESS_NOISE, GeoResolution};
 use strapdown::sim::{
     ExecutionLimits, ExecutionMonitor, FaultArgs, FilterType, NavigationResult, ParticleFilterType,
-    SchedulerArgs, SimulationConfig, SimulationMode, TestDataRecord, build_fault, build_scheduler,
-    dead_reckoning, initialize_ekf, initialize_eskf, initialize_ukf, run_closed_loop,
+    SchedulerArgs, SimulationConfig, SimulationMode, TestDataRecord, UkfConfig, build_fault,
+    build_scheduler, dead_reckoning, initialize_ekf, initialize_eskf, initialize_ukf,
+    run_closed_loop,
 };
 
 const LONG_ABOUT: &str =
@@ -416,7 +417,7 @@ fn process_file(
             let results = match filter_config.filter {
                 FilterType::Ukf => {
                     let mut ukf =
-                        initialize_ukf(records[0].clone(), None, None, None, None, None, None);
+                        initialize_ukf(records[0].clone(), UkfConfig::default());
                     info!("Initialized UKF");
                     run_closed_loop(&mut ukf, event_stream, None, Some(execution_limits.clone()))
                 }
@@ -635,7 +636,7 @@ fn process_file(
                     Event::Imu { dt_s, imu, .. } => {
                         rbpf.predict(&imu, dt_s);
                     }
-                    Event::Measurement { mut meas, .. } => {
+                    Event::Measurement { meas, .. } => {
                         #[cfg(feature = "geonav")]
                         if gravity_map.is_some() || magnetic_map.is_some() {
                             let (mean, _) = rbpf.estimate();
@@ -807,6 +808,7 @@ fn run_from_config(
 /// This is a helper function that extracts the common logic for running closed-loop simulations
 /// with either UKF or EKF filters. It handles event stream creation, filter initialization,
 /// simulation execution, and results writing.
+#[allow(clippy::too_many_arguments)]
 fn run_single_closed_loop_simulation(
     filter_type: FilterType,
     records: &[TestDataRecord],
@@ -1135,7 +1137,9 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
     // Get all CSV files to process
     let csv_files = get_csv_files(&args.sim.input)?;
     let is_multiple = csv_files.len() > 1;
-    let _execution_limits = execution_limits_from_args(&args.sim);
+    // NOTE: Execution limits are not yet applied in geophysical closed-loop simulations.
+    // We still parse the arguments here to validate them and keep CLI behavior consistent.
+    let _ = execution_limits_from_args(&args.sim);
 
     if is_multiple {
         info!("Processing {} CSV files from directory", csv_files.len());
@@ -1543,7 +1547,7 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
                 Event::Imu { dt_s, imu, .. } => {
                     rbpf.predict(&imu, dt_s);
                 }
-                Event::Measurement { mut meas, .. } => {
+                Event::Measurement { meas, .. } => {
                     #[cfg(feature = "geonav")]
                     if args.geo.geo {
                         let (mean, _) = rbpf.estimate();

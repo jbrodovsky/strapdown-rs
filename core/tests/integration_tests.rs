@@ -1977,7 +1977,7 @@ fn test_filter_output_length_matches_input() {
     );
 
     let event_stream = build_event_stream(&records, &degradation);
-    let ukf_results = run_closed_loop(&mut ukf, event_stream, None)
+    let ukf_results = run_closed_loop(&mut ukf, event_stream, None, None)
         .expect("UKF closed loop should complete successfully");
 
     assert_eq!(
@@ -2003,7 +2003,7 @@ fn test_filter_output_length_matches_input() {
     );
 
     let event_stream = build_event_stream(&records, &degradation);
-    let ekf_results = run_closed_loop(&mut ekf, event_stream, None)
+    let ekf_results = run_closed_loop(&mut ekf, event_stream, None, None)
         .expect("EKF closed loop should complete successfully");
 
     assert_eq!(
@@ -2024,7 +2024,7 @@ fn test_filter_output_length_matches_input() {
         ErrorStateKalmanFilter::new(initial_state, imu_biases, initial_covariance, process_noise);
 
     let event_stream = build_event_stream(&records, &degradation);
-    let eskf_results = run_closed_loop(&mut eskf, event_stream, None)
+    let eskf_results = run_closed_loop(&mut eskf, event_stream, None, None)
         .expect("ESKF closed loop should complete successfully");
 
     assert_eq!(
