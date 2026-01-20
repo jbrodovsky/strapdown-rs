@@ -20,6 +20,11 @@ examples/strapdown-sim/out
 *.blg
 *.bcf
 *.zip
+*.nav
+*.snm
+*.toc
+*.vrb
+*.run.xml
 
 # pixi environments
 .pixi
