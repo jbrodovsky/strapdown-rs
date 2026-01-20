@@ -2017,13 +2017,16 @@ pub fn run_closed_loop<F: NavigationFilter>(
             monitor.mark_progress();
         }
 
-        // If timestamp changed, or it's the last event, record the previous state
+        // If timestamp changed, record the previous state (unless it's the initial state)
         if Some(ts) != last_ts {
             if let Some(prev_ts) = last_ts {
-                let mean = filter.get_estimate();
-                let cov = filter.get_certainty();
-                results.push(NavigationResult::from((&prev_ts, &mean, &cov)));
-                debug!("Filter state at {}: {:?}", ts, mean);
+                // Skip pushing if this is the initial timestamp (already pushed at line 1945)
+                if prev_ts != start_time {
+                    let mean = filter.get_estimate();
+                    let cov = filter.get_certainty();
+                    results.push(NavigationResult::from((&prev_ts, &mean, &cov)));
+                    debug!("Filter state at {}: {:?}", ts, mean);
+                }
             }
             last_ts = Some(ts);
         }
