@@ -55,9 +55,10 @@ use strapdown::sim::health::HealthMonitor;
 #[cfg(feature = "geonav")]
 use strapdown::sim::{DEFAULT_PROCESS_NOISE, GeoResolution};
 use strapdown::sim::{
-    FaultArgs, FilterType, NavigationResult, ParticleFilterType, SchedulerArgs, SimulationConfig,
-    SimulationMode, TestDataRecord, UkfConfig, build_fault, build_scheduler, dead_reckoning,
-    initialize_ekf, initialize_eskf, initialize_ukf, run_closed_loop,
+    ExecutionLimits, ExecutionMonitor, FaultArgs, FilterType, NavigationResult, ParticleFilterType,
+    SchedulerArgs, SimulationConfig, SimulationMode, TestDataRecord, UkfConfig, build_fault,
+    build_scheduler, dead_reckoning, initialize_ekf, initialize_eskf, initialize_ukf,
+    run_closed_loop,
 };
 
 const LONG_ABOUT: &str =
@@ -156,6 +157,18 @@ struct SimArgs {
     /// When processing multiple files, output filenames will be generated as: {output_stem}_{input_stem}.csv
     #[arg(short, long, value_parser)]
     output: PathBuf,
+
+    /// Max wall-clock time as a ratio of simulated duration (<= 0 disables)
+    #[arg(long, default_value_t = strapdown::sim::DEFAULT_MAX_WALL_CLOCK_RATIO)]
+    max_wall_clock_ratio: f64,
+
+    /// Max wall-clock time per trajectory in seconds (<= 0 disables)
+    #[arg(long, default_value_t = strapdown::sim::DEFAULT_MAX_WALL_CLOCK_S)]
+    max_wall_clock_s: f64,
+
+    /// Max wall-clock time without progress in seconds (<= 0 disables)
+    #[arg(long, default_value_t = strapdown::sim::DEFAULT_MAX_NO_PROGRESS_S)]
+    max_no_progress_s: f64,
 }
 
 /// Geophysical measurement arguments (feature-gated)
@@ -346,6 +359,14 @@ struct CreateConfigArgs {
     mode: SimulationMode,
 }
 
+fn execution_limits_from_args(args: &SimArgs) -> ExecutionLimits {
+    ExecutionLimits {
+        max_wall_clock_ratio: args.max_wall_clock_ratio,
+        max_wall_clock_s: args.max_wall_clock_s,
+        max_no_progress_s: args.max_no_progress_s,
+    }
+}
+
 /// Process a single CSV file with the given configuration
 fn process_file(
     input_file: &Path,
@@ -386,280 +407,29 @@ fn process_file(
         SimulationMode::ClosedLoop => {
             let filter_config = config.closed_loop.clone().unwrap_or_default();
 
-            // Check if geophysical configuration is present
-            #[cfg(feature = "geonav")]
-            let has_geophysical = config.geophysical.as_ref().is_some_and(|geo| {
-                geo.gravity_resolution.is_some() || geo.magnetic_resolution.is_some()
-            });
+            let event_stream = build_event_stream(&records, &config.gnss_degradation);
+            info!(
+                "Initialized event stream with {} events",
+                event_stream.events.len()
+            );
+            let execution_limits = config.execution_limits.clone();
 
-            #[cfg(not(feature = "geonav"))]
-            let has_geophysical = false;
-
-            // If geophysical measurements are configured, use geonav path
-            #[cfg(feature = "geonav")]
-            let results = if has_geophysical {
-                let geo_cfg = config.geophysical.as_ref().unwrap();
-
-                info!(
-                    "Running geophysical navigation in closed-loop mode with {:?} filter",
-                    filter_config.filter
-                );
-
-                // Load gravity map if configured
-                let gravity_map = if let Some(res) = geo_cfg.gravity_resolution {
-                    let map_path = match &geo_cfg.gravity_map_file {
-                        Some(path) => PathBuf::from(path),
-                        None => find_gravity_map(input_file)?,
-                    };
-                    info!("Loading gravity map from: {}", map_path.display());
-                    let measurement_type =
-                        GeophysicalMeasurementType::Gravity(convert_resolution_gravity(res));
-                    let map = Rc::new(GeoMap::load_geomap(map_path, measurement_type)?);
-                    info!(
-                        "Loaded gravity map with {} x {} grid points",
-                        map.get_lats().len(),
-                        map.get_lons().len()
-                    );
-                    Some(map)
-                } else {
-                    None
-                };
-
-                // Load magnetic map if configured
-                let magnetic_map = if let Some(res) = geo_cfg.magnetic_resolution {
-                    let map_path = match &geo_cfg.magnetic_map_file {
-                        Some(path) => PathBuf::from(path),
-                        None => find_magnetic_map(input_file)?,
-                    };
-                    info!("Loading magnetic map from: {}", map_path.display());
-                    let measurement_type =
-                        GeophysicalMeasurementType::Magnetic(convert_resolution_magnetic(res));
-                    let map = Rc::new(GeoMap::load_geomap(map_path, measurement_type)?);
-                    info!(
-                        "Loaded magnetic map with {} x {} grid points",
-                        map.get_lats().len(),
-                        map.get_lons().len()
-                    );
-                    Some(map)
-                } else {
-                    None
-                };
-
-                // Build event stream with geophysical measurements
-                let event_stream = geo_build_event_stream(
-                    &records,
-                    &config.gnss_degradation,
-                    gravity_map.clone(),
-                    if gravity_map.is_some() {
-                        geo_cfg.gravity_noise_std
-                    } else {
-                        None
-                    },
-                    magnetic_map.clone(),
-                    if magnetic_map.is_some() {
-                        geo_cfg.magnetic_noise_std
-                    } else {
-                        None
-                    },
-                    geo_cfg.geo_frequency_s,
-                );
-                info!(
-                    "Built event stream with {} events",
-                    event_stream.events.len()
-                );
-
-                // Determine number of geophysical states
-                let num_geo_states =
-                    gravity_map.is_some() as usize + magnetic_map.is_some() as usize;
-
-                // Run simulation based on filter type
-
-                match filter_config.filter {
-                    FilterType::Ukf => {
-                        info!("Initializing UKF...");
-                        let mut process_noise: Vec<f64> = DEFAULT_PROCESS_NOISE.into();
-                        process_noise.extend(vec![1e-9; num_geo_states]);
-
-                        let mut geo_biases = Vec::new();
-                        let mut geo_noise_stds = Vec::new();
-
-                        if gravity_map.is_some() {
-                            geo_biases.push(geo_cfg.gravity_bias.unwrap_or(0.0));
-                            geo_noise_stds.push(geo_cfg.gravity_noise_std.unwrap_or(100.0));
-                        }
-                        if magnetic_map.is_some() {
-                            geo_biases.push(geo_cfg.magnetic_bias.unwrap_or(0.0));
-                            geo_noise_stds.push(geo_cfg.magnetic_noise_std.unwrap_or(150.0));
-                        }
-
-                        let mut ukf = initialize_ukf(
-                            records[0].clone(),
-                            UkfConfig {
-                                attitude_covariance: None,
-                                imu_biases: None,
-                                imu_biases_covariance: None,
-                                other_states: Some(geo_biases),
-                                other_states_covariance: Some(geo_noise_stds),
-                                process_noise_diagonal: Some(process_noise),
-                                ukf_alpha: Some(filter_config.ukf_alpha),
-                                ukf_beta: Some(filter_config.ukf_beta),
-                                ukf_kappa: Some(filter_config.ukf_kappa),
-                            },
-                        );
-                        info!(
-                            "Initialized UKF with state dimension {} (base: 9, geo: {})",
-                            ukf.get_estimate().len(),
-                            num_geo_states
-                        );
-
-                        info!("Running UKF geophysical navigation simulation...");
-                        geo_closed_loop_ukf(&mut ukf, event_stream)
-                    }
-                    FilterType::Ekf => {
-                        info!("Initializing EKF...");
-
-                        use strapdown::kalman::InitialState;
-                        let initial_state = InitialState {
-                            latitude: records[0].latitude,
-                            longitude: records[0].longitude,
-                            altitude: records[0].altitude,
-                            northward_velocity: records[0].speed
-                                * records[0].bearing.to_radians().cos(),
-                            eastward_velocity: records[0].speed
-                                * records[0].bearing.to_radians().sin(),
-                            vertical_velocity: 0.0,
-                            roll: 0.0,
-                            pitch: 0.0,
-                            yaw: records[0].bearing.to_radians(),
-                            in_degrees: true,
-                            is_enu: true,
-                        };
-
-                        let imu_biases = vec![0.0; 6];
-
-                        let mut covariance_diagonal = vec![
-                            1e-6, 1e-6, 1.0, // Position uncertainty
-                            0.1, 0.1, 0.1, // Velocity uncertainty
-                            1e-4, 1e-4, 1e-4, // Attitude uncertainty
-                            1e-6, 1e-6, 1e-6, // Accel bias uncertainty
-                            1e-8, 1e-8, 1e-8, // Gyro bias uncertainty
-                        ];
-                        covariance_diagonal.extend(vec![1.0; num_geo_states]);
-
-                        use nalgebra::DMatrix;
-                        let mut process_noise_vec = vec![
-                            1e-9, 1e-9, 1e-6, // Position process noise
-                            1e-6, 1e-6, 1e-6, // Velocity process noise
-                            1e-9, 1e-9, 1e-9, // Attitude process noise
-                            1e-9, 1e-9, 1e-9, // Accel bias process noise
-                            1e-9, 1e-9, 1e-9, // Gyro bias process noise
-                        ];
-                        process_noise_vec.extend(vec![1e-9; num_geo_states]);
-                        let process_noise =
-                            DMatrix::from_diagonal(&nalgebra::DVector::from_vec(process_noise_vec));
-
-                        use strapdown::kalman::ExtendedKalmanFilter;
-                        let mut ekf = ExtendedKalmanFilter::new(
-                            initial_state,
-                            imu_biases,
-                            covariance_diagonal,
-                            process_noise,
-                            true,
-                        );
-
-                        info!(
-                            "Initialized EKF with state dimension {} (base: 15, geo: {})",
-                            ekf.get_estimate().len(),
-                            num_geo_states
-                        );
-
-                        info!("Running EKF geophysical navigation simulation...");
-                        geo_closed_loop_ekf(&mut ekf, event_stream)
-                    }
-                    FilterType::Eskf => {
-                        error!("ESKF is not yet implemented for geophysical navigation");
-                        return Err("ESKF is not yet implemented for geophysical navigation".into());
-                    }
+            let results = match filter_config.filter {
+                FilterType::Ukf => {
+                    let mut ukf =
+                        initialize_ukf(records[0].clone(), UkfConfig::default());
+                    info!("Initialized UKF");
+                    run_closed_loop(&mut ukf, event_stream, None, Some(execution_limits.clone()))
                 }
-            } else {
-                // Standard closed-loop without geophysical measurements
-                info!(
-                    "Running closed-loop mode with {:?} filter",
-                    filter_config.filter
-                );
-
-                let event_stream = build_event_stream(&records, &config.gnss_degradation);
-                info!(
-                    "Initialized event stream with {} events",
-                    event_stream.events.len()
-                );
-
-                match filter_config.filter {
-                    FilterType::Ukf => {
-                        let mut ukf = initialize_ukf(
-                            records[0].clone(),
-                            UkfConfig {
-                                ukf_alpha: Some(filter_config.ukf_alpha),
-                                ukf_beta: Some(filter_config.ukf_beta),
-                                ukf_kappa: Some(filter_config.ukf_kappa),
-                                ..Default::default()
-                            },
-                        );
-                        info!("Initialized UKF");
-                        run_closed_loop(&mut ukf, event_stream, None)
-                    }
-                    FilterType::Ekf => {
-                        let mut ekf =
-                            initialize_ekf(records[0].clone(), None, None, None, None, true);
-                        info!("Initialized EKF");
-                        run_closed_loop(&mut ekf, event_stream, None)
-                    }
-                    FilterType::Eskf => {
-                        let mut eskf = initialize_eskf(records[0].clone(), None, None, None, None);
-                        info!("Initialized ESKF");
-                        run_closed_loop(&mut eskf, event_stream, None)
-                    }
+                FilterType::Ekf => {
+                    let mut ekf = initialize_ekf(records[0].clone(), None, None, None, None, true);
+                    info!("Initialized EKF");
+                    run_closed_loop(&mut ekf, event_stream, None, Some(execution_limits.clone()))
                 }
-            };
-
-            #[cfg(not(feature = "geonav"))]
-            let results = {
-                info!(
-                    "Running closed-loop mode with {:?} filter",
-                    filter_config.filter
-                );
-
-                let event_stream = build_event_stream(&records, &config.gnss_degradation);
-                info!(
-                    "Initialized event stream with {} events",
-                    event_stream.events.len()
-                );
-
-                match filter_config.filter {
-                    FilterType::Ukf => {
-                        let mut ukf = initialize_ukf(
-                            records[0].clone(),
-                            UkfConfig {
-                                ukf_alpha: Some(filter_config.ukf_alpha),
-                                ukf_beta: Some(filter_config.ukf_beta),
-                                ukf_kappa: Some(filter_config.ukf_kappa),
-                                ..Default::default()
-                            },
-                        );
-                        info!("Initialized UKF");
-                        run_closed_loop(&mut ukf, event_stream, None)
-                    }
-                    FilterType::Ekf => {
-                        let mut ekf =
-                            initialize_ekf(records[0].clone(), None, None, None, None, true);
-                        info!("Initialized EKF");
-                        run_closed_loop(&mut ekf, event_stream, None)
-                    }
-                    FilterType::Eskf => {
-                        let mut eskf = initialize_eskf(records[0].clone(), None, None, None, None);
-                        info!("Initialized ESKF");
-                        run_closed_loop(&mut eskf, event_stream, None)
-                    }
+                FilterType::Eskf => {
+                    let mut eskf = initialize_eskf(records[0].clone(), None, None, None, None);
+                    info!("Initialized ESKF");
+                    run_closed_loop(&mut eskf, event_stream, None, Some(execution_limits))
                 }
             };
 
@@ -834,6 +604,16 @@ fn process_file(
             let start_time = event_stream.start_time;
             let mut results = Vec::with_capacity(event_stream.events.len());
             let mut monitor = HealthMonitor::new(HealthLimits::default());
+            let sim_duration_s = event_stream
+                .events
+                .last()
+                .map(|event| match event {
+                    Event::Imu { elapsed_s, .. } => *elapsed_s,
+                    Event::Measurement { elapsed_s, .. } => *elapsed_s,
+                })
+                .unwrap_or(0.0);
+            let mut execution_monitor =
+                ExecutionMonitor::new(config.execution_limits.clone(), sim_duration_s);
 
             // Store the initial state (before processing any events)
             let (mean, cov) = rbpf.estimate();
@@ -856,7 +636,7 @@ fn process_file(
                     Event::Imu { dt_s, imu, .. } => {
                         rbpf.predict(&imu, dt_s);
                     }
-                    Event::Measurement { mut meas, .. } => {
+                    Event::Measurement { meas, .. } => {
                         #[cfg(feature = "geonav")]
                         if gravity_map.is_some() || magnetic_map.is_some() {
                             let (mean, _) = rbpf.estimate();
@@ -881,6 +661,8 @@ fn process_file(
                 if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
                     return Err(e.into());
                 }
+                execution_monitor.check("particle-filter")?;
+                execution_monitor.mark_progress();
 
                 // Store state when timestamp changes
                 if ts != last_ts {
@@ -946,6 +728,12 @@ fn run_from_config(
     info!("Output: {}", config.output);
     info!("Parallel: {}", config.parallel);
     info!("Generate plot: {}", config.generate_plot);
+    info!(
+        "Execution limits: ratio {:.2}, wall-clock {:.1}s, no-progress {:.1}s",
+        config.execution_limits.max_wall_clock_ratio,
+        config.execution_limits.max_wall_clock_s,
+        config.execution_limits.max_no_progress_s
+    );
 
     // Validate paths
     let input = Path::new(&config.input);
@@ -1020,11 +808,13 @@ fn run_from_config(
 /// This is a helper function that extracts the common logic for running closed-loop simulations
 /// with either UKF or EKF filters. It handles event stream creation, filter initialization,
 /// simulation execution, and results writing.
+#[allow(clippy::too_many_arguments)]
 fn run_single_closed_loop_simulation(
     filter_type: FilterType,
     records: &[TestDataRecord],
     gnss_degradation: &strapdown::messages::GnssDegradationConfig,
     output_file: &Path,
+    execution_limits: ExecutionLimits,
     ukf_alpha: f64,
     ukf_beta: f64,
     ukf_kappa: f64,
@@ -1049,17 +839,17 @@ fn run_single_closed_loop_simulation(
                 },
             );
             info!("Initialized UKF");
-            run_closed_loop(&mut ukf, event_stream, None)
+            run_closed_loop(&mut ukf, event_stream, None, Some(execution_limits.clone()))
         }
         FilterType::Ekf => {
             let mut ekf = initialize_ekf(records[0].clone(), None, None, None, None, true);
             info!("Initialized EKF");
-            run_closed_loop(&mut ekf, event_stream, None)
+            run_closed_loop(&mut ekf, event_stream, None, Some(execution_limits.clone()))
         }
         FilterType::Eskf => {
             let mut eskf = initialize_eskf(records[0].clone(), None, None, None, None);
             info!("Initialized ESKF");
-            run_closed_loop(&mut eskf, event_stream, None)
+            run_closed_loop(&mut eskf, event_stream, None, Some(execution_limits))
         }
     };
 
@@ -1175,6 +965,7 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
     // Get all CSV files to process
     let csv_files = get_csv_files(&args.sim.input)?;
     let is_multiple = csv_files.len() > 1;
+    let execution_limits = execution_limits_from_args(&args.sim);
 
     if is_multiple {
         info!("Processing {} CSV files from directory", csv_files.len());
@@ -1209,6 +1000,7 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
             &records,
             &gnss_degradation,
             &output_file,
+            execution_limits.clone(),
             args.ukf_alpha,
             args.ukf_beta,
             args.ukf_kappa,
@@ -1345,6 +1137,9 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
     // Get all CSV files to process
     let csv_files = get_csv_files(&args.sim.input)?;
     let is_multiple = csv_files.len() > 1;
+    // NOTE: Execution limits are not yet applied in geophysical closed-loop simulations.
+    // We still parse the arguments here to validate them and keep CLI behavior consistent.
+    let _ = execution_limits_from_args(&args.sim);
 
     if is_multiple {
         info!("Processing {} CSV files from directory", csv_files.len());
@@ -1584,6 +1379,7 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
 
     let csv_files = get_csv_files(&args.sim.input)?;
     let is_multiple = csv_files.len() > 1;
+    let execution_limits = execution_limits_from_args(&args.sim);
 
     if is_multiple {
         info!("Processing {} CSV files from directory", csv_files.len());
@@ -1720,6 +1516,15 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
         let start_time = event_stream.start_time;
         let mut results = Vec::with_capacity(event_stream.events.len());
         let mut monitor = HealthMonitor::new(HealthLimits::default());
+        let sim_duration_s = event_stream
+            .events
+            .last()
+            .map(|event| match event {
+                Event::Imu { elapsed_s, .. } => *elapsed_s,
+                Event::Measurement { elapsed_s, .. } => *elapsed_s,
+            })
+            .unwrap_or(0.0);
+        let mut execution_monitor = ExecutionMonitor::new(execution_limits.clone(), sim_duration_s);
 
         // Store the initial state (before processing any events)
         let (mean, cov) = rbpf.estimate();
@@ -1742,7 +1547,7 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
                 Event::Imu { dt_s, imu, .. } => {
                     rbpf.predict(&imu, dt_s);
                 }
-                Event::Measurement { mut meas, .. } => {
+                Event::Measurement { meas, .. } => {
                     #[cfg(feature = "geonav")]
                     if args.geo.geo {
                         let (mean, _) = rbpf.estimate();
@@ -1767,6 +1572,8 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
             if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
                 return Err(e.into());
             }
+            execution_monitor.check("particle-filter")?;
+            execution_monitor.mark_progress();
 
             // Store state when timestamp changes
             if ts != last_ts {
@@ -2350,6 +2157,7 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
     let mode = prompt_simulation_mode();
     let seed = prompt_seed();
     let parallel = prompt_parallel();
+    let execution_limits = ExecutionLimits::default();
 
     // Logging configuration
     println!("\n--- Logging Configuration ---");
@@ -2440,6 +2248,7 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
         seed,
         parallel,
         generate_plot: false,
+        execution_limits,
         logging,
         closed_loop,
         particle_filter,

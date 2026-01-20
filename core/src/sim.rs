@@ -44,6 +44,7 @@ use log::{debug, info, warn};
 use std::fmt::{Debug, Display};
 use std::io::{self, Read, Write};
 use std::path::Path;
+use std::time::{Duration as StdDuration, Instant};
 
 use anyhow::{Result, bail};
 use chrono::{DateTime, Duration, Utc};
@@ -61,7 +62,8 @@ use crate::messages::{Event, EventStream, GnssFaultModel, GnssScheduler};
 use crate::{IMUData, StrapdownState, forward};
 use health::HealthMonitor;
 
-// Re-export HealthLimits for easier access in tests and external users
+// Re-export execution and health types for easier access in tests and external users
+pub use execution::{ExecutionLimits, ExecutionMonitor};
 pub use health::HealthLimits;
 
 pub const DEFAULT_PROCESS_NOISE: [f64; 15] = [
@@ -82,6 +84,10 @@ pub const DEFAULT_PROCESS_NOISE: [f64; 15] = [
     1e-8, // gyro bias y noise
     1e-8, // gyro bias z noise
 ];
+
+pub const DEFAULT_MAX_WALL_CLOCK_RATIO: f64 = 0.25;
+pub const DEFAULT_MAX_WALL_CLOCK_S: f64 = 1200.0;
+pub const DEFAULT_MAX_NO_PROGRESS_S: f64 = 600.0;
 
 fn de_f64_nan<'de, D>(deserializer: D) -> Result<f64, D::Error>
 where
@@ -1903,6 +1909,7 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
 /// * `filter` - Mutable reference to a type implementing NavigationFilter
 /// * `stream` - Event stream containing IMU and measurement events
 /// * `health_limits` - Optional health limits for monitoring
+/// * `execution_limits` - Optional wall-clock and no-progress limits
 ///
 /// # Returns
 /// * `Vec<NavigationResult>` - A vector of navigation results
@@ -1910,11 +1917,22 @@ pub fn run_closed_loop<F: NavigationFilter>(
     filter: &mut F,
     stream: EventStream,
     health_limits: Option<HealthLimits>,
+    execution_limits: Option<ExecutionLimits>,
 ) -> anyhow::Result<Vec<NavigationResult>> {
     let start_time = stream.start_time;
     let mut results: Vec<NavigationResult> = Vec::with_capacity(stream.events.len());
     let total = stream.events.len();
     let mut monitor = HealthMonitor::new(health_limits.unwrap_or_default());
+    let sim_duration_s = stream
+        .events
+        .last()
+        .map(|event| match event {
+            Event::Imu { elapsed_s, .. } => *elapsed_s,
+            Event::Measurement { elapsed_s, .. } => *elapsed_s,
+        })
+        .unwrap_or(0.0);
+    let mut execution_monitor =
+        execution_limits.map(|limits| ExecutionMonitor::new(limits, sim_duration_s));
 
     info!(
         "Starting closed-loop navigation filter with {} events",
@@ -1926,7 +1944,7 @@ pub fn run_closed_loop<F: NavigationFilter>(
     let cov = filter.get_certainty();
     results.push(NavigationResult::from((&start_time, &mean, &cov)));
     debug!("Initial filter state at {}: {:?}", start_time, mean);
-    let mut last_ts = start_time;
+    let mut last_ts = Some(start_time);
 
     for (i, event) in stream.events.into_iter().enumerate() {
         // Print detailed progress every 100 iterations or at key milestones
@@ -1993,13 +2011,30 @@ pub fn run_closed_loop<F: NavigationFilter>(
             }
         }
 
-        // Store state when timestamp changes
-        if ts != last_ts {
+        // Check execution timeouts and mark progress
+        if let Some(ref mut monitor) = execution_monitor {
+            monitor.check("closed-loop")?;
+            monitor.mark_progress();
+        }
+
+        // If timestamp changed, or it's the last event, record the previous state
+        if Some(ts) != last_ts {
+            if let Some(prev_ts) = last_ts {
+                let mean = filter.get_estimate();
+                let cov = filter.get_certainty();
+                results.push(NavigationResult::from((&prev_ts, &mean, &cov)));
+                debug!("Filter state at {}: {:?}", ts, mean);
+            }
+            last_ts = Some(ts);
+        }
+
+        // If this is the last event, also push
+        if i == total - 1 {
             let mean = filter.get_estimate();
             let cov = filter.get_certainty();
             results.push(NavigationResult::from((&ts, &mean, &cov)));
             debug!("Filter state at {}: {:?}", ts, mean);
-            last_ts = ts;
+            last_ts = Some(ts);
         }
     }
     debug!("Closed-loop simulation complete");
@@ -2538,6 +2573,190 @@ pub fn print_sim_status<F: NavigationFilter>(filter: &F) {
     );
 }
 
+pub mod execution {
+    use super::*;
+
+    /// Configuration for execution timeout limits in simulations.
+    ///
+    /// This struct provides multiple timeout mechanisms to prevent runaway computations
+    /// and detect performance issues during simulation execution:
+    ///
+    /// - **Wall-clock ratio timeout**: Limits execution time relative to simulation duration
+    /// - **Absolute wall-clock timeout**: Enforces a hard limit in real-world seconds
+    /// - **No-progress timeout**: Detects when simulation makes no progress (possible hang)
+    ///
+    /// All timeout values <= 0 are treated as disabled. The most restrictive active timeout
+    /// will trigger first. These limits are enforced by [`ExecutionMonitor`] during simulation.
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub struct ExecutionLimits {
+        /// Max wall-clock time as a ratio of simulated duration (<= 0 disables).
+        #[serde(default = "default_max_wall_clock_ratio")]
+        pub max_wall_clock_ratio: f64,
+        /// Max wall-clock time per trajectory in seconds (<= 0 disables).
+        #[serde(default = "default_max_wall_clock_s")]
+        pub max_wall_clock_s: f64,
+        /// Max wall-clock time without progress in seconds (<= 0 disables).
+        #[serde(default = "default_max_no_progress_s")]
+        pub max_no_progress_s: f64,
+    }
+
+    fn default_max_wall_clock_ratio() -> f64 {
+        DEFAULT_MAX_WALL_CLOCK_RATIO
+    }
+
+    fn default_max_wall_clock_s() -> f64 {
+        DEFAULT_MAX_WALL_CLOCK_S
+    }
+
+    fn default_max_no_progress_s() -> f64 {
+        DEFAULT_MAX_NO_PROGRESS_S
+    }
+
+    impl Default for ExecutionLimits {
+        fn default() -> Self {
+            Self {
+                max_wall_clock_ratio: default_max_wall_clock_ratio(),
+                max_wall_clock_s: default_max_wall_clock_s(),
+                max_no_progress_s: default_max_no_progress_s(),
+            }
+        }
+    }
+
+    /// Monitors execution time and progress during simulation runs.
+    ///
+    /// This struct tracks wall-clock time and detects stalled simulations by monitoring
+    /// when progress was last reported. It enforces timeout limits specified in [`ExecutionLimits`].
+    ///
+    /// The monitor maintains two types of timeouts:
+    /// - **Wall-clock timeout**: Maximum total execution time (computed from simulation duration and limits)
+    /// - **No-progress timeout**: Maximum time without calling `mark_progress()`
+    ///
+    /// Use [`check`](ExecutionMonitor::check) periodically during simulation to verify execution
+    /// stays within limits, and call `mark_progress()` after each significant simulation step.
+    #[derive(Clone, Debug)]
+    pub struct ExecutionMonitor {
+        start_time: Instant,
+        last_progress: Instant,
+        max_wall_clock: Option<StdDuration>,
+        max_no_progress: Option<StdDuration>,
+    }
+
+    impl ExecutionMonitor {
+        /// Creates a new execution monitor with the specified limits.
+        ///
+        /// # Arguments
+        ///
+        /// * `limits` - Timeout configuration including wall-clock and no-progress limits
+        /// * `sim_duration_s` - Expected simulation duration in seconds, used to compute
+        ///   wall-clock timeout when `max_wall_clock_ratio` is enabled
+        ///
+        /// # Returns
+        ///
+        /// A new `ExecutionMonitor` instance initialized with the current time.
+        pub fn new(limits: ExecutionLimits, sim_duration_s: f64) -> Self {
+            let max_wall_clock = compute_max_wall_clock(
+                sim_duration_s,
+                limits.max_wall_clock_ratio,
+                limits.max_wall_clock_s,
+            );
+            let max_no_progress = if limits.max_no_progress_s > 0.0 {
+                Some(StdDuration::from_secs_f64(limits.max_no_progress_s))
+            } else {
+                None
+            };
+            let now = Instant::now();
+
+            Self {
+                start_time: now,
+                last_progress: now,
+                max_wall_clock,
+                max_no_progress,
+            }
+        }
+
+        /// Checks if execution is within timeout limits.
+        ///
+        /// This method verifies that the simulation has not exceeded wall-clock or no-progress
+        /// timeout limits. It should be called periodically during simulation execution.
+        ///
+        /// # Arguments
+        ///
+        /// * `context` - A string describing the current execution context, included in error messages
+        ///
+        /// # Returns
+        ///
+        /// * `Ok(())` if execution is within limits
+        /// * `Err(...)` with a descriptive message if any timeout has been exceeded
+        ///
+        /// # Example
+        ///
+        /// ```no_run
+        /// # use strapdown_core::sim::{ExecutionMonitor, ExecutionLimits};
+        /// let limits = ExecutionLimits::default();
+        /// let mut monitor = ExecutionMonitor::new(limits, 100.0);
+        ///
+        /// // Check timeout before processing
+        /// monitor.check("data processing")?;
+        /// // ... do work ...
+        /// monitor.mark_progress();
+        /// # Ok::<(), anyhow::Error>(())
+        /// ```
+        pub fn check(&mut self, context: &str) -> Result<()> {
+            let now = Instant::now();
+            if let Some(max_wall_clock) = self.max_wall_clock
+                && now.duration_since(self.start_time) > max_wall_clock
+            {
+                bail!(
+                    "Execution timeout ({context}): exceeded wall-clock limit of {:.2} s",
+                    max_wall_clock.as_secs_f64()
+                );
+            }
+            if let Some(max_no_progress) = self.max_no_progress {
+                let since_progress = now.duration_since(self.last_progress);
+                if since_progress > max_no_progress {
+                    bail!(
+                        "Execution timeout ({context}): no progress for {:.2} s (limit {:.2} s)",
+                        since_progress.as_secs_f64(),
+                        max_no_progress.as_secs_f64()
+                    );
+                }
+            }
+            Ok(())
+        }
+
+        /// Mark that progress has been made in the simulation.
+        /// This should be called after successfully processing each event.
+        pub fn mark_progress(&mut self) {
+            self.last_progress = Instant::now();
+        }
+    }
+
+    fn compute_max_wall_clock(
+        sim_duration_s: f64,
+        max_ratio: f64,
+        max_wall_clock_s: f64,
+    ) -> Option<StdDuration> {
+        let mut max_s = None;
+        if sim_duration_s > 0.0 && max_ratio > 0.0 {
+            max_s = Some(sim_duration_s * max_ratio);
+        }
+        if max_wall_clock_s > 0.0 {
+            max_s = Some(match max_s {
+                Some(current) => current.min(max_wall_clock_s),
+                None => max_wall_clock_s,
+            });
+        }
+
+        max_s.and_then(|s| {
+            if s > 0.0 {
+                Some(StdDuration::from_secs_f64(s))
+            } else {
+                None
+            }
+        })
+    }
+}
+
 pub mod health {
     use super::*;
 
@@ -3041,6 +3260,9 @@ pub struct SimulationConfig {
     /// Generate performance plot comparing navigation output to GPS measurements
     #[serde(default)]
     pub generate_plot: bool,
+    /// Execution time limits (wall-clock and no-progress)
+    #[serde(default)]
+    pub execution_limits: ExecutionLimits,
     /// Logging configuration
     #[serde(default)]
     pub logging: LoggingConfig,
@@ -3071,6 +3293,7 @@ impl Default for SimulationConfig {
             seed: default_seed(),
             parallel: false,
             generate_plot: false,
+            execution_limits: ExecutionLimits::default(),
             logging: LoggingConfig::default(),
             closed_loop: Some(ClosedLoopConfig::default()),
             particle_filter: None,
@@ -3741,7 +3964,7 @@ mod tests {
             events: vec![event],
         };
 
-        let res = run_closed_loop(&mut ukf, stream, None);
+        let res = run_closed_loop(&mut ukf, stream, None, None);
         assert!(!res.unwrap().is_empty());
     }
     #[test]
@@ -4124,6 +4347,83 @@ mod tests {
         assert!(limits.lat_rad.1 > 0.0);
         assert!(limits.speed_mps_max > 0.0);
         assert!(limits.cov_diag_max > 0.0);
+    }
+
+    #[test]
+    fn test_execution_monitor_no_progress_timeout() {
+        let limits = ExecutionLimits {
+            max_wall_clock_ratio: 0.0,
+            max_wall_clock_s: 0.0,
+            max_no_progress_s: 0.01,
+        };
+        let mut monitor = ExecutionMonitor::new(limits, 1.0);
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let result = monitor.check("test");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_execution_monitor_wall_clock_timeout() {
+        let limits = ExecutionLimits {
+            max_wall_clock_ratio: 0.0,
+            max_wall_clock_s: 0.01,
+            max_no_progress_s: 0.0,
+        };
+        let mut monitor = ExecutionMonitor::new(limits, 1.0);
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let result = monitor.check("test");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("wall-clock limit"));
+    }
+
+    #[test]
+    fn test_execution_monitor_successful_execution_with_progress() {
+        let limits = ExecutionLimits {
+            max_wall_clock_ratio: 0.0,
+            max_wall_clock_s: 1.0,
+            max_no_progress_s: 0.05,
+        };
+        let mut monitor = ExecutionMonitor::new(limits, 1.0);
+
+        // Simulate work with regular progress updates
+        for _ in 0..5 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            let result = monitor.check("test");
+            assert!(result.is_ok());
+            monitor.mark_progress();
+        }
+    }
+
+    #[test]
+    fn test_execution_monitor_zero_timeout_disabled() {
+        let limits = ExecutionLimits {
+            max_wall_clock_ratio: 0.0,
+            max_wall_clock_s: 0.0,
+            max_no_progress_s: 0.0,
+        };
+        let mut monitor = ExecutionMonitor::new(limits, 1.0);
+
+        // With all timeouts disabled, sleep and check should succeed
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let result = monitor.check("test");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_execution_monitor_negative_timeout_disabled() {
+        let limits = ExecutionLimits {
+            max_wall_clock_ratio: -1.0,
+            max_wall_clock_s: -1.0,
+            max_no_progress_s: -1.0,
+        };
+        let mut monitor = ExecutionMonitor::new(limits, 1.0);
+
+        // With negative timeouts (disabled), sleep and check should succeed
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let result = monitor.check("test");
+        assert!(result.is_ok());
     }
 
     #[test]
@@ -4616,7 +4916,7 @@ mod tests {
         };
 
         let health_limits = HealthLimits::default();
-        let result = run_closed_loop(&mut ukf, stream, Some(health_limits));
+        let result = run_closed_loop(&mut ukf, stream, Some(health_limits), None);
         assert!(result.is_ok());
     }
 
