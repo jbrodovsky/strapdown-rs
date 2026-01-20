@@ -1944,7 +1944,7 @@ pub fn run_closed_loop<F: NavigationFilter>(
     let cov = filter.get_certainty();
     results.push(NavigationResult::from((&start_time, &mean, &cov)));
     debug!("Initial filter state at {}: {:?}", start_time, mean);
-    let mut last_ts = start_time;
+    let mut last_ts = Some(start_time);
 
     for (i, event) in stream.events.into_iter().enumerate() {
         // Print detailed progress every 100 iterations or at key milestones
@@ -2034,7 +2034,7 @@ pub fn run_closed_loop<F: NavigationFilter>(
             let cov = filter.get_certainty();
             results.push(NavigationResult::from((&ts, &mean, &cov)));
             debug!("Filter state at {}: {:?}", ts, mean);
-            last_ts = ts;
+            last_ts = Some(ts);
         }
     }
     debug!("Closed-loop simulation complete");
@@ -2576,6 +2576,17 @@ pub fn print_sim_status<F: NavigationFilter>(filter: &F) {
 pub mod execution {
     use super::*;
 
+    /// Configuration for execution timeout limits in simulations.
+    ///
+    /// This struct provides multiple timeout mechanisms to prevent runaway computations
+    /// and detect performance issues during simulation execution:
+    ///
+    /// - **Wall-clock ratio timeout**: Limits execution time relative to simulation duration
+    /// - **Absolute wall-clock timeout**: Enforces a hard limit in real-world seconds
+    /// - **No-progress timeout**: Detects when simulation makes no progress (possible hang)
+    ///
+    /// All timeout values <= 0 are treated as disabled. The most restrictive active timeout
+    /// will trigger first. These limits are enforced by [`ExecutionMonitor`] during simulation.
     #[derive(Clone, Debug, Serialize, Deserialize)]
     pub struct ExecutionLimits {
         /// Max wall-clock time as a ratio of simulated duration (<= 0 disables).
@@ -2611,6 +2622,17 @@ pub mod execution {
         }
     }
 
+    /// Monitors execution time and progress during simulation runs.
+    ///
+    /// This struct tracks wall-clock time and detects stalled simulations by monitoring
+    /// when progress was last reported. It enforces timeout limits specified in [`ExecutionLimits`].
+    ///
+    /// The monitor maintains two types of timeouts:
+    /// - **Wall-clock timeout**: Maximum total execution time (computed from simulation duration and limits)
+    /// - **No-progress timeout**: Maximum time without calling `mark_progress()`
+    ///
+    /// Use [`check`](ExecutionMonitor::check) periodically during simulation to verify execution
+    /// stays within limits, and call `mark_progress()` after each significant simulation step.
     #[derive(Clone, Debug)]
     pub struct ExecutionMonitor {
         start_time: Instant,
@@ -2620,6 +2642,17 @@ pub mod execution {
     }
 
     impl ExecutionMonitor {
+        /// Creates a new execution monitor with the specified limits.
+        ///
+        /// # Arguments
+        ///
+        /// * `limits` - Timeout configuration including wall-clock and no-progress limits
+        /// * `sim_duration_s` - Expected simulation duration in seconds, used to compute
+        ///   wall-clock timeout when `max_wall_clock_ratio` is enabled
+        ///
+        /// # Returns
+        ///
+        /// A new `ExecutionMonitor` instance initialized with the current time.
         pub fn new(limits: ExecutionLimits, sim_duration_s: f64) -> Self {
             let max_wall_clock = compute_max_wall_clock(
                 sim_duration_s,
@@ -2641,6 +2674,33 @@ pub mod execution {
             }
         }
 
+        /// Checks if execution is within timeout limits.
+        ///
+        /// This method verifies that the simulation has not exceeded wall-clock or no-progress
+        /// timeout limits. It should be called periodically during simulation execution.
+        ///
+        /// # Arguments
+        ///
+        /// * `context` - A string describing the current execution context, included in error messages
+        ///
+        /// # Returns
+        ///
+        /// * `Ok(())` if execution is within limits
+        /// * `Err(...)` with a descriptive message if any timeout has been exceeded
+        ///
+        /// # Example
+        ///
+        /// ```no_run
+        /// # use strapdown_core::sim::{ExecutionMonitor, ExecutionLimits};
+        /// let limits = ExecutionLimits::default();
+        /// let mut monitor = ExecutionMonitor::new(limits, 100.0);
+        ///
+        /// // Check timeout before processing
+        /// monitor.check("data processing")?;
+        /// // ... do work ...
+        /// monitor.mark_progress();
+        /// # Ok::<(), anyhow::Error>(())
+        /// ```
         pub fn check(&mut self, context: &str) -> Result<()> {
             let now = Instant::now();
             if let Some(max_wall_clock) = self.max_wall_clock
@@ -4301,6 +4361,69 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(20));
         let result = monitor.check("test");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_execution_monitor_wall_clock_timeout() {
+        let limits = ExecutionLimits {
+            max_wall_clock_ratio: 0.0,
+            max_wall_clock_s: 0.01,
+            max_no_progress_s: 0.0,
+        };
+        let mut monitor = ExecutionMonitor::new(limits, 1.0);
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let result = monitor.check("test");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("wall-clock limit"));
+    }
+
+    #[test]
+    fn test_execution_monitor_successful_execution_with_progress() {
+        let limits = ExecutionLimits {
+            max_wall_clock_ratio: 0.0,
+            max_wall_clock_s: 1.0,
+            max_no_progress_s: 0.05,
+        };
+        let mut monitor = ExecutionMonitor::new(limits, 1.0);
+
+        // Simulate work with regular progress updates
+        for _ in 0..5 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            let result = monitor.check("test");
+            assert!(result.is_ok());
+            monitor.mark_progress();
+        }
+    }
+
+    #[test]
+    fn test_execution_monitor_zero_timeout_disabled() {
+        let limits = ExecutionLimits {
+            max_wall_clock_ratio: 0.0,
+            max_wall_clock_s: 0.0,
+            max_no_progress_s: 0.0,
+        };
+        let mut monitor = ExecutionMonitor::new(limits, 1.0);
+
+        // With all timeouts disabled, sleep and check should succeed
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let result = monitor.check("test");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_execution_monitor_negative_timeout_disabled() {
+        let limits = ExecutionLimits {
+            max_wall_clock_ratio: -1.0,
+            max_wall_clock_s: -1.0,
+            max_no_progress_s: -1.0,
+        };
+        let mut monitor = ExecutionMonitor::new(limits, 1.0);
+
+        // With negative timeouts (disabled), sleep and check should succeed
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let result = monitor.check("test");
+        assert!(result.is_ok());
     }
 
     #[test]

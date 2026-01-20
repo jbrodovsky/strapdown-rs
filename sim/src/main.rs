@@ -56,8 +56,9 @@ use strapdown::sim::health::HealthMonitor;
 use strapdown::sim::{DEFAULT_PROCESS_NOISE, GeoResolution};
 use strapdown::sim::{
     ExecutionLimits, ExecutionMonitor, FaultArgs, FilterType, NavigationResult, ParticleFilterType,
-    SchedulerArgs, SimulationConfig, SimulationMode, TestDataRecord, build_fault, build_scheduler,
-    dead_reckoning, initialize_ekf, initialize_eskf, initialize_ukf, run_closed_loop,
+    SchedulerArgs, SimulationConfig, SimulationMode, TestDataRecord, UkfConfig, build_fault,
+    build_scheduler, dead_reckoning, initialize_ekf, initialize_eskf, initialize_ukf,
+    run_closed_loop,
 };
 
 const LONG_ABOUT: &str =
@@ -416,7 +417,7 @@ fn process_file(
             let results = match filter_config.filter {
                 FilterType::Ukf => {
                     let mut ukf =
-                        initialize_ukf(records[0].clone(), None, None, None, None, None, None);
+                        initialize_ukf(records[0].clone(), UkfConfig::default());
                     info!("Initialized UKF");
                     run_closed_loop(&mut ukf, event_stream, None, Some(execution_limits.clone()))
                 }
@@ -1135,7 +1136,9 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
     // Get all CSV files to process
     let csv_files = get_csv_files(&args.sim.input)?;
     let is_multiple = csv_files.len() > 1;
-    let _execution_limits = execution_limits_from_args(&args.sim);
+    // NOTE: Execution limits are not yet applied in geophysical closed-loop simulations.
+    // We still parse the arguments here to validate them and keep CLI behavior consistent.
+    let _ = execution_limits_from_args(&args.sim);
 
     if is_multiple {
         info!("Processing {} CSV files from directory", csv_files.len());
