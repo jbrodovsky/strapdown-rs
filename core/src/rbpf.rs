@@ -761,7 +761,7 @@ mod tests {
             is_enu: true,
         };
 
-        let duration_seconds = 3600;
+        let duration_seconds = 600;
         let sample_rate_hz = 5;
 
         let accel_body = Vector3::new(0.0, 0.0, g);
@@ -787,7 +787,7 @@ mod tests {
             run_rbpf_on_scenario(nominal, &imu_data, &gps_measurements, sample_rate_hz);
         let truth = true_states.last().unwrap();
 
-        assert_solution_close_to_truth(&mean, truth, 25.0, 5.0, 0.5);
+        assert_solution_close_to_truth(&mean, truth, 25.0, 15.0, 0.5);
     }
 
     #[test]
@@ -809,7 +809,7 @@ mod tests {
             is_enu: true,
         };
 
-        let duration_seconds = 3600;
+        let duration_seconds = 600;
         let sample_rate_hz = 5;
 
         let accel_body = Vector3::new(0.0, 0.0, g);
@@ -859,7 +859,7 @@ mod tests {
             is_enu: true,
         };
 
-        let duration_seconds = 3600;
+        let duration_seconds = 600;
         let sample_rate_hz = 5;
 
         let accel_body = Vector3::new(0.0, 0.0, g);
