@@ -636,7 +636,7 @@ fn process_file(
                     Event::Imu { dt_s, imu, .. } => {
                         rbpf.predict(&imu, dt_s);
                     }
-                    Event::Measurement { mut meas, .. } => {
+                    Event::Measurement { meas, .. } => {
                         #[cfg(feature = "geonav")]
                         if gravity_map.is_some() || magnetic_map.is_some() {
                             let (mean, _) = rbpf.estimate();
@@ -808,6 +808,7 @@ fn run_from_config(
 /// This is a helper function that extracts the common logic for running closed-loop simulations
 /// with either UKF or EKF filters. It handles event stream creation, filter initialization,
 /// simulation execution, and results writing.
+#[allow(clippy::too_many_arguments)]
 fn run_single_closed_loop_simulation(
     filter_type: FilterType,
     records: &[TestDataRecord],
@@ -1546,7 +1547,7 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
                 Event::Imu { dt_s, imu, .. } => {
                     rbpf.predict(&imu, dt_s);
                 }
-                Event::Measurement { mut meas, .. } => {
+                Event::Measurement { meas, .. } => {
                     #[cfg(feature = "geonav")]
                     if args.geo.geo {
                         let (mean, _) = rbpf.estimate();
