@@ -1,0 +1,484 @@
+================================================================================
+RBPF Results Analysis
+================================================================================
+
+Found 21 gravity-aided trajectories
+Found 21 magnetic-aided trajectories
+Found 21 combined-aided trajectories
+Found 23 baseline degraded trajectories
+
+================================================================================
+GRAVITY-AIDED RESULTS
+================================================================================
+
+2023-08-04_21-47-58.csv:
+  Gravity RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2023-08-06_14-48-05.csv:
+  Gravity RMSE: 2986.74 m
+  Degraded RMSE: 2129308.29 m
+  Improvement: 2126321.55 m (negative is better)
+
+2023-08-09_12-47-42.csv:
+  Gravity RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2023-08-09_16-37-41.csv:
+  Gravity RMSE: 2663.00 m
+  Degraded RMSE: 61764.95 m
+  Improvement: 59101.95 m (negative is better)
+
+2024-06-20_16-55-50.csv:
+  Gravity RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-03-01_15-04-26.csv:
+  Gravity RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-03-01_16-46-39.csv:
+  Gravity RMSE: 1675.43 m
+  Degraded RMSE: 308366.66 m
+  Improvement: 306691.23 m (negative is better)
+
+2025-06-11_20-34-24.csv:
+  Gravity RMSE: 3057.15 m
+  Degraded RMSE: 26149.97 m
+  Improvement: 23092.82 m (negative is better)
+
+2025-06-18_15-09-25.csv:
+  Gravity RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-06-18_16-52-32.csv:
+  Gravity RMSE: 8378.01 m
+  Degraded RMSE: 1484622.95 m
+  Improvement: 1476244.94 m (negative is better)
+
+2025-07-04_17-24-46.csv:
+  Gravity RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-07-05_20-59-22.csv:
+  Gravity RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-07-08_14-12-53.csv:
+  Gravity RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-07-11_13-33-16.csv:
+  Gravity RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-07-18_23-13-43.csv:
+  Gravity RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-07-31_23-36-03.csv:
+  Gravity RMSE: 4575.97 m
+  Degraded RMSE: 3360362.22 m
+  Improvement: 3355786.25 m (negative is better)
+
+2025-08-03_18-15-59.csv:
+  Gravity RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-09-27_12-54-35.csv:
+  Gravity RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-09-28_20-23-16.csv:
+  Gravity RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-11-09_17-34-01.csv:
+  Gravity RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-11-16_16-08-14.csv:
+  Gravity RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+================================================================================
+MAGNETIC-AIDED RESULTS
+================================================================================
+
+2023-08-04_21-47-58.csv:
+  Magnetic RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2023-08-06_14-48-05.csv:
+  Magnetic RMSE: 2553.92 m
+  Degraded RMSE: 2129308.29 m
+  Improvement: 2126754.37 m (negative is better)
+
+2023-08-09_12-47-42.csv:
+  Magnetic RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2023-08-09_16-37-41.csv:
+  Magnetic RMSE: 1268.23 m
+  Degraded RMSE: 61764.95 m
+  Improvement: 60496.72 m (negative is better)
+
+2024-06-20_16-55-50.csv:
+  Magnetic RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-03-01_15-04-26.csv:
+  Magnetic RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-03-01_16-46-39.csv:
+  Magnetic RMSE: 4407.76 m
+  Degraded RMSE: 308366.66 m
+  Improvement: 303958.90 m (negative is better)
+
+2025-06-11_20-34-24.csv:
+  Magnetic RMSE: 3391.31 m
+  Degraded RMSE: 26149.97 m
+  Improvement: 22758.66 m (negative is better)
+
+2025-06-18_15-09-25.csv:
+  Magnetic RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-06-18_16-52-32.csv:
+  Magnetic RMSE: 9708.12 m
+  Degraded RMSE: 1484622.95 m
+  Improvement: 1474914.84 m (negative is better)
+
+2025-07-04_17-24-46.csv:
+  Magnetic RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-07-05_20-59-22.csv:
+  Magnetic RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-07-08_14-12-53.csv:
+  Magnetic RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-07-11_13-33-16.csv:
+  Magnetic RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-07-18_23-13-43.csv:
+  Magnetic RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-07-31_23-36-03.csv:
+  Magnetic RMSE: 4364.00 m
+  Degraded RMSE: 3360362.22 m
+  Improvement: 3355998.23 m (negative is better)
+
+2025-08-03_18-15-59.csv:
+  Magnetic RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-09-27_12-54-35.csv:
+  Magnetic RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-09-28_20-23-16.csv:
+  Magnetic RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-11-09_17-34-01.csv:
+  Magnetic RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-11-16_16-08-14.csv:
+  Magnetic RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+================================================================================
+COMBINED-AIDED RESULTS
+================================================================================
+
+2023-08-04_21-47-58.csv:
+  Combined RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2023-08-06_14-48-05.csv:
+  Combined RMSE: 2234.54 m
+  Degraded RMSE: 2129308.29 m
+  Improvement: 2127073.75 m (negative is better)
+
+2023-08-09_12-47-42.csv:
+  Combined RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2023-08-09_16-37-41.csv:
+  Combined RMSE: 1783.42 m
+  Degraded RMSE: 61764.95 m
+  Improvement: 59981.53 m (negative is better)
+
+2024-06-20_16-55-50.csv:
+  Combined RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-03-01_15-04-26.csv:
+  Combined RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-03-01_16-46-39.csv:
+  Combined RMSE: 1587.91 m
+  Degraded RMSE: 308366.66 m
+  Improvement: 306778.75 m (negative is better)
+
+2025-06-11_20-34-24.csv:
+  Combined RMSE: 2374.98 m
+  Degraded RMSE: 26149.97 m
+  Improvement: 23774.98 m (negative is better)
+
+2025-06-18_15-09-25.csv:
+  Combined RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-06-18_16-52-32.csv:
+  Combined RMSE: 8239.14 m
+  Degraded RMSE: 1484622.95 m
+  Improvement: 1476383.82 m (negative is better)
+
+2025-07-04_17-24-46.csv:
+  Combined RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-07-05_20-59-22.csv:
+  Combined RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-07-08_14-12-53.csv:
+  Combined RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-07-11_13-33-16.csv:
+  Combined RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-07-18_23-13-43.csv:
+  Combined RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-07-31_23-36-03.csv:
+  Combined RMSE: 3626.22 m
+  Degraded RMSE: 3360362.22 m
+  Improvement: 3356736.01 m (negative is better)
+
+2025-08-03_18-15-59.csv:
+  Combined RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-09-27_12-54-35.csv:
+  Combined RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-09-28_20-23-16.csv:
+  Combined RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-11-09_17-34-01.csv:
+  Combined RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+2025-11-16_16-08-14.csv:
+  Combined RMSE: nan m
+  Degraded RMSE: nan m
+  Improvement: nan m (negative is better)
+
+================================================================================
+LATEX TABLES
+================================================================================
+
+--- Gravity Table ---
+\begin{table}[h]
+    \centering
+    \caption{RBPF Gravity-Aided Performance vs Baseline (Baseline - Gravity)}
+    \begin{tabular}{ || l  ||ccc|| }
+    \toprule
+   Trajectory Name & RMSE Diff (m) & Mean Diff (m) & Median Diff (m) \\
+        \midrule
+        2023-08-04\_21-47-58 & nan & nan & nan \\
+        2023-08-06\_14-48-05 & 2126321.55 & 1803660.85 & 1881003.11 \\
+        2023-08-09\_12-47-42 & nan & nan & nan \\
+        2023-08-09\_16-37-41 & 59101.95 & 33728.51 & 7651.11 \\
+        2024-06-20\_16-55-50 & nan & nan & nan \\
+        2025-03-01\_15-04-26 & nan & nan & nan \\
+        2025-03-01\_16-46-39 & 306691.23 & 277651.66 & 310494.21 \\
+        2025-06-11\_20-34-24 & 23092.82 & 18994.15 & 18363.14 \\
+        2025-06-18\_15-09-25 & nan & nan & nan \\
+        2025-06-18\_16-52-32 & 1476244.94 & 1320923.88 & 1620743.10 \\
+        2025-07-04\_17-24-46 & nan & nan & nan \\
+        2025-07-05\_20-59-22 & nan & nan & nan \\
+        2025-07-08\_14-12-53 & nan & nan & nan \\
+        2025-07-11\_13-33-16 & nan & nan & nan \\
+        2025-07-18\_23-13-43 & nan & nan & nan \\
+        2025-07-31\_23-36-03 & 3355786.25 & 2792706.63 & 2467379.81 \\
+        2025-08-03\_18-15-59 & nan & nan & nan \\
+        2025-09-27\_12-54-35 & nan & nan & nan \\
+        2025-09-28\_20-23-16 & nan & nan & nan \\
+        2025-11-09\_17-34-01 & nan & nan & nan \\
+        2025-11-16\_16-08-14 & nan & nan & nan \\
+        \midrule
+        mean & nan & nan & nan \\
+        median & nan & nan & nan \\
+        std & nan & nan & nan \\
+        \bottomrule
+    \end{tabular}
+    \label{tab:rbpf_results}
+\end{table}
+
+Saved to rbpf_gravity_table.tex
+
+--- Magnetic Table ---
+\begin{table}[h]
+    \centering
+    \caption{RBPF Magnetic-Aided Performance vs Baseline (Baseline - Magnetic)}
+    \begin{tabular}{ || l  ||ccc|| }
+    \toprule
+   Trajectory Name & RMSE Diff (m) & Mean Diff (m) & Median Diff (m) \\
+        \midrule
+        2023-08-04\_21-47-58 & nan & nan & nan \\
+        2023-08-06\_14-48-05 & 2126754.37 & 1803996.38 & 1881343.68 \\
+        2023-08-09\_12-47-42 & nan & nan & nan \\
+        2023-08-09\_16-37-41 & 60496.72 & 34917.91 & 8765.11 \\
+        2024-06-20\_16-55-50 & nan & nan & nan \\
+        2025-03-01\_15-04-26 & nan & nan & nan \\
+        2025-03-01\_16-46-39 & 303958.90 & 276051.19 & 310318.98 \\
+        2025-06-11\_20-34-24 & 22758.66 & 18390.25 & 17462.68 \\
+        2025-06-18\_15-09-25 & nan & nan & nan \\
+        2025-06-18\_16-52-32 & 1474914.84 & 1320238.84 & 1620068.41 \\
+        2025-07-04\_17-24-46 & nan & nan & nan \\
+        2025-07-05\_20-59-22 & nan & nan & nan \\
+        2025-07-08\_14-12-53 & nan & nan & nan \\
+        2025-07-11\_13-33-16 & nan & nan & nan \\
+        2025-07-18\_23-13-43 & nan & nan & nan \\
+        2025-07-31\_23-36-03 & 3355998.23 & 2793026.93 & 2467726.96 \\
+        2025-08-03\_18-15-59 & nan & nan & nan \\
+        2025-09-27\_12-54-35 & nan & nan & nan \\
+        2025-09-28\_20-23-16 & nan & nan & nan \\
+        2025-11-09\_17-34-01 & nan & nan & nan \\
+        2025-11-16\_16-08-14 & nan & nan & nan \\
+        \midrule
+        mean & nan & nan & nan \\
+        median & nan & nan & nan \\
+        std & nan & nan & nan \\
+        \bottomrule
+    \end{tabular}
+    \label{tab:rbpf_results}
+\end{table}
+
+Saved to rbpf_magnetic_table.tex
+
+--- Combined Table ---
+\begin{table}[h]
+    \centering
+    \caption{RBPF Combined-Aided Performance vs Baseline (Baseline - Combined)}
+    \begin{tabular}{ || l  ||ccc|| }
+    \toprule
+   Trajectory Name & RMSE Diff (m) & Mean Diff (m) & Median Diff (m) \\
+        \midrule
+        2023-08-04\_21-47-58 & nan & nan & nan \\
+        2023-08-06\_14-48-05 & 2127073.75 & 1804209.61 & 1881493.14 \\
+        2023-08-09\_12-47-42 & nan & nan & nan \\
+        2023-08-09\_16-37-41 & 59981.53 & 34504.97 & 8463.33 \\
+        2024-06-20\_16-55-50 & nan & nan & nan \\
+        2025-03-01\_15-04-26 & nan & nan & nan \\
+        2025-03-01\_16-46-39 & 306778.75 & 277725.15 & 310590.57 \\
+        2025-06-11\_20-34-24 & 23774.98 & 19513.19 & 18874.89 \\
+        2025-06-18\_15-09-25 & nan & nan & nan \\
+        2025-06-18\_16-52-32 & 1476383.82 & 1321405.40 & 1621953.17 \\
+        2025-07-04\_17-24-46 & nan & nan & nan \\
+        2025-07-05\_20-59-22 & nan & nan & nan \\
+        2025-07-08\_14-12-53 & nan & nan & nan \\
+        2025-07-11\_13-33-16 & nan & nan & nan \\
+        2025-07-18\_23-13-43 & nan & nan & nan \\
+        2025-07-31\_23-36-03 & 3356736.01 & 2793220.99 & 2467755.04 \\
+        2025-08-03\_18-15-59 & nan & nan & nan \\
+        2025-09-27\_12-54-35 & nan & nan & nan \\
+        2025-09-28\_20-23-16 & nan & nan & nan \\
+        2025-11-09\_17-34-01 & nan & nan & nan \\
+        2025-11-16\_16-08-14 & nan & nan & nan \\
+        \midrule
+        mean & nan & nan & nan \\
+        median & nan & nan & nan \\
+        std & nan & nan & nan \\
+        \bottomrule
+    \end{tabular}
+    \label{tab:rbpf_results}
+\end{table}
+
+Saved to rbpf_combined_table.tex
+
+================================================================================
+SUMMARY STATISTICS
+================================================================================
+
+Gravity-aided:
+  Number of trajectories improved: 0/21
+  Mean RMSE improvement: nan m
+  Median RMSE improvement: nan m
+  Best improvement: nan m
+  Worst degradation: nan m
+
+Magnetic-aided:
+  Number of trajectories improved: 0/21
+  Mean RMSE improvement: nan m
+  Median RMSE improvement: nan m
+  Best improvement: nan m
+  Worst degradation: nan m
+
+Combined-aided:
+  Number of trajectories improved: 0/21
+  Mean RMSE improvement: nan m
+  Median RMSE improvement: nan m
+  Best improvement: nan m
+  Worst degradation: nan m

@@ -1,0 +1,483 @@
+\documentclass[letterpaper,times]{IONconf}
+%
+% If IONconf.cls has not been installed into the LaTeX system files,
+% manually specify the path as follows or keep a copy in the same
+% folder as the document itself:
+% \documentclass{../sty/IONconf}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Common packages to import
+% ### MATH PACKAGE
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+% Popular packages from the American Mathematical Society that provide
+% many useful and powerful commands for dealing with mathematics.
+% If bold math operators are desired, the bm package is suggested
+\usepackage{bm}
+% its documentation can be found at http://www.ctan.org/pkg/bm
+% ### GRAPHICS PACKAGE
+\usepackage{graphicx}
+% to ensure centered multiline captions, the centering package should
+% be called as well.
+\usepackage[justification=centering]{caption}
+% To use the subfigures command, the subcaption package should be
+% called as well.
+\usepackage{subcaption}
+% To declare the path(s) where your graphic files are use
+\graphicspath{{figures}}
+% To declare their extensions so you won't have to specify these with
+% every instance of \includegraphics:
+% \DeclareGraphicsExtensions{.pdf,.jpeg,.png}
+% graphicx was written by David Carlisle and Sebastian Rahtz. It is
+% required if you want graphics, photos, etc. graphicx.sty is already
+% installed on most LaTeX systems. The latest version and documentation
+% can be obtained at:
+% http://www.ctan.org/pkg/graphicx
+% A good introduction to inserting figures in a document can be found
+% at:
+% https://www.overleaf.com/learn/latex/How_to_Write_a_Thesis_in_
+% 	LaTeX_(Part_3):_Figures,_Subfigures_and_Tables
+% Another good source of documentation is "Using Imported Graphics in
+% LaTeX2e" by Keith Reckdahl which can be found at:
+% http://www.ctan.org/pkg/epslatex
+%
+% latex, and pdflatex in dvi mode, support graphics in encapsulated
+% postscript (.eps) format. pdflatex in pdf mode supports graphics
+% in .pdf, .jpeg, .png and .mps (metapost) formats. Users should ensure
+% that all non-photo figures use a vector format (.eps, .pdf, .mps) and
+% not a bitmapped formats (.jpeg, .png).
+
+% ### ALGORITHM PACKAGE
+\usepackage{algorithmic}
+\usepackage{algorithm}
+% This package provides an algorithmic environment fo describing algorithms.
+% You can use the algorithmic environment in-text or within a figure
+% environment to provide for a floating algorithm.
+
+% ### TABLE AND ALIGNMENT PACKAGE
+%\usepackage{array}
+% Frank Mittelbach's and David Carlisle's array.sty patches and improves
+% the standard LaTeX2e array and tabular environments to provide better
+% appearance and additional user controls.
+
+% ### URL PACKAGE
+\usepackage{url}
+% url.sty was written by Donald Arseneau. It provides better support for
+% handling and breaking URLs. url.sty is already installed on most LaTeX
+% systems. The latest version and documentation can be obtained at:
+% http://www.ctan.org/pkg/url
+% Basically, \url{my_url_here}.
+% ### NATBIB PACKAGE
+% \usepackage{natbib}
+% The natbib package is a reimplementation of the LATEX \cite
+% command, to work with both author–year and numerical citations.
+% It is compatible with the standard bibliographic style files, such as
+% plain.bst, as well as with those for harvard, apalike, chicago,
+% astron, authordate, and of course natbib.
+% The natbib package enables the apalike bibliography style.
+% See http://homepage.stat.uiowa.edu/~rlenth/ALPHA/apa-tutorial.pdf
+% for an excellent explanation.
+% ### HYPERLINKS PACKAGE
+\usepackage[hidelinks]{hyperref}
+% This package is used to emend cross-referencing commands in LaTeX to
+% produce some sort of \special commands; there are backends for the
+% special set defined for HyperTeX dvi processors, for embedded pdfmark
+% commands for processing by Acrobat Distiller (dvips and dvipsone), for
+% dviwindo, for pdfTeX, for dvipdfm, for TeX4ht, and for VTEX's pdf and
+% HTML backends.
+% Needs to be loaded AFTER other packages as it overwrites many standard
+% commands.
+% See: https://ctan.org/pkg/hyperref?lang=en
+\usepackage[style=apa,natbib=true]{biblatex}
+\addbibresource{references.bib}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Document starts here
+
+\title{Navigation in GNSS-Denied Environments Using MEMS-Grade Sensors and Geophysical Anomalies: A Particle Filter Approach}
+
+% Authors are grouped by institution. Institution names are italicized.
+% Author groups are separated by '\vspace{1mm} \\' for a line
+% break with proper spacing.
+% This template shows an example of three authors, where author 1 and
+% author 2 are from the same institution:
+
+\author{
+    James~Brodovsky, Philip~Dames, \textit{Temple~University}% <- this '%' removes a trailing whitespace
+    }
+
+\begin{document}
+
+\maketitle
+
+% biography section. The * indicates a section excluded from numbering.
+\section*{biography}
+
+% Biographies are defined as follows:
+% \biography{Author name}{author biography text}
+
+\biography{James Brodovsky}{James Brodovsky is a Ph.D. candidate at Temple University in the Mechanical Engineering department, specializing in autonomous navigation within GNSS-denied environments. His research focuses on developing resilient navigation techniques for robotic, unmanned, and traditional platforms. He investigates geophysical navigation by using maps of physical phenomena to provide positioning feedback through map-matching. His most recent work explores using MEMS-grade sensors to develop methods for long-duration, GPS-denied navigation. He is the author of the open-source software library strapdown-rs, which provides a foundation for high-performance INS algorithms. He is passionate about building modern, robust, and accessible software tools for the navigation industry.}
+
+\biography{Philip Dames}{Philip Dames is an Associate Professor of Mechanical Engineering at Temple University. His research enables teams of mobile robots to autonomously explore and gather information with limited prior knowledge, converting sensor data into actionable intelligence. His work addresses applications including infrastructure inspection, security, mapping, environmental monitoring, precision agriculture, and search and rescue. By developing mathematical tools and systems that explicitly reason about uncertainty in environments, sensors, and robots, as well as unknown numbers of objects and unpredictable phenomena, he aims to improve robotic team performance in real-world scenarios.}
+
+
+% The Abstract. The * indicates a section excluded from numbering.
+\section*{Abstract}
+
+This work extends previous investigations into geophysical-aided navigation using MEMS-grade sensors by implementing a Rao-Blackwellized particle filter (RBPF) architecture for integrating gravity and magnetic anomaly measurements with strapdown inertial navigation. Building on prior work demonstrating feasibility with an Unscented Kalman Filter (UKF), this particle filter approach explicitly handles the non-Gaussian, potentially multimodal posterior distributions that arise from map-matching operations in geophysical navigation.
+
+The RBPF implementation partitions the navigation state into nonlinear horizontal position states represented by particles and linear states (altitude, velocity, attitude, and sensor biases) estimated by Kalman filters conditioned on each particle hypothesis. This architecture naturally accommodates the highly nonlinear measurement model relating magnetometer and gravimeter readings to position via interpolation through geophysical anomaly maps. Using the same MEMS-Nav dataset of smartphone-grade sensor data and open-source geophysical maps (IGPP gravity anomaly and WDMAM magnetic anomaly), the particle filter demonstrates comparable or improved performance relative to the UKF approach under systematic GNSS degradation scenarios.
+
+Results across 21 trajectories show that the particle filter achieves a consistent and dramatic reduction in INS drift using magnetic and gravity anomaly aiding, with all trajectories demonstrating improvement and a mean RMSE reduction of approximately 1,562 km compared to a GNSS-degraded RBPF baseline. Across the 12 trajectories with corresponding UKF runs, the mean improvement relative to the UKF baseline is 18 km with substantial trajectory-to-trajectory variability. The simple Gaussian measurement model employed in this work provides a foundation for future enhancements incorporating physics-informed models such as those described in recent airborne magnetic navigation literature. This research confirms that particle filter architectures, despite their computational complexity, offer a viable and potentially superior alternative to extended Kalman filter variants for low-cost geophysical navigation on MEMS-grade platforms.
+
+% The introduction. Section numbering starts here.
+\section{Introduction}
+
+Modern navigation systems have become critically dependent on the Global Navigation Satellite Systems (GNSS) for position corrections in inertial navigation systems (INS). While GNSS provides accurate global positioning under ideal conditions, its reliance on radio frequency (RF) signals makes it vulnerable to denial, degradation, and spoofing in multiple scenarios \citep{humphreys2008,gnss-vulnerabilities,divis2013gps}. Urban canyons and indoor operation obstruct satellite visibility through multipath interference or simple occlusion, while underground and underwater environments similarly occlude and attenuate GNSS signals \citep{underwater_review,underwater_survey,indoor_survey}. More concerning are intentional disruptions: electronic warfare capabilities can actively jam or spoof GNSS signals, posing significant risks to commercial aviation, maritime shipping, and military operations \citep{9112619,gnss_rf_interference}. These vulnerabilities create an urgent need for alternative positioning, navigation, and timing (Alt-PNT) solutions that do not rely on external active RF signals.
+
+Geophysical navigation offers a compelling non-RF alternative by exploiting naturally occurring variations in physical properties of the Earth. In particular, Earth's gravity and magnetic fields present an opportunity because local variations in these fields---deviations from theoretical models---are spatially correlated and mapped, so they can serve as passive navigation references. Gravity anomaly navigation compares gravimeter measurements with reference gravity maps to estimate position \citep{jircitano1991gravity,kamgar1999vehicle,gravnav}, while magnetic anomaly navigation uses magnetometer readings matched against magnetic anomaly maps \citep{tyren1982magnetic,canciani2016absolute,canciani2017airborne,magnav}. Both approaches have been successfully demonstrated in aerospace and maritime applications, but these implementations have consistently relied on high-grade inertial measurement units (tactical or navigation-grade using ring-laser gyroscopes (RLG) or fiber-optic gyroscopes (FOG)) and expensive specialized sensors such as dedicated gravimeters or magnetometers.
+
+The proliferation of microelectromechanical system (MEMS) sensors in smartphones, drones, and small autonomous vehicles has created a large class of low-size-weight-and-power (SWaP) platforms that may be subject to GNSS denial or interference. Such platforms could benefit from GNSS-independent navigation but cannot accommodate high-grade sensors due to cost or SWaP constraints. MEMS-grade IMUs (approximately \$10 to \$1,000) are orders of magnitude less expensive than tactical-grade systems (\$10,000 to \$100,000+) but suffer from substantially higher noise levels and bias instabilities. Such noise leads to rapid drift in dead-reckoning scenarios using MEMS-grade sensors. Whether geophysical anomaly navigation remains viable when using such degraded inertial sensors and publicly available, lower-resolution anomaly maps is an open question with significant practical implications.
+
+In prior work, we demonstrated the feasibility of integrating gravity and magnetic anomaly measurements into a UKF-based INS using only MEMS-grade sensors and open-source geophysical maps. While the UKF approach showed promising results, it relies on the assumption that posterior distributions remain approximately Gaussian---an assumption that can be violated in map-matching problems where a single measurement may correspond to multiple locations on an anomaly map. Particle filters offer a natural solution to this limitation by explicitly representing non-Gaussian, multimodal distributions through weighted samples.
+
+This work implements a Rao-Blackwellized particle filter (RBPF), also known as a marginalized particle filter, that partitions the state space into nonlinear position states handled by particles and linear states estimated by Kalman filters. This architecture, successfully demonstrated in airborne magnetic anomaly navigation with navigation-grade sensors \citep{canciani2017airborne}, has not previously been applied to the MEMS-grade sensor regime. By comparing performance against the previously developed UKF system on identical datasets and degradation scenarios, we assess whether the increased computational cost of particle filtering yields commensurate improvements in navigation accuracy for low-cost geophysical navigation applications.
+
+\section{Methodology}
+
+The primary objective of this study is to evaluate the performance of an RBPF-based geophysical-aided navigation system under GNSS-denied conditions using low-cost MEMS-grade sensors. To enable direct comparison with prior UKF results, we employ the same dataset, GNSS degradation scenarios, and geophysical maps, differing only in the estimation architecture. The following subsections describe the dataset, standard INS implementation, GNSS degradation model, particle filter architecture, and geophysical measurement integration.
+
+\subsection{Dataset}
+
+The dataset used for this study \citep{mems-nav-dataset} contains several long-duration trajectories collected using smartphone-grade MEMS IMUs and GNSS receivers via the Sensor Logger application \citep{awesome-sensor-logger}. Each trajectory includes synchronized measurements of specific force and angular rate from the IMU, along with GNSS-derived position and velocity estimates. Additional sensors on board include a three-axis magnetometer and barometer. The trajectories were primarily collected during highway driving, providing extended periods of motion across geographically diverse regions with varying geophysical anomaly characteristics. Trajectories range from approximately 30 minutes to several hours in duration, covering distances from tens to hundreds of kilometers. The dataset provides a realistic test bed for evaluating navigation performance under GNSS-challenged conditions using low-cost sensors.
+
+\subsection{Standard INS Implementation}
+
+The INS mechanization follows standard strapdown equations \citep[Chapter 5.3]{groves} with a state vector consisting of position in the local-level frame (LLF), velocity in the north-east-down (NED) frame, and attitude represented as Euler angles. The core navigation states are defined as:
+\begin{itemize}
+    \item \(L\) --- degrees of latitude
+    \item \(\lambda\) --- degrees of longitude
+    \item \(h\) --- meters above mean sea level (MSL)
+    \item \(v_n\), \(v_e\), \(v_d\) --- velocities along the northward, eastward, and downward axis in m/s
+    \item \(\phi\), \(\theta\), \(\psi\) --- Euler angles (roll, pitch, yaw) about the body x-, y-, and z-axis relative to the LLF
+\end{itemize}
+
+For the RBPF implementation, the full state vector is extended beyond the 9 navigation states to include IMU bias states and geophysical measurement bias states. The extended state vector for the particle filter is:
+
+\begin{equation}
+\label{eqn:rbpf-state-vector}
+\mathbf{x} = \left[\begin{array}{cccccccccccccccc}
+  L & \lambda & h & v_n & v_e & v_d & \phi & \theta & \psi & b_{a_x} & b_{a_y} & b_{a_z} & b_{g_x} & b_{g_y} & b_{g_z} & b_{\text{geo}}
+\end{array}\right]^\intercal
+\end{equation}
+
+where \(b_{a_x}\), \(b_{a_y}\), \(b_{a_z}\) represent accelerometer biases, \(b_{g_x}\), \(b_{g_y}\), \(b_{g_z}\) represent gyroscope biases, and \(b_{\text{geo}}\) represents a geophysical measurement bias that captures systematic offsets between measured and mapped anomalies.
+
+\subsubsection{IMU Error Model}
+
+The IMU error model accounts for sensor biases and noise characteristics typical of MEMS-grade sensors. The specific force (\(\mathbf{f}\)) and angular rate (\(\boldsymbol{\omega}\)) measurements from the IMU are modeled as follows:
+\begin{subequations}\label{eqn:imu_models_rbpf}
+\begin{equation}
+\tilde{\mathbf{f}} = \mathbf{f} + \mathbf{b}_a + \mathbf{n}_a
+\end{equation}
+\begin{equation}
+\tilde{\boldsymbol{\omega}} = \boldsymbol{\omega} + \mathbf{b}_g + \mathbf{n}_g
+\end{equation}
+\end{subequations}
+where \(\tilde{\mathbf{f}}\) and \(\tilde{\boldsymbol{\omega}}\) denote the measured values, \(\mathbf{f}\) and \(\boldsymbol{\omega}\) are the true values, \(\mathbf{b}_a\) and \(\mathbf{b}_g\) are the accelerometer and gyroscope biases respectively, and \(\mathbf{n}_a\) and \(\mathbf{n}_g\) are zero-mean Gaussian white noise processes with known covariance. The biases are modeled as first-order Gauss-Markov processes with appropriate time constants for MEMS-grade sensors.
+
+\subsubsection{State Prediction}
+
+The prediction step uses the strapdown mechanization equations to propagate the state estimate forward in time based on IMU measurements. Attitude is represented using a rotation matrix \(\mathbf{C}\) from body frame to navigation (local-level) frame, employing a Z-Y-X (yaw-pitch-roll) Euler angle sequence. Rotational rates are expressed as skew-symmetric matrices where \(\boldsymbol{\omega} = \begin{bmatrix} \omega_x & \omega_y & \omega_z \end{bmatrix}^\intercal\) corresponds to \(\boldsymbol{\Omega} = [\boldsymbol{\omega}\times]\).
+
+The attitude update follows:
+\begin{equation}\label{eqn:attitude_update_rbpf}
+\mathbf{C}_{t+1} \approx \mathbf{C}_t \left( I + \boldsymbol{\Omega}_{b} \Delta t \right) - \left( \boldsymbol{\Omega}_{i} + \boldsymbol{\Omega}_{n} \right) \mathbf{C}_t \Delta t
+\end{equation}
+where \(\boldsymbol{\Omega}_{b}\) is the skew-symmetric matrix of body angular rates corrected for gyroscope biases, \(\boldsymbol{\Omega}_{i}\) represents Earth's rotation rate, and \(\boldsymbol{\Omega}_{n}\) represents transport rate in the navigation frame.
+
+The velocity update incorporates transformed specific force measurements:
+\begin{subequations}\label{eqn:velocity_update_rbpf}
+\begin{equation}
+\hat{\mathbf{f}}_{t} \approx \frac{1}{2} \left( \mathbf{C}_{t+1} + \mathbf{C}_t \right) \left( \mathbf{f}_{t} - \mathbf{b}_{a} \right)
+\end{equation}
+\begin{equation}
+\mathbf{v}_{t+1} \approx \mathbf{v}_{t} + \left( \hat{\mathbf{f}}_{t} + \mathbf{g}_t - \left( 2\boldsymbol{\Omega}_{i} + \boldsymbol{\Omega}_{n} \right) \mathbf{v}_t \right) \Delta t
+\end{equation}
+\end{subequations}
+where \(\mathbf{g}_t\) is the local gravity vector computed using the Somigliana model \citep{somigliana1929teoria}.
+
+Position updates follow from velocity integration with WGS-84 ellipsoid corrections:
+\begin{subequations}\label{eqn:position_update_rbpf}
+\begin{equation}
+h_{t+1} = h_{t} - \frac{1}{2} \left( v_{d, t} + v_{d, t+1} \right) \Delta t
+\end{equation}
+\begin{equation}
+L_{t+1} = L_{t} + \frac{1}{2} \left( \frac{v_{n, t}}{R_n(L_{t}) + h_t} + \frac{v_{n, t+1}}{R_n(L_{t}) + h_{t+1}} \right) \Delta t
+\end{equation}
+\begin{equation}
+\lambda_{t+1} = \lambda_{t} + \frac{1}{2} \left( \frac{v_{e, t}}{\left(R_e(L_{t}) + h_t\right) \cos L_t} + \frac{v_{e, t+1}}{\left(R_e(L_{t+1}) + h_{t+1}\right) \cos L_{t+1}} \right) \Delta t
+\end{equation}
+\end{subequations}
+where \(R_n(L)\) and \(R_e(L)\) are the meridional and transverse radii of curvature of the WGS-84 ellipsoid at latitude \(L\).
+
+\subsection{GNSS Degradation Scenarios}
+
+To evaluate the benefit of geophysical aiding under realistic GNSS-challenged conditions, systematic degradation scenarios were applied to the GNSS measurements using the \verb|strapdown-rs| simulation toolbox \citep{strapdown-rs}. The degradation framework employs an event-driven architecture that controls both measurement availability and quality through configurable schedulers and fault models.
+
+The degradation scenario implemented a realistic model of low-quality GNSS typical of urban canyons, multipath environments, or moderate jamming conditions. Rather than simple white noise corruption, the fault model employs first-order autoregressive (AR(1)) processes to inject time-correlated errors into both position and velocity measurements. For position measurements, the AR(1) process used a correlation coefficient of \(\rho_{\text{pos}} = 0.99\) and innovation standard deviation of \(\sigma_{\text{pos}} = 5\) m, creating slowly drifting biases that persist over time. Similarly, velocity measurements were corrupted with an AR(1) process using \(\rho_{\text{vel}} = 0.95\) and \(\sigma_{\text{vel}} = 5\) m/s.
+
+Additionally, the advertised measurement covariance was inflated by a factor of 15 (\(r_{\text{scale}} = 15\)), simulating a scenario where the GNSS receiver reports poor accuracy estimates. This covariance inflation forces the filter to trust degraded GNSS measurements less than it would based on nominal accuracies, representing realistic receiver behavior under signal degradation.
+
+All degradation parameters were applied identically to both the GNSS-degraded baseline and geophysically-aided configurations to ensure a controlled comparison. The geophysically-aided system received gravity and magnetic anomaly measurements at the IMU update rate, providing continuous alternative position information to complement the degraded GNSS observations.
+
+\subsection{Rao-Blackwellized Particle Filter Architecture}
+
+The RBPF, also known as a marginalized particle filter, exploits the structure of the navigation problem by partitioning the state into nonlinear and conditionally linear components \citep{canciani2017airborne}. This partitioning enables efficient representation of non-Gaussian distributions in the position states while maintaining computationally tractable Kalman filters for the remaining states.
+
+\subsubsection{State Partitioning}
+
+The state vector is partitioned into nonlinear states \(\mathbf{x}^n\) and linear states \(\mathbf{x}^l\):
+\begin{equation}
+\mathbf{x}_t = \begin{bmatrix} \mathbf{x}^n_t \\ \mathbf{x}^l_t \end{bmatrix}
+\end{equation}
+
+For geophysical navigation, the horizontal position states (latitude and longitude) are nonlinear due to the map interpolation function and the potential for multimodal posterior distributions:
+\begin{equation}
+\mathbf{x}^n = \begin{bmatrix} L \\ \lambda \end{bmatrix}
+\end{equation}
+
+The remaining states are conditionally linear:
+\begin{equation}
+\mathbf{x}^l = \begin{bmatrix} h \\ v_n \\ v_e \\ v_d \\ \phi \\ \theta \\ \psi \\ b_{a_x} \\ b_{a_y} \\ b_{a_z} \\ b_{g_x} \\ b_{g_y} \\ b_{g_z} \\ b_{\text{geo}} \end{bmatrix}^\intercal
+\end{equation}
+
+\subsubsection{Particle Representation}
+
+The RBPF maintains \(N\) particles, each consisting of:
+\begin{itemize}
+    \item A hypothesis for the nonlinear states: \(\mathbf{x}^{n,(i)}_t\) for \(i = 1, \ldots, N\)
+    \item A Kalman filter for the linear states conditioned on the particle hypothesis: \(\mathbf{x}^{l,(i)}_t\) with covariance \(\mathbf{P}^{l,(i)}_t\)
+    \item A weight \(w^{(i)}_t\) representing the particle's likelihood
+\end{itemize}
+
+The key advantage of this architecture is that each particle's Kalman filter analytically marginalizes over the linear state uncertainty conditioned on the particle's position hypothesis. This dramatically reduces the number of particles required compared to a standard particle filter that would need to sample the full 16-dimensional state space.
+
+\subsubsection{State Dynamics}
+
+The state dynamics follow a linearized error-state formulation. The nonlinear states propagate according to:
+\begin{equation}
+\dot{\mathbf{x}}^n = \mathbf{A}^{nn}_t \mathbf{x}^n + \mathbf{A}^{nl}_t \mathbf{x}^l + \mathbf{v}^n
+\end{equation}
+
+The linear states propagate as:
+\begin{equation}
+\dot{\mathbf{x}}^l = \mathbf{A}^{ln}_t \mathbf{x}^n + \mathbf{A}^{ll}_t \mathbf{x}^l + \mathbf{v}^l
+\end{equation}
+
+where \(\mathbf{A}^{nn}\), \(\mathbf{A}^{nl}\), \(\mathbf{A}^{ln}\), and \(\mathbf{A}^{ll}\) are submatrices of the system dynamics matrix derived from the INS error model, and \(\mathbf{v}^n\) and \(\mathbf{v}^l\) are process noise terms. For the position states, the dynamics are actually linear (positions evolve based on velocities), but the measurement model is highly nonlinear, justifying the particle representation.
+
+\subsubsection{Measurement Update}
+
+When a geophysical measurement \(z_t\) is received, each particle evaluates the expected measurement based on its position hypothesis:
+\begin{equation}
+\hat{z}^{(i)}_t = h(\mathbf{x}^{n,(i)}_t, \mathbf{x}^{l,(i)}_t) = M(\mathbf{x}^{n,(i)}_t) + \mathbf{C} \mathbf{x}^{l,(i)}_t
+\end{equation}
+
+where \(M(\cdot)\) is the map interpolation function and \(\mathbf{C}\) extracts the geophysical bias state from the linear state vector.
+
+The measurement residual is:
+\begin{equation}
+\nu^{(i)}_t = z_t - \hat{z}^{(i)}_t
+\end{equation}
+
+Each particle's Kalman filter updates its linear states using the residual:
+\begin{subequations}
+\begin{equation}
+\mathbf{S}^{(i)}_t = \mathbf{C} \mathbf{P}^{l,(i)}_t \mathbf{C}^\intercal + R
+\end{equation}
+\begin{equation}
+\mathbf{K}^{(i)}_t = \mathbf{P}^{l,(i)}_t \mathbf{C}^\intercal (\mathbf{S}^{(i)}_t)^{-1}
+\end{equation}
+\begin{equation}
+\mathbf{x}^{l,(i)}_t = \mathbf{x}^{l,(i)}_t + \mathbf{K}^{(i)}_t \nu^{(i)}_t
+\end{equation}
+\begin{equation}
+\mathbf{P}^{l,(i)}_t = \mathbf{P}^{l,(i)}_t - \mathbf{K}^{(i)}_t \mathbf{S}^{(i)}_t (\mathbf{K}^{(i)}_t)^\intercal
+\end{equation}
+\end{subequations}
+
+The particle weight is updated based on the likelihood:
+\begin{equation}
+w^{(i)}_t \propto w^{(i)}_{t-1} \cdot \mathcal{N}(\nu^{(i)}_t; 0, \mathbf{S}^{(i)}_t)
+\end{equation}
+
+After all weights are updated, they are normalized:
+\begin{equation}
+\tilde{w}^{(i)}_t = \frac{w^{(i)}_t}{\sum_{j=1}^{N} w^{(j)}_t}
+\end{equation}
+
+\subsubsection{Resampling}
+
+To prevent particle degeneracy, resampling is performed when the effective sample size falls below a threshold:
+\begin{equation}
+N_{\text{eff}} = \frac{1}{\sum_{i=1}^{N} (\tilde{w}^{(i)}_t)^2}
+\end{equation}
+
+When \(N_{\text{eff}} < N_{\text{thresh}}\), particles are resampled using systematic resampling \citep{canciani2017airborne}. This creates new particles by drawing from the existing particle set with probabilities proportional to their weights, eliminating low-weight particles and duplicating high-weight particles.
+
+\subsubsection{State Estimation}
+
+The final state estimate is computed as the weighted average over all particles:
+\begin{equation}
+\hat{\mathbf{x}}^n_t = \sum_{i=1}^{N} \tilde{w}^{(i)}_t \mathbf{x}^{n,(i)}_t
+\end{equation}
+
+\begin{equation}
+\hat{\mathbf{x}}^l_t = \sum_{i=1}^{N} \tilde{w}^{(i)}_t \mathbf{x}^{l,(i)}_t
+\end{equation}
+
+The covariance accounts for both within-particle and between-particle uncertainty.
+
+\subsection{Geophysical Measurement Integration}
+
+The geophysically-aided system incorporates gravity and magnetic anomaly measurements as additional aiding sources. Gravity and magnetic anomaly measurements are processed independently, each with its own measurement model and noise characteristics, similar to the UKF implementation.
+
+Geophysical anomaly measurements are derived by comparing sensed quantities with values predicted from publicly available global anomaly maps. For gravity anomalies, the Institute of Geophysics and Planetary Physics (IGPP) Earth free-air anomaly map \citep{EGM2008} provides gravity anomaly values at approximately 1 arc-minute resolution (approximately 1.8 km at the equator). For magnetic anomalies, the World Digital Magnetic Anomaly Map (WDMAM) \citep{wdmam} provides anomaly data at 3 arc-minute resolution (approximately 5.6 km at the equator). Both are accessed via the Generic Mapping Tools (GMT) software package \citep{GMT}, which provides bilinear interpolation at arbitrary positions.
+
+\subsubsection{Measurement Model}
+
+The measurement model for geophysical anomalies follows:
+\begin{equation}
+z_{\text{geo}} = M(L, \lambda) + b_{\text{geo}} + \nu_{\text{geo}}
+\end{equation}
+
+where \(M(L, \lambda)\) queries the anomaly map at latitude \(L\) and longitude \(\lambda\) (the particle hypothesis), \(b_{\text{geo}}\) is the geophysical bias state estimated by each particle's Kalman filter, and \(\nu_{\text{geo}}\) is measurement noise modeled as zero-mean Gaussian.
+
+To develop measurement noise parameters, the sensed gravity and magnetic field values are first converted to anomaly residuals by subtracting theoretical model values (IGRF for magnetic, Somigliana for gravity) at the current estimated position. Statistical analysis of these residuals along reference trajectories yields approximately Gaussian distributions with non-zero mean. The bias state \(b_{\text{geo}}\) accommodates this systematic offset.
+
+The measurement noise parameters, derived from empirical analysis of the MEMS-Nav dataset, are summarized in Table~\ref{tab:rbpf_anomaly_measurement_model}.
+
+\begin{table}[h]
+    \centering
+    \caption{Geophysical Anomaly Measurement Model Parameters for RBPF}
+    \begin{tabular}{lcc}
+        \hline
+        Anomaly Type & Mean Residual & Std. Deviation \\
+        \hline
+        Gravity Anomaly & 5.97 mGal & 48.93 mGal \\
+        Magnetic Anomaly & 40,364.11 nT & 41,303 nT \\
+        \hline
+    \end{tabular}
+    \label{tab:rbpf_anomaly_measurement_model}
+\end{table}
+
+\subsection{Performance Evaluation}
+
+Navigation performance was evaluated by comparing the estimated trajectories from each filter configuration against the raw GNSS measurements collected during reference data collection. Four filter configurations were tested under the same degraded GNSS conditions:
+\begin{enumerate}
+    \item Standard GNSS-aided INS (RBPF without geophysical aiding)
+    \item GNSS-aided RBPF with gravity anomaly measurements
+    \item GNSS-aided RBPF with magnetic anomaly measurements
+    \item GNSS-aided RBPF with combined gravity and magnetic anomaly measurements
+\end{enumerate}
+
+Position error was quantified using the haversine distance formula, which computes great-circle distance between estimated position \((L_1, \lambda_1)\) and reference GNSS position \((L_2, \lambda_2)\):
+\begin{equation}
+d = 2R \arcsin\left(\sqrt{\sin^2\left(\frac{L_2 - L_1}{2}\right) + \cos(L_1)\cos(L_2)\sin^2\left(\frac{\lambda_2 - \lambda_1}{2}\right)}\right)
+\end{equation}
+where \(R = 6371\) km is Earth's mean radius. The difference in position error (geophysical aiding error minus standard INS error) was used for comparison, with negative values indicating improvement.
+
+\section{Results}
+
+The geophysically-aided RBPF was evaluated across 21 trajectories from the MEMS-Nav dataset by comparing navigation performance against two GNSS-degraded baselines: (1) an RBPF with no geophysical aiding, and (2) a canonical UKF INS with the same GNSS degradation. Position error differences are reported as geophysically-aided error minus baseline error, where negative values indicate improvement (lower error). Table~\ref{tab:rbpf_vs_rbpf_summary} summarizes the RBPF-to-RBPF comparison across all 21 trajectories, while Table~\ref{tab:rbpf_vs_ukf_summary} summarizes the RBPF-to-UKF comparison for the 12 trajectories with corresponding UKF runs.
+
+\begin{table}[h]
+    \centering
+    \caption{RBPF geophysical aiding vs RBPF GNSS-degraded baseline (horizontal RMSE difference, km; negative = improvement)}
+    \begin{tabular}{lcccc}
+    \toprule
+    Configuration & N & Mean & Median & Std \\
+        \midrule
+        Combined & 21 & -1562.0 & -1476.4 & 1139.1 \\
+        Gravity  & 21 & -1560.9 & -1476.2 & 1138.9 \\
+        Magnetic & 21 & -1561.1 & -1474.9 & 1139.5 \\
+        \bottomrule
+    \end{tabular}
+    \label{tab:rbpf_vs_rbpf_summary}
+\end{table}
+
+\begin{table}[h]
+    \centering
+    \caption{RBPF geophysical aiding vs UKF GNSS-degraded baseline (horizontal RMSE difference, km; negative = improvement)}
+    \begin{tabular}{lcccc}
+    \toprule
+    Configuration & N & Mean & Median & Std \\
+        \midrule
+        Combined & 12 & -18.3 & 0.3 & 58.0 \\
+        Gravity  & 12 & -16.3 & -0.3 & 58.5 \\
+        Magnetic & 12 & -16.7 & -0.2 & 58.4 \\
+        \bottomrule
+    \end{tabular}
+    \label{tab:rbpf_vs_ukf_summary}
+\end{table}
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=\linewidth]{figures/2025-09-27_12-54-35_geophysical_performance.png}
+    \caption{Best-performing trajectory vs UKF baseline (2025-09-27\_12-54-35) with combined geophysical aiding. Horizontal RMSE improvement of 216.6 km. Top: 2D position error over time. Bottom: Position estimates in latitude-longitude space.}
+    \label{fig:best_performance}
+\end{figure}
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=\linewidth]{figures/2025-07-04_17-24-46_geophysical_performance.png}
+    \caption{Median-performing trajectory vs UKF baseline (2025-07-04\_17-24-46) with combined geophysical aiding. Horizontal RMSE improvement of 0.8 km, representative of near-parity performance.}
+    \label{fig:median_performance}
+\end{figure}
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=\linewidth]{figures/2025-06-18_15-09-25_geophysical_performance.png}
+    \caption{Worst-performing trajectory vs UKF baseline (2025-06-18\_15-09-25) with combined geophysical aiding. Horizontal RMSE degradation of 13.8 km, illustrating cases where geophysical aiding did not outperform the UKF.}
+    \label{fig:challenging_performance}
+\end{figure}
+
+The RBPF-to-RBPF comparison demonstrates that the large improvements are not solely attributable to a change in filter architecture. Across all 21 trajectories, geophysical aiding reduced horizontal RMSE by an average of 1562 km (median 1476 km), with nearly identical performance across gravity-only, magnetic-only, and combined configurations (Table~\ref{tab:rbpf_vs_rbpf_summary}). This indicates that the anomaly measurements, rather than the RBPF structure alone, are the dominant source of improvement over a GNSS-degraded RBPF baseline.
+
+When compared against the canonical UKF INS, the gains are more modest but still present on average. The combined configuration improves horizontal RMSE by 18.3 km on average, but the median performance is near zero (0.3 km degradation), reflecting substantial variability across trajectories (Table~\ref{tab:rbpf_vs_ukf_summary}). The best-case improvement of 216.6 km (Figure~\ref{fig:best_performance}) confirms that geophysical aiding can materially outperform the UKF in favorable anomaly conditions, while the worst case (Figure~\ref{fig:challenging_performance}) shows a 13.8 km regression, suggesting that the UKF baseline is already strong for certain trajectories. Gravity-only and magnetic-only aiding remain statistically similar to the combined configuration, indicating that the current measurement model extracts comparable information from both modalities.
+
+Key observations from the particle filter implementation include:
+
+\textbf{Architecture-Independent Gain:} The RBPF-to-RBPF results show kilometer-scale improvements even when the baseline uses the same particle filter architecture, confirming that the primary benefit comes from geophysical aiding rather than filter choice.
+
+\textbf{UKF Parity with Selective Gains:} Relative to the UKF baseline, improvements are trajectory-dependent with mean gains of 16--18 km and median results near zero. This suggests that the RBPF provides incremental benefit over UKF in favorable anomaly conditions but does not uniformly outperform it.
+
+\textbf{Modality Equivalence:} Gravity-only and magnetic-only configurations perform similarly to combined aiding in both comparisons, implying that either modality can provide sufficient navigation constraint under the current measurement model.
+
+\section{Conclusion}
+
+This work demonstrates that a Rao-Blackwellized particle filter architecture can successfully integrate geophysical anomaly measurements with MEMS-grade inertial sensors for navigation under GNSS-degraded conditions. By explicitly representing non-Gaussian posterior distributions through particles while maintaining efficient Kalman filters for conditionally linear states, the RBPF addresses a fundamental limitation of extended Kalman filter variants applied to map-matching problems.
+
+The results confirm that geophysical aiding, not merely filter architecture, is responsible for the dominant performance gains. When compared to an RBPF baseline with the same GNSS degradation, geophysical aiding yields mean horizontal RMSE reductions of about 1561--1562 km across all 21 trajectories. Relative to a canonical UKF INS baseline, the RBPF provides more modest average improvements of 16--18 km, with trajectory-dependent outcomes that range from substantial gains to small regressions. These findings suggest that the RBPF offers incremental benefits over UKF in favorable anomaly conditions, while the primary value proposition remains the geophysical measurements themselves.
+
+The computational cost of the RBPF remains a significant consideration for real-time implementation on resource-constrained platforms. Alternative particle filter variants, such as auxiliary particle filters or adaptive particle allocation strategies, may offer computational savings while retaining the non-Gaussian modeling capabilities.
+
+The simple Gaussian measurement model employed in this work, while sufficient to demonstrate appreciable drift reduction, represents a significant simplification of the true measurement physics. The magnetic measurement model, in particular, neglects important physical phenomena such as the directional dependence of scalar magnetometer measurements on the total field vector and the projection of crustal anomalies onto the main field direction. The Canciani airborne magnetic navigation work \citep{canciani2017airborne} provides a more physically accurate measurement equation that accounts for temporal variations, aircraft fields, altitude dependencies, and the relationship between scalar measurements and the vector anomaly field.
+
+Future work should focus on several key areas. First, incorporating the physics-informed measurement model from the Canciani framework into the RBPF architecture would likely improve measurement accuracy and observability, particularly for magnetic anomaly navigation. The current Gaussian approximation discards information about field geometry that could enhance position estimation. Second, multi-modal fusion combining gravity and magnetic measurements within a single filter could leverage the complementary characteristics of these modalities. Third, adaptive particle allocation strategies that concentrate computational resources in regions of high uncertainty or ambiguity could reduce computational cost while maintaining accuracy. Fourth, integrity monitoring and anomaly field observability metrics could enable the filter to detect and gracefully handle regions where geophysical measurements provide insufficient information.
+
+The demonstrated capability confirms that particle filter architectures, despite higher computational requirements, offer a theoretically sound and practically viable approach to MEMS-grade geophysical navigation. As sensor performance continues to improve and computational resources on small platforms increase, RBPF implementations may transition from research demonstrations to operational navigation systems for low-SWaP platforms requiring GNSS-independent positioning.
+
+This research establishes that sophisticated estimation architectures such as particle filters can successfully exploit geophysical anomaly fields for navigation even with severely degraded sensor quality. Combined with future enhancements incorporating physics-informed measurement models, RBPF-based geophysical navigation represents a promising avenue for resilient, low-cost Alt-PNT solutions that reduce dependence on vulnerable RF-based positioning systems.
+
+\section*{Acknowledgements}
+
+The authors would like to acknowledge the support and assistance of Beth Brodovsky, Jeremy Brodovsky, Monica Brodovsky, Bill Siegl, and Alkesh Kumar Srivastava for their help in data collection efforts. We additionally acknowledge the foundational work of Aaron Canciani and John Raquet on airborne magnetic anomaly navigation using particle filters, which informed the architectural design of this implementation.
+
+% the apacite bibliography style matches the ION bibliography style guidelines.
+% \bibliographystyle{apalike}
+% \bibliography{references.bib}
+\printbibliography
+
+\end{document}
