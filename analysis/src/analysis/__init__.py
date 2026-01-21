@@ -32,9 +32,7 @@ def main() -> None:
 
     command = parser.add_subparsers(title="command", dest="command")
 
-    preprocess = command.add_parser(
-        "preprocess", help="Preprocess raw trajectory data."
-    )
+    preprocess = command.add_parser("preprocess", help="Preprocess raw trajectory data.")
 
     preprocess.add_argument(
         "-i",
@@ -63,9 +61,7 @@ def main() -> None:
         help="Download geophysical maps for each trajectory.",
     )
 
-    performance = command.add_parser(
-        "performance", help="Generate performance plots from mechanization results."
-    )
+    performance = command.add_parser("performance", help="Generate performance plots from mechanization results.")
     performance.add_argument(
         "-p",
         "--processed",
@@ -87,9 +83,7 @@ def main() -> None:
         default="data/output",
     )
 
-    geoperformance = command.add_parser(
-        "geoperformance", help="Generate geophysical performance plots."
-    )
+    geoperformance = command.add_parser("geoperformance", help="Generate geophysical performance plots.")
     geoperformance.add_argument(
         "-p",
         "--processed",
@@ -172,30 +166,21 @@ def performance_analysis(args):
             reference_file = reference_path / dataset.name
             gps = read_csv(reference_file, parse_dates=True, index_col=0)
         except FileNotFoundError:
-            print(
-                f"Reference file for {dataset.name} not found in {reference_path}. Skipping."
-            )
+            print(f"Reference file for {dataset.name} not found in {reference_path}. Skipping.")
             continue
         output_plot = output_path / f"{dataset.stem}_performance.png"
-        print(
-            f"Processing dataset {dataset} ({len(nav)}) with reference {reference_file.name} ({len(gps)})"
-        )
+        print(f"Processing dataset {dataset} ({len(nav)}) with reference {reference_file.name} ({len(gps)})")
         try:
             plot_performance(nav, gps, output_plot)
         except Exception as e:
-            print(
-                f"Error plotting performance for {dataset.name}, possible dimension mismatch or missing data: {e}"
-            )
+            print(f"Error plotting performance for {dataset.name}, possible dimension mismatch or missing data: {e}")
             continue
         two_d_error = haversine_vector(
             gps[["latitude", "longitude"]].to_numpy()[1:, :],
             nav[["latitude", "longitude"]].to_numpy(),
             Unit.METERS,
         )
-        three_d_error = np.sqrt(
-            two_d_error**2
-            + (gps["altitude"].to_numpy()[1:] - nav["altitude"].to_numpy()) ** 2
-        )
+        three_d_error = np.sqrt(two_d_error**2 + (gps["altitude"].to_numpy()[1:] - nav["altitude"].to_numpy()) ** 2)
         summary_df.loc[dataset.stem] = [
             np.nanmin(two_d_error),
             np.nanmax(two_d_error),
@@ -204,11 +189,7 @@ def performance_analysis(args):
             np.nanmin(gps["altitude"].to_numpy()[1:] - nav["altitude"].to_numpy()),
             np.nanmax(gps["altitude"].to_numpy()[1:] - nav["altitude"].to_numpy()),
             np.nanmean(gps["altitude"].to_numpy()[1:] - nav["altitude"].to_numpy()),
-            np.sqrt(
-                np.nanmean(
-                    (gps["altitude"].to_numpy()[1:] - nav["altitude"].to_numpy()) ** 2
-                )
-            ),
+            np.sqrt(np.nanmean((gps["altitude"].to_numpy()[1:] - nav["altitude"].to_numpy()) ** 2)),
             np.nanmin(three_d_error),
             np.nanmax(three_d_error),
             np.nanmean(three_d_error),
@@ -243,23 +224,38 @@ def geophysical_performance_analysis(args):
     reference_path = Path(args.reference)
     degraded_path = Path(args.degraded)
 
+    summary_df = DataFrame(
+        columns=[
+            "Min Horizontal Error (m)",
+            "Max Horizontal Error (m)",
+            "Mean Horizontal Error (m)",
+            "RMSE Horizontal Error (m)",
+            "Min Vertical Error (m)",
+            "Max Vertical Error (m)",
+            "Mean Vertical Error (m)",
+            "RMSE Vertical Error (m)",
+            "Min 3D Error (m)",
+            "Max 3D Error (m)",
+            "Mean 3D Error (m)",
+            "RMSE 3D Error (m)",
+        ],  # ty:ignore[invalid-argument-type]
+        index=[dataset.stem for dataset in datasets],  # ty:ignore[invalid-argument-type]
+        # index.name = "Dataset"  # ty:ignore[unknown-argument]
+    )
+
     for dataset in tqdm(datasets):
         geo = read_csv(dataset, parse_dates=True, index_col=0)
         try:
             reference_file = reference_path / dataset.name
             nav = read_csv(reference_file, parse_dates=True, index_col=0)
         except FileNotFoundError:
-            print(
-                f"Reference file for {dataset.name} not found in {reference_path}. Skipping."
-            )
+            print(f"Reference file for {dataset.name} not found in {reference_path}. Skipping.")
             continue
         try:
             degraded_file = degraded_path / dataset.name
             degraded_nav = read_csv(degraded_file, parse_dates=True, index_col=0)
         except FileNotFoundError:
-            print(
-                f"Degraded file for {dataset.name} not found in {degraded_path}. Skipping."
-            )
+            print(f"Degraded file for {dataset.name} not found in {degraded_path}. Skipping.")
             continue
 
         output_plot = output_path / f"{dataset.stem}_geophysical_performance.png"
@@ -270,7 +266,8 @@ def geophysical_performance_analysis(args):
 
         # Check to make sure all three datasets have the same length. If geo is shorter than add the first row of reference to geo to align.
         # Merge in via index to ensure proper alignment.
-        if not (len(geo) == len(nav) == len(degraded_nav)):
+        if not (len(nav) == len(geo)):
+            # print("Correcting geo to match reference nav.")
             # print(
             #     f"Dataset length mismatch for {dataset.name}: geo({len(geo)}), nav({len(nav)}), degraded_nav({len(degraded_nav)}). Attempting to align."
             # )
@@ -288,21 +285,77 @@ def geophysical_performance_analysis(args):
             # print(geo.head(10))
             # print(nav.head(10))
             # print(degraded_nav.head(10))
-        if np.all(
-            degraded_nav.iloc[0][["latitude", "longitude", "altitude"]].to_numpy()
-            == np.nan
-        ):
-            degraded_nav.iloc[0][["latitude", "longitude", "altitude"]] = nav.iloc[0][
-                ["latitude", "longitude", "altitude"]
-            ]
+        if not (len(nav) == len(degraded_nav)):
+            # print("Correcting degraded_nav to match reference nav.")
+            # print(
+            #     f"Dataset length mismatch for {dataset.name}: geo({len(geo)}), nav({len(nav)}), degraded_nav({len(degraded_nav)}). Attempting to align."
+            # )
+            # Check if the first index of reference is in degraded_nav, if not add it.
+            if nav.index[0] not in degraded_nav.index:
+                first_row = degraded_nav.iloc[[0]][["latitude", "longitude", "altitude"]].copy()
+                first_row.index = [nav.index[0]]
+                degraded_nav.loc[first_row.index] = first_row
+                degraded_nav = degraded_nav.sort_index()
+            # Now reindex degraded_nav to match nav
+            degraded_nav = degraded_nav.reindex(nav.index)
+            # print(
+            #     f"After alignment, dataset lengths: geo({len(geo)}), nav({len(nav)}), degraded_nav({len(degraded_nav)})"
+            # )
+            # print(geo.head(10))
+            # print(nav.head(10))
+            # print(degraded_nav.head(10))
+
         try:
             plot_relative_performance(geo, degraded_nav, nav, output_plot)
+            geo_error = haversine_vector(
+                geo[["latitude", "longitude"]].to_numpy(dtype=np.float64, copy=False),
+                nav[["latitude", "longitude"]].to_numpy(),
+                Unit.METERS,
+            )
+
+            deg_error = haversine_vector(
+                degraded_nav[["latitude", "longitude"]].to_numpy(),
+                nav[["latitude", "longitude"]].to_numpy(),
+                Unit.METERS,
+            )
+            err_diff = geo_error - deg_error
+            geo_rmse = np.sqrt(np.nanmean(geo_error**2))
+            deg_rmse = np.sqrt(np.nanmean(deg_error**2))
+            summary_df.loc[dataset.stem] = [
+                np.nanmin(err_diff),
+                np.nanmax(err_diff),
+                np.nanmean(err_diff),
+                geo_rmse - deg_rmse,
+                np.nanmin(geo["altitude"].to_numpy() - nav["altitude"].to_numpy()),
+                np.nanmax(geo["altitude"].to_numpy() - nav["altitude"].to_numpy()),
+                np.nanmean(geo["altitude"].to_numpy() - nav["altitude"].to_numpy()),
+                np.sqrt(np.nanmean((geo["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2))
+                - np.sqrt(np.nanmean((degraded_nav["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2)),
+                np.nanmin(
+                    np.sqrt(geo_error**2 + (geo["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2)
+                    - np.sqrt(deg_error**2 + (degraded_nav["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2)
+                ),
+                np.nanmax(
+                    np.sqrt(geo_error**2 + (geo["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2)
+                    - np.sqrt(deg_error**2 + (degraded_nav["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2)
+                ),
+                np.nanmean(
+                    np.sqrt(geo_error**2 + (geo["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2)
+                    - np.sqrt(deg_error**2 + (degraded_nav["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2)
+                ),
+                geo_rmse - deg_rmse,
+            ]
         except Exception as e:
             print(
                 f"Error plotting geophysical performance for {dataset.name}, possible dimension mismatch or missing data: {e}"
             )
             continue
+    summary_df.loc["median"] = summary_df.median()
+    summary_df.loc["mean"] = summary_df.mean()
+    summary_df.loc["std"] = summary_df.std()
 
+    summary_file = output_path / "geophysical_performance_summary.csv"
+    summary_df.to_csv(summary_file)
     print("Geophysical performance analysis completed.")
 
 
