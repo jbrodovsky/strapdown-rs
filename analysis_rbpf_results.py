@@ -21,21 +21,27 @@ RBPF_GRAV_DIR = Path("data/output/rbpf/grav")
 RBPF_MAG_DIR = Path("data/output/rbpf/mag")
 RBPF_BOTH_DIR = Path("data/output/rbpf/both")
 RBPF_DEGRADED_DIR = Path("data/output/rbpf/degraded")
-UKF_GRAV_DIR = Path("data/output/ukf_original/grav")
-UKF_MAG_DIR = Path("data/output/ukf_original/mag")
-UKF_DEGRADED_DIR = Path("data/output/ukf_original/degraded")
+# UKF_GRAV_DIR = Path("data/output/ukf_original/grav")
+# UKF_MAG_DIR = Path("data/output/ukf_original/mag")
+# UKF_DEGRADED_DIR = Path("data/output/ukf_original/degraded")
+UKF_GRAV_DIR = Path("data/output/ukf/grav")
+UKF_MAG_DIR = Path("data/output/ukf/mag")
+UKF_BOTH_DIR = Path("data/output/ukf/both")
+UKF_DEGRADED_DIR = Path("data/output/ukf/degraded")
 GPS_TRUTH_DIR = Path("data/input")
+
 
 def load_trajectory(file_path: Path) -> pd.DataFrame:
     """Load a trajectory CSV file."""
     df = pd.read_csv(file_path)
     # Standardize time column name
-    if 'time' in df.columns:
-        df = df.rename(columns={'time': 'timestamp'})
+    if "time" in df.columns:
+        df = df.rename(columns={"time": "timestamp"})
     # Parse timestamps
-    if 'timestamp' in df.columns:
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
+    if "timestamp" in df.columns:
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
     return df
+
 
 def calculate_haversine_errors(nav_df: pd.DataFrame, truth_df: pd.DataFrame) -> np.ndarray:
     """
@@ -53,17 +59,21 @@ def calculate_haversine_errors(nav_df: pd.DataFrame, truth_df: pd.DataFrame) -> 
     truth_df = truth_df.copy()
 
     # Drop rows with NaN lat/lon in truth data
-    truth_df = truth_df.dropna(subset=['latitude', 'longitude'])
+    truth_df = truth_df.dropna(subset=["latitude", "longitude"])
 
     # Ensure both dataframes have timestamp index
-    if 'timestamp' in nav_df.columns:
-        nav_df = nav_df.set_index('timestamp')
-    if 'timestamp' in truth_df.columns:
-        truth_df = truth_df.set_index('timestamp')
+    if "timestamp" in nav_df.columns:
+        nav_df = nav_df.set_index("timestamp")
+    if "timestamp" in truth_df.columns:
+        truth_df = truth_df.set_index("timestamp")
 
     # Align by index (timestamp) - use inner join to get only matching timestamps
-    aligned = pd.concat([nav_df[['latitude', 'longitude']], truth_df[['latitude', 'longitude']]],
-                        axis=1, keys=['nav', 'truth'], join='inner')
+    aligned = pd.concat(
+        [nav_df[["latitude", "longitude"]], truth_df[["latitude", "longitude"]]],
+        axis=1,
+        keys=["nav", "truth"],
+        join="inner",
+    )
 
     # Drop any remaining NaN rows
     aligned = aligned.dropna()
@@ -73,34 +83,34 @@ def calculate_haversine_errors(nav_df: pd.DataFrame, truth_df: pd.DataFrame) -> 
         raise ValueError("No overlapping timestamps between navigation and truth data")
 
     # Create coordinate pairs
-    nav_coords = list(zip(aligned['nav']['latitude'].values, aligned['nav']['longitude'].values))
-    truth_coords = list(zip(aligned['truth']['latitude'].values, aligned['truth']['longitude'].values))
+    nav_coords = list(zip(aligned["nav"]["latitude"].values, aligned["nav"]["longitude"].values))
+    truth_coords = list(zip(aligned["truth"]["latitude"].values, aligned["truth"]["longitude"].values))
 
     # Calculate haversine distances
     distances = haversine_vector(nav_coords, truth_coords, Unit.METERS, comb=False)
 
     return distances
 
+
 def compute_statistics(errors: np.ndarray) -> Dict[str, float]:
     """Compute error statistics."""
     return {
-        'rmse': np.sqrt(np.mean(errors**2)),
-        'mean': np.mean(errors),
-        'median': np.median(errors),
-        'std': np.std(errors),
-        'max': np.max(errors),
-        'min': np.min(errors)
+        "rmse": np.sqrt(np.mean(errors**2)),
+        "mean": np.mean(errors),
+        "median": np.median(errors),
+        "std": np.std(errors),
+        "max": np.max(errors),
+        "min": np.min(errors),
     }
+
 
 def get_trajectory_files(directory: Path) -> List[Path]:
     """Get all CSV files from a directory."""
     return sorted(directory.glob("*.csv"))
 
+
 def analyze_trajectory(
-    traj_name: str,
-    geo_aided_path: Path,
-    degraded_path: Path,
-    truth_path: Path
+    traj_name: str, geo_aided_path: Path, degraded_path: Path, truth_path: Path
 ) -> Tuple[Dict[str, float], Dict[str, float], Dict[str, float]]:
     """
     Analyze a single trajectory.
@@ -125,12 +135,13 @@ def analyze_trajectory(
 
     # Compute difference (geophysical - baseline, negative means improvement)
     improvement_stats = {
-        'rmse': geo_stats['rmse'] - degraded_stats['rmse'],
-        'mean': geo_stats['mean'] - degraded_stats['mean'],
-        'median': geo_stats['median'] - degraded_stats['median']
+        "rmse": geo_stats["rmse"] - degraded_stats["rmse"],
+        "mean": geo_stats["mean"] - degraded_stats["mean"],
+        "median": geo_stats["median"] - degraded_stats["median"],
     }
 
     return geo_stats, degraded_stats, improvement_stats
+
 
 def save_results_to_csv(results: List[Tuple[str, Dict, Dict, Dict]], filename: str):
     """
@@ -143,22 +154,23 @@ def save_results_to_csv(results: List[Tuple[str, Dict, Dict, Dict]], filename: s
     rows = []
     for traj_name, geo_stats, degraded_stats, improvement_stats in results:
         row = {
-            'trajectory': traj_name.replace('.csv', ''),
-            'geo_rmse': geo_stats['rmse'],
-            'geo_mean': geo_stats['mean'],
-            'geo_median': geo_stats['median'],
-            'baseline_rmse': degraded_stats['rmse'],
-            'baseline_mean': degraded_stats['mean'],
-            'baseline_median': degraded_stats['median'],
-            'diff_rmse': improvement_stats['rmse'],
-            'diff_mean': improvement_stats['mean'],
-            'diff_median': improvement_stats['median'],
+            "trajectory": traj_name.replace(".csv", ""),
+            "geo_rmse": geo_stats["rmse"],
+            "geo_mean": geo_stats["mean"],
+            "geo_median": geo_stats["median"],
+            "baseline_rmse": degraded_stats["rmse"],
+            "baseline_mean": degraded_stats["mean"],
+            "baseline_median": degraded_stats["median"],
+            "diff_rmse": improvement_stats["rmse"],
+            "diff_mean": improvement_stats["mean"],
+            "diff_median": improvement_stats["median"],
         }
         rows.append(row)
 
     df = pd.DataFrame(rows)
     df.to_csv(filename, index=False)
     print(f"Saved detailed results to {filename}")
+
 
 def format_latex_table(results: List[Tuple[str, Dict]], title: str) -> str:
     """
@@ -183,17 +195,21 @@ def format_latex_table(results: List[Tuple[str, Dict]], title: str) -> str:
     # Trajectory rows
     for traj_name, stats in results:
         # Clean up trajectory name (remove file extension)
-        clean_name = traj_name.replace('.csv', '').replace('_', '\\_')
+        clean_name = traj_name.replace(".csv", "").replace("_", "\\_")
         lines.append(f"        {clean_name} & {stats['rmse']:.2f} & {stats['mean']:.2f} & {stats['median']:.2f} \\\\")
 
     # Calculate summary statistics
-    rmse_diffs = [s['rmse'] for _, s in results]
-    mean_diffs = [s['mean'] for _, s in results]
-    median_diffs = [s['median'] for _, s in results]
+    rmse_diffs = [s["rmse"] for _, s in results]
+    mean_diffs = [s["mean"] for _, s in results]
+    median_diffs = [s["median"] for _, s in results]
 
     lines.append("        \\midrule")
-    lines.append(f"        mean & {np.mean(rmse_diffs):.2f} & {np.mean(mean_diffs):.2f} & {np.mean(median_diffs):.2f} \\\\")
-    lines.append(f"        median & {np.median(rmse_diffs):.2f} & {np.median(mean_diffs):.2f} & {np.median(median_diffs):.2f} \\\\")
+    lines.append(
+        f"        mean & {np.mean(rmse_diffs):.2f} & {np.mean(mean_diffs):.2f} & {np.mean(median_diffs):.2f} \\\\"
+    )
+    lines.append(
+        f"        median & {np.median(rmse_diffs):.2f} & {np.median(mean_diffs):.2f} & {np.median(median_diffs):.2f} \\\\"
+    )
     lines.append(f"        std & {np.std(rmse_diffs):.2f} & {np.std(mean_diffs):.2f} & {np.std(median_diffs):.2f} \\\\")
     lines.append("        \\bottomrule")
     lines.append("    \\end{tabular}")
@@ -201,6 +217,7 @@ def format_latex_table(results: List[Tuple[str, Dict]], title: str) -> str:
     lines.append("\\end{table}")
 
     return "\n".join(lines)
+
 
 def main():
     """Main analysis function."""
@@ -239,9 +256,7 @@ def main():
             continue
 
         try:
-            geo_stats, degraded_stats, improvement = analyze_trajectory(
-                traj_name, grav_file, degraded_file, truth_file
-            )
+            geo_stats, degraded_stats, improvement = analyze_trajectory(traj_name, grav_file, degraded_file, truth_file)
             grav_results.append((traj_name, improvement))
             grav_detailed.append((traj_name, geo_stats, degraded_stats, improvement))
 
@@ -268,9 +283,7 @@ def main():
             continue
 
         try:
-            geo_stats, degraded_stats, improvement = analyze_trajectory(
-                traj_name, mag_file, degraded_file, truth_file
-            )
+            geo_stats, degraded_stats, improvement = analyze_trajectory(traj_name, mag_file, degraded_file, truth_file)
             mag_results.append((traj_name, improvement))
             mag_detailed.append((traj_name, geo_stats, degraded_stats, improvement))
 
@@ -297,9 +310,7 @@ def main():
             continue
 
         try:
-            geo_stats, degraded_stats, improvement = analyze_trajectory(
-                traj_name, both_file, degraded_file, truth_file
-            )
+            geo_stats, degraded_stats, improvement = analyze_trajectory(traj_name, both_file, degraded_file, truth_file)
             both_results.append((traj_name, improvement))
             both_detailed.append((traj_name, geo_stats, degraded_stats, improvement))
 
@@ -329,7 +340,9 @@ def main():
 
     if grav_results:
         print("\n--- Gravity Table ---")
-        grav_table = format_latex_table(grav_results, "RBPF Gravity-Aided Performance vs Baseline (Geo - Baseline, negative = improvement)")
+        grav_table = format_latex_table(
+            grav_results, "RBPF Gravity-Aided Performance vs Baseline (Geo - Baseline, negative = improvement)"
+        )
         print(grav_table)
 
         # Save to file
@@ -339,7 +352,9 @@ def main():
 
     if mag_results:
         print("\n--- Magnetic Table ---")
-        mag_table = format_latex_table(mag_results, "RBPF Magnetic-Aided Performance vs Baseline (Geo - Baseline, negative = improvement)")
+        mag_table = format_latex_table(
+            mag_results, "RBPF Magnetic-Aided Performance vs Baseline (Geo - Baseline, negative = improvement)"
+        )
         print(mag_table)
 
         with open("rbpf_magnetic_table.tex", "w") as f:
@@ -348,7 +363,9 @@ def main():
 
     if both_results:
         print("\n--- Combined Table ---")
-        both_table = format_latex_table(both_results, "RBPF Combined-Aided Performance vs Baseline (Geo - Baseline, negative = improvement)")
+        both_table = format_latex_table(
+            both_results, "RBPF Combined-Aided Performance vs Baseline (Geo - Baseline, negative = improvement)"
+        )
         print(both_table)
 
         with open("rbpf_combined_table.tex", "w") as f:
@@ -361,31 +378,38 @@ def main():
     print("=" * 80)
 
     if grav_results:
-        grav_improvements = [r[1]['rmse'] for r in grav_results]
+        grav_improvements = [r[1]["rmse"] for r in grav_results]
         print(f"\nGravity-aided:")
-        print(f"  Number of trajectories improved (negative difference): {sum(1 for x in grav_improvements if x < 0)}/{len(grav_improvements)}")
+        print(
+            f"  Number of trajectories improved (negative difference): {sum(1 for x in grav_improvements if x < 0)}/{len(grav_improvements)}"
+        )
         print(f"  Mean RMSE difference: {np.mean(grav_improvements):.2f} m")
         print(f"  Median RMSE difference: {np.median(grav_improvements):.2f} m")
         print(f"  Best (most negative): {min(grav_improvements):.2f} m")
         print(f"  Worst (most positive): {max(grav_improvements):.2f} m")
 
     if mag_results:
-        mag_improvements = [r[1]['rmse'] for r in mag_results]
+        mag_improvements = [r[1]["rmse"] for r in mag_results]
         print(f"\nMagnetic-aided:")
-        print(f"  Number of trajectories improved (negative difference): {sum(1 for x in mag_improvements if x < 0)}/{len(mag_improvements)}")
+        print(
+            f"  Number of trajectories improved (negative difference): {sum(1 for x in mag_improvements if x < 0)}/{len(mag_improvements)}"
+        )
         print(f"  Mean RMSE difference: {np.mean(mag_improvements):.2f} m")
         print(f"  Median RMSE difference: {np.median(mag_improvements):.2f} m")
         print(f"  Best (most negative): {min(mag_improvements):.2f} m")
         print(f"  Worst (most positive): {max(mag_improvements):.2f} m")
 
     if both_results:
-        both_improvements = [r[1]['rmse'] for r in both_results]
+        both_improvements = [r[1]["rmse"] for r in both_results]
         print(f"\nCombined-aided:")
-        print(f"  Number of trajectories improved (negative difference): {sum(1 for x in both_improvements if x < 0)}/{len(both_improvements)}")
+        print(
+            f"  Number of trajectories improved (negative difference): {sum(1 for x in both_improvements if x < 0)}/{len(both_improvements)}"
+        )
         print(f"  Mean RMSE difference: {np.mean(both_improvements):.2f} m")
         print(f"  Median RMSE difference: {np.median(both_improvements):.2f} m")
         print(f"  Best (most negative): {min(both_improvements):.2f} m")
         print(f"  Worst (most positive): {max(both_improvements):.2f} m")
+
 
 if __name__ == "__main__":
     main()

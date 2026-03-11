@@ -1,7 +1,5 @@
 import os
 
-from numpy.char import index
-
 # Ensure non-interactive backend for matplotlib to avoid Tkinter GUI usage
 os.environ.setdefault("MPLBACKEND", "Agg")
 
@@ -13,6 +11,13 @@ from haversine import Unit, haversine_vector
 from pandas import DataFrame, read_csv
 from tqdm import tqdm
 
+from analysis.compare import (
+    compute_error_statistics,
+    compute_improvement_statistics,
+    format_latex_table,
+    print_summary_statistics,
+    save_detailed_results_to_csv,
+)
 from analysis.plotting import plot_performance, plot_relative_performance
 from analysis.preprocess import preprocess_data
 
@@ -110,6 +115,71 @@ def main() -> None:
         help="Output directory for the geophysical performance plots.",
         default="data/output",
     )
+    geoperformance.add_argument(
+        "-f",
+        "--filter-name",
+        type=str,
+        default="geophysical",
+        help="Name of the filter (e.g., rbpf, ukf, ekf) for labeling outputs.",
+    )
+    geoperformance.add_argument(
+        "--geo-type",
+        type=str,
+        default="aided",
+        help="Type of geophysical aiding (e.g., grav, mag, both) for labeling outputs.",
+    )
+    geoperformance.add_argument(
+        "--no-latex",
+        action="store_true",
+        help="Disable LaTeX table generation.",
+    )
+    geoperformance.add_argument(
+        "--no-plots",
+        action="store_true",
+        help="Disable plot generation (only produce CSV and LaTeX outputs).",
+    )
+
+    # Compare filters command for cross-filter comparison
+    compare_filters = command.add_parser(
+        "compare-filters",
+        help="Compare performance across different filter modalities (e.g., RBPF vs UKF vs EKF).",
+    )
+    compare_filters.add_argument(
+        "-i",
+        "--input-dirs",
+        type=str,
+        nargs="+",
+        required=True,
+        help="Input directories containing filter results to compare (one per filter).",
+    )
+    compare_filters.add_argument(
+        "-l",
+        "--labels",
+        type=str,
+        nargs="+",
+        required=True,
+        help="Labels for each filter (must match number of input directories).",
+    )
+    compare_filters.add_argument(
+        "-r",
+        "--reference",
+        type=str,
+        default="data/input",
+        help="Directory containing GPS ground truth CSVs (default: data/input).",
+    )
+    compare_filters.add_argument(
+        "-o",
+        "--output",
+        type=str,
+        default="data/output/filter_comparison",
+        help="Output directory for comparison results.",
+    )
+    compare_filters.add_argument(
+        "--geo-type",
+        type=str,
+        default="comparison",
+        help="Geophysical type label for outputs (e.g., grav, mag, both).",
+    )
 
     args = parser.parse_args()
 
@@ -202,28 +272,48 @@ def performance_analysis(args):
 
 
 def geophysical_performance_analysis(args):
-    """Generate geophysical performance plots."""
+    """Generate geophysical performance analysis with plots, CSV summaries, and LaTeX tables.
+
+    This function processes geophysical-aided navigation results, comparing them against
+    baseline degraded solutions and GPS ground truth. It produces:
+    - Performance plots (PNG) showing error differences over time
+    - CSV summary with error statistics per trajectory
+    - Detailed CSV with per-trajectory statistics for geo, baseline, and differences
+    - LaTeX table for publication
+    - Console summary statistics
+    """
     input_dir = args.processed
-    print(f"Generating geophysical performance plots from data in: {input_dir}")
+    filter_name = args.filter_name
+    geo_type = args.geo_type
+    generate_plots = not args.no_plots
+    generate_latex = not args.no_latex
+
+    print("=" * 80)
+    print(f"Geophysical Performance Analysis: {filter_name.upper()} {geo_type}")
+    print("=" * 80)
+    print(f"Geophysical-aided data: {input_dir}")
 
     datasets = list(Path(input_dir).glob("*.csv"))
     print(f"Found {len(datasets)} datasets to process.")
 
-    print(f"Comparing to reference data in: {args.reference}")
+    print(f"Reference (truth) data: {args.reference}")
     references = list(Path(args.reference).glob("*.csv"))
     print(f"Found {len(references)} reference datasets.")
 
-    print(f"Comparing to degraded data in: {args.degraded}")
+    print(f"Degraded baseline data: {args.degraded}")
     degradeds = list(Path(args.degraded).glob("*.csv"))
     print(f"Found {len(degradeds)} degraded datasets.")
 
     output_path = Path(args.output)
     output_path.mkdir(parents=True, exist_ok=True)
-    print(f"Saving geophysical performance plots to: {args.output}")
+    print(f"Output directory: {args.output}")
+    print(f"Generate plots: {generate_plots}")
+    print(f"Generate LaTeX: {generate_latex}")
 
     reference_path = Path(args.reference)
     degraded_path = Path(args.degraded)
 
+    # Original summary DataFrame (error differences)
     summary_df = DataFrame(
         columns=[
             "Min Horizontal Error (m)",
@@ -240,8 +330,11 @@ def geophysical_performance_analysis(args):
             "RMSE 3D Error (m)",
         ],  # ty:ignore[invalid-argument-type]
         index=[dataset.stem for dataset in datasets],  # ty:ignore[invalid-argument-type]
-        # index.name = "Dataset"  # ty:ignore[unknown-argument]
     )
+
+    # For LaTeX table and detailed results
+    latex_results = []  # List of (traj_name, improvement_stats)
+    detailed_results = []  # List of (traj_name, geo_stats, baseline_stats, improvement_stats)
 
     for dataset in tqdm(datasets):
         geo = read_csv(dataset, parse_dates=True, index_col=0)
@@ -260,53 +353,30 @@ def geophysical_performance_analysis(args):
 
         output_plot = output_path / f"{dataset.stem}_geophysical_performance.png"
         nav = nav.iloc[1:].copy()
-        # print(
-        #     f"Processing dataset {dataset} ({len(geo)}) with reference {reference_file.name} ({len(nav)}) and degraded {degraded_file.name} ({len(degraded_nav)})"
-        # )
 
-        # Check to make sure all three datasets have the same length. If geo is shorter than add the first row of reference to geo to align.
-        # Merge in via index to ensure proper alignment.
+        # Align datasets by index
         if not (len(nav) == len(geo)):
-            # print("Correcting geo to match reference nav.")
-            # print(
-            #     f"Dataset length mismatch for {dataset.name}: geo({len(geo)}), nav({len(nav)}), degraded_nav({len(degraded_nav)}). Attempting to align."
-            # )
-            # Check if the first index of reference is in geo, if not add it.
             if nav.index[0] not in geo.index:
                 first_row = geo.iloc[[0]][["latitude", "longitude", "altitude"]].copy()
                 first_row.index = [nav.index[0]]
                 geo.loc[first_row.index] = first_row
                 geo = geo.sort_index()
-            # Now reindex geo to match nav
             geo = geo.reindex(nav.index)
-            # print(
-            #     f"After alignment, dataset lengths: geo({len(geo)}), nav({len(nav)}), degraded_nav({len(degraded_nav)})"
-            # )
-            # print(geo.head(10))
-            # print(nav.head(10))
-            # print(degraded_nav.head(10))
+
         if not (len(nav) == len(degraded_nav)):
-            # print("Correcting degraded_nav to match reference nav.")
-            # print(
-            #     f"Dataset length mismatch for {dataset.name}: geo({len(geo)}), nav({len(nav)}), degraded_nav({len(degraded_nav)}). Attempting to align."
-            # )
-            # Check if the first index of reference is in degraded_nav, if not add it.
             if nav.index[0] not in degraded_nav.index:
                 first_row = degraded_nav.iloc[[0]][["latitude", "longitude", "altitude"]].copy()
                 first_row.index = [nav.index[0]]
                 degraded_nav.loc[first_row.index] = first_row
                 degraded_nav = degraded_nav.sort_index()
-            # Now reindex degraded_nav to match nav
             degraded_nav = degraded_nav.reindex(nav.index)
-            # print(
-            #     f"After alignment, dataset lengths: geo({len(geo)}), nav({len(nav)}), degraded_nav({len(degraded_nav)})"
-            # )
-            # print(geo.head(10))
-            # print(nav.head(10))
-            # print(degraded_nav.head(10))
 
         try:
-            plot_relative_performance(geo, degraded_nav, nav, output_plot)
+            # Generate plot if enabled
+            if generate_plots:
+                plot_relative_performance(geo, degraded_nav, nav, output_plot)
+
+            # Compute haversine errors
             geo_error = haversine_vector(
                 geo[["latitude", "longitude"]].to_numpy(dtype=np.float64, copy=False),
                 nav[["latitude", "longitude"]].to_numpy(),
@@ -318,9 +388,21 @@ def geophysical_performance_analysis(args):
                 nav[["latitude", "longitude"]].to_numpy(),
                 Unit.METERS,
             )
+
+            # Compute statistics for detailed output
+            geo_stats = compute_error_statistics(geo_error)
+            baseline_stats = compute_error_statistics(deg_error)
+            improvement_stats = compute_improvement_statistics(geo_stats, baseline_stats)
+
+            # Store for LaTeX and detailed CSV
+            latex_results.append((dataset.stem, improvement_stats))
+            detailed_results.append((dataset.stem, geo_stats, baseline_stats, improvement_stats))
+
+            # Original summary DataFrame calculations
             err_diff = geo_error - deg_error
-            geo_rmse = np.sqrt(np.nanmean(geo_error**2))
-            deg_rmse = np.sqrt(np.nanmean(deg_error**2))
+            geo_rmse = geo_stats["rmse"]
+            deg_rmse = baseline_stats["rmse"]
+
             summary_df.loc[dataset.stem] = [
                 np.nanmin(err_diff),
                 np.nanmax(err_diff),
@@ -346,17 +428,47 @@ def geophysical_performance_analysis(args):
                 geo_rmse - deg_rmse,
             ]
         except Exception as e:
-            print(
-                f"Error plotting geophysical performance for {dataset.name}, possible dimension mismatch or missing data: {e}"
-            )
+            print(f"Error processing {dataset.name}, possible dimension mismatch or missing data: {e}")
             continue
+
+    # Add summary statistics to DataFrame
     summary_df.loc["median"] = summary_df.median()
     summary_df.loc["mean"] = summary_df.mean()
     summary_df.loc["std"] = summary_df.std()
 
+    # Save original summary CSV
     summary_file = output_path / "geophysical_performance_summary.csv"
     summary_df.to_csv(summary_file)
-    print("Geophysical performance analysis completed.")
+    print(f"\nSaved performance summary to {summary_file}")
+
+    # Save detailed results CSV
+    if detailed_results:
+        detailed_file = output_path / f"{filter_name}_{geo_type}_detailed_results.csv"
+        save_detailed_results_to_csv(detailed_results, detailed_file)
+        print(f"Saved detailed results to {detailed_file}")
+
+    # Generate and save LaTeX table
+    if generate_latex and latex_results:
+        table_title = (
+            f"{filter_name.upper()} {geo_type.capitalize()}-Aided Performance "
+            "vs Baseline (Geo - Baseline, negative = improvement)"
+        )
+        table_label = f"tab:{filter_name}_{geo_type}_results"
+        latex_table = format_latex_table(latex_results, table_title, table_label)
+
+        tex_file = output_path / f"{filter_name}_{geo_type}_table.tex"
+        with open(tex_file, "w") as f:
+            f.write(latex_table)
+        print(f"Saved LaTeX table to {tex_file}")
+
+    # Print summary statistics
+    if latex_results:
+        print("\n" + "=" * 80)
+        print("SUMMARY STATISTICS")
+        print("=" * 80)
+        print_summary_statistics(latex_results, f"{filter_name.upper()} {geo_type}-aided")
+
+    print("\nGeophysical performance analysis completed.")
 
 
 if __name__ == "__main__":

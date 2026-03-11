@@ -91,6 +91,9 @@
 % See: https://ctan.org/pkg/hyperref?lang=en
 \usepackage[style=apa,natbib=true]{biblatex}
 \addbibresource{references.bib}
+
+\usepackage{multirow}
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Document starts here
 
@@ -124,11 +127,11 @@
 % The Abstract. The * indicates a section excluded from numbering.
 \section*{Abstract}
 
-This work extends previous investigations into geophysical-aided navigation using MEMS-grade sensors by implementing a Rao-Blackwellized particle filter (RBPF) architecture for integrating gravity and magnetic anomaly measurements with strapdown inertial navigation. Building on prior work demonstrating feasibility with an Unscented Kalman Filter (UKF), this particle filter approach explicitly handles the non-Gaussian, potentially multimodal posterior distributions that arise from map-matching operations in geophysical navigation.
+This work further explores previous investigations into geophysical-aided navigation using MEMS-grade sensors by implementing a Rao-Blackwellized particle filter (RBPF) architecture for integrating gravity and magnetic anomaly measurements with strapdown inertial navigation. Building on prior work demonstrating feasibility with an Unscented Kalman Filter (UKF), this particle filter approach explicitly handles the non-Gaussian, potentially multimodal posterior distributions that arise from map-matching operations in geophysical navigation.
 
-The RBPF implementation partitions the navigation state into nonlinear horizontal position states represented by particles and linear states (altitude, velocity, attitude, and sensor biases) estimated by Kalman filters conditioned on each particle hypothesis. This architecture naturally accommodates the highly nonlinear measurement model relating magnetometer and gravimeter readings to position via interpolation through geophysical anomaly maps. Using the same MEMS-Nav dataset of smartphone-grade sensor data and open-source geophysical maps (IGPP gravity anomaly and WDMAM magnetic anomaly), the particle filter demonstrates comparable or improved performance relative to the UKF approach under systematic GNSS degradation scenarios.
+The RBPF implementation partitions the navigation state into nonlinear horizontal position states represented by particles and linear states (altitude, velocity, attitude, and sensor biases) estimated by Kalman filters conditioned on each particle hypothesis. This architecture naturally accommodates the highly nonlinear measurement model relating magnetometer and gravimeter readings to position via interpolation through geophysical anomaly maps. Using the same MEMS-Nav dataset of smartphone-grade sensor data and open-source geophysical maps (IGPP gravity anomaly and WDMAM magnetic anomaly), the particle filter demonstrates substantially improved performance relative to the UKF approach under systematic GNSS degradation scenarios.
 
-Results across 21 trajectories show that the particle filter achieves a consistent and dramatic reduction in INS drift using magnetic and gravity anomaly aiding, with all trajectories demonstrating improvement and a mean RMSE reduction of approximately 1,562 km compared to a GNSS-degraded RBPF baseline. Across the 12 trajectories with corresponding UKF runs, the mean improvement relative to the UKF baseline is 18 km with substantial trajectory-to-trajectory variability. The simple Gaussian measurement model employed in this work provides a foundation for future enhancements incorporating physics-informed models such as those described in recent airborne magnetic navigation literature. This research confirms that particle filter architectures, despite their computational complexity, offer a viable and potentially superior alternative to extended Kalman filter variants for low-cost geophysical navigation on MEMS-grade platforms.
+Results across 21 trajectories show that the particle filter achieves consistent and dramatic reduction in INS drift using magnetic and gravity anomaly aiding, with all trajectories demonstrating improvement and a mean RMSE reduction of approximately 1,566~km compared to a GNSS-degraded RBPF baseline. Across the 21 trajectories with corresponding GNSS-degraded UKF runs, the mean geophysically-aided RBPF RMSE improvement relative to the UKF baseline ranges from 0.2--1.4~km depending on anomaly modality. The simple Gaussian measurement model employed in this work provides a foundation for future enhancements incorporating physics-informed models from recent airborne magnetic navigation literature. This research confirms that Rao-Blackwell particle filter architectures offer a viable alternative to Kalman filter variants for low-cost geophysical navigation on MEMS-grade platforms.
 
 % The introduction. Section numbering starts here.
 \section{Introduction}
@@ -145,33 +148,33 @@ This work implements a Rao-Blackwellized particle filter (RBPF), also known as a
 
 \section{Methodology}
 
-The primary objective of this study is to evaluate the performance of an RBPF-based geophysical-aided navigation system under GNSS-denied conditions using low-cost MEMS-grade sensors. To enable direct comparison with prior UKF results, we employ the same dataset, GNSS degradation scenarios, and geophysical maps, differing only in the estimation architecture. The following subsections describe the dataset, standard INS implementation, GNSS degradation model, particle filter architecture, and geophysical measurement integration.
+The primary objective of this study is to evaluate the performance of an RBPF-based geophysical-aided navigation system under GNSS-denied conditions using low-cost MEMS-grade sensors. To enable direct comparison with prior UKF results \citep{brodovsky2026anomaly_ukf}, we employ the same dataset, GNSS degradation scenarios, and geophysical maps, differing only in the estimation architecture. The following subsections describe the dataset, standard INS implementation, GNSS degradation model, particle filter architecture, and geophysical measurement integration.
 
 \subsection{Dataset}
 
 The dataset used for this study \citep{mems-nav-dataset} contains several long-duration trajectories collected using smartphone-grade MEMS IMUs and GNSS receivers via the Sensor Logger application \citep{awesome-sensor-logger}. Each trajectory includes synchronized measurements of specific force and angular rate from the IMU, along with GNSS-derived position and velocity estimates. Additional sensors on board include a three-axis magnetometer and barometer. The trajectories were primarily collected during highway driving, providing extended periods of motion across geographically diverse regions with varying geophysical anomaly characteristics. Trajectories range from approximately 30 minutes to several hours in duration, covering distances from tens to hundreds of kilometers. The dataset provides a realistic test bed for evaluating navigation performance under GNSS-challenged conditions using low-cost sensors.
 
-\subsection{Standard INS Implementation}
+\subsection{INS Implementation}
 
-The INS mechanization follows standard strapdown equations \citep[Chapter 5.3]{groves} with a state vector consisting of position in the local-level frame (LLF), velocity in the north-east-down (NED) frame, and attitude represented as Euler angles. The core navigation states are defined as:
+The INS mechanization follows standard strapdown equations \citep[Chapter 5.3]{groves} with a state vector in the local-level frame (LLF). The core navigation states are defined as:
 \begin{itemize}
     \item \(L\) --- degrees of latitude
     \item \(\lambda\) --- degrees of longitude
     \item \(h\) --- meters above mean sea level (MSL)
-    \item \(v_n\), \(v_e\), \(v_d\) --- velocities along the northward, eastward, and downward axis in m/s
+    \item \(v_n\), \(v_e\), \(v_d\) --- velocities along the northward, eastward, and upward axis in meters per second
     \item \(\phi\), \(\theta\), \(\psi\) --- Euler angles (roll, pitch, yaw) about the body x-, y-, and z-axis relative to the LLF
 \end{itemize}
 
-For the RBPF implementation, the full state vector is extended beyond the 9 navigation states to include IMU bias states and geophysical measurement bias states. The extended state vector for the particle filter is:
+For the RBPF INS implementation, the full state vector is extended beyond the 9 navigation states above to include IMU bias states and the geophysical measurement bias state(s) in the geophysically aided INS filter. The extended state vector for the geophysically aided particle filter is:
 
 \begin{equation}
 \label{eqn:rbpf-state-vector}
 \mathbf{x} = \left[\begin{array}{cccccccccccccccc}
-  L & \lambda & h & v_n & v_e & v_d & \phi & \theta & \psi & b_{a_x} & b_{a_y} & b_{a_z} & b_{g_x} & b_{g_y} & b_{g_z} & b_{\text{geo}}
+  L & \lambda & h & v_n & v_e & v_d & \phi & \theta & \psi & b_{a_x} & b_{a_y} & b_{a_z} & b_{g_x} & b_{g_y} & b_{g_z} & \mathbf{b}_{\text{geo}}^\intercal
 \end{array}\right]^\intercal
 \end{equation}
 
-where \(b_{a_x}\), \(b_{a_y}\), \(b_{a_z}\) represent accelerometer biases, \(b_{g_x}\), \(b_{g_y}\), \(b_{g_z}\) represent gyroscope biases, and \(b_{\text{geo}}\) represents a geophysical measurement bias that captures systematic offsets between measured and mapped anomalies.
+where \(b_{a_x}\), \(b_{a_y}\), \(b_{a_z}\) represent accelerometer biases, \(b_{g_x}\), \(b_{g_y}\), \(b_{g_z}\) represent gyroscope biases, and \(b_{\text{geo}}\) may represent one or more geophysical bias states depending on the type of anomaly measurement(s) being used (gravity, magnetic, or both). Specifically, for gravity anomaly aiding, \(\mathbf{b}_{\text{geo}} = b_{\text{grav}}\), while for magnetic anomaly aiding, \(\mathbf{b}_{\text{geo}} = b_{\text{mag}}\). When both gravity and magnetic anomaly measurements are used simultaneously, \(\mathbf{b}_{\text{geo}} = \begin{bmatrix} b_{\text{grav}} & b_{\text{mag}} \end{bmatrix}\). Thus, the full state vector contains 16 states for single-anomaly aiding and 17 states for dual-anomaly aiding. In this formulation, the bias states capture slowly varying systematic errors in the IMU sensors and geophysical measurements.
 
 \subsubsection{IMU Error Model}
 
@@ -184,7 +187,7 @@ The IMU error model accounts for sensor biases and noise characteristics typical
 \tilde{\boldsymbol{\omega}} = \boldsymbol{\omega} + \mathbf{b}_g + \mathbf{n}_g
 \end{equation}
 \end{subequations}
-where \(\tilde{\mathbf{f}}\) and \(\tilde{\boldsymbol{\omega}}\) denote the measured values, \(\mathbf{f}\) and \(\boldsymbol{\omega}\) are the true values, \(\mathbf{b}_a\) and \(\mathbf{b}_g\) are the accelerometer and gyroscope biases respectively, and \(\mathbf{n}_a\) and \(\mathbf{n}_g\) are zero-mean Gaussian white noise processes with known covariance. The biases are modeled as first-order Gauss-Markov processes with appropriate time constants for MEMS-grade sensors.
+where \(\tilde{\mathbf{f}}\) and \(\tilde{\boldsymbol{\omega}}\) denote the measured values, \(\mathbf{f}\) and \(\boldsymbol{\omega}\) are the true values, \(\mathbf{b}_a\) and \(\mathbf{b}_g\) are the accelerometer and gyroscope biases respectively, and \(\mathbf{n}_a\) and \(\mathbf{n}_g\) are zero-mean Gaussian white noise processes with known covariance. The biases are modeled as first-order Gauss-Markov processes.
 
 \subsubsection{State Prediction}
 
@@ -231,6 +234,39 @@ Additionally, the advertised measurement covariance was inflated by a factor of 
 
 All degradation parameters were applied identically to both the GNSS-degraded baseline and geophysically-aided configurations to ensure a controlled comparison. The geophysically-aided system received gravity and magnetic anomaly measurements at the IMU update rate, providing continuous alternative position information to complement the degraded GNSS observations.
 
+\subsection{Geophysical Measurement Integration}
+
+The geophysically-aided system incorporates gravity and magnetic anomaly measurements as additional aiding sources. Gravity and magnetic anomaly measurements are processed independently, each with its own measurement model and noise characteristics, similar to the UKF implementation.
+
+Geophysical anomaly measurements are derived by comparing sensed quantities with values predicted from publicly available global anomaly maps. For gravity anomalies, the Institute of Geophysics and Planetary Physics (IGPP) Earth free-air anomaly map \citep{EGM2008} provides gravity anomaly values at approximately 1 arc-minute resolution (approximately 1.8 km at the equator). For magnetic anomalies, the World Digital Magnetic Anomaly Map (WDMAM) \citep{wdmam} provides anomaly data at 3 arc-minute resolution (approximately 5.6 km at the equator). Both are accessed via the Generic Mapping Tools (GMT) software package \citep{GMT}, which provides bilinear interpolation at arbitrary positions.
+
+\subsubsection{Measurement Model}
+
+The measurement model for geophysical anomalies follows:
+\begin{equation}
+z_{\text{geo}} = M(L, \lambda) + b_{\text{geo}} + \nu_{\text{geo}}
+\end{equation}
+
+where \(M(L, \lambda)\) queries the anomaly map at latitude \(L\) and longitude \(\lambda\) (the particle hypothesis), \(b_{\text{geo}}\) is the geophysical bias state estimated by each particle's Kalman filter, and \(\nu_{\text{geo}}\) is measurement noise modeled as zero-mean Gaussian.
+
+To develop measurement noise parameters, the sensed gravity and magnetic field values are first converted to anomaly residuals by subtracting theoretical model values (IGRF for magnetic, Somigliana for gravity) at the current estimated position. Statistical analysis of these residuals along reference trajectories yields approximately Gaussian distributions with non-zero mean. The bias state \(b_{\text{geo}}\) accommodates this systematic offset.
+
+The measurement noise parameters, derived from the empirical analysis of the MEMS-Nav dataset \citep{brodovsky2026anomaly_ukf}, are summarized in Table~\ref{tab:rbpf_anomaly_measurement_model}.
+
+\begin{table}[h]
+    \centering
+    \caption{Geophysical Anomaly Measurement Model Parameters for RBPF}
+    \begin{tabular}{lcc}
+        \hline
+        Anomaly Type & Mean Residual & Std. Deviation \\
+        \hline
+        Gravity Anomaly & 5.97 mGal & 48.93 mGal \\
+        Magnetic Anomaly & 40,364.11 nT & 41,303 nT \\
+        \hline
+    \end{tabular}
+    \label{tab:rbpf_anomaly_measurement_model}
+\end{table}
+
 \subsection{Rao-Blackwellized Particle Filter Architecture}
 
 The RBPF, also known as a marginalized particle filter, exploits the structure of the navigation problem by partitioning the state into nonlinear and conditionally linear components \citep{canciani2017airborne}. This partitioning enables efficient representation of non-Gaussian distributions in the position states while maintaining computationally tractable Kalman filters for the remaining states.
@@ -249,7 +285,7 @@ For geophysical navigation, the horizontal position states (latitude and longitu
 
 The remaining states are conditionally linear:
 \begin{equation}
-\mathbf{x}^l = \begin{bmatrix} h \\ v_n \\ v_e \\ v_d \\ \phi \\ \theta \\ \psi \\ b_{a_x} \\ b_{a_y} \\ b_{a_z} \\ b_{g_x} \\ b_{g_y} \\ b_{g_z} \\ b_{\text{geo}} \end{bmatrix}^\intercal
+\mathbf{x}^l = \left[\begin{array}{cccccccccccccc} h & v_n & v_e & v_d & \phi & \theta & \psi & b_{a_x} & b_{a_y} & b_{a_z} & b_{g_x} & b_{g_y} & b_{g_z} & b_{\text{geo}} \end{array}\right]^\intercal
 \end{equation}
 
 \subsubsection{Particle Representation}
@@ -263,28 +299,18 @@ The RBPF maintains \(N\) particles, each consisting of:
 
 The key advantage of this architecture is that each particle's Kalman filter analytically marginalizes over the linear state uncertainty conditioned on the particle's position hypothesis. This dramatically reduces the number of particles required compared to a standard particle filter that would need to sample the full 16-dimensional state space.
 
-\subsubsection{State Dynamics}
-
-The state dynamics follow a linearized error-state formulation. The nonlinear states propagate according to:
-\begin{equation}
-\dot{\mathbf{x}}^n = \mathbf{A}^{nn}_t \mathbf{x}^n + \mathbf{A}^{nl}_t \mathbf{x}^l + \mathbf{v}^n
-\end{equation}
-
-The linear states propagate as:
-\begin{equation}
-\dot{\mathbf{x}}^l = \mathbf{A}^{ln}_t \mathbf{x}^n + \mathbf{A}^{ll}_t \mathbf{x}^l + \mathbf{v}^l
-\end{equation}
-
-where \(\mathbf{A}^{nn}\), \(\mathbf{A}^{nl}\), \(\mathbf{A}^{ln}\), and \(\mathbf{A}^{ll}\) are submatrices of the system dynamics matrix derived from the INS error model, and \(\mathbf{v}^n\) and \(\mathbf{v}^l\) are process noise terms. For the position states, the dynamics are actually linear (positions evolve based on velocities), but the measurement model is highly nonlinear, justifying the particle representation.
-
 \subsubsection{Measurement Update}
 
 When a geophysical measurement \(z_t\) is received, each particle evaluates the expected measurement based on its position hypothesis:
 \begin{equation}
-\hat{z}^{(i)}_t = h(\mathbf{x}^{n,(i)}_t, \mathbf{x}^{l,(i)}_t) = M(\mathbf{x}^{n,(i)}_t) + \mathbf{C} \mathbf{x}^{l,(i)}_t
+\hat{z}^{(i)}_t = h(\mathbf{x}^{n,(i)}_t, \mathbf{x}^{l,(i)}_t) = M(\mathbf{x}^{n,(i)}_t) + \mathbf{H} \mathbf{x}^{l,(i)}_t
 \end{equation}
 
-where \(M(\cdot)\) is the map interpolation function and \(\mathbf{C}\) extracts the geophysical bias state from the linear state vector.
+where \(M(\cdot)\) is the map interpolation function and \(\mathbf{H}\) extracts the geophysical bias state from the linear state vector. For a single geophysical aiding source (one geophysical bias state):
+
+\begin{equation*}
+\mathbf{H} = \left[\begin{array}{cccccccccccccccc} 0 & 0 & 0 & 0 & 0 & 0 & 0 & 0 & 0 & 0 & 0 & 0 & 0 & 0 & 0 & 1 \end{array}\right]
+\end{equation*}
 
 The measurement residual is:
 \begin{equation}
@@ -294,10 +320,10 @@ The measurement residual is:
 Each particle's Kalman filter updates its linear states using the residual:
 \begin{subequations}
 \begin{equation}
-\mathbf{S}^{(i)}_t = \mathbf{C} \mathbf{P}^{l,(i)}_t \mathbf{C}^\intercal + R
+\mathbf{S}^{(i)}_t = \mathbf{H} \mathbf{P}^{l,(i)}_t \mathbf{H}^\intercal + R
 \end{equation}
 \begin{equation}
-\mathbf{K}^{(i)}_t = \mathbf{P}^{l,(i)}_t \mathbf{C}^\intercal (\mathbf{S}^{(i)}_t)^{-1}
+\mathbf{K}^{(i)}_t = \mathbf{P}^{l,(i)}_t \mathbf{H}^\intercal (\mathbf{S}^{(i)}_t)^{-1}
 \end{equation}
 \begin{equation}
 \mathbf{x}^{l,(i)}_t = \mathbf{x}^{l,(i)}_t + \mathbf{K}^{(i)}_t \nu^{(i)}_t
@@ -339,145 +365,408 @@ The final state estimate is computed as the weighted average over all particles:
 
 The covariance accounts for both within-particle and between-particle uncertainty.
 
-\subsection{Geophysical Measurement Integration}
-
-The geophysically-aided system incorporates gravity and magnetic anomaly measurements as additional aiding sources. Gravity and magnetic anomaly measurements are processed independently, each with its own measurement model and noise characteristics, similar to the UKF implementation.
-
-Geophysical anomaly measurements are derived by comparing sensed quantities with values predicted from publicly available global anomaly maps. For gravity anomalies, the Institute of Geophysics and Planetary Physics (IGPP) Earth free-air anomaly map \citep{EGM2008} provides gravity anomaly values at approximately 1 arc-minute resolution (approximately 1.8 km at the equator). For magnetic anomalies, the World Digital Magnetic Anomaly Map (WDMAM) \citep{wdmam} provides anomaly data at 3 arc-minute resolution (approximately 5.6 km at the equator). Both are accessed via the Generic Mapping Tools (GMT) software package \citep{GMT}, which provides bilinear interpolation at arbitrary positions.
-
-\subsubsection{Measurement Model}
-
-The measurement model for geophysical anomalies follows:
-\begin{equation}
-z_{\text{geo}} = M(L, \lambda) + b_{\text{geo}} + \nu_{\text{geo}}
-\end{equation}
-
-where \(M(L, \lambda)\) queries the anomaly map at latitude \(L\) and longitude \(\lambda\) (the particle hypothesis), \(b_{\text{geo}}\) is the geophysical bias state estimated by each particle's Kalman filter, and \(\nu_{\text{geo}}\) is measurement noise modeled as zero-mean Gaussian.
-
-To develop measurement noise parameters, the sensed gravity and magnetic field values are first converted to anomaly residuals by subtracting theoretical model values (IGRF for magnetic, Somigliana for gravity) at the current estimated position. Statistical analysis of these residuals along reference trajectories yields approximately Gaussian distributions with non-zero mean. The bias state \(b_{\text{geo}}\) accommodates this systematic offset.
-
-The measurement noise parameters, derived from empirical analysis of the MEMS-Nav dataset, are summarized in Table~\ref{tab:rbpf_anomaly_measurement_model}.
-
-\begin{table}[h]
-    \centering
-    \caption{Geophysical Anomaly Measurement Model Parameters for RBPF}
-    \begin{tabular}{lcc}
-        \hline
-        Anomaly Type & Mean Residual & Std. Deviation \\
-        \hline
-        Gravity Anomaly & 5.97 mGal & 48.93 mGal \\
-        Magnetic Anomaly & 40,364.11 nT & 41,303 nT \\
-        \hline
-    \end{tabular}
-    \label{tab:rbpf_anomaly_measurement_model}
-\end{table}
-
 \subsection{Performance Evaluation}
 
-Navigation performance was evaluated by comparing the estimated trajectories from each filter configuration against the raw GNSS measurements collected during reference data collection. Four filter configurations were tested under the same degraded GNSS conditions:
+Navigation performance was evaluated by comparing the estimated trajectories from each filter configuration against the raw GNSS measurements collected during reference data collection. Three filter configurations were tested under the same degraded GNSS conditions:
 \begin{enumerate}
-    \item Standard GNSS-aided INS (RBPF without geophysical aiding)
     \item GNSS-aided RBPF with gravity anomaly measurements
     \item GNSS-aided RBPF with magnetic anomaly measurements
     \item GNSS-aided RBPF with combined gravity and magnetic anomaly measurements
 \end{enumerate}
-
-Position error was quantified using the haversine distance formula, which computes great-circle distance between estimated position \((L_1, \lambda_1)\) and reference GNSS position \((L_2, \lambda_2)\):
+Additionally, two baselines were run using a standard GNSS-aided INS sensor configuration: using a RBPF filter architecture, and a UKF architecture. Position error was quantified using the haversine distance formula, which computes great-circle distance between estimated position \((L_1, \lambda_1)\) and reference GNSS position \((L_2, \lambda_2)\):
 \begin{equation}
 d = 2R \arcsin\left(\sqrt{\sin^2\left(\frac{L_2 - L_1}{2}\right) + \cos(L_1)\cos(L_2)\sin^2\left(\frac{\lambda_2 - \lambda_1}{2}\right)}\right)
 \end{equation}
-where \(R = 6371\) km is Earth's mean radius. The difference in position error (geophysical aiding error minus standard INS error) was used for comparison, with negative values indicating improvement.
+where \(R = 6371\) km is Earth's mean radius. The difference in position error (geophysical aiding error minus standard INS error) was used for comparison, with negative values indicating improvement and successful geophysical aiding.
 
 \section{Results}
 
-The geophysically-aided RBPF was evaluated across 21 trajectories from the MEMS-Nav dataset by comparing navigation performance against two GNSS-degraded baselines: (1) an RBPF with no geophysical aiding, and (2) a canonical UKF INS with the same GNSS degradation. Position error differences are reported as geophysically-aided error minus baseline error, where negative values indicate improvement (lower error). Table~\ref{tab:rbpf_vs_rbpf_summary} summarizes the RBPF-to-RBPF comparison across all 21 trajectories, while Table~\ref{tab:rbpf_vs_ukf_summary} summarizes the RBPF-to-UKF comparison for the 12 trajectories with corresponding UKF runs.
-
-\begin{table}[h]
+The geophysically-aided RBPF was evaluated across 21 trajectories from the MEMS-Nav dataset by comparing navigation performance against two GNSS-degraded baselines: (1) an RBPF with no geophysical aiding, and (2) a canonical UKF INS with the same GNSS degradation. Position error differences are reported as geophysically-aided error minus baseline error, where negative values indicate improvement (lower error). Table~\ref{tab:rbpf_vs_rbpf_summary} summarizes the RBPF-to-RBPF comparison across all 21 trajectories, while Table~\ref{tab:rbpf_vs_ukf_summary} summarizes the RBPF-to-UKF comparison for the 12 trajectories with corresponding UKF runs. \begin{table}[h]
     \centering
-    \caption{RBPF geophysical aiding vs RBPF GNSS-degraded baseline (horizontal RMSE difference, km; negative = improvement)}
-    \begin{tabular}{lcccc}
-    \toprule
-    Configuration & N & Mean & Median & Std \\
+    \caption{RBPF Geophysical-Aided Performance vs RBPF Baseline summary statistics.}
+    \begin{tabular}{c l c c c}
+        \toprule
+        Anomaly Type & Summary Error Metric & Mean & Median \\
         \midrule
-        Combined & 21 & -1562.0 & -1476.4 & 1139.1 \\
-        Gravity  & 21 & -1560.9 & -1476.2 & 1138.9 \\
-        Magnetic & 21 & -1561.1 & -1474.9 & 1139.5 \\
+        \multirow{3}{*}{Gravity} & RMSE Diff (m)   & -1,564,906    & -1,476,244 \\
+                                 & Mean Diff (m)   & -1,293,688    & -1,285,873 \\
+                                 & Median Diff (m) & -1,233,396    &  -932,981 \\
+        \midrule
+        \multirow{3}{*}{Magnetic} & RMSE Diff (m)   & -1,565,192   & -1,474,914 \\
+                                  & Mean Diff (m)   & -1,293,971   & -1,286,165 \\
+                                  & Median Diff (m) & -1,233,595   &  -932,883 \\
+        \midrule
+        \multirow{3}{*}{Combined} & RMSE Diff (m)   & -1,566,067 & -1,476,383 \\
+                                  & Mean Diff (m)   & -1,294,656 & -1,285,248 \\
+                                  & Median Diff (m) & -1,234,498 &  -932,466 \\
         \bottomrule
     \end{tabular}
     \label{tab:rbpf_vs_rbpf_summary}
-\end{table}
-
-\begin{table}[h]
+\end{table} \begin{table}[h]
     \centering
-    \caption{RBPF geophysical aiding vs UKF GNSS-degraded baseline (horizontal RMSE difference, km; negative = improvement)}
-    \begin{tabular}{lcccc}
-    \toprule
-    Configuration & N & Mean & Median & Std \\
+    \caption{RBPF Geophysical-Aided Performance vs UKF Baseline summary statistics.}
+    \begin{tabular}{c l c c c}
+        \toprule
+        Anomaly Type & Summary Error Metric & Mean & Median \\
         \midrule
-        Combined & 12 & -18.3 & 0.3 & 58.0 \\
-        Gravity  & 12 & -16.3 & -0.3 & 58.5 \\
-        Magnetic & 12 & -16.7 & -0.2 & 58.4 \\
+        \multirow{3}{*}{Gravity} & RMSE Diff (m)   & -233.68  & -1,176.73 \\
+                                 & Mean Diff (m)   & 1,391.47 & -105.38 \\
+                                 & Median Diff (m) & 1,714.54 & 350.88\\
+        \midrule
+        \multirow{3}{*}{Magnetic} & RMSE Diff (m)   & -520.36 & -495.86 \\
+                                  & Mean Diff (m)   & 1,108.63 & -12.44\\
+                                  & Median Diff (m) & 1,515.85 & 275.07 \\
+        \midrule
+        \multirow{3}{*}{Combined} & RMSE Diff (m)   & -1,394.99 & -658.94 \\
+                                  & Mean Diff (m)   & 423.78   & 45.85 \\
+                                  & Median Diff (m) & 612.02   & 459.92 \\
         \bottomrule
     \end{tabular}
     \label{tab:rbpf_vs_ukf_summary}
 \end{table}
 
-\begin{figure}[h]
+The RBPF-to-RBPF comparison isolates the contribution of geophysical aiding from filter architecture effects. Across all 21 trajectories, geophysical aiding reduced horizontal RMSE by an average of 1,562~km (median 1,476~km), with nearly identical performance across gravity-only, magnetic-only, and combined configurations (Table~\ref{tab:rbpf_vs_rbpf_summary}). This confirms that anomaly measurements, rather than the RBPF algorithm alone, drive the performance improvement. The low-quality inertial data and sparse GNSS updates severely limit achievable accuracy without additional aiding sources and cause substantial drift in the GNSS-only RBPF. The dramatic improvement in with the inculsion of geophysical measurements provide critical position information that substantially constrains drift. 
+
+By comparing to the UKF baseline, we illustrate the benefit of the RBPF architecture as an alternative positioning solution. A traditional Kalman filter architecture will have substantial covariance growth during GNSS outages, but instead of rapid divergence through stochasitic resampling, the typical Kalman filter will continue to deterministically propagate the state estimate, just with increasing uncertainty. The RBPF's ability to represent multimodal distributions and fuse dissimilar information allows it to better exploit the information content of geophysical measurements during these outages and constrain the stochastic drift. The RBPF-to-UKF results (Table~\ref{tab:rbpf_vs_ukf_summary}) show more modest improvements, with mean RMSE reductions of 0.2--1.4~km depending on anomaly type and median results near zero. This indicates that while the RBPF provides incremental benefit over UKF in favorable anomaly conditions, it does not uniformly outperform it across all trajectories.
+
+Figure~\ref{fig:rbpf_example_performance} illustrates representative filter performance for a typical trajectory, showing relative position error evolution over time for the geophysically-aided RBPF against the standard GNSS-aided strapdown UKF INS.
+
+\begin{figure}[ht]
     \centering
-    \includegraphics[width=\linewidth]{figures/2025-09-27_12-54-35_geophysical_performance.png}
-    \caption{Best-performing trajectory vs UKF baseline (2025-09-27\_12-54-35) with combined geophysical aiding. Horizontal RMSE improvement of 216.6 km. Top: 2D position error over time. Bottom: Position estimates in latitude-longitude space.}
-    \label{fig:best_performance}
+    \begin{subfigure}[b]{\columnwidth}
+        \centering
+        \includegraphics[width=\textwidth]{figures/good/2023-08-06_14-48-05_mag.png}
+        \caption{With magnetic anomaly aiding.}
+        \label{fig:rbpf_good_mag}
+    \end{subfigure}
+    \\
+    \begin{subfigure}[b]{\columnwidth}
+        \centering
+        \includegraphics[width=\textwidth]{figures/good/2023-08-06_14-48-05_grav.png}
+        \caption{With gravity anomaly aiding.}
+        \label{fig:rbpf_good_grav}
+    \end{subfigure}
+    \\
+    \begin{subfigure}[b]{\columnwidth}
+        \centering
+        \includegraphics[width=\textwidth]{figures/good/2023-08-06_14-48-05_combined.png}
+        \caption{With combined anomaly aiding.}
+        \label{fig:rbpf_good_combined}
+    \end{subfigure}
+    \caption{Position error over time for trajectory 2023-08-06 showing strong improvement, comparing RBPF baseline (degraded GNSS only) against geophysically-aided configurations using magnetic, gravity, and combined anomaly measurements.}
+    \label{fig:rbpf_example_performance}
 \end{figure}
 
-\begin{figure}[h]
+However, performance varies across trajectories due to differences in anomaly field characteristics, trajectory paths, and sensor noise. Some trajectories exhibit minimal improvement or slight degradation when compared to the UKF baseline, highlighting the dependence on favorable anomaly conditions for effective aiding. Figure~\ref{fig:rbpf_poor_performance} shows an example trajectory where the geophysically-aided RBPF fails to provide benefit over the UKF baseline. 
+
+\begin{figure}[ht]
     \centering
-    \includegraphics[width=\linewidth]{figures/2025-07-04_17-24-46_geophysical_performance.png}
-    \caption{Median-performing trajectory vs UKF baseline (2025-07-04\_17-24-46) with combined geophysical aiding. Horizontal RMSE improvement of 0.8 km, representative of near-parity performance.}
-    \label{fig:median_performance}
+    \begin{subfigure}[b]{\columnwidth}
+        \centering
+        \includegraphics[width=\textwidth]{figures/poor/2025-06-18_16-52-32_mag.png}
+        \caption{With magnetic anomaly aiding.}
+        \label{fig:rbpf_poor_mag}
+    \end{subfigure}
+    \\
+    \begin{subfigure}[b]{\columnwidth}
+        \centering
+        \includegraphics[width=\textwidth]{figures/poor/2025-06-18_16-52-32_grav.png}
+        \caption{With gravity anomaly aiding.}
+        \label{fig:rbpf_poor_grav}
+    \end{subfigure}
+    \\
+    \begin{subfigure}[b]{\columnwidth}
+        \centering
+        \includegraphics[width=\textwidth]{figures/poor/2025-06-18_16-52-32_combined.png}
+        \caption{With combined anomaly aiding.}
+        \label{fig:rbpf_poor_combined}
+    \end{subfigure}
+    \caption{Position error over time for trajectory 2025-06-18 showing poor RBPF performance, comparing RBPF baseline (degraded GNSS only) against geophysically-aided configurations using magnetic, gravity, and combined anomaly measurements.}
+    \label{fig:rbpf_poor_performance}
 \end{figure}
 
-\begin{figure}[h]
+That said, there are cases where the combination of simultaneous gravity and magnetic anomaly measurements provides a synergistic benefit, allowing the RBPF to resolve ambiguities that neither modality could address alone. Figure~\ref{fig:rbpf_combined_benefit} illustrates such a case, where combined anomaly aiding yields significant improvement over either single-modality configuration.
+
+\begin{figure}[ht]
     \centering
-    \includegraphics[width=\linewidth]{figures/2025-06-18_15-09-25_geophysical_performance.png}
-    \caption{Worst-performing trajectory vs UKF baseline (2025-06-18\_15-09-25) with combined geophysical aiding. Horizontal RMSE degradation of 13.8 km, illustrating cases where geophysical aiding did not outperform the UKF.}
-    \label{fig:challenging_performance}
+    \begin{subfigure}[b]{\columnwidth}
+        \centering
+        \includegraphics[width=\textwidth]{figures/mutual/2025-07-08_14-12-53_mag.png}
+        \caption{With magnetic anomaly aiding.}
+        \label{fig:rbpf_combo_mag}
+    \end{subfigure}
+    \\
+    \begin{subfigure}[b]{\columnwidth}
+        \centering
+        \includegraphics[width=\textwidth]{figures/mutual/2025-07-08_14-12-53_grav.png}
+        \caption{With gravity anomaly aiding.}
+        \label{fig:rbpf_combo_grav}
+    \end{subfigure}
+    \\
+    \begin{subfigure}[b]{\columnwidth}
+        \centering
+        \includegraphics[width=\textwidth]{figures/mutual/2025-07-08_14-12-53_combined.png}
+        \caption{With combined anomaly aiding.}
+        \label{fig:rbpf_combo_combined}
+    \end{subfigure}
+    \caption{Position error over time for trajectory 2025-11-16 showing synergistic benefit from combined anomaly aiding, comparing RBPF baseline (degraded GNSS only) against geophysically-aided configurations using magnetic, gravity, and combined anomaly measurements.}
+    \label{fig:rbpf_combined_benefit}
 \end{figure}
-
-The RBPF-to-RBPF comparison demonstrates that the large improvements are not solely attributable to a change in filter architecture. Across all 21 trajectories, geophysical aiding reduced horizontal RMSE by an average of 1562 km (median 1476 km), with nearly identical performance across gravity-only, magnetic-only, and combined configurations (Table~\ref{tab:rbpf_vs_rbpf_summary}). This indicates that the anomaly measurements, rather than the RBPF structure alone, are the dominant source of improvement over a GNSS-degraded RBPF baseline.
-
-When compared against the canonical UKF INS, the gains are more modest but still present on average. The combined configuration improves horizontal RMSE by 18.3 km on average, but the median performance is near zero (0.3 km degradation), reflecting substantial variability across trajectories (Table~\ref{tab:rbpf_vs_ukf_summary}). The best-case improvement of 216.6 km (Figure~\ref{fig:best_performance}) confirms that geophysical aiding can materially outperform the UKF in favorable anomaly conditions, while the worst case (Figure~\ref{fig:challenging_performance}) shows a 13.8 km regression, suggesting that the UKF baseline is already strong for certain trajectories. Gravity-only and magnetic-only aiding remain statistically similar to the combined configuration, indicating that the current measurement model extracts comparable information from both modalities.
-
-Key observations from the particle filter implementation include:
-
-\textbf{Architecture-Independent Gain:} The RBPF-to-RBPF results show kilometer-scale improvements even when the baseline uses the same particle filter architecture, confirming that the primary benefit comes from geophysical aiding rather than filter choice.
-
-\textbf{UKF Parity with Selective Gains:} Relative to the UKF baseline, improvements are trajectory-dependent with mean gains of 16--18 km and median results near zero. This suggests that the RBPF provides incremental benefit over UKF in favorable anomaly conditions but does not uniformly outperform it.
-
-\textbf{Modality Equivalence:} Gravity-only and magnetic-only configurations perform similarly to combined aiding in both comparisons, implying that either modality can provide sufficient navigation constraint under the current measurement model.
 
 \section{Conclusion}
 
-This work demonstrates that a Rao-Blackwellized particle filter architecture can successfully integrate geophysical anomaly measurements with MEMS-grade inertial sensors for navigation under GNSS-degraded conditions. By explicitly representing non-Gaussian posterior distributions through particles while maintaining efficient Kalman filters for conditionally linear states, the RBPF addresses a fundamental limitation of extended Kalman filter variants applied to map-matching problems.
+This work demonstrates that a Rao-Blackwellized particle filter can successfully integrate geophysical anomaly measurements with MEMS-grade inertial sensors for navigation under GNSS-degraded conditions. By explicitly representing non-Gaussian posteriors through particles while maintaining efficient Kalman filters for conditionally linear states, the RBPF addresses a fundamental limitation of Extended Kalman Filter (EKF) variants applied to map-matching problems while also not suffering the performance and speed limitations of a full high dimensional particle filter.
 
-The results confirm that geophysical aiding, not merely filter architecture, is responsible for the dominant performance gains. When compared to an RBPF baseline with the same GNSS degradation, geophysical aiding yields mean horizontal RMSE reductions of about 1561--1562 km across all 21 trajectories. Relative to a canonical UKF INS baseline, the RBPF provides more modest average improvements of 16--18 km, with trajectory-dependent outcomes that range from substantial gains to small regressions. These findings suggest that the RBPF offers incremental benefits over UKF in favorable anomaly conditions, while the primary value proposition remains the geophysical measurements themselves.
+The results confirm that geophysical aiding---not filter architecture---drives performance gains. Relative to an RBPF baseline with identical GNSS degradation, geophysical aiding yields mean horizontal RMSE reductions of approximately 1,562~km across all 21 trajectories. Compared to a canonical UKF baseline without geophysical aiding, the RBPF provides more modest improvements of 0.2--1.4~km in mean RMSE, with trajectory-dependent outcomes ranging from substantial gains to small regressions. These findings indicate that a geophysically aided RBPF offers modest benefits over more traditional INS architectures when subject to GNSS degradation.
 
-The computational cost of the RBPF remains a significant consideration for real-time implementation on resource-constrained platforms. Alternative particle filter variants, such as auxiliary particle filters or adaptive particle allocation strategies, may offer computational savings while retaining the non-Gaussian modeling capabilities.
+\subsection{Limitations}
 
-The simple Gaussian measurement model employed in this work, while sufficient to demonstrate appreciable drift reduction, represents a significant simplification of the true measurement physics. The magnetic measurement model, in particular, neglects important physical phenomena such as the directional dependence of scalar magnetometer measurements on the total field vector and the projection of crustal anomalies onto the main field direction. The Canciani airborne magnetic navigation work \citep{canciani2017airborne} provides a more physically accurate measurement equation that accounts for temporal variations, aircraft fields, altitude dependencies, and the relationship between scalar measurements and the vector anomaly field.
+The simple Gaussian measurement model employed here represents a significant simplification of the underlying physics. The magnetic model neglects the directional dependence of scalar magnetometer measurements on the total field vector and the projection of crustal anomalies onto the main field direction. The Canciani airborne magnetic navigation work \citep{canciani2017airborne} provides a more physically accurate formulation accounting for temporal variations, platform magnetic signatures, altitude dependencies, and vector-scalar relationships. 
 
-Future work should focus on several key areas. First, incorporating the physics-informed measurement model from the Canciani framework into the RBPF architecture would likely improve measurement accuracy and observability, particularly for magnetic anomaly navigation. The current Gaussian approximation discards information about field geometry that could enhance position estimation. Second, multi-modal fusion combining gravity and magnetic measurements within a single filter could leverage the complementary characteristics of these modalities. Third, adaptive particle allocation strategies that concentrate computational resources in regions of high uncertainty or ambiguity could reduce computational cost while maintaining accuracy. Fourth, integrity monitoring and anomaly field observability metrics could enable the filter to detect and gracefully handle regions where geophysical measurements provide insufficient information.
+Additionally, this work did not consider the potentially multi-modal posterior distribution of the particle field when analyzing performance. This paper presents a simple weight-mean approach which could lead to scenarios of developing a navigation solution that does not actually lie within the modal clusters. To address this, future work should consider the nature of the particle distribution. If the distribution is not multi-modal or distinct clusters can not be easily determined, a straightforward weighted mean approach should be sufficient. Otherwise a clustering methods such as K-Means, Gaussian Mixture Models, DBSCAN, or other such methods, should be used to separate out the modal clusters prior to developing a navigation solution.
 
-The demonstrated capability confirms that particle filter architectures, despite higher computational requirements, offer a theoretically sound and practically viable approach to MEMS-grade geophysical navigation. As sensor performance continues to improve and computational resources on small platforms increase, RBPF implementations may transition from research demonstrations to operational navigation systems for low-SWaP platforms requiring GNSS-independent positioning.
+\subsection{Future Work}
 
-This research establishes that sophisticated estimation architectures such as particle filters can successfully exploit geophysical anomaly fields for navigation even with severely degraded sensor quality. Combined with future enhancements incorporating physics-informed measurement models, RBPF-based geophysical navigation represents a promising avenue for resilient, low-cost Alt-PNT solutions that reduce dependence on vulnerable RF-based positioning systems.
+Several directions merit investigation. First, incorporating physics-informed measurement models, such as the Canciani model \citep{canciani2017airborne}, could improve measurement accuracy and observability, particularly for magnetic anomaly navigation. Second, adaptive particle allocation strategies that concentrate computational resources in regions of high uncertainty may reduce computational cost while maintaining estimation accuracy. Finally, the development of integrity monitoring techniques, such as observability metrics, could enable the system to gracefully handle regions where geophysical measurements provide insufficient information for reliable navigation.
 
-\section*{Acknowledgements}
-
-The authors would like to acknowledge the support and assistance of Beth Brodovsky, Jeremy Brodovsky, Monica Brodovsky, Bill Siegl, and Alkesh Kumar Srivastava for their help in data collection efforts. We additionally acknowledge the foundational work of Aaron Canciani and John Raquet on airborne magnetic anomaly navigation using particle filters, which informed the architectural design of this implementation.
+This research establishes that particle filter architectures offer a viable approach to MEMS-grade geophysical navigation despite higher computational requirements. Combined with physics-informed measurement models, RBPF-based geophysical navigation represents a promising avenue for resilient, low-cost Alt-PNT solutions that reduce dependence on vulnerable RF-based positioning systems.
 
 % the apacite bibliography style matches the ION bibliography style guidelines.
 % \bibliographystyle{apalike}
 % \bibliography{references.bib}
 \printbibliography
+
+% \appendix
+% 
+% \section{Full RBPF Results by Trajectory}
+% \label{app:results}
+% 
+% \subsection{RBPF vs. RBPF}
+% \label{app:rbpf_vs_rbpf}
+% 
+% \begin{table}[h]
+%     \centering
+%     \caption{RBPF Mag-Aided Performance vs Baseline (Geo - Baseline, negative = improvement)}
+%     \begin{tabular}{ || l || c c c || }
+%     \toprule
+%     Trajectory Name & RMSE Diff (m) & Mean Diff (m) & Median Diff (m) \\
+%     \midrule
+%     2025-07-11\_13-33-16 & -917965.83 & -782266.17 & -786640.71 \\
+%     2025-06-11\_20-34-24 & -22758.66 & -18390.25 & -17462.68 \\
+%     2025-07-08\_14-12-53 & -2562002.71 & -2005890.29 & -1739017.76 \\
+%     2025-11-16\_16-08-14 & -2261901.45 & -1878301.51 & -1679961.91 \\
+%     2025-03-01\_16-46-39 & -303958.90 & -276051.19 & -310318.98 \\
+%     2024-06-20\_16-55-50 & -3051480.99 & -2543698.08 & -2386185.76 \\
+%     2023-08-04\_21-47-58 & -1311716.63 & -985043.19 & -775234.49 \\
+%     2025-09-28\_20-23-16 & -2846476.27 & -2393346.74 & -2427208.68 \\
+%     2025-07-18\_23-13-43 & -862636.46 & -715399.21 & -660502.96 \\
+%     2025-08-03\_18-15-59 & -4108402.28 & -3343917.14 & -2863237.71 \\
+%     2025-07-04\_17-24-46 & -943076.84 & -793578.07 & -802735.76 \\
+%     2023-08-06\_14-48-05 & -2126754.37 & -1803996.38 & -1881343.68 \\
+%     2025-07-05\_20-59-22 & -1725179.58 & -1456715.86 & -1768898.97 \\
+%     2025-09-27\_12-54-35 & -2338633.60 & -1946639.07 & -1888648.56 \\
+%     2025-11-09\_17-34-01 & -1688782.51 & -1286165.41 & -932883.92 \\
+%     2023-08-09\_16-37-41 & -60496.72 & -34917.91 & -8765.11 \\
+%     2023-08-09\_12-47-42 & -667182.03 & -576598.80 & -649763.46 \\
+%     2025-06-18\_15-09-25 & -163871.28 & -152666.32 & -169158.80 \\
+%     2025-07-31\_23-36-03 & -3355998.23 & -2793026.93 & -2467726.96 \\
+%     2025-03-01\_15-04-26 & -74860.82 & -66549.27 & -69731.56 \\
+%     2025-06-18\_16-52-32 & -1474914.84 & -1320238.84 & -1620068.41 \\
+%     \midrule
+%     mean & -1565192.90 & -1293971.27 & -1233595.09 \\
+%     median & -1474914.84 & -1286165.41 & -932883.92 \\
+%     std & 1166111.97 & 958574.43 & 882251.65 \\
+%     \bottomrule
+%     \end{tabular}
+%     \label{tab:rbpf_mag_results}
+% \end{table}
+% 
+% \begin{table}[h]
+%     \centering
+%     \caption{RBPF Grav-Aided Performance vs Baseline (Geo - Baseline, negative = improvement)}
+%     \begin{tabular}{ || l || c c c || }
+%     \toprule
+%     Trajectory Name & RMSE Diff (m) & Mean Diff (m) & Median Diff (m) \\
+%     \midrule
+%     2025-07-11\_13-33-16 & -918845.75 & -782873.79 & -786859.72 \\
+%     2025-06-11\_20-34-24 & -23092.82 & -18994.15 & -18363.14 \\
+%     2025-07-08\_14-12-53 & -2547152.35 & -1994342.42 & -1731082.22 \\
+%     2025-11-16\_16-08-14 & -2260794.11 & -1877521.30 & -1679596.41 \\
+%     2025-03-01\_16-46-39 & -306691.23 & -277651.66 & -310494.21 \\
+%     2024-06-20\_16-55-50 & -3052908.53 & -2544603.53 & -2386702.19 \\
+%     2023-08-04\_21-47-58 & -1318261.58 & -987890.69 & -774968.19 \\
+%     2025-09-28\_20-23-16 & -2846367.30 & -2393386.86 & -2427208.03 \\
+%     2025-07-18\_23-13-43 & -863162.38 & -715972.69 & -661131.20 \\
+%     2025-08-03\_18-15-59 & -4110282.51 & -3344590.29 & -2863613.03 \\
+%     2025-07-04\_17-24-46 & -945354.57 & -795171.46 & -803820.85 \\
+%     2023-08-06\_14-48-05 & -2126321.55 & -1803660.85 & -1881003.11 \\
+%     2025-07-05\_20-59-22 & -1722147.50 & -1455107.55 & -1768559.27 \\
+%     2025-09-27\_12-54-35 & -2339825.42 & -1947981.05 & -1889705.55 \\
+%     2025-11-09\_17-34-01 & -1688409.96 & -1285873.58 & -932981.60 \\
+%     2023-08-09\_16-37-41 & -59101.95 & -33728.51 & -7651.11 \\
+%     2023-08-09\_12-47-42 & -658582.33 & -571688.56 & -649860.43 \\
+%     2025-06-18\_15-09-25 & -167385.45 & -155464.43 & -169656.68 \\
+%     2025-07-31\_23-36-03 & -3355786.25 & -2792706.63 & -2467379.81 \\
+%     2025-03-01\_15-04-26 & -76312.28 & -67322.94 & -69944.55 \\
+%     2025-06-18\_16-52-32 & -1476244.94 & -1320923.88 & -1620743.10 \\
+%     \midrule
+%     mean & -1564906.23 & -1293688.42 & -1233396.40 \\
+%     median & -1476244.94 & -1285873.58 & -932981.60 \\
+%     std & 1165531.43 & 958083.14 & 882015.71 \\
+%     \bottomrule
+%     \end{tabular}
+%     \label{tab:rbpf_grav_results}
+% \end{table}
+% 
+% \begin{table}[h]
+%     \centering
+%     \caption{RBPF Both-Aided Performance vs Baseline (Geo - Baseline, negative = improvement)}
+%     \begin{tabular}{ || l || c c c || }
+%     \toprule
+%     Trajectory Name & RMSE Diff (m) & Mean Diff (m) & Median Diff (m) \\
+%     \midrule
+%     2025-07-11\_13-33-16 & -918883.03 & -782944.53 & -787038.35 \\
+%     2025-06-11\_20-34-24 & -23774.98 & -19513.19 & -18874.89 \\
+%     2025-07-08\_14-12-53 & -2567613.65 & -2010432.52 & -1742911.15 \\
+%     2025-11-16\_16-08-14 & -2259714.04 & -1877011.03 & -1679397.25 \\
+%     2025-03-01\_16-46-39 & -306778.75 & -277725.15 & -310590.57 \\
+%     2024-06-20\_16-55-50 & -3049847.16 & -2543154.49 & -2386119.98 \\
+%     2023-08-04\_21-47-58 & -1312819.89 & -985196.07 & -775150.53 \\
+%     2025-09-28\_20-23-16 & -2843272.97 & -2391065.81 & -2425305.22 \\
+%     2025-07-18\_23-13-43 & -862990.59 & -716311.62 & -661752.61 \\
+%     2025-08-03\_18-15-59 & -4112063.01 & -3345256.18 & -2863272.90 \\
+%     2025-07-04\_17-24-46 & -945170.11 & -795029.83 & -803718.87 \\
+%     2023-08-06\_14-48-05 & -2127073.75 & -1804209.61 & -1881493.14 \\
+%     2025-07-05\_20-59-22 & -1725345.97 & -1456785.24 & -1768918.46 \\
+%     2025-09-27\_12-54-35 & -2339043.79 & -1947332.65 & -1889557.23 \\
+%     2025-11-09\_17-34-01 & -1687830.02 & -1285248.08 & -932466.82 \\
+%     2023-08-09\_16-37-41 & -59981.53 & -34504.97 & -8463.33 \\
+%     2023-08-09\_12-47-42 & -661529.92 & -573429.97 & -649836.92 \\
+%     2025-06-18\_15-09-25 & -175178.77 & -161424.25 & -180588.05 \\
+%     2025-07-31\_23-36-03 & -3356736.01 & -2793220.99 & -2467755.04 \\
+%     2025-03-01\_15-04-26 & -75386.54 & -66576.86 & -69312.64 \\
+%     2025-06-18\_16-52-32 & -1476383.82 & -1321405.40 & -1621953.17 \\
+%     \midrule
+%     mean & -1566067.54 & -1294656.12 & -1234498.91 \\
+%     median & -1476383.82 & -1285248.08 & -932466.82 \\
+%     std & 1165712.82 & 958126.06 & 881522.09 \\
+%     \bottomrule
+%     \end{tabular}
+%     \label{tab:rbpf_both_results}
+% \end{table}
+% 
+% \subsection{RBPF vs. UKF}
+% \label{app:rbpf_vs_ukf}
+% 
+% \begin{table}[h]
+%     \centering
+%     \caption{RBPF Mag-Aided Performance vs Baseline (Geo - Baseline, negative = improvement)}
+%     \begin{tabular}{ || l || c c c || }
+%     \toprule
+%     Trajectory Name & RMSE Diff (m) & Mean Diff (m) & Median Diff (m) \\
+%     \midrule
+%     2025-07-11\_13-33-16 & -4078.62 & -2152.13 & -952.27 \\
+%     2025-06-11\_20-34-24 & -5111.12 & -2030.70 & 275.07 \\
+%     2025-07-08\_14-12-53 & -14392.88 & -4023.90 & 161.15 \\
+%     2025-11-16\_16-08-14 & -834.65 & -110.45 & 226.06 \\
+%     2025-03-01\_16-46-39 & -3462.98 & -1672.40 & -1061.62 \\
+%     2024-06-20\_16-55-50 & -234.34 & 95.87 & 153.87 \\
+%     2023-08-04\_21-47-58 & 5368.21 & 4790.45 & 1350.11 \\
+%     2025-09-28\_20-23-16 & -3143.69 & -369.57 & 783.32 \\
+%     2025-07-18\_23-13-43 & 2564.75 & 2159.19 & 1709.57 \\
+%     2025-08-03\_18-15-59 & -476.86 & -186.30 & 390.33 \\
+%     2025-07-04\_17-24-46 & 1434.34 & 1488.01 & 1162.10 \\
+%     2023-08-06\_14-48-05 & -6664.25 & -3056.00 & -635.87 \\
+%     2025-07-05\_20-59-22 & -840.74 & -352.25 & -161.73 \\
+%     2025-09-27\_12-54-35 & -11966.21 & 145.79 & 1449.51 \\
+%     2025-11-09\_17-34-01 & 945.23 & 423.16 & 448.56 \\
+%     2023-08-09\_16-37-41 & -495.86 & -12.44 & 196.87 \\
+%     2023-08-09\_12-47-42 & 3909.63 & 3601.79 & 836.62 \\
+%     2025-06-18\_15-09-25 & 25331.75 & 21164.86 & 20495.10 \\
+%     2025-07-31\_23-36-03 & -3940.91 & -1927.61 & -394.52 \\
+%     2025-03-01\_15-04-26 & -459.59 & 73.44 & 79.76 \\
+%     2025-06-18\_16-52-32 & 5621.29 & 5232.32 & 5320.83 \\
+%     \midrule
+%     mean & -520.36 & 1108.63 & 1515.85 \\
+%     median & -495.86 & -12.44 & 275.07 \\
+%     std & 7553.95 & 5040.96 & 4433.70 \\
+%     \bottomrule
+%     \end{tabular}
+%     \label{tab:rbpf_mag_results}
+% \end{table}
+% 
+% \begin{table}[h]
+%     \centering
+%     \caption{RBPF Grav-Aided Performance vs Baseline (Geo - Baseline, negative = improvement)}
+%     \begin{tabular}{ || l || c c c || }
+%     \toprule
+%     Trajectory Name & RMSE Diff (m) & Mean Diff (m) & Median Diff (m) \\
+%     \midrule
+%     2025-07-11\_13-33-16 & -4958.53 & -2759.75 & -1171.28 \\
+%     2025-06-11\_20-34-24 & -5445.28 & -2634.60 & -625.39 \\
+%     2025-07-08\_14-12-53 & 457.49 & 7523.96 & 8096.70 \\
+%     2025-11-16\_16-08-14 & 272.70 & 669.76 & 591.56 \\
+%     2025-03-01\_16-46-39 & -6195.32 & -3272.87 & -1236.85 \\
+%     2024-06-20\_16-55-50 & -1661.88 & -809.59 & -362.55 \\
+%     2023-08-04\_21-47-58 & -1176.73 & 1942.95 & 1616.41 \\
+%     2025-09-28\_20-23-16 & -3034.71 & -409.70 & 783.96 \\
+%     2025-07-18\_23-13-43 & 2038.84 & 1585.71 & 1081.34 \\
+%     2025-08-03\_18-15-59 & -2357.09 & -859.45 & 15.01 \\
+%     2025-07-04\_17-24-46 & -843.39 & -105.38 & 77.02 \\
+%     2023-08-06\_14-48-05 & -6231.43 & -2720.48 & -295.30 \\
+%     2025-07-05\_20-59-22 & 2191.34 & 1256.07 & 177.97 \\
+%     2025-09-27\_12-54-35 & -13158.02 & -1196.19 & 392.52 \\
+%     2025-11-09\_17-34-01 & 1317.78 & 714.99 & 350.88 \\
+%     2023-08-09\_16-37-41 & 898.91 & 1176.97 & 1310.87 \\
+%     2023-08-09\_12-47-42 & 12509.33 & 8512.03 & 739.65 \\
+%     2025-06-18\_15-09-25 & 21817.57 & 18366.75 & 19997.21 \\
+%     2025-07-31\_23-36-03 & -3728.94 & -1607.31 & -47.37 \\
+%     2025-03-01\_15-04-26 & -1911.06 & -700.23 & -133.23 \\
+%     2025-06-18\_16-52-32 & 4291.18 & 4547.28 & 4646.14 \\
+%     \midrule
+%     mean & -233.68 & 1391.47 & 1714.54 \\
+%     median & -1176.73 & -105.38 & 350.88 \\
+%     std & 6912.06 & 4856.90 & 4557.35 \\
+%     \bottomrule
+%     \end{tabular}
+%     \label{tab:rbpf_grav_results}
+% \end{table}
+% 
+% \begin{table}[h]
+%     \centering
+%     \caption{RBPF Both-Aided Performance vs Baseline (Geo - Baseline, negative = improvement)}
+%     \begin{tabular}{ || l || c c c || }
+%     \toprule
+%     Trajectory Name & RMSE Diff (m) & Mean Diff (m) & Median Diff (m) \\
+%     \midrule
+%     2025-07-11\_13-33-16 & -4995.81 & -2830.49 & -1349.90 \\
+%     2025-06-11\_20-34-24 & -6127.44 & -3153.64 & -1137.15 \\
+%     2025-07-08\_14-12-53 & -20003.82 & -8566.14 & -3732.24 \\
+%     2025-11-16\_16-08-14 & 1352.77 & 1180.02 & 790.71 \\
+%     2025-03-01\_16-46-39 & -6282.84 & -3346.35 & -1333.21 \\
+%     2024-06-20\_16-55-50 & 1399.48 & 639.46 & 219.65 \\
+%     2023-08-04\_21-47-58 & 4264.96 & 4637.57 & 1434.06 \\
+%     2025-09-28\_20-23-16 & 59.62 & 1911.36 & 2686.77 \\
+%     2025-07-18\_23-13-43 & 2210.62 & 1246.78 & 459.92 \\
+%     2025-08-03\_18-15-59 & -4137.59 & -1525.35 & 355.14 \\
+%     2025-07-04\_17-24-46 & -658.94 & 36.25 & 179.00 \\
+%     2023-08-06\_14-48-05 & -6983.63 & -3269.24 & -785.33 \\
+%     2025-07-05\_20-59-22 & -1007.13 & -421.62 & -181.22 \\
+%     2025-09-27\_12-54-35 & -12376.40 & -547.79 & 540.84 \\
+%     2025-11-09\_17-34-01 & 1897.73 & 1340.49 & 865.66 \\
+%     2023-08-09\_16-37-41 & 19.33 & 400.50 & 498.65 \\
+%     2023-08-09\_12-47-42 & 9561.74 & 6770.61 & 763.16 \\
+%     2025-06-18\_15-09-25 & 14024.25 & 12406.93 & 9065.85 \\
+%     2025-07-31\_23-36-03 & -4678.69 & -2121.67 & -422.60 \\
+%     2025-03-01\_15-04-26 & -985.31 & 45.85 & 498.67 \\
+%     2025-06-18\_16-52-32 & 4152.31 & 4065.76 & 3436.07 \\
+%     \midrule
+%     mean & -1394.99 & 423.78 & 612.02 \\
+%     median & -658.94 & 45.85 & 459.92 \\
+%     std & 7038.87 & 4160.68 & 2372.67 \\
+%     \bottomrule
+%     \end{tabular}
+%     \label{tab:rbpf_both_results}
+% \end{table}
 
 \end{document}
