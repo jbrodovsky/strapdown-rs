@@ -43,6 +43,30 @@ analyze performance --processed data/output/ekf/grav --reference data/input/ --o
 analyze performance --processed data/output/ekf/mag --reference data/input/ --output data/output/ekf/mag/performance
 """
 
+# Geophysical performance analysis with LaTeX tables and detailed CSV
+geoperf-ukf-grav = "analyze geoperformance -p data/output/ukf/grav -d data/output/ukf/degraded -r data/input -o data/output/ukf/grav/analysis -f ukf --geo-type grav"
+geoperf-ukf-mag = "analyze geoperformance -p data/output/ukf/mag -d data/output/ukf/degraded -r data/input -o data/output/ukf/mag/analysis -f ukf --geo-type mag"
+geoperf-ukf-both = "analyze geoperformance -p data/output/ukf/both -d data/output/ukf/degraded -r data/input -o data/output/ukf/both/analysis -f ukf --geo-type both"
+
+geoperf-ekf-grav = "analyze geoperformance -p data/output/ekf/grav -d data/output/ekf/degraded -r data/input -o data/output/ekf/grav/analysis -f ekf --geo-type grav"
+geoperf-ekf-mag = "analyze geoperformance -p data/output/ekf/mag -d data/output/ekf/degraded -r data/input -o data/output/ekf/mag/analysis -f ekf --geo-type mag"
+geoperf-ekf-both = "analyze geoperformance -p data/output/ekf/both -d data/output/ekf/degraded -r data/input -o data/output/ekf/both/analysis -f ekf --geo-type both"
+
+# Run all geoperformance analyses
+geoperf-all = """
+analyze geoperformance -p data/output/ukf/grav -d data/output/ukf/degraded -r data/input -o data/output/ukf/grav/analysis -f ukf --geo-type grav && \
+analyze geoperformance -p data/output/ukf/mag -d data/output/ukf/degraded -r data/input -o data/output/ukf/mag/analysis -f ukf --geo-type mag && \
+analyze geoperformance -p data/output/ukf/both -d data/output/ukf/degraded -r data/input -o data/output/ukf/both/analysis -f ukf --geo-type both && \
+analyze geoperformance -p data/output/ekf/grav -d data/output/ekf/degraded -r data/input -o data/output/ekf/grav/analysis -f ekf --geo-type grav && \
+analyze geoperformance -p data/output/ekf/mag -d data/output/ekf/degraded -r data/input -o data/output/ekf/mag/analysis -f ekf --geo-type mag && \
+analyze geoperformance -p data/output/ekf/both -d data/output/ekf/degraded -r data/input -o data/output/ekf/both/analysis -f ekf --geo-type both
+"""
+
+# Run geoperformance for RBPF results (if they exist)
+geoperf-rbpf-grav = "analyze geoperformance -p data/output/rbpf/grav -d data/output/rbpf/degraded -r data/input -o data/output/rbpf/grav/analysis -f rbpf --geo-type grav"
+geoperf-rbpf-mag = "analyze geoperformance -p data/output/rbpf/mag -d data/output/rbpf/degraded -r data/input -o data/output/rbpf/mag/analysis -f rbpf --geo-type mag"
+geoperf-rbpf-both = "analyze geoperformance -p data/output/rbpf/both -d data/output/rbpf/degraded -r data/input -o data/output/rbpf/both/analysis -f rbpf --geo-type both"
+
 # Particle filter simulation with post-processing
 pf-gravity = """
 pf-sim --ins-dir data/output/ukf/degraded --imu-dir data/input --output-dir data/output/pf/gravity_ukf --geo-type gravity --gravity-noise-std 48.93 --num-particles 5000 && \
