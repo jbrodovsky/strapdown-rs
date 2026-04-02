@@ -854,7 +854,10 @@ impl MeasurementModel for CombinedGeophysicalMeasurement {
     fn get_noise(&self) -> DMatrix<f64> {
         let grav_noise = self.gravity.get_noise();
         let mag_noise = self.magnetic.get_noise();
-        DMatrix::from_diagonal(&DVector::from_vec(vec![grav_noise[(0, 0)], mag_noise[(0, 0)]]))
+        DMatrix::from_diagonal(&DVector::from_vec(vec![
+            grav_noise[(0, 0)],
+            mag_noise[(0, 0)],
+        ]))
     }
     fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
         let grav = self.gravity.get_expected_measurement(state);
@@ -1191,16 +1194,13 @@ pub fn geo_closed_loop_ukf(
                     .downcast_mut::<CombinedGeophysicalMeasurement>()
                 {
                     let mean_vec = ukf.get_estimate();
-                    let strapdown: StrapdownState =
-                        (&mean_vec.as_slice()[..9]).try_into().unwrap();
+                    let strapdown: StrapdownState = (&mean_vec.as_slice()[..9]).try_into().unwrap();
                     combined.set_state(&strapdown);
                     ukf.update(combined);
-                } else if let Some(gravity) =
-                    meas.as_any_mut().downcast_mut::<GravityMeasurement>()
+                } else if let Some(gravity) = meas.as_any_mut().downcast_mut::<GravityMeasurement>()
                 {
                     let mean_vec = ukf.get_estimate();
-                    let strapdown: StrapdownState =
-                        (&mean_vec.as_slice()[..9]).try_into().unwrap();
+                    let strapdown: StrapdownState = (&mean_vec.as_slice()[..9]).try_into().unwrap();
                     gravity.set_state(&strapdown);
                     ukf.update(gravity);
                 } else if let Some(magnetic) = meas
@@ -1208,8 +1208,7 @@ pub fn geo_closed_loop_ukf(
                     .downcast_mut::<MagneticAnomalyMeasurement>()
                 {
                     let mean_vec = ukf.get_estimate();
-                    let strapdown: StrapdownState =
-                        (&mean_vec.as_slice()[..9]).try_into().unwrap();
+                    let strapdown: StrapdownState = (&mean_vec.as_slice()[..9]).try_into().unwrap();
                     magnetic.set_state(&strapdown);
                     ukf.update(magnetic);
                 } else {
@@ -1316,16 +1315,13 @@ pub fn geo_closed_loop_ekf(
                     .downcast_mut::<CombinedGeophysicalMeasurement>()
                 {
                     let mean_vec = ekf.get_estimate();
-                    let strapdown: StrapdownState =
-                        (&mean_vec.as_slice()[..9]).try_into().unwrap();
+                    let strapdown: StrapdownState = (&mean_vec.as_slice()[..9]).try_into().unwrap();
                     combined.set_state(&strapdown);
                     ekf_update_geophysical(ekf, combined);
-                } else if let Some(gravity) =
-                    meas.as_any_mut().downcast_mut::<GravityMeasurement>()
+                } else if let Some(gravity) = meas.as_any_mut().downcast_mut::<GravityMeasurement>()
                 {
                     let mean_vec = ekf.get_estimate();
-                    let strapdown: StrapdownState =
-                        (&mean_vec.as_slice()[..9]).try_into().unwrap();
+                    let strapdown: StrapdownState = (&mean_vec.as_slice()[..9]).try_into().unwrap();
                     gravity.set_state(&strapdown);
                     ekf_update_geophysical(ekf, gravity);
                 } else if let Some(magnetic) = meas
@@ -1333,8 +1329,7 @@ pub fn geo_closed_loop_ekf(
                     .downcast_mut::<MagneticAnomalyMeasurement>()
                 {
                     let mean_vec = ekf.get_estimate();
-                    let strapdown: StrapdownState =
-                        (&mean_vec.as_slice()[..9]).try_into().unwrap();
+                    let strapdown: StrapdownState = (&mean_vec.as_slice()[..9]).try_into().unwrap();
                     magnetic.set_state(&strapdown);
                     ekf_update_geophysical(ekf, magnetic);
                 } else {
@@ -1409,7 +1404,11 @@ pub fn geo_closed_loop_rbpf(
 
     // Store the initial state
     let (mean, cov) = rbpf.estimate();
-    results.push(NavigationResult::from_particle_filter(&start_time, &mean, &cov));
+    results.push(NavigationResult::from_particle_filter(
+        &start_time,
+        &mean,
+        &cov,
+    ));
 
     for (i, event) in stream.events.into_iter().enumerate() {
         if i % 10 == 0 || i == total {
@@ -1441,8 +1440,7 @@ pub fn geo_closed_loop_rbpf(
                     .downcast_mut::<CombinedGeophysicalMeasurement>()
                 {
                     combined.set_state(&strapdown);
-                } else if let Some(gravity) =
-                    meas.as_any_mut().downcast_mut::<GravityMeasurement>()
+                } else if let Some(gravity) = meas.as_any_mut().downcast_mut::<GravityMeasurement>()
                 {
                     gravity.set_state(&strapdown);
                 } else if let Some(magnetic) = meas
