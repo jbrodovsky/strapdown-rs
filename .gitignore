@@ -1,4 +1,5 @@
 .vscode
+.claude
 target
 data/raw
 examples/strapdown-sim/out
@@ -29,7 +30,6 @@ examples/strapdown-sim/out
 # pixi environments
 .pixi
 *.egg-info
-
 
 # python notes
 *.ipynb_checkpoints
