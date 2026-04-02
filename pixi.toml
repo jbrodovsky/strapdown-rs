@@ -132,4 +132,3 @@ notebook = ">=7.5.5,<8"
 
 [pypi-dependencies]
 analysis = {path = "./analysis", editable = true}
-pf = {path = "./pf", editable = true}
