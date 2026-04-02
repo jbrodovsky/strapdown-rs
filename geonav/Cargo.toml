@@ -11,7 +11,7 @@ rand_distr = "*"
 csv = "*" # { workspace = true }
 strapdown-core = { path = "../core", features = ["clap"] }
 statrs = "0.18.0"
-netcdf = "0.11.0"
+netcdf = "0.12.0"
 world_magnetic_model = "0.4.0"
 chrono = "0.4.42"
 clap = { version = "4.0", features = ["derive"] }

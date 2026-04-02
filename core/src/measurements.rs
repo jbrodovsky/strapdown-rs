@@ -778,7 +778,7 @@ mod tests {
 
         // State with zero roll/pitch (level)
         let state = DVector::from_vec(vec![
-            0.7854,  // lat (45 deg)
+            std::f64::consts::FRAC_PI_4, // lat (45 deg)
             -2.1293, // lon (-122 deg)
             100.0,   // alt
             0.0, 0.0, 0.0, // velocities
@@ -808,7 +808,7 @@ mod tests {
         };
 
         let state = DVector::from_vec(vec![
-            0.7854, -2.1293, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, // level attitude
+            std::f64::consts::FRAC_PI_4, -2.1293, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, // level attitude
         ]);
 
         let z = meas.get_measurement(&state);
@@ -837,11 +837,11 @@ mod tests {
 
         // Level state
         let level_state =
-            DVector::from_vec(vec![0.7854, -2.1293, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+            DVector::from_vec(vec![std::f64::consts::FRAC_PI_4, -2.1293, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
 
         // Tilted state (10 degrees roll)
         let tilted_state = DVector::from_vec(vec![
-            0.7854, -2.1293, 100.0, 0.0, 0.0, 0.0, 0.1745, 0.0, 0.0, // ~10 deg roll
+            std::f64::consts::FRAC_PI_4, -2.1293, 100.0, 0.0, 0.0, 0.0, 0.1745, 0.0, 0.0, // ~10 deg roll
         ]);
 
         let z_level = meas.get_measurement(&level_state);
@@ -860,13 +860,13 @@ mod tests {
         let meas = MagnetometerYawMeasurement::default();
 
         let state = DVector::from_vec(vec![
-            0.7854, -2.1293, 100.0, 0.0, 0.0, 0.0, 0.1, 0.2, 1.5708, // yaw = π/2
+            std::f64::consts::FRAC_PI_4, -2.1293, 100.0, 0.0, 0.0, 0.0, 0.1, 0.2, std::f64::consts::FRAC_PI_2, // yaw = π/2
         ]);
 
         let expected = meas.get_expected_measurement(&state);
         assert_eq!(expected.len(), 1);
         assert!(
-            (expected[0] - 1.5708).abs() < EPS,
+            (expected[0] - std::f64::consts::FRAC_PI_2).abs() < EPS,
             "Expected measurement should be state yaw"
         );
     }
