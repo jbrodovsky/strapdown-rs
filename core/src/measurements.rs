@@ -779,9 +779,11 @@ mod tests {
         // State with zero roll/pitch (level)
         let state = DVector::from_vec(vec![
             std::f64::consts::FRAC_PI_4, // lat (45 deg)
-            -2.1293, // lon (-122 deg)
-            100.0,   // alt
-            0.0, 0.0, 0.0, // velocities
+            -2.1293,                     // lon (-122 deg)
+            100.0,                       // alt
+            0.0,
+            0.0,
+            0.0, // velocities
             0.0, // roll = 0
             0.0, // pitch = 0
             0.0, // yaw
@@ -808,7 +810,15 @@ mod tests {
         };
 
         let state = DVector::from_vec(vec![
-            std::f64::consts::FRAC_PI_4, -2.1293, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, // level attitude
+            std::f64::consts::FRAC_PI_4,
+            -2.1293,
+            100.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0, // level attitude
         ]);
 
         let z = meas.get_measurement(&state);
@@ -836,12 +846,29 @@ mod tests {
         };
 
         // Level state
-        let level_state =
-            DVector::from_vec(vec![std::f64::consts::FRAC_PI_4, -2.1293, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        let level_state = DVector::from_vec(vec![
+            std::f64::consts::FRAC_PI_4,
+            -2.1293,
+            100.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        ]);
 
         // Tilted state (10 degrees roll)
         let tilted_state = DVector::from_vec(vec![
-            std::f64::consts::FRAC_PI_4, -2.1293, 100.0, 0.0, 0.0, 0.0, 0.1745, 0.0, 0.0, // ~10 deg roll
+            std::f64::consts::FRAC_PI_4,
+            -2.1293,
+            100.0,
+            0.0,
+            0.0,
+            0.0,
+            0.1745,
+            0.0,
+            0.0, // ~10 deg roll
         ]);
 
         let z_level = meas.get_measurement(&level_state);
@@ -860,7 +887,15 @@ mod tests {
         let meas = MagnetometerYawMeasurement::default();
 
         let state = DVector::from_vec(vec![
-            std::f64::consts::FRAC_PI_4, -2.1293, 100.0, 0.0, 0.0, 0.0, 0.1, 0.2, std::f64::consts::FRAC_PI_2, // yaw = π/2
+            std::f64::consts::FRAC_PI_4,
+            -2.1293,
+            100.0,
+            0.0,
+            0.0,
+            0.0,
+            0.1,
+            0.2,
+            std::f64::consts::FRAC_PI_2, // yaw = π/2
         ]);
 
         let expected = meas.get_expected_measurement(&state);
