@@ -4564,11 +4564,7 @@ mod tests {
     fn deserialize_with_missing_trailing_columns_returns_error() {
         let headers = test_header();
         let time = "2023-08-04T21:47:58Z";
-        let row: Vec<String> = vec![
-            time.to_string(),
-            String::from("1.0"),
-            String::from("2.0"),
-        ];
+        let row: Vec<String> = vec![time.to_string(), String::from("1.0"), String::from("2.0")];
         let mut csv_data = String::new();
         csv_data.push_str(&headers.join(","));
         csv_data.push('\n');
@@ -4595,15 +4591,15 @@ mod tests {
         let time = "2023-08-04T21:47:58Z";
         let row: Vec<String> = vec![
             time.to_string(),
-            String::new(), // bearingAccuracy
-            String::new(), // speedAccuracy
-            String::new(), // verticalAccuracy
-            String::new(), // horizontalAccuracy
-            String::new(), // speed
-            String::new(), // bearing
-            String::new(), // altitude
+            String::new(),          // bearingAccuracy
+            String::new(),          // speedAccuracy
+            String::new(),          // verticalAccuracy
+            String::new(),          // horizontalAccuracy
+            String::new(),          // speed
+            String::new(),          // bearing
+            String::new(),          // altitude
             String::from("-122.0"), // longitude
-            String::from("37.0"), // latitude
+            String::from("37.0"),   // latitude
         ];
         let mut csv_data = String::new();
         csv_data.push_str(&headers.join(","));
@@ -4999,7 +4995,10 @@ mod tests {
 
     #[test]
     fn test_health_monitor_check_altitude_out_of_range() {
-        let limits = HealthLimits { alt_m: (-100.0, 10000.0), ..Default::default() };
+        let limits = HealthLimits {
+            alt_m: (-100.0, 10000.0),
+            ..Default::default()
+        };
         let mut monitor = HealthMonitor::new(limits);
 
         let state = vec![
@@ -5057,7 +5056,11 @@ mod tests {
 
     #[test]
     fn test_health_monitor_check_nis_exceeds_threshold() {
-        let limits = HealthLimits { nis_pos_max: 10.0, nis_pos_consec_fail: 3, ..Default::default() };
+        let limits = HealthLimits {
+            nis_pos_max: 10.0,
+            nis_pos_consec_fail: 3,
+            ..Default::default()
+        };
         let mut monitor = HealthMonitor::new(limits);
 
         let state = vec![
@@ -5075,7 +5078,11 @@ mod tests {
 
     #[test]
     fn test_health_monitor_check_nis_reset_on_pass() {
-        let limits = HealthLimits { nis_pos_max: 10.0, nis_pos_consec_fail: 3, ..Default::default() };
+        let limits = HealthLimits {
+            nis_pos_max: 10.0,
+            nis_pos_consec_fail: 3,
+            ..Default::default()
+        };
         let mut monitor = HealthMonitor::new(limits);
 
         let state = vec![
@@ -5332,8 +5339,8 @@ mod tests {
     fn test_navigation_result_from_strapdown_state_with_rotation() {
         let timestamp = Utc::now();
         let state = StrapdownState {
-            latitude: 0.5,   // radians
-            longitude: 1.0,  // radians
+            latitude: 0.5,  // radians
+            longitude: 1.0, // radians
             altitude: 500.0,
             velocity_north: 10.0,
             velocity_east: 5.0,

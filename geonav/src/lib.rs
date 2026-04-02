@@ -1527,7 +1527,7 @@ mod tests {
                 latitude: 40.5 + (i as f64) * 0.001, // Small movement
                 longitude: -73.5 + (i as f64) * 0.001,
                 altitude: 100.0 + (i as f64) * 0.1,
-                speed: 5.0,   // 5 m/s
+                speed: 5.0,    // 5 m/s
                 bearing: 45.0, // 45 degrees
                 acc_x: 0.1,
                 acc_y: 0.1,

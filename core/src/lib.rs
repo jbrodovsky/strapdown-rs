@@ -1580,7 +1580,10 @@ mod tests {
     fn test_velocity_update_enu_vs_ned() {
         // Test that ENU and NED frames handle gravity signs differently
         let state_enu = StrapdownState::default(); // is_enu = true by default
-        let state_ned = StrapdownState { is_enu: false, ..Default::default() };
+        let state_ned = StrapdownState {
+            is_enu: false,
+            ..Default::default()
+        };
 
         // Apply gravity-compensating specific force
         let f = Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0));
