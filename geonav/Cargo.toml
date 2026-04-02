@@ -9,7 +9,7 @@ nalgebra = "*" #{ workspace = true }
 rand = "*" #{ workspace = true }
 rand_distr = "*"
 csv = "*" # { workspace = true }
-strapdown-core = { path = "../core", features = ["clap"] }
+strapdown-core = { path = "../core", features = ["clap"], version = "0.5.0"}
 statrs = "0.18.0"
 netcdf = "0.12.0"
 world_magnetic_model = "0.4.0"
