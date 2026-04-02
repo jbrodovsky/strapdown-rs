@@ -45,6 +45,7 @@ use strapdown::measurements::{
 use strapdown::messages::{
     Event, EventStream, FaultState, GnssDegradationConfig, GnssScheduler, apply_fault,
 };
+use strapdown::rbpf::RaoBlackwellizedParticleFilter;
 use strapdown::sim::health::{HealthLimits, HealthMonitor};
 use strapdown::sim::{NavigationResult, TestDataRecord};
 use strapdown::{IMUData, NavigationFilter, StrapdownState};
@@ -804,6 +805,73 @@ impl MagneticAnomalyMeasurement {
         h
     }
 }
+
+/// Combined gravity and magnetic anomaly measurement model
+///
+/// When both gravity and magnetic anomaly maps are available, this model jointly processes
+/// them as a single 2-dimensional measurement update. This enables cross-correlation between
+/// the two modalities and provides a more statistically efficient update than processing them
+/// sequentially as independent 1D measurements.
+///
+/// The measurement vector is `[gravity_anomaly, magnetic_anomaly]` and the noise covariance
+/// is block-diagonal (assumes independence between gravity and magnetic noise).
+#[derive(Clone, Debug)]
+pub struct CombinedGeophysicalMeasurement {
+    /// Gravity anomaly measurement model
+    pub gravity: GravityMeasurement,
+    /// Magnetic anomaly measurement model
+    pub magnetic: MagneticAnomalyMeasurement,
+}
+
+impl GeophysicalAnomalyMeasurementModel for CombinedGeophysicalMeasurement {
+    fn get_anomaly(&self) -> f64 {
+        // Return gravity anomaly as the primary scalar value.
+        // The combined model produces two anomalies, but this trait method
+        // returns a single value for API compatibility.
+        self.gravity.get_anomaly()
+    }
+    fn set_state(&mut self, state: &StrapdownState) {
+        self.gravity.set_state(state);
+        self.magnetic.set_state(state);
+    }
+}
+
+impl MeasurementModel for CombinedGeophysicalMeasurement {
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn get_dimension(&self) -> usize {
+        2
+    }
+    fn get_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
+        let grav = self.gravity.get_measurement(state);
+        let mag = self.magnetic.get_measurement(state);
+        DVector::from_vec(vec![grav[0], mag[0]])
+    }
+    fn get_noise(&self) -> DMatrix<f64> {
+        let grav_noise = self.gravity.get_noise();
+        let mag_noise = self.magnetic.get_noise();
+        DMatrix::from_diagonal(&DVector::from_vec(vec![grav_noise[(0, 0)], mag_noise[(0, 0)]]))
+    }
+    fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
+        let grav = self.gravity.get_expected_measurement(state);
+        let mag = self.magnetic.get_expected_measurement(state);
+        DVector::from_vec(vec![grav[0], mag[0]])
+    }
+    fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64> {
+        let grav_j = self.gravity.get_jacobian(state);
+        let mag_j = self.magnetic.get_jacobian(state);
+        let ncols = grav_j.ncols();
+        let mut h = DMatrix::<f64>::zeros(2, ncols);
+        h.row_mut(0).copy_from(&grav_j.row(0));
+        h.row_mut(1).copy_from(&mag_j.row(0));
+        h
+    }
+}
+
 //================= Geophysical Navigation Simulation ======================================================
 /// Builds and initializes an event stream that also contains geophysical measurements
 ///
@@ -977,21 +1045,58 @@ pub fn build_event_stream(
 
         // Create geophysical measurements based on loaded maps
         if should_emit_geo {
-            // Process gravity measurements if gravity map is loaded
-            if let Some(ref g_map) = gravity_map
-                && gravity_present
-            {
-                // Calculate observed gravity magnitude
+            let has_gravity = gravity_map.is_some() && gravity_present;
+            let has_magnetic = magnetic_map.is_some() && magnetic_present;
+
+            if has_gravity && has_magnetic {
+                // Both maps available: emit a single combined 2D measurement
+                let g_map = gravity_map.as_ref().unwrap();
+                let m_map = magnetic_map.as_ref().unwrap();
+                let observed_gravity =
+                    (r1.grav_x.powi(2) + r1.grav_y.powi(2) + r1.grav_z.powi(2)).sqrt();
+                let datetime = r1.time;
+                let observed_magnetic =
+                    (r1.mag_x.powi(2) + r1.mag_y.powi(2) + r1.mag_z.powi(2)).sqrt();
+                let meas = CombinedGeophysicalMeasurement {
+                    gravity: GravityMeasurement {
+                        map: g_map.clone(),
+                        noise_std: gravity_noise_std.unwrap_or(100.0),
+                        gravity_observed: observed_gravity,
+                        latitude: f64::NAN,
+                        altitude: f64::NAN,
+                        north_velocity: f64::NAN,
+                        east_velocity: f64::NAN,
+                        bias_from_end: Some(bias_count), // bias_count == 2 when both maps present
+                    },
+                    magnetic: MagneticAnomalyMeasurement {
+                        map: m_map.clone(),
+                        noise_std: magnetic_noise_std.unwrap_or(150.0),
+                        mag_obs: observed_magnetic,
+                        latitude: f64::NAN,
+                        longitude: f64::NAN,
+                        altitude: f64::NAN,
+                        year: datetime.year(),
+                        day: datetime.ordinal() as u16,
+                        bias_from_end: Some(1),
+                    },
+                };
+                events.push(Event::Measurement {
+                    meas: Box::new(meas),
+                    elapsed_s: *t1,
+                });
+            } else if has_gravity {
+                // Gravity-only
+                let g_map = gravity_map.as_ref().unwrap();
                 let observed_gravity =
                     (r1.grav_x.powi(2) + r1.grav_y.powi(2) + r1.grav_z.powi(2)).sqrt();
                 let meas = GravityMeasurement {
                     map: g_map.clone(),
-                    noise_std: gravity_noise_std.unwrap_or(100.0), // Use provided or default value
+                    noise_std: gravity_noise_std.unwrap_or(100.0),
                     gravity_observed: observed_gravity,
-                    latitude: f64::NAN, // to be set in closed-loop using state
-                    altitude: f64::NAN, // to be set in closed-loop using state
-                    north_velocity: f64::NAN, // to be set in closed-loop using state
-                    east_velocity: f64::NAN, // to be set in closed-loop using state
+                    latitude: f64::NAN,
+                    altitude: f64::NAN,
+                    north_velocity: f64::NAN,
+                    east_velocity: f64::NAN,
                     bias_from_end: if bias_count > 0 {
                         Some(bias_count)
                     } else {
@@ -1002,22 +1107,19 @@ pub fn build_event_stream(
                     meas: Box::new(meas),
                     elapsed_s: *t1,
                 });
-            }
-
-            // Process magnetic measurements if magnetic map is loaded
-            if let Some(ref m_map) = magnetic_map
-                && magnetic_present
-            {
+            } else if has_magnetic {
+                // Magnetic-only
+                let m_map = magnetic_map.as_ref().unwrap();
                 let datetime = r1.time;
                 let observed_magnetic =
                     (r1.mag_x.powi(2) + r1.mag_y.powi(2) + r1.mag_z.powi(2)).sqrt();
                 let meas = MagneticAnomalyMeasurement {
                     map: m_map.clone(),
-                    noise_std: magnetic_noise_std.unwrap_or(150.0), // Use provided or default value
+                    noise_std: magnetic_noise_std.unwrap_or(150.0),
                     mag_obs: observed_magnetic,
-                    latitude: f64::NAN,  // to be set in closed-loop using state
-                    longitude: f64::NAN, // to be set in closed-loop using state
-                    altitude: f64::NAN,  // to be set in closed-loop using state
+                    latitude: f64::NAN,
+                    longitude: f64::NAN,
+                    altitude: f64::NAN,
                     year: datetime.year(),
                     day: datetime.ordinal() as u16,
                     bias_from_end: if bias_count > 0 { Some(1) } else { None },
@@ -1084,24 +1186,30 @@ pub fn geo_closed_loop_ukf(
                 // GPS measurements are handled by existing logic
                 // GeophysicalMeasurements need to relate the measured vector/scalar
                 // to the current state (lat, lon, alt) and the map
-                if let Some(gravity) = meas.as_any_mut().downcast_mut::<GravityMeasurement>() {
-                    // Handle GravityMeasurement-specific logic here if needed
-                    // dbg!("Processing GravityMeasurement at time {}", ts);
+                if let Some(combined) = meas
+                    .as_any_mut()
+                    .downcast_mut::<CombinedGeophysicalMeasurement>()
+                {
                     let mean_vec = ukf.get_estimate();
-                    // dbg!("Current State: {:?}", mean_vec.as_slice());
-                    let mean = mean_vec.as_slice();
-                    let strapdown: StrapdownState = (&mean[..9]).try_into().unwrap();
+                    let strapdown: StrapdownState =
+                        (&mean_vec.as_slice()[..9]).try_into().unwrap();
+                    combined.set_state(&strapdown);
+                    ukf.update(combined);
+                } else if let Some(gravity) =
+                    meas.as_any_mut().downcast_mut::<GravityMeasurement>()
+                {
+                    let mean_vec = ukf.get_estimate();
+                    let strapdown: StrapdownState =
+                        (&mean_vec.as_slice()[..9]).try_into().unwrap();
                     gravity.set_state(&strapdown);
                     ukf.update(gravity);
                 } else if let Some(magnetic) = meas
                     .as_any_mut()
                     .downcast_mut::<MagneticAnomalyMeasurement>()
                 {
-                    // Handle MagneticAnomalyMeasurement-specific logic here if needed
-                    //let mean: StrapdownState = ukf.get_mean().as_slice().try_into().unwrap();
                     let mean_vec = ukf.get_estimate();
-                    let mean = mean_vec.as_slice();
-                    let strapdown: StrapdownState = (&mean[..9]).try_into().unwrap();
+                    let strapdown: StrapdownState =
+                        (&mean_vec.as_slice()[..9]).try_into().unwrap();
                     magnetic.set_state(&strapdown);
                     ukf.update(magnetic);
                 } else {
@@ -1203,27 +1311,31 @@ pub fn geo_closed_loop_ekf(
             }
             Event::Measurement { mut meas, .. } => {
                 // Handle geophysical measurements with custom EKF update logic
-                if let Some(gravity) = meas.as_any_mut().downcast_mut::<GravityMeasurement>() {
-                    // Set current state for anomaly calculation
+                if let Some(combined) = meas
+                    .as_any_mut()
+                    .downcast_mut::<CombinedGeophysicalMeasurement>()
+                {
                     let mean_vec = ekf.get_estimate();
-                    let mean = mean_vec.as_slice();
-                    let strapdown: StrapdownState = (&mean[..9]).try_into().unwrap();
+                    let strapdown: StrapdownState =
+                        (&mean_vec.as_slice()[..9]).try_into().unwrap();
+                    combined.set_state(&strapdown);
+                    ekf_update_geophysical(ekf, combined);
+                } else if let Some(gravity) =
+                    meas.as_any_mut().downcast_mut::<GravityMeasurement>()
+                {
+                    let mean_vec = ekf.get_estimate();
+                    let strapdown: StrapdownState =
+                        (&mean_vec.as_slice()[..9]).try_into().unwrap();
                     gravity.set_state(&strapdown);
-
-                    // For EKF with geophysical measurements, use standard update
-                    // The measurement model will compute necessary Jacobians
                     ekf_update_geophysical(ekf, gravity);
                 } else if let Some(magnetic) = meas
                     .as_any_mut()
                     .downcast_mut::<MagneticAnomalyMeasurement>()
                 {
-                    // Set current state for anomaly calculation
                     let mean_vec = ekf.get_estimate();
-                    let mean = mean_vec.as_slice();
-                    let strapdown: StrapdownState = (&mean[..9]).try_into().unwrap();
+                    let strapdown: StrapdownState =
+                        (&mean_vec.as_slice()[..9]).try_into().unwrap();
                     magnetic.set_state(&strapdown);
-
-                    // Custom update with measurement state preparation
                     ekf_update_geophysical(ekf, magnetic);
                 } else {
                     // Handle standard measurements (GPS, baro, etc.)
@@ -1270,6 +1382,101 @@ fn ekf_update_geophysical(
     // The Jacobian computation methods are available in the measurement models via get_jacobian()
     // A future enhancement could modify the EKF to accept precomputed custom Jacobians
     ekf.update(measurement as &dyn MeasurementModel);
+}
+
+/// Closed-loop geophysical navigation simulation using a Rao-Blackwellized Particle Filter.
+///
+/// This function processes an event stream containing IMU, GNSS, and geophysical anomaly
+/// measurements through an RBPF. Geophysical measurements (gravity, magnetic, or combined)
+/// are handled by setting the current state estimate on each measurement model before the
+/// filter update, enabling state-dependent anomaly calculations.
+///
+/// # Arguments
+/// * `rbpf` - Mutable reference to an initialized RBPF
+/// * `stream` - Event stream containing IMU and measurement events
+///
+/// # Returns
+/// Navigation results at each distinct timestamp, or an error if health checks fail
+pub fn geo_closed_loop_rbpf(
+    rbpf: &mut RaoBlackwellizedParticleFilter,
+    stream: EventStream,
+) -> anyhow::Result<Vec<NavigationResult>> {
+    let start_time = stream.start_time;
+    let mut results: Vec<NavigationResult> = Vec::with_capacity(stream.events.len());
+    let total = stream.events.len();
+    let mut last_ts: Option<DateTime<Utc>> = None;
+    let mut monitor = HealthMonitor::new(HealthLimits::default());
+
+    // Store the initial state
+    let (mean, cov) = rbpf.estimate();
+    results.push(NavigationResult::from_particle_filter(&start_time, &mean, &cov));
+
+    for (i, event) in stream.events.into_iter().enumerate() {
+        if i % 10 == 0 || i == total {
+            print!(
+                "\rProcessing data {:.2}%...",
+                (i as f64 / total as f64) * 100.0
+            );
+            use std::io::Write;
+            std::io::stdout().flush().ok();
+        }
+
+        let elapsed_s = match &event {
+            Event::Imu { elapsed_s, .. } => *elapsed_s,
+            Event::Measurement { elapsed_s, .. } => *elapsed_s,
+        };
+        let ts = start_time + Duration::milliseconds((elapsed_s * 1000.0).round() as i64);
+
+        match event {
+            Event::Imu { dt_s, imu, .. } => {
+                rbpf.predict(&imu, dt_s);
+            }
+            Event::Measurement { mut meas, .. } => {
+                // Set current state on geophysical measurements before update
+                let (est, _) = rbpf.estimate();
+                let strapdown: StrapdownState = est.as_slice().try_into().unwrap();
+
+                if let Some(combined) = meas
+                    .as_any_mut()
+                    .downcast_mut::<CombinedGeophysicalMeasurement>()
+                {
+                    combined.set_state(&strapdown);
+                } else if let Some(gravity) =
+                    meas.as_any_mut().downcast_mut::<GravityMeasurement>()
+                {
+                    gravity.set_state(&strapdown);
+                } else if let Some(magnetic) = meas
+                    .as_any_mut()
+                    .downcast_mut::<MagneticAnomalyMeasurement>()
+                {
+                    magnetic.set_state(&strapdown);
+                }
+
+                rbpf.update(meas.as_ref());
+            }
+        }
+
+        let (mean, cov) = rbpf.estimate();
+        if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
+            bail!(e);
+        }
+
+        if Some(ts) != last_ts {
+            if let Some(prev_ts) = last_ts {
+                let (prev_mean, prev_cov) = rbpf.estimate();
+                results.push(NavigationResult::from_particle_filter(
+                    &prev_ts, &prev_mean, &prev_cov,
+                ));
+            }
+            last_ts = Some(ts);
+        }
+
+        if i == total - 1 {
+            results.push(NavigationResult::from_particle_filter(&ts, &mean, &cov));
+        }
+    }
+    debug!("RBPF geophysical navigation simulation complete");
+    Ok(results)
 }
 
 #[cfg(test)]
