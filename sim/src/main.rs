@@ -44,6 +44,8 @@ use geonav::{
     build_event_stream as geo_build_event_stream, geo_closed_loop_ekf, geo_closed_loop_rbpf,
     geo_closed_loop_ukf,
 };
+use rand::SeedableRng;
+use rand::rngs::StdRng;
 #[cfg(feature = "geonav")]
 use std::rc::Rc;
 #[cfg(feature = "geonav")]
@@ -56,9 +58,9 @@ use strapdown::sim::health::HealthMonitor;
 use strapdown::sim::{DEFAULT_PROCESS_NOISE, GeoResolution};
 use strapdown::sim::{
     ExecutionLimits, ExecutionMonitor, FaultArgs, FilterType, NavigationResult, ParticleFilterType,
-    SchedulerArgs, SimulationConfig, SimulationMode, TestDataRecord, UkfConfig, build_fault,
-    build_scheduler, dead_reckoning, initialize_ekf, initialize_eskf, initialize_ukf,
-    run_closed_loop,
+    SchedulerArgs, SimulationConfig, SimulationMode, SyntheticConfig, TestDataRecord, UkfConfig,
+    build_fault, build_scheduler, dead_reckoning, generate_synthetic, initialize_ekf,
+    initialize_eskf, initialize_ukf, run_closed_loop,
 };
 
 const LONG_ABOUT: &str =
@@ -142,7 +144,107 @@ enum Command {
     ParticleFilter(ParticleFilterSimArgs),
 
     #[command(name = "config", about = "Generate a template configuration file")]
-    CreateConfig, //(CreateConfigArgs),
+    CreateConfig,
+
+    #[command(
+        name = "syn",
+        about = "Generate a synthetic INS trajectory",
+        long_about = "Generate synthetic IMU, GNSS, and barometric sensor data from a defined \
+initial kinematic state. The trajectory propagates at constant nav-frame velocity with constant \
+body-frame angular velocity (zero linear and angular acceleration). Perfect IMU increments are \
+computed via inverse mechanization then degraded per the selected IMU quality grade.\n\n\
+Without --no-noise: outputs noisy TestDataRecord CSV compatible with 'cl' and 'pf' modes.\n\
+With --no-noise: outputs 9-state kinematic truth in NavigationResult CSV format."
+    )]
+    Synthetic(SyntheticArgs),
+}
+
+/// Arguments for the `syn` (synthetic trajectory) command
+#[derive(Args, Clone, Debug)]
+struct SyntheticArgs {
+    /// Output CSV file path
+    #[arg(short, long)]
+    output: PathBuf,
+
+    /// Trajectory duration in seconds
+    #[arg(long, default_value_t = 300.0)]
+    duration_s: f64,
+
+    /// IMU sample rate in Hz
+    #[arg(long, default_value_t = 10.0)]
+    sample_rate_hz: f64,
+
+    /// IMU quality grade (controls noise and bias levels)
+    #[arg(long, value_enum, default_value_t = strapdown::IMUQuality::Consumer)]
+    imu_grade: strapdown::IMUQuality,
+
+    /// Output 9-state kinematic truth (NavigationResult format) instead of noisy sensor data
+    #[arg(long)]
+    no_noise: bool,
+
+    /// Random seed for reproducibility
+    #[arg(long, default_value_t = 42)]
+    seed: u64,
+
+    /// Initial latitude in degrees (WGS84)
+    #[arg(long, default_value_t = 0.0)]
+    latitude_deg: f64,
+
+    /// Initial longitude in degrees (WGS84)
+    #[arg(long, default_value_t = 0.0)]
+    longitude_deg: f64,
+
+    /// Initial altitude in meters
+    #[arg(long, default_value_t = 0.0)]
+    altitude_m: f64,
+
+    /// Initial northward velocity in m/s
+    #[arg(long, default_value_t = 0.0)]
+    velocity_north_mps: f64,
+
+    /// Initial eastward velocity in m/s
+    #[arg(long, default_value_t = 0.0)]
+    velocity_east_mps: f64,
+
+    /// Initial downward velocity in m/s (positive down in NED)
+    #[arg(long, default_value_t = 0.0)]
+    velocity_down_mps: f64,
+
+    /// Initial roll angle in degrees
+    #[arg(long, default_value_t = 0.0)]
+    roll_deg: f64,
+
+    /// Initial pitch angle in degrees
+    #[arg(long, default_value_t = 0.0)]
+    pitch_deg: f64,
+
+    /// Initial yaw (heading) angle in degrees
+    #[arg(long, default_value_t = 0.0)]
+    yaw_deg: f64,
+
+    /// Constant body roll rate in degrees/s (angular velocity about x-axis)
+    #[arg(long, default_value_t = 0.0)]
+    angular_velocity_x_dps: f64,
+
+    /// Constant body pitch rate in degrees/s (angular velocity about y-axis)
+    #[arg(long, default_value_t = 0.0)]
+    angular_velocity_y_dps: f64,
+
+    /// Constant body yaw rate in degrees/s (angular velocity about z-axis)
+    #[arg(long, default_value_t = 0.0)]
+    angular_velocity_z_dps: f64,
+
+    /// GNSS horizontal position noise standard deviation in meters
+    #[arg(long, default_value_t = 2.5)]
+    gnss_horizontal_noise_m: f64,
+
+    /// GNSS vertical position noise standard deviation in meters
+    #[arg(long, default_value_t = 5.0)]
+    gnss_vertical_noise_m: f64,
+
+    /// Barometric pressure noise standard deviation in Pascals
+    #[arg(long, default_value_t = 50.0)]
+    baro_noise_std_pa: f64,
 }
 
 /// Common simulation arguments for input/output
@@ -416,8 +518,7 @@ fn process_file(
 
             let results = match filter_config.filter {
                 FilterType::Ukf => {
-                    let mut ukf =
-                        initialize_ukf(records[0].clone(), UkfConfig::default());
+                    let mut ukf = initialize_ukf(records[0].clone(), UkfConfig::default());
                     info!("Initialized UKF");
                     run_closed_loop(&mut ukf, event_stream, None, Some(execution_limits.clone()))
                 }
@@ -642,6 +743,9 @@ fn process_file(
 
             Ok(())
         }
+        SimulationMode::Synthetic => Err(
+            "Synthetic mode does not process input files; use the 'syn' subcommand directly".into(),
+        ),
     }
 }
 
@@ -667,6 +771,35 @@ fn run_from_config(
 
     info!("Configuration loaded successfully");
     info!("Mode: {:?}", config.mode);
+
+    // Synthetic mode has no input file — handle it separately before path validation
+    if matches!(config.mode, SimulationMode::Synthetic) {
+        let syn_config = config
+            .synthetic
+            .ok_or("mode is 'synthetic' but no [synthetic] section found in config file")?;
+        let output = Path::new(&syn_config.output);
+        if let Some(parent) = output.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            validate_output_path(parent)?;
+        }
+        let mut rng = StdRng::seed_from_u64(syn_config.seed);
+        let (truth, sensors) = generate_synthetic(&syn_config, &mut rng);
+        let n = truth.len();
+        info!(
+            "Generated {} synthetic records ({:.1} s at {:.0} Hz)",
+            n, syn_config.duration_s, syn_config.sample_rate_hz
+        );
+        if syn_config.no_noise {
+            NavigationResult::to_csv(&truth, output)?;
+            info!("Truth trajectory written to {}", output.display());
+        } else {
+            TestDataRecord::to_csv(&sensors, output)?;
+            info!("Sensor records written to {}", output.display());
+        }
+        return Ok(());
+    }
+
     info!("Input: {}", config.input);
     info!("Output: {}", config.output);
     info!("Parallel: {}", config.parallel);
@@ -808,6 +941,63 @@ fn run_single_closed_loop_simulation(
             Err(e.into())
         }
     }
+}
+
+/// Execute synthetic trajectory generation
+fn run_synthetic(args: &SyntheticArgs) -> Result<(), Box<dyn Error>> {
+    use strapdown::sim::SyntheticInitialState;
+
+    if let Some(parent) = args.output.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        validate_output_path(parent)?;
+    }
+
+    let config = SyntheticConfig {
+        output: args.output.to_string_lossy().into_owned(),
+        initial_state: SyntheticInitialState {
+            latitude_deg: args.latitude_deg,
+            longitude_deg: args.longitude_deg,
+            altitude_m: args.altitude_m,
+            velocity_north_mps: args.velocity_north_mps,
+            velocity_east_mps: args.velocity_east_mps,
+            velocity_down_mps: args.velocity_down_mps,
+            roll_deg: args.roll_deg,
+            pitch_deg: args.pitch_deg,
+            yaw_deg: args.yaw_deg,
+            angular_velocity_x_dps: args.angular_velocity_x_dps,
+            angular_velocity_y_dps: args.angular_velocity_y_dps,
+            angular_velocity_z_dps: args.angular_velocity_z_dps,
+            is_enu: false,
+        },
+        duration_s: args.duration_s,
+        sample_rate_hz: args.sample_rate_hz,
+        imu_quality: args.imu_grade,
+        seed: args.seed,
+        no_noise: args.no_noise,
+        gnss_horizontal_noise_m: args.gnss_horizontal_noise_m,
+        gnss_vertical_noise_m: args.gnss_vertical_noise_m,
+        baro_noise_std_pa: args.baro_noise_std_pa,
+    };
+
+    let mut rng = StdRng::seed_from_u64(args.seed);
+    let (truth, sensors) = generate_synthetic(&config, &mut rng);
+
+    let n = truth.len();
+    info!(
+        "Generated {} synthetic records ({:.1} s at {:.0} Hz)",
+        n, args.duration_s, args.sample_rate_hz
+    );
+
+    if args.no_noise {
+        NavigationResult::to_csv(&truth, &args.output)?;
+        info!("Truth trajectory written to {}", args.output.display());
+    } else {
+        TestDataRecord::to_csv(&sensors, &args.output)?;
+        info!("Sensor records written to {}", args.output.display());
+    }
+
+    Ok(())
 }
 
 /// Execute dead-reckoning simulation
@@ -1347,8 +1537,7 @@ fn run_rbpf_event_loop(
             Event::Imu { elapsed_s, .. } => *elapsed_s,
             Event::Measurement { elapsed_s, .. } => *elapsed_s,
         };
-        let ts =
-            start_time + chrono::Duration::milliseconds((elapsed_s * 1000.0).round() as i64);
+        let ts = start_time + chrono::Duration::milliseconds((elapsed_s * 1000.0).round() as i64);
 
         match event {
             Event::Imu { dt_s, imu, .. } => {
@@ -2203,6 +2392,7 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
         particle_filter,
         geophysical,
         gnss_degradation,
+        synthetic: None,
     };
 
     // validate output location exists and write to file using appropriate format based on file extension
@@ -2263,6 +2453,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         Some(Command::ClosedLoop(args)) => run_closed_loop_cli(&args),
         Some(Command::ParticleFilter(args)) => run_particle_filter(&args),
         Some(Command::CreateConfig) => create_config_file(),
+        Some(Command::Synthetic(args)) => run_synthetic(&args),
         None => {
             eprintln!("Error: No command provided. Use -h or --help for usage information.");
             std::process::exit(1);

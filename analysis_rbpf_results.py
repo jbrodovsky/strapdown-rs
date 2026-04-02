@@ -10,11 +10,12 @@ This script analyzes the RBPF navigation results and compares them to:
 Outputs LaTeX-formatted tables for the paper.
 """
 
-import pandas as pd
-import numpy as np
 from pathlib import Path
-from haversine import haversine_vector, Unit
 from typing import Dict, List, Tuple
+
+import numpy as np
+import pandas as pd
+from haversine import Unit, haversine_vector
 
 # Directories
 RBPF_GRAV_DIR = Path("data/output/rbpf/grav")

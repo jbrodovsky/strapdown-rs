@@ -238,7 +238,9 @@ pub trait InputModel {
 /// - [2] https://www.vectornav.com/resources/detail/what-is-an-inertial-measurement-unit
 /// - [3] Principles of GNSS, Inertial, and Multisensor Navigation Systems. Chapter 4.4.1, Paul D. Groves, 2nd Edition. Table 4.1
 ///
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 pub enum IMUQuality {
     #[default]
     /// Consumer-grade IMUs are typically low cost MEMS sensors found in consumer electronics (e.g. smartphones), wearables, and basic drones
@@ -1018,6 +1020,7 @@ pub(crate) fn calculate_constant_velocity_acceleration(
 /// # Returns
 /// * Tuple of (IMU data vector, GPS measurements vector, true states vector)
 #[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 pub fn generate_scenario_data(
     initial_state: StrapdownState,
     duration_seconds: usize,
@@ -1347,10 +1350,12 @@ mod tests {
     #[test]
     fn test_velocity_update_initial_velocity() {
         // Initial velocity, zero force, should remain unchanged
-        let mut state = StrapdownState::default();
-        state.velocity_north = 5.0;
-        state.velocity_east = -3.0;
-        state.velocity_vertical = 2.0;
+        let state = StrapdownState {
+            velocity_north: 5.0,
+            velocity_east: -3.0,
+            velocity_vertical: 2.0,
+            ..Default::default()
+        };
         let f = Vector3::from_vec(vec![0.0, 0.0, earth::gravity(&0.0, &0.0)]);
         let dt = 1.0;
         let v_new = velocity_update(&state, f, dt);
@@ -1384,10 +1389,7 @@ mod tests {
     #[test]
     fn vertical_acceleration() {
         // Test vertical acceleration
-        let mut state = StrapdownState::default();
-        state.velocity_north = 0.0;
-        state.velocity_east = 0.0;
-        state.velocity_vertical = 0.0;
+        let state = StrapdownState::default();
         let f = Vector3::from_vec(vec![0.0, 0.0, 2.0 * earth::gravity(&0.0, &0.0)]); // Upward acceleration
         let dt = 1.0;
         let v_new = velocity_update(&state, f, dt);
@@ -1578,8 +1580,7 @@ mod tests {
     fn test_velocity_update_enu_vs_ned() {
         // Test that ENU and NED frames handle gravity signs differently
         let state_enu = StrapdownState::default(); // is_enu = true by default
-        let mut state_ned = StrapdownState::default();
-        state_ned.is_enu = false;
+        let state_ned = StrapdownState { is_enu: false, ..Default::default() };
 
         // Apply gravity-compensating specific force
         let f = Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0));

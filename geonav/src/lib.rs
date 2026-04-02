@@ -854,7 +854,10 @@ impl MeasurementModel for CombinedGeophysicalMeasurement {
     fn get_noise(&self) -> DMatrix<f64> {
         let grav_noise = self.gravity.get_noise();
         let mag_noise = self.magnetic.get_noise();
-        DMatrix::from_diagonal(&DVector::from_vec(vec![grav_noise[(0, 0)], mag_noise[(0, 0)]]))
+        DMatrix::from_diagonal(&DVector::from_vec(vec![
+            grav_noise[(0, 0)],
+            mag_noise[(0, 0)],
+        ]))
     }
     fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
         let grav = self.gravity.get_expected_measurement(state);
@@ -1191,16 +1194,13 @@ pub fn geo_closed_loop_ukf(
                     .downcast_mut::<CombinedGeophysicalMeasurement>()
                 {
                     let mean_vec = ukf.get_estimate();
-                    let strapdown: StrapdownState =
-                        (&mean_vec.as_slice()[..9]).try_into().unwrap();
+                    let strapdown: StrapdownState = (&mean_vec.as_slice()[..9]).try_into().unwrap();
                     combined.set_state(&strapdown);
                     ukf.update(combined);
-                } else if let Some(gravity) =
-                    meas.as_any_mut().downcast_mut::<GravityMeasurement>()
+                } else if let Some(gravity) = meas.as_any_mut().downcast_mut::<GravityMeasurement>()
                 {
                     let mean_vec = ukf.get_estimate();
-                    let strapdown: StrapdownState =
-                        (&mean_vec.as_slice()[..9]).try_into().unwrap();
+                    let strapdown: StrapdownState = (&mean_vec.as_slice()[..9]).try_into().unwrap();
                     gravity.set_state(&strapdown);
                     ukf.update(gravity);
                 } else if let Some(magnetic) = meas
@@ -1208,8 +1208,7 @@ pub fn geo_closed_loop_ukf(
                     .downcast_mut::<MagneticAnomalyMeasurement>()
                 {
                     let mean_vec = ukf.get_estimate();
-                    let strapdown: StrapdownState =
-                        (&mean_vec.as_slice()[..9]).try_into().unwrap();
+                    let strapdown: StrapdownState = (&mean_vec.as_slice()[..9]).try_into().unwrap();
                     magnetic.set_state(&strapdown);
                     ukf.update(magnetic);
                 } else {
@@ -1316,16 +1315,13 @@ pub fn geo_closed_loop_ekf(
                     .downcast_mut::<CombinedGeophysicalMeasurement>()
                 {
                     let mean_vec = ekf.get_estimate();
-                    let strapdown: StrapdownState =
-                        (&mean_vec.as_slice()[..9]).try_into().unwrap();
+                    let strapdown: StrapdownState = (&mean_vec.as_slice()[..9]).try_into().unwrap();
                     combined.set_state(&strapdown);
                     ekf_update_geophysical(ekf, combined);
-                } else if let Some(gravity) =
-                    meas.as_any_mut().downcast_mut::<GravityMeasurement>()
+                } else if let Some(gravity) = meas.as_any_mut().downcast_mut::<GravityMeasurement>()
                 {
                     let mean_vec = ekf.get_estimate();
-                    let strapdown: StrapdownState =
-                        (&mean_vec.as_slice()[..9]).try_into().unwrap();
+                    let strapdown: StrapdownState = (&mean_vec.as_slice()[..9]).try_into().unwrap();
                     gravity.set_state(&strapdown);
                     ekf_update_geophysical(ekf, gravity);
                 } else if let Some(magnetic) = meas
@@ -1333,8 +1329,7 @@ pub fn geo_closed_loop_ekf(
                     .downcast_mut::<MagneticAnomalyMeasurement>()
                 {
                     let mean_vec = ekf.get_estimate();
-                    let strapdown: StrapdownState =
-                        (&mean_vec.as_slice()[..9]).try_into().unwrap();
+                    let strapdown: StrapdownState = (&mean_vec.as_slice()[..9]).try_into().unwrap();
                     magnetic.set_state(&strapdown);
                     ekf_update_geophysical(ekf, magnetic);
                 } else {
@@ -1409,7 +1404,11 @@ pub fn geo_closed_loop_rbpf(
 
     // Store the initial state
     let (mean, cov) = rbpf.estimate();
-    results.push(NavigationResult::from_particle_filter(&start_time, &mean, &cov));
+    results.push(NavigationResult::from_particle_filter(
+        &start_time,
+        &mean,
+        &cov,
+    ));
 
     for (i, event) in stream.events.into_iter().enumerate() {
         if i % 10 == 0 || i == total {
@@ -1441,8 +1440,7 @@ pub fn geo_closed_loop_rbpf(
                     .downcast_mut::<CombinedGeophysicalMeasurement>()
                 {
                     combined.set_state(&strapdown);
-                } else if let Some(gravity) =
-                    meas.as_any_mut().downcast_mut::<GravityMeasurement>()
+                } else if let Some(gravity) = meas.as_any_mut().downcast_mut::<GravityMeasurement>()
                 {
                     gravity.set_state(&strapdown);
                 } else if let Some(magnetic) = meas
@@ -1524,40 +1522,32 @@ mod tests {
             .unwrap();
 
         for i in 0..10 {
-            let mut record = TestDataRecord::default();
-            record.time = base_time + chrono::Duration::seconds(i);
-            record.latitude = 40.5 + (i as f64) * 0.001; // Small movement
-            record.longitude = -73.5 + (i as f64) * 0.001;
-            record.altitude = 100.0 + (i as f64) * 0.1;
-            record.speed = 5.0; // 5 m/s
-            record.bearing = 45.0; // 45 degrees
-
-            // IMU data
-            record.acc_x = 0.1;
-            record.acc_y = 0.1;
-            record.acc_z = 9.8;
-            record.gyro_x = 0.01;
-            record.gyro_y = 0.01;
-            record.gyro_z = 0.01;
-
-            // Gravity data
-            record.grav_x = 0.1;
-            record.grav_y = 0.1;
-            record.grav_z = 9.8;
-
-            // Magnetic data
-            record.mag_x = 20000.0; // micro teslas
-            record.mag_y = 5000.0;
-            record.mag_z = 45000.0;
-
-            // Other measurements
-            record.relative_altitude = i as f64 * 0.1;
-            record.pressure = 1013.25 - (i as f64) * 0.1;
-            record.horizontal_accuracy = 3.0;
-            record.vertical_accuracy = 5.0;
-            record.speed_accuracy = 0.1;
-
-            records.push(record);
+            records.push(TestDataRecord {
+                time: base_time + chrono::Duration::seconds(i),
+                latitude: 40.5 + (i as f64) * 0.001, // Small movement
+                longitude: -73.5 + (i as f64) * 0.001,
+                altitude: 100.0 + (i as f64) * 0.1,
+                speed: 5.0,   // 5 m/s
+                bearing: 45.0, // 45 degrees
+                acc_x: 0.1,
+                acc_y: 0.1,
+                acc_z: 9.8,
+                gyro_x: 0.01,
+                gyro_y: 0.01,
+                gyro_z: 0.01,
+                grav_x: 0.1,
+                grav_y: 0.1,
+                grav_z: 9.8,
+                mag_x: 20000.0, // micro teslas
+                mag_y: 5000.0,
+                mag_z: 45000.0,
+                relative_altitude: i as f64 * 0.1,
+                pressure: 1013.25 - (i as f64) * 0.1,
+                horizontal_accuracy: 3.0,
+                vertical_accuracy: 5.0,
+                speed_accuracy: 0.1,
+                ..Default::default()
+            });
         }
 
         records

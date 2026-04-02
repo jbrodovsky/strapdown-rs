@@ -2694,7 +2694,7 @@ pub mod execution {
         /// # Example
         ///
         /// ```no_run
-        /// # use strapdown_core::sim::{ExecutionMonitor, ExecutionLimits};
+        /// # use strapdown::sim::{ExecutionMonitor, ExecutionLimits};
         /// let limits = ExecutionLimits::default();
         /// let mut monitor = ExecutionMonitor::new(limits, 100.0);
         ///
@@ -3020,6 +3020,8 @@ pub enum SimulationMode {
     ClosedLoop,
     /// Particle filter based navigation
     ParticleFilter,
+    /// Synthetic trajectory generation from initial kinematic state
+    Synthetic,
 }
 
 /// Filter type for closed-loop mode
@@ -3249,8 +3251,10 @@ impl Default for LoggingConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SimulationConfig {
     /// Input CSV file path (relative or absolute)
+    #[serde(default = "default_input")]
     pub input: String,
     /// Output CSV file path (relative or absolute)
+    #[serde(default = "default_output")]
     pub output: String,
     /// Simulation mode
     pub mode: SimulationMode,
@@ -3281,6 +3285,17 @@ pub struct SimulationConfig {
     /// GNSS degradation configuration (scheduler + fault model)
     #[serde(default)]
     pub gnss_degradation: crate::messages::GnssDegradationConfig,
+    /// Synthetic trajectory configuration (only used if mode is Synthetic)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub synthetic: Option<SyntheticConfig>,
+}
+
+fn default_input() -> String {
+    "input.csv".to_string()
+}
+
+fn default_output() -> String {
+    "output.csv".to_string()
 }
 
 fn default_seed() -> u64 {
@@ -3302,6 +3317,7 @@ impl Default for SimulationConfig {
             particle_filter: None,
             geophysical: None,
             gnss_degradation: crate::messages::GnssDegradationConfig::default(),
+            synthetic: None,
         }
     }
 }
@@ -3635,6 +3651,464 @@ impl GeonavSimulationConfig {
     }
 }
 
+// ==================== Synthetic Trajectory Generation ====================
+
+/// Initial kinematic state for synthetic trajectory generation.
+///
+/// Defines the starting position, velocity, attitude, and angular velocity
+/// for a synthetic trajectory. The trajectory maintains constant nav-frame
+/// velocity and constant body-frame angular velocity (zero linear and angular
+/// acceleration).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SyntheticInitialState {
+    /// Starting latitude in degrees (WGS84)
+    pub latitude_deg: f64,
+    /// Starting longitude in degrees (WGS84)
+    pub longitude_deg: f64,
+    /// Starting altitude in meters (WGS84)
+    pub altitude_m: f64,
+    /// Initial northward velocity in m/s (NED frame)
+    #[serde(default)]
+    pub velocity_north_mps: f64,
+    /// Initial eastward velocity in m/s (NED frame)
+    #[serde(default)]
+    pub velocity_east_mps: f64,
+    /// Initial downward velocity in m/s (positive down in NED, positive up in ENU)
+    #[serde(default)]
+    pub velocity_down_mps: f64,
+    /// Initial roll angle in degrees
+    #[serde(default)]
+    pub roll_deg: f64,
+    /// Initial pitch angle in degrees
+    #[serde(default)]
+    pub pitch_deg: f64,
+    /// Initial yaw (heading) angle in degrees
+    #[serde(default)]
+    pub yaw_deg: f64,
+    /// Constant body-frame roll rate in degrees/s (angular velocity about x-axis)
+    #[serde(default)]
+    pub angular_velocity_x_dps: f64,
+    /// Constant body-frame pitch rate in degrees/s (angular velocity about y-axis)
+    #[serde(default)]
+    pub angular_velocity_y_dps: f64,
+    /// Constant body-frame yaw rate in degrees/s (angular velocity about z-axis)
+    #[serde(default)]
+    pub angular_velocity_z_dps: f64,
+    /// Coordinate frame: true = ENU, false = NED (default)
+    #[serde(default)]
+    pub is_enu: bool,
+}
+
+impl Default for SyntheticInitialState {
+    fn default() -> Self {
+        Self {
+            latitude_deg: 0.0,
+            longitude_deg: 0.0,
+            altitude_m: 0.0,
+            velocity_north_mps: 0.0,
+            velocity_east_mps: 0.0,
+            velocity_down_mps: 0.0,
+            roll_deg: 0.0,
+            pitch_deg: 0.0,
+            yaw_deg: 0.0,
+            angular_velocity_x_dps: 0.0,
+            angular_velocity_y_dps: 0.0,
+            angular_velocity_z_dps: 0.0,
+            is_enu: false,
+        }
+    }
+}
+
+fn default_sample_rate_hz() -> f64 {
+    10.0
+}
+
+fn default_gnss_horizontal_noise_m() -> f64 {
+    2.5
+}
+
+fn default_gnss_vertical_noise_m() -> f64 {
+    5.0
+}
+
+fn default_baro_noise_std_pa() -> f64 {
+    50.0
+}
+
+/// Configuration for the `syn` (synthetic trajectory) command.
+///
+/// Generates synthetic IMU, GNSS, and barometric sensor data from a defined
+/// initial kinematic state. The trajectory propagates at constant nav-frame
+/// velocity with constant body angular velocity.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SyntheticConfig {
+    /// Output CSV file path
+    pub output: String,
+    /// Initial kinematic state (position, velocity, attitude, angular velocity)
+    #[serde(default)]
+    pub initial_state: SyntheticInitialState,
+    /// Trajectory duration in seconds
+    pub duration_s: f64,
+    /// IMU sample rate in Hz
+    #[serde(default = "default_sample_rate_hz")]
+    pub sample_rate_hz: f64,
+    /// IMU quality grade (controls noise and bias levels)
+    #[serde(default)]
+    pub imu_quality: crate::IMUQuality,
+    /// Random number generator seed for reproducibility
+    #[serde(default = "default_seed")]
+    pub seed: u64,
+    /// If true, output 9-state kinematic truth (NavigationResult format).
+    /// If false (default), output noisy sensor measurements (TestDataRecord format).
+    #[serde(default)]
+    pub no_noise: bool,
+    /// GNSS horizontal position noise standard deviation in meters
+    #[serde(default = "default_gnss_horizontal_noise_m")]
+    pub gnss_horizontal_noise_m: f64,
+    /// GNSS vertical position noise standard deviation in meters
+    #[serde(default = "default_gnss_vertical_noise_m")]
+    pub gnss_vertical_noise_m: f64,
+    /// Barometric pressure noise standard deviation in Pascals
+    #[serde(default = "default_baro_noise_std_pa")]
+    pub baro_noise_std_pa: f64,
+}
+
+impl SyntheticConfig {
+    /// Write config to a file, choosing format by extension (.json, .yaml, .yml, .toml)
+    pub fn to_file<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
+        let p = path.as_ref();
+        let ext = p
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_lowercase());
+        match ext.as_deref() {
+            Some("json") => {
+                let json = serde_json::to_string_pretty(self)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                std::fs::write(p, json)
+            }
+            Some("yaml") | Some("yml") => {
+                let yaml = serde_yaml::to_string(self)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                std::fs::write(p, yaml)
+            }
+            Some("toml") => {
+                let toml = toml::to_string_pretty(self)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                std::fs::write(p, toml)
+            }
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unsupported file extension (expected .json, .yaml, .yml, or .toml)",
+            )),
+        }
+    }
+
+    /// Read config from a file, choosing format by extension (.json, .yaml, .yml, .toml)
+    pub fn from_file<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let p = path.as_ref();
+        let ext = p
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_lowercase());
+        let contents = std::fs::read_to_string(p)?;
+        match ext.as_deref() {
+            Some("json") => serde_json::from_str(&contents)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)),
+            Some("yaml") | Some("yml") => serde_yaml::from_str(&contents)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)),
+            Some("toml") => {
+                toml::from_str(&contents).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+            }
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unsupported file extension (expected .json, .yaml, .yml, or .toml)",
+            )),
+        }
+    }
+}
+
+/// Compute the perfect (noise-free) IMU measurements required to maintain constant
+/// nav-frame velocity with a specified constant body angular velocity.
+///
+/// The gyroscope reading is the sum of the desired body rotation rate and the
+/// Earth/transport rate compensation (so the filter sees the full inertial angular rate).
+/// The accelerometer reading is the specific force needed to keep nav-frame velocity
+/// constant (zero linear acceleration), recomputed from the current attitude at each step.
+///
+/// # Arguments
+/// - `state` - Current strapdown navigation state
+/// - `angular_velocity_body_rps` - Desired body rotation rate relative to nav frame,
+///   expressed in body coordinates, in radians/s. Zero gives constant-attitude motion.
+fn compute_perfect_imu(
+    state: &crate::StrapdownState,
+    angular_velocity_body_rps: Vector3<f64>,
+) -> crate::IMUData {
+    use crate::earth;
+
+    let lat_deg = state.latitude.to_degrees();
+    let velocity = Vector3::new(
+        state.velocity_north,
+        state.velocity_east,
+        state.velocity_vertical,
+    );
+
+    // Earth rotation and transport rate in nav frame
+    let omega_ie_nav = earth::earth_rate_lla(&lat_deg);
+    let omega_en_nav = earth::transport_rate(&lat_deg, &state.altitude, &velocity);
+
+    // Gyro: desired body rotation + Earth/transport compensation rotated into body frame
+    let c_nb = state.attitude.matrix();
+    let earth_body = c_nb.transpose() * (omega_ie_nav + omega_en_nav);
+    let gyro = angular_velocity_body_rps + earth_body;
+
+    // Accelerometer: specific force to hold v_nav constant (v_dot = 0)
+    // From velocity_update: v_dot = f_nav + g_nav - (Ω_en + 2*Ω_ie)*v = 0
+    // → f_nav = (Ω_en + 2*Ω_ie)*v - g_nav
+    let omega_en_skew = earth::vector_to_skew_symmetric(&omega_en_nav);
+    let omega_ie_skew = earth::vector_to_skew_symmetric(&omega_ie_nav);
+    let coriolis = (omega_en_skew + 2.0 * omega_ie_skew) * velocity;
+
+    let g = earth::gravity(&lat_deg, &state.altitude);
+    let g_nav = if state.is_enu {
+        Vector3::new(0.0, 0.0, -g)
+    } else {
+        Vector3::new(0.0, 0.0, g)
+    };
+
+    let f_nav = coriolis - g_nav;
+    let accel = c_nb.transpose() * f_nav;
+
+    crate::IMUData { accel, gyro }
+}
+
+/// Generate a synthetic trajectory from an initial kinematic state.
+///
+/// Propagates a constant nav-frame velocity / constant body angular velocity trajectory,
+/// computes perfect IMU measurements at each step via inverse mechanization, and
+/// optionally degrades them with IMU-grade noise.
+///
+/// Returns two parallel vectors:
+/// - `Vec<NavigationResult>` — truth 9-state trajectory (write this for `--no-noise`)
+/// - `Vec<TestDataRecord>` — sensor measurements with GNSS + baro (write this for noisy mode)
+///
+/// # Arguments
+/// - `config` - Synthetic trajectory configuration
+/// - `rng` - Seeded random number generator for reproducibility
+pub fn generate_synthetic(
+    config: &SyntheticConfig,
+    rng: &mut rand::rngs::StdRng,
+) -> (Vec<NavigationResult>, Vec<TestDataRecord>) {
+    use crate::earth;
+    use rand::Rng;
+    use rand_distr::Normal;
+
+    let s = &config.initial_state;
+
+    // Build initial strapdown state
+    let attitude = nalgebra::Rotation3::from_euler_angles(
+        s.roll_deg.to_radians(),
+        s.pitch_deg.to_radians(),
+        s.yaw_deg.to_radians(),
+    );
+    let mut state = crate::StrapdownState {
+        latitude: s.latitude_deg.to_radians(),
+        longitude: s.longitude_deg.to_radians(),
+        altitude: s.altitude_m,
+        velocity_north: s.velocity_north_mps,
+        velocity_east: s.velocity_east_mps,
+        velocity_vertical: s.velocity_down_mps,
+        attitude,
+        is_enu: s.is_enu,
+    };
+
+    // Constant body angular velocity (rad/s)
+    let angular_velocity_body_rps = Vector3::new(
+        s.angular_velocity_x_dps.to_radians(),
+        s.angular_velocity_y_dps.to_radians(),
+        s.angular_velocity_z_dps.to_radians(),
+    );
+
+    let dt = 1.0 / config.sample_rate_hz;
+    let n_steps = (config.duration_s * config.sample_rate_hz).round() as usize;
+    let initial_alt = state.altitude;
+
+    // Draw per-trajectory bias offsets (constant for the full run)
+    let accel_bias = {
+        let sigma = config.imu_quality.accel_bias_instability_mps2();
+        let dist = Normal::new(0.0_f64, sigma).unwrap_or(Normal::new(0.0, 1e-6).unwrap());
+        Vector3::new(rng.sample(dist), rng.sample(dist), rng.sample(dist))
+    };
+    let gyro_bias = {
+        let sigma = config.imu_quality.gyro_bias_instability_dph();
+        let dist = Normal::new(0.0_f64, sigma).unwrap_or(Normal::new(0.0, 1e-9).unwrap());
+        Vector3::new(rng.sample(dist), rng.sample(dist), rng.sample(dist))
+    };
+
+    // Per-sample noise standard deviations (ARW/VRW scaled to sample rate)
+    let accel_noise_sigma = config.imu_quality.accel_velocity_random_walk()
+        * (config.sample_rate_hz / 3600.0_f64).sqrt();
+    let gyro_noise_sigma =
+        config.imu_quality.gyro_angle_random_walk() * (config.sample_rate_hz / 3600.0_f64).sqrt();
+
+    let accel_noise_dist =
+        Normal::new(0.0_f64, accel_noise_sigma).unwrap_or(Normal::new(0.0, 1e-6).unwrap());
+    let gyro_noise_dist =
+        Normal::new(0.0_f64, gyro_noise_sigma).unwrap_or(Normal::new(0.0, 1e-9).unwrap());
+    let gnss_h_dist = Normal::new(0.0_f64, config.gnss_horizontal_noise_m)
+        .unwrap_or(Normal::new(0.0, 1.0).unwrap());
+    let gnss_v_dist = Normal::new(0.0_f64, config.gnss_vertical_noise_m)
+        .unwrap_or(Normal::new(0.0, 1.0).unwrap());
+    let baro_dist =
+        Normal::new(0.0_f64, config.baro_noise_std_pa).unwrap_or(Normal::new(0.0, 1.0).unwrap());
+
+    // Fixed epoch start time for reproducibility
+    let start_time: chrono::DateTime<Utc> = "2025-01-01T00:00:00Z"
+        .parse()
+        .unwrap_or_else(|_| Utc::now());
+
+    let mut truth_records: Vec<NavigationResult> = Vec::with_capacity(n_steps);
+    let mut sensor_records: Vec<TestDataRecord> = Vec::with_capacity(n_steps);
+
+    for i in 0..n_steps {
+        let timestamp = start_time + Duration::milliseconds((i as f64 * dt * 1000.0) as i64);
+        let perfect_imu = compute_perfect_imu(&state, angular_velocity_body_rps);
+
+        // Build truth NavigationResult from current state
+        let (roll, pitch, yaw) = state.attitude.euler_angles();
+        let truth = NavigationResult {
+            timestamp,
+            latitude: state.latitude.to_degrees(),
+            longitude: state.longitude.to_degrees(),
+            altitude: state.altitude,
+            velocity_north: state.velocity_north,
+            velocity_east: state.velocity_east,
+            velocity_vertical: state.velocity_vertical,
+            roll,
+            pitch,
+            yaw,
+            acc_bias_x: 0.0,
+            acc_bias_y: 0.0,
+            acc_bias_z: 0.0,
+            gyro_bias_x: 0.0,
+            gyro_bias_y: 0.0,
+            gyro_bias_z: 0.0,
+            latitude_cov: 0.0,
+            longitude_cov: 0.0,
+            altitude_cov: 0.0,
+            velocity_n_cov: 0.0,
+            velocity_e_cov: 0.0,
+            velocity_v_cov: 0.0,
+            roll_cov: 0.0,
+            pitch_cov: 0.0,
+            yaw_cov: 0.0,
+            acc_bias_x_cov: 0.0,
+            acc_bias_y_cov: 0.0,
+            acc_bias_z_cov: 0.0,
+            gyro_bias_x_cov: 0.0,
+            gyro_bias_y_cov: 0.0,
+            gyro_bias_z_cov: 0.0,
+        };
+        truth_records.push(truth);
+
+        // Build sensor TestDataRecord
+        let (out_acc, out_gyro, out_lat, out_lon, out_alt) = if config.no_noise {
+            (
+                perfect_imu.accel,
+                perfect_imu.gyro,
+                state.latitude.to_degrees(),
+                state.longitude.to_degrees(),
+                state.altitude,
+            )
+        } else {
+            let noisy_accel = perfect_imu.accel
+                + accel_bias
+                + Vector3::new(
+                    rng.sample(accel_noise_dist),
+                    rng.sample(accel_noise_dist),
+                    rng.sample(accel_noise_dist),
+                );
+            let noisy_gyro = perfect_imu.gyro
+                + gyro_bias
+                + Vector3::new(
+                    rng.sample(gyro_noise_dist),
+                    rng.sample(gyro_noise_dist),
+                    rng.sample(gyro_noise_dist),
+                );
+            let r_e = earth::EQUATORIAL_RADIUS;
+            let lat_noise_rad = rng.sample(gnss_h_dist) / r_e;
+            let lon_noise_rad =
+                rng.sample(gnss_h_dist) / ((r_e + state.altitude) * state.latitude.cos().max(1e-6));
+            (
+                noisy_accel,
+                noisy_gyro,
+                (state.latitude + lat_noise_rad).to_degrees(),
+                (state.longitude + lon_noise_rad).to_degrees(),
+                state.altitude + rng.sample(gnss_v_dist),
+            )
+        };
+
+        let true_pressure =
+            earth::expected_barometric_pressure(state.altitude, earth::SEA_LEVEL_PRESSURE);
+        let out_pressure = if config.no_noise {
+            true_pressure
+        } else {
+            true_pressure + rng.sample(baro_dist)
+        };
+
+        let speed = (state.velocity_north.powi(2) + state.velocity_east.powi(2)).sqrt();
+        let bearing = state.velocity_east.atan2(state.velocity_north).to_degrees();
+
+        // Gravity vector in body frame (NED: [0,0,g])
+        let g = earth::gravity(&state.latitude.to_degrees(), &state.altitude);
+        let g_nav = if state.is_enu {
+            Vector3::new(0.0, 0.0, -g)
+        } else {
+            Vector3::new(0.0, 0.0, g)
+        };
+        let grav_body = state.attitude.matrix().transpose() * g_nav;
+
+        sensor_records.push(TestDataRecord {
+            time: timestamp,
+            latitude: out_lat,
+            longitude: out_lon,
+            altitude: out_alt,
+            speed,
+            bearing,
+            bearing_accuracy: config.gnss_horizontal_noise_m,
+            speed_accuracy: config.gnss_horizontal_noise_m,
+            vertical_accuracy: config.gnss_vertical_noise_m,
+            horizontal_accuracy: config.gnss_horizontal_noise_m,
+            roll: roll.to_degrees(),
+            pitch: pitch.to_degrees(),
+            yaw: yaw.to_degrees(),
+            qw: state.attitude.euler_angles().2.cos(),
+            qx: 0.0,
+            qy: 0.0,
+            qz: 0.0,
+            acc_x: out_acc[0],
+            acc_y: out_acc[1],
+            acc_z: out_acc[2],
+            gyro_x: out_gyro[0],
+            gyro_y: out_gyro[1],
+            gyro_z: out_gyro[2],
+            mag_x: 0.0,
+            mag_y: 0.0,
+            mag_z: 0.0,
+            relative_altitude: out_alt - initial_alt,
+            pressure: out_pressure,
+            grav_x: grav_body[0],
+            grav_y: grav_body[1],
+            grav_z: grav_body[2],
+        });
+
+        // Propagate truth state with perfect IMU (noise-free)
+        crate::forward(&mut state, perfect_imu, dt);
+    }
+
+    (truth_records, sensor_records)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3732,78 +4206,79 @@ mod tests {
     fn test_data_record_to_and_from_csv() {
         // Read original records
         let path = Path::new("test_file.csv");
-        let mut records: Vec<TestDataRecord> = vec![];
         // Create some test data records
-        records.push(TestDataRecord {
-            time: DateTime::parse_from_str("2023-01-01 00:00:00+00:00", "%Y-%m-%d %H:%M:%S%z")
-                .unwrap()
-                .with_timezone(&Utc),
-            bearing_accuracy: 0.1,
-            speed_accuracy: 0.1,
-            vertical_accuracy: 0.1,
-            horizontal_accuracy: 0.1,
-            speed: 1.0,
-            bearing: 90.0,
-            altitude: 100.0,
-            longitude: -122.0,
-            latitude: 37.0,
-            qz: 0.0,
-            qy: 0.0,
-            qx: 0.0,
-            qw: 1.0,
-            roll: 0.0,
-            pitch: 0.0,
-            yaw: 0.0,
-            acc_z: 9.81,
-            acc_y: 0.0,
-            acc_x: 0.0,
-            gyro_z: 0.01,
-            gyro_y: 0.01,
-            gyro_x: 0.01,
-            mag_z: 50.0,
-            mag_y: -30.0,
-            mag_x: -20.0,
-            relative_altitude: 5.0,
-            pressure: 1013.25,
-            grav_z: 9.81,
-            grav_y: 0.0,
-            grav_x: 0.0,
-        });
-        records.push(TestDataRecord {
-            time: DateTime::parse_from_str("2023-01-01 00:01:00+00:00", "%Y-%m-%d %H:%M:%S%z")
-                .unwrap()
-                .with_timezone(&Utc),
-            bearing_accuracy: 0.1,
-            speed_accuracy: 0.1,
-            vertical_accuracy: 0.1,
-            horizontal_accuracy: 0.1,
-            speed: 2.0,
-            bearing: 180.0,
-            altitude: 200.0,
-            longitude: -121.0,
-            latitude: 38.0,
-            qz: 0.0,
-            qy: 0.0,
-            qx: 0.0,
-            qw: 1.0,
-            roll: 0.1,
-            pitch: 0.1,
-            yaw: 0.1,
-            acc_z: 9.81,
-            acc_y: 0.01,
-            acc_x: -0.01,
-            gyro_z: 0.02,
-            gyro_y: -0.02,
-            gyro_x: 0.02,
-            mag_z: 55.0,
-            mag_y: -25.0,
-            mag_x: -15.0,
-            relative_altitude: 10.0,
-            pressure: 1012.25,
-            grav_z: 9.81,
-            grav_y: 0.01,
-            grav_x: -0.01,
-        });
+        let records: Vec<TestDataRecord> = vec![
+            TestDataRecord {
+                time: DateTime::parse_from_str("2023-01-01 00:00:00+00:00", "%Y-%m-%d %H:%M:%S%z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+                bearing_accuracy: 0.1,
+                speed_accuracy: 0.1,
+                vertical_accuracy: 0.1,
+                horizontal_accuracy: 0.1,
+                speed: 1.0,
+                bearing: 90.0,
+                altitude: 100.0,
+                longitude: -122.0,
+                latitude: 37.0,
+                qz: 0.0,
+                qy: 0.0,
+                qx: 0.0,
+                qw: 1.0,
+                roll: 0.0,
+                pitch: 0.0,
+                yaw: 0.0,
+                acc_z: 9.81,
+                acc_y: 0.0,
+                acc_x: 0.0,
+                gyro_z: 0.01,
+                gyro_y: 0.01,
+                gyro_x: 0.01,
+                mag_z: 50.0,
+                mag_y: -30.0,
+                mag_x: -20.0,
+                relative_altitude: 5.0,
+                pressure: 1013.25,
+                grav_z: 9.81,
+                grav_y: 0.0,
+                grav_x: 0.0,
+            },
+            TestDataRecord {
+                time: DateTime::parse_from_str("2023-01-01 00:01:00+00:00", "%Y-%m-%d %H:%M:%S%z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+                bearing_accuracy: 0.1,
+                speed_accuracy: 0.1,
+                vertical_accuracy: 0.1,
+                horizontal_accuracy: 0.1,
+                speed: 2.0,
+                bearing: 180.0,
+                altitude: 200.0,
+                longitude: -121.0,
+                latitude: 38.0,
+                qz: 0.0,
+                qy: 0.0,
+                qx: 0.0,
+                qw: 1.0,
+                roll: 0.1,
+                pitch: 0.1,
+                yaw: 0.1,
+                acc_z: 9.81,
+                acc_y: 0.01,
+                acc_x: -0.01,
+                gyro_z: 0.02,
+                gyro_y: -0.02,
+                gyro_x: 0.02,
+                mag_z: 55.0,
+                mag_y: -25.0,
+                mag_x: -15.0,
+                relative_altitude: 10.0,
+                pressure: 1012.25,
+                grav_z: 9.81,
+                grav_y: 0.01,
+                grav_x: -0.01,
+            },
+        ];
         // Write to CSV
         TestDataRecord::to_csv(&records, path).expect("Failed to write test data to CSV");
         // Check to make sure the file exists
@@ -3850,14 +4325,16 @@ mod tests {
     }
     #[test]
     fn test_navigation_result_from_strapdown_state() {
-        let mut state = StrapdownState::default();
-        state.latitude = 1.0;
-        state.longitude = 2.0;
-        state.altitude = 3.0;
-        state.velocity_north = 4.0;
-        state.velocity_east = 5.0;
-        state.velocity_vertical = 6.0;
-        state.attitude = nalgebra::Rotation3::from_euler_angles(7.0, 8.0, 9.0);
+        let state = StrapdownState {
+            latitude: 1.0,
+            longitude: 2.0,
+            altitude: 3.0,
+            velocity_north: 4.0,
+            velocity_east: 5.0,
+            velocity_vertical: 6.0,
+            attitude: nalgebra::Rotation3::from_euler_angles(7.0, 8.0, 9.0),
+            ..Default::default()
+        };
 
         let state_vector: DVector<f64> = DVector::from_vec(vec![
             state.latitude,
@@ -4087,10 +4564,11 @@ mod tests {
     fn deserialize_with_missing_trailing_columns_returns_error() {
         let headers = test_header();
         let time = "2023-08-04T21:47:58Z";
-        let mut row: Vec<String> = Vec::new();
-        row.push(time.to_string());
-        row.push(String::from("1.0"));
-        row.push(String::from("2.0"));
+        let row: Vec<String> = vec![
+            time.to_string(),
+            String::from("1.0"),
+            String::from("2.0"),
+        ];
         let mut csv_data = String::new();
         csv_data.push_str(&headers.join(","));
         csv_data.push('\n');
@@ -4115,17 +4593,18 @@ mod tests {
     fn manual_padding_then_deserialize_succeeds() {
         let headers = test_header();
         let time = "2023-08-04T21:47:58Z";
-        let mut row: Vec<String> = Vec::new();
-        row.push(time.to_string());
-        row.push(String::new()); // bearingAccuracy
-        row.push(String::new()); // speedAccuracy
-        row.push(String::new()); // verticalAccuracy
-        row.push(String::new()); // horizontalAccuracy
-        row.push(String::new()); // speed
-        row.push(String::new()); // bearing
-        row.push(String::new()); // altitude
-        row.push(String::from("-122.0")); // longitude
-        row.push(String::from("37.0")); // latitude
+        let row: Vec<String> = vec![
+            time.to_string(),
+            String::new(), // bearingAccuracy
+            String::new(), // speedAccuracy
+            String::new(), // verticalAccuracy
+            String::new(), // horizontalAccuracy
+            String::new(), // speed
+            String::new(), // bearing
+            String::new(), // altitude
+            String::from("-122.0"), // longitude
+            String::from("37.0"), // latitude
+        ];
         let mut csv_data = String::new();
         csv_data.push_str(&headers.join(","));
         csv_data.push('\n');
@@ -4520,8 +4999,7 @@ mod tests {
 
     #[test]
     fn test_health_monitor_check_altitude_out_of_range() {
-        let mut limits = HealthLimits::default();
-        limits.alt_m = (-100.0, 10000.0);
+        let limits = HealthLimits { alt_m: (-100.0, 10000.0), ..Default::default() };
         let mut monitor = HealthMonitor::new(limits);
 
         let state = vec![
@@ -4579,9 +5057,7 @@ mod tests {
 
     #[test]
     fn test_health_monitor_check_nis_exceeds_threshold() {
-        let mut limits = HealthLimits::default();
-        limits.nis_pos_max = 10.0;
-        limits.nis_pos_consec_fail = 3;
+        let limits = HealthLimits { nis_pos_max: 10.0, nis_pos_consec_fail: 3, ..Default::default() };
         let mut monitor = HealthMonitor::new(limits);
 
         let state = vec![
@@ -4599,9 +5075,7 @@ mod tests {
 
     #[test]
     fn test_health_monitor_check_nis_reset_on_pass() {
-        let mut limits = HealthLimits::default();
-        limits.nis_pos_max = 10.0;
-        limits.nis_pos_consec_fail = 3;
+        let limits = HealthLimits { nis_pos_max: 10.0, nis_pos_consec_fail: 3, ..Default::default() };
         let mut monitor = HealthMonitor::new(limits);
 
         let state = vec![
@@ -4834,12 +5308,14 @@ mod tests {
 
     #[test]
     fn test_navigation_result_csv_roundtrip_with_nan() {
-        let mut nav = NavigationResult::default();
-        nav.latitude = 37.0;
-        nav.longitude = -122.0;
-        nav.altitude = 100.0;
-        nav.latitude_cov = f64::NAN;
-        nav.longitude_cov = f64::NAN;
+        let nav = NavigationResult {
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            latitude_cov: f64::NAN,
+            longitude_cov: f64::NAN,
+            ..Default::default()
+        };
 
         let temp_file = std::env::temp_dir().join("test_nav_nan.csv");
         NavigationResult::to_csv(&[nav.clone()], &temp_file).unwrap();
@@ -4855,14 +5331,16 @@ mod tests {
     #[test]
     fn test_navigation_result_from_strapdown_state_with_rotation() {
         let timestamp = Utc::now();
-        let mut state = StrapdownState::default();
-        state.latitude = 0.5; // radians
-        state.longitude = 1.0; // radians
-        state.altitude = 500.0;
-        state.velocity_north = 10.0;
-        state.velocity_east = 5.0;
-        state.velocity_vertical = -1.0;
-        state.attitude = nalgebra::Rotation3::from_euler_angles(0.1, 0.2, 0.3);
+        let state = StrapdownState {
+            latitude: 0.5,   // radians
+            longitude: 1.0,  // radians
+            altitude: 500.0,
+            velocity_north: 10.0,
+            velocity_east: 5.0,
+            velocity_vertical: -1.0,
+            attitude: nalgebra::Rotation3::from_euler_angles(0.1, 0.2, 0.3),
+            ..Default::default()
+        };
 
         let nav = NavigationResult::from((&timestamp, &state));
         assert_eq!(nav.timestamp, timestamp);
@@ -5067,77 +5545,78 @@ mod tests {
         let file_path = dir.path().join("test_data.h5");
 
         // Create test records
-        let mut records = Vec::new();
-        records.push(TestDataRecord {
-            time: DateTime::parse_from_str("2023-01-01 00:00:00+00:00", "%Y-%m-%d %H:%M:%S%z")
-                .unwrap()
-                .with_timezone(&Utc),
-            bearing_accuracy: 0.1,
-            speed_accuracy: 0.1,
-            vertical_accuracy: 0.1,
-            horizontal_accuracy: 0.1,
-            speed: 1.0,
-            bearing: 90.0,
-            altitude: 100.0,
-            longitude: -122.0,
-            latitude: 37.0,
-            qz: 0.0,
-            qy: 0.0,
-            qx: 0.0,
-            qw: 1.0,
-            roll: 0.0,
-            pitch: 0.0,
-            yaw: 0.0,
-            acc_z: 9.81,
-            acc_y: 0.0,
-            acc_x: 0.0,
-            gyro_z: 0.01,
-            gyro_y: 0.01,
-            gyro_x: 0.01,
-            mag_z: 50.0,
-            mag_y: -30.0,
-            mag_x: -20.0,
-            relative_altitude: 5.0,
-            pressure: 1013.25,
-            grav_z: 9.81,
-            grav_y: 0.0,
-            grav_x: 0.0,
-        });
-        records.push(TestDataRecord {
-            time: DateTime::parse_from_str("2023-01-01 00:01:00+00:00", "%Y-%m-%d %H:%M:%S%z")
-                .unwrap()
-                .with_timezone(&Utc),
-            bearing_accuracy: 0.2,
-            speed_accuracy: 0.2,
-            vertical_accuracy: 0.2,
-            horizontal_accuracy: 0.2,
-            speed: 2.0,
-            bearing: 180.0,
-            altitude: 200.0,
-            longitude: -121.0,
-            latitude: 38.0,
-            qz: 0.0,
-            qy: 0.0,
-            qx: 0.0,
-            qw: 1.0,
-            roll: 0.1,
-            pitch: 0.1,
-            yaw: 0.1,
-            acc_z: 9.81,
-            acc_y: 0.01,
-            acc_x: -0.01,
-            gyro_z: 0.02,
-            gyro_y: -0.02,
-            gyro_x: 0.02,
-            mag_z: 55.0,
-            mag_y: -25.0,
-            mag_x: -15.0,
-            relative_altitude: 10.0,
-            pressure: 1012.25,
-            grav_z: 9.81,
-            grav_y: 0.01,
-            grav_x: -0.01,
-        });
+        let records = vec![
+            TestDataRecord {
+                time: DateTime::parse_from_str("2023-01-01 00:00:00+00:00", "%Y-%m-%d %H:%M:%S%z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+                bearing_accuracy: 0.1,
+                speed_accuracy: 0.1,
+                vertical_accuracy: 0.1,
+                horizontal_accuracy: 0.1,
+                speed: 1.0,
+                bearing: 90.0,
+                altitude: 100.0,
+                longitude: -122.0,
+                latitude: 37.0,
+                qz: 0.0,
+                qy: 0.0,
+                qx: 0.0,
+                qw: 1.0,
+                roll: 0.0,
+                pitch: 0.0,
+                yaw: 0.0,
+                acc_z: 9.81,
+                acc_y: 0.0,
+                acc_x: 0.0,
+                gyro_z: 0.01,
+                gyro_y: 0.01,
+                gyro_x: 0.01,
+                mag_z: 50.0,
+                mag_y: -30.0,
+                mag_x: -20.0,
+                relative_altitude: 5.0,
+                pressure: 1013.25,
+                grav_z: 9.81,
+                grav_y: 0.0,
+                grav_x: 0.0,
+            },
+            TestDataRecord {
+                time: DateTime::parse_from_str("2023-01-01 00:01:00+00:00", "%Y-%m-%d %H:%M:%S%z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+                bearing_accuracy: 0.2,
+                speed_accuracy: 0.2,
+                vertical_accuracy: 0.2,
+                horizontal_accuracy: 0.2,
+                speed: 2.0,
+                bearing: 180.0,
+                altitude: 200.0,
+                longitude: -121.0,
+                latitude: 38.0,
+                qz: 0.0,
+                qy: 0.0,
+                qx: 0.0,
+                qw: 1.0,
+                roll: 0.1,
+                pitch: 0.1,
+                yaw: 0.1,
+                acc_z: 9.81,
+                acc_y: 0.01,
+                acc_x: -0.01,
+                gyro_z: 0.02,
+                gyro_y: -0.02,
+                gyro_x: 0.02,
+                mag_z: 55.0,
+                mag_y: -25.0,
+                mag_x: -15.0,
+                relative_altitude: 10.0,
+                pressure: 1012.25,
+                grav_z: 9.81,
+                grav_y: 0.01,
+                grav_x: -0.01,
+            },
+        ];
 
         // Write to HDF5
         TestDataRecord::to_hdf5(&records, &file_path).expect("Failed to write HDF5");
@@ -5287,13 +5766,15 @@ mod tests {
         let file_path = dir.path().join("test_data_nan.h5");
 
         // Create a record with NaN values
-        let mut record = TestDataRecord::default();
-        record.time = Utc::now();
-        record.latitude = 37.0;
-        record.longitude = -122.0;
-        record.altitude = f64::NAN;
-        record.speed = f64::NAN;
-        record.bearing = 90.0;
+        let record = TestDataRecord {
+            time: Utc::now(),
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: f64::NAN,
+            speed: f64::NAN,
+            bearing: 90.0,
+            ..Default::default()
+        };
 
         let records = vec![record.clone()];
 
@@ -5343,29 +5824,33 @@ mod tests {
         let temp_file = std::env::temp_dir().join("nav_results_mcap.mcap");
 
         // Create test navigation results
-        let mut result1 = NavigationResult::default();
-        result1.timestamp = Utc::now();
-        result1.latitude = 37.0;
-        result1.longitude = -122.0;
-        result1.altitude = 100.0;
-        result1.velocity_north = 10.0;
-        result1.velocity_east = 5.0;
-        result1.velocity_vertical = -1.0;
-        result1.roll = 0.1;
-        result1.pitch = 0.2;
-        result1.yaw = 0.3;
+        let result1 = NavigationResult {
+            timestamp: Utc::now(),
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            velocity_north: 10.0,
+            velocity_east: 5.0,
+            velocity_vertical: -1.0,
+            roll: 0.1,
+            pitch: 0.2,
+            yaw: 0.3,
+            ..Default::default()
+        };
 
-        let mut result2 = NavigationResult::default();
-        result2.timestamp = Utc::now() + chrono::Duration::seconds(1);
-        result2.latitude = 37.01;
-        result2.longitude = -122.01;
-        result2.altitude = 110.0;
-        result2.velocity_north = 12.0;
-        result2.velocity_east = 6.0;
-        result2.velocity_vertical = 0.5;
-        result2.roll = 0.15;
-        result2.pitch = 0.25;
-        result2.yaw = 0.35;
+        let result2 = NavigationResult {
+            timestamp: Utc::now() + chrono::Duration::seconds(1),
+            latitude: 37.01,
+            longitude: -122.01,
+            altitude: 110.0,
+            velocity_north: 12.0,
+            velocity_east: 6.0,
+            velocity_vertical: 0.5,
+            roll: 0.15,
+            pitch: 0.25,
+            yaw: 0.35,
+            ..Default::default()
+        };
 
         let results = vec![result1.clone(), result2.clone()];
 

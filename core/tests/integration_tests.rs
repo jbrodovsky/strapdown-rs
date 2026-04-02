@@ -1559,7 +1559,7 @@ fn test_eskf_stability_high_dynamics() {
 
     // Initialize ESKF with more aggressive process noise to simulate high dynamics
     // Higher uncertainty values to accommodate rapid maneuvers and accelerations
-    let initial_error_covariance = vec![
+    let _initial_error_covariance = vec![
         1e-6, 1e-6, 1.0, // position error (same as default)
         0.5, 0.5, 0.5, // velocity error (5x default - allows for higher acceleration)
         0.05, 0.05, 0.05, // attitude error (5x default - allows for rapid rotations)
@@ -1569,7 +1569,7 @@ fn test_eskf_stability_high_dynamics() {
 
     // Increased process noise for high dynamics
     // 10x velocity noise and 10x attitude noise to accommodate rapid changes
-    let process_noise_values = vec![
+    let _process_noise_values = vec![
         1e-5, 1e-5, 1e-5, // position noise (10x default)
         1e-2, 1e-2, 1e-2, // velocity noise (10x default for high dynamics)
         1e-4, 1e-4, 1e-4, // attitude noise (10x default for rapid maneuvers)
