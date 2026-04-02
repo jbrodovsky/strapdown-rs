@@ -32,6 +32,14 @@ sim = """
 ./target/release/strapdown-sim --config conf/ekf_mag.toml
 """
 
+sim-rbpf = """
+./target/release/strapdown-sim --config conf/rbpf_truth.toml && \
+./target/release/strapdown-sim --config conf/rbpf_degraded.toml && \
+./target/release/strapdown-sim --config conf/rbpf_grav.toml && \
+./target/release/strapdown-sim --config conf/rbpf_mag.toml && \
+./target/release/strapdown-sim --config conf/rbpf_both.toml
+"""
+
 postprocess = """
 analyze performance --processed data/output/ukf/truth --reference data/input/ --output data/output/ukf/truth/performance && \
 analyze performance --processed data/output/ukf/both --reference data/input/ --output data/output/ukf/both/performance && \
@@ -41,6 +49,14 @@ analyze performance --processed data/output/ekf/truth --reference data/input/ --
 analyze performance --processed data/output/ekf/both --reference data/input/ --output data/output/ekf/both/performance && \
 analyze performance --processed data/output/ekf/grav --reference data/input/ --output data/output/ekf/grav/performance && \
 analyze performance --processed data/output/ekf/mag --reference data/input/ --output data/output/ekf/mag/performance
+"""
+
+postprocess-rbpf = """
+analyze performance --processed data/output/rbpf/truth --reference data/input/ --output data/output/rbpf/truth/performance && \
+analyze performance --processed data/output/rbpf/degraded --reference data/input/ --output data/output/rbpf/degraded/performance && \
+analyze performance --processed data/output/rbpf/both --reference data/input/ --output data/output/rbpf/both/performance && \
+analyze performance --processed data/output/rbpf/grav --reference data/input/ --output data/output/rbpf/grav/performance && \
+analyze performance --processed data/output/rbpf/mag --reference data/input/ --output data/output/rbpf/mag/performance
 """
 
 # Geophysical performance analysis with LaTeX tables and detailed CSV
@@ -59,7 +75,17 @@ analyze geoperformance -p data/output/ukf/mag -d data/output/ukf/degraded -r dat
 analyze geoperformance -p data/output/ukf/both -d data/output/ukf/degraded -r data/input -o data/output/ukf/both/analysis -f ukf --geo-type both && \
 analyze geoperformance -p data/output/ekf/grav -d data/output/ekf/degraded -r data/input -o data/output/ekf/grav/analysis -f ekf --geo-type grav && \
 analyze geoperformance -p data/output/ekf/mag -d data/output/ekf/degraded -r data/input -o data/output/ekf/mag/analysis -f ekf --geo-type mag && \
-analyze geoperformance -p data/output/ekf/both -d data/output/ekf/degraded -r data/input -o data/output/ekf/both/analysis -f ekf --geo-type both
+analyze geoperformance -p data/output/ekf/both -d data/output/ekf/degraded -r data/input -o data/output/ekf/both/analysis -f ekf --geo-type both && \
+analyze geoperformance -p data/output/rbpf/grav -d data/output/rbpf/degraded -r data/input -o data/output/rbpf/grav/analysis -f rbpf --geo-type grav && \
+analyze geoperformance -p data/output/rbpf/mag -d data/output/rbpf/degraded -r data/input -o data/output/rbpf/mag/analysis -f rbpf --geo-type mag && \
+analyze geoperformance -p data/output/rbpf/both -d data/output/rbpf/degraded -r data/input -o data/output/rbpf/both/analysis -f rbpf --geo-type both
+"""
+
+# Run geoperformance for RBPF results only
+geoperf-rbpf-all = """
+analyze geoperformance -p data/output/rbpf/grav -d data/output/rbpf/degraded -r data/input -o data/output/rbpf/grav/analysis -f rbpf --geo-type grav && \
+analyze geoperformance -p data/output/rbpf/mag -d data/output/rbpf/degraded -r data/input -o data/output/rbpf/mag/analysis -f rbpf --geo-type mag && \
+analyze geoperformance -p data/output/rbpf/both -d data/output/rbpf/degraded -r data/input -o data/output/rbpf/both/analysis -f rbpf --geo-type both
 """
 
 # Run geoperformance for RBPF results (if they exist)
@@ -101,6 +127,7 @@ libfreetype6 = ">=2.14.1,<3"
 fontconfig = ">=2.15.0,<3"
 expat = ">=2.6.4,<3"
 ruff = ">=0.14.11,<0.15"
+notebook = ">=7.5.5,<8"
 
 [pypi-dependencies]
 analysis = {path = "./analysis", editable = true}

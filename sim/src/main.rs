@@ -34,15 +34,15 @@ use rayon::prelude::*;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use strapdown::messages::{Event, GnssScheduler, build_event_stream};
+use strapdown::messages::{Event, EventStream, GnssScheduler, build_event_stream};
 use strapdown::rbpf::{RaoBlackwellizedParticleFilter, RbpfConfig};
 
 // Geophysical navigation imports (feature-gated)
 #[cfg(feature = "geonav")]
 use geonav::{
-    GeoMap, GeophysicalAnomalyMeasurementModel, GeophysicalMeasurementType, GravityMeasurement,
-    GravityResolution, MagneticAnomalyMeasurement, MagneticResolution,
-    build_event_stream as geo_build_event_stream, geo_closed_loop_ekf, geo_closed_loop_ukf,
+    GeoMap, GeophysicalMeasurementType, GravityResolution, MagneticResolution,
+    build_event_stream as geo_build_event_stream, geo_closed_loop_ekf, geo_closed_loop_rbpf,
+    geo_closed_loop_ukf,
 };
 #[cfg(feature = "geonav")]
 use std::rc::Rc;
@@ -601,76 +601,19 @@ fn process_file(
                 },
             );
 
-            let start_time = event_stream.start_time;
-            let mut results = Vec::with_capacity(event_stream.events.len());
-            let mut monitor = HealthMonitor::new(HealthLimits::default());
-            let sim_duration_s = event_stream
-                .events
-                .last()
-                .map(|event| match event {
-                    Event::Imu { elapsed_s, .. } => *elapsed_s,
-                    Event::Measurement { elapsed_s, .. } => *elapsed_s,
-                })
-                .unwrap_or(0.0);
-            let mut execution_monitor =
-                ExecutionMonitor::new(config.execution_limits.clone(), sim_duration_s);
-
-            // Store the initial state (before processing any events)
-            let (mean, cov) = rbpf.estimate();
-            results.push(NavigationResult::from_particle_filter(
-                &start_time,
-                &mean,
-                &cov,
-            ));
-            let mut last_ts = start_time;
-
-            for event in event_stream.events.into_iter() {
-                let elapsed_s = match &event {
-                    Event::Imu { elapsed_s, .. } => *elapsed_s,
-                    Event::Measurement { elapsed_s, .. } => *elapsed_s,
+            #[cfg(feature = "geonav")]
+            let results: Result<Vec<NavigationResult>, Box<dyn Error>> =
+                if gravity_map.is_some() || magnetic_map.is_some() {
+                    geo_closed_loop_rbpf(&mut rbpf, event_stream)
+                        .map_err(|e| -> Box<dyn Error> { e.into() })
+                } else {
+                    run_rbpf_event_loop(&mut rbpf, event_stream, &config.execution_limits)
                 };
-                let ts = start_time
-                    + chrono::Duration::milliseconds((elapsed_s * 1000.0).round() as i64);
 
-                match event {
-                    Event::Imu { dt_s, imu, .. } => {
-                        rbpf.predict(&imu, dt_s);
-                    }
-                    Event::Measurement { meas, .. } => {
-                        #[cfg(feature = "geonav")]
-                        if gravity_map.is_some() || magnetic_map.is_some() {
-                            let (mean, _) = rbpf.estimate();
-                            let strapdown: strapdown::StrapdownState =
-                                mean.as_slice().try_into().unwrap();
-                            if let Some(gravity) =
-                                meas.as_any_mut().downcast_mut::<GravityMeasurement>()
-                            {
-                                gravity.set_state(&strapdown);
-                            } else if let Some(magnetic) =
-                                meas.as_any_mut()
-                                    .downcast_mut::<MagneticAnomalyMeasurement>()
-                            {
-                                magnetic.set_state(&strapdown);
-                            }
-                        }
-                        rbpf.update(meas.as_ref());
-                    }
-                }
+            #[cfg(not(feature = "geonav"))]
+            let results = run_rbpf_event_loop(&mut rbpf, event_stream, &config.execution_limits);
 
-                let (mean, cov) = rbpf.estimate();
-                if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
-                    return Err(e.into());
-                }
-                execution_monitor.check("particle-filter")?;
-                execution_monitor.mark_progress();
-
-                // Store state when timestamp changes
-                if ts != last_ts {
-                    results.push(NavigationResult::from_particle_filter(&ts, &mean, &cov));
-                    last_ts = ts;
-                }
-            }
-
+            let results = results?;
             let output_file = output.join(input_file.file_name().unwrap());
             NavigationResult::to_csv(&results, &output_file)?;
             info!("Results written to {}", output_file.display());
@@ -1368,6 +1311,70 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
     Ok(())
 }
 
+/// Run RBPF event loop for non-geophysical (standard GNSS) measurements.
+///
+/// This is the default event loop used when geophysical maps are not loaded.
+/// When geophysical navigation is active, `geo_closed_loop_rbpf` from the geonav
+/// crate is used instead.
+fn run_rbpf_event_loop(
+    rbpf: &mut RaoBlackwellizedParticleFilter,
+    event_stream: EventStream,
+    execution_limits: &ExecutionLimits,
+) -> Result<Vec<NavigationResult>, Box<dyn Error>> {
+    let start_time = event_stream.start_time;
+    let mut results = Vec::with_capacity(event_stream.events.len());
+    let mut monitor = HealthMonitor::new(HealthLimits::default());
+    let sim_duration_s = event_stream
+        .events
+        .last()
+        .map(|event| match event {
+            Event::Imu { elapsed_s, .. } => *elapsed_s,
+            Event::Measurement { elapsed_s, .. } => *elapsed_s,
+        })
+        .unwrap_or(0.0);
+    let mut execution_monitor = ExecutionMonitor::new(execution_limits.clone(), sim_duration_s);
+
+    let (mean, cov) = rbpf.estimate();
+    results.push(NavigationResult::from_particle_filter(
+        &start_time,
+        &mean,
+        &cov,
+    ));
+    let mut last_ts = start_time;
+
+    for event in event_stream.events.into_iter() {
+        let elapsed_s = match &event {
+            Event::Imu { elapsed_s, .. } => *elapsed_s,
+            Event::Measurement { elapsed_s, .. } => *elapsed_s,
+        };
+        let ts =
+            start_time + chrono::Duration::milliseconds((elapsed_s * 1000.0).round() as i64);
+
+        match event {
+            Event::Imu { dt_s, imu, .. } => {
+                rbpf.predict(&imu, dt_s);
+            }
+            Event::Measurement { meas, .. } => {
+                rbpf.update(meas.as_ref());
+            }
+        }
+
+        let (mean, cov) = rbpf.estimate();
+        if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
+            return Err(e.into());
+        }
+        execution_monitor.check("particle-filter")?;
+        execution_monitor.mark_progress();
+
+        if ts != last_ts {
+            results.push(NavigationResult::from_particle_filter(&ts, &mean, &cov));
+            last_ts = ts;
+        }
+    }
+
+    Ok(results)
+}
+
 /// Execute particle filter simulation
 fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error>> {
     validate_input_path(&args.sim.input)?;
@@ -1513,74 +1520,16 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
 
         let mut rbpf = RaoBlackwellizedParticleFilter::new(nominal, config);
 
-        let start_time = event_stream.start_time;
-        let mut results = Vec::with_capacity(event_stream.events.len());
-        let mut monitor = HealthMonitor::new(HealthLimits::default());
-        let sim_duration_s = event_stream
-            .events
-            .last()
-            .map(|event| match event {
-                Event::Imu { elapsed_s, .. } => *elapsed_s,
-                Event::Measurement { elapsed_s, .. } => *elapsed_s,
-            })
-            .unwrap_or(0.0);
-        let mut execution_monitor = ExecutionMonitor::new(execution_limits.clone(), sim_duration_s);
+        #[cfg(feature = "geonav")]
+        let results = if args.geo.geo {
+            geo_closed_loop_rbpf(&mut rbpf, event_stream)
+                .map_err(|e| -> Box<dyn Error> { e.into() })?
+        } else {
+            run_rbpf_event_loop(&mut rbpf, event_stream, &execution_limits)?
+        };
 
-        // Store the initial state (before processing any events)
-        let (mean, cov) = rbpf.estimate();
-        results.push(NavigationResult::from_particle_filter(
-            &start_time,
-            &mean,
-            &cov,
-        ));
-        let mut last_ts = start_time;
-
-        for event in event_stream.events.into_iter() {
-            let elapsed_s = match &event {
-                Event::Imu { elapsed_s, .. } => *elapsed_s,
-                Event::Measurement { elapsed_s, .. } => *elapsed_s,
-            };
-            let ts =
-                start_time + chrono::Duration::milliseconds((elapsed_s * 1000.0).round() as i64);
-
-            match event {
-                Event::Imu { dt_s, imu, .. } => {
-                    rbpf.predict(&imu, dt_s);
-                }
-                Event::Measurement { meas, .. } => {
-                    #[cfg(feature = "geonav")]
-                    if args.geo.geo {
-                        let (mean, _) = rbpf.estimate();
-                        let strapdown: strapdown::StrapdownState =
-                            mean.as_slice().try_into().unwrap();
-                        if let Some(gravity) =
-                            meas.as_any_mut().downcast_mut::<GravityMeasurement>()
-                        {
-                            gravity.set_state(&strapdown);
-                        } else if let Some(magnetic) = meas
-                            .as_any_mut()
-                            .downcast_mut::<MagneticAnomalyMeasurement>()
-                        {
-                            magnetic.set_state(&strapdown);
-                        }
-                    }
-                    rbpf.update(meas.as_ref());
-                }
-            }
-
-            let (mean, cov) = rbpf.estimate();
-            if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
-                return Err(e.into());
-            }
-            execution_monitor.check("particle-filter")?;
-            execution_monitor.mark_progress();
-
-            // Store state when timestamp changes
-            if ts != last_ts {
-                results.push(NavigationResult::from_particle_filter(&ts, &mean, &cov));
-                last_ts = ts;
-            }
-        }
+        #[cfg(not(feature = "geonav"))]
+        let results = run_rbpf_event_loop(&mut rbpf, event_stream, &execution_limits)?;
 
         let output_file = args.sim.output.join(input_file.file_name().ok_or_else(|| {
             std::io::Error::new(
