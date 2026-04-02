@@ -1522,40 +1522,32 @@ mod tests {
             .unwrap();
 
         for i in 0..10 {
-            let mut record = TestDataRecord::default();
-            record.time = base_time + chrono::Duration::seconds(i);
-            record.latitude = 40.5 + (i as f64) * 0.001; // Small movement
-            record.longitude = -73.5 + (i as f64) * 0.001;
-            record.altitude = 100.0 + (i as f64) * 0.1;
-            record.speed = 5.0; // 5 m/s
-            record.bearing = 45.0; // 45 degrees
-
-            // IMU data
-            record.acc_x = 0.1;
-            record.acc_y = 0.1;
-            record.acc_z = 9.8;
-            record.gyro_x = 0.01;
-            record.gyro_y = 0.01;
-            record.gyro_z = 0.01;
-
-            // Gravity data
-            record.grav_x = 0.1;
-            record.grav_y = 0.1;
-            record.grav_z = 9.8;
-
-            // Magnetic data
-            record.mag_x = 20000.0; // micro teslas
-            record.mag_y = 5000.0;
-            record.mag_z = 45000.0;
-
-            // Other measurements
-            record.relative_altitude = i as f64 * 0.1;
-            record.pressure = 1013.25 - (i as f64) * 0.1;
-            record.horizontal_accuracy = 3.0;
-            record.vertical_accuracy = 5.0;
-            record.speed_accuracy = 0.1;
-
-            records.push(record);
+            records.push(TestDataRecord {
+                time: base_time + chrono::Duration::seconds(i),
+                latitude: 40.5 + (i as f64) * 0.001, // Small movement
+                longitude: -73.5 + (i as f64) * 0.001,
+                altitude: 100.0 + (i as f64) * 0.1,
+                speed: 5.0,   // 5 m/s
+                bearing: 45.0, // 45 degrees
+                acc_x: 0.1,
+                acc_y: 0.1,
+                acc_z: 9.8,
+                gyro_x: 0.01,
+                gyro_y: 0.01,
+                gyro_z: 0.01,
+                grav_x: 0.1,
+                grav_y: 0.1,
+                grav_z: 9.8,
+                mag_x: 20000.0, // micro teslas
+                mag_y: 5000.0,
+                mag_z: 45000.0,
+                relative_altitude: i as f64 * 0.1,
+                pressure: 1013.25 - (i as f64) * 0.1,
+                horizontal_accuracy: 3.0,
+                vertical_accuracy: 5.0,
+                speed_accuracy: 0.1,
+                ..Default::default()
+            });
         }
 
         records

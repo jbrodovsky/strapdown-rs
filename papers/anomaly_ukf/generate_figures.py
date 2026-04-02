@@ -7,10 +7,10 @@ This script creates:
 2. Summary statistics bar chart
 """
 
-import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
+import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
 
 # Temple University color scheme
 TEMPLE_CHERRY = "#A41E35"

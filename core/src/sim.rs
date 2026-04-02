@@ -4206,78 +4206,79 @@ mod tests {
     fn test_data_record_to_and_from_csv() {
         // Read original records
         let path = Path::new("test_file.csv");
-        let mut records: Vec<TestDataRecord> = vec![];
         // Create some test data records
-        records.push(TestDataRecord {
-            time: DateTime::parse_from_str("2023-01-01 00:00:00+00:00", "%Y-%m-%d %H:%M:%S%z")
-                .unwrap()
-                .with_timezone(&Utc),
-            bearing_accuracy: 0.1,
-            speed_accuracy: 0.1,
-            vertical_accuracy: 0.1,
-            horizontal_accuracy: 0.1,
-            speed: 1.0,
-            bearing: 90.0,
-            altitude: 100.0,
-            longitude: -122.0,
-            latitude: 37.0,
-            qz: 0.0,
-            qy: 0.0,
-            qx: 0.0,
-            qw: 1.0,
-            roll: 0.0,
-            pitch: 0.0,
-            yaw: 0.0,
-            acc_z: 9.81,
-            acc_y: 0.0,
-            acc_x: 0.0,
-            gyro_z: 0.01,
-            gyro_y: 0.01,
-            gyro_x: 0.01,
-            mag_z: 50.0,
-            mag_y: -30.0,
-            mag_x: -20.0,
-            relative_altitude: 5.0,
-            pressure: 1013.25,
-            grav_z: 9.81,
-            grav_y: 0.0,
-            grav_x: 0.0,
-        });
-        records.push(TestDataRecord {
-            time: DateTime::parse_from_str("2023-01-01 00:01:00+00:00", "%Y-%m-%d %H:%M:%S%z")
-                .unwrap()
-                .with_timezone(&Utc),
-            bearing_accuracy: 0.1,
-            speed_accuracy: 0.1,
-            vertical_accuracy: 0.1,
-            horizontal_accuracy: 0.1,
-            speed: 2.0,
-            bearing: 180.0,
-            altitude: 200.0,
-            longitude: -121.0,
-            latitude: 38.0,
-            qz: 0.0,
-            qy: 0.0,
-            qx: 0.0,
-            qw: 1.0,
-            roll: 0.1,
-            pitch: 0.1,
-            yaw: 0.1,
-            acc_z: 9.81,
-            acc_y: 0.01,
-            acc_x: -0.01,
-            gyro_z: 0.02,
-            gyro_y: -0.02,
-            gyro_x: 0.02,
-            mag_z: 55.0,
-            mag_y: -25.0,
-            mag_x: -15.0,
-            relative_altitude: 10.0,
-            pressure: 1012.25,
-            grav_z: 9.81,
-            grav_y: 0.01,
-            grav_x: -0.01,
-        });
+        let records: Vec<TestDataRecord> = vec![
+            TestDataRecord {
+                time: DateTime::parse_from_str("2023-01-01 00:00:00+00:00", "%Y-%m-%d %H:%M:%S%z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+                bearing_accuracy: 0.1,
+                speed_accuracy: 0.1,
+                vertical_accuracy: 0.1,
+                horizontal_accuracy: 0.1,
+                speed: 1.0,
+                bearing: 90.0,
+                altitude: 100.0,
+                longitude: -122.0,
+                latitude: 37.0,
+                qz: 0.0,
+                qy: 0.0,
+                qx: 0.0,
+                qw: 1.0,
+                roll: 0.0,
+                pitch: 0.0,
+                yaw: 0.0,
+                acc_z: 9.81,
+                acc_y: 0.0,
+                acc_x: 0.0,
+                gyro_z: 0.01,
+                gyro_y: 0.01,
+                gyro_x: 0.01,
+                mag_z: 50.0,
+                mag_y: -30.0,
+                mag_x: -20.0,
+                relative_altitude: 5.0,
+                pressure: 1013.25,
+                grav_z: 9.81,
+                grav_y: 0.0,
+                grav_x: 0.0,
+            },
+            TestDataRecord {
+                time: DateTime::parse_from_str("2023-01-01 00:01:00+00:00", "%Y-%m-%d %H:%M:%S%z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+                bearing_accuracy: 0.1,
+                speed_accuracy: 0.1,
+                vertical_accuracy: 0.1,
+                horizontal_accuracy: 0.1,
+                speed: 2.0,
+                bearing: 180.0,
+                altitude: 200.0,
+                longitude: -121.0,
+                latitude: 38.0,
+                qz: 0.0,
+                qy: 0.0,
+                qx: 0.0,
+                qw: 1.0,
+                roll: 0.1,
+                pitch: 0.1,
+                yaw: 0.1,
+                acc_z: 9.81,
+                acc_y: 0.01,
+                acc_x: -0.01,
+                gyro_z: 0.02,
+                gyro_y: -0.02,
+                gyro_x: 0.02,
+                mag_z: 55.0,
+                mag_y: -25.0,
+                mag_x: -15.0,
+                relative_altitude: 10.0,
+                pressure: 1012.25,
+                grav_z: 9.81,
+                grav_y: 0.01,
+                grav_x: -0.01,
+            },
+        ];
         // Write to CSV
         TestDataRecord::to_csv(&records, path).expect("Failed to write test data to CSV");
         // Check to make sure the file exists
@@ -4324,14 +4325,16 @@ mod tests {
     }
     #[test]
     fn test_navigation_result_from_strapdown_state() {
-        let mut state = StrapdownState::default();
-        state.latitude = 1.0;
-        state.longitude = 2.0;
-        state.altitude = 3.0;
-        state.velocity_north = 4.0;
-        state.velocity_east = 5.0;
-        state.velocity_vertical = 6.0;
-        state.attitude = nalgebra::Rotation3::from_euler_angles(7.0, 8.0, 9.0);
+        let state = StrapdownState {
+            latitude: 1.0,
+            longitude: 2.0,
+            altitude: 3.0,
+            velocity_north: 4.0,
+            velocity_east: 5.0,
+            velocity_vertical: 6.0,
+            attitude: nalgebra::Rotation3::from_euler_angles(7.0, 8.0, 9.0),
+            ..Default::default()
+        };
 
         let state_vector: DVector<f64> = DVector::from_vec(vec![
             state.latitude,
@@ -4561,10 +4564,11 @@ mod tests {
     fn deserialize_with_missing_trailing_columns_returns_error() {
         let headers = test_header();
         let time = "2023-08-04T21:47:58Z";
-        let mut row: Vec<String> = Vec::new();
-        row.push(time.to_string());
-        row.push(String::from("1.0"));
-        row.push(String::from("2.0"));
+        let row: Vec<String> = vec![
+            time.to_string(),
+            String::from("1.0"),
+            String::from("2.0"),
+        ];
         let mut csv_data = String::new();
         csv_data.push_str(&headers.join(","));
         csv_data.push('\n');
@@ -4589,17 +4593,18 @@ mod tests {
     fn manual_padding_then_deserialize_succeeds() {
         let headers = test_header();
         let time = "2023-08-04T21:47:58Z";
-        let mut row: Vec<String> = Vec::new();
-        row.push(time.to_string());
-        row.push(String::new()); // bearingAccuracy
-        row.push(String::new()); // speedAccuracy
-        row.push(String::new()); // verticalAccuracy
-        row.push(String::new()); // horizontalAccuracy
-        row.push(String::new()); // speed
-        row.push(String::new()); // bearing
-        row.push(String::new()); // altitude
-        row.push(String::from("-122.0")); // longitude
-        row.push(String::from("37.0")); // latitude
+        let row: Vec<String> = vec![
+            time.to_string(),
+            String::new(), // bearingAccuracy
+            String::new(), // speedAccuracy
+            String::new(), // verticalAccuracy
+            String::new(), // horizontalAccuracy
+            String::new(), // speed
+            String::new(), // bearing
+            String::new(), // altitude
+            String::from("-122.0"), // longitude
+            String::from("37.0"), // latitude
+        ];
         let mut csv_data = String::new();
         csv_data.push_str(&headers.join(","));
         csv_data.push('\n');
@@ -4994,8 +4999,7 @@ mod tests {
 
     #[test]
     fn test_health_monitor_check_altitude_out_of_range() {
-        let mut limits = HealthLimits::default();
-        limits.alt_m = (-100.0, 10000.0);
+        let limits = HealthLimits { alt_m: (-100.0, 10000.0), ..Default::default() };
         let mut monitor = HealthMonitor::new(limits);
 
         let state = vec![
@@ -5053,9 +5057,7 @@ mod tests {
 
     #[test]
     fn test_health_monitor_check_nis_exceeds_threshold() {
-        let mut limits = HealthLimits::default();
-        limits.nis_pos_max = 10.0;
-        limits.nis_pos_consec_fail = 3;
+        let limits = HealthLimits { nis_pos_max: 10.0, nis_pos_consec_fail: 3, ..Default::default() };
         let mut monitor = HealthMonitor::new(limits);
 
         let state = vec![
@@ -5073,9 +5075,7 @@ mod tests {
 
     #[test]
     fn test_health_monitor_check_nis_reset_on_pass() {
-        let mut limits = HealthLimits::default();
-        limits.nis_pos_max = 10.0;
-        limits.nis_pos_consec_fail = 3;
+        let limits = HealthLimits { nis_pos_max: 10.0, nis_pos_consec_fail: 3, ..Default::default() };
         let mut monitor = HealthMonitor::new(limits);
 
         let state = vec![
@@ -5308,12 +5308,14 @@ mod tests {
 
     #[test]
     fn test_navigation_result_csv_roundtrip_with_nan() {
-        let mut nav = NavigationResult::default();
-        nav.latitude = 37.0;
-        nav.longitude = -122.0;
-        nav.altitude = 100.0;
-        nav.latitude_cov = f64::NAN;
-        nav.longitude_cov = f64::NAN;
+        let nav = NavigationResult {
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            latitude_cov: f64::NAN,
+            longitude_cov: f64::NAN,
+            ..Default::default()
+        };
 
         let temp_file = std::env::temp_dir().join("test_nav_nan.csv");
         NavigationResult::to_csv(&[nav.clone()], &temp_file).unwrap();
@@ -5329,14 +5331,16 @@ mod tests {
     #[test]
     fn test_navigation_result_from_strapdown_state_with_rotation() {
         let timestamp = Utc::now();
-        let mut state = StrapdownState::default();
-        state.latitude = 0.5; // radians
-        state.longitude = 1.0; // radians
-        state.altitude = 500.0;
-        state.velocity_north = 10.0;
-        state.velocity_east = 5.0;
-        state.velocity_vertical = -1.0;
-        state.attitude = nalgebra::Rotation3::from_euler_angles(0.1, 0.2, 0.3);
+        let state = StrapdownState {
+            latitude: 0.5,   // radians
+            longitude: 1.0,  // radians
+            altitude: 500.0,
+            velocity_north: 10.0,
+            velocity_east: 5.0,
+            velocity_vertical: -1.0,
+            attitude: nalgebra::Rotation3::from_euler_angles(0.1, 0.2, 0.3),
+            ..Default::default()
+        };
 
         let nav = NavigationResult::from((&timestamp, &state));
         assert_eq!(nav.timestamp, timestamp);
@@ -5541,77 +5545,78 @@ mod tests {
         let file_path = dir.path().join("test_data.h5");
 
         // Create test records
-        let mut records = Vec::new();
-        records.push(TestDataRecord {
-            time: DateTime::parse_from_str("2023-01-01 00:00:00+00:00", "%Y-%m-%d %H:%M:%S%z")
-                .unwrap()
-                .with_timezone(&Utc),
-            bearing_accuracy: 0.1,
-            speed_accuracy: 0.1,
-            vertical_accuracy: 0.1,
-            horizontal_accuracy: 0.1,
-            speed: 1.0,
-            bearing: 90.0,
-            altitude: 100.0,
-            longitude: -122.0,
-            latitude: 37.0,
-            qz: 0.0,
-            qy: 0.0,
-            qx: 0.0,
-            qw: 1.0,
-            roll: 0.0,
-            pitch: 0.0,
-            yaw: 0.0,
-            acc_z: 9.81,
-            acc_y: 0.0,
-            acc_x: 0.0,
-            gyro_z: 0.01,
-            gyro_y: 0.01,
-            gyro_x: 0.01,
-            mag_z: 50.0,
-            mag_y: -30.0,
-            mag_x: -20.0,
-            relative_altitude: 5.0,
-            pressure: 1013.25,
-            grav_z: 9.81,
-            grav_y: 0.0,
-            grav_x: 0.0,
-        });
-        records.push(TestDataRecord {
-            time: DateTime::parse_from_str("2023-01-01 00:01:00+00:00", "%Y-%m-%d %H:%M:%S%z")
-                .unwrap()
-                .with_timezone(&Utc),
-            bearing_accuracy: 0.2,
-            speed_accuracy: 0.2,
-            vertical_accuracy: 0.2,
-            horizontal_accuracy: 0.2,
-            speed: 2.0,
-            bearing: 180.0,
-            altitude: 200.0,
-            longitude: -121.0,
-            latitude: 38.0,
-            qz: 0.0,
-            qy: 0.0,
-            qx: 0.0,
-            qw: 1.0,
-            roll: 0.1,
-            pitch: 0.1,
-            yaw: 0.1,
-            acc_z: 9.81,
-            acc_y: 0.01,
-            acc_x: -0.01,
-            gyro_z: 0.02,
-            gyro_y: -0.02,
-            gyro_x: 0.02,
-            mag_z: 55.0,
-            mag_y: -25.0,
-            mag_x: -15.0,
-            relative_altitude: 10.0,
-            pressure: 1012.25,
-            grav_z: 9.81,
-            grav_y: 0.01,
-            grav_x: -0.01,
-        });
+        let records = vec![
+            TestDataRecord {
+                time: DateTime::parse_from_str("2023-01-01 00:00:00+00:00", "%Y-%m-%d %H:%M:%S%z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+                bearing_accuracy: 0.1,
+                speed_accuracy: 0.1,
+                vertical_accuracy: 0.1,
+                horizontal_accuracy: 0.1,
+                speed: 1.0,
+                bearing: 90.0,
+                altitude: 100.0,
+                longitude: -122.0,
+                latitude: 37.0,
+                qz: 0.0,
+                qy: 0.0,
+                qx: 0.0,
+                qw: 1.0,
+                roll: 0.0,
+                pitch: 0.0,
+                yaw: 0.0,
+                acc_z: 9.81,
+                acc_y: 0.0,
+                acc_x: 0.0,
+                gyro_z: 0.01,
+                gyro_y: 0.01,
+                gyro_x: 0.01,
+                mag_z: 50.0,
+                mag_y: -30.0,
+                mag_x: -20.0,
+                relative_altitude: 5.0,
+                pressure: 1013.25,
+                grav_z: 9.81,
+                grav_y: 0.0,
+                grav_x: 0.0,
+            },
+            TestDataRecord {
+                time: DateTime::parse_from_str("2023-01-01 00:01:00+00:00", "%Y-%m-%d %H:%M:%S%z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+                bearing_accuracy: 0.2,
+                speed_accuracy: 0.2,
+                vertical_accuracy: 0.2,
+                horizontal_accuracy: 0.2,
+                speed: 2.0,
+                bearing: 180.0,
+                altitude: 200.0,
+                longitude: -121.0,
+                latitude: 38.0,
+                qz: 0.0,
+                qy: 0.0,
+                qx: 0.0,
+                qw: 1.0,
+                roll: 0.1,
+                pitch: 0.1,
+                yaw: 0.1,
+                acc_z: 9.81,
+                acc_y: 0.01,
+                acc_x: -0.01,
+                gyro_z: 0.02,
+                gyro_y: -0.02,
+                gyro_x: 0.02,
+                mag_z: 55.0,
+                mag_y: -25.0,
+                mag_x: -15.0,
+                relative_altitude: 10.0,
+                pressure: 1012.25,
+                grav_z: 9.81,
+                grav_y: 0.01,
+                grav_x: -0.01,
+            },
+        ];
 
         // Write to HDF5
         TestDataRecord::to_hdf5(&records, &file_path).expect("Failed to write HDF5");
@@ -5761,13 +5766,15 @@ mod tests {
         let file_path = dir.path().join("test_data_nan.h5");
 
         // Create a record with NaN values
-        let mut record = TestDataRecord::default();
-        record.time = Utc::now();
-        record.latitude = 37.0;
-        record.longitude = -122.0;
-        record.altitude = f64::NAN;
-        record.speed = f64::NAN;
-        record.bearing = 90.0;
+        let record = TestDataRecord {
+            time: Utc::now(),
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: f64::NAN,
+            speed: f64::NAN,
+            bearing: 90.0,
+            ..Default::default()
+        };
 
         let records = vec![record.clone()];
 
@@ -5817,29 +5824,33 @@ mod tests {
         let temp_file = std::env::temp_dir().join("nav_results_mcap.mcap");
 
         // Create test navigation results
-        let mut result1 = NavigationResult::default();
-        result1.timestamp = Utc::now();
-        result1.latitude = 37.0;
-        result1.longitude = -122.0;
-        result1.altitude = 100.0;
-        result1.velocity_north = 10.0;
-        result1.velocity_east = 5.0;
-        result1.velocity_vertical = -1.0;
-        result1.roll = 0.1;
-        result1.pitch = 0.2;
-        result1.yaw = 0.3;
+        let result1 = NavigationResult {
+            timestamp: Utc::now(),
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            velocity_north: 10.0,
+            velocity_east: 5.0,
+            velocity_vertical: -1.0,
+            roll: 0.1,
+            pitch: 0.2,
+            yaw: 0.3,
+            ..Default::default()
+        };
 
-        let mut result2 = NavigationResult::default();
-        result2.timestamp = Utc::now() + chrono::Duration::seconds(1);
-        result2.latitude = 37.01;
-        result2.longitude = -122.01;
-        result2.altitude = 110.0;
-        result2.velocity_north = 12.0;
-        result2.velocity_east = 6.0;
-        result2.velocity_vertical = 0.5;
-        result2.roll = 0.15;
-        result2.pitch = 0.25;
-        result2.yaw = 0.35;
+        let result2 = NavigationResult {
+            timestamp: Utc::now() + chrono::Duration::seconds(1),
+            latitude: 37.01,
+            longitude: -122.01,
+            altitude: 110.0,
+            velocity_north: 12.0,
+            velocity_east: 6.0,
+            velocity_vertical: 0.5,
+            roll: 0.15,
+            pitch: 0.25,
+            yaw: 0.35,
+            ..Default::default()
+        };
 
         let results = vec![result1.clone(), result2.clone()];
 
