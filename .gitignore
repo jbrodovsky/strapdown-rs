@@ -4,7 +4,7 @@ target
 data/raw
 data/output_0
 data/input_0
-data/input/*.png
+# data/input/*.png
 examples/strapdown-sim/out
 
 # Map files
