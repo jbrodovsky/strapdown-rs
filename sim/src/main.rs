@@ -58,9 +58,9 @@ use strapdown::sim::health::HealthMonitor;
 use strapdown::sim::{DEFAULT_PROCESS_NOISE, GeoResolution};
 use strapdown::sim::{
     ExecutionLimits, ExecutionMonitor, FaultArgs, FilterConfig, FilterType, NavigationResult,
-    ParticleFilterType, SchedulerArgs, SimulationConfig, SimulationMode, SyntheticConfig,
-    TestDataRecord, UkfConfig, build_fault, build_scheduler, dead_reckoning, generate_synthetic,
-    initialize_ekf, initialize_eskf, initialize_ukf, run_closed_loop,
+    ParticleFilterType, RbpfFilterConfig, SchedulerArgs, SimulationConfig, SimulationMode,
+    SyntheticConfig, TestDataRecord, UkfConfig, build_fault, build_scheduler, dead_reckoning,
+    generate_synthetic, initialize_ekf, initialize_eskf, initialize_ukf, run_closed_loop,
 };
 
 const LONG_ABOUT: &str =
@@ -121,7 +121,7 @@ struct Cli {
     #[arg(long, requires = "input")]
     output: Option<PathBuf>,
 
-    /// Closed-loop filter type.
+    /// Filter type for direct simulation runs.
     #[arg(long, value_enum, default_value_t = FilterType::Ukf)]
     filter: FilterType,
 
@@ -463,6 +463,11 @@ struct CreateConfigArgs {
     mode: SimulationMode,
 }
 
+enum TopLevelSimulationArgs {
+    ClosedLoop(ClosedLoopSimArgs),
+    ParticleFilter(ParticleFilterSimArgs),
+}
+
 fn execution_limits_from_args(args: &SimArgs) -> ExecutionLimits {
     ExecutionLimits {
         max_wall_clock_ratio: args.max_wall_clock_ratio,
@@ -522,19 +527,50 @@ fn default_geophysical_args() -> GeophysicalArgs {
     GeophysicalArgs::default()
 }
 
-fn cli_closed_loop_args(cli: &Cli) -> Option<ClosedLoopSimArgs> {
+fn cli_simulation_args(cli: &Cli) -> Option<TopLevelSimulationArgs> {
     let (Some(input), Some(output)) = (&cli.input, &cli.output) else {
         return None;
     };
 
-    Some(ClosedLoopSimArgs {
-        sim: SimArgs {
-            input: input.clone(),
-            output: output.clone(),
-            max_wall_clock_ratio: strapdown::sim::DEFAULT_MAX_WALL_CLOCK_RATIO,
-            max_wall_clock_s: strapdown::sim::DEFAULT_MAX_WALL_CLOCK_S,
-            max_no_progress_s: strapdown::sim::DEFAULT_MAX_NO_PROGRESS_S,
-        },
+    let sim = SimArgs {
+        input: input.clone(),
+        output: output.clone(),
+        max_wall_clock_ratio: strapdown::sim::DEFAULT_MAX_WALL_CLOCK_RATIO,
+        max_wall_clock_s: strapdown::sim::DEFAULT_MAX_WALL_CLOCK_S,
+        max_no_progress_s: strapdown::sim::DEFAULT_MAX_NO_PROGRESS_S,
+    };
+
+    if matches!(cli.filter, FilterType::Rbpf) {
+        let rbpf_defaults = RbpfFilterConfig::default();
+        return Some(TopLevelSimulationArgs::ParticleFilter(ParticleFilterSimArgs {
+            sim,
+            filter_type: ParticleFilterType::RaoBlackwellized,
+            seed: cli.seed,
+            num_particles: rbpf_defaults.num_particles,
+            position_std: rbpf_defaults
+                .position_init_std_m
+                .first()
+                .copied()
+                .unwrap_or(10.0),
+            velocity_std: rbpf_defaults.velocity_init_std_mps,
+            attitude_std: rbpf_defaults.attitude_init_std_rad,
+            accel_bias_std: 0.1,
+            gyro_bias_std: 0.01,
+            process_noise_std_m: rbpf_defaults.position_process_noise_std_m,
+            velocity_process_noise_std_mps: rbpf_defaults.velocity_process_noise_std_mps,
+            attitude_process_noise_std_rad: rbpf_defaults.attitude_process_noise_std_rad,
+            scheduler: default_scheduler_args(),
+            fault: default_fault_args(),
+            geo: default_geophysical_args(),
+            zero_vertical_velocity: rbpf_defaults.zero_vertical_velocity,
+            zero_vertical_velocity_std_mps: rbpf_defaults.zero_vertical_velocity_std_mps,
+            geo_bias_init_std: rbpf_defaults.geo_bias_init_std,
+            geo_bias_process_noise_std: rbpf_defaults.geo_bias_process_noise_std,
+        }));
+    }
+
+    Some(TopLevelSimulationArgs::ClosedLoop(ClosedLoopSimArgs {
+        sim,
         filter: cli.filter,
         ukf_alpha: cli.ukf_alpha,
         ukf_beta: cli.ukf_beta,
@@ -543,7 +579,7 @@ fn cli_closed_loop_args(cli: &Cli) -> Option<ClosedLoopSimArgs> {
         scheduler: default_scheduler_args(),
         fault: default_fault_args(),
         geo: default_geophysical_args(),
-    })
+    }))
 }
 
 fn prepare_sim_output_path(input_root: &Path, output: &Path) -> Result<(), Box<dyn Error>> {
@@ -1084,6 +1120,9 @@ fn run_single_closed_loop_simulation(
             info!("Initialized ESKF");
             run_closed_loop(&mut eskf, event_stream, None, Some(execution_limits))
         }
+        FilterType::Rbpf => {
+            return Err("RBPF filter requires particle-filter mode".into());
+        }
     };
 
     // Write results to CSV
@@ -1254,6 +1293,9 @@ fn run_closed_loop_cli(
         FilterType::Ukf => "Unscented Kalman Filter (UKF)",
         FilterType::Ekf => "Extended Kalman Filter (EKF)",
         FilterType::Eskf => "Error-State Kalman Filter (ESKF)",
+        FilterType::Rbpf => {
+            return Err("RBPF filter requires particle-filter mode".into());
+        }
     };
     info!("Running in closed-loop mode with {}", filter_name);
 
@@ -1432,6 +1474,9 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
         FilterType::Ukf => "Unscented Kalman Filter (UKF)",
         FilterType::Ekf => "Extended Kalman Filter (EKF)",
         FilterType::Eskf => "Error-State Kalman Filter (ESKF)",
+        FilterType::Rbpf => {
+            return Err("RBPF filter requires particle-filter mode".into());
+        }
     };
     info!(
         "Running geophysical navigation in closed-loop mode with {}",
@@ -1641,6 +1686,9 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                 error!("ESKF is not yet implemented for geophysical navigation");
                 return Err("ESKF is not yet implemented for geophysical navigation".into());
             }
+            FilterType::Rbpf => {
+                return Err("RBPF filter requires particle-filter mode".into());
+            }
         };
 
         // Write results
@@ -1742,9 +1790,12 @@ fn run_rbpf_event_loop(
 
 /// Execute particle filter simulation
 #[allow(dead_code)]
-fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error>> {
+fn run_particle_filter(
+    args: &ParticleFilterSimArgs,
+    generate_plot: bool,
+) -> Result<(), Box<dyn Error>> {
     validate_input_path(&args.sim.input)?;
-    validate_output_path(&args.sim.output)?;
+    prepare_sim_output_path(&args.sim.input, &args.sim.output)?;
 
     if !matches!(args.filter_type, ParticleFilterType::RaoBlackwellized) {
         return Err("Only Rao-Blackwellized particle filter is implemented in this mode".into());
@@ -1897,15 +1948,27 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
         #[cfg(not(feature = "geonav"))]
         let results = run_rbpf_event_loop(&mut rbpf, event_stream, &execution_limits)?;
 
-        let output_file = args.sim.output.join(input_file.file_name().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("Input file path '{}' has no filename", input_file.display()),
-            )
-        })?);
+        let output_file = resolve_sim_output_file(&args.sim.input, input_file, &args.sim.output)?;
 
         NavigationResult::to_csv(&results, &output_file)?;
         info!("Results written to {}", output_file.display());
+
+        #[cfg(feature = "plotting")]
+        if generate_plot {
+            let plot_path = output_file.with_extension("png");
+            info!("Generating performance plot at {}", plot_path.display());
+
+            if let Err(e) = plotting::plot_performance(&results, &records, &plot_path) {
+                error!("Failed to generate performance plot: {}", e);
+            }
+        }
+
+        #[cfg(not(feature = "plotting"))]
+        if generate_plot {
+            error!(
+                "Plotting requested but 'plotting' feature not enabled. Rebuild with --features plotting"
+            );
+        }
     }
 
     info!("Particle filter simulation complete");
@@ -2495,6 +2558,9 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
                 FilterType::Eskf => FilterConfig::Eskf {
                     config: Default::default(),
                 },
+                FilterType::Rbpf => {
+                    unreachable!("RBPF is not offered for closed-loop config templates")
+                }
             };
             Some(filter_config)
         }
@@ -2620,13 +2686,24 @@ fn main() -> Result<(), Box<dyn Error>> {
     init_logger(&cli.log_level, cli.log_file.as_ref())?;
 
     if cli.command.is_none()
-        && let Some(args) = cli_closed_loop_args(&cli)
+        && let Some(args) = cli_simulation_args(&cli)
     {
-        info!(
-            "Running closed-loop simulation with input: {}",
-            args.sim.input.display()
-        );
-        return run_closed_loop_cli(&args, cli.plot);
+        match args {
+            TopLevelSimulationArgs::ClosedLoop(args) => {
+                info!(
+                    "Running closed-loop simulation with input: {}",
+                    args.sim.input.display()
+                );
+                return run_closed_loop_cli(&args, cli.plot);
+            }
+            TopLevelSimulationArgs::ParticleFilter(args) => {
+                info!(
+                    "Running Rao-Blackwellized particle filter simulation with input: {}",
+                    args.sim.input.display()
+                );
+                return run_particle_filter(&args, cli.plot);
+            }
+        }
     }
 
     // Otherwise, execute auxiliary subcommands.
@@ -2670,8 +2747,13 @@ mod tests {
 
     #[test]
     fn test_filter_type_variants() {
-        let filters = [FilterType::Ukf, FilterType::Ekf, FilterType::Eskf];
-        assert_eq!(filters.len(), 3); // Updated to include ESKF
+        let filters = [
+            FilterType::Ukf,
+            FilterType::Ekf,
+            FilterType::Eskf,
+            FilterType::Rbpf,
+        ];
+        assert_eq!(filters.len(), 4);
     }
 
     #[test]
@@ -2753,6 +2835,49 @@ mod tests {
         assert!(matches!(cli.filter, FilterType::Ukf));
         assert!(cli.plot);
         assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn test_cli_accepts_top_level_rbpf_filter_flag() {
+        let cli = Cli::try_parse_from([
+            "strapdown-sim",
+            "--input",
+            "data/input.csv",
+            "--output",
+            "out.csv",
+            "--filter",
+            "rbpf",
+        ])
+        .unwrap();
+
+        assert!(matches!(cli.filter, FilterType::Rbpf));
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn test_cli_simulation_args_routes_rbpf_to_particle_filter() {
+        let cli = Cli::try_parse_from([
+            "strapdown-sim",
+            "--input",
+            "data/input.csv",
+            "--output",
+            "out.csv",
+            "--filter",
+            "rbpf",
+        ])
+        .unwrap();
+
+        let args = cli_simulation_args(&cli).unwrap();
+
+        match args {
+            TopLevelSimulationArgs::ParticleFilter(pf_args) => {
+                assert!(matches!(pf_args.filter_type, ParticleFilterType::RaoBlackwellized));
+                assert_eq!(pf_args.sim.output, PathBuf::from("out.csv"));
+            }
+            TopLevelSimulationArgs::ClosedLoop(_) => {
+                panic!("expected particle-filter dispatch for --filter rbpf")
+            }
+        }
     }
 
     #[test]

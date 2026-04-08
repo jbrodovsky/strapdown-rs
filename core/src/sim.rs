@@ -3037,6 +3037,8 @@ pub enum FilterType {
     Ekf,
     /// Error-State Kalman Filter (ESKF) with multiplicative attitude error
     Eskf,
+    /// Rao-Blackwellized Particle Filter (RBPF)
+    Rbpf,
 }
 
 /// Particle filter type selection
