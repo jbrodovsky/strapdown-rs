@@ -35,7 +35,7 @@ A Particle Filter Approach}
 
 \author[Brodovsky \& Dames]{James Brodovsky \and Philip Dames}
 \institute[Temple University]{Department of Mechanical Engineering\\Temple University}
-\date{2026}
+\date{14 April 2026}
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \begin{document}
@@ -96,7 +96,7 @@ A Particle Filter Approach}
                 \item Entirely passive, no RF emissions
             \end{itemize}
             \vspace{0.5em}
-            \textbf{Prior art:} demonstrated in aerospace/maritime with \emph{navigation-grade} sensors (RLG/FOG IMUs, dedicated gravimeters)
+            \textbf{Prior art:} demonstrated in aerospace/maritime with \emph{navigation-grade} sensors (RLG/FOG IMUs, dedicated gravimeters and magnetometers)
         \end{column}
         \begin{column}{0.42\textwidth}
             \begin{exampleblock}{Open Question}
@@ -116,7 +116,7 @@ A Particle Filter Approach}
 \begin{frame}{Prior Work and This Contribution}
     \begin{columns}
         \begin{column}{0.52\textwidth}
-            \textbf{Prior work (Brodovsky \& Dames, ION 2025):}
+            \textbf{Prior work (Brodovsky \& Dames, ION ITM 2026):}
             \begin{itemize}
                 \item Integrated gravity \& magnetic anomaly into an \textbf{Unscented Kalman Filter} (UKF) INS
                 \item MEMS-grade sensors + open-source maps
@@ -187,7 +187,22 @@ A Particle Filter Approach}
         \end{column}
     \end{columns}
 \end{frame}
+%-----------------------------------------------------
+\begin{frame}{Dataset Map}
+    \centering
+    \includegraphics[width=.75\textwidth]{figures/terrain_map.png}
 
+\end{frame}
+%-----------------------------------------------------
+\begin{frame}{Gravity Anomaly Map}
+    \centering
+    \includegraphics[width=.75\textwidth]{figures/gravity_map.png}
+\end{frame}
+%-----------------------------------------------------
+\begin{frame}{Magnetic Anomaly Map}
+    \centering
+    \includegraphics[width=.75\textwidth]{figures/magnetic_map.png}
+\end{frame}
 %-----------------------------------------------------
 \begin{frame}{GNSS Degradation Model}
     \begin{columns}
@@ -237,8 +252,6 @@ A Particle Filter Approach}
             \mathbf{x}^n = \begin{bmatrix} L \\ \lambda \end{bmatrix} \quad \text{(lat, lon)}
             \]
             Particles explicitly represent multimodal position hypotheses.
-
-            \medskip
             \textbf{Linear states} (Kalman filter per particle):
             \[
             \mathbf{x}^l = [h,\, v_n,\, v_e,\, v_d,\, \phi,\, \theta,\, \psi,\, \mathbf{b}_a,\, \mathbf{b}_g,\, b_\text{geo}]^\top
@@ -402,23 +415,26 @@ A Particle Filter Approach}
 
 %-----------------------------------------------------
 \begin{frame}{Example: Strong Performance}
-    \begin{figure}
+    \begin{figure}[b]
         \centering
-        \begin{subfigure}[b]{0.32\textwidth}
-            \includegraphics[width=\textwidth]{figures/good/2023-08-06_14-48-05_mag.png}
-            \caption{Magnetic aiding}
-        \end{subfigure}
-        \hfill
-        \begin{subfigure}[b]{0.32\textwidth}
-            \includegraphics[width=\textwidth]{figures/good/2023-08-06_14-48-05_grav.png}
-            \caption{Gravity aiding}
-        \end{subfigure}
-        \hfill
-        \begin{subfigure}[b]{0.32\textwidth}
-            \includegraphics[width=\textwidth]{figures/good/2023-08-06_14-48-05_combined.png}
-            \caption{Combined aiding}
-        \end{subfigure}
-        \caption{Trajectory 2023-08-06: geophysically-aided RBPF (orange) vs.\ RBPF baseline (blue) and UKF baseline (green). All three modalities show substantial, consistent improvement.}
+        \includegraphics[width=\textwidth]{figures/good/2023-08-06_14-48-05_mag.png}
+        \caption{Geo-RBPF with Magnetic aiding vs INS; 6664\,m RMSE improvement over INS baseline.}
+    \end{figure}
+\end{frame}
+%-----------------------------------------------------
+\begin{frame}{Example: Strong Performance}
+\begin{figure}[b]
+    \centering
+    \includegraphics[width=\textwidth]{figures/good/2023-08-06_14-48-05_grav.png}
+    \caption{Geo-RBPF with Gravity aiding vs INS; 6231\,m RMSE improvement over INS baseline.}
+\end{figure}
+\end{frame}
+%-----------------------------------------------------
+\begin{frame}{Example: Strong Performance} 
+    \begin{figure}[b]
+        \centering
+        \includegraphics[width=\textwidth]{figures/good/2023-08-06_14-48-05_combined.png}
+        \caption{Geo-RBPF with Combined aiding vs INS; 6664\,m RMSE improvement over INS baseline.}
     \end{figure}
 \end{frame}
 
@@ -449,24 +465,29 @@ A Particle Filter Approach}
 \end{frame}
 
 %-----------------------------------------------------
-\begin{frame}{Example: Combined Aiding Synergy}
+\begin{frame}{Example: Synergy from Combined Aiding}
     \begin{figure}
         \centering
-        \begin{subfigure}[b]{0.32\textwidth}
-            \includegraphics[width=\textwidth]{figures/mutual/2025-07-08_14-12-53_mag.png}
-            \caption{Magnetic only}
-        \end{subfigure}
-        \hfill
-        \begin{subfigure}[b]{0.32\textwidth}
-            \includegraphics[width=\textwidth]{figures/mutual/2025-07-08_14-12-53_grav.png}
-            \caption{Gravity only}
-        \end{subfigure}
-        \hfill
-        \begin{subfigure}[b]{0.32\textwidth}
-            \includegraphics[width=\textwidth]{figures/mutual/2025-07-08_14-12-53_combined.png}
-            \caption{Combined}
-        \end{subfigure}
-        \caption{Trajectory 2025-07-08: combined anomaly aiding yields substantial improvement over either single modality. Gravity and magnetic anomalies resolve ambiguities that neither can address alone.}
+        \includegraphics[width=\textwidth]{figures/mutual/2025-07-08_14-12-53_mag.png}
+        \caption{Trajectory 2025-07-08: Magnetic anomaly aiding only. Strong improvement from hour 1 to 1.25.}
+    \end{figure}
+\end{frame}
+
+%-----------------------------------------------------
+\begin{frame}{Example: Synergy from Combined Aiding}
+    \begin{figure}
+        \centering
+        \includegraphics[width=\textwidth]{figures/mutual/2025-07-08_14-12-53_grav.png}
+        \caption{Trajectory 2025-07-08: Gravity anomaly aiding only. Degraded performance from hour 1 to 1.25. Overall performance worse than UKF baseline.}
+    \end{figure}
+\end{frame}
+
+%-----------------------------------------------------
+\begin{frame}{Example: Synergy from Combined Aiding}
+    \begin{figure}
+        \centering
+        \includegraphics[width=\textwidth]{figures/mutual/2025-07-08_14-12-53_combined.png}
+        \caption{Trajectory 2025-07-08: Combined gravity and magnetic anomaly aiding yields substantial improvement. Gravity and magnetic anomalies resolve ambiguities that neither can address alone.}
     \end{figure}
     \begin{exampleblock}{}
         \small
@@ -490,69 +511,55 @@ A Particle Filter Approach}
         \end{column}
         \begin{column}{0.42\textwidth}
             \begin{block}{Key Takeaway}
-                The RBPF is a viable architecture for MEMS-grade geophysical navigation. It handles non-Gaussian posteriors from map-matching without the $O(N^{16})$ cost of a full particle filter---but the primary driver of accuracy remains the \textbf{information content of the anomaly measurement}, not the filter alone.
+                The RBPF is a viable architecture for performant geophysical navigation. It handles non-Gaussian posteriors from map-matching without the $O(N^{16})$ cost of a full particle filter---but the primary driver of accuracy remains the \textbf{information content} of the anomaly measurement, and \textbf{IMU quality}, not the filter alone.
             \end{block}
         \end{column}
     \end{columns}
 \end{frame}
 
 %-----------------------------------------------------
-\begin{frame}{Limitations \& Future Work}
-    \begin{columns}
-        \begin{column}{0.50\textwidth}
-            \textbf{Current limitations:}
-            \begin{itemize}
-                \item Simple Gaussian measurement model---ignores:
-                    \begin{itemize}
-                        \item Directional dependence of scalar magnetometer
-                        \item Altitude corrections, temporal variation
-                        \item Platform magnetic signature
-                    \end{itemize}
-                \item Weighted-mean state estimate can lie between particle clusters in multimodal cases
-                \item Performance is field-dependent with no online observability estimate
-            \end{itemize}
-        \end{column}
-        \begin{column}{0.47\textwidth}
-            \textbf{Future directions:}
-            \begin{enumerate}
-                \item \textbf{Physics-informed models}: Canciani airborne magnetic navigation model accounting for vector-scalar relationships and platform signatures
-                \item \textbf{Multi-modal state estimation}: K-means, GMM, or DBSCAN clustering to handle distinct particle clusters before forming navigation solution
-                \item \textbf{Integrity monitoring}: Online observability metrics to identify when geophysical aiding is trustworthy
-                \item \textbf{Adaptive particles}: Concentrate particles where uncertainty is highest
-            \end{enumerate}
-        \end{column}
-    \end{columns}
+\begin{frame}{Limitations}
+    Simple Gaussian measurement model ignores:
+        \begin{itemize}
+            \item Directional dependence of scalar magnetometer
+            \item Altitude corrections, temporal variation
+            \item Platform magnetic signature (hard and soft iron compensation)
+        \end{itemize}
+    \vspace{1em}
+    Weighted-mean state estimate can lie between particle clusters in multimodal cases.\\
+    \vspace{1em}
+    Performance is field-dependent with no online observability estimate.\\
+    \vspace{1em}
+    \textbf{MEMS sensor quality} is a fundamental limit; severe degradation can overwhelm the filter's ability to extract signal from noise. Consumer MEMS-grade performance represents a lower bound; higher-quality MEMS (e.g., automotive-grade) should yield better results.
 \end{frame}
-
+%-----------------------------------------------------
+\begin{frame}{Future Work}
+\begin{enumerate}
+    \item \textbf{Physics-informed models}: Canciani airborne magnetic navigation model accounting for vector-scalar relationships and platform signatures
+    \item \textbf{Multi-modal state estimation}: K-means, GMM, or DBSCAN clustering to handle distinct particle clusters before forming navigation solution
+    \item \textbf{Integrity monitoring}: Online observability metrics to identify when geophysical aiding is trustworthy
+    \item \textbf{Adaptive particles}: Concentrate particles where uncertainty is highest
+\end{enumerate}
+\end{frame}
 %-----------------------------------------------------
 \begin{frame}{Summary}
     \begin{center}
         \Large
-        \textbf{Geophysical anomaly navigation with MEMS-grade sensors\\
-        using a Rao-Blackwellized Particle Filter is viable.}
+        \textbf{Geophysical anomaly navigation with MEMS-grade sensors using a Rao-Blackwellized Particle Filter produces a meaningful reduction in drift error.}
     \end{center}
-    \vspace{0.5em}
-    \begin{columns}
-        \begin{column}{0.48\textwidth}
-            \begin{exampleblock}{What we showed}
-                \begin{itemize}
-                    \item RBPF successfully fuses gravity \& magnetic anomalies with degraded GNSS and low-cost INS
-                    \item Consistent improvement across 21 diverse trajectories
-                    \item Combined aiding provides synergistic benefit
-                \end{itemize}
-            \end{exampleblock}
-        \end{column}
-        \begin{column}{0.48\textwidth}
-            \begin{block}{Open-source tools}
-                \texttt{strapdown-rs}: Rust library for high-performance INS algorithms\\[0.3em]
-                RBPF implementation, GNSS degradation simulation, geophysical map integration---all open source.
-            \end{block}
-        \end{column}
-    \end{columns}
-
     \vspace{1em}
     \begin{center}
         \Large \textbf{Thank you! Questions?}
+    \end{center}
+    \vspace{1em}
+    \begin{center}
+        \small
+        James Brodovsky\\
+        Ph.D Candidate, Temple University\\
+        jbrodovsky@temple.edu \\
+        \vspace{.5em}
+        \url{https://jbrodovsky.github.io} \\
+        \url{https://github.com/jbrodovsky/strapdown-rs}
     \end{center}
 \end{frame}
 
