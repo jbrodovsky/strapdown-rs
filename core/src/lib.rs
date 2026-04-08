@@ -806,14 +806,14 @@ pub fn position_update(state: &StrapdownState, velocity: Vector3<f64>, dt: f64) 
 }
 
 // --- Miscellaneous functions for wrapping angles ---
-/// Wrap an angle to the range -180 to 180 degrees
+/// Wrap an angle to the range -180 to 180 degrees.
 ///
-/// This function is generic and can be used with any type that implements the necessary traits.
+/// Non-finite values (±Inf, NaN) are returned unchanged.
 ///
 /// # Arguments
-/// * `angle` - The angle to be wrapped, which can be of any type that implements the necessary traits.
+/// * `angle` - The angle in degrees.
 /// # Returns
-/// * The wrapped angle, which will be in the range -180 to 180 degrees.
+/// * The wrapped angle in the range (-180, 180].
 /// # Example
 /// ```rust
 /// use strapdown::wrap_to_180;
@@ -821,27 +821,22 @@ pub fn position_update(state: &StrapdownState, velocity: Vector3<f64>, dt: f64) 
 /// let wrapped_angle = wrap_to_180(angle);
 /// assert_eq!(wrapped_angle, -170.0); // 190 degrees wrapped to -170 degrees
 /// ```
-pub fn wrap_to_180<T>(angle: T) -> T
-where
-    T: PartialOrd + Copy + std::ops::SubAssign + std::ops::AddAssign + From<f64>,
-{
-    let mut wrapped: T = angle;
-    while wrapped > T::from(180.0) {
-        wrapped -= T::from(360.0);
+pub fn wrap_to_180(angle: f64) -> f64 {
+    if !angle.is_finite() {
+        return angle;
     }
-    while wrapped < T::from(-180.0) {
-        wrapped += T::from(360.0);
-    }
-    wrapped
+    let wrapped = angle.rem_euclid(360.0);
+    if wrapped > 180.0 { wrapped - 360.0 } else { wrapped }
 }
-/// Wrap an angle to the range 0 to 360 degrees
+
+/// Wrap an angle to the range 0 to 360 degrees.
 ///
-/// This function is generic and can be used with any type that implements the necessary traits.
+/// Non-finite values (±Inf, NaN) are returned unchanged.
 ///
 /// # Arguments
-/// * `angle` - The angle to be wrapped, which can be of any type that implements the necessary traits.
+/// * `angle` - The angle in degrees.
 /// # Returns
-/// * The wrapped angle, which will be in the range 0 to 360 degrees.
+/// * The wrapped angle in the range [0, 360).
 /// # Example
 /// ```rust
 /// use strapdown::wrap_to_360;
@@ -849,27 +844,21 @@ where
 /// let wrapped_angle = wrap_to_360(angle);
 /// assert_eq!(wrapped_angle, 10.0); // 370 degrees wrapped to 10 degrees
 /// ```
-pub fn wrap_to_360<T>(angle: T) -> T
-where
-    T: PartialOrd + Copy + std::ops::SubAssign + std::ops::AddAssign + From<f64>,
-{
-    let mut wrapped: T = angle;
-    while wrapped > T::from(360.0) {
-        wrapped -= T::from(360.0);
+pub fn wrap_to_360(angle: f64) -> f64 {
+    if !angle.is_finite() {
+        return angle;
     }
-    while wrapped < T::from(0.0) {
-        wrapped += T::from(360.0);
-    }
-    wrapped
+    angle.rem_euclid(360.0)
 }
-/// Wrap an angle to the range 0 to $\pm\pi$ radians
+
+/// Wrap an angle to the range -π to π radians.
 ///
-/// This function is generic and can be used with any type that implements the necessary traits.
+/// Non-finite values (±Inf, NaN) are returned unchanged.
 ///
 /// # Arguments
-/// * `angle` - The angle to be wrapped, which can be of any type that implements the necessary traits.
+/// * `angle` - The angle in radians.
 /// # Returns
-/// * The wrapped angle, which will be in the range -π to π radians.
+/// * The wrapped angle in the range (-π, π].
 /// # Example
 /// ```rust
 /// use strapdown::wrap_to_pi;
@@ -878,27 +867,23 @@ where
 /// let wrapped_angle = wrap_to_pi(angle);
 /// assert_eq!(wrapped_angle, -PI / 2.0); // 3π/4 radians wrapped to -π/4 radians
 /// ```
-pub fn wrap_to_pi<T>(angle: T) -> T
-where
-    T: PartialOrd + Copy + std::ops::SubAssign + std::ops::AddAssign + From<f64>,
-{
-    let mut wrapped: T = angle;
-    while wrapped > T::from(std::f64::consts::PI) {
-        wrapped -= T::from(2.0 * std::f64::consts::PI);
+pub fn wrap_to_pi(angle: f64) -> f64 {
+    use std::f64::consts::TAU;
+    if !angle.is_finite() {
+        return angle;
     }
-    while wrapped < T::from(-std::f64::consts::PI) {
-        wrapped += T::from(2.0 * std::f64::consts::PI);
-    }
-    wrapped
+    let wrapped = angle.rem_euclid(TAU);
+    if wrapped > std::f64::consts::PI { wrapped - TAU } else { wrapped }
 }
-/// Wrap an angle to the range 0 to $2 \pi$ radians
+
+/// Wrap an angle to the range 0 to 2π radians.
 ///
-/// This function is generic and can be used with any type that implements the necessary traits.
+/// Non-finite values (±Inf, NaN) are returned unchanged.
 ///
 /// # Arguments
-/// * `angle` - The angle to be wrapped, which can be of any type that implements the necessary traits.
+/// * `angle` - The angle in radians.
 /// # Returns
-/// * The wrapped angle, which will be in the range -π to π radians.
+/// * The wrapped angle in the range [0, 2π).
 /// # Example
 /// ```rust
 /// use strapdown::wrap_to_2pi;
@@ -907,31 +892,20 @@ where
 /// let wrapped_angle = wrap_to_2pi(angle);
 /// assert_eq!(wrapped_angle, PI); // 5π radians wrapped to π radians
 /// ```
-pub fn wrap_to_2pi<T>(angle: T) -> T
-where
-    T: PartialOrd + Copy + std::ops::SubAssign + std::ops::AddAssign + From<f64>,
-    T: PartialOrd + Copy + std::ops::SubAssign + std::ops::AddAssign + From<i32>,
-{
-    let mut wrapped: T = angle;
-    while wrapped > T::from(2.0 * std::f64::consts::PI) {
-        wrapped -= T::from(2.0 * std::f64::consts::PI);
+pub fn wrap_to_2pi(angle: f64) -> f64 {
+    if !angle.is_finite() {
+        return angle;
     }
-    while wrapped < T::from(0.0) {
-        wrapped += T::from(2.0 * std::f64::consts::PI);
-    }
-    wrapped
+    angle.rem_euclid(2.0 * std::f64::consts::PI)
 }
-/// Wrap latitude to the range -90 to 90 degrees
+/// Wrap latitude to the range -90 to 90 degrees.
 ///
-/// This function is generic and can be used with any type that implements the necessary traits.
-/// This function is useful for ensuring that latitude values remain within the valid range for
-/// WGS84 coordinates. Keep in mind that the local level frame (NED/ENU) is typically used for
-/// navigation and positioning in middling latitudes.
+/// Non-finite values (±Inf, NaN) are returned unchanged.
 ///
 /// # Arguments
-/// * `latitude` - The latitude to be wrapped, which can be of any type that implements the necessary traits.
+/// * `latitude` - The latitude in degrees.
 /// # Returns
-/// * The wrapped latitude, which will be in the range -90 to 90 degrees.
+/// * The wrapped latitude in the range [-90, 90].
 /// # Example
 /// ```rust
 /// use strapdown::wrap_latitude;
@@ -939,18 +913,14 @@ where
 /// let wrapped_latitude = wrap_latitude(latitude);
 /// assert_eq!(wrapped_latitude, -85.0); // 95 degrees wrapped to -85 degrees
 /// ```
-pub fn wrap_latitude<T>(latitude: T) -> T
-where
-    T: PartialOrd + Copy + std::ops::SubAssign + std::ops::AddAssign + From<f64>,
-{
-    let mut wrapped: T = latitude;
-    while wrapped > T::from(90.0) {
-        wrapped -= T::from(180.0);
+pub fn wrap_latitude(latitude: f64) -> f64 {
+    if !latitude.is_finite() {
+        return latitude;
     }
-    while wrapped < T::from(-90.0) {
-        wrapped += T::from(180.0);
-    }
-    wrapped
+    // Map to [-90, 90] by reflecting through ±90.
+    // lat' = 90 - |((lat - 90) % 360 + 360) % 360 - 180|
+    let normalized = (latitude - 90.0).rem_euclid(360.0) - 180.0;
+    90.0 - normalized.abs()
 }
 
 // ============= Helper Functions for Test Scenarios =========================
