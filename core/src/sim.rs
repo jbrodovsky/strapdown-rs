@@ -2105,7 +2105,7 @@ pub fn print_ukf(ukf: &UnscentedKalmanFilter, record: &TestDataRecord) {
 ///
 /// This struct groups together optional parameters for initializing an Unscented Kalman Filter,
 /// reducing the number of function arguments and making it easier to specify custom configurations.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UkfConfig {
     /// Optional vector of f64 representing the initial attitude covariance (default is a small value).
     pub attitude_covariance: Option<Vec<f64>>,
@@ -3054,37 +3054,73 @@ pub enum ParticleFilterType {
     Velocity,
 }
 
-/// Closed-loop specific configuration
+/// Extended Kalman Filter configuration.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ClosedLoopConfig {
-    /// Filter type (UKF or EKF)
-    #[serde(default)]
-    pub filter: FilterType,
-    /// UKF alpha parameter (spread of sigma points)
-    #[serde(default = "default_ukf_alpha")]
-    pub ukf_alpha: f64,
-    /// UKF beta parameter (prior knowledge of distribution, 2.0 is optimal for Gaussian)
-    #[serde(default = "default_ukf_beta")]
-    pub ukf_beta: f64,
-    /// UKF kappa parameter (secondary spread control)
-    #[serde(default = "default_ukf_kappa")]
-    pub ukf_kappa: f64,
+pub struct EkfConfig {
+    /// Optional initial attitude covariance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attitude_covariance: Option<Vec<f64>>,
+    /// Optional initial IMU biases.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imu_biases: Option<Vec<f64>>,
+    /// Optional IMU bias covariance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imu_biases_covariance: Option<Vec<f64>>,
+    /// Optional process noise diagonal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_noise_diagonal: Option<Vec<f64>>,
+    /// If true, uses the 15-state EKF with IMU biases. Otherwise uses the 9-state EKF.
+    #[serde(default = "default_ekf_use_biases")]
+    pub use_biases: bool,
 }
 
-impl Default for ClosedLoopConfig {
+fn default_ekf_use_biases() -> bool {
+    true
+}
+
+impl Default for EkfConfig {
     fn default() -> Self {
         Self {
-            filter: FilterType::Ukf,
-            ukf_alpha: default_ukf_alpha(),
-            ukf_beta: default_ukf_beta(),
-            ukf_kappa: default_ukf_kappa(),
+            attitude_covariance: None,
+            imu_biases: None,
+            imu_biases_covariance: None,
+            process_noise_diagonal: None,
+            use_biases: default_ekf_use_biases(),
         }
     }
 }
 
-/// Particle filter configuration (RBPF defaults).
+/// Error-State Kalman Filter configuration.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ParticleFilterConfig {
+pub struct EskfConfig {
+    /// Optional initial attitude covariance for the error state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attitude_covariance: Option<Vec<f64>>,
+    /// Optional initial IMU biases.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imu_biases: Option<Vec<f64>>,
+    /// Optional IMU bias covariance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imu_biases_covariance: Option<Vec<f64>>,
+    /// Optional process noise diagonal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_noise_diagonal: Option<Vec<f64>>,
+}
+
+impl Default for EskfConfig {
+    fn default() -> Self {
+        Self {
+            attitude_covariance: None,
+            imu_biases: None,
+            imu_biases_covariance: None,
+            process_noise_diagonal: None,
+        }
+    }
+}
+
+/// Rao-Blackwellized particle filter configuration.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RbpfFilterConfig {
     /// Number of particles in the filter.
     #[serde(default = "default_num_particles")]
     pub num_particles: usize,
@@ -3128,18 +3164,6 @@ fn default_zero_vertical_velocity_std_mps() -> f64 {
     0.1
 }
 
-fn default_ukf_alpha() -> f64 {
-    1e-3
-}
-
-fn default_ukf_beta() -> f64 {
-    2.0
-}
-
-fn default_ukf_kappa() -> f64 {
-    0.0
-}
-
 fn default_num_particles() -> usize {
     100
 }
@@ -3176,7 +3200,7 @@ fn default_geo_bias_process_noise_std() -> f64 {
     1e-3
 }
 
-impl Default for ParticleFilterConfig {
+impl Default for RbpfFilterConfig {
     fn default() -> Self {
         Self {
             num_particles: default_num_particles(),
@@ -3190,6 +3214,52 @@ impl Default for ParticleFilterConfig {
             geo_bias_process_noise_std: default_geo_bias_process_noise_std(),
             zero_vertical_velocity: default_zero_vertical_velocity(),
             zero_vertical_velocity_std_mps: default_zero_vertical_velocity_std_mps(),
+        }
+    }
+}
+
+/// Tagged filter configuration for simulation modes.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum FilterConfig {
+    Ukf {
+        #[serde(flatten)]
+        config: UkfConfig,
+    },
+    Ekf {
+        #[serde(flatten)]
+        config: EkfConfig,
+    },
+    Eskf {
+        #[serde(flatten)]
+        config: EskfConfig,
+    },
+    Rbpf {
+        #[serde(flatten)]
+        config: RbpfFilterConfig,
+    },
+}
+
+impl FilterConfig {
+    pub fn rbpf_default() -> Self {
+        Self::Rbpf {
+            config: RbpfFilterConfig::default(),
+        }
+    }
+
+    pub fn default_for_mode(mode: SimulationMode) -> Option<Self> {
+        match mode {
+            SimulationMode::ClosedLoop => Some(Self::default()),
+            SimulationMode::ParticleFilter => Some(Self::rbpf_default()),
+            _ => None,
+        }
+    }
+}
+
+impl Default for FilterConfig {
+    fn default() -> Self {
+        Self::Ukf {
+            config: UkfConfig::default(),
         }
     }
 }
@@ -3273,12 +3343,9 @@ pub struct SimulationConfig {
     /// Logging configuration
     #[serde(default)]
     pub logging: LoggingConfig,
-    /// Closed-loop specific settings (only used if mode is ClosedLoop)
+    /// Tagged filter configuration used by closed-loop and particle-filter modes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub closed_loop: Option<ClosedLoopConfig>,
-    /// Particle filter settings (only used if mode is ParticleFilter)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub particle_filter: Option<ParticleFilterConfig>,
+    pub filter: Option<FilterConfig>,
     /// Geophysical measurement configuration (optional, requires --features geonav)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub geophysical: Option<GeophysicalConfig>,
@@ -3313,8 +3380,7 @@ impl Default for SimulationConfig {
             generate_plot: false,
             execution_limits: ExecutionLimits::default(),
             logging: LoggingConfig::default(),
-            closed_loop: Some(ClosedLoopConfig::default()),
-            particle_filter: None,
+            filter: FilterConfig::default_for_mode(SimulationMode::ClosedLoop),
             geophysical: None,
             gnss_degradation: crate::messages::GnssDegradationConfig::default(),
             synthetic: None,
@@ -4447,6 +4513,55 @@ mod tests {
         let res = run_closed_loop(&mut ukf, stream, None, None);
         assert!(!res.unwrap().is_empty());
     }
+    #[test]
+    fn test_simulation_config_serializes_tagged_ukf_filter_to_toml() {
+        let config = SimulationConfig {
+            filter: Some(FilterConfig::Ukf {
+                config: UkfConfig {
+                    ukf_alpha: Some(0.25),
+                    ukf_beta: Some(2.5),
+                    ..Default::default()
+                },
+            }),
+            ..Default::default()
+        };
+
+        let toml = toml::to_string(&config).expect("SimulationConfig should serialize to TOML");
+
+        assert!(toml.contains("[filter]"));
+        assert!(toml.contains("type = \"ukf\""));
+        assert!(toml.contains("ukf_alpha = 0.25"));
+        assert!(toml.contains("ukf_beta = 2.5"));
+    }
+
+    #[test]
+    fn test_simulation_config_deserializes_tagged_rbpf_filter_from_toml() {
+        let toml = r#"
+input = "input.csv"
+output = "output.csv"
+mode = "particle-filter"
+seed = 42
+
+[filter]
+type = "rbpf"
+num_particles = 256
+zero_vertical_velocity = false
+zero_vertical_velocity_std_mps = 0.5
+"#;
+
+        let config: SimulationConfig =
+            toml::from_str(toml).expect("SimulationConfig should deserialize from TOML");
+
+        match config.filter {
+            Some(FilterConfig::Rbpf { config: rbpf_cfg }) => {
+                assert_eq!(rbpf_cfg.num_particles, 256);
+                assert!(!rbpf_cfg.zero_vertical_velocity);
+                assert_eq!(rbpf_cfg.zero_vertical_velocity_std_mps, 0.5);
+            }
+            other => panic!("Expected RBPF filter config, got {other:?}"),
+        }
+    }
+
     #[test]
     fn test_initialize_ukf_default_and_custom() {
         let rec = TestDataRecord {

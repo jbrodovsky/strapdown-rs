@@ -14,9 +14,9 @@
 //!
 //! You can run simulations either by:
 //!   1. Loading all parameters from a configuration file (TOML/JSON/YAML)
-//!   2. Specifying parameters via command-line flags
+//!   2. Specifying `--input`, `--output`, `--filter`, and optional tuning flags directly
 //!
-//! For dataset format details, see the documentation or use --help with specific subcommands.
+//! For dataset format details, see the documentation or use --help.
 
 mod common;
 #[cfg(feature = "plotting")]
@@ -57,10 +57,10 @@ use strapdown::sim::health::HealthMonitor;
 #[cfg(feature = "geonav")]
 use strapdown::sim::{DEFAULT_PROCESS_NOISE, GeoResolution};
 use strapdown::sim::{
-    ExecutionLimits, ExecutionMonitor, FaultArgs, FilterType, NavigationResult, ParticleFilterType,
-    SchedulerArgs, SimulationConfig, SimulationMode, SyntheticConfig, TestDataRecord, UkfConfig,
-    build_fault, build_scheduler, dead_reckoning, generate_synthetic, initialize_ekf,
-    initialize_eskf, initialize_ukf, run_closed_loop,
+    ExecutionLimits, ExecutionMonitor, FaultArgs, FilterConfig, FilterType, NavigationResult,
+    ParticleFilterType, SchedulerArgs, SimulationConfig, SimulationMode, SyntheticConfig,
+    TestDataRecord, UkfConfig, build_fault, build_scheduler, dead_reckoning, generate_synthetic,
+    initialize_ekf, initialize_eskf, initialize_ukf, run_closed_loop,
 };
 
 const LONG_ABOUT: &str =
@@ -79,10 +79,10 @@ This program can operate in three modes: open-loop, closed-loop, and particle-fi
   Rao-Blackwellized implementations. CURRENTLY IN DEVELOPMENT!!!
 
 You can run simulations either by:
-  1. Loading all parameters from a configuration file (TOML/JSON/YAML)
-  2. Specifying parameters via command-line flags
+    1. Loading all parameters from a configuration file (TOML/JSON/YAML)
+    2. Specifying --input, --output, --filter, and optional tuning flags directly
 
-For dataset format details, see the documentation or use --help with specific subcommands.";
+For dataset format details, see the documentation or use --help.";
 
 /// Command line arguments
 #[derive(Parser)]
@@ -112,37 +112,39 @@ struct Cli {
     /// Generate performance plot comparing navigation output to GPS measurements
     #[arg(long, global = true)]
     plot: bool,
+
+    /// Input CSV file or directory containing CSV files.
+    #[arg(long, requires = "output")]
+    input: Option<PathBuf>,
+
+    /// Output file path for single-file input, or output directory for directory input.
+    #[arg(long, requires = "input")]
+    output: Option<PathBuf>,
+
+    /// Closed-loop filter type.
+    #[arg(long, value_enum, default_value_t = FilterType::Ukf)]
+    filter: FilterType,
+
+    /// UKF alpha parameter.
+    #[arg(long = "ukf-alpha", default_value_t = 1e-3)]
+    ukf_alpha: f64,
+
+    /// UKF beta parameter.
+    #[arg(long = "ukf-beta", default_value_t = 2.0)]
+    ukf_beta: f64,
+
+    /// UKF kappa parameter.
+    #[arg(long = "ukf-kappa", default_value_t = 0.0)]
+    ukf_kappa: f64,
+
+    /// RNG seed for stochastic processes.
+    #[arg(long = "seed", default_value_t = 42)]
+    seed: u64,
 }
 
 /// Top-level commands
 #[derive(Subcommand, Clone)]
 enum Command {
-    #[command(
-        name = "dr",
-        about = "Run simulation in dead reckoning mode",
-        long_about = "Run INS simulation in dead reckoning mode. In this mode, only inertial measurements (IMU) and an initial position estimate are used to propagate the navigation solution. External measurements like GNSS are not incorporated."
-    )]
-    DeadReckoning(SimArgs),
-    #[command(
-        name = "ol",
-        about = "Run simulation in open-loop mode",
-        long_about = "Run INS simulation in an open-loop (feed-forward) mode. In this mode, an initial position estimate and inertial measurements (IMU) are used to propagate the navigation solution. A Kalman filter (EKF or UKF) is used to estimate the errors to the navigation solution from GNSS measurements and apply the correction. Various GNSS degradation scenarios can be simulated, including jamming, reduced update rates, and spoofing."
-    )]
-    OpenLoop(SimArgs),
-    #[command(
-        name = "cl",
-        about = "Run simulation in closed-loop mode",
-        long_about = "Run INS simulation in a closed-loop (feedback) mode. In this mode, GNSS measurements are incorporated to correct for IMU drift and directly reset or update the navigation states using either an Unscented Kalman Filter (UKF) or Extended Kalman Filter (EKF). Various GNSS degradation scenarios can be simulated, including jamming, reduced update rates, and spoofing."
-    )]
-    ClosedLoop(ClosedLoopSimArgs),
-
-    #[command(
-        name = "pf",
-        about = "Run simulation using particle filter.",
-        long_about = "Run INS simulation using a particle filter for state estimation. This mode supports both standard and Rao-Blackwellized particle filter implementations. Various GNSS degradation scenarios can be simulated, including jamming, reduced update rates, and spoofing."
-    )]
-    ParticleFilter(ParticleFilterSimArgs),
-
     #[command(name = "config", about = "Generate a template configuration file")]
     CreateConfig,
 
@@ -153,7 +155,7 @@ enum Command {
 initial kinematic state. The trajectory propagates at constant nav-frame velocity with constant \
 body-frame angular velocity (zero linear and angular acceleration). Perfect IMU increments are \
 computed via inverse mechanization then degraded per the selected IMU quality grade.\n\n\
-Without --no-noise: outputs noisy TestDataRecord CSV compatible with 'cl' and 'pf' modes.\n\
+Without --no-noise: outputs noisy TestDataRecord CSV compatible with the top-level simulation CLI.\n\
 With --no-noise: outputs 9-state kinematic truth in NavigationResult CSV format."
     )]
     Synthetic(SyntheticArgs),
@@ -469,6 +471,128 @@ fn execution_limits_from_args(args: &SimArgs) -> ExecutionLimits {
     }
 }
 
+fn default_scheduler_args() -> SchedulerArgs {
+    SchedulerArgs {
+        sched: strapdown::sim::SchedKind::Passthrough,
+        interval_s: 1.0,
+        phase_s: 0.0,
+        on_s: 10.0,
+        off_s: 10.0,
+        duty_phase_s: 0.0,
+    }
+}
+
+fn default_fault_args() -> FaultArgs {
+    FaultArgs {
+        fault: strapdown::sim::FaultKind::None,
+        rho_pos: 0.99,
+        sigma_pos_m: 3.0,
+        rho_vel: 0.95,
+        sigma_vel_mps: 0.3,
+        r_scale: 5.0,
+        drift_n_mps: 0.02,
+        drift_e_mps: 0.0,
+        q_bias: 1e-6,
+        rotate_omega_rps: 0.0,
+        hijack_offset_n_m: 50.0,
+        hijack_offset_e_m: 0.0,
+        hijack_start_s: 120.0,
+        hijack_duration_s: 60.0,
+    }
+}
+
+#[cfg(feature = "geonav")]
+fn default_geophysical_args() -> GeophysicalArgs {
+    GeophysicalArgs {
+        geo: false,
+        gravity_resolution: None,
+        gravity_bias: None,
+        gravity_noise_std: 100.0,
+        gravity_map_file: None,
+        magnetic_resolution: None,
+        magnetic_bias: None,
+        magnetic_noise_std: 150.0,
+        magnetic_map_file: None,
+        geo_frequency_s: None,
+    }
+}
+
+#[cfg(not(feature = "geonav"))]
+fn default_geophysical_args() -> GeophysicalArgs {
+    GeophysicalArgs::default()
+}
+
+fn cli_closed_loop_args(cli: &Cli) -> Option<ClosedLoopSimArgs> {
+    let (Some(input), Some(output)) = (&cli.input, &cli.output) else {
+        return None;
+    };
+
+    Some(ClosedLoopSimArgs {
+        sim: SimArgs {
+            input: input.clone(),
+            output: output.clone(),
+            max_wall_clock_ratio: strapdown::sim::DEFAULT_MAX_WALL_CLOCK_RATIO,
+            max_wall_clock_s: strapdown::sim::DEFAULT_MAX_WALL_CLOCK_S,
+            max_no_progress_s: strapdown::sim::DEFAULT_MAX_NO_PROGRESS_S,
+        },
+        filter: cli.filter,
+        ukf_alpha: cli.ukf_alpha,
+        ukf_beta: cli.ukf_beta,
+        ukf_kappa: cli.ukf_kappa,
+        seed: cli.seed,
+        scheduler: default_scheduler_args(),
+        fault: default_fault_args(),
+        geo: default_geophysical_args(),
+    })
+}
+
+fn prepare_sim_output_path(input_root: &Path, output: &Path) -> Result<(), Box<dyn Error>> {
+    if input_root.is_dir() {
+        if output.exists() && output.is_file() {
+            return Err(format!(
+                "Output path '{}' must be a directory when input is a directory",
+                output.display()
+            )
+            .into());
+        }
+        validate_output_path(output)?;
+        return Ok(());
+    }
+
+    if output.exists() && output.is_dir() {
+        return Err(format!(
+            "Output path '{}' must be a file when input is a single file",
+            output.display()
+        )
+        .into());
+    }
+
+    if let Some(parent) = output.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        validate_output_path(parent)?;
+    }
+
+    Ok(())
+}
+
+fn resolve_sim_output_file(
+    input_root: &Path,
+    input_file: &Path,
+    output: &Path,
+) -> Result<PathBuf, Box<dyn Error>> {
+    if input_root.is_dir() {
+        return Ok(output.join(input_file.file_name().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Input file path '{}' has no filename", input_file.display()),
+            )
+        })?));
+    }
+
+    Ok(output.to_path_buf())
+}
+
 /// Process a single CSV file with the given configuration
 fn process_file(
     input_file: &Path,
@@ -507,7 +631,11 @@ fn process_file(
             Err("Open-loop mode is not yet fully implemented".into())
         }
         SimulationMode::ClosedLoop => {
-            let filter_config = config.closed_loop.clone().unwrap_or_default();
+            let filter_config = config
+                .filter
+                .clone()
+                .or_else(|| FilterConfig::default_for_mode(SimulationMode::ClosedLoop))
+                .ok_or("Missing filter configuration for closed-loop mode")?;
 
             let event_stream = build_event_stream(&records, &config.gnss_degradation);
             info!(
@@ -516,21 +644,37 @@ fn process_file(
             );
             let execution_limits = config.execution_limits.clone();
 
-            let results = match filter_config.filter {
-                FilterType::Ukf => {
-                    let mut ukf = initialize_ukf(records[0].clone(), UkfConfig::default());
+            let results = match filter_config {
+                FilterConfig::Ukf { config: ukf_cfg } => {
+                    let mut ukf = initialize_ukf(records[0].clone(), ukf_cfg);
                     info!("Initialized UKF");
                     run_closed_loop(&mut ukf, event_stream, None, Some(execution_limits.clone()))
                 }
-                FilterType::Ekf => {
-                    let mut ekf = initialize_ekf(records[0].clone(), None, None, None, None, true);
+                FilterConfig::Ekf { config: ekf_cfg } => {
+                    let mut ekf = initialize_ekf(
+                        records[0].clone(),
+                        ekf_cfg.attitude_covariance,
+                        ekf_cfg.imu_biases,
+                        ekf_cfg.imu_biases_covariance,
+                        ekf_cfg.process_noise_diagonal,
+                        ekf_cfg.use_biases,
+                    );
                     info!("Initialized EKF");
                     run_closed_loop(&mut ekf, event_stream, None, Some(execution_limits.clone()))
                 }
-                FilterType::Eskf => {
-                    let mut eskf = initialize_eskf(records[0].clone(), None, None, None, None);
+                FilterConfig::Eskf { config: eskf_cfg } => {
+                    let mut eskf = initialize_eskf(
+                        records[0].clone(),
+                        eskf_cfg.attitude_covariance,
+                        eskf_cfg.imu_biases,
+                        eskf_cfg.imu_biases_covariance,
+                        eskf_cfg.process_noise_diagonal,
+                    );
                     info!("Initialized ESKF");
                     run_closed_loop(&mut eskf, event_stream, None, Some(execution_limits))
+                }
+                FilterConfig::Rbpf { .. } => {
+                    return Err("RBPF filter configuration requires particle-filter mode".into());
                 }
             };
 
@@ -650,7 +794,20 @@ fn process_file(
                 is_enu: true,
             };
 
-            let pf_cfg = config.particle_filter.clone().unwrap_or_default();
+            let pf_cfg = match config
+                .filter
+                .clone()
+                .or_else(|| FilterConfig::default_for_mode(SimulationMode::ParticleFilter))
+                .ok_or("Missing filter configuration for particle-filter mode")?
+            {
+                FilterConfig::Rbpf { config: rbpf_cfg } => rbpf_cfg,
+                FilterConfig::Ukf { .. } | FilterConfig::Ekf { .. } | FilterConfig::Eskf { .. } => {
+                    return Err(
+                        "UKF/EKF/ESKF filter configuration is not valid in particle-filter mode"
+                            .into(),
+                    );
+                }
+            };
             let rbpf_defaults = RbpfConfig::default();
             let position_init_std_m = if pf_cfg.position_init_std_m.len() == 3 {
                 Vector3::new(
@@ -894,7 +1051,7 @@ fn run_single_closed_loop_simulation(
     ukf_alpha: f64,
     ukf_beta: f64,
     ukf_kappa: f64,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<Vec<NavigationResult>, Box<dyn Error>> {
     // Build event stream from records and GNSS degradation config
     let event_stream = build_event_stream(records, gnss_degradation);
     info!(
@@ -934,7 +1091,7 @@ fn run_single_closed_loop_simulation(
         Ok(ref nav_results) => {
             NavigationResult::to_csv(nav_results, output_file)?;
             info!("Results written to {}", output_file.display());
-            Ok(())
+            Ok(nav_results.clone())
         }
         Err(e) => {
             error!("Error running closed-loop simulation: {}", e);
@@ -1001,6 +1158,7 @@ fn run_synthetic(args: &SyntheticArgs) -> Result<(), Box<dyn Error>> {
 }
 
 /// Execute dead-reckoning simulation
+#[allow(dead_code)]
 fn run_dead_reckoning(args: &SimArgs) -> Result<(), Box<dyn Error>> {
     validate_input_path(&args.input)?;
     validate_output_path(&args.output)?;
@@ -1051,6 +1209,7 @@ fn run_dead_reckoning(args: &SimArgs) -> Result<(), Box<dyn Error>> {
 }
 
 /// Execute open-loop simulation
+#[allow(dead_code)]
 fn run_open_loop(args: &SimArgs) -> Result<(), Box<dyn Error>> {
     validate_input_path(&args.input)?;
     validate_output_path(&args.output)?;
@@ -1078,7 +1237,10 @@ fn run_open_loop(args: &SimArgs) -> Result<(), Box<dyn Error>> {
 }
 
 /// Execute closed-loop simulation
-fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
+fn run_closed_loop_cli(
+    args: &ClosedLoopSimArgs,
+    generate_plot: bool,
+) -> Result<(), Box<dyn Error>> {
     // Check if geophysical navigation is enabled
     #[cfg(feature = "geonav")]
     if args.geo.geo {
@@ -1086,7 +1248,7 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
     }
 
     validate_input_path(&args.sim.input)?;
-    validate_output_path(&args.sim.output)?;
+    prepare_sim_output_path(&args.sim.input, &args.sim.output)?;
 
     let filter_name = match args.filter {
         FilterType::Ukf => "Unscented Kalman Filter (UKF)",
@@ -1125,7 +1287,7 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
         };
 
         info!("Using GNSS degradation config: {:?}", gnss_degradation);
-        let output_file = Path::new(&args.sim.output).join(input_file);
+        let output_file = resolve_sim_output_file(&args.sim.input, input_file, &args.sim.output)?;
 
         // Run simulation using the common helper function
         match run_single_closed_loop_simulation(
@@ -1138,8 +1300,22 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
             args.ukf_beta,
             args.ukf_kappa,
         ) {
-            Ok(()) => {
-                // Success - result logging is handled by the helper function
+            Ok(nav_results) => {
+                #[cfg(feature = "plotting")]
+                if generate_plot {
+                    let plot_path = output_file.with_extension("png");
+                    info!("Generating performance plot at {}", plot_path.display());
+                    if let Err(e) = plotting::plot_performance(&nav_results, &records, &plot_path) {
+                        error!("Failed to generate performance plot: {}", e);
+                    }
+                }
+
+                #[cfg(not(feature = "plotting"))]
+                if generate_plot {
+                    error!(
+                        "Plotting requested but 'plotting' feature not enabled. Rebuild with --features plotting"
+                    );
+                }
             }
             Err(e) => {
                 error!(
@@ -1565,6 +1741,7 @@ fn run_rbpf_event_loop(
 }
 
 /// Execute particle filter simulation
+#[allow(dead_code)]
 fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error>> {
     validate_input_path(&args.sim.input)?;
     validate_output_path(&args.sim.output)?;
@@ -2307,23 +2484,26 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
     };
 
     // Mode-specific configuration
-    let closed_loop = if matches!(mode, SimulationMode::ClosedLoop) {
-        let filter = prompt_filter_type();
-        let closed_loop_cfg = strapdown::sim::ClosedLoopConfig {
-            filter,
-            ..Default::default()
-        };
-        Some(closed_loop_cfg)
-    } else {
-        None
-    };
-
-    let particle_filter = if matches!(mode, SimulationMode::ParticleFilter) {
-        println!("\nParticle filter configuration uses default values.");
-        println!("Edit the generated config file to customize particle filter settings.");
-        Some(strapdown::sim::ParticleFilterConfig::default())
-    } else {
-        None
+    let filter = match mode {
+        SimulationMode::ClosedLoop => {
+            let filter_type = prompt_filter_type();
+            let filter_config = match filter_type {
+                FilterType::Ukf => FilterConfig::default(),
+                FilterType::Ekf => FilterConfig::Ekf {
+                    config: Default::default(),
+                },
+                FilterType::Eskf => FilterConfig::Eskf {
+                    config: Default::default(),
+                },
+            };
+            Some(filter_config)
+        }
+        SimulationMode::ParticleFilter => {
+            println!("\nParticle filter configuration uses default values.");
+            println!("Edit the generated config file to customize particle filter settings.");
+            Some(FilterConfig::rbpf_default())
+        }
+        _ => None,
     };
 
     // GNSS degradation configuration
@@ -2388,8 +2568,7 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
         generate_plot: false,
         execution_limits,
         logging,
-        closed_loop,
-        particle_filter,
+        filter,
         geophysical,
         gnss_degradation,
         synthetic: None,
@@ -2440,22 +2619,24 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Initialize logger with CLI settings for command-line mode
     init_logger(&cli.log_level, cli.log_file.as_ref())?;
 
-    // Otherwise, execute based on subcommand
+    if cli.command.is_none()
+        && let Some(args) = cli_closed_loop_args(&cli)
+    {
+        info!(
+            "Running closed-loop simulation with input: {}",
+            args.sim.input.display()
+        );
+        return run_closed_loop_cli(&args, cli.plot);
+    }
+
+    // Otherwise, execute auxiliary subcommands.
     match cli.command {
-        Some(Command::DeadReckoning(args)) => {
-            info!(
-                "Running in Dead Reckoning mode with input: {}",
-                &args.input.display()
-            );
-            run_dead_reckoning(&args)
-        }
-        Some(Command::OpenLoop(args)) => run_open_loop(&args),
-        Some(Command::ClosedLoop(args)) => run_closed_loop_cli(&args),
-        Some(Command::ParticleFilter(args)) => run_particle_filter(&args),
         Some(Command::CreateConfig) => create_config_file(),
         Some(Command::Synthetic(args)) => run_synthetic(&args),
         None => {
-            eprintln!("Error: No command provided. Use -h or --help for usage information.");
+            eprintln!(
+                "Error: provide --input and --output for simulation, or use a subcommand like 'config' or 'syn'."
+            );
             std::process::exit(1);
         }
     }
@@ -2465,6 +2646,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use tempfile::tempdir;
 
     #[test]
     fn test_create_config_args_structure() {
@@ -2550,5 +2732,80 @@ mod tests {
         };
         assert_eq!(logging.level, LogLevel::Debug);
         assert_eq!(logging.file, Some("/tmp/test.log".to_string()));
+    }
+
+    #[test]
+    fn test_cli_accepts_top_level_simulation_flags() {
+        let cli = Cli::try_parse_from([
+            "strapdown-sim",
+            "--input",
+            "data/input.csv",
+            "--output",
+            "out.csv",
+            "--filter",
+            "ukf",
+            "--plot",
+        ])
+        .unwrap();
+
+        assert_eq!(cli.input, Some(PathBuf::from("data/input.csv")));
+        assert_eq!(cli.output, Some(PathBuf::from("out.csv")));
+        assert!(matches!(cli.filter, FilterType::Ukf));
+        assert!(cli.plot);
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn test_resolve_sim_output_file_single_input_uses_exact_output_path() {
+        let dir = tempdir().unwrap();
+        let input_file = dir.path().join("input.csv");
+        std::fs::write(&input_file, "timestamp\n").unwrap();
+        let output_file = dir.path().join("nested").join("result.csv");
+
+        let resolved = resolve_sim_output_file(&input_file, &input_file, &output_file).unwrap();
+
+        assert_eq!(resolved, output_file);
+    }
+
+    #[test]
+    fn test_resolve_sim_output_file_directory_input_joins_filename() {
+        let dir = tempdir().unwrap();
+        let input_dir = dir.path().join("inputs");
+        let output_dir = dir.path().join("outputs");
+        std::fs::create_dir_all(&input_dir).unwrap();
+        let input_file = input_dir.join("sample.csv");
+        std::fs::write(&input_file, "timestamp\n").unwrap();
+
+        let resolved = resolve_sim_output_file(&input_dir, &input_file, &output_dir).unwrap();
+
+        assert_eq!(resolved, output_dir.join("sample.csv"));
+    }
+
+    #[test]
+    fn test_prepare_sim_output_path_creates_parent_for_single_file_output() {
+        let dir = tempdir().unwrap();
+        let input_file = dir.path().join("input.csv");
+        std::fs::write(&input_file, "timestamp\n").unwrap();
+        let output_file = dir.path().join("results").join("out.csv");
+
+        prepare_sim_output_path(&input_file, &output_file).unwrap();
+
+        assert!(output_file.parent().unwrap().exists());
+    }
+
+    #[test]
+    fn test_prepare_sim_output_path_rejects_file_output_for_directory_input() {
+        let dir = tempdir().unwrap();
+        let input_dir = dir.path().join("inputs");
+        std::fs::create_dir_all(&input_dir).unwrap();
+        let output_file = dir.path().join("out.csv");
+        std::fs::write(&output_file, "existing\n").unwrap();
+
+        let err = prepare_sim_output_path(&input_dir, &output_file).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("must be a directory when input is a directory")
+        );
     }
 }

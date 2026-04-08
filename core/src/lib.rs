@@ -798,11 +798,16 @@ pub fn position_update(state: &StrapdownState, velocity: Vector3<f64>, dt: f64) 
                 + velocity[1] / ((r_e_1 + alt_1) * cos_lat1))
             * dt;
     // Save updated position
-    (
-        wrap_latitude(lat_1.to_degrees()).to_radians(),
-        wrap_to_pi(lon_1),
-        alt_1,
-    )
+    (clamp_latitude(lat_1), wrap_to_pi(lon_1), alt_1)
+}
+
+/// Clamp latitude to the physically valid geodetic range in radians.
+fn clamp_latitude(latitude_rad: f64) -> f64 {
+    if !latitude_rad.is_finite() {
+        return latitude_rad;
+    }
+
+    latitude_rad.clamp(-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2)
 }
 
 // --- Miscellaneous functions for wrapping angles ---
@@ -825,8 +830,14 @@ pub fn wrap_to_180(angle: f64) -> f64 {
     if !angle.is_finite() {
         return angle;
     }
-    let wrapped = angle.rem_euclid(360.0);
-    if wrapped > 180.0 { wrapped - 360.0 } else { wrapped }
+    let mut wrapped = angle;
+    while wrapped > 180.0 {
+        wrapped -= 360.0;
+    }
+    while wrapped < -180.0 {
+        wrapped += 360.0;
+    }
+    wrapped
 }
 
 /// Wrap an angle to the range 0 to 360 degrees.
@@ -868,12 +879,17 @@ pub fn wrap_to_360(angle: f64) -> f64 {
 /// assert_eq!(wrapped_angle, -PI / 2.0); // 3π/4 radians wrapped to -π/4 radians
 /// ```
 pub fn wrap_to_pi(angle: f64) -> f64 {
-    use std::f64::consts::TAU;
     if !angle.is_finite() {
         return angle;
     }
-    let wrapped = angle.rem_euclid(TAU);
-    if wrapped > std::f64::consts::PI { wrapped - TAU } else { wrapped }
+    let mut wrapped = angle;
+    while wrapped > std::f64::consts::PI {
+        wrapped -= 2.0 * std::f64::consts::PI;
+    }
+    while wrapped < -std::f64::consts::PI {
+        wrapped += 2.0 * std::f64::consts::PI;
+    }
+    wrapped
 }
 
 /// Wrap an angle to the range 0 to 2π radians.
@@ -911,16 +927,13 @@ pub fn wrap_to_2pi(angle: f64) -> f64 {
 /// use strapdown::wrap_latitude;
 /// let latitude = 95.0; // degrees
 /// let wrapped_latitude = wrap_latitude(latitude);
-/// assert_eq!(wrapped_latitude, -85.0); // 95 degrees wrapped to -85 degrees
+/// assert_eq!(wrapped_latitude, 90.0); // 95 degrees is clamped to 90 degrees
 /// ```
 pub fn wrap_latitude(latitude: f64) -> f64 {
     if !latitude.is_finite() {
         return latitude;
     }
-    // Map to [-90, 90] by reflecting through ±90.
-    // lat' = 90 - |((lat - 90) % 360 + 360) % 360 - 180|
-    let normalized = (latitude - 90.0).rem_euclid(360.0) - 180.0;
-    90.0 - normalized.abs()
+    latitude.clamp(-90.0, 90.0)
 }
 
 // ============= Helper Functions for Test Scenarios =========================
@@ -1165,6 +1178,33 @@ mod tests {
             std::f64::consts::PI
         );
     }
+
+    #[test]
+    fn test_wrap_latitude_clamps_without_hemisphere_flip() {
+        assert_eq!(super::wrap_latitude(95.0), 90.0);
+        assert_eq!(super::wrap_latitude(-95.0), -90.0);
+        assert_eq!(super::wrap_latitude(41.0), 41.0);
+        assert_eq!(super::wrap_latitude(-41.0), -41.0);
+    }
+
+    #[test]
+    fn test_position_update_preserves_small_positive_latitude_sign() {
+        let state = StrapdownState {
+            latitude: 0.0,
+            longitude: 0.0,
+            altitude: 0.0,
+            velocity_north: 10.0,
+            velocity_east: 0.0,
+            velocity_vertical: 0.0,
+            ..Default::default()
+        };
+
+        let velocity = Vector3::new(10.0, 0.0, 0.0);
+        let (lat_1, _, _) = position_update(&state, velocity, 1.0);
+
+        assert!(lat_1 >= 0.0);
+    }
+
     #[test]
     fn test_strapdown_state_new() {
         let state = StrapdownState::default();
