@@ -12,7 +12,6 @@ file = "log/ukf_mag.log"
 
 [closed_loop]
 filter = "ukf"
-file = "log/ukf_mag.log"
 
 [geophysical]
 # Magnetic anomaly measurements

@@ -181,6 +181,52 @@ def main() -> None:
         help="Geophysical type label for outputs (e.g., grav, mag, both).",
     )
 
+    pipeline = command.add_parser(
+        "pipeline",
+        help="Run the full simulation pipeline: sim -> postprocess -> geoperf.",
+    )
+    pipeline.add_argument(
+        "--filter",
+        type=str,
+        default="all",
+        choices=["ukf", "ekf", "rbpf", "all"],
+        help="Filter type to run (default: all).",
+    )
+    pipeline.add_argument(
+        "--conf-dir",
+        type=str,
+        default="conf",
+        help="Directory containing simulation config files (default: conf).",
+    )
+    pipeline.add_argument(
+        "--output-base",
+        type=str,
+        default="data/output",
+        help="Base output directory for simulation results (default: data/output).",
+    )
+    pipeline.add_argument(
+        "-r",
+        "--reference",
+        type=str,
+        default="data/input",
+        help="Directory containing GPS reference CSVs (default: data/input).",
+    )
+    pipeline.add_argument(
+        "--skip-sim",
+        action="store_true",
+        help="Skip the simulation step.",
+    )
+    pipeline.add_argument(
+        "--skip-postprocess",
+        action="store_true",
+        help="Skip the performance postprocessing step.",
+    )
+    pipeline.add_argument(
+        "--skip-geoperf",
+        action="store_true",
+        help="Skip the geophysical performance analysis step.",
+    )
+
     args = parser.parse_args()
 
     if args.command == "preprocess":
@@ -189,6 +235,10 @@ def main() -> None:
         performance_analysis(args)
     elif args.command == "geoperformance":
         geophysical_performance_analysis(args)
+    elif args.command == "compare-filters":
+        compare_filters_analysis(args)
+    elif args.command == "pipeline":
+        pipeline_analysis(args)
     else:
         parser.print_help()
 
@@ -469,6 +519,145 @@ def geophysical_performance_analysis(args):
         print_summary_statistics(latex_results, f"{filter_name.upper()} {geo_type}-aided")
 
     print("\nGeophysical performance analysis completed.")
+
+
+def compare_filters_analysis(args):
+    """Compare performance across multiple filter output directories."""
+    from pathlib import Path
+
+    if len(args.input_dirs) != len(args.labels):
+        print(f"ERROR: --input-dirs ({len(args.input_dirs)}) and --labels ({len(args.labels)}) must have the same count.")
+        return
+
+    output_path = Path(args.output)
+    output_path.mkdir(parents=True, exist_ok=True)
+    reference_path = Path(args.reference)
+
+    print("=" * 80)
+    print(f"Filter Comparison: {', '.join(args.labels)}")
+    print("=" * 80)
+
+    all_filter_stats = {}
+    for input_dir, label in zip(args.input_dirs, args.labels):
+        datasets = list(Path(input_dir).glob("*.csv"))
+        if not datasets:
+            print(f"No CSVs found in {input_dir}, skipping {label}.")
+            continue
+        traj_stats = []
+        for dataset in sorted(datasets):
+            try:
+                nav = read_csv(dataset, parse_dates=True, index_col=0)
+                gps = read_csv(reference_path / dataset.name, parse_dates=True, index_col=0)
+            except FileNotFoundError:
+                print(f"Reference for {dataset.name} not found, skipping.")
+                continue
+            two_d_error = haversine_vector(
+                gps[["latitude", "longitude"]].to_numpy()[1:, :],
+                nav[["latitude", "longitude"]].to_numpy(),
+                Unit.METERS,
+            )
+            traj_stats.append((dataset.stem, compute_error_statistics(two_d_error)))
+        all_filter_stats[label] = traj_stats
+        print(f"\n{label}: {len(traj_stats)} trajectories processed.")
+        print_summary_statistics([(n, s) for n, s in traj_stats], label)
+
+    # Save per-filter summary CSV
+    rows = []
+    for label, traj_stats in all_filter_stats.items():
+        for traj_name, stats in traj_stats:
+            rows.append({"filter": label, "trajectory": traj_name, **stats})
+    if rows:
+        from pandas import DataFrame
+
+        df = DataFrame(rows)
+        out_file = output_path / f"filter_comparison_{args.geo_type}.csv"
+        df.to_csv(out_file, index=False)
+        print(f"\nSaved comparison CSV to {out_file}")
+
+    print("\nFilter comparison completed.")
+
+
+def pipeline_analysis(args):
+    """Run the full simulation pipeline: sim -> postprocess -> geoperf."""
+    import subprocess
+    from types import SimpleNamespace
+
+    FILTERS = ["ukf", "ekf", "rbpf"]
+    SCENARIOS = ["truth", "degraded", "grav", "mag", "both"]
+    GEO_SCENARIOS = ["grav", "mag", "both"]
+
+    filters = [args.filter] if args.filter != "all" else FILTERS
+
+    # Step 1: Run simulations
+    if not args.skip_sim:
+        print("=" * 80)
+        print("STEP 1: Running simulations")
+        print("=" * 80)
+        for filt in filters:
+            for scenario in SCENARIOS:
+                conf = Path(args.conf_dir) / f"{filt}_{scenario}.toml"
+                if not conf.exists():
+                    print(f"Config not found, skipping: {conf}")
+                    continue
+                print(f"\nRunning: strapdown-sim --config {conf}")
+                result = subprocess.run(["strapdown-sim", "--config", str(conf)], check=False)
+                if result.returncode != 0:
+                    print(f"WARNING: simulation failed for {conf} (exit code {result.returncode})")
+    else:
+        print("Skipping simulation step.")
+
+    # Step 2: Performance postprocessing
+    if not args.skip_postprocess:
+        print("\n" + "=" * 80)
+        print("STEP 2: Performance postprocessing")
+        print("=" * 80)
+        for filt in filters:
+            for scenario in SCENARIOS:
+                out_dir = Path(args.output_base) / filt / scenario
+                if not out_dir.exists():
+                    continue
+                perf_args = SimpleNamespace(
+                    processed=str(out_dir),
+                    reference=args.reference,
+                    output=str(out_dir / "performance"),
+                )
+                print(f"\nPostprocessing: {out_dir}")
+                performance_analysis(perf_args)
+    else:
+        print("Skipping postprocessing step.")
+
+    # Step 3: Geophysical performance analysis
+    if not args.skip_geoperf:
+        print("\n" + "=" * 80)
+        print("STEP 3: Geophysical performance analysis")
+        print("=" * 80)
+        for filt in filters:
+            degraded_dir = Path(args.output_base) / filt / "degraded"
+            if not degraded_dir.exists():
+                print(f"No degraded output for {filt}, skipping geoperf.")
+                continue
+            for geo_type in GEO_SCENARIOS:
+                geo_dir = Path(args.output_base) / filt / geo_type
+                if not geo_dir.exists():
+                    continue
+                print(f"\nGeoperf: {filt}/{geo_type}")
+                geo_args = SimpleNamespace(
+                    processed=str(geo_dir),
+                    reference=args.reference,
+                    degraded=str(degraded_dir),
+                    output=str(geo_dir / "analysis"),
+                    filter_name=filt,
+                    geo_type=geo_type,
+                    no_plots=False,
+                    no_latex=False,
+                )
+                geophysical_performance_analysis(geo_args)
+    else:
+        print("Skipping geoperf step.")
+
+    print("\n" + "=" * 80)
+    print("Pipeline complete.")
+    print("=" * 80)
 
 
 if __name__ == "__main__":

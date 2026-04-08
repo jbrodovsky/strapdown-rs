@@ -406,7 +406,7 @@ impl NavigationFilter for UnscentedKalmanFilter {
         self.mean_state[6] = wrap_to_2pi(self.mean_state[6]);
         self.mean_state[7] = wrap_to_2pi(self.mean_state[7]);
         self.mean_state[8] = wrap_to_2pi(self.mean_state[8]);
-        self.covariance -= &k * &s * &k.transpose();
+        self.covariance -= &cross_covariance * &k.transpose();
         // Ensure covariance remains positive semi-definite with gentle regularization
         self.covariance = symmetrize(&self.covariance);
         // Add small diagonal regularization to prevent negative eigenvalues
