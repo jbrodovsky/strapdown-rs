@@ -344,36 +344,14 @@ impl GeoMap {
     /// - `lon` - The longitude of the point in degrees
     ///
     /// # Returns
-    /// - An Option containing the data value at the point, or None if the point is not in the map
-    ///
-    /// # Example
-    /// ```ignore
-    /// use geonav::{GeoMap, GeophysicalMeasurementType, ReliefResolution};
-    /// use std::path::PathBuf;
-    ///
-    /// let map = GeoMap::load_geomap(PathBuf::from("path/to/file.nc"), GeophysicalMeasurementType::Relief(ReliefResolution::OneDegree));
-    /// let value = map.get_point(&1.5, &1.5);
-    /// ```
-    /// # Panics
-    /// - Panics if the lat/lon are out of bounds
-    /// - Panics if the lat/lon are not in the map
+    /// - An Option containing the data value at the point, or None if the point is outside the map bounds
     pub fn get_point(&self, lat: &f64, lon: &f64) -> Option<f64> {
-        // Check if the lat/lon are within the bounds of the map
+        // Return None if the lat/lon are outside the bounds of the map
         if lat < &self.lats[0] || lat > &self.lats[self.lats.len() - 1] {
-            panic!(
-                "Latitude out of bounds: {} not in [{}, {}]",
-                lat,
-                self.lats[0],
-                self.lats[self.lats.len() - 1]
-            );
+            return None;
         }
         if lon < &self.lons[0] || lon > &self.lons[self.lons.len() - 1] {
-            panic!(
-                "Longitude out of bounds: {} not in [{}, {}]",
-                lon,
-                self.lons[0],
-                self.lons[self.lons.len() - 1]
-            );
+            return None;
         }
         // Check if the lat/lon are at the origin or the end of the map
         if lat == &self.lats[0] && lon == &self.lons[0] {

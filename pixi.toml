@@ -20,7 +20,6 @@ PKG_CONFIG_PATH = "${PIXI_PROJECT_ROOT}/.pixi/envs/default/lib/pkgconfig"
 build = "cargo build --workspace --release"
 lint = "ruff check --select I --fix && cargo clippy --all-targets --all-features --fix --allow-dirty -- -D warnings"
 fmt = "ruff format . && cargo fmt"
-code = "code ."
 coverage = "cargo tarpaulin --workspace --timeout 600"
 
 # Full pipeline: sim -> postprocess -> geoperf
@@ -29,59 +28,65 @@ pipeline-rbpf = "analyze pipeline --filter rbpf"
 
 # Run all simulations (all filter types and scenarios)
 sim = """
-./target/release/strapdown-sim --config conf/ukf_truth.toml && \
-./target/release/strapdown-sim --config conf/ukf_degraded.toml && \
-./target/release/strapdown-sim --config conf/ukf_both.toml && \
-./target/release/strapdown-sim --config conf/ukf_grav.toml && \
-./target/release/strapdown-sim --config conf/ukf_mag.toml && \
-./target/release/strapdown-sim --config conf/ekf_truth.toml && \
-./target/release/strapdown-sim --config conf/ekf_degraded.toml && \
-./target/release/strapdown-sim --config conf/ekf_both.toml && \
-./target/release/strapdown-sim --config conf/ekf_grav.toml && \
-./target/release/strapdown-sim --config conf/ekf_mag.toml && \
-./target/release/strapdown-sim --config conf/rbpf_truth.toml && \
-./target/release/strapdown-sim --config conf/rbpf_degraded.toml && \
-./target/release/strapdown-sim --config conf/rbpf_grav.toml && \
-./target/release/strapdown-sim --config conf/rbpf_mag.toml && \
-./target/release/strapdown-sim --config conf/rbpf_both.toml
+./target/release/strapdown-sim --config conf/ukf_truth.toml;
+./target/release/strapdown-sim --config conf/ukf_degraded.toml;
+./target/release/strapdown-sim --config conf/ukf_both.toml;
+./target/release/strapdown-sim --config conf/ukf_grav.toml;
+./target/release/strapdown-sim --config conf/ukf_mag.toml;
+./target/release/strapdown-sim --config conf/ekf_truth.toml;
+./target/release/strapdown-sim --config conf/ekf_degraded.toml;
+./target/release/strapdown-sim --config conf/ekf_both.toml;
+./target/release/strapdown-sim --config conf/ekf_grav.toml;
+./target/release/strapdown-sim --config conf/ekf_mag.toml;
+"""
+
+rbpf-sim = """
+./target/release/strapdown-sim --config conf/rbpf_truth.toml;
+./target/release/strapdown-sim --config conf/rbpf_degraded.toml;
+./target/release/strapdown-sim --config conf/rbpf_grav.toml;
+./target/release/strapdown-sim --config conf/rbpf_mag.toml;
+./target/release/strapdown-sim --config conf/rbpf_both.toml;
 """
 
 # Performance postprocessing for all scenarios
 postprocess = """
-analyze performance --processed data/output/ukf/truth --reference data/input/ --output data/output/ukf/truth/performance && \
-analyze performance --processed data/output/ukf/degraded --reference data/input/ --output data/output/ukf/degraded/performance && \
-analyze performance --processed data/output/ukf/both --reference data/input/ --output data/output/ukf/both/performance && \
-analyze performance --processed data/output/ukf/grav --reference data/input/ --output data/output/ukf/grav/performance && \
-analyze performance --processed data/output/ukf/mag --reference data/input/ --output data/output/ukf/mag/performance && \
-analyze performance --processed data/output/ekf/truth --reference data/input/ --output data/output/ekf/truth/performance && \
-analyze performance --processed data/output/ekf/degraded --reference data/input/ --output data/output/ekf/degraded/performance && \
-analyze performance --processed data/output/ekf/both --reference data/input/ --output data/output/ekf/both/performance && \
-analyze performance --processed data/output/ekf/grav --reference data/input/ --output data/output/ekf/grav/performance && \
-analyze performance --processed data/output/ekf/mag --reference data/input/ --output data/output/ekf/mag/performance && \
-analyze performance --processed data/output/rbpf/truth --reference data/input/ --output data/output/rbpf/truth/performance && \
-analyze performance --processed data/output/rbpf/degraded --reference data/input/ --output data/output/rbpf/degraded/performance && \
-analyze performance --processed data/output/rbpf/both --reference data/input/ --output data/output/rbpf/both/performance && \
-analyze performance --processed data/output/rbpf/grav --reference data/input/ --output data/output/rbpf/grav/performance && \
+analyze performance --processed data/output/ukf/truth --reference data/input/ --output data/output/ukf/truth/performance;
+analyze performance --processed data/output/ukf/degraded --reference data/input/ --output data/output/ukf/degraded/performance;
+analyze performance --processed data/output/ukf/both --reference data/input/ --output data/output/ukf/both/performance;
+analyze performance --processed data/output/ukf/grav --reference data/input/ --output data/output/ukf/grav/performance;
+analyze performance --processed data/output/ukf/mag --reference data/input/ --output data/output/ukf/mag/performance;
+analyze performance --processed data/output/ekf/truth --reference data/input/ --output data/output/ekf/truth/performance;
+analyze performance --processed data/output/ekf/degraded --reference data/input/ --output data/output/ekf/degraded/performance;
+analyze performance --processed data/output/ekf/both --reference data/input/ --output data/output/ekf/both/performance;
+analyze performance --processed data/output/ekf/grav --reference data/input/ --output data/output/ekf/grav/performance;
+analyze performance --processed data/output/ekf/mag --reference data/input/ --output data/output/ekf/mag/performance;
+analyze performance --processed data/output/rbpf/truth --reference data/input/ --output data/output/rbpf/truth/performance;
+analyze performance --processed data/output/rbpf/degraded --reference data/input/ --output data/output/rbpf/degraded/performance;
+analyze performance --processed data/output/rbpf/both --reference data/input/ --output data/output/rbpf/both/performance;
+analyze performance --processed data/output/rbpf/grav --reference data/input/ --output data/output/rbpf/grav/performance;
 analyze performance --processed data/output/rbpf/mag --reference data/input/ --output data/output/rbpf/mag/performance
 """
 
 # Geophysical performance analysis (all filter types)
 geoperf-all = """
-analyze geoperformance -p data/output/ukf/grav -d data/output/ukf/degraded -r data/input -o data/output/ukf/grav/analysis -f ukf --geo-type grav && \
-analyze geoperformance -p data/output/ukf/mag -d data/output/ukf/degraded -r data/input -o data/output/ukf/mag/analysis -f ukf --geo-type mag && \
-analyze geoperformance -p data/output/ukf/both -d data/output/ukf/degraded -r data/input -o data/output/ukf/both/analysis -f ukf --geo-type both && \
-analyze geoperformance -p data/output/ekf/grav -d data/output/ekf/degraded -r data/input -o data/output/ekf/grav/analysis -f ekf --geo-type grav && \
-analyze geoperformance -p data/output/ekf/mag -d data/output/ekf/degraded -r data/input -o data/output/ekf/mag/analysis -f ekf --geo-type mag && \
-analyze geoperformance -p data/output/ekf/both -d data/output/ekf/degraded -r data/input -o data/output/ekf/both/analysis -f ekf --geo-type both && \
-analyze geoperformance -p data/output/rbpf/grav -d data/output/rbpf/degraded -r data/input -o data/output/rbpf/grav/analysis -f rbpf --geo-type grav && \
-analyze geoperformance -p data/output/rbpf/mag -d data/output/rbpf/degraded -r data/input -o data/output/rbpf/mag/analysis -f rbpf --geo-type mag && \
-analyze geoperformance -p data/output/rbpf/both -d data/output/rbpf/degraded -r data/input -o data/output/rbpf/both/analysis -f rbpf --geo-type both
+analyze geoperformance -p data/output/ukf/grav -d data/output/ukf/degraded -r data/input -o data/output/ukf/grav/analysis -f ukf --geo-type grav;
+analyze geoperformance -p data/output/ukf/mag -d data/output/ukf/degraded -r data/input -o data/output/ukf/mag/analysis -f ukf --geo-type mag;
+analyze geoperformance -p data/output/ukf/both -d data/output/ukf/degraded -r data/input -o data/output/ukf/both/analysis -f ukf --geo-type both;
+analyze geoperformance -p data/output/ekf/grav -d data/output/ekf/degraded -r data/input -o data/output/ekf/grav/analysis -f ekf --geo-type grav;
+analyze geoperformance -p data/output/ekf/mag -d data/output/ekf/degraded -r data/input -o data/output/ekf/mag/analysis -f ekf --geo-type mag;
+analyze geoperformance -p data/output/ekf/both -d data/output/ekf/degraded -r data/input -o data/output/ekf/both/analysis -f ekf --geo-type both;
+analyze geoperformance -p data/output/rbpf/grav -d data/output/rbpf/degraded -r data/input -o data/output/rbpf/grav/analysis/rbpf -f rbpf --geo-type grav;
+analyze geoperformance -p data/output/rbpf/mag -d data/output/rbpf/degraded -r data/input -o data/output/rbpf/mag/analysis/rbpf -f rbpf --geo-type mag;
+analyze geoperformance -p data/output/rbpf/both -d data/output/rbpf/degraded -r data/input -o data/output/rbpf/both/analysis/rbpf -f rbpf --geo-type both;
+analyze geoperformance -p data/output/rbpf/grav -d data/output/ukf/degraded -r data/input -o data/output/rbpf/grav/analysis/ins -f rbpf --geo-type grav;
+analyze geoperformance -p data/output/rbpf/mag -d data/output/ukf/degraded -r data/input -o data/output/rbpf/mag/analysis/ins -f rbpf --geo-type mag;
+analyze geoperformance -p data/output/rbpf/both -d data/output/ukf/degraded -r data/input -o data/output/rbpf/both/analysis/ins -f rbpf --geo-type both;
 """
 
 # Geophysical performance analysis for RBPF only
 geoperf-rbpf = """
-analyze geoperformance -p data/output/rbpf/grav -d data/output/rbpf/degraded -r data/input -o data/output/rbpf/grav/analysis -f rbpf --geo-type grav && \
-analyze geoperformance -p data/output/rbpf/mag -d data/output/rbpf/degraded -r data/input -o data/output/rbpf/mag/analysis -f rbpf --geo-type mag && \
+analyze geoperformance -p data/output/rbpf/grav -d data/output/rbpf/degraded -r data/input -o data/output/rbpf/grav/analysis -f rbpf --geo-type grav;
+analyze geoperformance -p data/output/rbpf/mag -d data/output/rbpf/degraded -r data/input -o data/output/rbpf/mag/analysis -f rbpf --geo-type mag;
 analyze geoperformance -p data/output/rbpf/both -d data/output/rbpf/degraded -r data/input -o data/output/rbpf/both/analysis -f rbpf --geo-type both
 """
 

@@ -23,6 +23,58 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
+from haversine import Unit, haversine_vector
+
+
+def align_dataframes_on_common_index(*frames: pd.DataFrame) -> Tuple[pd.DataFrame, ...]:
+    """Align multiple DataFrames to the intersection of their timestamp indexes."""
+    if not frames:
+        raise ValueError("At least one DataFrame is required for alignment.")
+
+    sorted_frames = [frame.sort_index() for frame in frames]
+    common_index = sorted_frames[0].index
+
+    for frame in sorted_frames[1:]:
+        common_index = common_index.intersection(frame.index)
+
+    if len(common_index) == 0:
+        raise ValueError("Input data do not share any timestamps.")
+
+    aligned_frames = tuple(frame.loc[common_index].copy() for frame in sorted_frames)
+    if any(frame.empty for frame in aligned_frames):
+        raise ValueError("Input data are empty after timestamp alignment.")
+
+    return aligned_frames
+
+
+def align_navigation_to_reference(nav: pd.DataFrame, reference: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Align navigation and reference trajectories on their shared timestamps.
+
+    The processed navigation outputs and reference logs should generally share a
+    one-to-one timestamp index. This function makes that assumption explicit and
+    gracefully trims either side to the common index when minor differences are
+    present.
+    """
+    aligned_nav, aligned_reference = align_dataframes_on_common_index(nav, reference)
+    return aligned_nav, aligned_reference
+
+
+def compute_navigation_errors(
+    nav: pd.DataFrame,
+    reference: pd.DataFrame,
+) -> Tuple[pd.DataFrame, pd.DataFrame, np.ndarray, np.ndarray, np.ndarray]:
+    """Compute aligned 2D, vertical, and 3D navigation errors against reference."""
+    aligned_nav, aligned_reference = align_navigation_to_reference(nav, reference)
+
+    two_d_error = haversine_vector(
+        aligned_reference[["latitude", "longitude"]].to_numpy(),
+        aligned_nav[["latitude", "longitude"]].to_numpy(),
+        Unit.METERS,
+    )
+    vertical_error = aligned_reference["altitude"].to_numpy() - aligned_nav["altitude"].to_numpy()
+    three_d_error = np.sqrt(two_d_error**2 + vertical_error**2)
+
+    return aligned_nav, aligned_reference, two_d_error, vertical_error, three_d_error
 
 
 def compute_error_statistics(errors: np.ndarray) -> Dict[str, float]:

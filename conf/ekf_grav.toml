@@ -11,20 +11,19 @@ generate_plot = true
 level = "info"
 file = "log/ekf_grav.log"
 
-[closed_loop]
-filter = "ekf"
+[filter]
+type = "ekf"
 
 [geophysical]
 # Gravity anomaly measurements
 gravity_resolution = "one_minute"
-gravity_bias = 0.0
-gravity_noise_std = 100.0
-# gravity_map_file will be auto-detected if not specified
+gravity_bias = 5.97
+gravity_noise_std = 48.93
 
-# Magnetic anomaly disabled for this config
-# magnetic_resolution = ""
-# magnetic_bias = 0.0
-# magnetic_noise_std = 150.0
+# Magnetic anomaly measurements
+# magnetic_resolution = "two_minutes"
+# magnetic_bias = 40364.0
+# magnetic_noise_std = 41303.0
 
 # Measurement frequency (seconds)
 geo_frequency_s = 1.0

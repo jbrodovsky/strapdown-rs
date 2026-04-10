@@ -28,7 +28,7 @@ use common::{
     prompt_input_path, prompt_output_path, read_user_input, validate_input_path,
     validate_output_path,
 };
-use log::{error, info};
+use log::{error, info, warn};
 use nalgebra::{Rotation3, Vector3};
 use rayon::prelude::*;
 use std::error::Error;
@@ -542,31 +542,33 @@ fn cli_simulation_args(cli: &Cli) -> Option<TopLevelSimulationArgs> {
 
     if matches!(cli.filter, FilterType::Rbpf) {
         let rbpf_defaults = RbpfFilterConfig::default();
-        return Some(TopLevelSimulationArgs::ParticleFilter(ParticleFilterSimArgs {
-            sim,
-            filter_type: ParticleFilterType::RaoBlackwellized,
-            seed: cli.seed,
-            num_particles: rbpf_defaults.num_particles,
-            position_std: rbpf_defaults
-                .position_init_std_m
-                .first()
-                .copied()
-                .unwrap_or(10.0),
-            velocity_std: rbpf_defaults.velocity_init_std_mps,
-            attitude_std: rbpf_defaults.attitude_init_std_rad,
-            accel_bias_std: 0.1,
-            gyro_bias_std: 0.01,
-            process_noise_std_m: rbpf_defaults.position_process_noise_std_m,
-            velocity_process_noise_std_mps: rbpf_defaults.velocity_process_noise_std_mps,
-            attitude_process_noise_std_rad: rbpf_defaults.attitude_process_noise_std_rad,
-            scheduler: default_scheduler_args(),
-            fault: default_fault_args(),
-            geo: default_geophysical_args(),
-            zero_vertical_velocity: rbpf_defaults.zero_vertical_velocity,
-            zero_vertical_velocity_std_mps: rbpf_defaults.zero_vertical_velocity_std_mps,
-            geo_bias_init_std: rbpf_defaults.geo_bias_init_std,
-            geo_bias_process_noise_std: rbpf_defaults.geo_bias_process_noise_std,
-        }));
+        return Some(TopLevelSimulationArgs::ParticleFilter(
+            ParticleFilterSimArgs {
+                sim,
+                filter_type: ParticleFilterType::RaoBlackwellized,
+                seed: cli.seed,
+                num_particles: rbpf_defaults.num_particles,
+                position_std: rbpf_defaults
+                    .position_init_std_m
+                    .first()
+                    .copied()
+                    .unwrap_or(10.0),
+                velocity_std: rbpf_defaults.velocity_init_std_mps,
+                attitude_std: rbpf_defaults.attitude_init_std_rad,
+                accel_bias_std: 0.1,
+                gyro_bias_std: 0.01,
+                process_noise_std_m: rbpf_defaults.position_process_noise_std_m,
+                velocity_process_noise_std_mps: rbpf_defaults.velocity_process_noise_std_mps,
+                attitude_process_noise_std_rad: rbpf_defaults.attitude_process_noise_std_rad,
+                scheduler: default_scheduler_args(),
+                fault: default_fault_args(),
+                geo: default_geophysical_args(),
+                zero_vertical_velocity: rbpf_defaults.zero_vertical_velocity,
+                zero_vertical_velocity_std_mps: rbpf_defaults.zero_vertical_velocity_std_mps,
+                geo_bias_init_std: rbpf_defaults.geo_bias_init_std,
+                geo_bias_process_noise_std: rbpf_defaults.geo_bias_process_noise_std,
+            },
+        ));
     }
 
     Some(TopLevelSimulationArgs::ClosedLoop(ClosedLoopSimArgs {
@@ -629,6 +631,20 @@ fn resolve_sim_output_file(
     Ok(output.to_path_buf())
 }
 
+fn log_processing_failures(failures: &[(PathBuf, String)]) {
+    if failures.is_empty() {
+        return;
+    }
+
+    warn!(
+        "{} file(s) failed to process; continuing with successful files",
+        failures.len()
+    );
+    for (file, err) in failures {
+        warn!("  {}: {}", file.display(), err);
+    }
+}
+
 /// Process a single CSV file with the given configuration
 fn process_file(
     input_file: &Path,
@@ -644,6 +660,14 @@ fn process_file(
         records.len(),
         input_file.display()
     );
+
+    if records.is_empty() {
+        return Err(format!(
+            "No valid sensor records were parsed from {}",
+            input_file.display()
+        )
+        .into());
+    }
 
     // Execute based on mode
     match config.mode {
@@ -673,32 +697,306 @@ fn process_file(
                 .or_else(|| FilterConfig::default_for_mode(SimulationMode::ClosedLoop))
                 .ok_or("Missing filter configuration for closed-loop mode")?;
 
+            #[cfg(not(feature = "geonav"))]
+            if config.geophysical.is_some() {
+                return Err("Geophysical configuration requires the geonav feature".into());
+            }
+
+            #[cfg(feature = "geonav")]
+            let geophysical_config = config.geophysical.as_ref();
+            #[cfg(feature = "geonav")]
+            let gravity_map = if let Some(geo_cfg) = geophysical_config {
+                if let Some(resolution) = geo_cfg.gravity_resolution {
+                    let map_path = match &geo_cfg.gravity_map_file {
+                        Some(path) => PathBuf::from(path),
+                        None => find_gravity_map(input_file)?,
+                    };
+                    let measurement_type =
+                        GeophysicalMeasurementType::Gravity(convert_resolution_gravity(resolution));
+                    Some(Rc::new(GeoMap::load_geomap(map_path, measurement_type)?))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            #[cfg(feature = "geonav")]
+            let magnetic_map = if let Some(geo_cfg) = geophysical_config {
+                if let Some(resolution) = geo_cfg.magnetic_resolution {
+                    let map_path = match &geo_cfg.magnetic_map_file {
+                        Some(path) => PathBuf::from(path),
+                        None => find_magnetic_map(input_file)?,
+                    };
+                    let measurement_type = GeophysicalMeasurementType::Magnetic(
+                        convert_resolution_magnetic(resolution),
+                    );
+                    Some(Rc::new(GeoMap::load_geomap(map_path, measurement_type)?))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            #[cfg(feature = "geonav")]
+            let geo_enabled = gravity_map.is_some() || magnetic_map.is_some();
+
+            #[cfg(feature = "geonav")]
+            let event_stream = if geo_enabled {
+                let geo_cfg = geophysical_config
+                    .expect("geophysical config must exist when maps are enabled");
+                geo_build_event_stream(
+                    &records,
+                    &config.gnss_degradation,
+                    gravity_map.clone(),
+                    gravity_map
+                        .as_ref()
+                        .map(|_| geo_cfg.get_gravity_noise_std()),
+                    magnetic_map.clone(),
+                    magnetic_map
+                        .as_ref()
+                        .map(|_| geo_cfg.get_magnetic_noise_std()),
+                    geo_cfg.geo_frequency_s,
+                )
+            } else {
+                build_event_stream(&records, &config.gnss_degradation)
+            };
+
+            #[cfg(not(feature = "geonav"))]
             let event_stream = build_event_stream(&records, &config.gnss_degradation);
+
             info!(
                 "Initialized event stream with {} events",
                 event_stream.events.len()
             );
             let execution_limits = config.execution_limits.clone();
 
-            let results = match filter_config {
+            let results: Result<Vec<NavigationResult>, Box<dyn Error>> = match filter_config {
                 FilterConfig::Ukf { config: ukf_cfg } => {
-                    let mut ukf = initialize_ukf(records[0].clone(), ukf_cfg);
-                    info!("Initialized UKF");
-                    run_closed_loop(&mut ukf, event_stream, None, Some(execution_limits.clone()))
+                    #[cfg(feature = "geonav")]
+                    if geo_enabled {
+                        let geo_cfg = geophysical_config.expect(
+                            "geophysical config must exist when geophysical aiding is enabled",
+                        );
+                        let num_geo_states =
+                            gravity_map.is_some() as usize + magnetic_map.is_some() as usize;
+
+                        let mut process_noise = ukf_cfg
+                            .process_noise_diagonal
+                            .clone()
+                            .unwrap_or_else(|| DEFAULT_PROCESS_NOISE.to_vec());
+                        process_noise.extend(vec![1e-9; num_geo_states]);
+
+                        let mut other_states = Vec::with_capacity(num_geo_states);
+                        let mut other_states_covariance = Vec::with_capacity(num_geo_states);
+                        if gravity_map.is_some() {
+                            other_states.push(geo_cfg.get_gravity_bias());
+                            other_states_covariance.push(geo_cfg.get_gravity_noise_std());
+                        }
+                        if magnetic_map.is_some() {
+                            other_states.push(geo_cfg.get_magnetic_bias());
+                            other_states_covariance.push(geo_cfg.get_magnetic_noise_std());
+                        }
+
+                        let mut ukf = initialize_ukf(
+                            records[0].clone(),
+                            UkfConfig {
+                                attitude_covariance: ukf_cfg.attitude_covariance.clone(),
+                                imu_biases: ukf_cfg.imu_biases.clone(),
+                                imu_biases_covariance: ukf_cfg.imu_biases_covariance.clone(),
+                                other_states: Some(other_states),
+                                other_states_covariance: Some(other_states_covariance),
+                                process_noise_diagonal: Some(process_noise),
+                                ukf_alpha: ukf_cfg.ukf_alpha,
+                                ukf_beta: ukf_cfg.ukf_beta,
+                                ukf_kappa: ukf_cfg.ukf_kappa,
+                            },
+                        );
+                        info!("Initialized UKF with geophysical aiding");
+                        geo_closed_loop_ukf(&mut ukf, event_stream)
+                            .map_err(|e| -> Box<dyn Error> { e.into() })
+                    } else {
+                        let mut ukf = initialize_ukf(records[0].clone(), ukf_cfg);
+                        info!("Initialized UKF");
+                        run_closed_loop(
+                            &mut ukf,
+                            event_stream,
+                            None,
+                            Some(execution_limits.clone()),
+                        )
+                        .map_err(|e| -> Box<dyn Error> { e.into() })
+                    }
+                    #[cfg(not(feature = "geonav"))]
+                    {
+                        let mut ukf = initialize_ukf(records[0].clone(), ukf_cfg);
+                        info!("Initialized UKF");
+                        run_closed_loop(
+                            &mut ukf,
+                            event_stream,
+                            None,
+                            Some(execution_limits.clone()),
+                        )
+                        .map_err(|e| -> Box<dyn Error> { e.into() })
+                        .map_err(|e| -> Box<dyn Error> { e.into() })
+                    }
                 }
                 FilterConfig::Ekf { config: ekf_cfg } => {
-                    let mut ekf = initialize_ekf(
-                        records[0].clone(),
-                        ekf_cfg.attitude_covariance,
-                        ekf_cfg.imu_biases,
-                        ekf_cfg.imu_biases_covariance,
-                        ekf_cfg.process_noise_diagonal,
-                        ekf_cfg.use_biases,
-                    );
-                    info!("Initialized EKF");
-                    run_closed_loop(&mut ekf, event_stream, None, Some(execution_limits.clone()))
+                    #[cfg(feature = "geonav")]
+                    if geo_enabled {
+                        use nalgebra::{DMatrix, DVector};
+
+                        let geo_cfg = geophysical_config.expect(
+                            "geophysical config must exist when geophysical aiding is enabled",
+                        );
+                        let num_geo_states =
+                            gravity_map.is_some() as usize + magnetic_map.is_some() as usize;
+                        let state_size = if ekf_cfg.use_biases { 15 } else { 9 };
+
+                        let initial_state = InitialState {
+                            latitude: records[0].latitude,
+                            longitude: records[0].longitude,
+                            altitude: records[0].altitude,
+                            northward_velocity: records[0].speed
+                                * records[0].bearing.to_radians().cos(),
+                            eastward_velocity: records[0].speed
+                                * records[0].bearing.to_radians().sin(),
+                            vertical_velocity: 0.0,
+                            roll: if records[0].roll.is_nan() {
+                                0.0
+                            } else {
+                                records[0].roll
+                            },
+                            pitch: if records[0].pitch.is_nan() {
+                                0.0
+                            } else {
+                                records[0].pitch
+                            },
+                            yaw: if records[0].yaw.is_nan() {
+                                0.0
+                            } else {
+                                records[0].yaw
+                            },
+                            in_degrees: true,
+                            is_enu: true,
+                        };
+
+                        let position_std_rad = (records[0].horizontal_accuracy
+                            * strapdown::earth::METERS_TO_DEGREES)
+                            .to_radians();
+                        let mut covariance_diagonal = vec![
+                            position_std_rad.powf(2.0),
+                            position_std_rad.powf(2.0),
+                            records[0].vertical_accuracy.powf(2.0),
+                            records[0].speed_accuracy.powf(2.0),
+                            records[0].speed_accuracy.powf(2.0),
+                            records[0].speed_accuracy.powf(2.0),
+                        ];
+                        covariance_diagonal.extend(
+                            ekf_cfg
+                                .attitude_covariance
+                                .clone()
+                                .unwrap_or_else(|| vec![1e-9; 3]),
+                        );
+
+                        let imu_biases = if ekf_cfg.use_biases {
+                            match ekf_cfg.imu_biases.clone() {
+                                Some(imu_biases) => {
+                                    covariance_diagonal.extend(
+                                        ekf_cfg
+                                            .imu_biases_covariance
+                                            .clone()
+                                            .unwrap_or_else(|| vec![1e-3; 6]),
+                                    );
+                                    imu_biases
+                                }
+                                None => {
+                                    covariance_diagonal.extend(vec![1e-3; 6]);
+                                    vec![0.0; 6]
+                                }
+                            }
+                        } else {
+                            vec![0.0; 6]
+                        };
+
+                        if gravity_map.is_some() {
+                            covariance_diagonal.push(geo_cfg.get_gravity_noise_std());
+                        }
+                        if magnetic_map.is_some() {
+                            covariance_diagonal.push(geo_cfg.get_magnetic_noise_std());
+                        }
+
+                        let mut process_noise_diagonal =
+                            ekf_cfg.process_noise_diagonal.clone().unwrap_or_else(|| {
+                                if ekf_cfg.use_biases {
+                                    DEFAULT_PROCESS_NOISE.to_vec()
+                                } else {
+                                    DEFAULT_PROCESS_NOISE[0..9].to_vec()
+                                }
+                            });
+                        assert_eq!(
+                            process_noise_diagonal.len(),
+                            state_size,
+                            "Process noise diagonal length mismatch for EKF geophysical aiding"
+                        );
+                        process_noise_diagonal.extend(vec![1e-9; num_geo_states]);
+                        let process_noise =
+                            DMatrix::from_diagonal(&DVector::from_vec(process_noise_diagonal));
+
+                        let mut ekf = ExtendedKalmanFilter::new(
+                            initial_state,
+                            imu_biases,
+                            covariance_diagonal,
+                            process_noise,
+                            ekf_cfg.use_biases,
+                        );
+                        info!("Initialized EKF with geophysical aiding");
+                        geo_closed_loop_ekf(&mut ekf, event_stream)
+                            .map_err(|e| -> Box<dyn Error> { e.into() })
+                    } else {
+                        let mut ekf = initialize_ekf(
+                            records[0].clone(),
+                            ekf_cfg.attitude_covariance,
+                            ekf_cfg.imu_biases,
+                            ekf_cfg.imu_biases_covariance,
+                            ekf_cfg.process_noise_diagonal,
+                            ekf_cfg.use_biases,
+                        );
+                        info!("Initialized EKF");
+                        run_closed_loop(
+                            &mut ekf,
+                            event_stream,
+                            None,
+                            Some(execution_limits.clone()),
+                        )
+                        .map_err(|e| -> Box<dyn Error> { e.into() })
+                    }
+                    #[cfg(not(feature = "geonav"))]
+                    {
+                        let mut ekf = initialize_ekf(
+                            records[0].clone(),
+                            ekf_cfg.attitude_covariance,
+                            ekf_cfg.imu_biases,
+                            ekf_cfg.imu_biases_covariance,
+                            ekf_cfg.process_noise_diagonal,
+                            ekf_cfg.use_biases,
+                        );
+                        info!("Initialized EKF");
+                        run_closed_loop(
+                            &mut ekf,
+                            event_stream,
+                            None,
+                            Some(execution_limits.clone()),
+                        )
+                        .map_err(|e| -> Box<dyn Error> { e.into() })
+                    }
                 }
                 FilterConfig::Eskf { config: eskf_cfg } => {
+                    #[cfg(feature = "geonav")]
+                    if geo_enabled {
+                        return Err(
+                            "ESKF geophysical navigation is not yet implemented for config-driven closed-loop mode"
+                                .into(),
+                        );
+                    }
                     let mut eskf = initialize_eskf(
                         records[0].clone(),
                         eskf_cfg.attitude_covariance,
@@ -708,6 +1006,7 @@ fn process_file(
                     );
                     info!("Initialized ESKF");
                     run_closed_loop(&mut eskf, event_stream, None, Some(execution_limits))
+                        .map_err(|e| -> Box<dyn Error> { e.into() })
                 }
                 FilterConfig::Rbpf { .. } => {
                     return Err("RBPF filter configuration requires particle-filter mode".into());
@@ -1008,7 +1307,7 @@ fn run_from_config(
     let input = Path::new(&config.input);
     let output = Path::new(&config.output);
     validate_input_path(input)?;
-    validate_output_path(output)?;
+    prepare_sim_output_path(input, output)?;
 
     // Get all CSV files to process
     let csv_files = get_csv_files(input)?;
@@ -1022,6 +1321,7 @@ fn run_from_config(
     }
 
     // Process files either sequentially or in parallel
+    let total_files = csv_files.len();
     if config.parallel && is_multiple {
         // Parallel processing
         let errors = Mutex::new(Vec::new());
@@ -1030,7 +1330,6 @@ fn run_from_config(
             match process_file(input_file, output, &config) {
                 Ok(()) => {}
                 Err(e) => {
-                    error!("Error processing {}: {}", input_file.display(), e);
                     // Use expect with a descriptive message for mutex operations
                     errors
                         .lock()
@@ -1046,27 +1345,31 @@ fn run_from_config(
             .into_inner()
             .expect("Failed to extract errors from mutex - another thread panicked");
         if !errors.is_empty() {
-            error!("{} file(s) failed to process", errors.len());
-            for (file, err) in &errors {
-                error!("  {}: {}", file.display(), err);
-            }
-            return Err(format!("{} file(s) failed to process", errors.len()).into());
+            log_processing_failures(&errors);
         }
+        info!(
+            "Batch complete: {}/{} files succeeded, {} failed",
+            total_files - errors.len(),
+            total_files,
+            errors.len()
+        );
     } else {
         // Sequential processing
-        let mut failures = 0usize;
+        let mut failures = Vec::new();
         for input_file in &csv_files {
             if let Err(e) = process_file(input_file, output, &config) {
-                if !is_multiple {
-                    return Err(e);
-                }
-                failures += 1;
-                error!("Error processing {}: {}", input_file.display(), e);
+                failures.push((input_file.clone(), e.to_string()));
             }
         }
-        if failures > 0 {
-            error!("{} file(s) failed to process", failures);
+        if !failures.is_empty() {
+            log_processing_failures(&failures);
         }
+        info!(
+            "Batch complete: {}/{} files succeeded, {} failed",
+            total_files - failures.len(),
+            total_files,
+            failures.len()
+        );
     }
 
     Ok(())
@@ -1736,7 +2039,8 @@ fn run_rbpf_event_loop(
     execution_limits: &ExecutionLimits,
 ) -> Result<Vec<NavigationResult>, Box<dyn Error>> {
     let start_time = event_stream.start_time;
-    let mut results = Vec::with_capacity(event_stream.events.len());
+    let total = event_stream.events.len();
+    let mut results = Vec::with_capacity(total);
     let mut monitor = HealthMonitor::new(HealthLimits::default());
     let sim_duration_s = event_stream
         .events
@@ -1756,7 +2060,11 @@ fn run_rbpf_event_loop(
     ));
     let mut last_ts = start_time;
 
-    for event in event_stream.events.into_iter() {
+    // Progress logging interval: every 1000 events
+    let log_interval = 1000;
+    let wall_start = std::time::Instant::now();
+
+    for (i, event) in event_stream.events.into_iter().enumerate() {
         let elapsed_s = match &event {
             Event::Imu { elapsed_s, .. } => *elapsed_s,
             Event::Measurement { elapsed_s, .. } => *elapsed_s,
@@ -1772,18 +2080,35 @@ fn run_rbpf_event_loop(
             }
         }
 
-        let (mean, cov) = rbpf.estimate();
-        if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
-            return Err(e.into());
-        }
         execution_monitor.check("particle-filter")?;
         execution_monitor.mark_progress();
 
         if ts != last_ts {
+            let (mean, cov) = rbpf.estimate();
+            if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
+                return Err(e.into());
+            }
             results.push(NavigationResult::from_particle_filter(&ts, &mean, &cov));
             last_ts = ts;
         }
+
+        if i % log_interval == 0 && i > 0 {
+            let pct = (i as f64 / total as f64) * 100.0;
+            let wall_elapsed = wall_start.elapsed().as_secs_f64();
+            info!(
+                "[RBPF {:.1}%] Event {}/{} | wall {:.1}s | sim {:.1}s",
+                pct, i, total, wall_elapsed, elapsed_s
+            );
+        }
     }
+
+    let wall_elapsed = wall_start.elapsed().as_secs_f64();
+    info!(
+        "RBPF event loop complete: {} events, {} results, {:.1}s wall-clock",
+        total,
+        results.len(),
+        wall_elapsed
+    );
 
     Ok(results)
 }
@@ -2722,6 +3047,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use strapdown::messages::{GnssDegradationConfig, GnssFaultModel};
+    use strapdown::sim::{EkfConfig, GeoResolution, GeophysicalConfig};
     use std::path::PathBuf;
     use tempfile::tempdir;
 
@@ -2871,7 +3198,10 @@ mod tests {
 
         match args {
             TopLevelSimulationArgs::ParticleFilter(pf_args) => {
-                assert!(matches!(pf_args.filter_type, ParticleFilterType::RaoBlackwellized));
+                assert!(matches!(
+                    pf_args.filter_type,
+                    ParticleFilterType::RaoBlackwellized
+                ));
                 assert_eq!(pf_args.sim.output, PathBuf::from("out.csv"));
             }
             TopLevelSimulationArgs::ClosedLoop(_) => {
@@ -2919,6 +3249,58 @@ mod tests {
     }
 
     #[test]
+    fn test_run_from_config_single_invalid_csv_returns_ok() {
+        use strapdown::sim::SimulationConfig;
+
+        let dir = tempdir().unwrap();
+        let input_file = dir.path().join("bad.csv");
+        let output_file = dir.path().join("output.csv");
+        let config_path = dir.path().join("config.toml");
+
+        std::fs::write(&input_file, "bad,header\n1,2\n").unwrap();
+
+        let config = SimulationConfig {
+            input: input_file.display().to_string(),
+            output: output_file.display().to_string(),
+            ..SimulationConfig::default()
+        };
+        config.to_file(&config_path).unwrap();
+
+        let result = run_from_config(&config_path, false, false);
+
+        assert!(result.is_ok());
+        assert!(!output_file.exists());
+    }
+
+    #[test]
+    fn test_run_from_config_parallel_invalid_csv_batch_returns_ok() {
+        use strapdown::sim::SimulationConfig;
+
+        let dir = tempdir().unwrap();
+        let input_dir = dir.path().join("inputs");
+        let output_dir = dir.path().join("outputs");
+        let config_path = dir.path().join("config.toml");
+
+        std::fs::create_dir_all(&input_dir).unwrap();
+        std::fs::write(input_dir.join("bad_one.csv"), "bad,header\n1,2\n").unwrap();
+        std::fs::write(input_dir.join("bad_two.csv"), "bad,header\n3,4\n").unwrap();
+
+        let config = SimulationConfig {
+            input: input_dir.display().to_string(),
+            output: output_dir.display().to_string(),
+            parallel: true,
+            ..SimulationConfig::default()
+        };
+        config.to_file(&config_path).unwrap();
+
+        let result = run_from_config(&config_path, false, false);
+
+        assert!(result.is_ok());
+        assert!(!output_dir.join("bad_one.csv").exists());
+        assert!(!output_dir.join("bad_two.csv").exists());
+    }
+
+    #[test]
     fn test_prepare_sim_output_path_rejects_file_output_for_directory_input() {
         let dir = tempdir().unwrap();
         let input_dir = dir.path().join("inputs");
@@ -2932,5 +3314,79 @@ mod tests {
             err.to_string()
                 .contains("must be a directory when input is a directory")
         );
+    }
+
+    #[cfg(feature = "geonav")]
+    #[test]
+    fn test_process_file_ekf_geophysical_output_differs_from_degraded() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let source_csv = repo_root.join("data/input/2023-08-06_14-48-05.csv");
+        let gravity_map = repo_root.join("data/input/2023-08-06_14-48-05_gravity.nc");
+        let magnetic_map = repo_root.join("data/input/2023-08-06_14-48-05_magnetic.nc");
+
+        let all_records = TestDataRecord::from_csv(&source_csv).unwrap();
+        let sample_records: Vec<_> = all_records.into_iter().take(240).collect();
+        assert!(sample_records.len() > 10);
+
+        let dir = tempdir().unwrap();
+        let input_path = dir.path().join("sample.csv");
+        TestDataRecord::to_csv(&sample_records, &input_path).unwrap();
+
+        let degraded_output_dir = dir.path().join("degraded");
+        let geo_output_dir = dir.path().join("geo");
+        std::fs::create_dir_all(&degraded_output_dir).unwrap();
+        std::fs::create_dir_all(&geo_output_dir).unwrap();
+
+        let gnss_degradation = GnssDegradationConfig {
+            scheduler: GnssScheduler::FixedInterval {
+                interval_s: 60.0,
+                phase_s: 0.0,
+            },
+            fault: GnssFaultModel::Degraded {
+                rho_pos: 0.99,
+                sigma_pos_m: 15.0,
+                rho_vel: 0.95,
+                sigma_vel_mps: 5.0,
+                r_scale: 15.0,
+            },
+            seed: 42,
+        };
+
+        let mut degraded_config = SimulationConfig::default();
+        degraded_config.mode = SimulationMode::ClosedLoop;
+        degraded_config.output = degraded_output_dir.to_string_lossy().into_owned();
+        degraded_config.generate_plot = false;
+        degraded_config.filter = Some(FilterConfig::Ekf {
+            config: EkfConfig::default(),
+        });
+        degraded_config.gnss_degradation = gnss_degradation.clone();
+        degraded_config.geophysical = None;
+
+        let mut geo_config = degraded_config.clone();
+        geo_config.output = geo_output_dir.to_string_lossy().into_owned();
+        geo_config.geophysical = Some(GeophysicalConfig {
+            gravity_resolution: Some(GeoResolution::OneMinute),
+            gravity_bias: Some(5.97),
+            gravity_noise_std: Some(48.93),
+            gravity_map_file: Some(gravity_map.to_string_lossy().into_owned()),
+            magnetic_resolution: Some(GeoResolution::TwoMinutes),
+            magnetic_bias: Some(40364.0),
+            magnetic_noise_std: Some(41303.0),
+            magnetic_map_file: Some(magnetic_map.to_string_lossy().into_owned()),
+            geo_frequency_s: Some(1.0),
+        });
+
+        process_file(&input_path, &degraded_output_dir, &degraded_config).unwrap();
+        process_file(&input_path, &geo_output_dir, &geo_config).unwrap();
+
+        let degraded_output = degraded_output_dir.join("sample.csv");
+        let geo_output = geo_output_dir.join("sample.csv");
+        let degraded_contents = std::fs::read_to_string(degraded_output).unwrap();
+        let geo_contents = std::fs::read_to_string(geo_output).unwrap();
+
+        assert_ne!(geo_contents, degraded_contents);
     }
 }

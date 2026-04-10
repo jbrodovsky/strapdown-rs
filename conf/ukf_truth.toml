@@ -10,8 +10,8 @@ level = "info"
 file = "log/ukf_truth.log"
 
 
-[closed_loop]
-filter = "ukf"
+[filter]
+type = "ukf"
 
 [gnss_degradation]
 seed = 42

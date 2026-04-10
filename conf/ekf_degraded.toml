@@ -10,8 +10,8 @@ generate_plot = true
 level = "info"
 file = "log/ekf_degraded.log"
 
-[closed_loop]
-filter = "ekf"
+[filter]
+type = "ekf"
 
 [gnss_degradation]
 seed = 42
