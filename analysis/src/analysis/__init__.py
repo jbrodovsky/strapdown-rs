@@ -12,6 +12,8 @@ from pandas import DataFrame, read_csv
 from tqdm import tqdm
 
 from analysis.compare import (
+    align_dataframes_on_common_index,
+    compute_navigation_errors,
     compute_error_statistics,
     compute_improvement_statistics,
     format_latex_table,
@@ -275,9 +277,8 @@ def performance_analysis(args):
             "Max 3D Error (m)",
             "Mean 3D Error (m)",
             "RMSE 3D Error (m)",
-        ],  # ty:ignore[invalid-argument-type]
-        index=[dataset.stem for dataset in datasets],  # ty:ignore[invalid-argument-type]
-        # index.name = "Dataset"  # ty:ignore[unknown-argument]
+        ],
+        index=[dataset.stem for dataset in datasets],
     )
 
     for dataset in datasets:
@@ -295,21 +296,16 @@ def performance_analysis(args):
         except Exception as e:
             print(f"Error plotting performance for {dataset.name}, possible dimension mismatch or missing data: {e}")
             continue
-        two_d_error = haversine_vector(
-            gps[["latitude", "longitude"]].to_numpy()[1:, :],
-            nav[["latitude", "longitude"]].to_numpy(),
-            Unit.METERS,
-        )
-        three_d_error = np.sqrt(two_d_error**2 + (gps["altitude"].to_numpy()[1:] - nav["altitude"].to_numpy()) ** 2)
+        _, _, two_d_error, vertical_error, three_d_error = compute_navigation_errors(nav, gps)
         summary_df.loc[dataset.stem] = [
             np.nanmin(two_d_error),
             np.nanmax(two_d_error),
             np.nanmean(two_d_error),
             np.sqrt(np.nanmean(two_d_error**2)),
-            np.nanmin(gps["altitude"].to_numpy()[1:] - nav["altitude"].to_numpy()),
-            np.nanmax(gps["altitude"].to_numpy()[1:] - nav["altitude"].to_numpy()),
-            np.nanmean(gps["altitude"].to_numpy()[1:] - nav["altitude"].to_numpy()),
-            np.sqrt(np.nanmean((gps["altitude"].to_numpy()[1:] - nav["altitude"].to_numpy()) ** 2)),
+            np.nanmin(vertical_error),
+            np.nanmax(vertical_error),
+            np.nanmean(vertical_error),
+            np.sqrt(np.nanmean(vertical_error**2)),
             np.nanmin(three_d_error),
             np.nanmax(three_d_error),
             np.nanmean(three_d_error),
@@ -378,8 +374,8 @@ def geophysical_performance_analysis(args):
             "Max 3D Error (m)",
             "Mean 3D Error (m)",
             "RMSE 3D Error (m)",
-        ],  # ty:ignore[invalid-argument-type]
-        index=[dataset.stem for dataset in datasets],  # ty:ignore[invalid-argument-type]
+        ],
+        index=[dataset.stem for dataset in datasets],
     )
 
     # For LaTeX table and detailed results
@@ -402,26 +398,10 @@ def geophysical_performance_analysis(args):
             continue
 
         output_plot = output_path / f"{dataset.stem}_geophysical_performance.png"
-        nav = nav.iloc[1:].copy()
-
-        # Align datasets by index
-        if not (len(nav) == len(geo)):
-            if nav.index[0] not in geo.index:
-                first_row = geo.iloc[[0]][["latitude", "longitude", "altitude"]].copy()
-                first_row.index = [nav.index[0]]
-                geo.loc[first_row.index] = first_row
-                geo = geo.sort_index()
-            geo = geo.reindex(nav.index)
-
-        if not (len(nav) == len(degraded_nav)):
-            if nav.index[0] not in degraded_nav.index:
-                first_row = degraded_nav.iloc[[0]][["latitude", "longitude", "altitude"]].copy()
-                first_row.index = [nav.index[0]]
-                degraded_nav.loc[first_row.index] = first_row
-                degraded_nav = degraded_nav.sort_index()
-            degraded_nav = degraded_nav.reindex(nav.index)
 
         try:
+            geo, degraded_nav, nav = align_dataframes_on_common_index(geo, degraded_nav, nav)
+
             # Generate plot if enabled
             if generate_plots:
                 plot_relative_performance(geo, degraded_nav, nav, output_plot)
@@ -526,7 +506,9 @@ def compare_filters_analysis(args):
     from pathlib import Path
 
     if len(args.input_dirs) != len(args.labels):
-        print(f"ERROR: --input-dirs ({len(args.input_dirs)}) and --labels ({len(args.labels)}) must have the same count.")
+        print(
+            f"ERROR: --input-dirs ({len(args.input_dirs)}) and --labels ({len(args.labels)}) must have the same count."
+        )
         return
 
     output_path = Path(args.output)

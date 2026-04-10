@@ -1872,8 +1872,8 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
         latitude: first_record.latitude.to_radians(),
         longitude: first_record.longitude.to_radians(),
         altitude: first_record.altitude,
-        velocity_north: first_record.speed * first_record.bearing.cos(),
-        velocity_east: first_record.speed * first_record.bearing.sin(),
+        velocity_north: first_record.speed * first_record.bearing.to_radians().cos(),
+        velocity_east: first_record.speed * first_record.bearing.to_radians().sin(),
         velocity_vertical: 0.0, // initial velocities
         attitude,
         is_enu: true,
@@ -2065,8 +2065,8 @@ pub fn print_ukf(ukf: &UnscentedKalmanFilter, record: &TestDataRecord) {
         ukf.get_certainty()[(3, 3)],
         ukf.get_certainty()[(4, 4)],
         ukf.get_certainty()[(5, 5)],
-        ukf.get_estimate()[3] - record.speed * record.bearing.cos(),
-        ukf.get_estimate()[4] - record.speed * record.bearing.sin(),
+        ukf.get_estimate()[3] - record.speed * record.bearing.to_radians().cos(),
+        ukf.get_estimate()[4] - record.speed * record.bearing.to_radians().sin(),
         ukf.get_estimate()[5] - 0.0 // Assuming no vertical velocity
     );
     debug!(
@@ -2145,8 +2145,10 @@ pub fn initialize_ukf(initial_pose: TestDataRecord, config: UkfConfig) -> Unscen
         latitude: initial_pose.latitude,
         longitude: initial_pose.longitude,
         altitude: initial_pose.altitude,
-        northward_velocity: initial_pose.speed * initial_pose.bearing.cos(),
-        eastward_velocity: initial_pose.speed * initial_pose.bearing.sin(),
+        // Note: `initial_pose.bearing` is stored in degrees in `TestDataRecord`.
+        // Convert to radians here for use with trigonometric functions.
+        northward_velocity: initial_pose.speed * initial_pose.bearing.to_radians().cos(),
+        eastward_velocity: initial_pose.speed * initial_pose.bearing.to_radians().sin(),
         vertical_velocity: 0.0, // Assuming no initial vertical velocity for simplicity
         roll: if initial_pose.roll.is_nan() {
             0.0
@@ -2237,7 +2239,7 @@ pub fn initialize_ukf(initial_pose: TestDataRecord, config: UkfConfig) -> Unscen
         other_states,
         covariance_diagonal,
         process_noise,
-        config.ukf_alpha.unwrap_or(1e-3),
+        config.ukf_alpha.unwrap_or(1.0),
         config.ukf_beta.unwrap_or(2.0),
         config.ukf_kappa.unwrap_or(0.0),
     )
@@ -2325,9 +2327,10 @@ pub fn initialize_ekf(
 
     // Build covariance diagonal
     let position_accuracy = initial_pose.horizontal_accuracy;
+    let position_std_rad = (position_accuracy * METERS_TO_DEGREES).to_radians();
     let mut covariance_diagonal = vec![
-        (position_accuracy * METERS_TO_DEGREES).powf(2.0),
-        (position_accuracy * METERS_TO_DEGREES).powf(2.0),
+        position_std_rad.powf(2.0),
+        position_std_rad.powf(2.0),
         initial_pose.vertical_accuracy.powf(2.0),
         initial_pose.speed_accuracy.powf(2.0),
         initial_pose.speed_accuracy.powf(2.0),

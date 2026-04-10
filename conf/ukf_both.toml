@@ -10,19 +10,19 @@ generate_plot = true
 level = "info"
 file = "log/ukf_both.log"
 
-[closed_loop]
-filter = "ukf"
+[filter]
+type = "ukf"
 
 [geophysical]
 # Gravity anomaly measurements
 gravity_resolution = "one_minute"
-gravity_bias = 0.0
-gravity_noise_std = 100.0
+gravity_bias = 5.97
+gravity_noise_std = 48.93
 
 # Magnetic anomaly measurements
 magnetic_resolution = "two_minutes"
-magnetic_bias = 0.0
-magnetic_noise_std = 150.0
+magnetic_bias = 40364.0
+magnetic_noise_std = 41303.0
 
 # Measurement frequency (seconds)
 geo_frequency_s = 1.0

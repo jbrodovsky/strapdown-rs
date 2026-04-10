@@ -7,7 +7,7 @@
 use crate::linalg::{matrix_square_root, robust_spd_solve, symmetrize};
 use crate::measurements::MeasurementModel;
 use crate::{
-    IMUData, NavigationFilter, StrapdownState, forward, wrap_to_2pi, wrap_to_180, wrap_to_360,
+    IMUData, NavigationFilter, StrapdownState, forward, wrap_to_180,
 };
 
 use std::fmt::{self, Debug, Display};
@@ -53,7 +53,7 @@ pub struct InitialState {
     pub is_enu: bool,
 }
 impl InitialState {
-    /// Create a new `InitialState`, normalizing/convertng angles as required.
+    /// Create a new `InitialState`, normalizing/converting angles as required.
     ///
     /// The constructor accepts latitude/longitude and Euler angles either in
     /// degrees (when `in_degrees==true`) or already in radians. When degrees
@@ -104,13 +104,9 @@ impl InitialState {
         };
         let is_enu = is_enu.unwrap_or(true);
         if in_degrees {
-            roll = wrap_to_360(roll).to_radians();
-            pitch = wrap_to_360(pitch).to_radians();
-            yaw = wrap_to_360(yaw).to_radians();
-        } else {
-            roll = wrap_to_2pi(roll);
-            pitch = wrap_to_2pi(pitch);
-            yaw = wrap_to_2pi(yaw);
+            roll = roll.to_radians();
+            pitch = pitch.to_radians();
+            yaw = yaw.to_radians();
         }
         InitialState {
             latitude,
@@ -403,9 +399,6 @@ impl NavigationFilter for UnscentedKalmanFilter {
         }
         let k = self.robust_kalman_gain(&cross_covariance, &s);
         self.mean_state += &k * (measurement.get_measurement(&self.mean_state) - &z_hat);
-        self.mean_state[6] = wrap_to_2pi(self.mean_state[6]);
-        self.mean_state[7] = wrap_to_2pi(self.mean_state[7]);
-        self.mean_state[8] = wrap_to_2pi(self.mean_state[8]);
         self.covariance -= &cross_covariance * &k.transpose();
         // Ensure covariance remains positive semi-definite with gentle regularization
         self.covariance = symmetrize(&self.covariance);
@@ -910,11 +903,6 @@ impl NavigationFilter for ExtendedKalmanFilter {
 
         // State update: x = x + K * nu
         self.mean_state += &k * innovation;
-
-        // Wrap angles to [0, 2*pi)
-        self.mean_state[6] = wrap_to_2pi(self.mean_state[6]);
-        self.mean_state[7] = wrap_to_2pi(self.mean_state[7]);
-        self.mean_state[8] = wrap_to_2pi(self.mean_state[8]);
 
         // Covariance update (Joseph form for numerical stability):
         // P = (I - K*H)*P*(I - K*H)^T + K*R*K^T
@@ -1676,9 +1664,9 @@ impl NavigationFilter for ErrorStateKalmanFilter {
             self.nominal_quaternion[3],
         ));
         let euler = quat.euler_angles();
-        state[6] = wrap_to_2pi(euler.0); // roll
-        state[7] = wrap_to_2pi(euler.1); // pitch
-        state[8] = wrap_to_2pi(euler.2); // yaw
+        state[6] = euler.0; // roll
+        state[7] = euler.1; // pitch
+        state[8] = euler.2; // yaw
 
         // Biases
         state[9] = self.nominal_accel_bias[0];
@@ -3480,10 +3468,10 @@ mod tests {
         // Get state (which wraps angles)
         let state = eskf.get_estimate();
 
-        // Angles should be wrapped to [0, 2*pi] range
-        assert!(state[6] >= 0.0 && state[6] <= 2.0 * std::f64::consts::PI);
-        assert!(state[7] >= 0.0 && state[7] <= 2.0 * std::f64::consts::PI);
-        assert!(state[8] >= 0.0 && state[8] <= 2.0 * std::f64::consts::PI);
+        // Angles should be in the natural euler_angles() range [-pi, pi]
+        assert!(state[6].is_finite());
+        assert!(state[7].is_finite());
+        assert!(state[8].is_finite());
     }
 
     #[test]

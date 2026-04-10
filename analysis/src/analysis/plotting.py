@@ -40,6 +40,8 @@ from matplotlib.figure import Figure
 from pandas import DataFrame
 from pygmt.io import load_dataarray
 
+from analysis.compare import compute_navigation_errors
+
 
 def inflate_bounds(
     x_min: int | float,
@@ -110,32 +112,28 @@ def plot_performance(nav: DataFrame, gps: DataFrame, output_path: Path | str):
     - Altitude and error units are metres.
     """
     output_path = Path(output_path)
-    # output_path.mkdir(parents=True, exist_ok=True)
+    aligned_nav, aligned_gps, two_d_error, vertical_error, _ = compute_navigation_errors(nav, gps)
+
     fig, ax = plt.subplots(1, 1, figsize=(12, 4))
-    two_d_error = haversine_vector(
-        gps[["latitude", "longitude"]].to_numpy()[1:, :],
-        nav[["latitude", "longitude"]].to_numpy(),
-        Unit.METERS,
-    )
     ax.plot(
-        (nav.index - nav.index[0]).total_seconds(),
+        (aligned_nav.index - aligned_nav.index[0]).total_seconds(),
         two_d_error,
         label="2D Haversine Error",
     )
     ax.plot(
-        (nav.index - nav.index[0]).total_seconds(),
-        abs(nav["altitude"].to_numpy() - gps["altitude"].to_numpy()[1:]),
+        (aligned_nav.index - aligned_nav.index[0]).total_seconds(),
+        np.abs(vertical_error),
         label="Altitude Error",
     )
     ax.plot(
-        (gps.index - gps.index[0]).total_seconds(),
-        gps["horizontalAccuracy"],
+        (aligned_gps.index - aligned_gps.index[0]).total_seconds(),
+        aligned_gps["horizontalAccuracy"],
         label="GPS Horizontal Accuracy",
         linestyle="--",
     )
     ax.plot(
-        (gps.index - gps.index[0]).total_seconds(),
-        gps["verticalAccuracy"],
+        (aligned_gps.index - aligned_gps.index[0]).total_seconds(),
+        aligned_gps["verticalAccuracy"],
         label="GPS Vertical Accuracy",
         linestyle="--",
     )

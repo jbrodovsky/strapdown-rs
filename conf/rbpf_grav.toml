@@ -10,7 +10,8 @@ parallel = true
 level = "info"
 file = "log/rbpf_grav.log"
 
-[particle_filter]
+[filter]
+type = "rbpf"
 num_particles = 1000
 position_init_std_m = [10.0, 10.0, 5.0]
 velocity_init_std_mps = 1.0
@@ -26,14 +27,13 @@ zero_vertical_velocity_std_mps = 0.1
 [geophysical]
 # Gravity anomaly measurements
 gravity_resolution = "one_minute"
-gravity_bias = 0.0
-gravity_noise_std = 100.0
-# gravity_map_file will be auto-detected if not specified
+gravity_bias = 5.97
+gravity_noise_std = 48.93
 
-# Magnetic anomaly disabled for this config
-# magnetic_resolution = ""
-# magnetic_bias = 0.0
-# magnetic_noise_std = 150.0
+# Magnetic anomaly measurements
+# magnetic_resolution = "two_minutes"
+# magnetic_bias = 40364.0
+# magnetic_noise_std = 41303.0
 
 # Measurement frequency (seconds)
 geo_frequency_s = 1.0

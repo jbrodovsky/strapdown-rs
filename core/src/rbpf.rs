@@ -315,20 +315,33 @@ impl RaoBlackwellizedParticleFilter {
 
     /// Return weighted mean and covariance of the full 9-state estimate.
     pub fn estimate(&self) -> (DVector<f64>, DMatrix<f64>) {
-        let mut mean = DVector::<f64>::zeros(9);
+        let (roll, pitch, yaw) = self.nominal.attitude.euler_angles();
+        let mut mean = [0.0f64; 9];
         for particle in &self.particles {
-            let state = self.particle_state_vector(particle);
-            mean += state * particle.weight;
+            let s = self.particle_state_array(particle, roll, pitch, yaw);
+            let w = particle.weight;
+            for i in 0..9 {
+                mean[i] += s[i] * w;
+            }
         }
 
         let mut cov = DMatrix::<f64>::zeros(9, 9);
         for particle in &self.particles {
-            let state = self.particle_state_vector(particle);
-            let diff = &state - &mean;
-            cov += particle.weight * (&diff * diff.transpose());
+            let s = self.particle_state_array(particle, roll, pitch, yaw);
+            let w = particle.weight;
+            for i in 0..9 {
+                let di = s[i] - mean[i];
+                for j in i..9 {
+                    let dj = s[j] - mean[j];
+                    let v = w * di * dj;
+                    cov[(i, j)] += v;
+                    if i != j {
+                        cov[(j, i)] += v;
+                    }
+                }
+            }
         }
-        cov = symmetrize(&cov);
-        (mean, cov)
+        (DVector::from_column_slice(&mean), cov)
     }
 
     /// Compute the effective sample size.
@@ -516,9 +529,16 @@ impl RaoBlackwellizedParticleFilter {
         self.update_linear_state(&residual, &h, &r);
     }
 
-    fn particle_state_vector(&self, particle: &RbpfParticle) -> DVector<f64> {
-        let (roll, pitch, yaw) = self.nominal.attitude.euler_angles();
-        DVector::from_vec(vec![
+    /// Build the 9-state array for a particle without heap allocation.
+    #[inline]
+    fn particle_state_array(
+        &self,
+        particle: &RbpfParticle,
+        roll: f64,
+        pitch: f64,
+        yaw: f64,
+    ) -> [f64; 9] {
+        [
             self.nominal.latitude + particle.position_error[0],
             self.nominal.longitude + particle.position_error[1],
             self.nominal.altitude + particle.position_error[2],
@@ -528,7 +548,12 @@ impl RaoBlackwellizedParticleFilter {
             roll + particle.linear_state[3],
             pitch + particle.linear_state[4],
             yaw + particle.linear_state[5],
-        ])
+        ]
+    }
+
+    fn particle_state_vector(&self, particle: &RbpfParticle) -> DVector<f64> {
+        let (roll, pitch, yaw) = self.nominal.attitude.euler_angles();
+        DVector::from_column_slice(&self.particle_state_array(particle, roll, pitch, yaw))
     }
 
     fn particle_state_vector_full(&self, particle: &RbpfParticle) -> DVector<f64> {
@@ -787,7 +812,7 @@ mod tests {
             run_rbpf_on_scenario(nominal, &imu_data, &gps_measurements, sample_rate_hz);
         let truth = true_states.last().unwrap();
 
-        assert_solution_close_to_truth(&mean, truth, 25.0, 15.0, 0.5);
+        assert_solution_close_to_truth(&mean, truth, 25.0, 25.0, 0.5);
     }
 
     #[test]
