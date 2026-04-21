@@ -71,7 +71,7 @@ def compute_navigation_errors(
         aligned_nav[["latitude", "longitude"]].to_numpy(),
         Unit.METERS,
     )
-    vertical_error = aligned_reference["altitude"].to_numpy() - aligned_nav["altitude"].to_numpy()
+    vertical_error = np.abs(aligned_reference["altitude"].to_numpy() - aligned_nav["altitude"].to_numpy())
     three_d_error = np.sqrt(two_d_error**2 + vertical_error**2)
 
     return aligned_nav, aligned_reference, two_d_error, vertical_error, three_d_error
@@ -218,6 +218,70 @@ def format_latex_table(
         f"    median & {np.median(rmse_diffs):.2f} & {np.median(mean_diffs):.2f} & {np.median(median_diffs):.2f} \\\\"
     )
     lines.append(f"    std & {np.std(rmse_diffs):.2f} & {np.std(mean_diffs):.2f} & {np.std(median_diffs):.2f} \\\\")
+    lines.append("    \\bottomrule")
+    lines.append("    \\end{tabular}")
+    lines.append(f"    \\label{{{label}}}")
+    lines.append("\\end{table}")
+
+    return "\n".join(lines)
+
+
+def format_performance_latex_table(
+    summary_df: pd.DataFrame,
+    title: str,
+    label: str = "tab:performance",
+) -> str:
+    """Format a performance summary DataFrame as a LaTeX table.
+
+    Parameters
+    ----------
+    summary_df : pd.DataFrame
+        DataFrame produced by ``performance_analysis``, indexed by dataset name,
+        with columns for Min/Max/Mean/RMSE of horizontal, vertical, and 3D errors.
+    title : str
+        Caption for the table.
+    label : str, optional
+        LaTeX label for the table, by default "tab:performance".
+
+    Returns
+    -------
+    str
+        LaTeX table string ready for inclusion in a document.
+    """
+    rmse_h = summary_df["RMSE Horizontal Error (m)"]
+    mean_h = summary_df["Mean Horizontal Error (m)"]
+    rmse_v = summary_df["RMSE Vertical Error (m)"]
+    mean_v = summary_df["Mean Vertical Error (m)"]
+    rmse_3 = summary_df["RMSE 3D Error (m)"]
+    mean_3 = summary_df["Mean 3D Error (m)"]
+
+    lines = []
+    lines.append("\\begin{table}[h]")
+    lines.append("    \\centering")
+    lines.append(f"    \\caption{{{title}}}")
+    lines.append("    \\begin{tabular}{ || l || c c | c c | c c || }")
+    lines.append("    \\toprule")
+    lines.append(
+        "    Dataset & RMSE H (m) & Mean H (m) & RMSE V (m) & Mean V (m) & RMSE 3D (m) & Mean 3D (m) \\\\"
+    )
+    lines.append("    \\midrule")
+
+    for name in summary_df.index:
+        clean = str(name).replace("_", "\\_")
+        lines.append(
+            f"    {clean} & {rmse_h[name]:.2f} & {mean_h[name]:.2f}"
+            f" & {rmse_v[name]:.2f} & {mean_v[name]:.2f}"
+            f" & {rmse_3[name]:.2f} & {mean_3[name]:.2f} \\\\"
+        )
+
+    lines.append("    \\midrule")
+    for stat_name, fn in [("mean", np.mean), ("median", np.median), ("std", np.std)]:
+        lines.append(
+            f"    {stat_name} & {fn(rmse_h):.2f} & {fn(mean_h):.2f}"
+            f" & {fn(rmse_v):.2f} & {fn(mean_v):.2f}"
+            f" & {fn(rmse_3):.2f} & {fn(mean_3):.2f} \\\\"
+        )
+
     lines.append("    \\bottomrule")
     lines.append("    \\end{tabular}")
     lines.append(f"    \\label{{{label}}}")

@@ -9,9 +9,11 @@ generate_plot = true
 level = "info"
 file = "log/ukf_truth.log"
 
-
 [filter]
 type = "ukf"
+ukf_alpha = 0.1
+ukf_beta = 2.0
+ukf_kappa = 0.0
 
 [gnss_degradation]
 seed = 42

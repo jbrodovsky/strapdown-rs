@@ -4,6 +4,7 @@ target
 data/raw
 data/output
 data/output_0
+data/output_1
 data/input_0
 examples/strapdown-sim/out
 

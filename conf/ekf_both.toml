@@ -37,8 +37,8 @@ phase_s = 0.0
 
 [gnss_degradation.fault]
 kind = "degraded"
-rho_pos = 0.99
-sigma_pos_m = 15.0
-rho_vel = 0.95
-sigma_vel_mps = 5.0
-r_scale = 15.0
+rho_pos = 0.98
+sigma_pos_m = 5.0
+rho_vel = 0.90
+sigma_vel_mps = 2.0
+r_scale = 5.0

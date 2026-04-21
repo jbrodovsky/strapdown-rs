@@ -17,6 +17,7 @@ from analysis.compare import (
     compute_error_statistics,
     compute_improvement_statistics,
     format_latex_table,
+    format_performance_latex_table,
     print_summary_statistics,
     save_detailed_results_to_csv,
 )
@@ -314,6 +315,11 @@ def performance_analysis(args):
 
     summary_file = output_path / "performance_summary.csv"
     summary_df.to_csv(summary_file)
+
+    latex = format_performance_latex_table(summary_df, title="Navigation Performance Summary")
+    latex_file = output_path / "performance_summary.tex"
+    latex_file.write_text(latex)
+    print(f"LaTeX table saved to: {latex_file}")
     print("Performance analysis completed.")
 
 
