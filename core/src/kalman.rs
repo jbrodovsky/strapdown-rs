@@ -7,7 +7,7 @@
 use crate::linalg::{matrix_square_root, robust_spd_solve, symmetrize};
 use crate::measurements::MeasurementModel;
 use crate::{
-    IMUData, NavigationFilter, StrapdownState, forward, wrap_to_180,
+    IMUData, NavigationFilter, StrapdownState, forward, wrap_to_180, wrap_to_pi,
 };
 
 use std::fmt::{self, Debug, Display};
@@ -399,6 +399,10 @@ impl NavigationFilter for UnscentedKalmanFilter {
         }
         let k = self.robust_kalman_gain(&cross_covariance, &s);
         self.mean_state += &k * (measurement.get_measurement(&self.mean_state) - &z_hat);
+        // Normalize attitude angles to prevent unbounded drift across many update steps
+        self.mean_state[6] = wrap_to_pi(self.mean_state[6]);
+        self.mean_state[7] = wrap_to_pi(self.mean_state[7]);
+        self.mean_state[8] = wrap_to_pi(self.mean_state[8]);
         self.covariance -= &cross_covariance * &k.transpose();
         // Ensure covariance remains positive semi-definite with gentle regularization
         self.covariance = symmetrize(&self.covariance);

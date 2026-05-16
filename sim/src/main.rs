@@ -1046,7 +1046,7 @@ fn process_file(
                     Ok(())
                 }
                 Err(e) => {
-                    error!("Error running closed-loop simulation: {}", e);
+                    error!("Error running closed-loop simulation for trajectory {}: {}", input_file.display(), e);
                     Err(e.into())
                 }
             }
