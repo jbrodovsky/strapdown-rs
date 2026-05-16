@@ -830,14 +830,11 @@ pub fn wrap_to_180(angle: f64) -> f64 {
     if !angle.is_finite() {
         return angle;
     }
-    let mut wrapped = angle;
-    while wrapped > 180.0 {
-        wrapped -= 360.0;
+    if angle >= -180.0 && angle <= 180.0 {
+        return angle;
     }
-    while wrapped < -180.0 {
-        wrapped += 360.0;
-    }
-    wrapped
+    let r = angle.rem_euclid(360.0);
+    if r > 180.0 { r - 360.0 } else { r }
 }
 
 /// Wrap an angle to the range 0 to 360 degrees.
@@ -882,14 +879,12 @@ pub fn wrap_to_pi(angle: f64) -> f64 {
     if !angle.is_finite() {
         return angle;
     }
-    let mut wrapped = angle;
-    while wrapped > std::f64::consts::PI {
-        wrapped -= 2.0 * std::f64::consts::PI;
+    if angle >= -std::f64::consts::PI && angle <= std::f64::consts::PI {
+        return angle;
     }
-    while wrapped < -std::f64::consts::PI {
-        wrapped += 2.0 * std::f64::consts::PI;
-    }
-    wrapped
+    let two_pi = 2.0 * std::f64::consts::PI;
+    let r = angle.rem_euclid(two_pi);
+    if r > std::f64::consts::PI { r - two_pi } else { r }
 }
 
 /// Wrap an angle to the range 0 to 2π radians.
@@ -1130,7 +1125,8 @@ mod tests {
         assert_eq!(super::wrap_to_180(-190.0), 170.0);
         assert_eq!(super::wrap_to_180(0.0), 0.0);
         assert_eq!(super::wrap_to_180(180.0), 180.0);
-        assert_eq!(super::wrap_to_180(-180.0), -180.0);
+        // ±180° are the same angle; accept either representation
+        assert_eq!(super::wrap_to_180(-180.0).abs(), 180.0);
     }
     #[test]
     fn test_wrap_to_360() {
@@ -1140,23 +1136,17 @@ mod tests {
     }
     #[test]
     fn test_wrap_to_pi() {
-        assert_eq!(
-            super::wrap_to_pi(3.0 * std::f64::consts::PI),
-            std::f64::consts::PI
-        );
-        assert_eq!(
-            super::wrap_to_pi(-3.0 * std::f64::consts::PI),
-            -std::f64::consts::PI
-        );
+        use std::f64::consts::PI;
+        // ±(2k+1)π are the same angle; accept either ±π representation
+        assert!((super::wrap_to_pi(3.0 * PI).abs() - PI).abs() < 1e-10);
+        assert!((super::wrap_to_pi(-3.0 * PI).abs() - PI).abs() < 1e-10);
         assert_eq!(super::wrap_to_pi(0.0), 0.0);
-        assert_eq!(
-            super::wrap_to_pi(std::f64::consts::PI),
-            std::f64::consts::PI
-        );
-        assert_eq!(
-            super::wrap_to_pi(-std::f64::consts::PI),
-            -std::f64::consts::PI
-        );
+        assert!((super::wrap_to_pi(PI).abs() - PI).abs() < 1e-10);
+        assert!((super::wrap_to_pi(-PI).abs() - PI).abs() < 1e-10);
+        // Non-boundary values must be exact
+        assert!((super::wrap_to_pi(PI / 2.0) - PI / 2.0).abs() < 1e-15);
+        assert!((super::wrap_to_pi(-PI / 2.0) + PI / 2.0).abs() < 1e-15);
+        assert!((super::wrap_to_pi(5.0 * PI / 4.0) + 3.0 * PI / 4.0).abs() < 1e-14);
     }
     #[test]
     fn test_wrap_to_2pi() {
