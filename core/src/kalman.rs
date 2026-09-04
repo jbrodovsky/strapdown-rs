@@ -1541,72 +1541,11 @@ impl NavigationFilter for ErrorStateKalmanFilter {
         // Get expected measurement from nominal state
         let z_hat = measurement.get_expected_measurement(&nominal_state_vec);
 
-        // Compute measurement Jacobian H (maps error state to measurements)
-        // For ESKF, we need to account for the error-state representation
-        use crate::measurements::{
-            GPSPositionAndVelocityMeasurement, GPSPositionMeasurement, GPSVelocityMeasurement,
-            MagnetometerYawMeasurement, RelativeAltitudeMeasurement,
-        };
-
-        // Create StrapdownState for Jacobian computation
-        let qw = self.nominal_quaternion[0];
-        let qx = self.nominal_quaternion[1];
-        let qy = self.nominal_quaternion[2];
-        let qz = self.nominal_quaternion[3];
-        let unit_quat = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(qw, qx, qy, qz));
-        let rotation =
-            Rotation3::from_matrix_unchecked(unit_quat.to_rotation_matrix().into_inner());
-
-        let nav_state = StrapdownState {
-            latitude: self.nominal_latitude,
-            longitude: self.nominal_longitude,
-            altitude: self.nominal_altitude,
-            velocity_north: self.nominal_velocity_north,
-            velocity_east: self.nominal_velocity_east,
-            velocity_vertical: self.nominal_velocity_vertical,
-            attitude: rotation,
-            is_enu: self.is_enu,
-        };
-
-        // Compute measurement Jacobian for 9-state nav system
-        let h_9state = if measurement
-            .as_any()
-            .downcast_ref::<GPSPositionMeasurement>()
-            .is_some()
-        {
-            crate::linearize::gps_position_jacobian(&nav_state)
-        } else if measurement
-            .as_any()
-            .downcast_ref::<GPSVelocityMeasurement>()
-            .is_some()
-        {
-            crate::linearize::gps_velocity_jacobian(&nav_state)
-        } else if measurement
-            .as_any()
-            .downcast_ref::<GPSPositionAndVelocityMeasurement>()
-            .is_some()
-        {
-            crate::linearize::gps_position_velocity_jacobian(&nav_state)
-        } else if measurement
-            .as_any()
-            .downcast_ref::<RelativeAltitudeMeasurement>()
-            .is_some()
-        {
-            crate::linearize::relative_altitude_jacobian(&nav_state)
-        } else if let Some(mag_meas) = measurement
-            .as_any()
-            .downcast_ref::<MagnetometerYawMeasurement>()
-        {
-            crate::linearize::magnetometer_yaw_jacobian(
-                &nav_state,
-                mag_meas.mag_x,
-                mag_meas.mag_y,
-                mag_meas.mag_z,
-            )
-        } else {
-            // Fallback: assume direct position measurement
-            crate::linearize::gps_position_jacobian(&nav_state)
-        };
+        // Measurement Jacobian, supplied by the measurement model itself.
+        // Every `MeasurementModel` implementor is required to provide this, so new
+        // measurement types (ZUPT/ZARU, geophysical anomalies) work here without
+        // the filter needing to know about them.
+        let h_9state = measurement.get_jacobian(&nominal_state_vec);
 
         // Extend H to full 15-state error state (add zero columns for bias states)
         let meas_dim = measurement.get_dimension();

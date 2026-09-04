@@ -42,7 +42,6 @@ fn jacobian_state(state: &DVector<f64>) -> StrapdownState {
     }
 }
 
-
 /// Generic measurement model trait for all types of measurements.
 ///
 /// This trait defines the interface for measurement models used in Kalman-style
