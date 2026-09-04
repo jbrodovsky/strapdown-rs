@@ -41,7 +41,6 @@ __pycache__
 .pixi
 *.egg-info
 .python-version
-uv.lock
 batch_process.nu
 .pixi/*
 !.pixi/config.toml
@@ -60,8 +59,6 @@ book/book/
 
 # Generated performance plots
 data/output/*.png
-pixi.lock
-Cargo.lock
 
 # Research artifacts kept locally, out of the v1.0 release scope.
 # See papers/README.md for where these live now.
