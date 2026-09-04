@@ -55,11 +55,24 @@ git config rerere.enabled true      # same conflicts recur across every rebase
 git config rebase.updateRefs true   # carries downstream branch tips when the base moves
 ```
 
-After a spine PR merges, rebase only the next link forward, recording the old base first:
+### Merging a spine PR
+
+Order matters. GitHub **auto-closes** a PR when its base branch is deleted, and then permanently
+refuses to reopen it if the head was force-pushed in the meantime -- which a stack rebase always
+does. Queue position 1 was lost this way once (#270, replaced by #285). So:
 
 ```bash
-git rebase --onto main <old-base-sha> v1/0N-next
+OLD=$(git rev-parse origin/v1/0N-current)      # 1. record the tip BEFORE merging
+gh pr merge <N> --rebase                       # 2. merge WITHOUT --delete-branch
+gh api -X PATCH repos/OWNER/REPO/pulls/<N+1> -f base=main   # 3. retarget the child FIRST
+git rebase --onto origin/main "$OLD" v1/0N+1-next           # 4. then rebase
+git push --force-with-lease origin v1/0N+1-next
+git push origin --delete v1/0N-current         # 5. only now delete the merged branch
 ```
+
+Note that GitHub's rebase-merge **rewrites commit SHAs** even when the branch is a
+fast-forward, which is why step 1 records the old tip and step 4 needs `--onto` rather than a
+plain `git rebase main`.
 
 Spine PRs are **rebase-merged, not squashed** -- squashing rewrites the base and forces a manual
 `--onto` on every subsequent rebase. Keep `cargo fmt` output in its own commit per branch; on a
