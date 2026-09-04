@@ -1198,6 +1198,17 @@ impl Display for ErrorStateKalmanFilter {
     }
 }
 
+/// Relative floor used to keep the ESKF error covariance numerically conditioned.
+///
+/// The ESKF error state spans twelve orders of magnitude in units: latitude and
+/// longitude errors are radians (a 1 m error is ~1.6e-7 rad, so ~2.5e-14 rad² of
+/// variance), while accelerometer bias errors are m/s². A single absolute value
+/// added to every diagonal entry cannot serve both -- the 1e-9 this used to add was
+/// simultaneously ~(200 m)² of bogus horizontal position variance and a rounding
+/// error for velocity, and it silently overwrote any deliberately small covariance
+/// (freezing a state by giving it a 1e-12 variance did nothing). See #266.
+const ESKF_COVARIANCE_JITTER_RELATIVE: f64 = 1e-9;
+
 impl ErrorStateKalmanFilter {
     /// Create a new Error-State Kalman Filter
     ///
@@ -1286,6 +1297,23 @@ impl ErrorStateKalmanFilter {
         }
     }
 
+    /// Regularise the error covariance after a predict or update.
+    ///
+    /// Symmetrises, then adds a jitter proportional to each state's own variance
+    /// rather than a single absolute value shared across states whose units differ
+    /// by twelve orders of magnitude. The process-noise diagonal supplies a
+    /// per-state floor so a state whose variance has collapsed to zero still gets a
+    /// jitter in its own units.
+    fn regularize_covariance(&mut self) {
+        self.error_covariance = symmetrize(&self.error_covariance);
+        for i in 0..15 {
+            let scale = self.error_covariance[(i, i)]
+                .abs()
+                .max(self.process_noise[(i, i)].abs());
+            self.error_covariance[(i, i)] += ESKF_COVARIANCE_JITTER_RELATIVE * scale;
+        }
+    }
+
     /// Inject error state into nominal state and reset error state to zero
     ///
     /// This is the key operation that distinguishes ESKF from full-state EKF.
@@ -1310,12 +1338,22 @@ impl ErrorStateKalmanFilter {
     ///
     /// The error state is then reset: $\delta x \leftarrow 0$
     fn inject_error_state(&mut self) {
-        // Position error injection (convert error in meters to lat/lon in radians)
-        let lat_deg = self.nominal_latitude.to_degrees();
-        let (r_n, r_e, _r_p) = crate::earth::principal_radii(&lat_deg, &self.nominal_altitude);
-
-        self.nominal_latitude += self.error_state[0] / r_n;
-        self.nominal_longitude += self.error_state[1] / (r_e * self.nominal_latitude.cos());
+        // Position error injection.
+        //
+        // delta_p is carried in the SAME units the error-state transition Jacobian and
+        // the measurement Jacobians use: radians for latitude/longitude, metres for
+        // altitude. `error_state_transition_jacobian` sets f[(0,3)] = dt / r_n, which
+        // converts a velocity error in m/s into a *radian* position-error rate, and the
+        // GPS position Jacobian is the identity against a radian-valued measurement
+        // (see `measurements::GPSPositionMeasurement::get_measurement`). So the
+        // correction is applied directly, with no metres-to-radians conversion.
+        //
+        // Dividing by the principal radii here (as this did before) rescaled the
+        // horizontal correction by ~1/6.4e6, leaving the horizontal channel effectively
+        // open loop: the lat/lon innovation never nulled, and the filter drove the
+        // residual into velocity, tilt and accelerometer bias instead. See #266.
+        self.nominal_latitude += self.error_state[0];
+        self.nominal_longitude += self.error_state[1];
         self.nominal_altitude += self.error_state[2];
 
         // Velocity error injection
@@ -1475,14 +1513,7 @@ impl NavigationFilter for ErrorStateKalmanFilter {
         self.error_covariance =
             &f_error * &self.error_covariance * f_error.transpose() + &self.process_noise;
 
-        // Ensure covariance remains symmetric and positive semi-definite
-        self.error_covariance = symmetrize(&self.error_covariance);
-
-        // Add small regularization to prevent numerical issues
-        let eps = 1e-9;
-        for i in 0..15 {
-            self.error_covariance[(i, i)] += eps;
-        }
+        self.regularize_covariance();
     }
 
     /// Update step: compute error state correction and inject into nominal state
@@ -1578,14 +1609,7 @@ impl NavigationFilter for ErrorStateKalmanFilter {
         self.error_covariance =
             &i_kh * &self.error_covariance * i_kh.transpose() + &k * r * k.transpose();
 
-        // Ensure covariance remains symmetric and positive semi-definite
-        self.error_covariance = symmetrize(&self.error_covariance);
-
-        // Add small regularization
-        let eps = 1e-9;
-        for i in 0..15 {
-            self.error_covariance[(i, i)] += eps;
-        }
+        self.regularize_covariance();
     }
 
     /// Get the current nominal state estimate
@@ -3093,6 +3117,119 @@ mod tests {
     }
 
     // ==================== Error-State Kalman Filter Tests ====================
+
+    /// #266: the position rows of the ESKF error state are radians, not metres.
+    ///
+    /// `error_state_transition_jacobian` produces a radian position-error rate
+    /// (`f[(0,3)] = dt / r_n`) and the GPS position Jacobian is the identity against a
+    /// radian-valued measurement, so the injection must add the correction directly.
+    /// Dividing by the principal radii here rescaled every horizontal correction by
+    /// ~1/6.4e6 and left the horizontal channel effectively open loop.
+    #[test]
+    fn eskf_position_error_injection_is_in_radians() {
+        let mut eskf = ErrorStateKalmanFilter::new(
+            UKF_PARAMS,
+            IMU_BIASES.to_vec(),
+            COVARIANCE_DIAGONAL.to_vec(),
+            DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
+        );
+        // Put the filter somewhere with a non-trivial cos(latitude) so a stray
+        // 1/(r_e cos(lat)) factor cannot coincidentally cancel.
+        eskf.nominal_latitude = 45.0_f64.to_radians();
+        eskf.nominal_longitude = (-122.0_f64).to_radians();
+        eskf.nominal_altitude = 100.0;
+
+        let lat0 = eskf.nominal_latitude;
+        let lon0 = eskf.nominal_longitude;
+        let alt0 = eskf.nominal_altitude;
+
+        let d_lat = 1.0e-6; // radians (~6.4 m)
+        let d_lon = 2.0e-6; // radians
+        let d_alt = 3.0; // metres
+        eskf.error_state[0] = d_lat;
+        eskf.error_state[1] = d_lon;
+        eskf.error_state[2] = d_alt;
+
+        eskf.inject_error_state();
+
+        // Tolerance is bounded by double-precision cancellation at ~0.8 rad
+        // (eps * 0.8 ~ 1.7e-16), not by the arithmetic under test.
+        assert_approx_eq!(eskf.nominal_latitude - lat0, d_lat, 1e-15);
+        assert_approx_eq!(eskf.nominal_longitude - lon0, d_lon, 1e-15);
+        assert_approx_eq!(eskf.nominal_altitude - alt0, d_alt, 1e-12);
+
+        // The specific regression: treating delta_p as metres would divide by the
+        // principal radii, making the applied correction ~6.4e6 times too small.
+        assert!(
+            (eskf.nominal_latitude - lat0) > d_lat * 0.5,
+            "latitude correction was rescaled -- delta_p is being treated as metres (#266)"
+        );
+    }
+
+    /// #266: a filter whose tests pass by exact floating-point bit pattern is not
+    /// tested. Perturbing an input by ~1e-12 relative must not change the answer by a
+    /// physically meaningful amount.
+    ///
+    /// Before the fix, a 1e-14 perturbation grew ~1% per sample and reached 1.5e8 m of
+    /// altitude over a 5,366-sample run.
+    #[test]
+    fn eskf_is_insensitive_to_tiny_input_perturbation() {
+        fn run(perturb: f64) -> DVector<f64> {
+            let mut eskf = ErrorStateKalmanFilter::new(
+                UKF_PARAMS,
+                IMU_BIASES.to_vec(),
+                vec![1e-12; 15],
+                DMatrix::from_diagonal(&DVector::from_vec(vec![1e-12; 15])),
+            );
+            let dt = 0.01;
+            for step in 0..2000 {
+                // Gentle, non-degenerate motion so the attitude is never identity.
+                let t = f64::from(step) * dt;
+                let imu = IMUData {
+                    accel: Vector3::new(0.05 * t.cos() * (1.0 + perturb), -0.03 * t.sin(), 9.81),
+                    gyro: Vector3::new(0.001, -0.002, 0.01),
+                };
+                eskf.predict(&imu, dt);
+
+                if step % 25 == 0 {
+                    let meas = crate::measurements::GPSPositionMeasurement {
+                        latitude: 0.0,
+                        longitude: 0.0,
+                        altitude: 0.0,
+                        horizontal_noise_std: 3.0,
+                        vertical_noise_std: 5.0,
+                    };
+                    eskf.update(&meas);
+                }
+            }
+            eskf.get_estimate()
+        }
+
+        let baseline = run(0.0);
+        let perturbed = run(1e-12);
+
+        for i in 0..15 {
+            assert!(
+                baseline[i].is_finite() && perturbed[i].is_finite(),
+                "state {i} is not finite"
+            );
+        }
+
+        // Altitude is the channel that ran away. A 1e-12 relative input change must
+        // not move it by even a millimetre.
+        let d_alt = (baseline[2] - perturbed[2]).abs();
+        assert!(
+            d_alt < 1e-3,
+            "altitude moved {d_alt:e} m from a 1e-12 relative input perturbation -- \
+             the filter is amplifying rounding noise (#266)"
+        );
+
+        let d_vel = (baseline[5] - perturbed[5]).abs();
+        assert!(
+            d_vel < 1e-4,
+            "vertical velocity moved {d_vel:e} m/s from a 1e-12 relative perturbation (#266)"
+        );
+    }
 
     #[test]
     fn eskf_construction() {

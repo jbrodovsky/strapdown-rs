@@ -383,13 +383,27 @@ pub fn error_state_transition_jacobian(
     // The main effect is self-coupling which is captured by identity matrix
 
     // ∂(δv̇)/∂(δθ): Velocity error depends on attitude error (most important coupling!)
-    // δv̇^n = -[C_b^n f^b]_× δθ
-    // where [a]_× is the skew-symmetric matrix of vector a
-    let f_n = c_bn * imu_accel; // Transform measured acceleration to nav frame
-    let f_skew = vector_to_skew_symmetric(&f_n);
+    //
+    // The error state uses the LOCAL (body-frame) attitude-error convention:
+    //     C_b^n(true) = C_b^n(nominal) · (I + [δθ]_×)
+    // which is what the rest of this matrix and the ESKF's injection already assume --
+    // attitude propagation below uses -[ω^b]_× and the gyro-bias coupling is the bare
+    // identity, both of which are only correct for a body-frame error, and
+    // `ErrorStateKalmanFilter::inject_error_state` right-multiplies q_nom ⊗ δq.
+    //
+    // Under that convention:
+    //     δf^n = C_b^n [δθ]_× f^b = -C_b^n [f^b]_× δθ
+    // so the block is -C_b^n [f^b]_× dt.
+    //
+    // This previously read -[C_b^n f^b]_× dt, which is the GLOBAL (nav-frame) form and
+    // differs from the local one by a rotation. Mixing the two inside a single F rotated
+    // the tilt-to-velocity feedback onto the wrong axes whenever heading was non-zero.
+    // See #266.
+    let accel_skew_body = vector_to_skew_symmetric(imu_accel);
+    let velocity_attitude_block = -(c_bn * accel_skew_body) * dt;
     for i in 0..3 {
         for j in 0..3 {
-            f[(3 + i, 6 + j)] = -f_skew[(i, j)] * dt;
+            f[(3 + i, 6 + j)] = velocity_attitude_block[(i, j)];
         }
     }
 
@@ -1050,6 +1064,144 @@ mod tests {
     use super::*;
     use assert_approx_eq::assert_approx_eq;
     use nalgebra::Rotation3;
+
+    /// Finite-difference check of the error-state Jacobian's attitude convention.
+    ///
+    /// This is the test whose absence let #266 ship. The existing
+    /// `numerical_state_jacobian` helper covers the *full-state* Jacobian; nothing
+    /// checked that `error_state_transition_jacobian` uses one consistent
+    /// attitude-error convention throughout.
+    ///
+    /// The error state uses the LOCAL (body-frame) convention:
+    ///     C_b^n(true) = C_b^n(nominal) · (I + [δθ]_×)
+    /// so perturbing the nominal attitude on the right by a small rotation δθ and
+    /// propagating must reproduce the velocity change that F's δv/δθ block predicts.
+    ///
+    /// A non-identity `C_b^n` is essential: the local and global conventions differ
+    /// by exactly that rotation, so with identity attitude both forms agree and the
+    /// bug is invisible. Hence the deliberately non-trivial roll/pitch/yaw below.
+    #[test]
+    fn test_error_state_jacobian_velocity_attitude_block_is_body_frame() {
+        let dt = 0.01;
+        // Deliberately non-identity attitude -- see doc comment.
+        let attitude = Rotation3::from_euler_angles(0.3, -0.2, 1.1);
+        let state = StrapdownState::new(
+            45.0_f64.to_radians(),
+            -122.0_f64.to_radians(),
+            100.0,
+            10.0,
+            5.0,
+            0.5,
+            attitude,
+            false,
+            Some(true),
+        );
+        // Specific force with all three components non-zero so every column matters.
+        let accel = Vector3::new(0.7, -1.3, 9.81);
+        let gyro = Vector3::new(0.02, -0.01, 0.03);
+
+        let f_error = error_state_transition_jacobian(&state, &accel, &gyro, dt);
+
+        // Analytic block: F[3..6, 6..9]
+        let mut analytic = nalgebra::Matrix3::zeros();
+        for i in 0..3 {
+            for j in 0..3 {
+                analytic[(i, j)] = f_error[(3 + i, 6 + j)];
+            }
+        }
+
+        // Numerical block: perturb attitude on the RIGHT (body frame), propagate,
+        // and difference the resulting velocity.
+        let eps = 1e-7;
+        let mut numerical = nalgebra::Matrix3::zeros();
+        for j in 0..3 {
+            let mut axis = Vector3::zeros();
+            axis[j] = eps;
+
+            let mut plus = state;
+            plus.attitude = state.attitude * Rotation3::from_scaled_axis(axis);
+            let mut minus = state;
+            minus.attitude = state.attitude * Rotation3::from_scaled_axis(-axis);
+
+            let imu = crate::IMUData { accel, gyro };
+            crate::forward(&mut plus, imu, dt);
+            crate::forward(&mut minus, imu, dt);
+
+            numerical[(0, j)] = (plus.velocity_north - minus.velocity_north) / (2.0 * eps);
+            numerical[(1, j)] = (plus.velocity_east - minus.velocity_east) / (2.0 * eps);
+            numerical[(2, j)] = (plus.velocity_vertical - minus.velocity_vertical) / (2.0 * eps);
+        }
+
+        // Relative tolerance: `forward` integrates velocity trapezoidally, so the
+        // finite difference carries an O(dt) discretisation residual that a fixed
+        // absolute epsilon would either reject or make meaningless. 1e-3 relative sits
+        // far below the O(1) relative gap between the two attitude-error conventions
+        // and far above the discretisation residual (~3e-5 relative here).
+        let scale = analytic.abs().max().max(1e-12);
+        for i in 0..3 {
+            for j in 0..3 {
+                let err = (analytic[(i, j)] - numerical[(i, j)]).abs() / scale;
+                assert!(
+                    err < 1e-3,
+                    "F[{},{}] disagrees with finite differences: analytic={:e} numerical={:e} rel_err={:e}",
+                    3 + i,
+                    6 + j,
+                    analytic[(i, j)],
+                    numerical[(i, j)],
+                    err
+                );
+            }
+        }
+
+        // Guard the specific regression: the previous code used the GLOBAL
+        // (nav-frame) form -[C_b^n f^b]_× dt. Assert we are measurably far from it,
+        // so a revert cannot pass this test.
+        let global_form = -vector_to_skew_symmetric(&(state.attitude.matrix() * accel)) * dt;
+        let gap = (analytic - global_form).abs().max() / scale;
+        assert!(
+            gap > 1e-2,
+            "F's velocity/attitude block matches the global convention (gap {:e}); \
+             the local (body-frame) form -C_b^n [f^b]_x dt is required -- see #266",
+            gap
+        );
+    }
+
+    /// The position rows of the error-state Jacobian must be in radians, matching
+    /// both the measurement Jacobians and `apply_eskf_correction`.
+    ///
+    /// #266: the ESKF's `inject_error_state` treated these as metres and divided by
+    /// the principal radii, rescaling every horizontal correction by ~1/6.4e6.
+    #[test]
+    fn test_error_state_jacobian_position_rows_are_radians() {
+        let dt = 0.5;
+        let state = StrapdownState::new(
+            45.0_f64.to_radians(),
+            -122.0_f64.to_radians(),
+            100.0,
+            0.0,
+            0.0,
+            0.0,
+            Rotation3::identity(),
+            false,
+            Some(true),
+        );
+        let f = error_state_transition_jacobian(&state, &Vector3::zeros(), &Vector3::zeros(), dt);
+
+        let (r_n, r_e, _) =
+            crate::earth::principal_radii(&state.latitude.to_degrees(), &state.altitude);
+
+        // A 1 m/s north velocity error must produce dt / r_n radians of latitude
+        // error, i.e. a number of order 1e-7 -- not order 1.
+        assert_approx_eq!(f[(0, 3)], dt / r_n, 1e-15);
+        assert_approx_eq!(f[(1, 4)], dt / (r_e * state.latitude.cos()), 1e-15);
+        assert!(
+            f[(0, 3)] < 1e-6,
+            "latitude row must be radians per m/s (got {}); a value near dt means metres crept back in",
+            f[(0, 3)]
+        );
+        // Altitude stays in metres.
+        assert_approx_eq!(f[(2, 5)], dt, 1e-15);
+    }
 
     /// Compute numerical Jacobian using finite differences for state transition
     fn numerical_state_jacobian(
