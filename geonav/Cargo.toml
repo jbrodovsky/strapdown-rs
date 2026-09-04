@@ -1,24 +1,33 @@
 [package]
 name = "strapdown-geonav"
-version = "0.1.0"
-edition = "2024"
+description = "Experimental geophysical anomaly navigation (gravity and magnetic map aiding) for strapdown inertial navigation systems."
+readme = "README.md"
+keywords = ["navigation", "geophysical", "gravity", "magnetic", "anomaly"]
+documentation = "https://docs.rs/strapdown-geonav/"
 
+# Experimental crate: published alongside the v1.0 release but deliberately
+# held at 0.x so its API can change without forcing a major bump on the
+# workspace. Do not inherit the workspace version here.
+version = "0.1.0"
+
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
 
 [dependencies]
-nalgebra = "*" #{ workspace = true }
-rand = "*" #{ workspace = true }
-rand_distr = "*"
-csv = "*" # { workspace = true }
-strapdown-core = { path = "../core", features = ["clap"], version = "0.5.0"}
-statrs = "0.18.0"
-netcdf = "0.12.0"
-world_magnetic_model = "0.4.0"
-chrono = "0.4.42"
-clap = { version = "4.0", features = ["derive"] }
-anyhow = "1.0.100"
-assert_approx_eq = "1.1.0"
-log = "0.4"
-env_logger = "0.11"
+strapdown-core = { path = "../core", version = "1.0.0" }
+nalgebra.workspace = true
+chrono.workspace = true
+netcdf.workspace = true
+world_magnetic_model.workspace = true
+anyhow.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+assert_approx_eq.workspace = true
 
 [lib]
 name = "geonav"

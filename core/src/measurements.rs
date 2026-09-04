@@ -5,6 +5,7 @@
 //! altitude, and magnetometer-based yaw measurements. These models are used in
 //! inertial navigation systems to process sensor data.
 
+use crate::StrapdownState;
 use crate::earth::METERS_TO_DEGREES;
 
 use std::any::Any;
@@ -18,6 +19,29 @@ use world_magnetic_model::uom::si::f32::{Angle, Length};
 use world_magnetic_model::uom::si::length::meter;
 
 pub const MAG_YAW_NOISE: f64 = 0.2; // radians
+
+/// Build a [`StrapdownState`] from a 9-element state vector without range validation.
+///
+/// Measurement Jacobians are evaluated on whatever the filter's current estimate
+/// happens to be, including estimates that have wandered outside the range the
+/// mechanization is valid over. Constructing through `StrapdownState::new` would
+/// assert in that situation, turning a filter-quality problem into a panic inside
+/// the update step. Linearization itself is well defined for any finite state, so
+/// build the value directly and leave range enforcement to state construction from
+/// user input.
+fn jacobian_state(state: &DVector<f64>) -> StrapdownState {
+    StrapdownState {
+        latitude: state[0],
+        longitude: state[1],
+        altitude: state[2],
+        velocity_north: state[3],
+        velocity_east: state[4],
+        velocity_vertical: state[5],
+        attitude: Rotation3::from_euler_angles(state[6], state[7], state[8]),
+        is_enu: false,
+    }
+}
+
 
 /// Generic measurement model trait for all types of measurements.
 ///
@@ -170,8 +194,7 @@ impl MeasurementModel for GPSPositionMeasurement {
     }
 
     fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64> {
-        // Convert state slice to StrapdownState for linearize function
-        let nav_state = crate::StrapdownState::try_from(&state.as_slice()[..9]).unwrap();
+        let nav_state = jacobian_state(state);
         crate::linearize::gps_position_jacobian(&nav_state)
     }
 }
@@ -227,8 +250,7 @@ impl MeasurementModel for GPSVelocityMeasurement {
     }
 
     fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64> {
-        // Convert state slice to StrapdownState for linearize function
-        let nav_state = crate::StrapdownState::try_from(&state.as_slice()[..9]).unwrap();
+        let nav_state = jacobian_state(state);
         crate::linearize::gps_velocity_jacobian(&nav_state)
     }
 }
@@ -282,8 +304,7 @@ impl MeasurementModel for GPSPositionAndVelocityMeasurement {
     }
 
     fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64> {
-        // Convert state slice to StrapdownState for linearize function
-        let nav_state = crate::StrapdownState::try_from(&state.as_slice()[..9]).unwrap();
+        let nav_state = jacobian_state(state);
         crate::linearize::gps_position_velocity_jacobian(&nav_state)
     }
     //fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
@@ -336,8 +357,7 @@ impl MeasurementModel for RelativeAltitudeMeasurement {
     }
 
     fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64> {
-        // Convert state slice to StrapdownState for linearize function
-        let nav_state = crate::StrapdownState::try_from(&state.as_slice()[..9]).unwrap();
+        let nav_state = jacobian_state(state);
         crate::linearize::relative_altitude_jacobian(&nav_state)
     }
     // fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
@@ -555,8 +575,7 @@ impl MeasurementModel for MagnetometerYawMeasurement {
     }
 
     fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64> {
-        // Convert state slice to StrapdownState for linearize function
-        let nav_state = crate::StrapdownState::try_from(&state.as_slice()[..9]).unwrap();
+        let nav_state = jacobian_state(state);
         crate::linearize::magnetometer_yaw_jacobian(&nav_state, self.mag_x, self.mag_y, self.mag_z)
     }
 }

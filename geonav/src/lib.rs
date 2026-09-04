@@ -27,8 +27,8 @@ use std::fmt::{Debug, Display};
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use anyhow::{Result, bail};
-use chrono::{DateTime, Datelike, Duration, Utc};
+use anyhow::Result;
+use chrono::Datelike;
 use log::debug;
 use nalgebra::{DMatrix, DVector, Vector3};
 use world_magnetic_model::GeomagneticField;
@@ -38,17 +38,14 @@ use world_magnetic_model::uom::si::f32::{Angle, Length};
 use world_magnetic_model::uom::si::length::meter;
 
 use strapdown::earth::gravity_anomaly;
-use strapdown::kalman::UnscentedKalmanFilter;
 use strapdown::measurements::{
     GPSPositionAndVelocityMeasurement, MeasurementModel, RelativeAltitudeMeasurement,
 };
 use strapdown::messages::{
     Event, EventStream, FaultState, GnssDegradationConfig, GnssScheduler, apply_fault,
 };
-use strapdown::rbpf::RaoBlackwellizedParticleFilter;
-use strapdown::sim::health::{HealthLimits, HealthMonitor};
-use strapdown::sim::{NavigationResult, TestDataRecord};
-use strapdown::{IMUData, NavigationFilter, StrapdownState};
+use strapdown::sim::TestDataRecord;
+use strapdown::{IMUData, StrapdownState};
 
 /// Conversion factor from radians to degrees (180/π)
 const RAD_TO_DEG: f64 = 180.0 / std::f64::consts::PI;
@@ -1136,346 +1133,16 @@ pub fn build_event_stream(
     }
     EventStream { start_time, events }
 }
-/// Closed-loop GPS-aided inertial navigation simulation.
-///
-/// This function simulates a closed-loop full-state navigation system where GPS measurements are used
-/// to correct the inertial navigation solution. It implements an Unscented Kalman Filter (UKF) to propagate
-/// the state and update it with GPS measurements when available.
-///
-/// # Arguments
-/// * `records` - Vector of test data records containing IMU measurements and GPS data.
-/// # Returns
-/// * `Vec<NavigationResult>` - A vector of navigation results containing the state estimates and covariances at each timestamp.
-pub fn geo_closed_loop_ukf(
-    ukf: &mut UnscentedKalmanFilter,
-    stream: EventStream,
-) -> anyhow::Result<Vec<NavigationResult>> {
-    let start_time = stream.start_time;
-    let mut results: Vec<NavigationResult> = Vec::with_capacity(stream.events.len());
-    let total = stream.events.len();
-    let mut last_ts: Option<DateTime<Utc>> = None;
-    let mut monitor = HealthMonitor::new(HealthLimits::default());
-
-    for (i, event) in stream.events.into_iter().enumerate() {
-        // Print progress every 10 iterations
-        if i % 10 == 0 || i == total {
-            print!(
-                "\rProcessing data {:.2}%...",
-                (i as f64 / total as f64) * 100.0
-            );
-            //print_ukf(&ukf, record);
-            use std::io::Write;
-            std::io::stdout().flush().ok();
-        }
-        // Compute wall-clock time for this event
-        let elapsed_s = match &event {
-            Event::Imu { elapsed_s, .. } => *elapsed_s,
-            Event::Measurement { elapsed_s, .. } => *elapsed_s,
-        };
-        let ts = start_time + Duration::milliseconds((elapsed_s * 1000.0).round() as i64);
-        // Apply event
-        match event {
-            Event::Imu { dt_s, imu, .. } => {
-                ukf.predict(&imu, dt_s);
-                if let Err(e) =
-                    monitor.check(ukf.get_estimate().as_slice(), &ukf.get_certainty(), None)
-                {
-                    // log::error!("Health fail after predict at {} (#{i}): {e}", ts);
-                    bail!(e);
-                }
-            }
-            Event::Measurement { mut meas, .. } => {
-                // Here we will need to sort out the measurement type
-                // GPS measurements are handled by existing logic
-                // GeophysicalMeasurements need to relate the measured vector/scalar
-                // to the current state (lat, lon, alt) and the map
-                if let Some(combined) = meas
-                    .as_any_mut()
-                    .downcast_mut::<CombinedGeophysicalMeasurement>()
-                {
-                    let mean_vec = ukf.get_estimate();
-                    let strapdown: StrapdownState = (&mean_vec.as_slice()[..9]).try_into().unwrap();
-                    combined.set_state(&strapdown);
-                    ukf.update(combined);
-                } else if let Some(gravity) = meas.as_any_mut().downcast_mut::<GravityMeasurement>()
-                {
-                    let mean_vec = ukf.get_estimate();
-                    let strapdown: StrapdownState = (&mean_vec.as_slice()[..9]).try_into().unwrap();
-                    gravity.set_state(&strapdown);
-                    ukf.update(gravity);
-                } else if let Some(magnetic) = meas
-                    .as_any_mut()
-                    .downcast_mut::<MagneticAnomalyMeasurement>()
-                {
-                    let mean_vec = ukf.get_estimate();
-                    let strapdown: StrapdownState = (&mean_vec.as_slice()[..9]).try_into().unwrap();
-                    magnetic.set_state(&strapdown);
-                    ukf.update(magnetic);
-                } else {
-                    // Handle other built-in core measurement types (e.g., GPS, baro, etc.)
-                    ukf.update(meas.as_ref());
-                }
-                if let Err(e) =
-                    monitor.check(ukf.get_estimate().as_slice(), &ukf.get_certainty(), None)
-                {
-                    bail!(e);
-                }
-                // Health check after measurement update
-                if let Err(e) =
-                    monitor.check(ukf.get_estimate().as_slice(), &ukf.get_certainty(), None)
-                {
-                    // log::error!("Health fail after measurement update at {} (#{i}): {e}", ts);
-                    bail!(e);
-                }
-            }
-        }
-        // If timestamp changed, or it's the last event, record the previous state
-        if Some(ts) != last_ts {
-            if let Some(prev_ts) = last_ts {
-                results.push(NavigationResult::from((&prev_ts, &*ukf)));
-            }
-            last_ts = Some(ts);
-        }
-        // If this is the last event, also push
-        if i == total - 1 {
-            results.push(NavigationResult::from((&ts, &*ukf)));
-        }
-    }
-    debug!("Geophysical navigation simulation complete");
-    Ok(results)
-}
-
-/// Closed-loop geophysical navigation simulation using Extended Kalman Filter (EKF)
-///
-/// This function simulates a closed-loop full-state navigation system using an EKF
-/// to incorporate geophysical measurements (gravity/magnetic anomalies) along with
-/// GNSS measurements for improved navigation accuracy.
-///
-/// # Arguments
-///
-/// * `ekf` - Mutable reference to an ExtendedKalmanFilter instance
-/// * `stream` - Event stream containing IMU, GNSS, and geophysical measurements
-///
-/// # Returns
-///
-/// * `Result<Vec<NavigationResult>>` - Navigation solution history or error
-///
-/// # Example
-///
-/// ```ignore
-/// use strapdown::kalman::{ExtendedKalmanFilter, InitialState};
-/// use geonav::{build_event_stream, geo_closed_loop_ekf};
-///
-/// let mut ekf = ExtendedKalmanFilter::new(initial_state, biases, cov_diag, process_noise, true);
-/// let stream = build_event_stream(&records, &config, Some(geomap), Some(100.0), None, None, None);
-/// let results = geo_closed_loop_ekf(&mut ekf, stream)?;
-/// ```
-pub fn geo_closed_loop_ekf(
-    ekf: &mut strapdown::kalman::ExtendedKalmanFilter,
-    stream: EventStream,
-) -> anyhow::Result<Vec<NavigationResult>> {
-    let start_time = stream.start_time;
-    let mut results: Vec<NavigationResult> = Vec::with_capacity(stream.events.len());
-    let total = stream.events.len();
-    let mut last_ts: Option<DateTime<Utc>> = None;
-    let mut monitor = HealthMonitor::new(HealthLimits::default());
-
-    for (i, event) in stream.events.into_iter().enumerate() {
-        // Print progress every 10 iterations
-        if i % 10 == 0 || i == total {
-            print!(
-                "\rProcessing data {:.2}%...",
-                (i as f64 / total as f64) * 100.0
-            );
-            use std::io::Write;
-            std::io::stdout().flush().ok();
-        }
-
-        // Compute wall-clock time for this event
-        let elapsed_s = match &event {
-            Event::Imu { elapsed_s, .. } => *elapsed_s,
-            Event::Measurement { elapsed_s, .. } => *elapsed_s,
-        };
-        let ts = start_time + Duration::milliseconds((elapsed_s * 1000.0).round() as i64);
-
-        // Apply event
-        match event {
-            Event::Imu { dt_s, imu, .. } => {
-                ekf.predict(&imu, dt_s);
-                if let Err(e) =
-                    monitor.check(ekf.get_estimate().as_slice(), &ekf.get_certainty(), None)
-                {
-                    bail!(e);
-                }
-            }
-            Event::Measurement { mut meas, .. } => {
-                // Handle geophysical measurements with custom EKF update logic
-                if let Some(combined) = meas
-                    .as_any_mut()
-                    .downcast_mut::<CombinedGeophysicalMeasurement>()
-                {
-                    let mean_vec = ekf.get_estimate();
-                    let strapdown: StrapdownState = (&mean_vec.as_slice()[..9]).try_into().unwrap();
-                    combined.set_state(&strapdown);
-                    ekf_update_geophysical(ekf, combined);
-                } else if let Some(gravity) = meas.as_any_mut().downcast_mut::<GravityMeasurement>()
-                {
-                    let mean_vec = ekf.get_estimate();
-                    let strapdown: StrapdownState = (&mean_vec.as_slice()[..9]).try_into().unwrap();
-                    gravity.set_state(&strapdown);
-                    ekf_update_geophysical(ekf, gravity);
-                } else if let Some(magnetic) = meas
-                    .as_any_mut()
-                    .downcast_mut::<MagneticAnomalyMeasurement>()
-                {
-                    let mean_vec = ekf.get_estimate();
-                    let strapdown: StrapdownState = (&mean_vec.as_slice()[..9]).try_into().unwrap();
-                    magnetic.set_state(&strapdown);
-                    ekf_update_geophysical(ekf, magnetic);
-                } else {
-                    // Handle standard measurements (GPS, baro, etc.)
-                    ekf.update(meas.as_ref());
-                }
-
-                // Health check after measurement update
-                if let Err(e) =
-                    monitor.check(ekf.get_estimate().as_slice(), &ekf.get_certainty(), None)
-                {
-                    bail!(e);
-                }
-            }
-        }
-
-        // If timestamp changed, or it's the last event, record the previous state
-        if Some(ts) != last_ts {
-            if let Some(prev_ts) = last_ts {
-                results.push(NavigationResult::from((&prev_ts, &*ekf)));
-            }
-            last_ts = Some(ts);
-        }
-
-        // If this is the last event, also push
-        if i == total - 1 {
-            results.push(NavigationResult::from((&ts, &*ekf)));
-        }
-    }
-
-    debug!("EKF geophysical navigation simulation complete");
-    Ok(results)
-}
-
-/// Helper function to perform EKF update with geophysical measurements
-///
-/// This function handles the measurement update for geophysical anomaly measurements.
-/// Currently uses the standard EKF update method. Future enhancements could pass custom
-/// Jacobians directly to the EKF for improved efficiency.
-fn ekf_update_geophysical(
-    ekf: &mut strapdown::kalman::ExtendedKalmanFilter,
-    measurement: &dyn GeophysicalAnomalyMeasurementModel,
-) {
-    // For now, we use the standard EKF update which computes Jacobians internally
-    // The Jacobian computation methods are available in the measurement models via get_jacobian()
-    // A future enhancement could modify the EKF to accept precomputed custom Jacobians
-    ekf.update(measurement as &dyn MeasurementModel);
-}
-
-/// Closed-loop geophysical navigation simulation using a Rao-Blackwellized Particle Filter.
-///
-/// This function processes an event stream containing IMU, GNSS, and geophysical anomaly
-/// measurements through an RBPF. Geophysical measurements (gravity, magnetic, or combined)
-/// are handled by setting the current state estimate on each measurement model before the
-/// filter update, enabling state-dependent anomaly calculations.
-///
-/// # Arguments
-/// * `rbpf` - Mutable reference to an initialized RBPF
-/// * `stream` - Event stream containing IMU and measurement events
-///
-/// # Returns
-/// Navigation results at each distinct timestamp, or an error if health checks fail
-pub fn geo_closed_loop_rbpf(
-    rbpf: &mut RaoBlackwellizedParticleFilter,
-    stream: EventStream,
-) -> anyhow::Result<Vec<NavigationResult>> {
-    let start_time = stream.start_time;
-    let mut results: Vec<NavigationResult> = Vec::with_capacity(stream.events.len());
-    let total = stream.events.len();
-    let mut last_ts: Option<DateTime<Utc>> = None;
-    let mut monitor = HealthMonitor::new(HealthLimits::default());
-
-    // Store the initial state
-    let (mean, cov) = rbpf.estimate();
-    results.push(NavigationResult::from_particle_filter(
-        &start_time,
-        &mean,
-        &cov,
-    ));
-
-    for (i, event) in stream.events.into_iter().enumerate() {
-        if i % 10 == 0 || i == total {
-            print!(
-                "\rProcessing data {:.2}%...",
-                (i as f64 / total as f64) * 100.0
-            );
-            use std::io::Write;
-            std::io::stdout().flush().ok();
-        }
-
-        let elapsed_s = match &event {
-            Event::Imu { elapsed_s, .. } => *elapsed_s,
-            Event::Measurement { elapsed_s, .. } => *elapsed_s,
-        };
-        let ts = start_time + Duration::milliseconds((elapsed_s * 1000.0).round() as i64);
-
-        match event {
-            Event::Imu { dt_s, imu, .. } => {
-                rbpf.predict(&imu, dt_s);
-            }
-            Event::Measurement { mut meas, .. } => {
-                // Set current state on geophysical measurements before update
-                let (est, _) = rbpf.estimate();
-                let strapdown: StrapdownState = est.as_slice().try_into().unwrap();
-
-                if let Some(combined) = meas
-                    .as_any_mut()
-                    .downcast_mut::<CombinedGeophysicalMeasurement>()
-                {
-                    combined.set_state(&strapdown);
-                } else if let Some(gravity) = meas.as_any_mut().downcast_mut::<GravityMeasurement>()
-                {
-                    gravity.set_state(&strapdown);
-                } else if let Some(magnetic) = meas
-                    .as_any_mut()
-                    .downcast_mut::<MagneticAnomalyMeasurement>()
-                {
-                    magnetic.set_state(&strapdown);
-                }
-
-                rbpf.update(meas.as_ref());
-            }
-        }
-
-        let (mean, cov) = rbpf.estimate();
-        if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
-            bail!(e);
-        }
-
-        if Some(ts) != last_ts {
-            if let Some(prev_ts) = last_ts {
-                let (prev_mean, prev_cov) = rbpf.estimate();
-                results.push(NavigationResult::from_particle_filter(
-                    &prev_ts, &prev_mean, &prev_cov,
-                ));
-            }
-            last_ts = Some(ts);
-        }
-
-        if i == total - 1 {
-            results.push(NavigationResult::from_particle_filter(&ts, &mean, &cov));
-        }
-    }
-    debug!("RBPF geophysical navigation simulation complete");
-    Ok(results)
-}
+// NOTE: `geo_closed_loop_ukf`, `geo_closed_loop_ekf` and `geo_closed_loop_rbpf` were
+// removed in favour of `strapdown::sim::run_closed_loop`.
+//
+// They existed only to call `GeophysicalAnomalyMeasurementModel::set_state` before each
+// filter update and to route EKF updates through a pass-through helper. Neither is needed:
+// `get_measurement`, `get_expected_measurement` and `get_jacobian` all read the state vector
+// the filter passes in, and the EKF already sources its Jacobian from the measurement model.
+//
+// Using the shared driver also brings geophysical runs configurable health and execution
+// limits, structured logging, and the same result-recording behaviour as every other filter.
 
 #[cfg(test)]
 mod tests {

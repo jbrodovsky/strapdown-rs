@@ -1,18 +1,21 @@
 [package]
 name = "strapdown-core"
-authors = ["James Brodovsky"]
-version = "0.5.0"
-edition = "2024"
+version = "1.0.0"
 description = "A toolbox for building and analyzing strapdown inertial navigation systems as well as simulating various scenarios of GNSS signal degradation."
-license = "MIT"
 readme = "README.md"
-homepage = "https://www.strapdown.rs"
-repository = "https://github.com/jbrodovsky/strapdown-rs"
 keywords = ["strapdown", "inertial", "navigation", "IMU", "INS"]
-#categories = ["navigation", "robotics", "aerospace", "engineering"]
-documentation = "https://docs.rs/strapdown-rs/"
+categories = ["aerospace", "science", "simulation"]
+documentation = "https://docs.rs/strapdown-core/"
+
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
 
 [package.metadata.docs.rs]
+all-features = true
 rustdoc-args = [ "--html-in-header", "katex-header.html" ]
 
 [lib]
@@ -25,26 +28,27 @@ clap = ["dep:clap"]
 
 [dependencies]
 angle = "0.5.0"
-chrono = {version = "0.4.41", features = ["serde"] }
-csv = "1.3.1"
-nalgebra = ">=0.33.3, <0.35.0"
 nav-types = "0.5.2"
-rand = "0.9.1"
-rand_distr = "0.5.1"
-serde = { version = "1.0.219", features = ["derive"] }
-world_magnetic_model = "0.4.0"
-anyhow = "1.0.99"
 serde_json = "1.0"
 serde_yaml = "0.9"
 toml = "0.7"
-clap = { version = "4.0", features = ["derive"], optional = true }
-log = "0.4"
-hdf5 = { package = "hdf5-metno", version = "0.12" }
-mcap = "0.23"
 memmap2 = "0.9"
 rmp-serde = "1.3"
-netcdf = "0.12.0"
+hdf5 = { package = "hdf5-metno", version = "0.12" }
+mcap = "0.23"
+
+nalgebra.workspace = true
+chrono.workspace = true
+serde.workspace = true
+rand.workspace = true
+rand_distr.workspace = true
+csv.workspace = true
+log.workspace = true
+anyhow.workspace = true
+netcdf.workspace = true
+world_magnetic_model.workspace = true
+clap = { workspace = true, optional = true }
 
 [dev-dependencies]
-assert_approx_eq = "1.1.0"
-tempfile = "3.5"
+assert_approx_eq.workspace = true
+tempfile.workspace = true

@@ -41,8 +41,7 @@ use strapdown::rbpf::{RaoBlackwellizedParticleFilter, RbpfConfig};
 #[cfg(feature = "geonav")]
 use geonav::{
     GeoMap, GeophysicalMeasurementType, GravityResolution, MagneticResolution,
-    build_event_stream as geo_build_event_stream, geo_closed_loop_ekf, geo_closed_loop_rbpf,
-    geo_closed_loop_ukf,
+    build_event_stream as geo_build_event_stream,
 };
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -702,19 +701,9 @@ fn process_file(
                 },
             );
 
-            #[cfg(feature = "geonav")]
-            let results: Result<Vec<NavigationResult>, Box<dyn Error>> =
-                if gravity_map.is_some() || magnetic_map.is_some() {
-                    geo_closed_loop_rbpf(&mut rbpf, event_stream)
-                        .map_err(|e| -> Box<dyn Error> { e.into() })
-                } else {
-                    run_rbpf_event_loop(&mut rbpf, event_stream, &config.execution_limits)
-                };
-
-            #[cfg(not(feature = "geonav"))]
-            let results = run_rbpf_event_loop(&mut rbpf, event_stream, &config.execution_limits);
-
-            let results = results?;
+            // Geophysical measurements ride the same event stream as every other
+            // measurement type, so there is no separate geo path here.
+            let results = run_rbpf_event_loop(&mut rbpf, event_stream, &config.execution_limits)?;
             let output_file = output.join(input_file.file_name().unwrap());
             NavigationResult::to_csv(&results, &output_file)?;
             info!("Results written to {}", output_file.display());
@@ -1402,7 +1391,7 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                 );
 
                 info!("Running UKF geophysical navigation simulation...");
-                geo_closed_loop_ukf(&mut ukf, events)
+                run_closed_loop(&mut ukf, events, None, None)
             }
             FilterType::Ekf => {
                 info!("Initializing EKF...");
@@ -1459,7 +1448,7 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                 );
 
                 info!("Running EKF geophysical navigation simulation...");
-                geo_closed_loop_ekf(&mut ekf, events)
+                run_closed_loop(&mut ekf, events, None, None)
             }
             FilterType::Eskf => {
                 error!("ESKF is not yet implemented for geophysical navigation");
@@ -1501,11 +1490,11 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
     Ok(())
 }
 
-/// Run RBPF event loop for non-geophysical (standard GNSS) measurements.
+/// Run the RBPF event loop.
 ///
-/// This is the default event loop used when geophysical maps are not loaded.
-/// When geophysical navigation is active, `geo_closed_loop_rbpf` from the geonav
-/// crate is used instead.
+/// Handles every measurement type carried by the event stream, geophysical
+/// anomalies included -- the measurement models read the state the filter
+/// passes them, so no separate geophysical loop is required.
 fn run_rbpf_event_loop(
     rbpf: &mut RaoBlackwellizedParticleFilter,
     event_stream: EventStream,
@@ -1709,15 +1698,6 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
 
         let mut rbpf = RaoBlackwellizedParticleFilter::new(nominal, config);
 
-        #[cfg(feature = "geonav")]
-        let results = if args.geo.geo {
-            geo_closed_loop_rbpf(&mut rbpf, event_stream)
-                .map_err(|e| -> Box<dyn Error> { e.into() })?
-        } else {
-            run_rbpf_event_loop(&mut rbpf, event_stream, &execution_limits)?
-        };
-
-        #[cfg(not(feature = "geonav"))]
         let results = run_rbpf_event_loop(&mut rbpf, event_stream, &execution_limits)?;
 
         let output_file = args.sim.output.join(input_file.file_name().ok_or_else(|| {

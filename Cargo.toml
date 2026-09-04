@@ -8,6 +8,36 @@ members = [
 ]
 resolver = "3"
 
+# Shared metadata for every crate in the workspace. Individual crates opt in
+# with `field.workspace = true`.
+[workspace.package]
+authors = ["James Brodovsky"]
+edition = "2024"
+license = "MIT"
+homepage = "https://www.strapdown.rs"
+repository = "https://github.com/jbrodovsky/strapdown-rs"
+# Minimum supported Rust version. Keep this in sync with the `rust` pin in
+# pixi.toml and the CI toolchain; raising it is a breaking change.
+rust-version = "1.91"
+
+[workspace.dependencies]
+# Pinned to a single minor version on purpose. A range spanning 0.33/0.34 lets
+# Cargo resolve different, semver-incompatible copies into different workspace
+# crates, which fails to compile when nalgebra types cross a crate boundary.
+nalgebra = "0.34"
+chrono = { version = "0.4.41", features = ["serde"] }
+serde = { version = "1.0.219", features = ["derive"] }
+rand = "0.9.1"
+rand_distr = "0.5.1"
+csv = "1.3.1"
+log = "0.4"
+anyhow = "1.0.99"
+clap = { version = "4.5.4", features = ["derive"] }
+netcdf = "0.12.0"
+world_magnetic_model = "0.4.0"
+assert_approx_eq = "1.1.0"
+tempfile = "3.15"
+
 [profile.test]
 inherits = "release"
 

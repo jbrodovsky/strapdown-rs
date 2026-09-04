@@ -4376,7 +4376,7 @@ mod tests {
         nav.velocity_east = 5.0;
         nav.velocity_vertical = 6.0;
         let temp_file = std::env::temp_dir().join("test_nav_result.csv");
-        NavigationResult::to_csv(&[nav.clone()], &temp_file).unwrap();
+        NavigationResult::to_csv(std::slice::from_ref(&nav), &temp_file).unwrap();
         let read = NavigationResult::from_csv(&temp_file).unwrap();
         assert_eq!(read.len(), 1);
         assert_eq!(read[0].latitude, 1.0);
@@ -5322,7 +5322,7 @@ mod tests {
         };
 
         let temp_file = std::env::temp_dir().join("test_nav_nan.csv");
-        NavigationResult::to_csv(&[nav.clone()], &temp_file).unwrap();
+        NavigationResult::to_csv(std::slice::from_ref(&nav), &temp_file).unwrap();
 
         let read = NavigationResult::from_csv(&temp_file).unwrap();
         assert_eq!(read.len(), 1);
