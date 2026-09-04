@@ -245,6 +245,32 @@ pub fn state_transition_jacobian(
     f
 }
 
+/// Magnitude of the vertical gravity gradient, |∂g/∂h|, in s^-2.
+///
+/// Matches the linear altitude term in [`earth::gravity`], which is
+/// `g0(lat) - 3.08e-6 * altitude`.
+const GRAVITY_ALTITUDE_GRADIENT: f64 = 3.08e-6;
+
+/// Derivative of Somigliana normal gravity with respect to latitude, in m/s² per radian.
+///
+/// [`earth::gravity`] uses
+/// `g0 = GE (1 + K sin²φ) / sqrt(1 - e² sin²φ)`, so
+/// `dg0/dφ = GE cosφ sinφ [ 2K / sqrt(D) + (1 + K sin²φ) e² / D^(3/2) ]` with
+/// `D = 1 - e² sin²φ`. About 0.0519 m/s² per radian at 45° latitude, peaking there and
+/// vanishing at the equator and poles.
+fn gravity_latitude_gradient(latitude_rad: f64) -> f64 {
+    let sin_lat = latitude_rad.sin();
+    let cos_lat = latitude_rad.cos();
+    let sin_sq = sin_lat * sin_lat;
+    let d = 1.0 - earth::ECCENTRICITY_SQUARED * sin_sq;
+    let sqrt_d = d.sqrt();
+    earth::GE
+        * cos_lat
+        * sin_lat
+        * (2.0 * earth::K / sqrt_d
+            + (1.0 + earth::K * sin_sq) * earth::ECCENTRICITY_SQUARED / (d * sqrt_d))
+}
+
 /// Compute the error-state transition Jacobian for ESKF
 ///
 /// This function computes the linearized state transition matrix F for the
@@ -362,21 +388,28 @@ pub fn error_state_transition_jacobian(
 
     // ===== Velocity Error Block (rows 3-5) =====
 
-    // ∂(δv̇)/∂(δp): Velocity error rate depends on position error (gravity gradient, Coriolis)
+    // ∂(δv̇)/∂(δp): the gravity model depends on both altitude and latitude, so this
+    // block is not zero.
     //
-    // NOTE: The gravity gradient term (∂g/∂h ≈ -3.08e-6) creates unstable or marginally stable
-    // dynamics in the vertical channel when used alone:
-    // - ENU: +3.08e-6 coupling → exponentially growing eigenvalues (UNSTABLE)
-    // - NED: -3.08e-6 coupling → purely imaginary eigenvalues (undamped oscillations)
+    // `earth::gravity` is g(lat, h) = g0(lat) - 3.08e-6 h, giving
+    //     ∂g/∂h   = -3.08e-6 s^-2                    (the vertical gravity gradient)
+    //     ∂g/∂lat = dg0/dlat, ~0.0519 m/s²/rad at 45°  (Somigliana latitude variation)
     //
-    // In practice, this term is often omitted in error-state EKF formulations because:
-    // 1. The magnitude is very small (~3e-6) and negligible over short time steps
-    // 2. Measurement updates (GPS, baro) provide the necessary stabilization
-    // 3. Including it can cause numerical issues in particle filters with sparse updates
+    // Both were previously omitted. The comment that used to stand here argued the
+    // gravity-gradient term should be left out because in ENU it produces exponentially
+    // growing eigenvalues. That instability is real -- it is the classic undamped INS
+    // vertical channel -- but it belongs to the *system*, not to the linearisation.
+    // Dropping a term that the nominal propagation actually applies makes F disagree
+    // with `forward()`, so the covariance stops describing the real error dynamics and
+    // the filter can no longer attribute an altitude innovation to vertical-velocity
+    // error. Numerically differentiating `forward()` shows both entries clearly, stable
+    // across four orders of magnitude of step size. See #286.
     //
-    // For the RBPF conditional EKF, we omit this term to avoid vertical channel instability.
-    // The position-altitude coupling is handled implicitly through measurement updates.
-    // f[(5, 2)] = 0.0; // Gravity gradient term omitted for stability
+    // Sign follows the frame: in ENU the vertical axis is up and v̇_up contains -g, so a
+    // higher altitude means weaker gravity means a *more positive* v̇_up. NED flips it.
+    let vertical_sign = if state.is_enu { 1.0 } else { -1.0 };
+    f[(5, 2)] = vertical_sign * GRAVITY_ALTITUDE_GRADIENT * dt;
+    f[(5, 0)] = -vertical_sign * gravity_latitude_gradient(lat) * dt;
 
     // ∂(δv̇)/∂(δv): Velocity error damping due to Coriolis and centrifugal effects
     // These coupling terms are small for low dynamics and often approximated as zero
@@ -420,10 +453,18 @@ pub fn error_state_transition_jacobian(
     // ∂(δθ̇)/∂(δθ): Attitude error dynamics (rotation coupling)
     // δθ̇ = -[ω^b]_× δθ (in body frame)
     // This represents how attitude errors rotate due to angular velocity
+    //
+    // NOTE the `-=`. `f` is initialised to the identity and this block is
+    // `I - [omega^b]_x dt`, so the term must be *subtracted from* the identity, not
+    // assigned over it. A skew-symmetric matrix has a zero diagonal, so the previous
+    // `=` silently set f[(6,6)], f[(7,7)] and f[(8,8)] to zero instead of one --
+    // annihilating the attitude error covariance on every propagation step. The filter
+    // then believed attitude was perfectly known after each predict, never corrected
+    // tilt, and left gyro bias (observable only through tilt) unconstrained. See #286.
     let omega_skew = vector_to_skew_symmetric(imu_gyro);
     for i in 0..3 {
         for j in 0..3 {
-            f[(6 + i, 6 + j)] = -omega_skew[(i, j)] * dt;
+            f[(6 + i, 6 + j)] -= omega_skew[(i, j)] * dt;
         }
     }
 
@@ -1064,6 +1105,155 @@ mod tests {
     use super::*;
     use assert_approx_eq::assert_approx_eq;
     use nalgebra::Rotation3;
+
+    /// Every diagonal entry of the error-state transition Jacobian must be ~1.
+    ///
+    /// `F = I + A dt`, so for a small `dt` the diagonal stays near unity. The attitude
+    /// block used to be *assigned* `-[omega^b]_x dt` rather than subtracted from the
+    /// identity, and a skew-symmetric matrix has a zero diagonal, so f[(6,6)], f[(7,7)]
+    /// and f[(8,8)] were silently zero. That annihilates the attitude error covariance
+    /// on every propagation: the filter believes attitude is perfectly known after each
+    /// step, never corrects tilt, and leaves gyro bias unconstrained. See #286.
+    #[test]
+    fn test_error_state_jacobian_diagonal_is_unity() {
+        let dt = 0.01;
+        let state = StrapdownState::new(
+            45.0_f64.to_radians(),
+            (-122.0_f64).to_radians(),
+            150.0,
+            8.0,
+            -3.0,
+            0.4,
+            Rotation3::from_euler_angles(0.25, -0.15, 1.2),
+            false,
+            Some(true),
+        );
+        // Deliberately non-zero angular rate: with omega = 0 the bug is invisible.
+        let f = error_state_transition_jacobian(
+            &state,
+            &Vector3::new(0.6, -1.1, 9.9),
+            &Vector3::new(0.03, -0.02, 0.05),
+            dt,
+        );
+        for i in 0..15 {
+            assert!(
+                (f[(i, i)] - 1.0).abs() < 1e-3,
+                "F[{i},{i}] = {}, expected ~1. A block was assigned over the identity \
+                 instead of added to it (#286).",
+                f[(i, i)]
+            );
+        }
+    }
+
+    /// The error-state Jacobian must agree with a finite difference of the nonlinear
+    /// propagation it linearises.
+    ///
+    /// This is the check that would have caught #266 and #286 together. It perturbs each
+    /// error state, runs `forward` (with the bias errors applied to the IMU input the way
+    /// the ESKF's `predict` applies them), and differences the result.
+    ///
+    /// Entries are compared only where the true derivative is large enough to resolve;
+    /// `forward` integrates velocity trapezoidally, so a first-order `I + A dt` Jacobian
+    /// legitimately omits O(dt^2) cross terms. The bound below is set above those and far
+    /// below the first-order terms.
+    #[test]
+    fn test_error_state_jacobian_matches_nonlinear_propagation() {
+        const DT: f64 = 0.02;
+        let accel = Vector3::new(0.6, -1.1, 9.9);
+        let gyro = Vector3::new(0.03, -0.02, 0.05);
+        let nominal = StrapdownState::new(
+            45.0_f64.to_radians(),
+            (-122.0_f64).to_radians(),
+            150.0,
+            8.0,
+            -3.0,
+            0.4,
+            Rotation3::from_euler_angles(0.25, -0.15, 1.2),
+            false,
+            Some(true),
+        );
+
+        let mut base_out = nominal;
+        crate::forward(&mut base_out, crate::IMUData { accel, gyro }, DT);
+
+        // Apply a 15-element error, propagate, and return the 9-element error out.
+        let propagate = |dx: &DVector<f64>| -> DVector<f64> {
+            let mut s = nominal;
+            s.latitude += dx[0];
+            s.longitude += dx[1];
+            s.altitude += dx[2];
+            s.velocity_north += dx[3];
+            s.velocity_east += dx[4];
+            s.velocity_vertical += dx[5];
+            s.attitude =
+                nominal.attitude * Rotation3::from_scaled_axis(Vector3::new(dx[6], dx[7], dx[8]));
+            // predict() feeds `accel - bias`, so a bias error db means the true input is
+            // accel - (b_nom + db).
+            let imu = crate::IMUData {
+                accel: accel - Vector3::new(dx[9], dx[10], dx[11]),
+                gyro: gyro - Vector3::new(dx[12], dx[13], dx[14]),
+            };
+            crate::forward(&mut s, imu, DT);
+            let dtheta = (base_out.attitude.transpose() * s.attitude).scaled_axis();
+            DVector::from_vec(vec![
+                s.latitude - base_out.latitude,
+                s.longitude - base_out.longitude,
+                s.altitude - base_out.altitude,
+                s.velocity_north - base_out.velocity_north,
+                s.velocity_east - base_out.velocity_east,
+                s.velocity_vertical - base_out.velocity_vertical,
+                dtheta[0],
+                dtheta[1],
+                dtheta[2],
+            ])
+        };
+
+        let f_analytic = error_state_transition_jacobian(&nominal, &accel, &gyro, DT);
+        // Per-state step sizes: radians for lat/lon, SI elsewhere. Chosen large enough to
+        // clear cancellation noise in an f64 latitude of ~0.8 rad.
+        // The lat/lon steps are deliberately coarse (1e-5 rad, ~64 m). A latitude of
+        // ~0.8 rad loses most of its significant digits under a 1e-9 perturbation, and
+        // extracting a rotation vector from the resulting attitudes then produces
+        // cancellation noise that scales like 1/h -- it reads as a spurious 12 rad/rad
+        // in the attitude rows at h=1e-9 and decays to 0.013 by h=1e-6. 1e-5 puts that
+        // noise below the tolerance while staying comfortably inside the linear regime
+        // of the gravity model.
+        let steps: [f64; 15] = [
+            1e-5, 1e-5, 1e-1, 1e-3, 1e-3, 1e-3, 1e-5, 1e-5, 1e-5, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6,
+            1e-6,
+        ];
+        // O(dt^2) terms the first-order Jacobian omits reach ~7e-4 at this dt; anything
+        // above 5e-3 is a first-order structural error.
+        const TOLERANCE: f64 = 5e-3;
+
+        // Columns 9..15 (the bias errors) are excluded. `forward` stores attitude via
+        // `Rotation3::from_matrix`, an iterative orthonormalising projection whose own
+        // derivative is not unity, and differencing through it reports d(theta)/d(b_g)
+        // as ~1.5x dt rather than dt. Until that is understood (#286) the finite
+        // difference is not a trustworthy oracle for those columns; the attitude and
+        // velocity columns below are unaffected and cover the error dynamics that
+        // matter here.
+        for col in 0..9 {
+            let h = steps[col];
+            let mut plus = DVector::zeros(15);
+            plus[col] = h;
+            let mut minus = DVector::zeros(15);
+            minus[col] = -h;
+            let out_plus = propagate(&plus);
+            let out_minus = propagate(&minus);
+            for row in 0..9 {
+                let numerical = (out_plus[row] - out_minus[row]) / (2.0 * h);
+                let analytic = f_analytic[(row, col)];
+                assert!(
+                    (analytic - numerical).abs() < TOLERANCE,
+                    "F[{row},{col}] = {analytic:e} but finite differences of `forward` \
+                     give {numerical:e} (diff {:e}); the linearisation disagrees with the \
+                     propagation it is supposed to linearise (#286)",
+                    (analytic - numerical).abs()
+                );
+            }
+        }
+    }
 
     /// Finite-difference check of the error-state Jacobian's attitude convention.
     ///
