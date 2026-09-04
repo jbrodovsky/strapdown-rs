@@ -7,28 +7,32 @@
 //!
 //! ## Data Formats
 //!
-//! The module supports both CSV and netCDF formats for input and output data:
+//! Data is represented by the `TestDataRecord` struct (sensor measurements) and
+//! `NavigationResult` struct (navigation solutions). Both support several formats:
 //!
-//! - **CSV format**: Human-readable text format, suitable for quick inspection and editing
-//! - **netCDF format**: Binary format optimized for large datasets, better for archival and data interchange
+//! - **CSV**: human-readable, suitable for quick inspection and editing. Always available.
+//! - **netCDF**: binary, optimized for large datasets and archival. Requires the `netcdf` feature.
+//! - **HDF5**: binary, good compression and fast I/O. Requires the `hdf5` feature.
+//! - **MCAP**: robotics log format. Requires the `mcap` feature.
 //!
-//! Data is represented by the `TestDataRecord` struct (sensor measurements) and `NavigationResult` struct
-//! (navigation solutions). Both structs support serialization to/from CSV and netCDF formats.
+//! The binary formats each depend on a system library or a large dependency tree,
+//! so they are opt-in; see the crate README for the feature table. Format-specific
+//! examples live on the individual methods (`to_netcdf`, `from_hdf5`, and so on).
 //!
-//! ### Example: Working with netCDF files
+//! ### Example: Working with CSV files
 //!
 //! ```no_run
 //! use strapdown::sim::{TestDataRecord, NavigationResult};
 //!
-//! // Read test data from netCDF file
-//! let test_data = TestDataRecord::from_netcdf("input_data.nc")
+//! // Read test data
+//! let test_data = TestDataRecord::from_csv("input_data.csv")
 //!     .expect("Failed to read input data");
 //!
 //! // ... perform navigation simulation ...
 //!
-//! // Write navigation results to netCDF file
+//! // Write navigation results
 //! # let nav_results: Vec<NavigationResult> = vec![];
-//! NavigationResult::to_netcdf(&nav_results, "output_results.nc")
+//! NavigationResult::to_csv(&nav_results, "output_results.csv")
 //!     .expect("Failed to write navigation results");
 //! ```
 //!
@@ -321,6 +325,7 @@ impl TestDataRecord {
     /// TestDataRecord::to_hdf5(&records, "data.h5")
     ///    .expect("Failed to write test data to HDF5");
     /// ```
+    #[cfg(feature = "hdf5")]
     pub fn to_hdf5<P: AsRef<Path>>(records: &[Self], path: P) -> Result<()> {
         use hdf5::File;
 
@@ -405,6 +410,7 @@ impl TestDataRecord {
     ///
     /// # Returns
     /// * `io::Result<()>` - Ok if successful, Err otherwise
+    #[cfg(feature = "mcap")]
     pub fn to_mcap<P: AsRef<Path>>(records: &[Self], path: P) -> io::Result<()> {
         use mcap::{Writer, records::MessageHeader};
         use std::collections::BTreeMap;
@@ -473,6 +479,7 @@ impl TestDataRecord {
     /// let records = TestDataRecord::from_hdf5("data.h5")
     ///     .expect("Failed to read test data from HDF5");
     /// ```
+    #[cfg(feature = "hdf5")]
     pub fn from_hdf5<P: AsRef<Path>>(path: P) -> Result<Vec<Self>> {
         use hdf5::File;
 
@@ -586,6 +593,7 @@ impl TestDataRecord {
     ///
     /// # Returns
     /// * `Result<()>` - Ok if successful, Err otherwise
+    #[cfg(feature = "netcdf")]
     pub fn to_netcdf<P: AsRef<Path>>(records: &[Self], path: P) -> Result<()> {
         if records.is_empty() {
             bail!("Cannot write empty records to netCDF");
@@ -682,6 +690,7 @@ impl TestDataRecord {
     /// # Returns
     /// * `Ok(Vec<TestDataRecord>)` if successful.
     /// * `Err` if the file cannot be read or parsed.
+    #[cfg(feature = "netcdf")]
     pub fn from_netcdf<P: AsRef<Path>>(path: P) -> Result<Vec<Self>> {
         let file = netcdf::open(path)?;
 
@@ -788,6 +797,7 @@ impl TestDataRecord {
     ///
     /// # Arguments
     /// * `path` - Path to the MCAP file to read.
+    #[cfg(feature = "mcap")]
     pub fn from_mcap<P: AsRef<Path>>(path: P) -> Result<Vec<Self>, Box<dyn std::error::Error>> {
         use mcap::MessageStream;
         use std::fs::File;
@@ -1009,6 +1019,7 @@ impl NavigationResult {
     /// NavigationResult::to_hdf5(&results, "nav_results.h5")
     ///     .expect("Failed to write navigation results to HDF5");
     /// ```
+    #[cfg(feature = "hdf5")]
     pub fn to_hdf5<P: AsRef<Path>>(records: &[Self], path: P) -> Result<()> {
         use hdf5::File;
 
@@ -1102,6 +1113,7 @@ impl NavigationResult {
     /// let results = NavigationResult::from_hdf5("nav_results.h5")
     ///     .expect("Failed to read navigation results from HDF5");
     /// ```
+    #[cfg(feature = "hdf5")]
     pub fn from_hdf5<P: AsRef<Path>>(path: P) -> Result<Vec<Self>> {
         use hdf5::File;
 
@@ -1218,6 +1230,7 @@ impl NavigationResult {
     ///
     /// # Returns
     /// * `Result<()>` - Ok if successful, Err otherwise
+    #[cfg(feature = "netcdf")]
     pub fn to_netcdf<P: AsRef<Path>>(records: &[Self], path: P) -> Result<()> {
         if records.is_empty() {
             bail!("Cannot write empty records to netCDF");
@@ -1317,6 +1330,7 @@ impl NavigationResult {
     /// # Returns
     /// * `Ok(Vec<NavigationResult>)` if successful.
     /// * `Err` if the file cannot be read or parsed.
+    #[cfg(feature = "netcdf")]
     pub fn from_netcdf<P: AsRef<Path>>(path: P) -> Result<Vec<Self>> {
         let file = netcdf::open(path)?;
 
@@ -1436,6 +1450,7 @@ impl NavigationResult {
     /// NavigationResult::to_mcap(&results, "results.mcap")
     ///    .expect("Failed to write navigation results to MCAP");
     /// ```
+    #[cfg(feature = "mcap")]
     pub fn to_mcap<P: AsRef<Path>>(records: &[Self], path: P) -> io::Result<()> {
         use mcap::{Writer, records::MessageHeader};
         use std::collections::BTreeMap;
@@ -1497,6 +1512,7 @@ impl NavigationResult {
     ///     .expect("Failed to read navigation results from MCAP");
     /// println!("Read {} navigation results", results.len());
     /// ```
+    #[cfg(feature = "mcap")]
     pub fn from_mcap<P: AsRef<Path>>(path: P) -> Result<Vec<Self>, Box<dyn std::error::Error>> {
         use mcap::MessageStream;
         use std::fs::File;
@@ -5541,6 +5557,7 @@ mod tests {
         assert_eq!(ekf.get_estimate().len(), 15);
     }
 
+    #[cfg(feature = "hdf5")]
     #[test]
     fn test_test_data_record_hdf5_roundtrip() {
         use tempfile::tempdir;
@@ -5664,6 +5681,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "hdf5")]
     #[test]
     fn test_navigation_result_hdf5_roundtrip() {
         use tempfile::tempdir;
@@ -5762,6 +5780,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "hdf5")]
     #[test]
     fn test_test_data_record_hdf5_with_nan_values() {
         use tempfile::tempdir;
@@ -5802,6 +5821,7 @@ mod tests {
         assert!((read_records[0].longitude - record.longitude).abs() < 1e-10);
     }
 
+    #[cfg(feature = "hdf5")]
     #[test]
     fn test_navigation_result_hdf5_empty() {
         use tempfile::tempdir;
@@ -5823,6 +5843,7 @@ mod tests {
         // that conflict with binary serialization formats. TestDataRecord is optimized for CSV.
         // For MCAP usage, convert TestDataRecord to NavigationResult.
     }
+    #[cfg(feature = "mcap")]
     #[test]
     fn test_navigation_result_mcap_roundtrip() {
         let temp_file = std::env::temp_dir().join("nav_results_mcap.mcap");

@@ -4,7 +4,35 @@ Strapdown-rs is a straightforward strapdown inertial navigation system (INS) imp
 
 ## Installation
 
-To use `strapdown-rs`, you can add it as a dependency in your `Cargo.toml` file: `cargo add strapdown-rs` or install the simulation binary directly via `cargo install strapdown-rs`.
+Add the library to your project with `cargo add strapdown-core`, or install the
+simulation CLI with `cargo install strapdown-sim`.
+
+The library is imported as `strapdown`:
+
+```rust
+use strapdown::StrapdownState;
+```
+
+## Cargo Features
+
+`strapdown-core` builds with no features by default and requires **no system
+libraries** -- a Rust toolchain is enough. The binary data formats each pull in a
+system library or a sizeable dependency tree, so they are opt-in:
+
+| Feature   | Enables                                  | Requires        |
+|-----------|------------------------------------------|-----------------|
+| `hdf5`    | `to_hdf5` / `from_hdf5`                  | `libhdf5`       |
+| `netcdf`  | `to_netcdf` / `from_netcdf`              | `libnetcdf`     |
+| `mcap`    | `to_mcap` / `from_mcap`                  | --              |
+| `clap`    | `clap::ValueEnum` derives on config enums | --             |
+| `full`    | all of the above                         | both libraries  |
+
+CSV support is always available and needs no feature flag.
+
+```toml
+[dependencies]
+strapdown-core = { version = "1.0", features = ["hdf5", "netcdf"] }
+```
 
 ## Summary
 
@@ -24,7 +52,8 @@ Both `strapdown-sim` and `geonav-sim` include built-in logging capabilities usin
 
 ## Data Formats
 
-The library supports both CSV and HDF5 file formats for input and output data.
+The library supports CSV, HDF5, netCDF, and MCAP for input and output data. CSV
+works out of the box; the others are behind the feature flags listed above.
 
 ### CSV Format
 
@@ -46,7 +75,7 @@ NavigationResult::to_csv(&results, "nav_results_out.csv")?;
 
 ### HDF5 Format
 
-HDF5 provides efficient storage for large datasets with better compression and faster I/O:
+Requires the `hdf5` feature. HDF5 provides efficient storage for large datasets with better compression and faster I/O:
 
 ```rust
 use strapdown::sim::{TestDataRecord, NavigationResult};
