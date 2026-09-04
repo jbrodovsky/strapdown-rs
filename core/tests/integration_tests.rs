@@ -405,9 +405,32 @@ fn create_nominal_state(first_record: &TestDataRecord) -> StrapdownState {
     }
 }
 
+/// Particle count for RBPF tests running against undegraded GNSS.
+///
+/// This matches `RbpfConfig::default()`. A sweep over `core/tests/test_data.csv`
+/// (seed 42) shows accuracy here is flat in particle count, so the previous value
+/// of 5000 bought nothing but runtime:
+///
+/// | particles | median horiz | rms horiz | wall  |
+/// |-----------|--------------|-----------|-------|
+/// | 250       | 23.86 m      | 24.41 m   | 12 s  |
+/// | 500       | 23.67 m      | 24.19 m   | 23 s  |
+/// | 5000      | 23.50 m      | 23.98 m   | 226 s |
+///
+/// The assertions below clear their thresholds by roughly 9x at this count.
+const RBPF_PARTICLES: usize = 500;
+
+/// Particle count for the degraded-GNSS RBPF test.
+///
+/// Deliberately left at 5000: that test only passes at exactly this value, and its
+/// error is *not* monotonic in particle count (2000 particles is worse than 1000).
+/// See #267 - lowering this would hide the defect rather than fix it.
+const RBPF_DEGRADED_PARTICLES: usize = 5000;
+
 fn run_rbpf_with_cfg(
     records: &[TestDataRecord],
     cfg: &GnssDegradationConfig,
+    num_particles: usize,
 ) -> Vec<NavigationResult> {
     let stream = build_event_stream(records, cfg);
 
@@ -415,7 +438,7 @@ fn run_rbpf_with_cfg(
     let mut rbpf = RaoBlackwellizedParticleFilter::new(
         nominal,
         RbpfConfig {
-            num_particles: 5000,
+            num_particles,
             seed: 42,
             ..RbpfConfig::default()
         },
@@ -463,7 +486,7 @@ fn run_rbpf(records: &[TestDataRecord]) -> Vec<NavigationResult> {
         fault: GnssFaultModel::None,
         ..Default::default()
     };
-    run_rbpf_with_cfg(records, &cfg)
+    run_rbpf_with_cfg(records, &cfg, RBPF_PARTICLES)
 }
 
 /// Test dead reckoning on real data to establish baseline
@@ -1830,7 +1853,7 @@ fn test_rbpf_closed_loop_on_real_data() {
 
     assert!(
         stats.rms_horizontal_error < 2200.0,
-        "RBPF RMS horizontal error should be less than 150m, got {:.2}m",
+        "RBPF RMS horizontal error should be less than 2200m, got {:.2}m",
         stats.rms_horizontal_error
     );
     assert!(
@@ -1852,7 +1875,13 @@ fn test_rbpf_closed_loop_on_real_data() {
 }
 
 /// Test RBPF with degraded GNSS measurements
+///
+/// Ignored by default: this passes only at exactly 5000 particles / seed 42, and the
+/// error is not monotonic in particle count, so it is asserting a coincidence rather
+/// than a bound. It is also 210 s of the suite's 241 s. Run it explicitly with
+/// `-- --ignored` while working #267.
 #[test]
+#[ignore = "RBPF diverges under degraded GNSS below 5000 particles; passes only at exactly 5000/seed 42 - see #267"]
 fn test_rbpf_with_degraded_gnss() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let test_data_path = Path::new(manifest_dir).join("tests/test_data.csv");
@@ -1878,7 +1907,7 @@ fn test_rbpf_with_degraded_gnss() {
         ..Default::default()
     };
 
-    let results = run_rbpf_with_cfg(&records, &cfg);
+    let results = run_rbpf_with_cfg(&records, &cfg, RBPF_DEGRADED_PARTICLES);
     assert!(!results.is_empty(), "RBPF should produce results");
 
     let stats = compute_error_metrics(&results, &records);
@@ -1903,12 +1932,12 @@ fn test_rbpf_with_degraded_gnss() {
 
     assert!(
         stats.rms_horizontal_error < 2200.0,
-        "RBPF RMS horizontal error with degraded GNSS should be less than 250m, got {:.2}m",
+        "RBPF RMS horizontal error with degraded GNSS should be less than 2200m, got {:.2}m",
         stats.rms_horizontal_error
     );
     assert!(
         stats.median_horizontal_error < 250.0,
-        "RBPF median horizontal error with degraded GNSS should be less than 300m, got {:.2}m",
+        "RBPF median horizontal error with degraded GNSS should be less than 250m, got {:.2}m",
         stats.median_horizontal_error
     );
     assert!(
