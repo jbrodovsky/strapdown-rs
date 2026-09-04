@@ -2673,6 +2673,21 @@ pub mod execution {
         ///
         /// A new `ExecutionMonitor` instance initialized with the current time.
         pub fn new(limits: ExecutionLimits, sim_duration_s: f64) -> Self {
+            Self::new_at(limits, sim_duration_s, Instant::now())
+        }
+
+        /// Construct with an explicit start instant.
+        ///
+        /// The timeout logic is a pure function of the instants it is given, so the
+        /// only thing separating it from a deterministic test is where those instants
+        /// come from. This constructor and the `*_at` methods below take them as
+        /// arguments so tests can advance a clock instead of sleeping on one.
+        ///
+        /// `std::thread::sleep` guarantees a *minimum* duration, never a maximum, so a
+        /// test that sleeps 10 ms and then asserts a 50 ms budget was not exceeded is
+        /// asserting something the standard library does not promise. On a contended
+        /// runner it fails. See #284.
+        pub(crate) fn new_at(limits: ExecutionLimits, sim_duration_s: f64, now: Instant) -> Self {
             let max_wall_clock = compute_max_wall_clock(
                 sim_duration_s,
                 limits.max_wall_clock_ratio,
@@ -2683,7 +2698,6 @@ pub mod execution {
             } else {
                 None
             };
-            let now = Instant::now();
 
             Self {
                 start_time: now,
@@ -2721,7 +2735,11 @@ pub mod execution {
         /// # Ok::<(), anyhow::Error>(())
         /// ```
         pub fn check(&mut self, context: &str) -> Result<()> {
-            let now = Instant::now();
+            self.check_at(context, Instant::now())
+        }
+
+        /// [`Self::check`] against an explicit instant. See [`Self::new_at`].
+        pub(crate) fn check_at(&mut self, context: &str, now: Instant) -> Result<()> {
             if let Some(max_wall_clock) = self.max_wall_clock
                 && now.duration_since(self.start_time) > max_wall_clock
             {
@@ -2746,7 +2764,12 @@ pub mod execution {
         /// Mark that progress has been made in the simulation.
         /// This should be called after successfully processing each event.
         pub fn mark_progress(&mut self) {
-            self.last_progress = Instant::now();
+            self.mark_progress_at(Instant::now());
+        }
+
+        /// [`Self::mark_progress`] against an explicit instant. See [`Self::new_at`].
+        pub(crate) fn mark_progress_at(&mut self, now: Instant) {
+            self.last_progress = now;
         }
     }
 
@@ -4840,81 +4863,189 @@ mod tests {
         assert!(limits.cov_diag_max > 0.0);
     }
 
+    /// Fixed reference instant plus an offset, so every timeout assertion below is
+    /// exact instead of racing the scheduler. See `ExecutionMonitor::new_at` and #284.
+    fn at(base: std::time::Instant, millis: u64) -> std::time::Instant {
+        base + std::time::Duration::from_millis(millis)
+    }
+
     #[test]
     fn test_execution_monitor_no_progress_timeout() {
+        let t0 = std::time::Instant::now();
         let limits = ExecutionLimits {
             max_wall_clock_ratio: 0.0,
             max_wall_clock_s: 0.0,
-            max_no_progress_s: 0.01,
+            max_no_progress_s: 0.010,
         };
-        let mut monitor = ExecutionMonitor::new(limits, 1.0);
+        let mut monitor = ExecutionMonitor::new_at(limits, 1.0, t0);
 
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        let result = monitor.check("test");
+        let result = monitor.check_at("test", at(t0, 20));
         assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("no progress"));
+    }
+
+    /// The no-progress timeout must fire strictly after the limit, not at or before it.
+    #[test]
+    fn test_execution_monitor_no_progress_boundary() {
+        let t0 = std::time::Instant::now();
+        let limits = ExecutionLimits {
+            max_wall_clock_ratio: 0.0,
+            max_wall_clock_s: 0.0,
+            max_no_progress_s: 0.100,
+        };
+        let mut monitor = ExecutionMonitor::new_at(limits, 1.0, t0);
+
+        assert!(
+            monitor.check_at("test", at(t0, 99)).is_ok(),
+            "just under the limit"
+        );
+        assert!(
+            monitor.check_at("test", at(t0, 100)).is_ok(),
+            "exactly at the limit"
+        );
+        assert!(
+            monitor.check_at("test", at(t0, 101)).is_err(),
+            "just over the limit"
+        );
+    }
+
+    /// `mark_progress` must restart the no-progress window.
+    #[test]
+    fn test_execution_monitor_progress_resets_no_progress_window() {
+        let t0 = std::time::Instant::now();
+        let limits = ExecutionLimits {
+            max_wall_clock_ratio: 0.0,
+            max_wall_clock_s: 0.0,
+            max_no_progress_s: 0.100,
+        };
+        let mut monitor = ExecutionMonitor::new_at(limits, 1.0, t0);
+
+        assert!(monitor.check_at("test", at(t0, 90)).is_ok());
+        monitor.mark_progress_at(at(t0, 90));
+        // 150 ms since start, but only 60 ms since the last progress.
+        assert!(monitor.check_at("test", at(t0, 150)).is_ok());
+        // 210 ms since start and 120 ms since progress -- now it must fire.
+        assert!(monitor.check_at("test", at(t0, 210)).is_err());
     }
 
     #[test]
     fn test_execution_monitor_wall_clock_timeout() {
+        let t0 = std::time::Instant::now();
         let limits = ExecutionLimits {
             max_wall_clock_ratio: 0.0,
-            max_wall_clock_s: 0.01,
+            max_wall_clock_s: 0.010,
             max_no_progress_s: 0.0,
         };
-        let mut monitor = ExecutionMonitor::new(limits, 1.0);
+        let mut monitor = ExecutionMonitor::new_at(limits, 1.0, t0);
 
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        let result = monitor.check("test");
+        let result = monitor.check_at("test", at(t0, 20));
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("wall-clock limit"));
     }
 
+    /// The wall-clock timeout is absolute: `mark_progress` must not defer it.
     #[test]
-    fn test_execution_monitor_successful_execution_with_progress() {
+    fn test_execution_monitor_wall_clock_boundary_ignores_progress() {
+        let t0 = std::time::Instant::now();
         let limits = ExecutionLimits {
             max_wall_clock_ratio: 0.0,
-            max_wall_clock_s: 1.0,
-            max_no_progress_s: 0.05,
+            max_wall_clock_s: 0.100,
+            max_no_progress_s: 0.0,
         };
-        let mut monitor = ExecutionMonitor::new(limits, 1.0);
+        let mut monitor = ExecutionMonitor::new_at(limits, 1.0, t0);
 
-        // Simulate work with regular progress updates
-        for _ in 0..5 {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            let result = monitor.check("test");
-            assert!(result.is_ok());
-            monitor.mark_progress();
+        assert!(
+            monitor.check_at("test", at(t0, 100)).is_ok(),
+            "exactly at the limit"
+        );
+        monitor.mark_progress_at(at(t0, 100));
+        assert!(
+            monitor.check_at("test", at(t0, 101)).is_err(),
+            "progress must not extend the absolute wall-clock budget"
+        );
+    }
+
+    /// Steady work with regular progress marks must never trip either timeout, even
+    /// once total elapsed time exceeds the no-progress budget.
+    ///
+    /// This is the test #284 was about. It used to sleep 10 ms per iteration and assert
+    /// a 50 ms no-progress budget had not been exceeded -- an upper bound on
+    /// `thread::sleep`, which the standard library never promises. It failed on loaded
+    /// CI runners. Driving the clock directly tests the same property deterministically,
+    /// and lets the loop run long enough to be meaningful.
+    #[test]
+    fn test_execution_monitor_successful_execution_with_progress() {
+        let t0 = std::time::Instant::now();
+        let limits = ExecutionLimits {
+            max_wall_clock_ratio: 0.0,
+            max_wall_clock_s: 10.0,
+            max_no_progress_s: 0.050,
+        };
+        let mut monitor = ExecutionMonitor::new_at(limits, 1.0, t0);
+
+        // 200 iterations at 40 ms each: 8 s total, comfortably past the 50 ms
+        // no-progress budget, but each individual gap stays under it.
+        for step in 1..=200 {
+            let now = at(t0, step * 40);
+            assert!(
+                monitor.check_at("test", now).is_ok(),
+                "step {step} tripped a timeout despite regular progress"
+            );
+            monitor.mark_progress_at(now);
         }
     }
 
     #[test]
     fn test_execution_monitor_zero_timeout_disabled() {
+        let t0 = std::time::Instant::now();
         let limits = ExecutionLimits {
             max_wall_clock_ratio: 0.0,
             max_wall_clock_s: 0.0,
             max_no_progress_s: 0.0,
         };
-        let mut monitor = ExecutionMonitor::new(limits, 1.0);
+        let mut monitor = ExecutionMonitor::new_at(limits, 1.0, t0);
 
-        // With all timeouts disabled, sleep and check should succeed
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        let result = monitor.check("test");
-        assert!(result.is_ok());
+        // All timeouts disabled: an hour of no progress is still fine.
+        assert!(monitor.check_at("test", at(t0, 3_600_000)).is_ok());
     }
 
     #[test]
     fn test_execution_monitor_negative_timeout_disabled() {
+        let t0 = std::time::Instant::now();
         let limits = ExecutionLimits {
             max_wall_clock_ratio: -1.0,
             max_wall_clock_s: -1.0,
             max_no_progress_s: -1.0,
         };
-        let mut monitor = ExecutionMonitor::new(limits, 1.0);
+        let mut monitor = ExecutionMonitor::new_at(limits, 1.0, t0);
 
-        // With negative timeouts (disabled), sleep and check should succeed
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        let result = monitor.check("test");
-        assert!(result.is_ok());
+        assert!(monitor.check_at("test", at(t0, 3_600_000)).is_ok());
+    }
+
+    /// `max_wall_clock_ratio` scales with simulated duration, and the tighter of the
+    /// ratio and the absolute limit wins.
+    #[test]
+    fn test_execution_monitor_ratio_and_absolute_limits_combine() {
+        let t0 = std::time::Instant::now();
+        // ratio: 0.25 * 2 s = 500 ms; absolute: 200 ms. The absolute one is tighter.
+        let limits = ExecutionLimits {
+            max_wall_clock_ratio: 0.25,
+            max_wall_clock_s: 0.200,
+            max_no_progress_s: 0.0,
+        };
+        let mut monitor = ExecutionMonitor::new_at(limits, 2.0, t0);
+        assert!(monitor.check_at("test", at(t0, 200)).is_ok());
+        assert!(monitor.check_at("test", at(t0, 201)).is_err());
+
+        // ratio: 0.25 * 2 s = 500 ms; absolute: 5 s. Now the ratio is tighter.
+        let limits = ExecutionLimits {
+            max_wall_clock_ratio: 0.25,
+            max_wall_clock_s: 5.0,
+            max_no_progress_s: 0.0,
+        };
+        let mut monitor = ExecutionMonitor::new_at(limits, 2.0, t0);
+        assert!(monitor.check_at("test", at(t0, 500)).is_ok());
+        assert!(monitor.check_at("test", at(t0, 501)).is_err());
     }
 
     #[test]
