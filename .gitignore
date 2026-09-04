@@ -3,6 +3,7 @@
 target
 data/raw
 examples/strapdown-sim/out
+data/
 
 # Map files
 *.nc
