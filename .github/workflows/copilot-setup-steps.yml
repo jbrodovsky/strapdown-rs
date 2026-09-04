@@ -35,9 +35,7 @@ jobs:
                 libhdf5-dev \
                 libnetcdf-dev \
                 libfreetype6-dev \
-                libfontconfig-dev \
-                gmt
-                
+                libfontconfig-dev
       - name: Install rust
         uses: dtolnay/rust-toolchain@stable
         with:

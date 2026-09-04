@@ -79,20 +79,26 @@ pixi run coverage
 
 ### Lint & Format
 ```bash
-# Run linting (includes Python ruff and Rust clippy)
+# Run clippy exactly as CI does (warnings are errors)
 pixi run lint
 
-# Format code (Python and Rust)
+# Apply the clippy fixes it can
+pixi run lint-fix
+
+# Format code
 pixi run fmt
+
+# Check formatting without writing (CI parity)
+pixi run fmt-check
 ```
 
 ### Running Simulations
 ```bash
 # Open-loop (dead reckoning)
-./target/release/strapdown-sim -i data/input/input.csv -o output.csv open-loop
+./target/release/strapdown-sim -i input.csv -o output.csv open-loop
 
 # Closed-loop with GNSS degradation
-./target/release/strapdown-sim -i data/input/input.csv -o output.csv closed-loop \
+./target/release/strapdown-sim -i input.csv -o output.csv closed-loop \
   --seed 42 \
   --dropout-start-s 100.0 --dropout-duration-s 50.0 \
   --fault-type bias --fault-magnitude 10.0
@@ -102,16 +108,12 @@ pixi run fmt
   --geo-type gravity --geo-resolution one-minute
 ```
 
-### Data Processing (Python scripts)
+### Datasets
+Sample datasets are no longer vendored in this repository. Test fixtures live in
+`core/tests/`; generate your own trajectories with the `syn` subcommand:
+
 ```bash
-# Preprocess raw data
-pixi run preprocess
-
-# Download geophysical maps
-pixi run getmaps
-
-# Create simulation datasets
-pixi run create_dataset
+./target/release/strapdown-sim syn -o synthetic.csv --duration-s 600 --seed 42
 ```
 
 ## Free Core Features (Definition of Done)

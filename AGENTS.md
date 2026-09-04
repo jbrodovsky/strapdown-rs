@@ -3,23 +3,24 @@
 When asked to execute on an issue or new high-level feature request, ask the user if this should be completed on the current branch or to create a new branch. This project is still in pre-1.0 development, so breaking changes may be introduced at any time and backwards compatibility need not be maintained.
 
 ## Project Structure & Module Organization
-This is a Cargo workspace with three primary crates plus supporting data/scripts.
+This is a Cargo workspace with three crates.
 - `core/`: `strapdown-core` library (INS algorithms, filters, simulation utilities).
 - `sim/`: `strapdown-sim` CLI for open/closed-loop runs and GNSS degradation.
 - `geonav/`: experimental geophysical navigation module.
-- `data/`: sample datasets and scenarios (e.g., `data/input/*.csv`).
-- `docs/`, `papers/`, `spec.md`: design notes and research docs.
-- `scripts/`, `examples/`: helper workflows and usage examples.
+- `docs/`, `book/`: design notes and the mdBook user guide.
+- `papers/joss/`: the JOSS submission manuscript.
+- `examples/`: usage examples and sample scenario configs.
+- Test fixtures live in `core/tests/`; sample datasets are not vendored.
 
 ## Build, Test, and Development Commands
 Use Pixi when available; Cargo works directly too.
 - `pixi run build` / `cargo build --workspace --release`: build all crates.
 - `cargo test --workspace`: run all tests.
 - `cargo test --package strapdown-core`: test a single crate.
-- `pixi run lint`: run Rust clippy and Python ruff.
-- `pixi run fmt`: run rustfmt and Python formatting.
+- `pixi run lint`: run clippy as CI does; `pixi run lint-fix` applies fixes.
+- `pixi run fmt`: run rustfmt; `pixi run fmt-check` checks without writing.
 - `pixi run coverage` / `cargo tarpaulin --workspace --timeout 600`: coverage.
-- Example run: `./target/release/strapdown-sim -i data/input/input.csv -o output.csv open-loop`.
+- Example run: `./target/release/strapdown-sim -i input.csv -o output.csv open-loop`.
 
 ## Coding Style & Naming Conventions
 - Rust formatting via rustfmt (4-space indentation); keep functions focused and small.
