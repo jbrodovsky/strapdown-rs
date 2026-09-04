@@ -659,25 +659,25 @@ fn test_ukf_closed_loop_on_real_data() {
 
     assert!(
         stats.rms_horizontal_error < rms_horizontal_limit,
-        "RMS horizontal error with degraded GNSS should be less than {:.2}m, got {:.2}m",
+        "ESKF RMS horizontal error should be less than {:.2}m, got {:.2}m",
         rms_horizontal_limit,
         stats.rms_horizontal_error
     );
     assert!(
         stats.max_horizontal_error < max_horizontal_limit,
-        "Maximum horizontal error with degraded GNSS should be less than {:.2}m, got {:.2}m",
+        "ESKF maximum horizontal error should be less than {:.2}m, got {:.2}m",
         max_horizontal_limit,
         stats.max_horizontal_error
     );
     assert!(
         stats.rms_altitude_error < rms_altitude_limit,
-        "RMS altitude error with degraded GNSS should be less than {:.2}m, got {:.2}m",
+        "ESKF RMS altitude error should be less than {:.2}m (provisional, see #286), got {:.2}m",
         rms_altitude_limit,
         stats.rms_altitude_error
     );
     assert!(
         stats.max_altitude_error < max_altitude_limit,
-        "Maximum altitude error with degraded GNSS should be less than {:.2}m, got {:.2}m",
+        "ESKF maximum altitude error should be less than {:.2}m (provisional, see #286), got {:.2}m",
         max_altitude_limit,
         stats.max_altitude_error
     );
@@ -988,25 +988,25 @@ fn test_ekf_closed_loop_on_real_data() {
 
     assert!(
         stats.rms_horizontal_error < rms_horizontal_limit,
-        "RMS horizontal error with degraded GNSS should be less than {:.2}m, got {:.2}m",
+        "ESKF RMS horizontal error should be less than {:.2}m, got {:.2}m",
         rms_horizontal_limit,
         stats.rms_horizontal_error
     );
     assert!(
         stats.max_horizontal_error < max_horizontal_limit,
-        "Maximum horizontal error with degraded GNSS should be less than {:.2}m, got {:.2}m",
+        "ESKF maximum horizontal error should be less than {:.2}m, got {:.2}m",
         max_horizontal_limit,
         stats.max_horizontal_error
     );
     assert!(
         stats.rms_altitude_error < rms_altitude_limit,
-        "RMS altitude error with degraded GNSS should be less than {:.2}m, got {:.2}m",
+        "ESKF RMS altitude error should be less than {:.2}m (provisional, see #286), got {:.2}m",
         rms_altitude_limit,
         stats.rms_altitude_error
     );
     assert!(
         stats.max_altitude_error < max_altitude_limit,
-        "Maximum altitude error with degraded GNSS should be less than {:.2}m, got {:.2}m",
+        "ESKF maximum altitude error should be less than {:.2}m (provisional, see #286), got {:.2}m",
         max_altitude_limit,
         stats.max_altitude_error
     );
@@ -1125,25 +1125,25 @@ fn test_ekf_with_degraded_gnss() {
 
     assert!(
         stats.rms_horizontal_error < rms_horizontal_limit,
-        "RMS horizontal error with degraded GNSS should be less than {:.2}m, got {:.2}m",
+        "ESKF RMS horizontal error should be less than {:.2}m, got {:.2}m",
         rms_horizontal_limit,
         stats.rms_horizontal_error
     );
     assert!(
         stats.max_horizontal_error < max_horizontal_limit,
-        "Maximum horizontal error with degraded GNSS should be less than {:.2}m, got {:.2}m",
+        "ESKF maximum horizontal error should be less than {:.2}m, got {:.2}m",
         max_horizontal_limit,
         stats.max_horizontal_error
     );
     assert!(
         stats.rms_altitude_error < rms_altitude_limit,
-        "RMS altitude error with degraded GNSS should be less than {:.2}m, got {:.2}m",
+        "ESKF RMS altitude error should be less than {:.2}m (provisional, see #286), got {:.2}m",
         rms_altitude_limit,
         stats.rms_altitude_error
     );
     assert!(
         stats.max_altitude_error < max_altitude_limit,
-        "Maximum altitude error with degraded GNSS should be less than {:.2}m, got {:.2}m",
+        "ESKF maximum altitude error should be less than {:.2}m (provisional, see #286), got {:.2}m",
         max_altitude_limit,
         stats.max_altitude_error
     );
@@ -1240,7 +1240,6 @@ fn test_ekf_outperforms_dead_reckoning() {
 /// 3. The filter performs comparably to UKF/EKF
 /// 4. Quaternion normalization is maintained
 #[test]
-#[ignore = "ESKF vertical channel diverges; altitude error thresholds here are tuned to exact floating-point bits"]
 fn test_eskf_closed_loop_on_real_data() {
     // Load test data
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -1320,32 +1319,44 @@ fn test_eskf_closed_loop_on_real_data() {
     // Performance reflects trade-off between stability (no divergence) and accuracy
     // These bounds are based on empirical performance with real MEMS-grade IMU data
 
-    let rms_horizontal_limit = 2000.0;
-    let max_horizontal_limit = 2500.0;
-    let rms_altitude_limit = 135.0;
-    let max_altitude_limit = 509.0;
+    // Horizontal bounds are physical, not fitted. With continuous GNSS aiding at a
+    // few metres of position noise, a correctly closed loosely-coupled filter must
+    // stay in the tens of metres; the UKF and EKF sit at 23.6 m and 26.6 m rms on this
+    // dataset and the ESKF is now at 24.1 m. 100 m rms / 250 m peak leaves roughly a
+    // 4x margin while still failing loudly if the horizontal loop opens again (before
+    // #266 this run produced 1734 m rms).
+    let rms_horizontal_limit = 100.0;
+    let max_horizontal_limit = 250.0;
+
+    // PROVISIONAL, not physical. The vertical channel is still broken -- see #286.
+    // The UKF achieves 2.8 m rms / 12.1 m peak on this same data; the ESKF is at
+    // 127.6 m / 379.6 m. These ceilings only pin the current behaviour so a further
+    // regression is caught, and must be tightened to UKF-comparable values when #286
+    // lands. Do not treat them as a statement about what the filter should achieve.
+    let rms_altitude_limit = 200.0;
+    let max_altitude_limit = 600.0;
 
     assert!(
         stats.rms_horizontal_error < rms_horizontal_limit,
-        "RMS horizontal error with degraded GNSS should be less than {:.2}m, got {:.2}m",
+        "ESKF RMS horizontal error should be less than {:.2}m, got {:.2}m",
         rms_horizontal_limit,
         stats.rms_horizontal_error
     );
     assert!(
         stats.max_horizontal_error < max_horizontal_limit,
-        "Maximum horizontal error with degraded GNSS should be less than {:.2}m, got {:.2}m",
+        "ESKF maximum horizontal error should be less than {:.2}m, got {:.2}m",
         max_horizontal_limit,
         stats.max_horizontal_error
     );
     assert!(
         stats.rms_altitude_error < rms_altitude_limit,
-        "RMS altitude error with degraded GNSS should be less than {:.2}m, got {:.2}m",
+        "ESKF RMS altitude error should be less than {:.2}m (provisional, see #286), got {:.2}m",
         rms_altitude_limit,
         stats.rms_altitude_error
     );
     assert!(
         stats.max_altitude_error < max_altitude_limit,
-        "Maximum altitude error with degraded GNSS should be less than {:.2}m, got {:.2}m",
+        "ESKF maximum altitude error should be less than {:.2}m (provisional, see #286), got {:.2}m",
         max_altitude_limit,
         stats.max_altitude_error
     );
@@ -1389,7 +1400,7 @@ fn test_eskf_closed_loop_on_real_data() {
 ///
 /// This test simulates degraded GNSS conditions with reduced update rate (5s intervals).
 #[test]
-#[ignore = "ESKF with degraded GNSS has altitude divergence and health monitor aborts due to out of range"]
+#[ignore = "ESKF vertical channel still diverges under degraded GNSS; horizontal loop fixed in #266, vertical tracked by #286"]
 fn test_eskf_with_degraded_gnss() {
     // Load test data
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -1676,9 +1687,14 @@ fn test_eskf_stability_high_dynamics() {
         stats.rms_altitude_error, stats.max_altitude_error
     );
 
-    // With high process noise, errors may be slightly higher but should still be bounded
-    let rms_horizontal_limit = 1905.0;
-    let max_horizontal_limit = 2494.0;
+    // Physical bounds, not fitted. Before #266 the ESKF's horizontal loop was open --
+    // corrections were rescaled by ~1/6.4e6 -- and this run produced ~1900 m rms, which
+    // is what the previous 1905.0 / 2494.0 limits were pinned to. Those numbers were
+    // tight enough to the observed value that macOS and Windows failed them at 2121.97 m
+    // purely on floating-point code generation. With the loop closed the run sits at
+    // 24 m rms, so bound it where a GNSS-aided filter physically belongs.
+    let rms_horizontal_limit = 100.0;
+    let max_horizontal_limit = 250.0;
     assert!(
         stats.rms_horizontal_error < rms_horizontal_limit,
         "RMS horizontal error should remain bounded with high dynamics, expected and error less than {:.2}m, got {:.2}m",
@@ -1797,12 +1813,14 @@ fn test_filter_comparison() {
         ekf_stats.rms_horizontal_error < 30.0,
         "EKF RMS horizontal error should be reasonable"
     );
-    // Note: ESKF has a significantly larger tolerance (1905.0m) compared to UKF (25.0m) and EKF (30.0m)
-    // due to the current implementation's handling of error state corrections. This is acceptable for
-    // the current test scenario but may warrant further investigation for production use.
+    // The 1905.0 m tolerance this used to carry was the signature of #266: the ESKF's
+    // horizontal corrections were divided by the principal radii, leaving that channel
+    // open loop. With the units fixed the ESKF tracks the other two filters, so hold it
+    // to the same standard as the EKF.
     assert!(
-        eskf_stats.rms_horizontal_error < 1905.0,
-        "ESKF RMS horizontal error should be reasonable"
+        eskf_stats.rms_horizontal_error < 30.0,
+        "ESKF RMS horizontal error should be comparable to UKF/EKF, got {:.2}m",
+        eskf_stats.rms_horizontal_error
     );
 
     // Verify all filters completed without producing invalid values
@@ -2066,7 +2084,7 @@ fn test_filter_output_length_matches_input() {
 /// the divergence is exponential and a ~1e-14 numerical perturbation is enough
 /// to trigger it, so this test passing is not evidence the filter is sound.
 #[test]
-#[ignore = "ESKF vertical channel diverges (altitude reaches ~1.5e8 m) even with full GNSS aiding"]
+#[ignore = "ESKF vertical channel still diverges; horizontal loop fixed in #266, vertical tracked by #286"]
 fn test_eskf_output_length_matches_input() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let test_data_path = Path::new(manifest_dir).join("tests/test_data.csv");
