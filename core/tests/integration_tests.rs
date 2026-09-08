@@ -659,7 +659,7 @@ fn test_ukf_closed_loop_on_real_data() {
 
     assert!(
         stats.rms_horizontal_error < rms_horizontal_limit,
-        "ESKF RMS horizontal error should be less than {:.2}m, got {:.2}m",
+        "UKF RMS horizontal error should be less than {:.2}m, got {:.2}m",
         rms_horizontal_limit,
         stats.rms_horizontal_error
     );
