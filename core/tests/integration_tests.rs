@@ -1125,7 +1125,7 @@ fn test_ekf_with_degraded_gnss() {
 
     assert!(
         stats.rms_horizontal_error < rms_horizontal_limit,
-        "ESKF RMS horizontal error should be less than {:.2}m, got {:.2}m",
+        "EKF RMS horizontal error with degraded GNSS should be less than {:.2}m, got {:.2}m",
         rms_horizontal_limit,
         stats.rms_horizontal_error
     );
