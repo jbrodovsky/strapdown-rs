@@ -2425,7 +2425,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         Some(Command::DeadReckoning(args)) => {
             info!(
                 "Running in Dead Reckoning mode with input: {}",
-                &args.input.display()
+                args.input.display()
             );
             run_dead_reckoning(&args)
         }
