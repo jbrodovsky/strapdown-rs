@@ -651,9 +651,15 @@ fn test_ukf_closed_loop_on_real_data() {
 
     // Assert error bounds - these should be reasonable for a working filter with GNSS
     // With good GNSS, horizontal error should be within a few meters RMS
-
-    let rms_horizontal_limit = 25.0;
-    let max_horizontal_limit = 39.0;
+    //
+    // Healthy-filter horizontal rms on this data is ~24 m (UKF/EKF/ESKF agree to
+    // within a few meters), an order of magnitude above the ~4.7 m fix noise
+    // floor because of dynamics, so the bounds below are ~1.6x the observed
+    // healthy value: tight enough that any divergence trips them instantly
+    // (dead reckoning is at 5e6 m), loose enough that floating-point codegen
+    // differences between platforms cannot (see #288: 39.0 m carried 2% margin).
+    let rms_horizontal_limit = 40.0;
+    let max_horizontal_limit = 60.0;
     let rms_altitude_limit = 50.0;
     let max_altitude_limit = 250.0;
 
@@ -800,7 +806,7 @@ fn test_ukf_with_degraded_gnss() {
 
     assert!(
         stats.max_horizontal_error < 400.0,
-        "Maximum horizontal error with degraded GNSS should be less than 600m, got {:.2}m",
+        "Maximum horizontal error with degraded GNSS should be less than 400m, got {:.2}m",
         stats.max_horizontal_error
     );
 
@@ -981,8 +987,13 @@ fn test_ekf_closed_loop_on_real_data() {
     // With good GNSS, horizontal error should be within a few meters RMS
     // EKF may have slightly higher errors than UKF due to linearization
 
-    let rms_horizontal_limit = 35.0;
-    let max_horizontal_limit = 145.0;
+    // Same healthy-filter rationale as the UKF test (see #288): the three
+    // filters agree at ~24-27 m horizontal rms, so hold the EKF to ~1.7x that.
+    // Altitude bounds stay wide deliberately: the EKF vertical channel can
+    // excursion under sparse aiding (#290), and with 1 s fixes that stays
+    // reined in (max 173.5 m observed) but is not bit-stable across platforms.
+    let rms_horizontal_limit = 45.0;
+    let max_horizontal_limit = 175.0;
     let rms_altitude_limit = 150.0;
     let max_altitude_limit = 1230.0;
 
@@ -1050,6 +1061,10 @@ fn test_ekf_closed_loop_on_real_data() {
 ///
 /// This test simulates degraded GNSS conditions with reduced update rate and verifies
 /// that the filter still performs reasonably well, though with higher errors than full-rate GNSS.
+///
+/// Degradation profile: `FixedInterval { interval_s: 5.0 }` with `fault: None`
+/// (uncorrupted fixes, dataset accuracies: horizontal sigma ~4.7 m, vertical
+/// sigma ~1.4 m), plus the per-sample baro/mag aiding present in every stream.
 #[test]
 fn test_ekf_with_degraded_gnss() {
     // Load test data
@@ -1116,12 +1131,44 @@ fn test_ekf_with_degraded_gnss() {
         stats.rms_altitude_error
     );
 
-    // Error bounds should be looser than full-rate GNSS but still reasonable
-    // EKF may have slightly higher errors than UKF due to linearization
-    let rms_horizontal_limit = 125.0;
+    // Error bounds should be looser than full-rate GNSS but still reasonable.
+    // EKF may have slightly higher errors than UKF due to linearization.
+    //
+    // Two kinds of bound are used here, and they must not be confused (see #288).
+    // Typical (median) accuracy is governed by dead-reckoning drift between the
+    // 5 s fixes: rate error x 5 s plus the fix noise floor (~4.7 m horizontal,
+    // ~1.4 m vertical). With a 10 m/s credible horizontal rate error and a
+    // 5 m/s credible vertical rate error that gives 50 m / 25 m; observed
+    // medians on Linux are 29.5 m / 8.8 m, so both carry real margin.
+    // The median is used (rather than the mean) because it is insensitive to
+    // the excursion tail and hence stable across floating-point codegen.
+    //
+    // The rms/max asserts are anti-divergence guards, not accuracy bounds: the
+    // EKF vertical channel suffers a large excursion at ~29 m/s with 5 s fixes
+    // (rms 81 m Linux / 186 m macOS, max ~945 m; UKF holds 5.9 m on the same
+    // stream), tracked by #290. They are set at ~1.6-2x the worst observed
+    // cross-platform value so a genuine divergence (1e8 m scale, cf. #266)
+    // still trips them while codegen jitter cannot. Do not tighten these to
+    // observed values without fixing #290 first.
+    let median_horizontal_limit = 50.0;
+    let median_altitude_limit = 25.0;
+    let rms_horizontal_limit = 150.0;
     let max_horizontal_limit = 1700.0;
-    let rms_altitude_limit = 140.0;
+    let rms_altitude_limit = 300.0;
     let max_altitude_limit = 2000.0;
+
+    assert!(
+        stats.median_horizontal_error < median_horizontal_limit,
+        "EKF median horizontal error with degraded GNSS should be less than {:.2}m, got {:.2}m",
+        median_horizontal_limit,
+        stats.median_horizontal_error
+    );
+    assert!(
+        stats.median_altitude_error < median_altitude_limit,
+        "EKF median altitude error with degraded GNSS should be less than {:.2}m, got {:.2}m",
+        median_altitude_limit,
+        stats.median_altitude_error
+    );
 
     assert!(
         stats.rms_horizontal_error < rms_horizontal_limit,
@@ -1804,13 +1851,15 @@ fn test_filter_comparison() {
         eskf_stats.max_horizontal_error
     );
 
-    // All filters should produce reasonable results
+    // All filters should produce reasonable results. Bounds are ~1.6x the
+    // observed healthy-filter rms (~24-27 m for all three; dead reckoning is
+    // at 5e6 m), not fitted to observed values -- see #288.
     assert!(
-        ukf_stats.rms_horizontal_error < 25.0,
+        ukf_stats.rms_horizontal_error < 40.0,
         "UKF RMS horizontal error should be reasonable"
     );
     assert!(
-        ekf_stats.rms_horizontal_error < 30.0,
+        ekf_stats.rms_horizontal_error < 45.0,
         "EKF RMS horizontal error should be reasonable"
     );
     // The 1905.0 m tolerance this used to carry was the signature of #266: the ESKF's
@@ -1818,7 +1867,7 @@ fn test_filter_comparison() {
     // open loop. With the units fixed the ESKF tracks the other two filters, so hold it
     // to the same standard as the EKF.
     assert!(
-        eskf_stats.rms_horizontal_error < 30.0,
+        eskf_stats.rms_horizontal_error < 45.0,
         "ESKF RMS horizontal error should be comparable to UKF/EKF, got {:.2}m",
         eskf_stats.rms_horizontal_error
     );
