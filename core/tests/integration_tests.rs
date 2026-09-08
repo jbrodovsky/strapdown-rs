@@ -665,19 +665,19 @@ fn test_ukf_closed_loop_on_real_data() {
     );
     assert!(
         stats.max_horizontal_error < max_horizontal_limit,
-        "ESKF maximum horizontal error should be less than {:.2}m, got {:.2}m",
+        "UKF maximum horizontal error should be less than {:.2}m, got {:.2}m",
         max_horizontal_limit,
         stats.max_horizontal_error
     );
     assert!(
         stats.rms_altitude_error < rms_altitude_limit,
-        "ESKF RMS altitude error should be less than {:.2}m (provisional, see #286), got {:.2}m",
+        "UKF RMS altitude error should be less than {:.2}m, got {:.2}m",
         rms_altitude_limit,
         stats.rms_altitude_error
     );
     assert!(
         stats.max_altitude_error < max_altitude_limit,
-        "ESKF maximum altitude error should be less than {:.2}m (provisional, see #286), got {:.2}m",
+        "UKF maximum altitude error should be less than {:.2}m, got {:.2}m",
         max_altitude_limit,
         stats.max_altitude_error
     );
@@ -994,19 +994,19 @@ fn test_ekf_closed_loop_on_real_data() {
     );
     assert!(
         stats.max_horizontal_error < max_horizontal_limit,
-        "ESKF maximum horizontal error should be less than {:.2}m, got {:.2}m",
+        "EKF maximum horizontal error should be less than {:.2}m, got {:.2}m",
         max_horizontal_limit,
         stats.max_horizontal_error
     );
     assert!(
         stats.rms_altitude_error < rms_altitude_limit,
-        "ESKF RMS altitude error should be less than {:.2}m (provisional, see #286), got {:.2}m",
+        "EKF RMS altitude error should be less than {:.2}m, got {:.2}m",
         rms_altitude_limit,
         stats.rms_altitude_error
     );
     assert!(
         stats.max_altitude_error < max_altitude_limit,
-        "ESKF maximum altitude error should be less than {:.2}m (provisional, see #286), got {:.2}m",
+        "EKF maximum altitude error should be less than {:.2}m, got {:.2}m",
         max_altitude_limit,
         stats.max_altitude_error
     );
@@ -1131,19 +1131,19 @@ fn test_ekf_with_degraded_gnss() {
     );
     assert!(
         stats.max_horizontal_error < max_horizontal_limit,
-        "ESKF maximum horizontal error should be less than {:.2}m, got {:.2}m",
+        "EKF maximum horizontal error with degraded GNSS should be less than {:.2}m, got {:.2}m",
         max_horizontal_limit,
         stats.max_horizontal_error
     );
     assert!(
         stats.rms_altitude_error < rms_altitude_limit,
-        "ESKF RMS altitude error should be less than {:.2}m (provisional, see #286), got {:.2}m",
+        "EKF RMS altitude error with degraded GNSS should be less than {:.2}m, got {:.2}m",
         rms_altitude_limit,
         stats.rms_altitude_error
     );
     assert!(
         stats.max_altitude_error < max_altitude_limit,
-        "ESKF maximum altitude error should be less than {:.2}m (provisional, see #286), got {:.2}m",
+        "EKF maximum altitude error with degraded GNSS should be less than {:.2}m, got {:.2}m",
         max_altitude_limit,
         stats.max_altitude_error
     );
