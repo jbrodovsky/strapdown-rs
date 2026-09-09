@@ -1692,13 +1692,22 @@ impl NavigationFilter for ErrorStateKalmanFilter {
         // The analytic attitude columns differentiate w.r.t. Euler angles;
         // the error state needs derivatives w.r.t. the body-frame rotation
         // vector, so overwrite columns 6..8 with the finite-difference form
-        // (see `attitude_error_jacobian`, #286).
-        let h_att = Self::attitude_error_jacobian(
-            measurement,
-            &self.nominal_quaternion,
-            &nominal_state_vec,
-        );
-        h_error.view_mut((0, 6), (meas_dim, 3)).copy_from(&h_att);
+        // (see `attitude_error_jacobian`, #286). Measurements whose analytic
+        // attitude block is identically zero (e.g. GPS, baro) are
+        // attitude-independent, so the finite differences would be zero too
+        // and are skipped to keep them out of the hot loop.
+        let analytic_attitude_block_zero = h_error
+            .view((0, 6), (meas_dim, 3))
+            .iter()
+            .all(|v| *v == 0.0);
+        if !analytic_attitude_block_zero {
+            let h_att = Self::attitude_error_jacobian(
+                measurement,
+                &self.nominal_quaternion,
+                &nominal_state_vec,
+            );
+            h_error.view_mut((0, 6), (meas_dim, 3)).copy_from(&h_att);
+        }
 
         // Innovation covariance: S = H * P * H^T + R
         let s = &h_error * &self.error_covariance * h_error.transpose() + measurement.get_noise();

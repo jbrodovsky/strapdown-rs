@@ -138,7 +138,7 @@ pub trait MeasurementModel: Any {
     /// ```
     fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64>;
 
-    /// Wrap angular components of an innovation vector into (-π, π].
+    /// Wrap angular components of an innovation vector into [-π, π).
     ///
     /// The default is the identity: most measurements live in R^n and need no
     /// wrapping. Angular measurements must override this. A `z`/`z_hat` pair
