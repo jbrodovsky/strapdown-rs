@@ -488,7 +488,7 @@ fn process_file(
     match config.mode {
         SimulationMode::DeadReckoning => {
             info!("Running dead reckoning simulation");
-            let results = dead_reckoning(&records);
+            let results = dead_reckoning(&records)?;
             info!("Generated {} navigation results", results.len());
 
             let output_file = output.join(input_file.file_name().ok_or_else(|| {
@@ -788,7 +788,7 @@ fn run_from_config(
             validate_output_path(parent)?;
         }
         let mut rng = StdRng::seed_from_u64(syn_config.seed);
-        let (truth, sensors) = generate_synthetic(&syn_config, &mut rng);
+        let (truth, sensors) = generate_synthetic(&syn_config, &mut rng)?;
         let n = truth.len();
         info!(
             "Generated {} synthetic records ({:.1} s at {:.0} Hz)",
@@ -986,7 +986,7 @@ fn run_synthetic(args: &SyntheticArgs) -> Result<(), Box<dyn Error>> {
     };
 
     let mut rng = StdRng::seed_from_u64(args.seed);
-    let (truth, sensors) = generate_synthetic(&config, &mut rng);
+    let (truth, sensors) = generate_synthetic(&config, &mut rng)?;
 
     let n = truth.len();
     info!(
@@ -1037,7 +1037,7 @@ fn run_dead_reckoning(args: &SimArgs) -> Result<(), Box<dyn Error>> {
             "Running dead reckoning simulation on {} records",
             records.len()
         );
-        let results = dead_reckoning(&records);
+        let results = dead_reckoning(&records)?;
         info!("Generated {} navigation results", results.len());
 
         // Write results to CSV

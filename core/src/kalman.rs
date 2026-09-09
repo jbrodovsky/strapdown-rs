@@ -8,7 +8,8 @@ use crate::StrapdownError;
 use crate::linalg::{matrix_square_root, robust_spd_solve, symmetrize};
 use crate::measurements::MeasurementModel;
 use crate::{
-    IMUData, NavigationFilter, StrapdownState, forward, wrap_to_2pi, wrap_to_180, wrap_to_360,
+    IMUData, ImuSample, NavigationFilter, StrapdownState, mechanize, wrap_to_2pi, wrap_to_180,
+    wrap_to_360,
 };
 
 use std::fmt::{self, Debug, Display};
@@ -373,7 +374,7 @@ impl NavigationFilter for UnscentedKalmanFilter {
                 accel: imu_input.accel - &accel_biases,
                 gyro: imu_input.gyro - &gyro_biases,
             };
-            forward(&mut state, imu_data, dt);
+            mechanize(&mut state, &ImuSample::from_rates(&imu_data, dt))?;
             sigma_point_vec[0] = state.latitude;
             sigma_point_vec[1] = state.longitude;
             sigma_point_vec[2] = state.altitude;
@@ -835,7 +836,7 @@ impl NavigationFilter for ExtendedKalmanFilter {
         };
 
         // Nonlinear state propagation
-        forward(&mut state, corrected_imu, dt);
+        mechanize(&mut state, &ImuSample::from_rates(&corrected_imu, dt))?;
 
         // Update state vector with propagated values
         self.mean_state[0] = state.latitude;
@@ -1615,7 +1616,10 @@ impl NavigationFilter for ErrorStateKalmanFilter {
             accel: corrected_accel,
             gyro: corrected_gyro,
         };
-        forward(&mut nominal_state, corrected_imu, dt);
+        mechanize(
+            &mut nominal_state,
+            &ImuSample::from_rates(&corrected_imu, dt),
+        )?;
 
         // Update nominal state from propagation
         self.nominal_latitude = nominal_state.latitude;

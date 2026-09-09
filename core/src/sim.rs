@@ -65,7 +65,7 @@ use crate::earth::METERS_TO_DEGREES;
 use crate::kalman::{InitialState, UnscentedKalmanFilter};
 use crate::messages::{Event, EventStream, GnssFaultModel, GnssScheduler};
 
-use crate::{IMUData, StrapdownState, forward};
+use crate::{IMUData, ImuSample, StrapdownState, mechanize};
 use health::HealthMonitor;
 
 // Re-export execution and health types for easier access in tests and external users
@@ -1892,9 +1892,12 @@ impl NavigationResult {
 /// # Returns
 /// * `Vec<NavigationResult>` containing the sequence of StrapdownState instances over time,
 ///   along with timestamps and time differences.
-pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
+/// # Errors
+/// Propagated from [`crate::mechanize`] -- chiefly a non-positive `dt`, which duplicate or
+/// out-of-order record timestamps produce.
+pub fn dead_reckoning(records: &[TestDataRecord]) -> Result<Vec<NavigationResult>, StrapdownError> {
     if records.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     // Initialize the result vector
     let mut results = Vec::with_capacity(records.len());
@@ -1928,11 +1931,11 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
             accel: Vector3::new(record.acc_x, record.acc_y, record.acc_z),
             gyro: Vector3::new(record.gyro_x, record.gyro_y, record.gyro_z),
         };
-        forward(&mut state, imu_data, dt);
+        mechanize(&mut state, &ImuSample::from_rates(&imu_data, dt))?;
         results.push(NavigationResult::from((&current_time, &state)));
         previous_time = record.time;
     }
-    results
+    Ok(results)
 }
 /// Generic closed-loop simulation runner for any NavigationFilter
 ///
@@ -4026,10 +4029,12 @@ fn compute_perfect_imu(
 /// # Arguments
 /// - `config` - Synthetic trajectory configuration
 /// - `rng` - Seeded random number generator for reproducibility
+/// # Errors
+/// Propagated from [`crate::mechanize`] while propagating the truth trajectory.
 pub fn generate_synthetic(
     config: &SyntheticConfig,
     rng: &mut rand::rngs::StdRng,
-) -> (Vec<NavigationResult>, Vec<TestDataRecord>) {
+) -> Result<(Vec<NavigationResult>, Vec<TestDataRecord>), StrapdownError> {
     use crate::earth;
     use rand::Rng;
     use rand_distr::Normal;
@@ -4244,10 +4249,10 @@ pub fn generate_synthetic(
         });
 
         // Propagate truth state with perfect IMU (noise-free)
-        crate::forward(&mut state, perfect_imu, dt);
+        crate::mechanize(&mut state, &crate::ImuSample::from_rates(&perfect_imu, dt))?;
     }
 
-    (truth_records, sensor_records)
+    Ok((truth_records, sensor_records))
 }
 
 #[cfg(test)]
@@ -4828,7 +4833,7 @@ mod tests {
     }
     #[test]
     fn test_dead_reckoning_empty_records() {
-        let results = dead_reckoning(&[]);
+        let results = dead_reckoning(&[]).unwrap();
         assert!(results.is_empty());
     }
     #[test]
@@ -4851,7 +4856,7 @@ mod tests {
             gyro_z: 0.0,
             ..Default::default()
         };
-        let results = dead_reckoning(&[rec]);
+        let results = dead_reckoning(&[rec]).unwrap();
         assert_eq!(results.len(), 1);
     }
     #[test]
