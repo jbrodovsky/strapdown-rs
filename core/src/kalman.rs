@@ -218,9 +218,9 @@ impl UnscentedKalmanFilter {
                 initial_state.northward_velocity,
                 initial_state.eastward_velocity,
                 initial_state.vertical_velocity,
-                initial_state.roll,
-                initial_state.pitch,
-                initial_state.yaw,
+                initial_state.roll.to_radians(),
+                initial_state.pitch.to_radians(),
+                initial_state.yaw.to_radians(),
             ]
         } else {
             vec![
@@ -402,7 +402,12 @@ impl NavigationFilter for UnscentedKalmanFilter {
             cross_covariance += self.weights_cov[i] * state_diff * measurement_diff.transpose();
         }
         let k = self.robust_kalman_gain(&cross_covariance, &s);
-        self.mean_state += &k * (measurement.get_measurement(&self.mean_state) - &z_hat);
+        let mut innovation = measurement.get_measurement(&self.mean_state) - &z_hat;
+        // Keep angular innovations on the circle (see `wrap_residual`, #286).
+        // (The sigma-point spread above is left linearised: with a sane yaw
+        // uncertainty the points do not straddle the cut.)
+        measurement.wrap_residual(&mut innovation);
+        self.mean_state += &k * innovation;
         self.mean_state[6] = wrap_to_2pi(self.mean_state[6]);
         self.mean_state[7] = wrap_to_2pi(self.mean_state[7]);
         self.mean_state[8] = wrap_to_2pi(self.mean_state[8]);
@@ -644,9 +649,9 @@ impl ExtendedKalmanFilter {
                 initial_state.northward_velocity,
                 initial_state.eastward_velocity,
                 initial_state.vertical_velocity,
-                initial_state.roll,
-                initial_state.pitch,
-                initial_state.yaw,
+                initial_state.roll.to_radians(),
+                initial_state.pitch.to_radians(),
+                initial_state.yaw.to_radians(),
             ]
         } else {
             vec![
@@ -906,7 +911,9 @@ impl NavigationFilter for ExtendedKalmanFilter {
                 .transpose();
 
         // Innovation (measurement residual): nu = z - z_hat
-        let innovation = measurement.get_measurement(&self.mean_state) - &z_hat;
+        let mut innovation = measurement.get_measurement(&self.mean_state) - &z_hat;
+        // Keep angular innovations on the circle (see `wrap_residual`, #286).
+        measurement.wrap_residual(&mut innovation);
 
         // State update: x = x + K * nu
         self.mean_state += &k * innovation;
@@ -1198,6 +1205,25 @@ impl Display for ErrorStateKalmanFilter {
     }
 }
 
+/// Relative floor used to keep the ESKF error covariance numerically conditioned.
+///
+/// The ESKF error state spans twelve orders of magnitude in units: latitude and
+/// longitude errors are radians (a 1 m error is ~1.6e-7 rad, so ~2.5e-14 rad² of
+/// variance), while accelerometer bias errors are m/s². A single absolute value
+/// added to every diagonal entry cannot serve both -- the 1e-9 this used to add was
+/// simultaneously ~(200 m)² of bogus horizontal position variance and a rounding
+/// error for velocity, and it silently overwrote any deliberately small covariance
+/// (freezing a state by giving it a 1e-12 variance did nothing). See #266.
+const ESKF_COVARIANCE_JITTER_RELATIVE: f64 = 1e-9;
+
+/// Anti-windup caps for ESKF bias estimates (see `inject_error_state`, #286).
+///
+/// Orders of magnitude above legitimate consumer-MEMS turn-on biases
+/// (~0.1 m/s², ~0.01 rad/s) and far below the runaway values a persistently
+/// faulty aiding sensor can otherwise produce (9 m/s², 6 rad/s).
+const MAX_ACCEL_BIAS_MPS2: f64 = 2.0;
+const MAX_GYRO_BIAS_RPS: f64 = 0.05;
+
 impl ErrorStateKalmanFilter {
     /// Create a new Error-State Kalman Filter
     ///
@@ -1232,15 +1258,20 @@ impl ErrorStateKalmanFilter {
         error_covariance_diagonal: Vec<f64>,
         process_noise: DMatrix<f64>,
     ) -> ErrorStateKalmanFilter {
-        // Convert initial Euler angles to quaternion for nominal state
+        // Convert initial Euler angles to quaternion for nominal state.
+        // `from_euler_angles` takes radians unconditionally, so degree inputs
+        // must be converted here. (This was previously inverted -- radian
+        // inputs were converted *to* degrees -- which built a wildly wrong
+        // initial DCM whenever the initial attitude was non-zero and drove
+        // the vertical channel unstable within seconds. See #286.)
         let (roll, pitch, yaw) = if initial_state.in_degrees {
-            (initial_state.roll, initial_state.pitch, initial_state.yaw)
-        } else {
             (
-                initial_state.roll.to_degrees(),
-                initial_state.pitch.to_degrees(),
-                initial_state.yaw.to_degrees(),
+                initial_state.roll.to_radians(),
+                initial_state.pitch.to_radians(),
+                initial_state.yaw.to_radians(),
             )
+        } else {
+            (initial_state.roll, initial_state.pitch, initial_state.yaw)
         };
 
         // Convert Euler angles to quaternion (XYZ sequence: roll, pitch, yaw)
@@ -1286,6 +1317,23 @@ impl ErrorStateKalmanFilter {
         }
     }
 
+    /// Regularise the error covariance after a predict or update.
+    ///
+    /// Symmetrises, then adds a jitter proportional to each state's own variance
+    /// rather than a single absolute value shared across states whose units differ
+    /// by twelve orders of magnitude. The process-noise diagonal supplies a
+    /// per-state floor so a state whose variance has collapsed to zero still gets a
+    /// jitter in its own units.
+    fn regularize_covariance(&mut self) {
+        self.error_covariance = symmetrize(&self.error_covariance);
+        for i in 0..15 {
+            let scale = self.error_covariance[(i, i)]
+                .abs()
+                .max(self.process_noise[(i, i)].abs());
+            self.error_covariance[(i, i)] += ESKF_COVARIANCE_JITTER_RELATIVE * scale;
+        }
+    }
+
     /// Inject error state into nominal state and reset error state to zero
     ///
     /// This is the key operation that distinguishes ESKF from full-state EKF.
@@ -1310,12 +1358,22 @@ impl ErrorStateKalmanFilter {
     ///
     /// The error state is then reset: $\delta x \leftarrow 0$
     fn inject_error_state(&mut self) {
-        // Position error injection (convert error in meters to lat/lon in radians)
-        let lat_deg = self.nominal_latitude.to_degrees();
-        let (r_n, r_e, _r_p) = crate::earth::principal_radii(&lat_deg, &self.nominal_altitude);
-
-        self.nominal_latitude += self.error_state[0] / r_n;
-        self.nominal_longitude += self.error_state[1] / (r_e * self.nominal_latitude.cos());
+        // Position error injection.
+        //
+        // delta_p is carried in the SAME units the error-state transition Jacobian and
+        // the measurement Jacobians use: radians for latitude/longitude, metres for
+        // altitude. `error_state_transition_jacobian` sets f[(0,3)] = dt / r_n, which
+        // converts a velocity error in m/s into a *radian* position-error rate, and the
+        // GPS position Jacobian is the identity against a radian-valued measurement
+        // (see `measurements::GPSPositionMeasurement::get_measurement`). So the
+        // correction is applied directly, with no metres-to-radians conversion.
+        //
+        // Dividing by the principal radii here (as this did before) rescaled the
+        // horizontal correction by ~1/6.4e6, leaving the horizontal channel effectively
+        // open loop: the lat/lon innovation never nulled, and the filter drove the
+        // residual into velocity, tilt and accelerometer bias instead. See #266.
+        self.nominal_latitude += self.error_state[0];
+        self.nominal_longitude += self.error_state[1];
         self.nominal_altitude += self.error_state[2];
 
         // Velocity error injection
@@ -1368,8 +1426,86 @@ impl ErrorStateKalmanFilter {
         self.nominal_gyro_bias[1] += self.error_state[13];
         self.nominal_gyro_bias[2] += self.error_state[14];
 
+        // Anti-windup: keep bias estimates within physically plausible bounds.
+        //
+        // Biases are observed only indirectly (bias -> tilt -> velocity), so a
+        // persistently faulty aiding sensor (e.g. an uncalibrated phone
+        // magnetometer disagreeing with yaw by ~80°, see #286) can drag them to
+        // physically impossible values (9 m/s², 6 rad/s), after which the
+        // bias-corrupted nominal propagation defeats every other update. The
+        // EKF never hits this because its bias states never move at all; the
+        // ESKF must actively defend the linear regime its error model assumes.
+        // Caps are set orders of magnitude above legitimate consumer-MEMS
+        // turn-on biases, so they never bind in normal operation.
+        for b in self.nominal_accel_bias.iter_mut() {
+            *b = b.clamp(-MAX_ACCEL_BIAS_MPS2, MAX_ACCEL_BIAS_MPS2);
+        }
+        for b in self.nominal_gyro_bias.iter_mut() {
+            *b = b.clamp(-MAX_GYRO_BIAS_RPS, MAX_GYRO_BIAS_RPS);
+        }
+
         // Reset error state to zero
         self.error_state.fill(0.0);
+    }
+
+    /// Finite-difference Jacobian of the expected measurement with respect
+    /// to the body-frame attitude error vector.
+    ///
+    /// The analytic Jacobians supplied by measurement models differentiate
+    /// with respect to Euler angles, but the ESKF error state carries a
+    /// body-frame rotation vector. The two parameterisations are related by a
+    /// nontrivial map that degenerates at high pitch, so copying the analytic
+    /// attitude columns into the error-state `H` rotates corrections onto the
+    /// wrong axes (see #286). Differentiating the expected measurement
+    /// numerically with the *same* perturbation convention the injection uses
+    /// (right-multiplied body-frame small rotation) is exact by construction
+    /// and generic across measurement types, including future
+    /// attitude-dependent ones.
+    ///
+    /// Only the attitude columns are produced here; position/velocity columns
+    /// share units between the 9-state and error-state forms and are copied
+    /// from the analytic Jacobian by the caller.
+    ///
+    /// Note the differentiation target: it must be the expected measurement
+    /// `h(x)`, not the innovation `z - h(x)`, because the update always forms
+    /// the residual as `z - h(x)` while taking `H = dh/dx`. Differentiating
+    /// the innovation would flip the sign of every column that `z` does not
+    /// share (e.g. yaw), destabilising the very channel being corrected.
+    pub(crate) fn attitude_error_jacobian<M: MeasurementModel + ?Sized>(
+        measurement: &M,
+        nominal_quaternion_wxyz: &nalgebra::Vector4<f64>,
+        nominal_state_vec: &DVector<f64>,
+    ) -> DMatrix<f64> {
+        const EPS: f64 = 1e-8;
+        let meas_dim = measurement.get_dimension();
+        let mut h_att = DMatrix::<f64>::zeros(meas_dim, 3);
+        let q_nom = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+            nominal_quaternion_wxyz[0],
+            nominal_quaternion_wxyz[1],
+            nominal_quaternion_wxyz[2],
+            nominal_quaternion_wxyz[3],
+        ));
+        let h_base = measurement.get_expected_measurement(nominal_state_vec);
+        for i in 0..3 {
+            let axis = if i == 0 {
+                Vector3::x_axis()
+            } else if i == 1 {
+                Vector3::y_axis()
+            } else {
+                Vector3::z_axis()
+            };
+            let q_pert = q_nom * UnitQuaternion::from_axis_angle(&axis, EPS);
+            let euler_pert = q_pert.euler_angles();
+            let mut vec_pert = nominal_state_vec.clone();
+            vec_pert[6] = euler_pert.0;
+            vec_pert[7] = euler_pert.1;
+            vec_pert[8] = euler_pert.2;
+            let h_pert = measurement.get_expected_measurement(&vec_pert);
+            for r in 0..meas_dim {
+                h_att[(r, i)] = (h_pert[r] - h_base[r]) / EPS;
+            }
+        }
+        h_att
     }
 }
 
@@ -1475,14 +1611,7 @@ impl NavigationFilter for ErrorStateKalmanFilter {
         self.error_covariance =
             &f_error * &self.error_covariance * f_error.transpose() + &self.process_noise;
 
-        // Ensure covariance remains symmetric and positive semi-definite
-        self.error_covariance = symmetrize(&self.error_covariance);
-
-        // Add small regularization to prevent numerical issues
-        let eps = 1e-9;
-        for i in 0..15 {
-            self.error_covariance[(i, i)] += eps;
-        }
+        self.regularize_covariance();
     }
 
     /// Update step: compute error state correction and inject into nominal state
@@ -1553,6 +1682,33 @@ impl NavigationFilter for ErrorStateKalmanFilter {
         h_error.view_mut((0, 0), (meas_dim, 9)).copy_from(&h_9state);
         // Measurement doesn't depend on biases (columns 9-14 remain zero)
 
+        // Innovation (measurement residual): nu = z - z_hat. Computed here
+        // (rather than below) because the attitude-column correction needs it.
+        // Angular components are wrapped onto the circle first so a z/z_hat
+        // pair straddling the branch cut cannot inject a phantom ±2π kick.
+        let mut innovation = measurement.get_measurement(&nominal_state_vec) - &z_hat;
+        measurement.wrap_residual(&mut innovation);
+
+        // The analytic attitude columns differentiate w.r.t. Euler angles;
+        // the error state needs derivatives w.r.t. the body-frame rotation
+        // vector, so overwrite columns 6..8 with the finite-difference form
+        // (see `attitude_error_jacobian`, #286). Measurements whose analytic
+        // attitude block is identically zero (e.g. GPS, baro) are
+        // attitude-independent, so the finite differences would be zero too
+        // and are skipped to keep them out of the hot loop.
+        let analytic_attitude_block_zero = h_error
+            .view((0, 6), (meas_dim, 3))
+            .iter()
+            .all(|v| *v == 0.0);
+        if !analytic_attitude_block_zero {
+            let h_att = Self::attitude_error_jacobian(
+                measurement,
+                &self.nominal_quaternion,
+                &nominal_state_vec,
+            );
+            h_error.view_mut((0, 6), (meas_dim, 3)).copy_from(&h_att);
+        }
+
         // Innovation covariance: S = H * P * H^T + R
         let s = &h_error * &self.error_covariance * h_error.transpose() + measurement.get_noise();
 
@@ -1562,11 +1718,8 @@ impl NavigationFilter for ErrorStateKalmanFilter {
             * robust_spd_solve(&symmetrize(&s), &DMatrix::identity(s.nrows(), s.ncols()))
                 .transpose();
 
-        // Innovation (measurement residual): nu = z - z_hat
-        let innovation = measurement.get_measurement(&nominal_state_vec) - &z_hat;
-
         // Error state update: δx = K * nu
-        self.error_state = &k * innovation;
+        self.error_state = &k * &innovation;
 
         // Inject error state into nominal state and reset
         self.inject_error_state();
@@ -1578,14 +1731,7 @@ impl NavigationFilter for ErrorStateKalmanFilter {
         self.error_covariance =
             &i_kh * &self.error_covariance * i_kh.transpose() + &k * r * k.transpose();
 
-        // Ensure covariance remains symmetric and positive semi-definite
-        self.error_covariance = symmetrize(&self.error_covariance);
-
-        // Add small regularization
-        let eps = 1e-9;
-        for i in 0..15 {
-            self.error_covariance[(i, i)] += eps;
-        }
+        self.regularize_covariance();
     }
 
     /// Get the current nominal state estimate
@@ -3094,6 +3240,119 @@ mod tests {
 
     // ==================== Error-State Kalman Filter Tests ====================
 
+    /// #266: the position rows of the ESKF error state are radians, not metres.
+    ///
+    /// `error_state_transition_jacobian` produces a radian position-error rate
+    /// (`f[(0,3)] = dt / r_n`) and the GPS position Jacobian is the identity against a
+    /// radian-valued measurement, so the injection must add the correction directly.
+    /// Dividing by the principal radii here rescaled every horizontal correction by
+    /// ~1/6.4e6 and left the horizontal channel effectively open loop.
+    #[test]
+    fn eskf_position_error_injection_is_in_radians() {
+        let mut eskf = ErrorStateKalmanFilter::new(
+            UKF_PARAMS,
+            IMU_BIASES.to_vec(),
+            COVARIANCE_DIAGONAL.to_vec(),
+            DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
+        );
+        // Put the filter somewhere with a non-trivial cos(latitude) so a stray
+        // 1/(r_e cos(lat)) factor cannot coincidentally cancel.
+        eskf.nominal_latitude = 45.0_f64.to_radians();
+        eskf.nominal_longitude = (-122.0_f64).to_radians();
+        eskf.nominal_altitude = 100.0;
+
+        let lat0 = eskf.nominal_latitude;
+        let lon0 = eskf.nominal_longitude;
+        let alt0 = eskf.nominal_altitude;
+
+        let d_lat = 1.0e-6; // radians (~6.4 m)
+        let d_lon = 2.0e-6; // radians
+        let d_alt = 3.0; // metres
+        eskf.error_state[0] = d_lat;
+        eskf.error_state[1] = d_lon;
+        eskf.error_state[2] = d_alt;
+
+        eskf.inject_error_state();
+
+        // Tolerance is bounded by double-precision cancellation at ~0.8 rad
+        // (eps * 0.8 ~ 1.7e-16), not by the arithmetic under test.
+        assert_approx_eq!(eskf.nominal_latitude - lat0, d_lat, 1e-15);
+        assert_approx_eq!(eskf.nominal_longitude - lon0, d_lon, 1e-15);
+        assert_approx_eq!(eskf.nominal_altitude - alt0, d_alt, 1e-12);
+
+        // The specific regression: treating delta_p as metres would divide by the
+        // principal radii, making the applied correction ~6.4e6 times too small.
+        assert!(
+            (eskf.nominal_latitude - lat0) > d_lat * 0.5,
+            "latitude correction was rescaled -- delta_p is being treated as metres (#266)"
+        );
+    }
+
+    /// #266: a filter whose tests pass by exact floating-point bit pattern is not
+    /// tested. Perturbing an input by ~1e-12 relative must not change the answer by a
+    /// physically meaningful amount.
+    ///
+    /// Before the fix, a 1e-14 perturbation grew ~1% per sample and reached 1.5e8 m of
+    /// altitude over a 5,366-sample run.
+    #[test]
+    fn eskf_is_insensitive_to_tiny_input_perturbation() {
+        fn run(perturb: f64) -> DVector<f64> {
+            let mut eskf = ErrorStateKalmanFilter::new(
+                UKF_PARAMS,
+                IMU_BIASES.to_vec(),
+                vec![1e-12; 15],
+                DMatrix::from_diagonal(&DVector::from_vec(vec![1e-12; 15])),
+            );
+            let dt = 0.01;
+            for step in 0..2000 {
+                // Gentle, non-degenerate motion so the attitude is never identity.
+                let t = f64::from(step) * dt;
+                let imu = IMUData {
+                    accel: Vector3::new(0.05 * t.cos() * (1.0 + perturb), -0.03 * t.sin(), 9.81),
+                    gyro: Vector3::new(0.001, -0.002, 0.01),
+                };
+                eskf.predict(&imu, dt);
+
+                if step % 25 == 0 {
+                    let meas = crate::measurements::GPSPositionMeasurement {
+                        latitude: 0.0,
+                        longitude: 0.0,
+                        altitude: 0.0,
+                        horizontal_noise_std: 3.0,
+                        vertical_noise_std: 5.0,
+                    };
+                    eskf.update(&meas);
+                }
+            }
+            eskf.get_estimate()
+        }
+
+        let baseline = run(0.0);
+        let perturbed = run(1e-12);
+
+        for i in 0..15 {
+            assert!(
+                baseline[i].is_finite() && perturbed[i].is_finite(),
+                "state {i} is not finite"
+            );
+        }
+
+        // Altitude is the channel that ran away. A 1e-12 relative input change must
+        // not move it by even a millimetre.
+        let d_alt = (baseline[2] - perturbed[2]).abs();
+        assert!(
+            d_alt < 1e-3,
+            "altitude moved {d_alt:e} m from a 1e-12 relative input perturbation -- \
+             the filter is amplifying rounding noise (#266)"
+        );
+
+        let d_vel = (baseline[5] - perturbed[5]).abs();
+        assert!(
+            d_vel < 1e-4,
+            "vertical velocity moved {d_vel:e} m/s from a 1e-12 relative perturbation (#266)"
+        );
+    }
+
     #[test]
     fn eskf_construction() {
         // Test ESKF construction
@@ -3470,5 +3729,198 @@ mod tests {
         for i in 6..9 {
             assert!(state[i].is_finite()); // angles
         }
+    }
+
+    /// #286: filter constructors must honour `in_degrees` for attitude.
+    ///
+    /// The ESKF built its initial quaternion from degree values when radians
+    /// were supplied (and vice versa), producing a wildly wrong initial DCM
+    /// for any non-zero attitude; the EKF/UKF dropped the attitude conversion
+    /// in the degrees branch. All three must agree across unit modes and match
+    /// a direct radians construction.
+    #[test]
+    fn filter_init_attitude_respects_angle_units() {
+        let roll_rad: f64 = 0.1626;
+        let pitch_rad: f64 = -1.3395;
+        let yaw_rad: f64 = 0.1792;
+        let mk = |in_degrees: bool| InitialState {
+            latitude: 0.7,
+            longitude: -1.3,
+            altitude: 100.0,
+            northward_velocity: 0.0,
+            eastward_velocity: 0.0,
+            vertical_velocity: 0.0,
+            roll: if in_degrees {
+                roll_rad.to_degrees()
+            } else {
+                roll_rad
+            },
+            pitch: if in_degrees {
+                pitch_rad.to_degrees()
+            } else {
+                pitch_rad
+            },
+            yaw: if in_degrees {
+                yaw_rad.to_degrees()
+            } else {
+                yaw_rad
+            },
+            in_degrees,
+            is_enu: true,
+        };
+        let q15 = DMatrix::identity(15, 15);
+
+        // ESKF: both unit modes must yield the same nominal quaternion...
+        let eskf_rad = ErrorStateKalmanFilter::new(
+            mk(false),
+            IMU_BIASES.to_vec(),
+            COVARIANCE_DIAGONAL.to_vec(),
+            DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
+        );
+        let eskf_deg = ErrorStateKalmanFilter::new(
+            mk(true),
+            IMU_BIASES.to_vec(),
+            COVARIANCE_DIAGONAL.to_vec(),
+            DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
+        );
+        for i in 0..4 {
+            assert_approx_eq!(
+                eskf_rad.nominal_quaternion[i],
+                eskf_deg.nominal_quaternion[i],
+                1e-12
+            );
+        }
+        // ...and it must equal the direct radians construction (catches an
+        // inverted conversion, which also agrees across modes).
+        let expected = UnitQuaternion::from_rotation_matrix(&Rotation3::from_euler_angles(
+            roll_rad, pitch_rad, yaw_rad,
+        ));
+        assert_approx_eq!(eskf_rad.nominal_quaternion[0], expected.w, 1e-12);
+        assert_approx_eq!(eskf_rad.nominal_quaternion[1], expected.i, 1e-12);
+        assert_approx_eq!(eskf_rad.nominal_quaternion[2], expected.j, 1e-12);
+        assert_approx_eq!(eskf_rad.nominal_quaternion[3], expected.k, 1e-12);
+
+        // EKF/UKF: degree inputs must land in the mean state as radians.
+        let ekf = ExtendedKalmanFilter::new(
+            mk(true),
+            IMU_BIASES.to_vec(),
+            vec![1e-6; 15],
+            q15.clone(),
+            true,
+        );
+        assert_approx_eq!(ekf.mean_state[6], roll_rad, 1e-12);
+        assert_approx_eq!(ekf.mean_state[7], pitch_rad, 1e-12);
+        assert_approx_eq!(ekf.mean_state[8], yaw_rad, 1e-12);
+        let ukf = UnscentedKalmanFilter::new(
+            mk(true),
+            IMU_BIASES.to_vec(),
+            None,
+            vec![1e-6; 15],
+            q15,
+            1e-3,
+            2.0,
+            0.0,
+        );
+        assert_approx_eq!(ukf.mean_state[6], roll_rad, 1e-12);
+        assert_approx_eq!(ukf.mean_state[7], pitch_rad, 1e-12);
+        assert_approx_eq!(ukf.mean_state[8], yaw_rad, 1e-12);
+    }
+
+    /// #286: bias injection clamps to physically plausible bounds.
+    #[test]
+    fn eskf_inject_clamps_biases_to_physical_bounds() {
+        let mut eskf = ErrorStateKalmanFilter::new(
+            InitialState::default(),
+            IMU_BIASES.to_vec(),
+            COVARIANCE_DIAGONAL.to_vec(),
+            DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
+        );
+        eskf.error_state[9] = 5.0;
+        eskf.error_state[11] = -5.0;
+        eskf.error_state[12] = 1.0;
+        eskf.error_state[14] = -1.0;
+        eskf.inject_error_state();
+        assert_approx_eq!(eskf.nominal_accel_bias[0], MAX_ACCEL_BIAS_MPS2, 1e-12);
+        assert_approx_eq!(eskf.nominal_accel_bias[1], 0.0, 1e-12);
+        assert_approx_eq!(eskf.nominal_accel_bias[2], -MAX_ACCEL_BIAS_MPS2, 1e-12);
+        assert_approx_eq!(eskf.nominal_gyro_bias[0], MAX_GYRO_BIAS_RPS, 1e-12);
+        assert_approx_eq!(eskf.nominal_gyro_bias[1], 0.0, 1e-12);
+        assert_approx_eq!(eskf.nominal_gyro_bias[2], -MAX_GYRO_BIAS_RPS, 1e-12);
+        // Error state still resets to zero after a clamped injection.
+        assert!(eskf.error_state.iter().all(|v| *v == 0.0));
+    }
+
+    /// #286: finite-difference attitude columns carry the expected-measurement
+    /// sensitivity (yaw-only for the mag model), not the tilt sensitivity of
+    /// the raw sensor reading.
+    ///
+    /// The update always forms the residual as `z - h(x)` with `H = dh/dx`,
+    /// so the attitude block must differentiate `h` (here: state yaw), whose
+    /// rotation-vector derivative at level attitude is `[0, 0, 1]`. In
+    /// particular the FD yaw column must equal the analytic `+1.0`, while the
+    /// FD tilt columns are ~0 -- the analytic tilt columns differentiate `z`,
+    /// not `h`, and copying them into an error-state `H` lets the update feed
+    /// tilt sensitivity back with the wrong sign whenever the tilt derivatives
+    /// exceed 1 (e.g. at high pitch), amplifying the residual instead of
+    /// nulling it.
+    #[test]
+    fn fd_attitude_columns_match_analytic_at_level_attitude() {
+        use crate::measurements::{MagnetometerYawMeasurement, MeasurementModel};
+
+        let m = MagnetometerYawMeasurement {
+            mag_x: 20.0,
+            mag_y: 5.0,
+            mag_z: -45.0,
+            noise_std: 0.2,
+            apply_declination: false,
+            year: 2025,
+            day_of_year: 1,
+        };
+        // Level attitude with a non-zero yaw (exercises the yaw column).
+        let nominal = DVector::from_vec(vec![0.7, -1.3, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.3]);
+        let q = UnitQuaternion::from_rotation_matrix(&Rotation3::from_euler_angles(0.0, 0.0, 0.3));
+        let q_wxyz = nalgebra::Vector4::new(q.w, q.i, q.j, q.k);
+        let analytic = m.get_jacobian(&nominal);
+        let fd = ErrorStateKalmanFilter::attitude_error_jacobian(&m, &q_wxyz, &nominal);
+        // Yaw column agrees with the analytic +1.0 ...
+        assert_approx_eq!(fd[(0, 2)], analytic[(0, 8)], 1e-6);
+        assert_approx_eq!(fd[(0, 2)], 1.0, 1e-6);
+        // ... while the tilt columns are ~0 (h is yaw-only).
+        assert_approx_eq!(fd[(0, 0)], 0.0, 1e-6);
+        assert_approx_eq!(fd[(0, 1)], 0.0, 1e-6);
+    }
+
+    /// #286: at high pitch the Euler and rotation-vector parameterisations
+    /// genuinely differ, so the FD columns must differ from the analytic copy
+    /// there. Locks in *why* the FD form exists (fails if someone reverts to
+    /// copying the analytic attitude columns into the error-state H).
+    #[test]
+    fn fd_attitude_columns_differ_from_analytic_at_high_pitch() {
+        use crate::measurements::{MagnetometerYawMeasurement, MeasurementModel};
+
+        let m = MagnetometerYawMeasurement {
+            mag_x: 20.0,
+            mag_y: 5.0,
+            mag_z: -45.0,
+            noise_std: 0.2,
+            apply_declination: false,
+            year: 2025,
+            day_of_year: 1,
+        };
+        // Representative of the test dataset's mount: pitched up steeply.
+        let nominal = DVector::from_vec(vec![0.7, -1.3, 100.0, 0.0, 0.0, 0.0, 0.16, -1.34, 0.18]);
+        let q =
+            UnitQuaternion::from_rotation_matrix(&Rotation3::from_euler_angles(0.16, -1.34, 0.18));
+        let q_wxyz = nalgebra::Vector4::new(q.w, q.i, q.j, q.k);
+        let analytic = m.get_jacobian(&nominal);
+        let fd = ErrorStateKalmanFilter::attitude_error_jacobian(&m, &q_wxyz, &nominal);
+        let max_diff = (0..3)
+            .map(|i| (fd[(0, i)] - analytic[(0, 6 + i)]).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            max_diff > 0.05,
+            "FD and analytic attitude columns should differ at high pitch, max diff {}",
+            max_diff
+        );
     }
 }
