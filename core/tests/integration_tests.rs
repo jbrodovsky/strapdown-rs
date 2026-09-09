@@ -28,6 +28,7 @@
 //! 4. The closed-loop filter outperforms dead reckoning
 use std::path::Path;
 
+use strapdown::NavigationFilter;
 use strapdown::StrapdownState;
 use strapdown::earth::haversine_distance;
 use strapdown::kalman::{
@@ -1367,19 +1368,20 @@ fn test_eskf_closed_loop_on_real_data() {
     // Horizontal bounds are physical, not fitted. With continuous GNSS aiding at a
     // few metres of position noise, a correctly closed loosely-coupled filter must
     // stay in the tens of metres; the UKF and EKF sit at 23.6 m and 26.6 m rms on this
-    // dataset and the ESKF is now at 24.1 m. 100 m rms / 250 m peak leaves roughly a
-    // 4x margin while still failing loudly if the horizontal loop opens again (before
-    // #266 this run produced 1734 m rms).
-    let rms_horizontal_limit = 100.0;
-    let max_horizontal_limit = 250.0;
+    // dataset and the ESKF is now at 23.5 m. The limits below match the UKF test's
+    // (~1.7x observed) so all three filters are held to the same standard: they
+    // still fail loudly if the horizontal loop opens again (before #266 this run
+    // produced 1734 m rms).
+    let rms_horizontal_limit = 40.0;
+    let max_horizontal_limit = 60.0;
 
-    // PROVISIONAL, not physical. The vertical channel is still broken -- see #286.
-    // The UKF achieves 2.8 m rms / 12.1 m peak on this same data; the ESKF is at
-    // 127.6 m / 379.6 m. These ceilings only pin the current behaviour so a further
-    // regression is caught, and must be tightened to UKF-comparable values when #286
-    // lands. Do not treat them as a statement about what the filter should achieve.
-    let rms_altitude_limit = 200.0;
-    let max_altitude_limit = 600.0;
+    // Vertical bounds, tightened when #286 landed. The UKF achieves 2.8 m rms /
+    // 12.1 m peak on this data; the ESKF is at 2.4 m / 9.2 m. Limits carry ~4x
+    // margin: any return of the vertical-channel divergence (previously 119 m
+    // rms / 385 m peak) trips them immediately, while healthy-filter codegen
+    // jitter across platforms cannot.
+    let rms_altitude_limit = 10.0;
+    let max_altitude_limit = 40.0;
 
     assert!(
         stats.rms_horizontal_error < rms_horizontal_limit,
@@ -1395,16 +1397,42 @@ fn test_eskf_closed_loop_on_real_data() {
     );
     assert!(
         stats.rms_altitude_error < rms_altitude_limit,
-        "ESKF RMS altitude error should be less than {:.2}m (provisional, see #286), got {:.2}m",
+        "ESKF RMS altitude error should be less than {:.2}m, got {:.2}m",
         rms_altitude_limit,
         stats.rms_altitude_error
     );
     assert!(
         stats.max_altitude_error < max_altitude_limit,
-        "ESKF maximum altitude error should be less than {:.2}m (provisional, see #286), got {:.2}m",
+        "ESKF maximum altitude error should be less than {:.2}m, got {:.2}m",
         max_altitude_limit,
         stats.max_altitude_error
     );
+
+    // Bias plausibility (#286): bias estimates must stay within the anti-windup
+    // caps that bound them (2.0 m/s², 0.05 rad/s -- orders of magnitude above
+    // legitimate consumer-MEMS biases). Before the #286 fixes these reached
+    // 9.2 m/s² and 6.5 rad/s on this same run.
+    let final_est = eskf.get_estimate();
+    println!(
+        "Final biases: accel=[{:.4}, {:.4}, {:.4}] m/s², gyro=[{:.5}, {:.5}, {:.5}] rad/s",
+        final_est[9], final_est[10], final_est[11], final_est[12], final_est[13], final_est[14]
+    );
+    for i in 9..12 {
+        assert!(
+            final_est[i].abs() <= 2.0,
+            "ESKF accel bias {} should stay plausible, got {:.3} m/s² (see #286)",
+            i - 9,
+            final_est[i]
+        );
+    }
+    for i in 12..15 {
+        assert!(
+            final_est[i].abs() <= 0.05,
+            "ESKF gyro bias {} should stay plausible, got {:.4} rad/s (see #286)",
+            i - 12,
+            final_est[i]
+        );
+    }
 
     // Verify no NaN or infinite values in results
     for result in &results {
@@ -1443,9 +1471,8 @@ fn test_eskf_closed_loop_on_real_data() {
 
 /// Test ESKF with degraded GNSS (reduced update rate)
 ///
-/// This test simulates degraded GNSS conditions with reduced update rate (5s intervals).
+/// This test simulates degraded GNSS conditions with reduced update rate (2s intervals).
 #[test]
-#[ignore = "ESKF vertical channel still diverges under degraded GNSS; horizontal loop fixed in #266, vertical tracked by #286"]
 fn test_eskf_with_degraded_gnss() {
     // Load test data
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -1492,7 +1519,7 @@ fn test_eskf_with_degraded_gnss() {
     let stats = compute_error_metrics(&results, &records);
 
     // Print statistics
-    println!("\n=== ESKF with Degraded GNSS (5s updates) Error Statistics ===");
+    println!("\n=== ESKF with Degraded GNSS (2s updates) Error Statistics ===");
     println!(
         "Horizontal Error: mean={:.2}m, min={:.2}m, median={:.2}m, max={:.2}m, rms={:.2}m",
         stats.mean_horizontal_error,
@@ -1510,30 +1537,36 @@ fn test_eskf_with_degraded_gnss() {
         stats.rms_altitude_error
     );
 
-    // Error bounds for degraded GNSS (5s update intervals)
-    // With less frequent updates, errors will be significantly higher
-    // These bounds are based on empirical performance with 8x process noise tuning
+    // Error bounds for degraded GNSS (2s update intervals).
+    //
+    // Re-enabled and tightened when #286 landed: with 2 s fixes the healthy
+    // ESKF sits at 23.7 m horizontal rms / 40.1 m peak and 3.6 m altitude rms /
+    // 12.9 m peak -- barely above the full-rate numbers (23.5 / 2.4 m), since
+    // 2 s of MEMS dead-reckoning drift is small next to the fix noise floor.
+    // Limits carry ~2.5-4.5x margin: the previous 1000/3500/400/3000 m ceilings
+    // were vacuous (any non-divergent filter passed) and are replaced with
+    // bounds that actually fail if the vertical channel regresses.
     assert!(
-        stats.rms_horizontal_error < 1000.0,
-        "RMS horizontal error with degraded GNSS should be less than 1000m, got {:.2}m",
+        stats.rms_horizontal_error < 60.0,
+        "RMS horizontal error with degraded GNSS should be less than 60m, got {:.2}m",
         stats.rms_horizontal_error
     );
 
     assert!(
-        stats.max_horizontal_error < 3500.0,
-        "Maximum horizontal error with degraded GNSS should be less than 3500m, got {:.2}m",
+        stats.max_horizontal_error < 150.0,
+        "Maximum horizontal error with degraded GNSS should be less than 150m, got {:.2}m",
         stats.max_horizontal_error
     );
 
     assert!(
-        stats.rms_altitude_error < 400.0,
-        "RMS altitude error with degraded GNSS should be less than 400m, got {:.2}m",
+        stats.rms_altitude_error < 15.0,
+        "RMS altitude error with degraded GNSS should be less than 15m, got {:.2}m",
         stats.rms_altitude_error
     );
 
     assert!(
-        stats.max_altitude_error < 3000.0,
-        "Maximum altitude error with degraded GNSS should be less than 3000m, got {:.2}m",
+        stats.max_altitude_error < 60.0,
+        "Maximum altitude error with degraded GNSS should be less than 60m, got {:.2}m",
         stats.max_altitude_error
     );
 
@@ -2115,7 +2148,7 @@ fn test_filter_output_length_matches_input() {
     );
 
     // ESKF length coverage lives in test_eskf_output_length_matches_input,
-    // which is #[ignore]d pending the vertical-channel divergence fix.
+    // re-enabled when the vertical-channel divergence fix (#286) landed.
 
     println!(
         "\n✅ All filters produce output length matching input length: {}",
@@ -2131,7 +2164,6 @@ fn test_filter_output_length_matches_input() {
 /// the divergence is exponential and a ~1e-14 numerical perturbation is enough
 /// to trigger it, so this test passing is not evidence the filter is sound.
 #[test]
-#[ignore = "ESKF vertical channel still diverges; horizontal loop fixed in #266, vertical tracked by #286"]
 fn test_eskf_output_length_matches_input() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let test_data_path = Path::new(manifest_dir).join("tests/test_data.csv");
