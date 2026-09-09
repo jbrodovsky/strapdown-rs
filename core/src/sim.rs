@@ -1956,6 +1956,10 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Result<Vec<NavigationResult
         velocity_east: first_record.speed * first_record.bearing.sin(),
         velocity_vertical: 0.0, // initial velocities
         attitude,
+        // Deliberately ENU and deliberately still hardcoded; see the note in
+        // `initialize_ukf`. `TestDataRecord` carries no frame tag, so honouring the NED
+        // default here would break every ENU recording with no way to opt back in. The
+        // frame becomes a caller-supplied option in queue 7's `InsEngine` builder.
         is_enu: true,
     };
     // Store the initial state and metadata
@@ -2300,6 +2304,19 @@ pub fn initialize_ukf(
             initial_pose.yaw
         },
         in_degrees: true,
+        // Deliberately ENU, and deliberately still hardcoded.
+        //
+        // These entry points build their own `InitialState` from a `TestDataRecord`, which
+        // carries no frame tag -- Sensor Logger exports (ENU-convention: +g along the
+        // device's up-axis at rest) and `generate_synthetic` output (NED) are
+        // indistinguishable once loaded. Honouring the new NED default here would silently
+        // break every ENU recording with no way to opt back in, so the frame has to become a
+        // caller-supplied option first. That is a signature change across
+        // `dead_reckoning`/`initialize_ukf`/`initialize_ekf`/`initialize_eskf` and the CLI,
+        // which is queue 7's `InsEngine` builder, not this PR's default flip.
+        //
+        // Known symptom until then: `strapdown-sim syn` emits NED, so dead-reckoning it
+        // through this ENU path double-counts gravity and falls at 2 g. Tracked separately.
         is_enu: true,
     };
     let process_noise_diagonal = match config.process_noise_diagonal {
@@ -2442,6 +2459,10 @@ pub fn initialize_ekf(
             initial_pose.yaw
         },
         in_degrees: true,
+        // Deliberately ENU and deliberately still hardcoded; see the note in
+        // `initialize_ukf`. `TestDataRecord` carries no frame tag, so honouring the NED
+        // default here would break every ENU recording with no way to opt back in. The
+        // frame becomes a caller-supplied option in queue 7's `InsEngine` builder.
         is_enu: true,
     };
 
@@ -2615,6 +2636,10 @@ pub fn initialize_eskf(
             initial_pose.yaw
         },
         in_degrees: true,
+        // Deliberately ENU and deliberately still hardcoded; see the note in
+        // `initialize_ukf`. `TestDataRecord` carries no frame tag, so honouring the NED
+        // default here would break every ENU recording with no way to opt back in. The
+        // frame becomes a caller-supplied option in queue 7's `InsEngine` builder.
         is_enu: true,
     };
 
@@ -4353,6 +4378,54 @@ pub fn generate_synthetic(
 
 #[cfg(test)]
 mod tests {
+
+    /// A NED synthetic descent must actually lose altitude.
+    ///
+    /// `generate_synthetic` propagates a NED state (`is_enu: false`) through `mechanize`, so it
+    /// rode directly on the vertical-channel sign bug in `position_update`: a positive
+    /// `velocity_down_mps` used to make the trajectory *climb*. Nothing caught it because no
+    /// test ran the generator with a non-zero vertical rate.
+    #[test]
+    fn synthetic_ned_descent_loses_altitude() {
+        use rand::SeedableRng;
+
+        let config = SyntheticConfig {
+            output: String::new(),
+            initial_state: SyntheticInitialState {
+                altitude_m: 2000.0,
+                velocity_north_mps: 50.0,
+                velocity_down_mps: 5.0, // descending at 5 m/s, NED
+                ..Default::default()
+            },
+            duration_s: 60.0,
+            sample_rate_hz: 10.0,
+            imu_quality: crate::IMUQuality::default(),
+            seed: 42,
+            no_noise: true,
+            gnss_horizontal_noise_m: 1.0,
+            gnss_vertical_noise_m: 1.0,
+            baro_noise_std_pa: 1.0,
+        };
+        assert!(!config.initial_state.is_enu, "synthetic default is NED");
+
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        let (truth, _) = generate_synthetic(&config, &mut rng).unwrap();
+
+        let first = truth.first().unwrap();
+        let last = truth.last().unwrap();
+        assert!(
+            last.altitude < first.altitude,
+            "descending in NED must lose altitude: {} -> {}",
+            first.altitude,
+            last.altitude
+        );
+        // ~5 m/s over ~60 s, allowing for the vertical channel's own dynamics.
+        let drop = first.altitude - last.altitude;
+        assert!(
+            (200.0..400.0).contains(&drop),
+            "expected roughly 300 m of descent, got {drop}"
+        );
+    }
     use super::*;
     use chrono::Utc;
     use std::fs::File;

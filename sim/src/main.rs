@@ -654,6 +654,9 @@ fn process_file(
                 velocity_east: first.speed * first.bearing.to_radians().sin(),
                 velocity_vertical: 0.0,
                 attitude,
+                // ENU, matching `initialize_*` in `strapdown::sim`. Sensor Logger exports
+                // are ENU-convention; `syn` emits NED and needs the frame to become a CLI
+                // option first (queue 7's `InsEngine` builder).
                 is_enu: true,
             };
 
@@ -1420,6 +1423,9 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                     pitch: 0.0,
                     yaw: records[0].bearing.to_radians(),
                     in_degrees: true,
+                    // ENU, matching `initialize_*` in `strapdown::sim`. Sensor Logger exports
+                    // are ENU-convention; `syn` emits NED and needs the frame to become a CLI
+                    // option first (queue 7's `InsEngine` builder).
                     is_enu: true,
                 };
 
@@ -1664,6 +1670,9 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
             velocity_east: first.speed * first.bearing.to_radians().sin(),
             velocity_vertical: 0.0,
             attitude,
+            // ENU, matching `initialize_*` in `strapdown::sim`. Sensor Logger exports
+            // are ENU-convention; `syn` emits NED and needs the frame to become a CLI
+            // option first (queue 7's `InsEngine` builder).
             is_enu: true,
         };
 

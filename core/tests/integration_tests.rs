@@ -387,6 +387,10 @@ fn create_initial_state(first_record: &TestDataRecord) -> InitialState {
         pitch,
         yaw,
         in_degrees: false, // All angles now in radians
+        // ENU on purpose: `test_data.csv` is a Sensor Logger export, whose accelerometer reads
+        // +g along the device's up-axis at rest. Pinning it explicitly -- rather than leaning on
+        // the crate default, which is now NED -- is what keeps this suite's numbers unchanged
+        // across the frame flip, so any movement here is attributable to something else.
         is_enu: true,
     }
 }
@@ -410,6 +414,10 @@ fn create_nominal_state(first_record: &TestDataRecord) -> StrapdownState {
         velocity_east: first_record.speed * first_record.bearing.to_radians().sin(),
         velocity_vertical: 0.0,
         attitude: Rotation3::from_euler_angles(roll, pitch, yaw),
+        // ENU on purpose: `test_data.csv` is a Sensor Logger export, whose accelerometer reads
+        // +g along the device's up-axis at rest. Pinning it explicitly -- rather than leaning on
+        // the crate default, which is now NED -- is what keeps this suite's numbers unchanged
+        // across the frame flip, so any movement here is attributable to something else.
         is_enu: true,
     }
 }
