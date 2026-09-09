@@ -51,6 +51,8 @@ use std::path::Path;
 use std::time::{Duration as StdDuration, Instant};
 
 use anyhow::{Result, bail};
+
+use crate::StrapdownError;
 use chrono::{DateTime, Duration, Utc};
 use nalgebra::{DMatrix, DVector, Vector3};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -1560,6 +1562,14 @@ impl NavigationResult {
 /// # Returns
 /// A NavigationResult struct containing the navigation solution.
 impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>)> for NavigationResult {
+    /// # Panics
+    /// If the state is not 15 elements or the covariance is not 15x15.
+    ///
+    /// Deliberately an assertion rather than a [`StrapdownError`], unlike the rest of the
+    /// #254 conversion: this is fed exclusively by `filter.get_estimate()` /
+    /// `get_certainty()`, so a wrong shape is a crate invariant violation rather than bad
+    /// user input. Converting it to `TryFrom` would push `?` into `run_closed_loop`'s result
+    /// assembly and the integration tests for no reachable failure.
     fn from(
         (timestamp, state, covariance): (&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>),
     ) -> Self {
@@ -1810,6 +1820,9 @@ impl NavigationResult {
     /// * `timestamp` - Timestamp for this navigation solution
     /// * `mean` - 9-element state vector [lat, lon, alt, vn, ve, vd, roll, pitch, yaw] in radians/meters
     /// * `cov` - 9x9 covariance matrix
+    /// # Panics
+    /// If `mean` is not 9 elements or `cov` is not 9x9. Same reasoning as the `From` impl
+    /// above: the inputs come from `rbpf.estimate()`, not from user input.
     pub fn from_particle_filter(
         timestamp: &DateTime<Utc>,
         mean: &DVector<f64>,
@@ -1937,6 +1950,14 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Vec<NavigationResult> {
 ///
 /// # Returns
 /// * `Vec<NavigationResult>` - A vector of navigation results
+/// Abort after this many consecutive rejected measurements.
+///
+/// Skipping unusable measurements keeps a run alive through a map edge; skipping *every*
+/// measurement silently degrades the run to dead reckoning, which would still pass an
+/// accuracy assertion by coincidence. This is the circuit breaker that distinguishes the
+/// two. At typical 1 Hz aiding it is roughly 100 s without a usable fix.
+const MAX_CONSECUTIVE_REJECTIONS: usize = 100;
+
 pub fn run_closed_loop<F: NavigationFilter>(
     filter: &mut F,
     stream: EventStream,
@@ -1947,9 +1968,16 @@ pub fn run_closed_loop<F: NavigationFilter>(
     let mut results: Vec<NavigationResult> = Vec::with_capacity(stream.events.len());
     let total = stream.events.len();
     let mut monitor = HealthMonitor::new(health_limits.unwrap_or_default());
-    let sim_duration_s = stream.events.last().map_or(0.0, |event| match event {
-        Event::Imu { elapsed_s, .. } | Event::Measurement { elapsed_s, .. } => *elapsed_s,
-    });
+    let mut rejected_measurements: usize = 0;
+    let mut consecutive_rejections: usize = 0;
+    let sim_duration_s = stream
+        .events
+        .last()
+        .map(|event| match event {
+            Event::Imu { elapsed_s, .. } => *elapsed_s,
+            Event::Measurement { elapsed_s, .. } => *elapsed_s,
+        })
+        .unwrap_or(0.0);
     let mut execution_monitor =
         execution_limits.map(|limits| ExecutionMonitor::new(limits, sim_duration_s));
 
@@ -2007,7 +2035,10 @@ pub fn run_closed_loop<F: NavigationFilter>(
         // Apply event
         match event {
             Event::Imu { dt_s, imu, .. } => {
-                filter.predict(&imu, dt_s);
+                // Propagation failures are always fatal: a failed mechanization or a
+                // singular covariance means the state is undefined, and continuing would
+                // emit numbers that look like a trajectory and are not.
+                filter.predict(&imu, dt_s)?;
                 let mean = filter.get_estimate();
                 let cov = filter.get_certainty();
                 if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
@@ -2016,7 +2047,30 @@ pub fn run_closed_loop<F: NavigationFilter>(
                 }
             }
             Event::Measurement { meas, .. } => {
-                filter.update(meas.as_ref());
+                match filter.update(meas.as_ref()) {
+                    Ok(()) => consecutive_rejections = 0,
+                    // A measurement the filter cannot use -- an off-map geophysical sample,
+                    // an unavailable external model -- leaves the state untouched and valid.
+                    // Aborting on it would make geophysical aiding unusable at map edges,
+                    // which is the condition it exists to handle (#254).
+                    Err(e) if e.is_recoverable() => {
+                        rejected_measurements += 1;
+                        consecutive_rejections += 1;
+                        log::warn!("Measurement rejected at {ts} (#{i}): {e}");
+                        if consecutive_rejections > MAX_CONSECUTIVE_REJECTIONS {
+                            bail!(
+                                "aborting: {consecutive_rejections} consecutive measurements \
+                                 rejected, most recently at {ts} (#{i}): {e}"
+                            );
+                        }
+                        // State is unchanged, so the health check has nothing new to judge.
+                        continue;
+                    }
+                    Err(e) => {
+                        log::error!("Filter update failed at {ts} (#{i}): {e}");
+                        bail!(e);
+                    }
+                }
                 let mean = filter.get_estimate();
                 let cov = filter.get_certainty();
                 if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
@@ -2056,6 +2110,13 @@ pub fn run_closed_loop<F: NavigationFilter>(
         }
     }
     debug!("Closed-loop simulation complete");
+    // Report the total even when it is zero: a silent run and a run that rejected every
+    // measurement look identical from the outside otherwise.
+    if rejected_measurements > 0 {
+        log::warn!(
+            "closed-loop run completed with {rejected_measurements} of {total} events rejected as unusable measurements"
+        );
+    }
     Ok(results)
 }
 /// Print the Unscented Kalman Filter state and covariance for debugging purposes.
@@ -2155,7 +2216,25 @@ pub struct UkfConfig {
 /// # Returns
 ///
 /// * `UnscentedKalmanFilter` - An instance of the Unscented Kalman Filter initialized with the provided parameters.
-pub fn initialize_ukf(initial_pose: TestDataRecord, config: UkfConfig) -> UnscentedKalmanFilter {
+/// Reject an invalid configuration value.
+///
+/// Every call below guards a length that comes from a user-authored TOML/YAML/JSON config,
+/// so the failure is a report-and-exit condition rather than a crate invariant (#254).
+fn require_config(ok: bool, field: &'static str, reason: String) -> Result<(), StrapdownError> {
+    if ok {
+        Ok(())
+    } else {
+        Err(StrapdownError::InvalidConfiguration { field, reason })
+    }
+}
+
+/// # Errors
+/// [`StrapdownError::InvalidConfiguration`] if any configured vector length disagrees with
+/// the filter's state size.
+pub fn initialize_ukf(
+    initial_pose: TestDataRecord,
+    config: UkfConfig,
+) -> Result<UnscentedKalmanFilter, StrapdownError> {
     let initial_state = InitialState {
         latitude: initial_pose.latitude,
         longitude: initial_pose.longitude,
@@ -2223,27 +2302,35 @@ pub fn initialize_ukf(initial_pose: TestDataRecord, config: UkfConfig) -> Unscen
         }
         None => None,
     };
-    assert!(
-        covariance_diagonal.len() == 15 + other_states.as_ref().map_or(0, std::vec::Vec::len),
-        "Covariance diagonal length mismatch: expected {}, got {}",
-        15 + other_states.as_ref().map_or(0, std::vec::Vec::len),
-        covariance_diagonal.len()
-    );
-    assert!(
-        process_noise_diagonal.len() == 15 + other_states.as_ref().map_or(0, std::vec::Vec::len),
-        "Process noise diagonal length mismatch: expected {}, got {}",
-        15 + other_states.as_ref().map_or(0, std::vec::Vec::len),
-        process_noise_diagonal.len()
-    );
-    assert!(
+    let expected = 15 + other_states.as_ref().map_or(0, Vec::len);
+    require_config(
+        covariance_diagonal.len() == expected,
+        "covariance_diagonal",
+        format!(
+            "expected {expected} elements, got {}",
+            covariance_diagonal.len()
+        ),
+    )?;
+    require_config(
+        process_noise_diagonal.len() == expected,
+        "process_noise_diagonal",
+        format!(
+            "expected {expected} elements, got {}",
+            process_noise_diagonal.len()
+        ),
+    )?;
+    require_config(
         process_noise_diagonal.len() == covariance_diagonal.len(),
-        "Process noise and covariance diagonal length mismatch: {} vs {}",
-        process_noise_diagonal.len(),
-        covariance_diagonal.len()
-    );
+        "process_noise_diagonal",
+        format!(
+            "must match covariance_diagonal: {} vs {}",
+            process_noise_diagonal.len(),
+            covariance_diagonal.len()
+        ),
+    )?;
     let process_noise = DMatrix::from_diagonal(&DVector::from_vec(process_noise_diagonal));
     //DVector::from_vec(vec![0.0; 15]);
-    UnscentedKalmanFilter::new(
+    Ok(UnscentedKalmanFilter::new(
         initial_state,
         imu_biases,
         other_states,
@@ -2252,7 +2339,7 @@ pub fn initialize_ukf(initial_pose: TestDataRecord, config: UkfConfig) -> Unscen
         config.ukf_alpha.unwrap_or(1e-3),
         config.ukf_beta.unwrap_or(2.0),
         config.ukf_kappa.unwrap_or(0.0),
-    )
+    ))
 }
 
 /// Initialize an Extended Kalman Filter for simulation.
@@ -2280,7 +2367,7 @@ pub fn initialize_ekf(
     imu_biases_covariance: Option<Vec<f64>>,
     process_noise_diagonal: Option<Vec<f64>>,
     use_biases: bool,
-) -> crate::kalman::ExtendedKalmanFilter {
+) -> Result<crate::kalman::ExtendedKalmanFilter, StrapdownError> {
     use crate::kalman::ExtendedKalmanFilter;
 
     // Build initial state from sensor data
@@ -2318,12 +2405,11 @@ pub fn initialize_ekf(
     // Build process noise diagonal
     let process_noise_diagonal = match process_noise_diagonal {
         Some(pn) => {
-            assert!(
+            require_config(
                 pn.len() == state_size,
-                "Process noise diagonal length mismatch: expected {}, got {}",
-                state_size,
-                pn.len()
-            );
+                "process_noise_diagonal",
+                format!("expected {state_size} elements, got {}", pn.len()),
+            )?;
             pn
         }
         None => {
@@ -2349,10 +2435,11 @@ pub fn initialize_ekf(
     // Add attitude covariance
     match attitude_covariance {
         Some(att_cov) => {
-            assert!(
+            require_config(
                 att_cov.len() == 3,
-                "Attitude covariance must have 3 elements"
-            );
+                "attitude_covariance",
+                format!("expected 3 elements, got {}", att_cov.len()),
+            )?;
             covariance_diagonal.extend(att_cov);
         }
         None => covariance_diagonal.extend(vec![1e-9; 3]),
@@ -2360,43 +2447,52 @@ pub fn initialize_ekf(
 
     // Add IMU bias covariance if using biases
     let imu_biases_vec = if use_biases {
-        if let Some(biases) = imu_biases {
-            assert!(biases.len() == 6, "IMU biases must have 6 elements");
-            covariance_diagonal.extend(match imu_biases_covariance {
-                Some(imu_cov) => {
-                    assert!(
-                        imu_cov.len() == 6,
-                        "IMU bias covariance must have 6 elements"
-                    );
-                    imu_cov
-                }
-                None => vec![1e-3; 6],
-            });
-            biases
-        } else {
-            covariance_diagonal.extend(vec![1e-3; 6]);
-            vec![0.0; 6]
+        match imu_biases {
+            Some(biases) => {
+                require_config(
+                    biases.len() == 6,
+                    "imu_biases",
+                    format!("expected 6 elements, got {}", biases.len()),
+                )?;
+                covariance_diagonal.extend(match imu_biases_covariance {
+                    Some(imu_cov) => {
+                        require_config(
+                            imu_cov.len() == 6,
+                            "imu_biases_covariance",
+                            format!("expected 6 elements, got {}", imu_cov.len()),
+                        )?;
+                        imu_cov
+                    }
+                    None => vec![1e-3; 6],
+                });
+                biases
+            }
+            None => {
+                covariance_diagonal.extend(vec![1e-3; 6]);
+                vec![0.0; 6]
+            }
         }
     } else {
         vec![0.0; 6] // Not used in 9-state, but required by constructor
     };
 
-    assert!(
+    require_config(
         covariance_diagonal.len() == state_size,
-        "Covariance diagonal length mismatch: expected {}, got {}",
-        state_size,
-        covariance_diagonal.len()
-    );
+        "covariance_diagonal",
+        format!(
+            "expected {state_size} elements, got {}",
+            covariance_diagonal.len()
+        ),
+    )?;
 
     let process_noise = DMatrix::from_diagonal(&DVector::from_vec(process_noise_diagonal));
-
-    ExtendedKalmanFilter::new(
+    Ok(ExtendedKalmanFilter::new(
         initial_state,
         imu_biases_vec,
         covariance_diagonal,
         process_noise,
         use_biases,
-    )
+    ))
 }
 
 /// Initialize an Error-State Kalman Filter (ESKF) for simulation.
@@ -2434,7 +2530,7 @@ pub fn initialize_ekf(
 ///     // ... other fields ...
 ///     ..Default::default()
 /// };
-/// let eskf = initialize_eskf(initial_pose, None, None, None, None);
+/// let eskf = initialize_eskf(initial_pose, None, None, None, None).unwrap();
 /// ```
 #[allow(clippy::too_many_arguments)]
 pub fn initialize_eskf(
@@ -2443,7 +2539,7 @@ pub fn initialize_eskf(
     imu_biases: Option<Vec<f64>>,
     imu_biases_covariance: Option<Vec<f64>>,
     process_noise_diagonal: Option<Vec<f64>>,
-) -> crate::kalman::ErrorStateKalmanFilter {
+) -> Result<crate::kalman::ErrorStateKalmanFilter, StrapdownError> {
     use crate::kalman::ErrorStateKalmanFilter;
 
     // Build initial state from sensor data
@@ -2481,12 +2577,11 @@ pub fn initialize_eskf(
     // Build process noise diagonal for error state (15 elements)
     let process_noise_diagonal = match process_noise_diagonal {
         Some(pn) => {
-            assert!(
+            require_config(
                 pn.len() == state_size,
-                "Process noise diagonal length mismatch: expected {}, got {}",
-                state_size,
-                pn.len()
-            );
+                "process_noise_diagonal",
+                format!("expected {state_size} elements, got {}", pn.len()),
+            )?;
             pn
         }
         None => DEFAULT_PROCESS_NOISE.to_vec(),
@@ -2495,11 +2590,11 @@ pub fn initialize_eskf(
     // Build IMU biases
     let imu_biases = match imu_biases {
         Some(biases) => {
-            assert!(
+            require_config(
                 biases.len() == 6,
-                "IMU biases length mismatch: expected 6, got {}",
-                biases.len()
-            );
+                "imu_biases",
+                format!("expected 6 elements, got {}", biases.len()),
+            )?;
             biases
         }
         None => vec![0.0; 6],
@@ -2515,11 +2610,11 @@ pub fn initialize_eskf(
     // Add attitude error covariance
     error_covariance_diagonal.extend(match attitude_covariance {
         Some(att_cov) => {
-            assert!(
+            require_config(
                 att_cov.len() == 3,
-                "Attitude covariance length mismatch: expected 3, got {}",
-                att_cov.len()
-            );
+                "attitude_covariance",
+                format!("expected 3 elements, got {}", att_cov.len()),
+            )?;
             att_cov
         }
         None => vec![1e-5; 3], // Default: small attitude uncertainty (rad²)
@@ -2528,11 +2623,11 @@ pub fn initialize_eskf(
     // Add IMU bias error covariance
     error_covariance_diagonal.extend(match imu_biases_covariance {
         Some(bias_cov) => {
-            assert!(
+            require_config(
                 bias_cov.len() == 6,
-                "IMU bias covariance length mismatch: expected 6, got {}",
-                bias_cov.len()
-            );
+                "imu_biases_covariance",
+                format!("expected 6 elements, got {}", bias_cov.len()),
+            )?;
             bias_cov
         }
         None => {
@@ -2543,21 +2638,22 @@ pub fn initialize_eskf(
         }
     });
 
-    assert!(
+    require_config(
         error_covariance_diagonal.len() == state_size,
-        "Error covariance diagonal length mismatch: expected {}, got {}",
-        state_size,
-        error_covariance_diagonal.len()
-    );
+        "error_covariance_diagonal",
+        format!(
+            "expected {state_size} elements, got {}",
+            error_covariance_diagonal.len()
+        ),
+    )?;
 
     let process_noise = DMatrix::from_diagonal(&DVector::from_vec(process_noise_diagonal));
-
-    ErrorStateKalmanFilter::new(
+    Ok(ErrorStateKalmanFilter::new(
         initial_state,
         imu_biases,
         error_covariance_diagonal,
         process_noise,
-    )
+    ))
 }
 
 // ==== Simulation Helper functions ====
@@ -3971,12 +4067,22 @@ pub fn generate_synthetic(
     // Draw per-trajectory bias offsets (constant for the full run)
     let accel_bias = {
         let sigma = config.imu_quality.accel_bias_instability_mps2();
-        let dist = Normal::new(0.0_f64, sigma).unwrap_or_else(|_| Normal::new(0.0, 1e-6).unwrap());
+        let dist = Normal::new(0.0_f64, sigma).unwrap_or_else(|_| {
+            log::warn!(
+                "accel bias instability {sigma} is not a usable standard deviation; using 1e-6"
+            );
+            crate::normal_with_std(1e-6)
+        });
         Vector3::new(rng.sample(dist), rng.sample(dist), rng.sample(dist))
     };
     let gyro_bias = {
         let sigma = config.imu_quality.gyro_bias_instability_dph();
-        let dist = Normal::new(0.0_f64, sigma).unwrap_or_else(|_| Normal::new(0.0, 1e-9).unwrap());
+        let dist = Normal::new(0.0_f64, sigma).unwrap_or_else(|_| {
+            log::warn!(
+                "gyro bias instability {sigma} is not a usable standard deviation; using 1e-9"
+            );
+            crate::normal_with_std(1e-9)
+        });
         Vector3::new(rng.sample(dist), rng.sample(dist), rng.sample(dist))
     };
 
@@ -3987,15 +4093,15 @@ pub fn generate_synthetic(
         config.imu_quality.gyro_angle_random_walk() * (config.sample_rate_hz / 3600.0_f64).sqrt();
 
     let accel_noise_dist =
-        Normal::new(0.0_f64, accel_noise_sigma).unwrap_or_else(|_| Normal::new(0.0, 1e-6).unwrap());
+        Normal::new(0.0_f64, accel_noise_sigma).unwrap_or_else(|_| crate::normal_with_std(1e-6));
     let gyro_noise_dist =
-        Normal::new(0.0_f64, gyro_noise_sigma).unwrap_or_else(|_| Normal::new(0.0, 1e-9).unwrap());
+        Normal::new(0.0_f64, gyro_noise_sigma).unwrap_or_else(|_| crate::normal_with_std(1e-9));
     let gnss_h_dist = Normal::new(0.0_f64, config.gnss_horizontal_noise_m)
-        .unwrap_or_else(|_| Normal::new(0.0, 1.0).unwrap());
+        .unwrap_or_else(|_| crate::normal_with_std(1.0));
     let gnss_v_dist = Normal::new(0.0_f64, config.gnss_vertical_noise_m)
-        .unwrap_or_else(|_| Normal::new(0.0, 1.0).unwrap());
+        .unwrap_or_else(|_| crate::normal_with_std(1.0));
     let baro_dist = Normal::new(0.0_f64, config.baro_noise_std_pa)
-        .unwrap_or_else(|_| Normal::new(0.0, 1.0).unwrap());
+        .unwrap_or_else(|_| crate::normal_with_std(1.0));
 
     // Fixed epoch start time for reproducibility
     let start_time: chrono::DateTime<Utc> = "2025-01-01T00:00:00Z"
@@ -4459,7 +4565,7 @@ mod tests {
         };
 
         // Initialize UKF
-        let mut ukf = initialize_ukf(rec.clone(), UkfConfig::default());
+        let mut ukf = initialize_ukf(rec.clone(), UkfConfig::default()).unwrap();
 
         // Create a minimal EventStream with one IMU event
         let imu_data = IMUData {
@@ -4514,7 +4620,7 @@ mod tests {
             grav_y: 0.0,
             grav_x: 0.0,
         };
-        let ukf = initialize_ukf(rec.clone(), UkfConfig::default());
+        let ukf = initialize_ukf(rec.clone(), UkfConfig::default()).unwrap();
         assert!(!ukf.get_estimate().is_empty());
         let ukf2 = initialize_ukf(
             rec,
@@ -4523,7 +4629,8 @@ mod tests {
                 imu_biases: Some(vec![0.4, 0.5, 0.6, 0.7, 0.8, 0.9]),
                 ..Default::default()
             },
-        );
+        )
+        .unwrap();
         assert!(!ukf2.get_estimate().is_empty());
     }
     // Helper to produce the header in the same order the struct expects
@@ -4710,7 +4817,7 @@ mod tests {
             yaw: 0.3,
             ..Default::default()
         };
-        let ukf = initialize_ukf(rec, UkfConfig::default());
+        let ukf = initialize_ukf(rec.clone(), UkfConfig::default()).unwrap();
         let timestamp = Utc::now();
         let nav_result = NavigationResult::from((&timestamp, &ukf));
 
@@ -4764,7 +4871,7 @@ mod tests {
             yaw: 0.3,
             ..Default::default()
         };
-        let ukf = initialize_ukf(rec.clone(), UkfConfig::default());
+        let ukf = initialize_ukf(rec.clone(), UkfConfig::default()).unwrap();
         // Just ensure it doesn't panic
         print_ukf(&ukf, &rec);
     }
@@ -4785,7 +4892,7 @@ mod tests {
             yaw: f64::NAN,
             ..Default::default()
         };
-        let ukf = initialize_ukf(rec, UkfConfig::default());
+        let ukf = initialize_ukf(rec, UkfConfig::default()).unwrap();
         let estimate = ukf.get_estimate();
         // Should default NaN angles to 0.0
         assert!(estimate[6].abs() < 1e-6); // roll
@@ -4818,7 +4925,8 @@ mod tests {
                 imu_biases_covariance: Some(vec![1e-5; 6]),
                 ..Default::default()
             },
-        );
+        )
+        .unwrap();
         let estimate = ukf.get_estimate();
         assert_eq!(estimate.len(), 15);
     }
@@ -4847,7 +4955,8 @@ mod tests {
                 process_noise_diagonal: Some(custom_noise),
                 ..Default::default()
             },
-        );
+        )
+        .unwrap();
         assert!(!ukf.get_estimate().is_empty());
     }
     #[test]
@@ -5529,7 +5638,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut ukf = initialize_ukf(rec.clone(), UkfConfig::default());
+        let mut ukf = initialize_ukf(rec.clone(), UkfConfig::default()).unwrap();
 
         let stream = EventStream {
             start_time: rec.time,
@@ -5567,7 +5676,7 @@ mod tests {
             yaw: 0.0,
             ..Default::default()
         };
-        let ekf = initialize_ekf(rec, None, None, None, None, false);
+        let ekf = initialize_ekf(rec, None, None, None, None, false).unwrap();
         let estimate = ekf.get_estimate();
         assert_eq!(estimate.len(), 9, "9-state EKF should have 9 states");
         // Check velocity decomposition (bearing 45° means equal north/east components)
@@ -5591,7 +5700,7 @@ mod tests {
             yaw: 0.0,
             ..Default::default()
         };
-        let ekf = initialize_ekf(rec, None, None, None, None, true);
+        let ekf = initialize_ekf(rec, None, None, None, None, true).unwrap();
         let estimate = ekf.get_estimate();
         assert_eq!(estimate.len(), 15, "15-state EKF should have 15 states");
         // Check that biases are initialized to zero by default
@@ -5620,7 +5729,7 @@ mod tests {
             yaw: f64::NAN,
             ..Default::default()
         };
-        let ekf = initialize_ekf(rec, None, None, None, None, true);
+        let ekf = initialize_ekf(rec, None, None, None, None, true).unwrap();
         let estimate = ekf.get_estimate();
         // Should default NaN angles to 0.0
         assert!(estimate[6].abs() < 1e-6, "NaN roll should default to 0"); // roll
@@ -5652,7 +5761,8 @@ mod tests {
             Some(vec![1e-5; 6]),
             None,
             true,
-        );
+        )
+        .unwrap();
         let estimate = ekf.get_estimate();
         assert_eq!(estimate.len(), 15);
         // Check that custom biases are set
@@ -5679,7 +5789,7 @@ mod tests {
             ..Default::default()
         };
         let custom_noise = vec![1e-7; 15];
-        let ekf = initialize_ekf(rec, None, None, None, Some(custom_noise), true);
+        let ekf = initialize_ekf(rec, None, None, None, Some(custom_noise.clone()), true).unwrap();
         // Verify EKF was created successfully
         assert_eq!(ekf.get_estimate().len(), 15);
     }

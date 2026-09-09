@@ -31,6 +31,7 @@ use anyhow::Result;
 use chrono::Datelike;
 use log::debug;
 use nalgebra::{DMatrix, DVector, Vector3};
+use strapdown::StrapdownError;
 use world_magnetic_model::GeomagneticField;
 use world_magnetic_model::time::Date;
 use world_magnetic_model::uom::si::angle::degree;
@@ -270,29 +271,60 @@ impl GeoMap {
     /// use std::path::PathBuf;
     /// let map = GeoMap::load_geomap(PathBuf::from("path/to/file.nc"), GeophysicalMeasurementType::Relief(ReliefResolution::OneDegree));
     /// ```
+    /// # Errors
+    /// [`StrapdownError::MapLoad`] if the file cannot be opened, does not carry the `lat`,
+    /// `lon` and `z` variables, or holds a `z` grid whose length is not `lat.len() *
+    /// lon.len()`.
+    ///
+    /// This function always returned `Result`; until #254 every one of those paths panicked
+    /// instead, so the `Err` variant was unreachable. The final shape check is new: a
+    /// transposed or multi-band grid used to panic inside `DMatrix::from_row_slice`.
     pub fn load_geomap(
         filename: PathBuf,
         map_type: GeophysicalMeasurementType,
-    ) -> Result<Self, String> {
-        // Open the netcdf file
-        let file = match netcdf::open(filename) {
-            Ok(file) => file,
-            Err(e) => panic!("Error opening file: {e:?}"),
+    ) -> Result<GeoMap, StrapdownError> {
+        let map_err = |detail: String| StrapdownError::MapLoad {
+            path: filename.clone(),
+            detail,
         };
+        // Open the netcdf file
+        let file = netcdf::open(&filename)
+            .map_err(|e| map_err(format!("could not open the NetCDF file: {e}")))?;
         // Get the lat/lon variables
-        let lats: &netcdf::Variable<'_> =
-            &file.variable("lat").expect("Could not find variable 'lat'");
-        let lons: &netcdf::Variable<'_> =
-            &file.variable("lon").expect("Could not find variable 'lon'");
+        let lats = file
+            .variable("lat")
+            .ok_or_else(|| map_err("no variable named `lat`".to_owned()))?;
+        let lons = file
+            .variable("lon")
+            .ok_or_else(|| map_err("no variable named `lon`".to_owned()))?;
         // Get the data variable
-        let data: netcdf::Variable<'_> = file.variable("z").expect("Could not find variable 'z'");
+        let data = file
+            .variable("z")
+            .ok_or_else(|| map_err("no variable named `z`".to_owned()))?;
         // Conversion to basic types
-        let lats: Vec<f64> = lats.get_values(..).unwrap();
-        let lons: Vec<f64> = lons.get_values(..).unwrap();
-        let data: Vec<f64> = data.get_values(..).unwrap();
+        let lats: Vec<f64> = lats
+            .get_values(..)
+            .map_err(|e| map_err(format!("could not read `lat` as f64: {e}")))?;
+        let lons: Vec<f64> = lons
+            .get_values(..)
+            .map_err(|e| map_err(format!("could not read `lon` as f64: {e}")))?;
+        let data: Vec<f64> = data
+            .get_values(..)
+            .map_err(|e| map_err(format!("could not read `z` as f64: {e}")))?;
         // Convert the data to DVector
         let lats = DVector::from_vec(lats);
         let lons = DVector::from_vec(lons);
+        // `from_row_slice` panics on a length mismatch, which happens for a transposed grid,
+        // a pixel- versus gridline-registered grid, or one carrying a third dimension.
+        if data.len() != lats.len() * lons.len() {
+            return Err(map_err(format!(
+                "`z` has {} values but `lat` x `lon` is {} x {} = {}",
+                data.len(),
+                lats.len(),
+                lons.len(),
+                lats.len() * lons.len()
+            )));
+        }
         // Convert the data to DMatrix
         let data = DMatrix::from_row_slice(lats.len(), lons.len(), &data);
         // Create the GeoMap object
@@ -352,44 +384,85 @@ impl GeoMap {
     /// let map = GeoMap::load_geomap(PathBuf::from("path/to/file.nc"), GeophysicalMeasurementType::Relief(ReliefResolution::OneDegree));
     /// let value = map.get_point(&1.5, &1.5);
     /// ```
-    /// # Panics
-    /// - Panics if the lat/lon are out of bounds
-    /// - Panics if the lat/lon are not in the map
-    pub fn get_point(&self, lat: &f64, lon: &f64) -> Option<f64> {
+    ///
+    /// # Errors
+    /// * [`StrapdownError::NonFinite`] if either coordinate is `NaN` or infinite. Checked
+    ///   *first*, and deliberately: every comparison against `NaN` is false, so `NaN` passed
+    ///   straight through the bounds tests below and reached the index search, which then
+    ///   found no element and panicked on `unwrap`. Geophysical measurements are constructed
+    ///   with `NaN` position placeholders, so this was reachable in normal use.
+    /// * [`StrapdownError::OutOfMapBounds`] if the point lies outside the loaded tile. This
+    ///   is a routine condition — a filter estimate near a tile edge, or any particle in the
+    ///   tail of the distribution — and [`StrapdownError::is_recoverable`] reports it as such
+    ///   so callers skip the measurement rather than aborting the run.
+    pub fn get_point(&self, lat: &f64, lon: &f64) -> Result<f64, StrapdownError> {
+        if !lat.is_finite() {
+            return Err(StrapdownError::NonFinite {
+                what: "map query latitude",
+            });
+        }
+        if !lon.is_finite() {
+            return Err(StrapdownError::NonFinite {
+                what: "map query longitude",
+            });
+        }
         // Check if the lat/lon are within the bounds of the map
-        assert!(
-            !(lat < &self.lats[0] || lat > &self.lats[self.lats.len() - 1]),
-            "Latitude out of bounds: {} not in [{}, {}]",
-            lat,
-            self.lats[0],
-            self.lats[self.lats.len() - 1]
-        );
-        assert!(
-            !(lon < &self.lons[0] || lon > &self.lons[self.lons.len() - 1]),
-            "Longitude out of bounds: {} not in [{}, {}]",
-            lon,
-            self.lons[0],
-            self.lons[self.lons.len() - 1]
-        );
+        if lat < &self.lats[0] || lat > &self.lats[self.lats.len() - 1] {
+            return Err(StrapdownError::OutOfMapBounds {
+                axis: "latitude",
+                value: *lat,
+                min: self.lats[0],
+                max: self.lats[self.lats.len() - 1],
+            });
+        }
+        if lon < &self.lons[0] || lon > &self.lons[self.lons.len() - 1] {
+            return Err(StrapdownError::OutOfMapBounds {
+                axis: "longitude",
+                value: *lon,
+                min: self.lons[0],
+                max: self.lons[self.lons.len() - 1],
+            });
+        }
         // Check if the lat/lon are at the origin or the end of the map
         if lat == &self.lats[0] && lon == &self.lons[0] {
             // If the lat/lon are at the origin, return the first data point
-            return Some(self.data[(0, 0)]);
+            return Ok(self.data[(0, 0)]);
         }
         if lat == &self.lats[self.lats.len() - 1] && lon == &self.lons[self.lons.len() - 1] {
             // If the lat/lon are at the end, return the last data point
-            return Some(self.data[(self.lats.len() - 1, self.lons.len() - 1)]);
+            return Ok(self.data[(self.lats.len() - 1, self.lons.len() - 1)]);
         }
-        // Structure the interpolation in a few different ways. If the lat/lon are on the edge of the map,
-        // only interpolate using the coordinate that is not on the edge.
-        let lat_index = self.lats.iter().position(|&x| x >= *lat).unwrap();
-        let lon_index = self.lons.iter().position(|&x| x >= *lon).unwrap();
+        // Structure the interpolation in a few different ways. If the lat/lon are on the edge
+        // of the map, only interpolate using the coordinate that is not on the edge.
+        //
+        // Both indices are searched once here. The bounds and finiteness checks above
+        // guarantee the searches succeed, so these are the only two `position` calls the
+        // function needs -- the edge branches below used to repeat them verbatim.
+        let lat_index =
+            self.lats
+                .iter()
+                .position(|&x| x >= *lat)
+                .ok_or(StrapdownError::OutOfMapBounds {
+                    axis: "latitude",
+                    value: *lat,
+                    min: self.lats[0],
+                    max: self.lats[self.lats.len() - 1],
+                })?;
+        let lon_index =
+            self.lons
+                .iter()
+                .position(|&x| x >= *lon)
+                .ok_or(StrapdownError::OutOfMapBounds {
+                    axis: "longitude",
+                    value: *lon,
+                    min: self.lons[0],
+                    max: self.lons[self.lons.len() - 1],
+                })?;
         if lat == &self.lats[0] || lat == &self.lats[self.lats.len() - 1] {
             // If the latitude is on the edge, only interpolate using longitude
-            let lon_index = self.lons.iter().position(|&x| x >= *lon).unwrap();
             // Special case for the edges of the map
             if lon_index == 0 {
-                return Some(self.data[(lat_index, lon_index)]);
+                return Ok(self.data[(lat_index, lon_index)]);
             }
             let lon1_index = lon_index - 1;
             let a = self.data[(lat_index, lon_index)];
@@ -397,28 +470,53 @@ impl GeoMap {
             debug!("Bilinear interpolation edge case - a: {a}, b: {b}");
             let lon_diff = self.lons[lon_index] - self.lons[lon1_index];
             let result = ((a - b) / lon_diff) * (lon - self.lons[lon1_index]) + b;
-            return Some(result);
+            return Ok(result);
         }
         if lon == &self.lons[0] || lon == &self.lons[self.lons.len() - 1] {
             // If the longitude is on the edge, only interpolate using latitude
-            let lat_index = self.lats.iter().position(|&x| x >= *lat).unwrap();
             if lat_index == 0 {
-                return Some(self.data[(lat_index, lon_index)]);
+                return Ok(self.data[(lat_index, lon_index)]);
             }
             let lat1_index = lat_index - 1;
             let a = self.data[(lat_index, lon_index)];
             let b = self.data[(lat1_index, lon_index)];
             let lat_diff = self.lats[lat_index] - self.lats[lat1_index];
-            return Some(((a - b) / lat_diff) * (lat - self.lats[lat1_index]) + b);
+            return Ok(((a - b) / lat_diff) * (lat - self.lats[lat1_index]) + b);
         }
-        // If the lat/lon are not on the edge, use normal bilinear interpolation
-        Some(self.bilinear_interpolation(*lat, *lon))
+        // If the lat/lon are not on the edge, use normal bilinear interpolation.
+        // The surrounding indices are already known; passing them avoids two further
+        // `position` searches and makes the `- 1` below provably safe.
+        self.bilinear_interpolation(*lat, *lon, lat_index, lon_index)
     }
     /// Bilinear interpolation helper method for get_point
-    fn bilinear_interpolation(&self, lat: f64, lon: f64) -> f64 {
-        // Find the indices that surround the point
-        let lat2_index: usize = self.lats.iter().position(|&x| x >= lat).unwrap();
-        let lon2_index: usize = self.lons.iter().position(|&x| x >= lon).unwrap();
+    ///
+    /// `lat2_index` / `lon2_index` are the upper bracketing indices already located by
+    /// [`Self::get_point`]. They are parameters rather than recomputed here because the
+    /// `- 1` below underflows on a `usize` when the index is 0 — reachable for a coordinate
+    /// one ULP above the first grid line, which the exact-equality edge tests miss.
+    fn bilinear_interpolation(
+        &self,
+        lat: f64,
+        lon: f64,
+        lat2_index: usize,
+        lon2_index: usize,
+    ) -> Result<f64, StrapdownError> {
+        if lat2_index == 0 {
+            return Err(StrapdownError::OutOfMapBounds {
+                axis: "latitude",
+                value: lat,
+                min: self.lats[0],
+                max: self.lats[self.lats.len() - 1],
+            });
+        }
+        if lon2_index == 0 {
+            return Err(StrapdownError::OutOfMapBounds {
+                axis: "longitude",
+                value: lon,
+                min: self.lons[0],
+                max: self.lons[self.lons.len() - 1],
+            });
+        }
         let lat1_index: usize = lat2_index - 1;
         let lon1_index: usize = lon2_index - 1;
         // Get the four surrounding points
@@ -436,7 +534,7 @@ impl GeoMap {
         let w12: f64 = ((lon2 - lon) * (lat - lat1)) / ((lon2 - lon1) * (lat2 - lat1));
         let w21: f64 = ((lon - lon1) * (lat2 - lat)) / ((lon2 - lon1) * (lat2 - lat1));
         let w22: f64 = ((lon - lon1) * (lat - lat1)) / ((lon2 - lon1) * (lat2 - lat1));
-        w11 * q11 + w12 * q12 + w21 * q21 + w22 * q22
+        Ok(w11 * q11 + w12 * q12 + w21 * q21 + w22 * q22)
     }
 
     /// Compute numerical gradient of the map at a given point (lat, lon)
@@ -456,24 +554,39 @@ impl GeoMap {
     /// ```ignore
     /// let (dlat, dlon) = map.get_gradient(&40.5, &-73.5, 1e-6);
     /// ```
-    pub fn get_gradient(&self, lat: &f64, lon: &f64, epsilon: f64) -> (f64, f64) {
+    /// # Errors
+    /// Propagates [`StrapdownError::OutOfMapBounds`] / [`StrapdownError::NonFinite`] from
+    /// [`Self::get_point`].
+    ///
+    /// Each sample used to be `?`, which looked defensive and was not: an
+    /// off-map sample silently produced a **zero gradient**, which is a zero row in the EKF
+    /// measurement Jacobian — an aiding measurement that quietly stops constraining anything
+    /// rather than reporting that it cannot. Note also that the latitude branch below guards
+    /// only the latitude, so an out-of-range *longitude* reached `get_point` regardless and
+    /// panicked there.
+    pub fn get_gradient(
+        &self,
+        lat: &f64,
+        lon: &f64,
+        epsilon: f64,
+    ) -> Result<(f64, f64), StrapdownError> {
         // Central difference for latitude derivative
         let lat_plus = lat + epsilon;
         let lat_minus = lat - epsilon;
 
         // Check bounds before computing
         let dlat = if lat_minus >= self.lats[0] && lat_plus <= self.lats[self.lats.len() - 1] {
-            let z_plus = self.get_point(&lat_plus, lon).unwrap_or(0.0);
-            let z_minus = self.get_point(&lat_minus, lon).unwrap_or(0.0);
+            let z_plus = self.get_point(&lat_plus, lon)?;
+            let z_minus = self.get_point(&lat_minus, lon)?;
             (z_plus - z_minus) / (2.0 * epsilon)
         } else {
             // Fall back to forward/backward difference at boundaries
-            let z_center = self.get_point(lat, lon).unwrap_or(0.0);
+            let z_center = self.get_point(lat, lon)?;
             if lat_plus <= self.lats[self.lats.len() - 1] {
-                let z_plus = self.get_point(&lat_plus, lon).unwrap_or(0.0);
+                let z_plus = self.get_point(&lat_plus, lon)?;
                 (z_plus - z_center) / epsilon
             } else {
-                let z_minus = self.get_point(&lat_minus, lon).unwrap_or(0.0);
+                let z_minus = self.get_point(&lat_minus, lon)?;
                 (z_center - z_minus) / epsilon
             }
         };
@@ -483,22 +596,22 @@ impl GeoMap {
         let lon_minus = lon - epsilon;
 
         let dlon = if lon_minus >= self.lons[0] && lon_plus <= self.lons[self.lons.len() - 1] {
-            let z_plus = self.get_point(lat, &lon_plus).unwrap_or(0.0);
-            let z_minus = self.get_point(lat, &lon_minus).unwrap_or(0.0);
+            let z_plus = self.get_point(lat, &lon_plus)?;
+            let z_minus = self.get_point(lat, &lon_minus)?;
             (z_plus - z_minus) / (2.0 * epsilon)
         } else {
             // Fall back to forward/backward difference at boundaries
-            let z_center = self.get_point(lat, lon).unwrap_or(0.0);
+            let z_center = self.get_point(lat, lon)?;
             if lon_plus <= self.lons[self.lons.len() - 1] {
-                let z_plus = self.get_point(lat, &lon_plus).unwrap_or(0.0);
+                let z_plus = self.get_point(lat, &lon_plus)?;
                 (z_plus - z_center) / epsilon
             } else {
-                let z_minus = self.get_point(lat, &lon_minus).unwrap_or(0.0);
+                let z_minus = self.get_point(lat, &lon_minus)?;
                 (z_center - z_minus) / epsilon
             }
         };
 
-        (dlat, dlon)
+        Ok((dlat, dlon))
     }
 
     // TODO: #95 Implement direct GMT interface using system shell calls
@@ -515,7 +628,15 @@ impl GeoMap {
 /// Magnetic anomaly calculation requires knowledge of the vehicle pose and the date to compute the reference magnetic
 /// field using the World Magnetic Model (WMM).
 pub trait GeophysicalAnomalyMeasurementModel: MeasurementModel {
-    fn get_anomaly(&self) -> f64;
+    /// The anomaly value for the model's current state.
+    ///
+    /// # Errors
+    /// [`StrapdownError::ExternalModel`] when an underlying geophysical model rejects the
+    /// query — chiefly the World Magnetic Model, which has hard validity ranges in position
+    /// and a coefficient epoch that expires. `core`'s magnetometer model already degrades
+    /// gracefully on exactly this condition; geonav used to panic on it, on the per-particle
+    /// path, so a single outlier particle ended the run.
+    fn get_anomaly(&self) -> Result<f64, StrapdownError>;
     fn set_state(&mut self, state: &StrapdownState);
 }
 /// Gravity measurement model
@@ -542,14 +663,14 @@ pub struct GravityMeasurement {
 /// the gravity anomaly given the current state. Free air anomaly correction needs knowledge of the vehicle
 /// velocity to compute the Eotvos correction.
 impl GeophysicalAnomalyMeasurementModel for GravityMeasurement {
-    fn get_anomaly(&self) -> f64 {
-        gravity_anomaly(
+    fn get_anomaly(&self) -> Result<f64, StrapdownError> {
+        Ok(gravity_anomaly(
             &self.latitude,
             &self.altitude,
             &self.north_velocity,
             &self.east_velocity,
             &self.gravity_observed,
-        )
+        ))
     }
     fn set_state(&mut self, state: &StrapdownState) {
         self.latitude = state.latitude;
@@ -568,15 +689,15 @@ impl MeasurementModel for GravityMeasurement {
     fn get_dimension(&self) -> usize {
         1 // Single measurement: map value at current position
     }
-    fn get_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
+    fn get_measurement(&self, state: &DVector<f64>) -> Result<DVector<f64>, StrapdownError> {
         // Return the observed gravity anomaly as the measurement vector.
         // Use provided state if available (for per-particle updates), otherwise fallback to stored state.
         let anomaly = if let Some((lat, alt, v_n, v_e)) = Self::extract_state_inputs(state) {
             gravity_anomaly(&lat, &alt, &v_n, &v_e, &self.gravity_observed)
         } else {
-            self.get_anomaly()
+            self.get_anomaly()?
         };
-        DVector::from_vec(vec![anomaly])
+        Ok(DVector::from_vec(vec![anomaly]))
     }
     fn get_noise(&self) -> DMatrix<f64> {
         DMatrix::from_diagonal(&DVector::from_element(
@@ -601,7 +722,7 @@ impl MeasurementModel for GravityMeasurement {
         DVector::from_vec(vec![map_value + bias.unwrap_or(0.0)])
     }
 
-    fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64> {
+    fn get_jacobian(&self, state: &DVector<f64>) -> Result<DMatrix<f64>, StrapdownError> {
         self.get_jacobian_internal(state)
     }
 }
@@ -631,7 +752,14 @@ impl GravityMeasurement {
     /// # Returns
     ///
     /// 1×9 Jacobian matrix H for gravity anomaly measurement
-    pub fn get_jacobian_internal(&self, state: &DVector<f64>) -> DMatrix<f64> {
+    ///
+    /// # Errors
+    /// Propagates [`StrapdownError::OutOfMapBounds`] when the estimate has left the loaded
+    /// tile. That is recoverable: the caller should skip this measurement, not abort.
+    pub fn get_jacobian_internal(
+        &self,
+        state: &DVector<f64>,
+    ) -> Result<DMatrix<f64>, StrapdownError> {
         let mut h = DMatrix::<f64>::zeros(1, 9);
 
         let lat = state[0];
@@ -640,13 +768,13 @@ impl GravityMeasurement {
         // Compute numerical gradient from the geophysical map
         let (dlat_deg, dlon_deg) =
             self.map
-                .get_gradient(&lat.to_degrees(), &lon.to_degrees(), 1e-6);
+                .get_gradient(&lat.to_degrees(), &lon.to_degrees(), 1e-6)?;
 
         // Convert gradient from per-degree to per-radian
         h[(0, 0)] = dlat_deg * RAD_TO_DEG;
         h[(0, 1)] = dlon_deg * RAD_TO_DEG;
 
-        h
+        Ok(h)
     }
 }
 /// Magnetic anomaly measurement model
@@ -672,18 +800,30 @@ pub struct MagneticAnomalyMeasurement {
     pub bias_from_end: Option<usize>,
 }
 impl GeophysicalAnomalyMeasurementModel for MagneticAnomalyMeasurement {
-    fn get_anomaly(&self) -> f64 {
+    fn get_anomaly(&self) -> Result<f64, StrapdownError> {
         // Clamp altitude to valid WMM range to prevent errors
         let alt_clamped = self.altitude.clamp(WMM_MIN_ALTITUDE_M, WMM_MAX_ALTITUDE_M);
 
+        let date = Date::from_ordinal_date(self.year, self.day).map_err(|e| {
+            StrapdownError::ExternalModel {
+                model: "WMM",
+                detail: format!("invalid date (year {}, day {}): {e}", self.year, self.day),
+            }
+        })?;
         let magnetic_field = GeomagneticField::new(
             Length::new::<meter>(alt_clamped as f32),
             Angle::new::<degree>(self.latitude as f32),
             Angle::new::<degree>(self.longitude as f32),
-            Date::from_ordinal_date(self.year, self.day).unwrap(),
+            date,
         )
-        .expect("Failed to create GeomagneticField");
-        self.mag_obs - f64::from(magnetic_field.f().value)
+        .map_err(|e| StrapdownError::ExternalModel {
+            model: "WMM",
+            detail: format!(
+                "unavailable at lat={}, lon={}, alt={alt_clamped}: {e:?}",
+                self.latitude, self.longitude
+            ),
+        })?;
+        Ok(self.mag_obs - magnetic_field.f().value as f64)
     }
     fn set_state(&mut self, state: &StrapdownState) {
         self.latitude = state.latitude.to_degrees();
@@ -701,7 +841,7 @@ impl MeasurementModel for MagneticAnomalyMeasurement {
     fn get_dimension(&self) -> usize {
         1 // Single measurement: map value at current position
     }
-    fn get_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
+    fn get_measurement(&self, state: &DVector<f64>) -> Result<DVector<f64>, StrapdownError> {
         // Return the observed magnetic anomaly as the measurement vector.
         // Use provided state if available (for per-particle updates), otherwise fallback to stored state.
         let anomaly = if let Some((lat_deg, lon_deg, alt)) = Self::extract_state_inputs(state) {
@@ -712,22 +852,29 @@ impl MeasurementModel for MagneticAnomalyMeasurement {
                 log::warn!("Altitude {alt} m out of WMM bounds, clamped to {alt_clamped} m");
             }
 
+            let date = Date::from_ordinal_date(self.year, self.day).map_err(|e| {
+                StrapdownError::ExternalModel {
+                    model: "WMM",
+                    detail: format!("invalid date (year {}, day {}): {e}", self.year, self.day),
+                }
+            })?;
             let magnetic_field = GeomagneticField::new(
                 Length::new::<meter>(alt_clamped as f32),
                 Angle::new::<degree>(lat_deg as f32),
                 Angle::new::<degree>(lon_deg as f32),
-                Date::from_ordinal_date(self.year, self.day).unwrap(),
+                date,
             )
-            .unwrap_or_else(|e| {
-                panic!(
-                    "Failed to create GeomagneticField at lat={lat_deg}, lon={lon_deg}, alt={alt} (clamped: {alt_clamped}): {e:?}"
-                )
-            });
-            self.mag_obs - f64::from(magnetic_field.f().value)
+            .map_err(|e| StrapdownError::ExternalModel {
+                model: "WMM",
+                detail: format!(
+                    "unavailable at lat={lat_deg}, lon={lon_deg}, alt={alt} (clamped {alt_clamped}): {e:?}"
+                ),
+            })?;
+            self.mag_obs - magnetic_field.f().value as f64
         } else {
-            self.get_anomaly()
+            self.get_anomaly()?
         };
-        DVector::from_vec(vec![anomaly])
+        Ok(DVector::from_vec(vec![anomaly]))
     }
     fn get_noise(&self) -> DMatrix<f64> {
         DMatrix::from_diagonal(&DVector::from_element(
@@ -752,7 +899,7 @@ impl MeasurementModel for MagneticAnomalyMeasurement {
         DVector::from_vec(vec![map_value + bias.unwrap_or(0.0)])
     }
 
-    fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64> {
+    fn get_jacobian(&self, state: &DVector<f64>) -> Result<DMatrix<f64>, StrapdownError> {
         self.get_jacobian_internal(state)
     }
 }
@@ -778,7 +925,14 @@ impl MagneticAnomalyMeasurement {
     /// # Returns
     ///
     /// 1×9 Jacobian matrix H for magnetic anomaly measurement
-    pub fn get_jacobian_internal(&self, state: &DVector<f64>) -> DMatrix<f64> {
+    ///
+    /// # Errors
+    /// Propagates [`StrapdownError::OutOfMapBounds`] when the estimate has left the loaded
+    /// tile. That is recoverable: the caller should skip this measurement, not abort.
+    pub fn get_jacobian_internal(
+        &self,
+        state: &DVector<f64>,
+    ) -> Result<DMatrix<f64>, StrapdownError> {
         let mut h = DMatrix::<f64>::zeros(1, 9);
 
         let lat = state[0];
@@ -787,13 +941,13 @@ impl MagneticAnomalyMeasurement {
         // Compute numerical gradient from the geophysical map
         let (dlat_deg, dlon_deg) =
             self.map
-                .get_gradient(&lat.to_degrees(), &lon.to_degrees(), 1e-6);
+                .get_gradient(&lat.to_degrees(), &lon.to_degrees(), 1e-6)?;
 
         // Convert gradient from per-degree to per-radian
         h[(0, 0)] = dlat_deg * RAD_TO_DEG;
         h[(0, 1)] = dlon_deg * RAD_TO_DEG;
 
-        h
+        Ok(h)
     }
 }
 
@@ -815,7 +969,7 @@ pub struct CombinedGeophysicalMeasurement {
 }
 
 impl GeophysicalAnomalyMeasurementModel for CombinedGeophysicalMeasurement {
-    fn get_anomaly(&self) -> f64 {
+    fn get_anomaly(&self) -> Result<f64, StrapdownError> {
         // Return gravity anomaly as the primary scalar value.
         // The combined model produces two anomalies, but this trait method
         // returns a single value for API compatibility.
@@ -837,10 +991,10 @@ impl MeasurementModel for CombinedGeophysicalMeasurement {
     fn get_dimension(&self) -> usize {
         2
     }
-    fn get_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
-        let grav = self.gravity.get_measurement(state);
-        let mag = self.magnetic.get_measurement(state);
-        DVector::from_vec(vec![grav[0], mag[0]])
+    fn get_measurement(&self, state: &DVector<f64>) -> Result<DVector<f64>, StrapdownError> {
+        let grav = self.gravity.get_measurement(state)?;
+        let mag = self.magnetic.get_measurement(state)?;
+        Ok(DVector::from_vec(vec![grav[0], mag[0]]))
     }
     fn get_noise(&self) -> DMatrix<f64> {
         let grav_noise = self.gravity.get_noise();
@@ -855,14 +1009,16 @@ impl MeasurementModel for CombinedGeophysicalMeasurement {
         let mag = self.magnetic.get_expected_measurement(state);
         DVector::from_vec(vec![grav[0], mag[0]])
     }
-    fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64> {
-        let grav_j = self.gravity.get_jacobian(state);
-        let mag_j = self.magnetic.get_jacobian(state);
+    fn get_jacobian(&self, state: &DVector<f64>) -> Result<DMatrix<f64>, StrapdownError> {
+        // Either sub-model going off-map fails the combined measurement: a half-populated
+        // Jacobian would silently drop one of the two aiding channels.
+        let grav_j = self.gravity.get_jacobian(state)?;
+        let mag_j = self.magnetic.get_jacobian(state)?;
         let ncols = grav_j.ncols();
         let mut h = DMatrix::<f64>::zeros(2, ncols);
         h.row_mut(0).copy_from(&grav_j.row(0));
         h.row_mut(1).copy_from(&mag_j.row(0));
-        h
+        Ok(h)
     }
 }
 
@@ -1039,13 +1195,14 @@ pub fn build_event_stream(
 
         // Create geophysical measurements based on loaded maps
         if should_emit_geo {
-            let has_gravity = gravity_map.is_some() && gravity_present;
-            let has_magnetic = magnetic_map.is_some() && magnetic_present;
+            // Bind the maps in the condition rather than testing `is_some()` and then
+            // unwrapping: the availability test and the value then cannot drift apart.
+            // `Option<&Rc<GeoMap>>` is `Copy`, so each branch may use these freely.
+            let available_gravity = gravity_map.as_ref().filter(|_| gravity_present);
+            let available_magnetic = magnetic_map.as_ref().filter(|_| magnetic_present);
 
-            if has_gravity && has_magnetic {
+            if let (Some(g_map), Some(m_map)) = (available_gravity, available_magnetic) {
                 // Both maps available: emit a single combined 2D measurement
-                let g_map = gravity_map.as_ref().unwrap();
-                let m_map = magnetic_map.as_ref().unwrap();
                 let observed_gravity =
                     (r1.grav_x.powi(2) + r1.grav_y.powi(2) + r1.grav_z.powi(2)).sqrt();
                 let datetime = r1.time;
@@ -1078,9 +1235,8 @@ pub fn build_event_stream(
                     meas: Box::new(meas),
                     elapsed_s: *t1,
                 });
-            } else if has_gravity {
+            } else if let Some(g_map) = available_gravity {
                 // Gravity-only
-                let g_map = gravity_map.as_ref().unwrap();
                 let observed_gravity =
                     (r1.grav_x.powi(2) + r1.grav_y.powi(2) + r1.grav_z.powi(2)).sqrt();
                 let meas = GravityMeasurement {
@@ -1101,9 +1257,8 @@ pub fn build_event_stream(
                     meas: Box::new(meas),
                     elapsed_s: *t1,
                 });
-            } else if has_magnetic {
+            } else if let Some(m_map) = available_magnetic {
                 // Magnetic-only
-                let m_map = magnetic_map.as_ref().unwrap();
                 let datetime = r1.time;
                 let observed_magnetic =
                     (r1.mag_x.powi(2) + r1.mag_y.powi(2) + r1.mag_z.powi(2)).sqrt();
@@ -1234,15 +1389,13 @@ mod tests {
         let map = create_test_gravity_map();
 
         // Test exact point
-        let value = map.get_point(&40.0, &-74.0);
-        assert!(value.is_some());
-        assert!((value.unwrap() - (-10.0)).abs() < 1e-10);
+        let value = map.get_point(&40.0, &-74.0).unwrap();
+        assert!((value - (-10.0)).abs() < 1e-10);
 
         // Test interpolated point within bounds
-        let value = map.get_point(&40.5, &-73.5);
-        assert!(value.is_some());
+        let value = map.get_point(&40.5, &-73.5).unwrap();
         // Should be interpolated value between surrounding points
-        assert!(value.unwrap().abs() < 10.0);
+        assert!(value.abs() < 10.0);
     }
 
     #[test]
@@ -1263,9 +1416,13 @@ mod tests {
 
         // Dummy state for get_measurement (forces fallback to stored state)
         let dummy_state = DVector::from_vec(vec![f64::NAN; 9]);
-        let measurement_vector = measurement.get_measurement(&dummy_state);
+        let measurement_vector = measurement.get_measurement(&dummy_state).unwrap();
         assert_eq!(measurement_vector.len(), 1);
-        assert_approx_eq!(measurement_vector[0], measurement.get_anomaly(), 1e-6);
+        assert_approx_eq!(
+            measurement_vector[0],
+            measurement.get_anomaly().unwrap(),
+            1e-6
+        );
 
         let noise_matrix = measurement.get_noise();
         assert_eq!(noise_matrix.nrows(), 1);
@@ -1292,10 +1449,14 @@ mod tests {
 
         // Dummy state for get_measurement (forces fallback to stored state)
         let dummy_state = DVector::from_vec(vec![f64::NAN; 9]);
-        let measurement_vector = measurement.get_measurement(&dummy_state);
+        let measurement_vector = measurement.get_measurement(&dummy_state).unwrap();
         assert_eq!(measurement_vector.len(), 1);
 
-        assert_approx_eq!(measurement_vector[0], measurement.get_anomaly(), 1e-6);
+        assert_approx_eq!(
+            measurement_vector[0],
+            measurement.get_anomaly().unwrap(),
+            1e-6
+        );
 
         let noise_matrix = measurement.get_noise();
         assert_eq!(noise_matrix.nrows(), 1);
@@ -1457,20 +1618,65 @@ mod tests {
         let map = create_test_gravity_map();
 
         // Test points within bounds
-        assert!(map.get_point(&40.5, &-73.5).is_some());
-        assert!(map.get_point(&41.0, &-73.0).is_some());
+        assert!(map.get_point(&40.5, &-73.5).is_ok());
+        assert!(map.get_point(&41.0, &-73.0).is_ok());
 
         // Test corner points (should be valid)
-        assert!(map.get_point(&40.0, &-74.0).is_some()); // Bottom-left
-        assert!(map.get_point(&42.0, &-72.0).is_some()); // Top-right
+        assert!(map.get_point(&40.0, &-74.0).is_ok()); // Bottom-left
+        assert!(map.get_point(&42.0, &-72.0).is_ok()); // Top-right
     }
 
     #[test]
-    #[should_panic(expected = "Latitude out of bounds")]
-    fn test_map_out_of_bounds_panic() {
+    fn test_map_out_of_bounds_errors() {
         let map = create_test_gravity_map();
-        // This should panic according to the current implementation
-        map.get_point(&39.0, &-73.0);
+        // Was `test_map_out_of_bounds_panic`. Leaving the loaded tile is a routine
+        // condition for a filter estimate, not a defect, so it is now reported rather
+        // than fatal -- and `is_recoverable` tells the caller to skip the measurement.
+        let got = map.get_point(&39.0, &-73.0);
+        assert!(
+            matches!(
+                got,
+                Err(StrapdownError::OutOfMapBounds {
+                    axis: "latitude",
+                    ..
+                })
+            ),
+            "expected OutOfMapBounds on latitude, got {got:?}"
+        );
+        assert!(got.unwrap_err().is_recoverable());
+    }
+
+    /// `NaN` used to reach the index search and panic on `unwrap`: every comparison
+    /// against `NaN` is false, so it passed straight through the bounds guards. The
+    /// geophysical measurement models are built with `NaN` position placeholders, so this
+    /// was reachable in ordinary use rather than only under a diverged filter.
+    #[test]
+    fn test_map_rejects_non_finite_coordinates() {
+        let map = create_test_gravity_map();
+        assert!(matches!(
+            map.get_point(&f64::NAN, &-73.0),
+            Err(StrapdownError::NonFinite { .. })
+        ));
+        assert!(matches!(
+            map.get_point(&40.5, &f64::NAN),
+            Err(StrapdownError::NonFinite { .. })
+        ));
+        assert!(matches!(
+            map.get_point(&f64::INFINITY, &-73.0),
+            Err(StrapdownError::NonFinite { .. })
+        ));
+    }
+
+    /// A coordinate one ULP above the first grid line skips the exact-equality edge
+    /// branches and lands on `lat2_index == 0`, where the old `lat2_index - 1` underflowed
+    /// a `usize`. It must produce an error or a value, never a panic.
+    #[test]
+    fn test_map_handles_coordinate_just_above_first_gridline() {
+        let map = create_test_gravity_map();
+        let first_lat = map.get_lats()[0];
+        let just_above = f64::from_bits(first_lat.to_bits() + 1);
+        // Either outcome is acceptable; panicking is not.
+        let _ = map.get_point(&just_above, &-73.5);
     }
 
     #[test]
@@ -1614,7 +1820,7 @@ mod tests {
         let map = create_test_gravity_map();
 
         // Test gradient computation at center point
-        let (dlat, dlon) = map.get_gradient(&41.0, &-73.0, 1e-6);
+        let (dlat, dlon) = map.get_gradient(&41.0, &-73.0, 1e-6).unwrap();
 
         // Gradient should be non-zero for a non-constant map
         assert!(
@@ -1623,7 +1829,7 @@ mod tests {
         );
 
         // Test gradient at corner (should handle boundaries gracefully)
-        let (dlat_corner, dlon_corner) = map.get_gradient(&40.0, &-74.0, 1e-6);
+        let (dlat_corner, dlon_corner) = map.get_gradient(&40.0, &-74.0, 1e-6).unwrap();
         assert!(
             dlat_corner.is_finite() && dlon_corner.is_finite(),
             "Gradient should be finite at map corners"
@@ -1657,7 +1863,7 @@ mod tests {
             0.0, // attitude
         ]);
 
-        let jacobian = measurement.get_jacobian_internal(&state);
+        let jacobian = measurement.get_jacobian_internal(&state).unwrap();
 
         // Jacobian should be 1x9
         assert_eq!(jacobian.nrows(), 1);
@@ -1698,7 +1904,7 @@ mod tests {
             0.0, // attitude
         ]);
 
-        let jacobian = measurement.get_jacobian_internal(&state);
+        let jacobian = measurement.get_jacobian_internal(&state).unwrap();
 
         // Jacobian should be 1x9
         assert_eq!(jacobian.nrows(), 1);
@@ -1740,7 +1946,7 @@ mod tests {
         ]);
 
         // Test that get_jacobian returns a valid Jacobian
-        let jacobian = measurement.get_jacobian(&state);
+        let jacobian = measurement.get_jacobian(&state).unwrap();
         assert_eq!(jacobian.nrows(), 1);
         assert_eq!(jacobian.ncols(), 9);
     }
@@ -1775,7 +1981,7 @@ mod tests {
         ]);
 
         // Test that get_jacobian returns a valid Jacobian
-        let jacobian = measurement.get_jacobian(&state);
+        let jacobian = measurement.get_jacobian(&state).unwrap();
         assert_eq!(jacobian.nrows(), 1);
         assert_eq!(jacobian.ncols(), 9);
     }

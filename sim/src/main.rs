@@ -517,23 +517,30 @@ fn process_file(
 
             let results = match filter_config.filter {
                 FilterType::Ukf => {
-                    let mut ukf = initialize_ukf(records[0].clone(), UkfConfig::default());
+                    let mut ukf = initialize_ukf(records[0].clone(), UkfConfig::default())?;
                     info!("Initialized UKF");
                     run_closed_loop(&mut ukf, event_stream, None, Some(execution_limits))
                 }
                 FilterType::Ekf => {
-                    let mut ekf = initialize_ekf(records[0].clone(), None, None, None, None, true);
+                    let mut ekf = initialize_ekf(records[0].clone(), None, None, None, None, true)?;
                     info!("Initialized EKF");
                     run_closed_loop(&mut ekf, event_stream, None, Some(execution_limits))
                 }
                 FilterType::Eskf => {
-                    let mut eskf = initialize_eskf(records[0].clone(), None, None, None, None);
+                    let mut eskf = initialize_eskf(records[0].clone(), None, None, None, None)?;
                     info!("Initialized ESKF");
                     run_closed_loop(&mut eskf, event_stream, None, Some(execution_limits))
                 }
             };
 
-            let output_file = output.join(input_file.file_name().unwrap());
+            // `get_csv_files` yields real files, so this always has a final component --
+            // but the coupling is not enforced by any type, so name the fallback rather
+            // than assert it.
+            let output_file = output.join(
+                input_file
+                    .file_name()
+                    .unwrap_or_else(|| std::ffi::OsStr::new("output.csv")),
+            );
             match results {
                 Ok(ref nav_results) => {
                     NavigationResult::to_csv(nav_results, &output_file)?;
@@ -700,12 +707,19 @@ fn process_file(
                     zero_vertical_velocity_std_mps: pf_cfg.zero_vertical_velocity_std_mps,
                     ..rbpf_defaults
                 },
-            );
+            )?;
 
             // Geophysical measurements ride the same event stream as every other
             // measurement type, so there is no separate geo path here.
             let results = run_rbpf_event_loop(&mut rbpf, event_stream, &config.execution_limits)?;
-            let output_file = output.join(input_file.file_name().unwrap());
+            // `get_csv_files` yields real files, so this always has a final component --
+            // but the coupling is not enforced by any type, so name the fallback rather
+            // than assert it.
+            let output_file = output.join(
+                input_file
+                    .file_name()
+                    .unwrap_or_else(|| std::ffi::OsStr::new("output.csv")),
+            );
             NavigationResult::to_csv(&results, &output_file)?;
             info!("Results written to {}", output_file.display());
 
@@ -828,12 +842,13 @@ fn run_from_config(
                 Ok(()) => {}
                 Err(e) => {
                     error!("Error processing {}: {}", input_file.display(), e);
-                    // Use expect with a descriptive message for mutex operations
+                    // Recover from a poisoned lock rather than panicking. This mutex
+                    // guards the list of per-file failures; if another worker panicked
+                    // while holding it, turning that into a second panic here loses the
+                    // very error report this block exists to produce.
                     errors
                         .lock()
-                        .expect(
-                            "Failed to acquire lock on error collection - another thread panicked",
-                        )
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .push((input_file.clone(), e.to_string()));
                 }
             }
@@ -841,7 +856,7 @@ fn run_from_config(
 
         let errors = errors
             .into_inner()
-            .expect("Failed to extract errors from mutex - another thread panicked");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !errors.is_empty() {
             error!("{} file(s) failed to process", errors.len());
             for (file, err) in &errors {
@@ -903,17 +918,17 @@ fn run_single_closed_loop_simulation(
                     ukf_kappa: Some(ukf_kappa),
                     ..Default::default()
                 },
-            );
+            )?;
             info!("Initialized UKF");
             run_closed_loop(&mut ukf, event_stream, None, Some(execution_limits))
         }
         FilterType::Ekf => {
-            let mut ekf = initialize_ekf(records[0].clone(), None, None, None, None, true);
+            let mut ekf = initialize_ekf(records[0].clone(), None, None, None, None, true)?;
             info!("Initialized EKF");
             run_closed_loop(&mut ekf, event_stream, None, Some(execution_limits))
         }
         FilterType::Eskf => {
-            let mut eskf = initialize_eskf(records[0].clone(), None, None, None, None);
+            let mut eskf = initialize_eskf(records[0].clone(), None, None, None, None)?;
             info!("Initialized ESKF");
             run_closed_loop(&mut eskf, event_stream, None, Some(execution_limits))
         }
@@ -1380,7 +1395,7 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                         ukf_beta: Some(args.ukf_beta),
                         ukf_kappa: Some(args.ukf_kappa),
                     },
-                );
+                )?;
                 info!(
                     "Initialized UKF with state dimension {} (base: 9, geo: {})",
                     ukf.get_estimate().len(),
@@ -1520,10 +1535,10 @@ fn run_rbpf_event_loop(
 
         match event {
             Event::Imu { dt_s, imu, .. } => {
-                rbpf.predict(&imu, dt_s);
+                rbpf.predict(&imu, dt_s)?;
             }
             Event::Measurement { meas, .. } => {
-                rbpf.update(meas.as_ref());
+                rbpf.update(meas.as_ref())?;
             }
         }
 
@@ -1686,7 +1701,7 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
             ..RbpfConfig::default()
         };
 
-        let mut rbpf = RaoBlackwellizedParticleFilter::new(nominal, config);
+        let mut rbpf = RaoBlackwellizedParticleFilter::new(nominal, config)?;
 
         let results = run_rbpf_event_loop(&mut rbpf, event_stream, &execution_limits)?;
 

@@ -440,7 +440,7 @@ fn run_rbpf_with_cfg(
     let stream = build_event_stream(records, cfg);
 
     let nominal = create_nominal_state(&records[0]);
-    let mut rbpf = RaoBlackwellizedParticleFilter::new(nominal, rbpf_config);
+    let mut rbpf = RaoBlackwellizedParticleFilter::new(nominal, rbpf_config).unwrap();
 
     let start_time = stream.start_time;
     let mut results: Vec<NavigationResult> = Vec::with_capacity(stream.events.len());
@@ -454,8 +454,8 @@ fn run_rbpf_with_cfg(
         let ts = start_time + chrono::Duration::milliseconds((elapsed_s * 1000.0).round() as i64);
 
         match event {
-            Event::Imu { dt_s, imu, .. } => rbpf.predict(&imu, dt_s),
-            Event::Measurement { meas, .. } => rbpf.update(meas.as_ref()),
+            Event::Imu { dt_s, imu, .. } => rbpf.predict(&imu, dt_s).unwrap(),
+            Event::Measurement { meas, .. } => rbpf.update(meas.as_ref()).unwrap(),
         }
 
         if Some(ts) != last_ts {

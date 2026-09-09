@@ -5,6 +5,7 @@
 //! altitude, and magnetometer-based yaw measurements. These models are used in
 //! inertial navigation systems to process sensor data.
 
+use crate::StrapdownError;
 use crate::StrapdownState;
 use crate::earth::METERS_TO_DEGREES;
 
@@ -20,6 +21,19 @@ use world_magnetic_model::uom::si::length::meter;
 
 pub const MAG_YAW_NOISE: f64 = 0.2; // radians
 
+/// Date substituted when a record carries an unusable year/day-of-year pair.
+///
+/// The declination lookup degrades rather than failing here: a wrong date shifts declination
+/// by a fraction of a degree, whereas refusing the measurement loses the heading aid
+/// entirely. Built once, with a single documented allow, instead of an `unwrap` per call.
+#[expect(
+    clippy::expect_used,
+    reason = "1 January 2025 is a valid ordinal date; this cannot fail"
+)]
+fn fallback_wmm_date() -> Date {
+    Date::from_ordinal_date(2025, 1).expect("2025-001 is a valid ordinal date")
+}
+
 /// Build a [`StrapdownState`] from a 9-element state vector without range validation.
 ///
 /// Measurement Jacobians are evaluated on whatever the filter's current estimate
@@ -29,8 +43,19 @@ pub const MAG_YAW_NOISE: f64 = 0.2; // radians
 /// the update step. Linearization itself is well defined for any finite state, so
 /// build the value directly and leave range enforcement to state construction from
 /// user input.
-fn jacobian_state(state: &DVector<f64>) -> StrapdownState {
-    StrapdownState {
+///
+/// # Errors
+/// [`StrapdownError::DimensionMismatch`] if `state` has fewer than 9 elements. The indexing
+/// below is unconditional, so a short vector panicked here before #254.
+fn jacobian_state(state: &DVector<f64>) -> Result<StrapdownState, StrapdownError> {
+    if state.len() < 9 {
+        return Err(StrapdownError::DimensionMismatch {
+            what: "measurement Jacobian state vector",
+            expected: 9,
+            got: state.len(),
+        });
+    }
+    Ok(StrapdownState {
         latitude: state[0],
         longitude: state[1],
         altitude: state[2],
@@ -39,7 +64,7 @@ fn jacobian_state(state: &DVector<f64>) -> StrapdownState {
         velocity_vertical: state[5],
         attitude: Rotation3::from_euler_angles(state[6], state[7], state[8]),
         is_enu: false,
-    }
+    })
 }
 
 /// Generic measurement model trait for all types of measurements.
@@ -81,7 +106,14 @@ pub trait MeasurementModel: Any {
     /// # Returns
     ///
     /// A `DVector<f64>` containing the measurement value(s)
-    fn get_measurement(&self, state: &DVector<f64>) -> DVector<f64>;
+    /// The observed measurement `z` for the given state.
+    ///
+    /// # Errors
+    /// Returns an error when no measurement can be formed. Analytic models in this crate are
+    /// infallible, but a geophysical anomaly is `observed - model(position)`, so if the
+    /// underlying model rejects the query there is no `z` to return — and substituting one
+    /// would corrupt the innovation rather than report the gap.
+    fn get_measurement(&self, state: &DVector<f64>) -> Result<DVector<f64>, StrapdownError>;
     /// Get the measurement noise characteristics in a matrix format
     fn get_noise(&self) -> DMatrix<f64>;
     /// Get the expected measurements from the state. Measurement model function
@@ -132,11 +164,18 @@ pub trait MeasurementModel: Any {
     /// };
     ///
     /// let state = DVector::from_vec(vec![0.7854, -2.1293, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
-    /// let h_matrix = gps_meas.get_jacobian(&state);
+    /// let h_matrix = gps_meas.get_jacobian(&state).unwrap();
     /// assert_eq!(h_matrix.nrows(), 3);
     /// assert_eq!(h_matrix.ncols(), 9);
     /// ```
-    fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64>;
+    ///
+    /// # Errors
+    /// Returns an error when the Jacobian cannot be evaluated at `state`. The models in this
+    /// crate are analytic and fail only on a malformed state vector, but geophysical models
+    /// read a loaded map and legitimately fail when the estimate leaves its bounds — see
+    /// [`StrapdownError::is_recoverable`], which tells a caller that skipping the measurement
+    /// is the correct response rather than aborting.
+    fn get_jacobian(&self, state: &DVector<f64>) -> Result<DMatrix<f64>, StrapdownError>;
 
     /// Wrap angular components of an innovation vector into [-π, π).
     ///
@@ -180,13 +219,13 @@ impl MeasurementModel for GPSPositionMeasurement {
     fn get_dimension(&self) -> usize {
         3
     }
-    fn get_measurement(&self, _state: &DVector<f64>) -> DVector<f64> {
+    fn get_measurement(&self, _state: &DVector<f64>) -> Result<DVector<f64>, StrapdownError> {
         // GPS position measurement is state-independent
-        DVector::from_vec(vec![
+        Ok(DVector::from_vec(vec![
             self.latitude.to_radians(),
             self.longitude.to_radians(),
             self.altitude,
-        ])
+        ]))
     }
     fn get_noise(&self) -> DMatrix<f64> {
         // Convert horizontal noise from meters to radians for position covariance
@@ -201,9 +240,9 @@ impl MeasurementModel for GPSPositionMeasurement {
         DVector::from_vec(vec![state[0], state[1], state[2]])
     }
 
-    fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64> {
-        let nav_state = jacobian_state(state);
-        crate::linearize::gps_position_jacobian(&nav_state)
+    fn get_jacobian(&self, state: &DVector<f64>) -> Result<DMatrix<f64>, StrapdownError> {
+        let nav_state = jacobian_state(state)?;
+        Ok(crate::linearize::gps_position_jacobian(&nav_state))
     }
 }
 /// GPS Velocity measurement model
@@ -238,13 +277,13 @@ impl MeasurementModel for GPSVelocityMeasurement {
     fn get_dimension(&self) -> usize {
         3
     }
-    fn get_measurement(&self, _state: &DVector<f64>) -> DVector<f64> {
+    fn get_measurement(&self, _state: &DVector<f64>) -> Result<DVector<f64>, StrapdownError> {
         // GPS velocity measurement is state-independent
-        DVector::from_vec(vec![
+        Ok(DVector::from_vec(vec![
             self.northward_velocity,
             self.eastward_velocity,
             self.vertical_velocity,
-        ])
+        ]))
     }
     fn get_noise(&self) -> DMatrix<f64> {
         DMatrix::from_diagonal(&DVector::from_vec(vec![
@@ -257,9 +296,9 @@ impl MeasurementModel for GPSVelocityMeasurement {
         DVector::from_vec(vec![state[3], state[4], state[5]])
     }
 
-    fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64> {
-        let nav_state = jacobian_state(state);
-        crate::linearize::gps_velocity_jacobian(&nav_state)
+    fn get_jacobian(&self, state: &DVector<f64>) -> Result<DMatrix<f64>, StrapdownError> {
+        let nav_state = jacobian_state(state)?;
+        Ok(crate::linearize::gps_velocity_jacobian(&nav_state))
     }
 }
 /// GPS Position and Velocity measurement model
@@ -284,15 +323,15 @@ impl MeasurementModel for GPSPositionAndVelocityMeasurement {
     fn get_dimension(&self) -> usize {
         5
     }
-    fn get_measurement(&self, _state: &DVector<f64>) -> DVector<f64> {
+    fn get_measurement(&self, _state: &DVector<f64>) -> Result<DVector<f64>, StrapdownError> {
         // GPS position and velocity measurement is state-independent
-        DVector::from_vec(vec![
+        Ok(DVector::from_vec(vec![
             self.latitude.to_radians(),
             self.longitude.to_radians(),
             self.altitude,
             self.northward_velocity,
             self.eastward_velocity,
-        ])
+        ]))
     }
     fn get_noise(&self) -> DMatrix<f64> {
         // Convert horizontal noise from meters to radians for position covariance
@@ -311,9 +350,9 @@ impl MeasurementModel for GPSPositionAndVelocityMeasurement {
         DVector::from_vec(vec![state[0], state[1], state[2], state[3], state[4]])
     }
 
-    fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64> {
-        let nav_state = jacobian_state(state);
-        crate::linearize::gps_position_velocity_jacobian(&nav_state)
+    fn get_jacobian(&self, state: &DVector<f64>) -> Result<DMatrix<f64>, StrapdownError> {
+        let nav_state = jacobian_state(state)?;
+        Ok(crate::linearize::gps_position_velocity_jacobian(&nav_state))
     }
     //fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
     //    let mut measurement_sigma_points = DMatrix::<f64>::zeros(5, state_sigma_points.ncols());
@@ -353,9 +392,11 @@ impl MeasurementModel for RelativeAltitudeMeasurement {
     fn get_dimension(&self) -> usize {
         1
     }
-    fn get_measurement(&self, _state: &DVector<f64>) -> DVector<f64> {
+    fn get_measurement(&self, _state: &DVector<f64>) -> Result<DVector<f64>, StrapdownError> {
         // Barometric altitude measurement is state-independent
-        DVector::from_vec(vec![self.relative_altitude + self.reference_altitude])
+        Ok(DVector::from_vec(vec![
+            self.relative_altitude + self.reference_altitude,
+        ]))
     }
     fn get_noise(&self) -> DMatrix<f64> {
         DMatrix::from_diagonal(&DVector::from_vec(vec![5.0]))
@@ -364,9 +405,9 @@ impl MeasurementModel for RelativeAltitudeMeasurement {
         DVector::from_vec(vec![state[2]])
     }
 
-    fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64> {
-        let nav_state = jacobian_state(state);
-        crate::linearize::relative_altitude_jacobian(&nav_state)
+    fn get_jacobian(&self, state: &DVector<f64>) -> Result<DMatrix<f64>, StrapdownError> {
+        let nav_state = jacobian_state(state)?;
+        Ok(crate::linearize::relative_altitude_jacobian(&nav_state))
     }
     // fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
     //     let mut measurement_sigma_points = DMatrix::<f64>::zeros(self.get_dimension(), state_sigma_points.ncols());
@@ -457,7 +498,7 @@ impl MeasurementModel for RelativeAltitudeMeasurement {
 /// ]);
 ///
 /// // Get tilt-compensated yaw measurement
-/// let z = mag_meas.get_measurement(&state);
+/// let z = mag_meas.get_measurement(&state).unwrap();
 /// assert_eq!(z.len(), 1);
 /// ```
 #[derive(Clone, Debug)]
@@ -516,7 +557,7 @@ impl MagnetometerYawMeasurement {
     /// Magnetic declination in radians (positive east)
     pub fn get_declination(&self, lat_deg: f64, lon_deg: f64, alt_m: f64) -> f64 {
         let date = Date::from_ordinal_date(self.year, self.day_of_year)
-            .unwrap_or_else(|_| Date::from_ordinal_date(2025, 1).unwrap());
+            .unwrap_or_else(|_| fallback_wmm_date());
 
         let field = GeomagneticField::new(
             Length::new::<meter>(alt_m as f32),
@@ -545,7 +586,7 @@ impl MeasurementModel for MagnetometerYawMeasurement {
         1 // Single yaw measurement
     }
 
-    fn get_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
+    fn get_measurement(&self, state: &DVector<f64>) -> Result<DVector<f64>, StrapdownError> {
         // Extract roll and pitch from state for tilt compensation
         let roll = if state.len() > 6 { state[6] } else { 0.0 };
         let pitch = if state.len() > 7 { state[7] } else { 0.0 };
@@ -574,7 +615,7 @@ impl MeasurementModel for MagnetometerYawMeasurement {
             heading = heading.rem_euclid(2.0 * std::f64::consts::PI);
         }
 
-        DVector::from_vec(vec![heading])
+        Ok(DVector::from_vec(vec![heading]))
     }
 
     fn get_noise(&self) -> DMatrix<f64> {
@@ -587,9 +628,11 @@ impl MeasurementModel for MagnetometerYawMeasurement {
         DVector::from_vec(vec![yaw])
     }
 
-    fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64> {
-        let nav_state = jacobian_state(state);
-        crate::linearize::magnetometer_yaw_jacobian(&nav_state, self.mag_x, self.mag_y, self.mag_z)
+    fn get_jacobian(&self, state: &DVector<f64>) -> Result<DMatrix<f64>, StrapdownError> {
+        let nav_state = jacobian_state(state)?;
+        Ok(crate::linearize::magnetometer_yaw_jacobian(
+            &nav_state, self.mag_x, self.mag_y, self.mag_z,
+        ))
     }
 
     fn wrap_residual(&self, residual: &mut DVector<f64>) {
@@ -629,7 +672,8 @@ mod tests {
         let z_at = |yaw: f64| {
             m.get_measurement(&DVector::from_vec(vec![
                 0.7, -1.3, 100.0, 0.0, 0.0, 0.0, 0.16, -0.4, yaw,
-            ]))[0]
+            ]))
+            .unwrap()[0]
         };
         let z0 = z_at(0.2);
         for yaw in [0.0, 1.0, 2.5, 5.0, -1.2] {
@@ -676,7 +720,7 @@ mod tests {
         let dummy_state = DVector::from_vec(vec![0.0; 9]);
 
         // Vector in radians for lat/lon
-        let vec = meas.get_measurement(&dummy_state);
+        let vec = meas.get_measurement(&dummy_state).unwrap();
         assert_eq!(vec.len(), 3);
         assert!((vec[0] - 37.0_f64.to_radians()).abs() < EPS);
         assert!((vec[1] - (-122.0_f64).to_radians()).abs() < EPS);
@@ -719,7 +763,7 @@ mod tests {
         // Dummy state for get_measurement (GPS velocity is state-independent)
         let dummy_state = DVector::from_vec(vec![0.0; 9]);
 
-        let vec = meas.get_measurement(&dummy_state);
+        let vec = meas.get_measurement(&dummy_state).unwrap();
         assert_eq!(vec.len(), 3);
         assert!((vec[0] - 1.5).abs() < EPS);
         assert!((vec[1] - (-0.5)).abs() < EPS);
@@ -760,7 +804,7 @@ mod tests {
         // Dummy state for get_measurement (GPS measurement is state-independent)
         let dummy_state = DVector::from_vec(vec![0.0; 9]);
 
-        let vec = meas.get_measurement(&dummy_state);
+        let vec = meas.get_measurement(&dummy_state).unwrap();
         assert_eq!(vec.len(), 5);
         assert!((vec[0] - 10.0_f64.to_radians()).abs() < EPS);
         assert!((vec[3] - 2.0).abs() < EPS);
@@ -795,7 +839,7 @@ mod tests {
         // Dummy state for get_measurement (barometric altitude is state-independent)
         let dummy_state = DVector::from_vec(vec![0.0; 9]);
 
-        let vec = meas.get_measurement(&dummy_state);
+        let vec = meas.get_measurement(&dummy_state).unwrap();
         assert_eq!(vec.len(), 1);
         assert!((vec[0] - 95.0).abs() < EPS);
 
@@ -883,7 +927,7 @@ mod tests {
             0.0, // yaw
         ]);
 
-        let z = meas.get_measurement(&state);
+        let z = meas.get_measurement(&state).unwrap();
         assert_eq!(z.len(), 1);
 
         // With mag pointing north and level attitude, heading should be ~0
@@ -915,7 +959,7 @@ mod tests {
             0.0, // level attitude
         ]);
 
-        let z = meas.get_measurement(&state);
+        let z = meas.get_measurement(&state).unwrap();
 
         // With mag pointing east and level attitude, heading should be ~π/2 (90 deg)
         let expected = std::f64::consts::FRAC_PI_2;
@@ -965,8 +1009,8 @@ mod tests {
             0.0, // ~10 deg roll
         ]);
 
-        let z_level = meas.get_measurement(&level_state);
-        let z_tilted = meas.get_measurement(&tilted_state);
+        let z_level = meas.get_measurement(&level_state).unwrap();
+        let z_tilted = meas.get_measurement(&tilted_state).unwrap();
 
         // Heading should be different when tilted (tilt compensation effect)
         assert!(

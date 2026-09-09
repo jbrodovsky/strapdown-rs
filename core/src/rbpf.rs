@@ -5,6 +5,7 @@
 //! for map-matching and GNSS-aided navigation where measurements are highly
 //! nonlinear in position but linear in the remaining states.
 
+use crate::StrapdownError;
 use crate::earth::METERS_TO_DEGREES;
 use crate::linalg::{matrix_square_root, symmetrize};
 use crate::linearize::state_transition_jacobian;
@@ -106,7 +107,11 @@ impl RaoBlackwellizedParticleFilter {
         LINEAR_STATE_DIM_BASE + self.config.extra_state_dim
     }
     /// Create a new RBPF with particles initialized around the nominal state.
-    pub fn new(nominal: StrapdownState, config: RbpfConfig) -> Self {
+    /// # Errors
+    /// [`StrapdownError::InvalidConfiguration`] if any `position_init_std_m` component is
+    /// not a usable standard deviation. Zero is a plausible thing for a user to write --
+    /// "I know my start position exactly" -- and it used to panic here at construction.
+    pub fn new(nominal: StrapdownState, config: RbpfConfig) -> Result<Self, StrapdownError> {
         let mut rng = StdRng::seed_from_u64(config.seed);
         let linear_dim = LINEAR_STATE_DIM_BASE + config.extra_state_dim;
 
@@ -117,9 +122,15 @@ impl RaoBlackwellizedParticleFilter {
             config.position_init_std_m[2],
         );
 
-        let normal_lat = Normal::new(0.0, pos_std[0]).unwrap();
-        let normal_lon = Normal::new(0.0, pos_std[1]).unwrap();
-        let normal_alt = Normal::new(0.0, pos_std[2]).unwrap();
+        let position_normal = |axis: usize, name: &'static str| {
+            Normal::new(0.0, pos_std[axis]).map_err(|e| StrapdownError::InvalidConfiguration {
+                field: name,
+                reason: format!("{} is not a usable standard deviation: {e}", pos_std[axis]),
+            })
+        };
+        let normal_lat = position_normal(0, "position_init_std_m[0]")?;
+        let normal_lon = position_normal(1, "position_init_std_m[1]")?;
+        let normal_alt = position_normal(2, "position_init_std_m[2]")?;
 
         let mut linear_cov = DMatrix::<f64>::zeros(linear_dim, linear_dim);
         for i in 0..3 {
@@ -137,7 +148,8 @@ impl RaoBlackwellizedParticleFilter {
         let weight = 1.0 / config.num_particles as f64;
         let extra_state_normal = if config.extra_state_dim > 0 && config.extra_state_init_std > 0.0
         {
-            Some(Normal::new(0.0, config.extra_state_init_std).unwrap())
+            // Guarded by `extra_state_init_std > 0.0` on the line above.
+            Some(crate::normal_with_std(config.extra_state_init_std))
         } else {
             None
         };
@@ -161,13 +173,13 @@ impl RaoBlackwellizedParticleFilter {
             });
         }
 
-        Self {
+        Ok(Self {
             config,
             particles,
             nominal,
             rng,
             linear_update_applied: false,
-        }
+        })
     }
 
     /// Access the nominal INS state.
@@ -176,7 +188,12 @@ impl RaoBlackwellizedParticleFilter {
     }
 
     /// Predict step using IMU data.
-    pub fn predict(&mut self, imu: &IMUData, dt: f64) {
+    ///
+    /// # Errors
+    /// Propagates [`StrapdownError::NotSquare`] from the process-noise square root. The RBPF
+    /// keeps its inherent methods rather than adopting [`NavigationFilter`] — that is queue
+    /// position 5 (#259) — but it still owes the zero-panic contract of #254.
+    pub fn predict(&mut self, imu: &IMUData, dt: f64) -> Result<(), StrapdownError> {
         let f = state_transition_jacobian(&self.nominal, &imu.accel, &imu.gyro, dt);
         let linear_dim = LINEAR_STATE_DIM_BASE + self.config.extra_state_dim;
 
@@ -235,7 +252,7 @@ impl RaoBlackwellizedParticleFilter {
         // Propagate nominal state with strapdown mechanization.
         forward(&mut self.nominal, *imu, dt);
 
-        let normal = Normal::new(0.0, 1.0).unwrap();
+        let normal = crate::normal_with_std(1.0);
 
         // Conditional covariance recursion, computed once per step instead of
         // once per particle per step. It depends only on the shared
@@ -246,7 +263,8 @@ impl RaoBlackwellizedParticleFilter {
         // per-particle noise draws and state propagation stay in the loop, in
         // the same order, keeping the RNG stream untouched.
         let Some(first) = self.particles.first() else {
-            return;
+            // No particles to propagate; nothing to do and nothing wrong.
+            return Ok(());
         };
         let n = &f_nl_full * &first.linear_cov * f_nl_full.transpose() + &q_n;
         let n = symmetrize(&n);
@@ -261,7 +279,7 @@ impl RaoBlackwellizedParticleFilter {
         for i in 0..linear_dim {
             p_new[(i, i)] += 1e-9;
         }
-        let q_sqrt = matrix_square_root(&n);
+        let q_sqrt = matrix_square_root(&n)?;
 
         for particle in &mut self.particles {
             let x_n = particle.position_error;
@@ -293,44 +311,50 @@ impl RaoBlackwellizedParticleFilter {
             particle.linear_state = x_l_pred;
             particle.linear_cov.clone_from(&p_new);
         }
+        Ok(())
     }
 
     /// Update step using a measurement model.
-    pub fn update<M: MeasurementModel + ?Sized>(&mut self, measurement: &M) {
+    ///
+    /// # Errors
+    /// Propagates measurement failures — chiefly a geophysical model whose particle has
+    /// drifted off the loaded map. Callers should consult
+    /// [`StrapdownError::is_recoverable`] and skip the measurement rather than abort.
+    pub fn update<M: MeasurementModel + ?Sized>(
+        &mut self,
+        measurement: &M,
+    ) -> Result<(), StrapdownError> {
         if let Some(pos_meas) = measurement
             .as_any()
             .downcast_ref::<GPSPositionMeasurement>()
         {
-            self.update_position_only(pos_meas);
-            return;
+            return self.update_position_only(pos_meas);
         }
         if let Some(vel_meas) = measurement
             .as_any()
             .downcast_ref::<GPSVelocityMeasurement>()
         {
-            self.update_velocity_only(vel_meas);
-            return;
+            return self.update_velocity_only(vel_meas);
         }
         if let Some(pos_vel) = measurement
             .as_any()
             .downcast_ref::<GPSPositionAndVelocityMeasurement>()
         {
-            self.update_position_velocity(pos_vel);
-            return;
+            return self.update_position_velocity(pos_vel);
         }
         if let Some(alt) = measurement
             .as_any()
             .downcast_ref::<RelativeAltitudeMeasurement>()
         {
-            self.update_position_only(alt);
-            return;
+            return self.update_position_only(alt);
         }
 
-        self.update_weights_generic(measurement);
+        self.update_weights_generic(measurement)?;
 
         if self.config.zero_vertical_velocity {
             self.update_vertical_velocity_constraint();
         }
+        Ok(())
     }
 
     /// Return weighted mean and covariance of the full 9-state estimate.
@@ -357,15 +381,22 @@ impl RaoBlackwellizedParticleFilter {
         if sum_sq > 0.0 { 1.0 / sum_sq } else { 0.0 }
     }
 
-    fn update_position_only<M: MeasurementModel + ?Sized>(&mut self, measurement: &M) {
-        self.update_weights_generic(measurement);
+    fn update_position_only<M: MeasurementModel + ?Sized>(
+        &mut self,
+        measurement: &M,
+    ) -> Result<(), StrapdownError> {
+        self.update_weights_generic(measurement)?;
         if self.config.zero_vertical_velocity {
             self.update_vertical_velocity_constraint();
         }
+        Ok(())
     }
 
-    fn update_velocity_only(&mut self, measurement: &GPSVelocityMeasurement) {
-        let measurement_vec = measurement.get_measurement(&DVector::zeros(9));
+    fn update_velocity_only(
+        &mut self,
+        measurement: &GPSVelocityMeasurement,
+    ) -> Result<(), StrapdownError> {
+        let measurement_vec = measurement.get_measurement(&DVector::zeros(9))?;
         let v_nominal = Vector3::new(
             self.nominal.velocity_north,
             self.nominal.velocity_east,
@@ -386,12 +417,16 @@ impl RaoBlackwellizedParticleFilter {
         if self.config.zero_vertical_velocity {
             self.update_vertical_velocity_constraint();
         }
+        Ok(())
     }
 
-    fn update_position_velocity(&mut self, measurement: &GPSPositionAndVelocityMeasurement) {
-        self.update_weights_gps_position(measurement);
+    fn update_position_velocity(
+        &mut self,
+        measurement: &GPSPositionAndVelocityMeasurement,
+    ) -> Result<(), StrapdownError> {
+        self.update_weights_gps_position(measurement)?;
 
-        let measurement_vec = measurement.get_measurement(&DVector::zeros(9));
+        let measurement_vec = measurement.get_measurement(&DVector::zeros(9))?;
         let v_nominal = Vector3::new(self.nominal.velocity_north, self.nominal.velocity_east, 0.0);
         let residual = DVector::from_vec(vec![
             measurement_vec[3] - v_nominal[0],
@@ -412,10 +447,14 @@ impl RaoBlackwellizedParticleFilter {
         if self.config.zero_vertical_velocity {
             self.update_vertical_velocity_constraint();
         }
+        Ok(())
     }
 
-    fn update_weights_gps_position(&mut self, measurement: &GPSPositionAndVelocityMeasurement) {
-        let z_full = measurement.get_measurement(&DVector::zeros(9));
+    fn update_weights_gps_position(
+        &mut self,
+        measurement: &GPSPositionAndVelocityMeasurement,
+    ) -> Result<(), StrapdownError> {
+        let z_full = measurement.get_measurement(&DVector::zeros(9))?;
         let z = DVector::from_vec(vec![z_full[0], z_full[1], z_full[2]]);
 
         let r_full = measurement.get_noise();
@@ -462,15 +501,19 @@ impl RaoBlackwellizedParticleFilter {
         }
 
         self.maybe_resample();
+        Ok(())
     }
 
-    fn update_weights_generic<M: MeasurementModel + ?Sized>(&mut self, measurement: &M) {
+    fn update_weights_generic<M: MeasurementModel + ?Sized>(
+        &mut self,
+        measurement: &M,
+    ) -> Result<(), StrapdownError> {
         let mut log_weights = Vec::with_capacity(self.particles.len());
         let mut max_log = f64::NEG_INFINITY;
 
         for particle in &self.particles {
             let state = self.particle_state_vector_full(particle);
-            let z = measurement.get_measurement(&state);
+            let z = measurement.get_measurement(&state)?;
             let z_hat = measurement.get_expected_measurement(&state);
             let mut residual = z - z_hat;
             // Keep angular residuals on the circle; an unwrapped ±2π mag
@@ -508,6 +551,7 @@ impl RaoBlackwellizedParticleFilter {
         }
 
         self.maybe_resample();
+        Ok(())
     }
 
     fn update_linear_state(&mut self, residual: &DVector<f64>, h: &DMatrix<f64>, r: &DMatrix<f64>) {
@@ -683,7 +727,7 @@ mod tests {
             zero_vertical_velocity_std_mps: 0.05,
             ..RbpfConfig::default()
         };
-        let mut rbpf = RaoBlackwellizedParticleFilter::new(nominal, config);
+        let mut rbpf = RaoBlackwellizedParticleFilter::new(nominal, config).unwrap();
 
         for (imu, gps) in imu_data.iter().zip(gps_measurements.iter()) {
             rbpf.predict(imu, dt);
@@ -746,7 +790,7 @@ mod tests {
             seed: 7,
             ..RbpfConfig::default()
         };
-        let mut rbpf = RaoBlackwellizedParticleFilter::new(nominal, config);
+        let mut rbpf = RaoBlackwellizedParticleFilter::new(nominal, config).unwrap();
 
         let meas = GPSPositionMeasurement {
             latitude: 0.0,
@@ -950,7 +994,7 @@ mod tests {
             seed: 42,
             ..RbpfConfig::default()
         };
-        let mut rbpf = RaoBlackwellizedParticleFilter::new(nominal, config);
+        let mut rbpf = RaoBlackwellizedParticleFilter::new(nominal, config).unwrap();
         let imu = IMUData {
             accel: Vector3::new(0.1, 0.05, 9.81),
             gyro: Vector3::new(0.001, -0.002, 0.0005),

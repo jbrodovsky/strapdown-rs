@@ -4,6 +4,7 @@
 //! inertial navigation systems. These filter build on the dead-reckoning functions
 //! provided in the top-level [lib] module.
 
+use crate::StrapdownError;
 use crate::linalg::{matrix_square_root, robust_spd_solve, symmetrize};
 use crate::measurements::MeasurementModel;
 use crate::{
@@ -263,14 +264,17 @@ impl UnscentedKalmanFilter {
             is_enu: initial_state.is_enu,
         }
     }
-    pub fn get_sigma_points(&self) -> DMatrix<f64> {
+    /// # Errors
+    /// [`StrapdownError::NotSquare`] if the covariance is not square, propagated from
+    /// [`matrix_square_root`].
+    pub fn get_sigma_points(&self) -> Result<DMatrix<f64>, StrapdownError> {
         // Generate the augmented sigma points matrix for the current mean and covariance.
         //
         // The returned matrix has dimensions `(state_size) x (2*state_size + 1)` where each
         // column is a sigma point. Sigma point generation follows the scaled unscented
         // transform: sqrt((n+lambda) P) columns added/subtracted from the mean.
         let p = (self.state_size as f64 + self.lambda) * self.covariance.clone();
-        let sqrt_p = matrix_square_root(&p);
+        let sqrt_p = matrix_square_root(&p)?;
         let mu = self.mean_state.clone();
         let mut pts = DMatrix::<f64>::zeros(self.state_size, 2 * self.state_size + 1);
         pts.column_mut(0).copy_from(&mu);
@@ -279,16 +283,42 @@ impl UnscentedKalmanFilter {
             pts.column_mut(i + 1 + self.state_size)
                 .copy_from(&(&mu - sqrt_p.column(i)));
         }
-        pts
+        Ok(pts)
     }
-    fn robust_kalman_gain(cross_covariance: &DMatrix<f64>, s: &DMatrix<f64>) -> DMatrix<f64> {
+    fn robust_kalman_gain(
+        cross_covariance: &DMatrix<f64>,
+        s: &DMatrix<f64>,
+    ) -> Result<DMatrix<f64>, StrapdownError> {
         // Compute a numerically robust Kalman gain K = P_xz * S^{-1} using a
         // symmetric positive-definite solver. This helps avoid instability when
         // the innovation covariance `s` is poorly conditioned.
-        let kt = robust_spd_solve(&symmetrize(s), &cross_covariance.transpose());
-        kt.transpose()
+        let kt = robust_spd_solve(&symmetrize(s), &cross_covariance.transpose())?;
+        Ok(kt.transpose())
     }
 }
+/// Resolve an [`InputModel`](crate::InputModel) trait object into the [`IMUData`] the
+/// Kalman-family filters mechanize with.
+///
+/// Replaces three copies of `downcast_ref::<IMUData>().expect(..)`. The trait admits any
+/// `InputModel` — `VelocityData` implements it too — so the type system permits exactly what
+/// those `expect`s forbade. This reports that as an error instead of aborting.
+///
+/// # Errors
+/// [`StrapdownError::UnsupportedInput`] if `input` is not [`IMUData`].
+fn imu_from_input(
+    input: &dyn crate::InputModel,
+    filter: &'static str,
+) -> Result<IMUData, StrapdownError> {
+    input
+        .as_any()
+        .downcast_ref::<IMUData>()
+        .copied()
+        .ok_or(StrapdownError::UnsupportedInput {
+            filter,
+            expected: "IMUData",
+        })
+}
+
 impl NavigationFilter for UnscentedKalmanFilter {
     /// Predict step for the UKF: propagate sigma points through the mechanization.
     ///
@@ -296,13 +326,15 @@ impl NavigationFilter for UnscentedKalmanFilter {
     ///
     /// * `control_input` - An `InputModel` implementing type (expected `IMUData`).
     /// * `dt` - Time step in seconds.
-    fn predict<C: crate::InputModel>(&mut self, control_input: &C, dt: f64) {
-        let imu_input = control_input
-            .as_any()
-            .downcast_ref::<IMUData>()
-            .expect("UnscentedKalmanFilter.predict expects an IMUData InputModel");
+    fn predict(
+        &mut self,
+        control_input: &dyn crate::InputModel,
+        dt: f64,
+    ) -> Result<(), StrapdownError> {
+        let imu_input = imu_from_input(control_input, "UnscentedKalmanFilter")?;
+        let imu_input = &imu_input;
 
-        let mut sigma_points = self.get_sigma_points();
+        let mut sigma_points = self.get_sigma_points()?;
         for i in 0..sigma_points.ncols() {
             let mut sigma_point_vec = sigma_points.column(i).clone_owned();
             let mut state = StrapdownState {
@@ -365,6 +397,7 @@ impl NavigationFilter for UnscentedKalmanFilter {
         p_bar += &self.process_noise;
         self.mean_state = mu_bar;
         self.covariance = symmetrize(&p_bar);
+        Ok(())
     }
     /// Update step for the UKF: map sigma points into measurement space and
     /// compute cross-covariances to form the Kalman gain.
@@ -372,12 +405,13 @@ impl NavigationFilter for UnscentedKalmanFilter {
     /// # Arguments
     ///
     /// * `measurement` - A measurement model implementing `MeasurementModel`.
-    fn update<M: MeasurementModel + ?Sized>(&mut self, measurement: &M) {
+    fn update(&mut self, measurement: &dyn MeasurementModel) -> Result<(), StrapdownError> {
         //let measurement_sigma_points = measurement.get_sigma_points(&self.get_sigma_points());
         let mut measurement_sigma_points =
             DMatrix::<f64>::zeros(measurement.get_dimension(), 2 * self.state_size + 1);
         let mut z_hat = DVector::<f64>::zeros(measurement.get_dimension());
-        for (i, sigma_point) in self.get_sigma_points().column_iter().enumerate() {
+        let sigma_points = self.get_sigma_points()?;
+        for (i, sigma_point) in sigma_points.column_iter().enumerate() {
             //let sigma_point_vec = sigma_point.clone_owned();
             let sigma_point = measurement.get_expected_measurement(&sigma_point.clone_owned());
             measurement_sigma_points.set_column(i, &sigma_point);
@@ -389,7 +423,7 @@ impl NavigationFilter for UnscentedKalmanFilter {
             s += self.weights_cov[i] * &diff * &diff.transpose();
         }
         s += measurement.get_noise();
-        let sigma_points = self.get_sigma_points();
+        let sigma_points = self.get_sigma_points()?;
         let mut cross_covariance =
             DMatrix::<f64>::zeros(self.state_size, measurement.get_dimension());
         for (i, measurement_sigma_point) in measurement_sigma_points.column_iter().enumerate() {
@@ -397,8 +431,8 @@ impl NavigationFilter for UnscentedKalmanFilter {
             let state_diff = sigma_points.column(i) - &self.mean_state;
             cross_covariance += self.weights_cov[i] * state_diff * measurement_diff.transpose();
         }
-        let k = Self::robust_kalman_gain(&cross_covariance, &s);
-        let mut innovation = measurement.get_measurement(&self.mean_state) - &z_hat;
+        let k = Self::robust_kalman_gain(&cross_covariance, &s)?;
+        let mut innovation = measurement.get_measurement(&self.mean_state)? - &z_hat;
         // Keep angular innovations on the circle (see `wrap_residual`, #286).
         // (The sigma-point spread above is left linearised: with a sane yaw
         // uncertainty the points do not straddle the cut.)
@@ -415,6 +449,7 @@ impl NavigationFilter for UnscentedKalmanFilter {
         for i in 0..self.state_size {
             self.covariance[(i, i)] += eps;
         }
+        Ok(())
     }
     /// Return the current mean state estimate.
     fn get_estimate(&self) -> DVector<f64> {
@@ -725,12 +760,13 @@ impl NavigationFilter for ExtendedKalmanFilter {
     /// and $Q_w$ is the IMU noise covariance. In this implementation, the `process_noise`
     /// parameter is assumed to already incorporate $G Q_w G^T$, i.e., it represents
     /// the final process noise covariance in state space.
-    fn predict<C: crate::InputModel>(&mut self, control_input: &C, dt: f64) {
-        // Downcast to IMUData
-        let imu_data = control_input
-            .as_any()
-            .downcast_ref::<IMUData>()
-            .expect("ExtendedKalmanFilter.predict expects an IMUData InputModel");
+    fn predict(
+        &mut self,
+        control_input: &dyn crate::InputModel,
+        dt: f64,
+    ) -> Result<(), StrapdownError> {
+        let imu_data = imu_from_input(control_input, "ExtendedKalmanFilter")?;
+        let imu_data = &imu_data;
 
         // Extract current state
         let mut state = StrapdownState {
@@ -824,6 +860,7 @@ impl NavigationFilter for ExtendedKalmanFilter {
         for i in 0..self.state_size {
             self.covariance[(i, i)] += eps;
         }
+        Ok(())
     }
 
     /// Update step: correct state estimate using a measurement
@@ -871,13 +908,15 @@ impl NavigationFilter for ExtendedKalmanFilter {
     ///
     /// where $z$ is the actual measurement and $h(\bar{x})$ is the expected
     /// measurement given the predicted state.
-    fn update<M: MeasurementModel + ?Sized>(&mut self, measurement: &M) {
+    fn update(&mut self, measurement: &dyn MeasurementModel) -> Result<(), StrapdownError> {
+        // Jacobian FIRST, deliberately. A geophysical model whose estimate has left the
+        // loaded map reports that as an error here, whereas `get_expected_measurement`
+        // returns NaN for the same condition. Evaluating the expected measurement first
+        // would poison `z_hat` before the error was ever seen.
+        let h_9state = measurement.get_jacobian(&self.mean_state)?;
+
         // Get expected measurement from current state
         let z_hat = measurement.get_expected_measurement(&self.mean_state);
-
-        // Get measurement Jacobian from the measurement model
-        // All measurements implement get_jacobian() which returns the H matrix
-        let h_9state = measurement.get_jacobian(&self.mean_state);
 
         // Extend H to full state size if using biases or augmented states
         let h_matrix = if self.use_biases && self.state_size >= 15 {
@@ -903,11 +942,11 @@ impl NavigationFilter for ExtendedKalmanFilter {
         // Kalman gain: K = P * H^T * S^(-1)
         let k = self.covariance.clone()
             * h_matrix.transpose()
-            * robust_spd_solve(&symmetrize(&s), &DMatrix::identity(s.nrows(), s.ncols()))
+            * robust_spd_solve(&symmetrize(&s), &DMatrix::identity(s.nrows(), s.ncols()))?
                 .transpose();
 
         // Innovation (measurement residual): nu = z - z_hat
-        let mut innovation = measurement.get_measurement(&self.mean_state) - &z_hat;
+        let mut innovation = measurement.get_measurement(&self.mean_state)? - &z_hat;
         // Keep angular innovations on the circle (see `wrap_residual`, #286).
         measurement.wrap_residual(&mut innovation);
 
@@ -933,6 +972,7 @@ impl NavigationFilter for ExtendedKalmanFilter {
         for i in 0..self.state_size {
             self.covariance[(i, i)] += eps;
         }
+        Ok(())
     }
 
     /// Get the current state estimate
@@ -1534,12 +1574,13 @@ impl NavigationFilter for ErrorStateKalmanFilter {
     ///
     /// where $F_k$ is the error-state transition Jacobian and $G_k$ maps
     /// process noise to error states.
-    fn predict<C: crate::InputModel>(&mut self, control_input: &C, dt: f64) {
-        // Downcast to IMUData
-        let imu_data = control_input
-            .as_any()
-            .downcast_ref::<IMUData>()
-            .expect("ErrorStateKalmanFilter.predict expects an IMUData InputModel");
+    fn predict(
+        &mut self,
+        control_input: &dyn crate::InputModel,
+        dt: f64,
+    ) -> Result<(), StrapdownError> {
+        let imu_data = imu_from_input(control_input, "ErrorStateKalmanFilter")?;
+        let imu_data = &imu_data;
 
         // Compensate IMU measurements for biases
         let corrected_accel = imu_data.accel - self.nominal_accel_bias;
@@ -1608,6 +1649,7 @@ impl NavigationFilter for ErrorStateKalmanFilter {
             &f_error * &self.error_covariance * f_error.transpose() + &self.process_noise;
 
         self.regularize_covariance();
+        Ok(())
     }
 
     /// Update step: compute error state correction and inject into nominal state
@@ -1641,7 +1683,7 @@ impl NavigationFilter for ErrorStateKalmanFilter {
     /// $$
     ///
     /// Error injection and reset (see `inject_error_state` for details)
-    fn update<M: MeasurementModel + ?Sized>(&mut self, measurement: &M) {
+    fn update(&mut self, measurement: &dyn MeasurementModel) -> Result<(), StrapdownError> {
         // Create nominal state vector for measurement prediction (9-state format)
         let mut nominal_state_vec = DVector::zeros(9);
         nominal_state_vec[0] = self.nominal_latitude;
@@ -1670,7 +1712,7 @@ impl NavigationFilter for ErrorStateKalmanFilter {
         // Every `MeasurementModel` implementor is required to provide this, so new
         // measurement types (ZUPT/ZARU, geophysical anomalies) work here without
         // the filter needing to know about them.
-        let h_9state = measurement.get_jacobian(&nominal_state_vec);
+        let h_9state = measurement.get_jacobian(&nominal_state_vec)?;
 
         // Extend H to full 15-state error state (add zero columns for bias states)
         let meas_dim = measurement.get_dimension();
@@ -1682,7 +1724,7 @@ impl NavigationFilter for ErrorStateKalmanFilter {
         // (rather than below) because the attitude-column correction needs it.
         // Angular components are wrapped onto the circle first so a z/z_hat
         // pair straddling the branch cut cannot inject a phantom ±2π kick.
-        let mut innovation = measurement.get_measurement(&nominal_state_vec) - &z_hat;
+        let mut innovation = measurement.get_measurement(&nominal_state_vec)? - &z_hat;
         measurement.wrap_residual(&mut innovation);
 
         // The analytic attitude columns differentiate w.r.t. Euler angles;
@@ -1711,7 +1753,7 @@ impl NavigationFilter for ErrorStateKalmanFilter {
         // Kalman gain: K = P * H^T * S^(-1)
         let k = self.error_covariance.clone()
             * h_error.transpose()
-            * robust_spd_solve(&symmetrize(&s), &DMatrix::identity(s.nrows(), s.ncols()))
+            * robust_spd_solve(&symmetrize(&s), &DMatrix::identity(s.nrows(), s.ncols()))?
                 .transpose();
 
         // Error state update: δx = K * nu
@@ -1728,6 +1770,7 @@ impl NavigationFilter for ErrorStateKalmanFilter {
             &i_kh * &self.error_covariance * i_kh.transpose() + &k * r * k.transpose();
 
         self.regularize_covariance();
+        Ok(())
     }
 
     /// Get the current nominal state estimate
@@ -1858,10 +1901,10 @@ mod tests {
             BETA,
             KAPPA,
         );
-        let sigma_points = ukf.get_sigma_points();
+        let sigma_points = ukf.get_sigma_points().unwrap();
         assert_eq!(sigma_points.ncols(), (2 * ukf.state_size) + 1);
 
-        let mu = ukf.get_sigma_points() * ukf.weights_mean;
+        let mu = ukf.get_sigma_points().unwrap() * ukf.weights_mean;
         assert_eq!(mu.nrows(), ukf.state_size);
         assert_eq!(mu.ncols(), 1);
         assert_approx_eq!(mu[0], 0.0, 1e-6);
@@ -3858,7 +3901,7 @@ mod tests {
         let nominal = DVector::from_vec(vec![0.7, -1.3, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.3]);
         let q = UnitQuaternion::from_rotation_matrix(&Rotation3::from_euler_angles(0.0, 0.0, 0.3));
         let q_wxyz = nalgebra::Vector4::new(q.w, q.i, q.j, q.k);
-        let analytic = m.get_jacobian(&nominal);
+        let analytic = m.get_jacobian(&nominal).unwrap();
         let fd = ErrorStateKalmanFilter::attitude_error_jacobian(&m, &q_wxyz, &nominal);
         // Yaw column agrees with the analytic +1.0 ...
         assert_approx_eq!(fd[(0, 2)], analytic[(0, 8)], 1e-6);
@@ -3890,7 +3933,7 @@ mod tests {
         let q =
             UnitQuaternion::from_rotation_matrix(&Rotation3::from_euler_angles(0.16, -1.34, 0.18));
         let q_wxyz = nalgebra::Vector4::new(q.w, q.i, q.j, q.k);
-        let analytic = m.get_jacobian(&nominal);
+        let analytic = m.get_jacobian(&nominal).unwrap();
         let fd = ErrorStateKalmanFilter::attitude_error_jacobian(&m, &q_wxyz, &nominal);
         let max_diff = (0..3)
             .map(|i| (fd[(0, i)] - analytic[(0, 6 + i)]).abs())

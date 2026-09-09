@@ -558,7 +558,8 @@ impl FaultState {
 /// - `sigma`: Innovation standard deviation.
 /// - `rng`: Deterministic random number generator used for noise sampling.
 fn ar1_step(x: &mut f64, rho: f64, sigma: f64, rng: &mut rand::rngs::StdRng) {
-    let n = Normal::new(0.0, sigma.max(0.0)).unwrap();
+    // `max(0.0)` clamps negatives and NaN alike, so the argument is always valid.
+    let n = crate::normal_with_std(sigma.max(0.0));
     *x = rho * *x + n.sample(rng);
 }
 /// Apply a GNSS fault model to a truth-like GNSS fix, producing a corrupted measurement.
