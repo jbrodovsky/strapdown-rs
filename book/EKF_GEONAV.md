@@ -94,7 +94,7 @@ With automatic fallback to forward/backward differences at map boundaries.
 ### Command Line
 
 ```bash
-# Run with EKF (instead of default UKF)
+# Run with EKF (instead of the default ESKF)
 strapdown-geonav \
   --input sensor_data.csv \
   --output navigation_solution.csv \

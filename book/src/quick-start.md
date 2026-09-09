@@ -35,6 +35,11 @@ timestamp,gyro_x,gyro_y,gyro_z,accel_x,accel_y,accel_z,latitude,longitude,altitu
 strapdown-sim open-loop -i data/input.csv -o results/output.csv
 ```
 
+**Closed-Loop (15-state ESKF, the default)**:
+```bash
+strapdown-sim closed-loop -i data/input.csv -o results/output.csv
+```
+
 **Closed-Loop with EKF**:
 ```bash
 strapdown-sim closed-loop -i data/input.csv -o results/output.csv --filter ekf
