@@ -79,20 +79,16 @@ missing_debug_implementations = "warn"
 pedantic = { level = "warn", priority = -1 }
 nursery = { level = "warn", priority = -1 }
 
-# #254's zero-panic policy. These are the 48 library-code call sites that
-# issue #254 exists to remove, and they cannot go green here: several are real
-# panic paths that need somewhere to return an error to. `geonav/src/lib.rs:382`
-# panics on any coordinate outside the map bounds; `get_values(..).unwrap()`
-# panics on a malformed NetCDF file. Turning these into `Result` *is* queue
-# position 2, so they are enabled there, in the same commit as `StrapdownError`.
-# Left at `allow` here so the gate stays honest rather than green-by-exception.
-unwrap_used = "allow"     # -> queue 2 (#254)
-expect_used = "allow"     # -> queue 2 (#254)
-panic = "allow"           # -> queue 2 (#254)
-# Same dependency: `# Errors`/`# Panics` sections describe error types that
-# #254 replaces wholesale. Written there, against the final signatures.
-missing_errors_doc = "allow"   # -> queue 2 (#254)
-missing_panics_doc = "allow"   # -> queue 2 (#254)
+# #254's zero-panic policy, now enforced. The 49 library call sites these named are
+# gone; `StrapdownError` gives every one of them somewhere to return to. Tests are
+# exempted in `clippy.toml`, so these point only at library code.
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+# Enabled with them: the error and panic sections describe `StrapdownError`, which
+# did not exist when these were deferred.
+missing_errors_doc = "warn"
+missing_panics_doc = "warn"
 
 # Relaxed on purpose, with reasons.
 #
@@ -159,12 +155,7 @@ too_many_lines = "allow"
 # more informative spelling -- it says "crate-internal by intent", not "public
 # by accident" -- so this one is declined on readability grounds.
 redundant_pub_crate = "allow"
-# All 12 hits are on public constructors -- `UnscentedKalmanFilter::new`,
-# `ErrorStateKalmanFilter::new`, `initialize_ukf`, `build_event_stream` -- that
-# take `InitialState` and `Vec<f64>` by value. Switching them to borrows is a
-# breaking signature change across all three filter impls, ~14 doc examples and
-# the unit tests, which is precisely the churn queue position 2 (#254/#255) is
-# scheduled to do in one pass. Fixed there, against the final signatures.
-# (The `Rc<GeoMap>` parameters in geonav are by-value on purpose: cloning an
-# `Rc` is a refcount bump and the callee stores it.)
-needless_pass_by_value = "allow"   # -> queue 2 (#254/#255)
+# Enabled with the rest. The `Rc<GeoMap>` parameters in geonav remain by-value on
+# purpose -- cloning an `Rc` is a refcount bump and the callee stores it -- so any
+# that resurface there should be judged, not mechanically borrowed.
+needless_pass_by_value = "warn"

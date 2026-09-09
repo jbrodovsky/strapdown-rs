@@ -62,6 +62,9 @@
 //! - Roll and pitch are typically in [-π, π] but may vary by implementation
 
 use crate::StrapdownError;
+
+/// Accelerometer and gyroscope bias corrections extracted from a 15-element error state.
+pub type ImuBiasCorrection = (Vector3<f64>, Vector3<f64>);
 use crate::StrapdownState;
 use crate::earth::{self, vector_to_skew_symmetric};
 use nalgebra::{DMatrix, DVector, Rotation3, Vector3};
@@ -1027,10 +1030,12 @@ pub fn apply_eskf_correction(
 ///     println!("Gyro bias correction: {:?}", gyro_bias);
 /// }
 /// ```
+/// # Errors
+/// Propagated from [`apply_eskf_correction`]: the error state must have at least 9 elements.
 pub fn apply_eskf_correction_with_biases(
     state: &mut StrapdownState,
     delta_x: &DVector<f64>,
-) -> Result<Option<(Vector3<f64>, Vector3<f64>)>, StrapdownError> {
+) -> Result<Option<ImuBiasCorrection>, StrapdownError> {
     // Apply the navigation state correction
     apply_eskf_correction(state, delta_x)?;
 
@@ -1197,7 +1202,11 @@ mod tests {
         .unwrap();
 
         let mut base_out = nominal;
-        crate::forward(&mut base_out, crate::IMUData { accel, gyro }, DT);
+        crate::mechanize(
+            &mut base_out,
+            &crate::ImuSample::from_rates(&crate::IMUData { accel, gyro }, DT),
+        )
+        .unwrap();
 
         // Apply a 15-element error, propagate, and return the 9-element error out.
         let propagate = |dx: &DVector<f64>| -> DVector<f64> {
@@ -1216,7 +1225,7 @@ mod tests {
                 accel: accel - Vector3::new(dx[9], dx[10], dx[11]),
                 gyro: gyro - Vector3::new(dx[12], dx[13], dx[14]),
             };
-            crate::forward(&mut s, imu, DT);
+            crate::mechanize(&mut s, &crate::ImuSample::from_rates(&imu, DT)).unwrap();
             let dtheta = (base_out.attitude.transpose() * s.attitude).scaled_axis();
             DVector::from_vec(vec![
                 s.latitude - base_out.latitude,
@@ -1334,8 +1343,8 @@ mod tests {
             minus.attitude = state.attitude * Rotation3::from_scaled_axis(-axis);
 
             let imu = crate::IMUData { accel, gyro };
-            crate::forward(&mut plus, imu, dt);
-            crate::forward(&mut minus, imu, dt);
+            crate::mechanize(&mut plus, &crate::ImuSample::from_rates(&imu, dt)).unwrap();
+            crate::mechanize(&mut minus, &crate::ImuSample::from_rates(&imu, dt)).unwrap();
 
             numerical[(0, j)] = (plus.velocity_north - minus.velocity_north) / (2.0 * eps);
             numerical[(1, j)] = (plus.velocity_east - minus.velocity_east) / (2.0 * eps);
@@ -1428,14 +1437,17 @@ mod tests {
 
         // Evaluate nominal dynamics
         let mut state_nominal = *state;
-        crate::forward(
+        crate::mechanize(
             &mut state_nominal,
-            crate::IMUData {
-                accel: *imu_accel,
-                gyro: *imu_gyro,
-            },
-            dt,
-        );
+            &crate::ImuSample::from_rates(
+                &crate::IMUData {
+                    accel: *imu_accel,
+                    gyro: *imu_gyro,
+                },
+                dt,
+            ),
+        )
+        .unwrap();
         let f0: Vec<f64> = (&state_nominal).into();
 
         // Perturb each state component
@@ -1448,14 +1460,17 @@ mod tests {
             state_pert.is_enu = state.is_enu;
 
             // Propagate perturbed state
-            crate::forward(
+            crate::mechanize(
                 &mut state_pert,
-                crate::IMUData {
-                    accel: *imu_accel,
-                    gyro: *imu_gyro,
-                },
-                dt,
-            );
+                &crate::ImuSample::from_rates(
+                    &crate::IMUData {
+                        accel: *imu_accel,
+                        gyro: *imu_gyro,
+                    },
+                    dt,
+                ),
+            )
+            .unwrap();
             let f_pert: Vec<f64> = (&state_pert).into();
 
             // Compute finite difference

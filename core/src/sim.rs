@@ -227,6 +227,8 @@ impl TestDataRecord {
     /// # Returns
     /// * `Ok(Vec<TestDataRecord>)` if successful.
     /// * `Err` if the file cannot be read or parsed.
+    /// # Errors
+    /// If the file cannot be read, or its contents are not valid CSV.
     pub fn from_csv<P: AsRef<std::path::Path>>(
         path: P,
     ) -> Result<Vec<Self>, Box<dyn std::error::Error>> {
@@ -302,6 +304,9 @@ impl TestDataRecord {
     /// // doctest cleanup
     /// std::fs::remove_file("data.csv").unwrap();
     /// ```
+    /// # Errors
+    /// If the file cannot be created or written, or the records cannot be
+    /// serialised as CSV.
     pub fn to_csv<P: AsRef<Path>>(records: &[Self], path: P) -> io::Result<()> {
         let mut writer = csv::Writer::from_path(path)?;
         for record in records {
@@ -332,6 +337,9 @@ impl TestDataRecord {
     ///    .expect("Failed to write test data to HDF5");
     /// ```
     #[cfg(feature = "hdf5")]
+    /// # Errors
+    /// If the file cannot be created or written, or the records cannot be
+    /// serialised as HDF5.
     pub fn to_hdf5<P: AsRef<Path>>(records: &[Self], path: P) -> Result<()> {
         use hdf5::File;
 
@@ -417,6 +425,9 @@ impl TestDataRecord {
     /// # Returns
     /// * `io::Result<()>` - Ok if successful, Err otherwise
     #[cfg(feature = "mcap")]
+    /// # Errors
+    /// If the file cannot be created or written, or the records cannot be
+    /// serialised as MCAP.
     pub fn to_mcap<P: AsRef<Path>>(records: &[Self], path: P) -> io::Result<()> {
         use mcap::{Writer, records::MessageHeader};
         use std::collections::BTreeMap;
@@ -486,6 +497,8 @@ impl TestDataRecord {
     ///     .expect("Failed to read test data from HDF5");
     /// ```
     #[cfg(feature = "hdf5")]
+    /// # Errors
+    /// If the file cannot be read, or its contents are not valid HDF5.
     pub fn from_hdf5<P: AsRef<Path>>(path: P) -> Result<Vec<Self>> {
         use hdf5::File;
 
@@ -600,6 +613,9 @@ impl TestDataRecord {
     /// # Returns
     /// * `Result<()>` - Ok if successful, Err otherwise
     #[cfg(feature = "netcdf")]
+    /// # Errors
+    /// If the file cannot be created or written, or the records cannot be
+    /// serialised as NetCDF.
     pub fn to_netcdf<P: AsRef<Path>>(records: &[Self], path: P) -> Result<()> {
         if records.is_empty() {
             bail!("Cannot write empty records to netCDF");
@@ -697,6 +713,8 @@ impl TestDataRecord {
     /// * `Ok(Vec<TestDataRecord>)` if successful.
     /// * `Err` if the file cannot be read or parsed.
     #[cfg(feature = "netcdf")]
+    /// # Errors
+    /// If the file cannot be read, or its contents are not valid NetCDF.
     pub fn from_netcdf<P: AsRef<Path>>(path: P) -> Result<Vec<Self>> {
         let file = netcdf::open(path)?;
 
@@ -804,6 +822,8 @@ impl TestDataRecord {
     /// # Arguments
     /// * `path` - Path to the MCAP file to read.
     #[cfg(feature = "mcap")]
+    /// # Errors
+    /// If the file cannot be read, or its contents are not valid MCAP.
     pub fn from_mcap<P: AsRef<Path>>(path: P) -> Result<Vec<Self>, Box<dyn std::error::Error>> {
         use mcap::MessageStream;
         use std::fs::File;
@@ -984,6 +1004,9 @@ impl NavigationResult {
     ///
     /// # Returns
     /// * `io::Result<()>` - Ok if successful, Err otherwise
+    /// # Errors
+    /// If the file cannot be created or written, or the records cannot be
+    /// serialised as CSV.
     pub fn to_csv<P: AsRef<Path>>(records: &[Self], path: P) -> io::Result<()> {
         let mut writer = csv::Writer::from_path(path)?;
         for record in records {
@@ -1000,6 +1023,8 @@ impl NavigationResult {
     /// # Returns
     /// * `Ok(Vec<NavigationResult>)` if successful.
     /// * `Err` if the file cannot be read or parsed.
+    /// # Errors
+    /// If the file cannot be read, or its contents are not valid CSV.
     pub fn from_csv<P: AsRef<std::path::Path>>(
         path: P,
     ) -> Result<Vec<Self>, Box<dyn std::error::Error>> {
@@ -1030,6 +1055,9 @@ impl NavigationResult {
     ///     .expect("Failed to write navigation results to HDF5");
     /// ```
     #[cfg(feature = "hdf5")]
+    /// # Errors
+    /// If the file cannot be created or written, or the records cannot be
+    /// serialised as HDF5.
     pub fn to_hdf5<P: AsRef<Path>>(records: &[Self], path: P) -> Result<()> {
         use hdf5::File;
 
@@ -1124,6 +1152,8 @@ impl NavigationResult {
     ///     .expect("Failed to read navigation results from HDF5");
     /// ```
     #[cfg(feature = "hdf5")]
+    /// # Errors
+    /// If the file cannot be read, or its contents are not valid HDF5.
     pub fn from_hdf5<P: AsRef<Path>>(path: P) -> Result<Vec<Self>> {
         use hdf5::File;
 
@@ -1241,6 +1271,9 @@ impl NavigationResult {
     /// # Returns
     /// * `Result<()>` - Ok if successful, Err otherwise
     #[cfg(feature = "netcdf")]
+    /// # Errors
+    /// If the file cannot be created or written, or the records cannot be
+    /// serialised as NetCDF.
     pub fn to_netcdf<P: AsRef<Path>>(records: &[Self], path: P) -> Result<()> {
         if records.is_empty() {
             bail!("Cannot write empty records to netCDF");
@@ -1341,6 +1374,8 @@ impl NavigationResult {
     /// * `Ok(Vec<NavigationResult>)` if successful.
     /// * `Err` if the file cannot be read or parsed.
     #[cfg(feature = "netcdf")]
+    /// # Errors
+    /// If the file cannot be read, or its contents are not valid NetCDF.
     pub fn from_netcdf<P: AsRef<Path>>(path: P) -> Result<Vec<Self>> {
         let file = netcdf::open(path)?;
 
@@ -1461,6 +1496,9 @@ impl NavigationResult {
     ///    .expect("Failed to write navigation results to MCAP");
     /// ```
     #[cfg(feature = "mcap")]
+    /// # Errors
+    /// If the file cannot be created or written, or the records cannot be
+    /// serialised as MCAP.
     pub fn to_mcap<P: AsRef<Path>>(records: &[Self], path: P) -> io::Result<()> {
         use mcap::{Writer, records::MessageHeader};
         use std::collections::BTreeMap;
@@ -1523,6 +1561,8 @@ impl NavigationResult {
     /// println!("Read {} navigation results", results.len());
     /// ```
     #[cfg(feature = "mcap")]
+    /// # Errors
+    /// If the file cannot be read, or its contents are not valid MCAP.
     pub fn from_mcap<P: AsRef<Path>>(path: P) -> Result<Vec<Self>, Box<dyn std::error::Error>> {
         use mcap::MessageStream;
         use std::fs::File;
@@ -1937,6 +1977,14 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Result<Vec<NavigationResult
     }
     Ok(results)
 }
+/// Abort after this many consecutive rejected measurements.
+///
+/// Skipping unusable measurements keeps a run alive through a map edge; skipping *every*
+/// measurement silently degrades the run to dead reckoning, which would still pass an
+/// accuracy assertion by coincidence. This is the circuit breaker that distinguishes the
+/// two. At typical 1 Hz aiding it is roughly 100 s without a usable fix.
+const MAX_CONSECUTIVE_REJECTIONS: usize = 100;
+
 /// Generic closed-loop simulation runner for any NavigationFilter
 ///
 /// This function implements the core simulation loop for navigation filter architectures.
@@ -1953,14 +2001,10 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Result<Vec<NavigationResult
 ///
 /// # Returns
 /// * `Vec<NavigationResult>` - A vector of navigation results
-/// Abort after this many consecutive rejected measurements.
-///
-/// Skipping unusable measurements keeps a run alive through a map edge; skipping *every*
-/// measurement silently degrades the run to dead reckoning, which would still pass an
-/// accuracy assertion by coincidence. This is the circuit breaker that distinguishes the
-/// two. At typical 1 Hz aiding it is roughly 100 s without a usable fix.
-const MAX_CONSECUTIVE_REJECTIONS: usize = 100;
-
+/// # Errors
+/// If propagation fails, if a non-recoverable measurement error occurs, if the health or
+/// execution monitor trips, or if more than [`MAX_CONSECUTIVE_REJECTIONS`] measurements are
+/// rejected in a row. Recoverable measurement failures are skipped and counted instead.
 pub fn run_closed_loop<F: NavigationFilter>(
     filter: &mut F,
     stream: EventStream,
@@ -1973,16 +2017,11 @@ pub fn run_closed_loop<F: NavigationFilter>(
     let mut monitor = HealthMonitor::new(health_limits.unwrap_or_default());
     let mut rejected_measurements: usize = 0;
     let mut consecutive_rejections: usize = 0;
-    let sim_duration_s = stream
-        .events
-        .last()
-        .map(|event| match event {
-            Event::Imu { elapsed_s, .. } => *elapsed_s,
-            Event::Measurement { elapsed_s, .. } => *elapsed_s,
-        })
-        .unwrap_or(0.0);
+    let sim_duration_s = stream.events.last().map_or(0.0, |event| match event {
+        Event::Imu { elapsed_s, .. } | Event::Measurement { elapsed_s, .. } => *elapsed_s,
+    });
     let mut execution_monitor =
-        execution_limits.map(|limits| ExecutionMonitor::new(limits, sim_duration_s));
+        execution_limits.map(|limits| ExecutionMonitor::new(&limits, sim_duration_s));
 
     info!("Starting closed-loop navigation filter with {total} events");
 
@@ -2206,6 +2245,18 @@ pub struct UkfConfig {
     pub ukf_kappa: Option<f64>,
 }
 
+/// Reject an invalid configuration value.
+///
+/// Every call below guards a length that comes from a user-authored TOML/YAML/JSON config,
+/// so the failure is a report-and-exit condition rather than a crate invariant (#254).
+fn require_config(ok: bool, field: &'static str, reason: String) -> Result<(), StrapdownError> {
+    if ok {
+        Ok(())
+    } else {
+        Err(StrapdownError::InvalidConfiguration { field, reason })
+    }
+}
+
 /// Helper function to initialize a UKF for closed-loop mode.
 ///
 /// This function sets up the Unscented Kalman Filter (UKF) with initial pose and configuration parameters.
@@ -2219,23 +2270,11 @@ pub struct UkfConfig {
 /// # Returns
 ///
 /// * `UnscentedKalmanFilter` - An instance of the Unscented Kalman Filter initialized with the provided parameters.
-/// Reject an invalid configuration value.
-///
-/// Every call below guards a length that comes from a user-authored TOML/YAML/JSON config,
-/// so the failure is a report-and-exit condition rather than a crate invariant (#254).
-fn require_config(ok: bool, field: &'static str, reason: String) -> Result<(), StrapdownError> {
-    if ok {
-        Ok(())
-    } else {
-        Err(StrapdownError::InvalidConfiguration { field, reason })
-    }
-}
-
 /// # Errors
 /// [`StrapdownError::InvalidConfiguration`] if any configured vector length disagrees with
 /// the filter's state size.
 pub fn initialize_ukf(
-    initial_pose: TestDataRecord,
+    initial_pose: &TestDataRecord,
     config: UkfConfig,
 ) -> Result<UnscentedKalmanFilter, StrapdownError> {
     let initial_state = InitialState {
@@ -2334,9 +2373,9 @@ pub fn initialize_ukf(
     let process_noise = DMatrix::from_diagonal(&DVector::from_vec(process_noise_diagonal));
     //DVector::from_vec(vec![0.0; 15]);
     Ok(UnscentedKalmanFilter::new(
-        initial_state,
-        imu_biases,
-        other_states,
+        &initial_state,
+        &imu_biases,
+        other_states.as_deref(),
         covariance_diagonal,
         process_noise,
         config.ukf_alpha.unwrap_or(1e-3),
@@ -2362,9 +2401,13 @@ pub fn initialize_ukf(
 /// # Returns
 ///
 /// * `ExtendedKalmanFilter` - An instance of the Extended Kalman Filter.
+///
+/// # Errors
+/// [`StrapdownError::InvalidConfiguration`] if any configured vector length disagrees with
+/// the filter's state size.
 #[allow(clippy::too_many_arguments)]
 pub fn initialize_ekf(
-    initial_pose: TestDataRecord,
+    initial_pose: &TestDataRecord,
     attitude_covariance: Option<Vec<f64>>,
     imu_biases: Option<Vec<f64>>,
     imu_biases_covariance: Option<Vec<f64>>,
@@ -2450,30 +2493,27 @@ pub fn initialize_ekf(
 
     // Add IMU bias covariance if using biases
     let imu_biases_vec = if use_biases {
-        match imu_biases {
-            Some(biases) => {
-                require_config(
-                    biases.len() == 6,
-                    "imu_biases",
-                    format!("expected 6 elements, got {}", biases.len()),
-                )?;
-                covariance_diagonal.extend(match imu_biases_covariance {
-                    Some(imu_cov) => {
-                        require_config(
-                            imu_cov.len() == 6,
-                            "imu_biases_covariance",
-                            format!("expected 6 elements, got {}", imu_cov.len()),
-                        )?;
-                        imu_cov
-                    }
-                    None => vec![1e-3; 6],
-                });
-                biases
-            }
-            None => {
-                covariance_diagonal.extend(vec![1e-3; 6]);
-                vec![0.0; 6]
-            }
+        if let Some(biases) = imu_biases {
+            require_config(
+                biases.len() == 6,
+                "imu_biases",
+                format!("expected 6 elements, got {}", biases.len()),
+            )?;
+            covariance_diagonal.extend(match imu_biases_covariance {
+                Some(imu_cov) => {
+                    require_config(
+                        imu_cov.len() == 6,
+                        "imu_biases_covariance",
+                        format!("expected 6 elements, got {}", imu_cov.len()),
+                    )?;
+                    imu_cov
+                }
+                None => vec![1e-3; 6],
+            });
+            biases
+        } else {
+            covariance_diagonal.extend(vec![1e-3; 6]);
+            vec![0.0; 6]
         }
     } else {
         vec![0.0; 6] // Not used in 9-state, but required by constructor
@@ -2490,8 +2530,8 @@ pub fn initialize_ekf(
 
     let process_noise = DMatrix::from_diagonal(&DVector::from_vec(process_noise_diagonal));
     Ok(ExtendedKalmanFilter::new(
-        initial_state,
-        imu_biases_vec,
+        &initial_state,
+        &imu_biases_vec,
         covariance_diagonal,
         process_noise,
         use_biases,
@@ -2519,6 +2559,10 @@ pub fn initialize_ekf(
 ///
 /// * `ErrorStateKalmanFilter` - An instance of the Error-State Kalman Filter.
 ///
+/// # Errors
+/// [`StrapdownError::InvalidConfiguration`] if any configured vector length disagrees with
+/// the filter's state size.
+///
 /// # Example
 ///
 /// ```no_run
@@ -2533,11 +2577,11 @@ pub fn initialize_ekf(
 ///     // ... other fields ...
 ///     ..Default::default()
 /// };
-/// let eskf = initialize_eskf(initial_pose, None, None, None, None).unwrap();
+/// let eskf = initialize_eskf(&initial_pose, None, None, None, None).unwrap();
 /// ```
 #[allow(clippy::too_many_arguments)]
 pub fn initialize_eskf(
-    initial_pose: TestDataRecord,
+    initial_pose: &TestDataRecord,
     attitude_covariance: Option<Vec<f64>>,
     imu_biases: Option<Vec<f64>>,
     imu_biases_covariance: Option<Vec<f64>>,
@@ -2652,8 +2696,8 @@ pub fn initialize_eskf(
 
     let process_noise = DMatrix::from_diagonal(&DVector::from_vec(process_noise_diagonal));
     Ok(ErrorStateKalmanFilter::new(
-        initial_state,
-        imu_biases,
+        &initial_state,
+        &imu_biases,
         error_covariance_diagonal,
         process_noise,
     ))
@@ -2766,7 +2810,7 @@ pub mod execution {
         /// # Returns
         ///
         /// A new `ExecutionMonitor` instance initialized with the current time.
-        pub fn new(limits: ExecutionLimits, sim_duration_s: f64) -> Self {
+        pub fn new(limits: &ExecutionLimits, sim_duration_s: f64) -> Self {
             Self::new_at(limits, sim_duration_s, Instant::now())
         }
 
@@ -2781,7 +2825,7 @@ pub mod execution {
         /// test that sleeps 10 ms and then asserts a 50 ms budget was not exceeded is
         /// asserting something the standard library does not promise. On a contended
         /// runner it fails. See #284.
-        pub(crate) fn new_at(limits: ExecutionLimits, sim_duration_s: f64, now: Instant) -> Self {
+        pub(crate) fn new_at(limits: &ExecutionLimits, sim_duration_s: f64, now: Instant) -> Self {
             let max_wall_clock = compute_max_wall_clock(
                 sim_duration_s,
                 limits.max_wall_clock_ratio,
@@ -2820,7 +2864,7 @@ pub mod execution {
         /// ```no_run
         /// # use strapdown::sim::{ExecutionMonitor, ExecutionLimits};
         /// let limits = ExecutionLimits::default();
-        /// let mut monitor = ExecutionMonitor::new(limits, 100.0);
+        /// let mut monitor = ExecutionMonitor::new(&limits, 100.0);
         ///
         /// // Check timeout before processing
         /// monitor.check("data processing")?;
@@ -2828,6 +2872,8 @@ pub mod execution {
         /// monitor.mark_progress();
         /// # Ok::<(), anyhow::Error>(())
         /// ```
+        /// # Errors
+        /// If the wall-clock budget or the no-progress budget has been exceeded.
         pub fn check(&self, context: &str) -> Result<()> {
             self.check_at(context, Instant::now())
         }
@@ -2939,6 +2985,11 @@ pub mod health {
         }
 
         /// Call after **every event** (predict or update). Provide optional NIS when you have a GNSS update.
+        ///
+        /// # Errors
+        /// If the state has left the configured physical bounds, the covariance diagonal has
+        /// grown past its limit, or a supplied NIS exceeds its gate -- i.e. the filter has
+        /// diverged and later results would be meaningless.
         pub fn check(
             &mut self,
             x: &[f64], // your mean_state slice
@@ -3458,18 +3509,26 @@ impl Default for SimulationConfig {
 
 impl SimulationConfig {
     /// Write the configuration to a JSON file (pretty-printed)
+    /// # Errors
+    /// If the file cannot be created or written, or the records cannot be
+    /// serialised as JSON.
     pub fn to_json<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
         let file = std::fs::File::create(path)?;
         serde_json::to_writer_pretty(file, self).map_err(io::Error::other)
     }
 
     /// Read the configuration from a JSON file
+    /// # Errors
+    /// If the file cannot be read, or its contents are not valid JSON.
     pub fn from_json<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let file = std::fs::File::open(path)?;
         serde_json::from_reader(file).map_err(io::Error::other)
     }
 
     /// Write the configuration as YAML
+    /// # Errors
+    /// If the file cannot be created or written, or the records cannot be
+    /// serialised as YAML.
     pub fn to_yaml<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
         let mut file = std::fs::File::create(path)?;
         let s = serde_yaml::to_string(self).map_err(io::Error::other)?;
@@ -3477,12 +3536,17 @@ impl SimulationConfig {
     }
 
     /// Read the configuration from YAML
+    /// # Errors
+    /// If the file cannot be read, or its contents are not valid YAML.
     pub fn from_yaml<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let file = std::fs::File::open(path)?;
         serde_yaml::from_reader(file).map_err(io::Error::other)
     }
 
     /// Write the configuration as TOML
+    /// # Errors
+    /// If the file cannot be created or written, or the records cannot be
+    /// serialised as TOML.
     pub fn to_toml<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
         let mut file = std::fs::File::create(path)?;
         let s = toml::to_string_pretty(self).map_err(io::Error::other)?;
@@ -3490,6 +3554,8 @@ impl SimulationConfig {
     }
 
     /// Read the configuration from TOML
+    /// # Errors
+    /// If the file cannot be read, or its contents are not valid TOML.
     pub fn from_toml<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let mut s = String::new();
         let mut file = std::fs::File::open(path)?;
@@ -3498,6 +3564,9 @@ impl SimulationConfig {
     }
 
     /// Generic write: choose format by file extension (.json/.yaml/.yml/.toml)
+    /// # Errors
+    /// If the file cannot be created or written, or the records cannot be
+    /// serialised as the inferred format.
     pub fn to_file<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
         let p = path.as_ref();
         let ext = p
@@ -3516,6 +3585,8 @@ impl SimulationConfig {
     }
 
     /// Generic read: choose format by file extension (.json/.yaml/.yml/.toml)
+    /// # Errors
+    /// If the file cannot be read, or its contents are not valid the inferred format.
     pub fn from_file<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let p = path.as_ref();
         let ext = p
@@ -3709,18 +3780,26 @@ impl Default for GeonavSimulationConfig {
 }
 impl GeonavSimulationConfig {
     /// Write the configuration to a JSON file (pretty-printed)
+    /// # Errors
+    /// If the file cannot be created or written, or the records cannot be
+    /// serialised as JSON.
     pub fn to_json<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
         let file = std::fs::File::create(path)?;
         serde_json::to_writer_pretty(file, self).map_err(io::Error::other)
     }
 
     /// Read the configuration from a JSON file
+    /// # Errors
+    /// If the file cannot be read, or its contents are not valid JSON.
     pub fn from_json<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let file = std::fs::File::open(path)?;
         serde_json::from_reader(file).map_err(io::Error::other)
     }
 
     /// Write the configuration as YAML
+    /// # Errors
+    /// If the file cannot be created or written, or the records cannot be
+    /// serialised as YAML.
     pub fn to_yaml<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
         let mut file = std::fs::File::create(path)?;
         let s = serde_yaml::to_string(self).map_err(io::Error::other)?;
@@ -3728,12 +3807,17 @@ impl GeonavSimulationConfig {
     }
 
     /// Read the configuration from YAML
+    /// # Errors
+    /// If the file cannot be read, or its contents are not valid YAML.
     pub fn from_yaml<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let file = std::fs::File::open(path)?;
         serde_yaml::from_reader(file).map_err(io::Error::other)
     }
 
     /// Write the configuration as TOML
+    /// # Errors
+    /// If the file cannot be created or written, or the records cannot be
+    /// serialised as TOML.
     pub fn to_toml<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
         let mut file = std::fs::File::create(path)?;
         let s = toml::to_string_pretty(self).map_err(io::Error::other)?;
@@ -3741,6 +3825,8 @@ impl GeonavSimulationConfig {
     }
 
     /// Read the configuration from TOML
+    /// # Errors
+    /// If the file cannot be read, or its contents are not valid TOML.
     pub fn from_toml<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let mut s = String::new();
         let mut file = std::fs::File::open(path)?;
@@ -3749,6 +3835,9 @@ impl GeonavSimulationConfig {
     }
 
     /// Generic write: choose format by file extension (.json/.yaml/.yml/.toml)
+    /// # Errors
+    /// If the file cannot be created or written, or the records cannot be
+    /// serialised as the inferred format.
     pub fn to_file<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
         let p = path.as_ref();
         let ext = p
@@ -3767,6 +3856,8 @@ impl GeonavSimulationConfig {
     }
 
     /// Generic read: choose format by file extension (.json/.yaml/.yml/.toml)
+    /// # Errors
+    /// If the file cannot be read, or its contents are not valid the inferred format.
     pub fn from_file<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let p = path.as_ref();
         let ext = p
@@ -3909,6 +4000,9 @@ pub struct SyntheticConfig {
 
 impl SyntheticConfig {
     /// Write config to a file, choosing format by extension (.json, .yaml, .yml, .toml)
+    /// # Errors
+    /// If the file cannot be created or written, or the records cannot be
+    /// serialised as the inferred format.
     pub fn to_file<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
         let p = path.as_ref();
         let ext = p
@@ -3939,6 +4033,8 @@ impl SyntheticConfig {
     }
 
     /// Read config from a file, choosing format by extension (.json, .yaml, .yml, .toml)
+    /// # Errors
+    /// If the file cannot be read, or its contents are not valid the inferred format.
     pub fn from_file<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let p = path.as_ref();
         let ext = p
@@ -4570,7 +4666,7 @@ mod tests {
         };
 
         // Initialize UKF
-        let mut ukf = initialize_ukf(rec.clone(), UkfConfig::default()).unwrap();
+        let mut ukf = initialize_ukf(&rec, UkfConfig::default()).unwrap();
 
         // Create a minimal EventStream with one IMU event
         let imu_data = IMUData {
@@ -4625,10 +4721,10 @@ mod tests {
             grav_y: 0.0,
             grav_x: 0.0,
         };
-        let ukf = initialize_ukf(rec.clone(), UkfConfig::default()).unwrap();
+        let ukf = initialize_ukf(&rec, UkfConfig::default()).unwrap();
         assert!(!ukf.get_estimate().is_empty());
         let ukf2 = initialize_ukf(
-            rec,
+            &rec,
             UkfConfig {
                 attitude_covariance: Some(vec![0.1, 0.2, 0.3]),
                 imu_biases: Some(vec![0.4, 0.5, 0.6, 0.7, 0.8, 0.9]),
@@ -4822,7 +4918,7 @@ mod tests {
             yaw: 0.3,
             ..Default::default()
         };
-        let ukf = initialize_ukf(rec.clone(), UkfConfig::default()).unwrap();
+        let ukf = initialize_ukf(&rec, UkfConfig::default()).unwrap();
         let timestamp = Utc::now();
         let nav_result = NavigationResult::from((&timestamp, &ukf));
 
@@ -4876,7 +4972,7 @@ mod tests {
             yaw: 0.3,
             ..Default::default()
         };
-        let ukf = initialize_ukf(rec.clone(), UkfConfig::default()).unwrap();
+        let ukf = initialize_ukf(&rec, UkfConfig::default()).unwrap();
         // Just ensure it doesn't panic
         print_ukf(&ukf, &rec);
     }
@@ -4897,7 +4993,7 @@ mod tests {
             yaw: f64::NAN,
             ..Default::default()
         };
-        let ukf = initialize_ukf(rec, UkfConfig::default()).unwrap();
+        let ukf = initialize_ukf(&rec, UkfConfig::default()).unwrap();
         let estimate = ukf.get_estimate();
         // Should default NaN angles to 0.0
         assert!(estimate[6].abs() < 1e-6); // roll
@@ -4923,7 +5019,7 @@ mod tests {
             ..Default::default()
         };
         let ukf = initialize_ukf(
-            rec,
+            &rec,
             UkfConfig {
                 attitude_covariance: Some(vec![1e-4, 2e-4, 3e-4]),
                 imu_biases: Some(vec![0.01, 0.02, 0.03, 0.001, 0.002, 0.003]),
@@ -4955,7 +5051,7 @@ mod tests {
         };
         let custom_noise = vec![1e-5; 15];
         let ukf = initialize_ukf(
-            rec,
+            &rec,
             UkfConfig {
                 process_noise_diagonal: Some(custom_noise),
                 ..Default::default()
@@ -4987,7 +5083,7 @@ mod tests {
             max_wall_clock_s: 0.0,
             max_no_progress_s: 0.010,
         };
-        let monitor = ExecutionMonitor::new_at(limits, 1.0, t0);
+        let monitor = ExecutionMonitor::new_at(&limits, 1.0, t0);
 
         let result = monitor.check_at("test", at(t0, 20));
         assert!(result.is_err());
@@ -5003,7 +5099,7 @@ mod tests {
             max_wall_clock_s: 0.0,
             max_no_progress_s: 0.100,
         };
-        let monitor = ExecutionMonitor::new_at(limits, 1.0, t0);
+        let monitor = ExecutionMonitor::new_at(&limits, 1.0, t0);
 
         assert!(
             monitor.check_at("test", at(t0, 99)).is_ok(),
@@ -5028,7 +5124,7 @@ mod tests {
             max_wall_clock_s: 0.0,
             max_no_progress_s: 0.100,
         };
-        let mut monitor = ExecutionMonitor::new_at(limits, 1.0, t0);
+        let mut monitor = ExecutionMonitor::new_at(&limits, 1.0, t0);
 
         assert!(monitor.check_at("test", at(t0, 90)).is_ok());
         monitor.mark_progress_at(at(t0, 90));
@@ -5046,7 +5142,7 @@ mod tests {
             max_wall_clock_s: 0.010,
             max_no_progress_s: 0.0,
         };
-        let monitor = ExecutionMonitor::new_at(limits, 1.0, t0);
+        let monitor = ExecutionMonitor::new_at(&limits, 1.0, t0);
 
         let result = monitor.check_at("test", at(t0, 20));
         assert!(result.is_err());
@@ -5062,7 +5158,7 @@ mod tests {
             max_wall_clock_s: 0.100,
             max_no_progress_s: 0.0,
         };
-        let mut monitor = ExecutionMonitor::new_at(limits, 1.0, t0);
+        let mut monitor = ExecutionMonitor::new_at(&limits, 1.0, t0);
 
         assert!(
             monitor.check_at("test", at(t0, 100)).is_ok(),
@@ -5091,7 +5187,7 @@ mod tests {
             max_wall_clock_s: 10.0,
             max_no_progress_s: 0.050,
         };
-        let mut monitor = ExecutionMonitor::new_at(limits, 1.0, t0);
+        let mut monitor = ExecutionMonitor::new_at(&limits, 1.0, t0);
 
         // 200 iterations at 40 ms each: 8 s total, comfortably past the 50 ms
         // no-progress budget, but each individual gap stays under it.
@@ -5113,7 +5209,7 @@ mod tests {
             max_wall_clock_s: 0.0,
             max_no_progress_s: 0.0,
         };
-        let monitor = ExecutionMonitor::new_at(limits, 1.0, t0);
+        let monitor = ExecutionMonitor::new_at(&limits, 1.0, t0);
 
         // All timeouts disabled: an hour of no progress is still fine.
         assert!(monitor.check_at("test", at(t0, 3_600_000)).is_ok());
@@ -5127,7 +5223,7 @@ mod tests {
             max_wall_clock_s: -1.0,
             max_no_progress_s: -1.0,
         };
-        let monitor = ExecutionMonitor::new_at(limits, 1.0, t0);
+        let monitor = ExecutionMonitor::new_at(&limits, 1.0, t0);
 
         assert!(monitor.check_at("test", at(t0, 3_600_000)).is_ok());
     }
@@ -5143,7 +5239,7 @@ mod tests {
             max_wall_clock_s: 0.200,
             max_no_progress_s: 0.0,
         };
-        let monitor = ExecutionMonitor::new_at(limits, 2.0, t0);
+        let monitor = ExecutionMonitor::new_at(&limits, 2.0, t0);
         assert!(monitor.check_at("test", at(t0, 200)).is_ok());
         assert!(monitor.check_at("test", at(t0, 201)).is_err());
 
@@ -5153,7 +5249,7 @@ mod tests {
             max_wall_clock_s: 5.0,
             max_no_progress_s: 0.0,
         };
-        let monitor = ExecutionMonitor::new_at(limits, 2.0, t0);
+        let monitor = ExecutionMonitor::new_at(&limits, 2.0, t0);
         assert!(monitor.check_at("test", at(t0, 500)).is_ok());
         assert!(monitor.check_at("test", at(t0, 501)).is_err());
     }
@@ -5643,7 +5739,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut ukf = initialize_ukf(rec.clone(), UkfConfig::default()).unwrap();
+        let mut ukf = initialize_ukf(&rec, UkfConfig::default()).unwrap();
 
         let stream = EventStream {
             start_time: rec.time,
@@ -5681,7 +5777,7 @@ mod tests {
             yaw: 0.0,
             ..Default::default()
         };
-        let ekf = initialize_ekf(rec, None, None, None, None, false).unwrap();
+        let ekf = initialize_ekf(&rec, None, None, None, None, false).unwrap();
         let estimate = ekf.get_estimate();
         assert_eq!(estimate.len(), 9, "9-state EKF should have 9 states");
         // Check velocity decomposition (bearing 45° means equal north/east components)
@@ -5705,7 +5801,7 @@ mod tests {
             yaw: 0.0,
             ..Default::default()
         };
-        let ekf = initialize_ekf(rec, None, None, None, None, true).unwrap();
+        let ekf = initialize_ekf(&rec, None, None, None, None, true).unwrap();
         let estimate = ekf.get_estimate();
         assert_eq!(estimate.len(), 15, "15-state EKF should have 15 states");
         // Check that biases are initialized to zero by default
@@ -5734,7 +5830,7 @@ mod tests {
             yaw: f64::NAN,
             ..Default::default()
         };
-        let ekf = initialize_ekf(rec, None, None, None, None, true).unwrap();
+        let ekf = initialize_ekf(&rec, None, None, None, None, true).unwrap();
         let estimate = ekf.get_estimate();
         // Should default NaN angles to 0.0
         assert!(estimate[6].abs() < 1e-6, "NaN roll should default to 0"); // roll
@@ -5760,7 +5856,7 @@ mod tests {
             ..Default::default()
         };
         let ekf = initialize_ekf(
-            rec,
+            &rec,
             Some(vec![1e-4, 2e-4, 3e-4]),
             Some(vec![0.01, 0.02, 0.03, 0.001, 0.002, 0.003]),
             Some(vec![1e-5; 6]),
@@ -5794,7 +5890,7 @@ mod tests {
             ..Default::default()
         };
         let custom_noise = vec![1e-7; 15];
-        let ekf = initialize_ekf(rec, None, None, None, Some(custom_noise.clone()), true).unwrap();
+        let ekf = initialize_ekf(&rec, None, None, None, Some(custom_noise), true).unwrap();
         // Verify EKF was created successfully
         assert_eq!(ekf.get_estimate().len(), 15);
     }

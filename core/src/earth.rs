@@ -797,7 +797,7 @@ pub fn magnetic_declination(latitude: &f64, longitude: &f64, altitude: &f64) -> 
 }
 /// Calculate the magnetic anomaly at a given location
 pub fn magnetic_anomaly(
-    magnetic_field: GeomagneticField,
+    magnetic_field: &GeomagneticField,
     mag_x: f64,
     mag_y: f64,
     mag_z: f64,

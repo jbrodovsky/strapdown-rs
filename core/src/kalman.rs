@@ -200,12 +200,12 @@ impl UnscentedKalmanFilter {
     /// use strapdown::kalman::{UnscentedKalmanFilter, InitialState};
     /// use nalgebra::DMatrix;
     /// let init = InitialState::default();
-    /// let ukf = UnscentedKalmanFilter::new(init, vec![0.0;6], None, vec![1e-6;9], DMatrix::identity(9,9), 1e-3, 2.0, 0.0);
+    /// let ukf = UnscentedKalmanFilter::new(&init, &[0.0;6], None, vec![1e-6;9], DMatrix::identity(9,9), 1e-3, 2.0, 0.0);
     /// ```
     pub fn new(
-        initial_state: InitialState,
-        imu_biases: Vec<f64>,
-        other_states: Option<Vec<f64>>,
+        initial_state: &InitialState,
+        imu_biases: &[f64],
+        other_states: Option<&[f64]>,
         covariance_diagonal: Vec<f64>,
         process_noise: DMatrix<f64>,
         alpha: f64,
@@ -238,7 +238,7 @@ impl UnscentedKalmanFilter {
             ]
         };
         mean.extend(imu_biases);
-        if let Some(ref other_states) = other_states {
+        if let Some(other_states) = other_states {
             mean.extend(other_states.iter().copied());
         }
         let state_size = mean.len();
@@ -569,8 +569,8 @@ impl NavigationFilter for UnscentedKalmanFilter {
 /// };
 ///
 /// let mut ekf = ExtendedKalmanFilter::new(
-///     initial_state,
-///     vec![0.0; 6], // IMU biases (3 accel + 3 gyro)
+///     &initial_state,
+///     &[0.0; 6], // IMU biases (3 accel + 3 gyro)
 ///     vec![1e-6; 15], // Initial covariance diagonal
 ///     DMatrix::from_diagonal(&nalgebra::DVector::from_vec(vec![1e-9; 15])), // Process noise
 ///     true, // use_biases
@@ -658,16 +658,16 @@ impl ExtendedKalmanFilter {
     ///
     /// let initial_state = InitialState::default();
     /// let ekf = ExtendedKalmanFilter::new(
-    ///     initial_state,
-    ///     vec![0.0; 6],
+    ///     &initial_state,
+    ///     &[0.0; 6],
     ///     vec![1e-6; 15],
     ///     DMatrix::from_diagonal(&nalgebra::DVector::from_vec(vec![1e-9; 15])),
     ///     true,
     /// );
     /// ```
     pub fn new(
-        initial_state: InitialState,
-        imu_biases: Vec<f64>,
+        initial_state: &InitialState,
+        imu_biases: &[f64],
         covariance_diagonal: Vec<f64>,
         process_noise: DMatrix<f64>,
         use_biases: bool,
@@ -1129,8 +1129,8 @@ impl NavigationFilter for ExtendedKalmanFilter {
 /// };
 ///
 /// let mut eskf = ErrorStateKalmanFilter::new(
-///     initial_state,
-///     vec![0.0; 6], // Initial IMU biases (3 accel + 3 gyro)
+///     &initial_state,
+///     &[0.0; 6], // Initial IMU biases (3 accel + 3 gyro)
 ///     vec![1e-6; 15], // Initial error covariance diagonal
 ///     DMatrix::from_diagonal(&nalgebra::DVector::from_vec(vec![1e-9; 15])), // Process noise
 /// );
@@ -1283,15 +1283,15 @@ impl ErrorStateKalmanFilter {
     ///
     /// let initial_state = InitialState::default();
     /// let eskf = ErrorStateKalmanFilter::new(
-    ///     initial_state,
-    ///     vec![0.0; 6],
+    ///     &initial_state,
+    ///     &[0.0; 6],
     ///     vec![1e-6; 15],
     ///     DMatrix::from_diagonal(&nalgebra::DVector::from_vec(vec![1e-9; 15])),
     /// );
     /// ```
     pub fn new(
-        initial_state: InitialState,
-        imu_biases: Vec<f64>,
+        initial_state: &InitialState,
+        imu_biases: &[f64],
         error_covariance_diagonal: Vec<f64>,
         process_noise: DMatrix<f64>,
     ) -> Self {
@@ -1865,9 +1865,9 @@ mod tests {
     fn ukf_construction() {
         let measurement_bias = vec![0.0; 3]; // Example measurement bias
         let ukf = UnscentedKalmanFilter::new(
-            UKF_PARAMS,
-            IMU_BIASES.to_vec(),
-            Some(measurement_bias),
+            &UKF_PARAMS,
+            &IMU_BIASES,
+            Some(&measurement_bias),
             vec![1e-3; 18],
             DMatrix::from_diagonal(&DVector::from_vec(vec![1e-3; 18])),
             ALPHA,
@@ -1896,8 +1896,8 @@ mod tests {
     #[test]
     fn ukf_get_sigma_points() {
         let ukf = UnscentedKalmanFilter::new(
-            UKF_PARAMS,
-            IMU_BIASES.to_vec(),
+            &UKF_PARAMS,
+            &IMU_BIASES,
             None,
             COVARIANCE_DIAGONAL.to_vec(),
             DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
@@ -1925,8 +1925,8 @@ mod tests {
     #[test]
     fn ukf_propagate() {
         let mut ukf = UnscentedKalmanFilter::new(
-            UKF_PARAMS,
-            vec![0.0; 6],
+            &UKF_PARAMS,
+            &[0.0; 6],
             None,         //Some(measurement_bias.clone()),
             vec![0.0; N], // Absolute certainty use for testing the process
             DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
@@ -1939,7 +1939,7 @@ mod tests {
             accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
             gyro: Vector3::new(0.0, 0.0, 0.0), // No rotation
         };
-        ukf.predict(&imu_data, dt);
+        ukf.predict(&imu_data, dt).unwrap();
         assert_eq!(ukf.mean_state.len(), 15);
         let measurement = GPSPositionMeasurement {
             latitude: 0.0,
@@ -1948,7 +1948,7 @@ mod tests {
             horizontal_noise_std: 1e-3,
             vertical_noise_std: 1e-3,
         };
-        ukf.update(&measurement);
+        ukf.update(&measurement).unwrap();
         // Check that the state has not changed
         assert_approx_eq!(ukf.mean_state[0], 0.0, 1e-3);
         assert_approx_eq!(ukf.mean_state[1], 0.0, 1e-3);
@@ -1962,8 +1962,8 @@ mod tests {
     fn ukf_debug_display() {
         // Test Debug and Display implementations for UKF
         let ukf = UnscentedKalmanFilter::new(
-            UKF_PARAMS,
-            IMU_BIASES.to_vec(),
+            &UKF_PARAMS,
+            &IMU_BIASES,
             None,
             COVARIANCE_DIAGONAL.to_vec(),
             DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
@@ -1987,8 +1987,8 @@ mod tests {
     fn ukf_predict_with_biases() {
         // Test UKF predict with non-zero biases
         let mut ukf = UnscentedKalmanFilter::new(
-            UKF_PARAMS,
-            vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6], // non-zero biases
+            &UKF_PARAMS,
+            &[0.1, 0.2, 0.3, 0.4, 0.5, 0.6], // non-zero biases
             None,
             COVARIANCE_DIAGONAL.to_vec(),
             DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
@@ -2002,7 +2002,7 @@ mod tests {
             gyro: Vector3::new(0.0, 0.0, 0.0),
         };
 
-        ukf.predict(&imu_data, 0.1);
+        ukf.predict(&imu_data, 0.1).unwrap();
 
         // Just verify prediction completed without panic
         assert_eq!(ukf.mean_state.len(), 15);
@@ -2012,8 +2012,8 @@ mod tests {
     fn ukf_update_with_cross_covariance() {
         // Test UKF update to cover cross-covariance calculation
         let mut ukf = UnscentedKalmanFilter::new(
-            UKF_PARAMS,
-            IMU_BIASES.to_vec(),
+            &UKF_PARAMS,
+            &IMU_BIASES,
             None,
             COVARIANCE_DIAGONAL.to_vec(),
             DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
@@ -2027,7 +2027,7 @@ mod tests {
             accel: Vector3::new(0.0, 0.0, -9.81),
             gyro: Vector3::new(0.0, 0.0, 0.0),
         };
-        ukf.predict(&imu_data, 0.1);
+        ukf.predict(&imu_data, 0.1).unwrap();
 
         // Update with GPS position measurement
         let measurement = GPSPositionMeasurement {
@@ -2038,7 +2038,7 @@ mod tests {
             vertical_noise_std: 2.0,
         };
 
-        ukf.update(&measurement);
+        ukf.update(&measurement).unwrap();
 
         // Verify update completed
         assert!(!ukf.mean_state.is_empty());
@@ -2051,9 +2051,9 @@ mod tests {
         let total_states = 15 + measurement_bias.len();
 
         let ukf = UnscentedKalmanFilter::new(
-            UKF_PARAMS,
-            IMU_BIASES.to_vec(),
-            Some(measurement_bias),
+            &UKF_PARAMS,
+            &IMU_BIASES,
+            Some(&measurement_bias),
             vec![1e-6; total_states],
             DMatrix::from_diagonal(&DVector::from_vec(vec![1e-9; total_states])),
             ALPHA,
@@ -2069,8 +2069,8 @@ mod tests {
     fn ukf_with_velocity_measurement() {
         // Test UKF with velocity measurement
         let mut ukf = UnscentedKalmanFilter::new(
-            UKF_PARAMS,
-            IMU_BIASES.to_vec(),
+            &UKF_PARAMS,
+            &IMU_BIASES,
             None,
             COVARIANCE_DIAGONAL.to_vec(),
             DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
@@ -2087,7 +2087,7 @@ mod tests {
             vertical_noise_std: 0.5,
         };
 
-        ukf.update(&vel_meas);
+        ukf.update(&vel_meas).unwrap();
 
         // Verify update completed
         assert_eq!(ukf.mean_state.len(), 15);
@@ -2097,8 +2097,8 @@ mod tests {
     fn ukf_with_position_velocity_measurement() {
         // Test UKF with combined position and velocity measurement
         let mut ukf = UnscentedKalmanFilter::new(
-            UKF_PARAMS,
-            IMU_BIASES.to_vec(),
+            &UKF_PARAMS,
+            &IMU_BIASES,
             None,
             COVARIANCE_DIAGONAL.to_vec(),
             DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
@@ -2118,7 +2118,7 @@ mod tests {
             velocity_noise_std: 0.5,
         };
 
-        ukf.update(&meas);
+        ukf.update(&meas).unwrap();
 
         // Verify update completed
         assert_eq!(ukf.mean_state.len(), 15);
@@ -2142,8 +2142,8 @@ mod tests {
         };
 
         let mut ukf = UnscentedKalmanFilter::new(
-            initial_state,
-            IMU_BIASES.to_vec(),
+            &initial_state,
+            &IMU_BIASES,
             None,
             COVARIANCE_DIAGONAL.to_vec(),
             DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
@@ -2157,7 +2157,7 @@ mod tests {
             reference_altitude: 95.0,
         };
 
-        ukf.update(&alt_meas);
+        ukf.update(&alt_meas).unwrap();
 
         // Should pull altitude toward 100m
         assert!(ukf.mean_state[2] > 90.0 && ukf.mean_state[2] < 110.0);
@@ -2181,8 +2181,8 @@ mod tests {
         };
 
         let mut ukf = UnscentedKalmanFilter::new(
-            initial_state,
-            IMU_BIASES.to_vec(),
+            &initial_state,
+            &IMU_BIASES,
             None,
             vec![
                 1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8,
@@ -2206,7 +2206,7 @@ mod tests {
                 accel: Vector3::new(0.0, 0.0, 0.0), // Free fall - no measured acceleration
                 gyro: Vector3::new(0.0, 0.0, 0.0),
             };
-            ukf.predict(&imu_data, dt);
+            ukf.predict(&imu_data, dt).unwrap();
         }
 
         // After 1 second of free fall, should have accumulated vertical velocity
@@ -2232,7 +2232,7 @@ mod tests {
             horizontal_noise_std: 5.0,
             vertical_noise_std: 2.0,
         };
-        ukf.update(&measurement);
+        ukf.update(&measurement).unwrap();
 
         // After measurement update, estimate should remain close to measurement
         assert_approx_eq!(ukf.mean_state[2], final_altitude, 5.0);
@@ -2256,8 +2256,8 @@ mod tests {
         };
 
         let mut ukf = UnscentedKalmanFilter::new(
-            initial_state,
-            IMU_BIASES.to_vec(),
+            &initial_state,
+            &IMU_BIASES,
             None,
             vec![
                 1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8,
@@ -2281,7 +2281,7 @@ mod tests {
                 accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
                 gyro: Vector3::new(0.0, 0.0, 0.0),
             };
-            ukf.predict(&imu_data, dt);
+            ukf.predict(&imu_data, dt).unwrap();
         }
 
         // Velocity should remain near zero
@@ -2304,7 +2304,7 @@ mod tests {
             horizontal_noise_std: 0.5,
             vertical_noise_std: 0.5,
         };
-        ukf.update(&vel_measurement);
+        ukf.update(&vel_measurement).unwrap();
 
         // After update, velocities should remain near zero
         assert_approx_eq!(ukf.mean_state[3], 0.0, 0.5);
@@ -2330,8 +2330,8 @@ mod tests {
         };
 
         let mut ukf = UnscentedKalmanFilter::new(
-            initial_state,
-            IMU_BIASES.to_vec(),
+            &initial_state,
+            &IMU_BIASES,
             None,
             vec![
                 1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8,
@@ -2356,7 +2356,7 @@ mod tests {
                 accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
                 gyro: Vector3::new(0.0, 0.0, 0.0),
             };
-            ukf.predict(&imu_data, dt);
+            ukf.predict(&imu_data, dt).unwrap();
         }
 
         // Latitude should have increased (moving north)
@@ -2385,7 +2385,7 @@ mod tests {
             vertical_noise_std: 2.0,
             velocity_noise_std: 0.5,
         };
-        ukf.update(&meas);
+        ukf.update(&meas).unwrap();
 
         // After measurement, velocities should be close to measured values
         assert_approx_eq!(ukf.mean_state[3], 10.0, 1.0);
@@ -2410,8 +2410,8 @@ mod tests {
         };
 
         let mut ukf = UnscentedKalmanFilter::new(
-            initial_state,
-            IMU_BIASES.to_vec(),
+            &initial_state,
+            &IMU_BIASES,
             None,
             vec![
                 1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8,
@@ -2436,7 +2436,7 @@ mod tests {
                 accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
                 gyro: Vector3::new(0.0, 0.0, 0.0),
             };
-            ukf.predict(&imu_data, dt);
+            ukf.predict(&imu_data, dt).unwrap();
         }
 
         // Longitude should have increased (moving east)
@@ -2466,7 +2466,7 @@ mod tests {
             horizontal_noise_std: 5.0,
             vertical_noise_std: 2.0,
         };
-        ukf.update(&pos_meas);
+        ukf.update(&pos_meas).unwrap();
 
         // Position should remain close to measurement
         assert_approx_eq!(ukf.mean_state[1], final_lon, 0.01);
@@ -2480,7 +2480,7 @@ mod tests {
             horizontal_noise_std: 0.5,
             vertical_noise_std: 0.5,
         };
-        ukf.update(&vel_meas);
+        ukf.update(&vel_meas).unwrap();
 
         // After measurement, velocities should be close to measured values
         assert_approx_eq!(ukf.mean_state[3], 0.0, 0.5);
@@ -2506,8 +2506,8 @@ mod tests {
         };
 
         let mut ukf = UnscentedKalmanFilter::new(
-            initial_state,
-            IMU_BIASES.to_vec(),
+            &initial_state,
+            &IMU_BIASES,
             None,
             vec![
                 1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8,
@@ -2533,7 +2533,7 @@ mod tests {
                 accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
                 gyro: Vector3::new(0.0, 0.0, 0.0),
             };
-            ukf.predict(&imu_data, dt);
+            ukf.predict(&imu_data, dt).unwrap();
         }
 
         // Both latitude and longitude should have increased
@@ -2557,7 +2557,7 @@ mod tests {
             vertical_noise_std: 2.0,
             velocity_noise_std: 0.5,
         };
-        ukf.update(&meas);
+        ukf.update(&meas).unwrap();
 
         // After measurement, state should be well-constrained
         assert_approx_eq!(ukf.mean_state[3], 10.0, 1.0);
@@ -2571,8 +2571,8 @@ mod tests {
     fn ekf_construction_9state() {
         // Test EKF construction with 9-state configuration (no biases)
         let ekf = ExtendedKalmanFilter::new(
-            UKF_PARAMS,
-            vec![0.0; 6], // Biases provided but won't be used
+            &UKF_PARAMS,
+            &[0.0; 6], // Biases provided but won't be used
             vec![1e-3; 9],
             DMatrix::from_diagonal(&DVector::from_vec(vec![1e-3; 9])),
             false, // Don't use biases
@@ -2586,8 +2586,8 @@ mod tests {
     fn ekf_construction_15state() {
         // Test EKF construction with 15-state configuration (with biases)
         let ekf = ExtendedKalmanFilter::new(
-            UKF_PARAMS,
-            IMU_BIASES.to_vec(),
+            &UKF_PARAMS,
+            &IMU_BIASES,
             COVARIANCE_DIAGONAL.to_vec(),
             DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
             true, // Use biases
@@ -2601,8 +2601,8 @@ mod tests {
     fn ekf_debug_display() {
         // Test Debug and Display implementations for EKF
         let ekf = ExtendedKalmanFilter::new(
-            UKF_PARAMS,
-            IMU_BIASES.to_vec(),
+            &UKF_PARAMS,
+            &IMU_BIASES,
             COVARIANCE_DIAGONAL.to_vec(),
             DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
             true,
@@ -2623,8 +2623,8 @@ mod tests {
     fn ekf_propagate_9state() {
         // Test EKF predict without biases
         let mut ekf = ExtendedKalmanFilter::new(
-            UKF_PARAMS,
-            vec![0.0; 6],
+            &UKF_PARAMS,
+            &[0.0; 6],
             vec![0.0; 9], // Absolute certainty for testing
             DMatrix::from_diagonal(&DVector::from_vec(vec![1e-9; 9])),
             false, // 9-state
@@ -2634,7 +2634,7 @@ mod tests {
             accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
             gyro: Vector3::new(0.0, 0.0, 0.0),
         };
-        ekf.predict(&imu_data, dt);
+        ekf.predict(&imu_data, dt).unwrap();
         assert_eq!(ekf.mean_state.len(), 9);
 
         // Test GPS position measurement update
@@ -2645,7 +2645,7 @@ mod tests {
             horizontal_noise_std: 1e-3,
             vertical_noise_std: 1e-3,
         };
-        ekf.update(&measurement);
+        ekf.update(&measurement).unwrap();
 
         // Check that the state has not changed significantly
         assert_approx_eq!(ekf.mean_state[0], 0.0, 1e-3);
@@ -2660,8 +2660,8 @@ mod tests {
     fn ekf_propagate_15state() {
         // Test EKF predict with biases
         let mut ekf = ExtendedKalmanFilter::new(
-            UKF_PARAMS,
-            vec![0.0; 6],
+            &UKF_PARAMS,
+            &[0.0; 6],
             vec![0.0; 15], // Absolute certainty for testing
             DMatrix::from_diagonal(&DVector::from_vec(vec![1e-9; 15])),
             true, // 15-state with biases
@@ -2671,7 +2671,7 @@ mod tests {
             accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
             gyro: Vector3::new(0.0, 0.0, 0.0),
         };
-        ekf.predict(&imu_data, dt);
+        ekf.predict(&imu_data, dt).unwrap();
         assert_eq!(ekf.mean_state.len(), 15);
 
         // Test GPS position measurement update
@@ -2682,7 +2682,7 @@ mod tests {
             horizontal_noise_std: 1e-3,
             vertical_noise_std: 1e-3,
         };
-        ekf.update(&measurement);
+        ekf.update(&measurement).unwrap();
 
         // Check that the state has not changed significantly
         assert_approx_eq!(ekf.mean_state[0], 0.0, 1e-3);
@@ -2694,8 +2694,8 @@ mod tests {
     fn ekf_predict_with_nonzero_biases() {
         // Test EKF predict with non-zero biases
         let mut ekf = ExtendedKalmanFilter::new(
-            UKF_PARAMS,
-            vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6], // non-zero biases
+            &UKF_PARAMS,
+            &[0.1, 0.2, 0.3, 0.4, 0.5, 0.6], // non-zero biases
             COVARIANCE_DIAGONAL.to_vec(),
             DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
             true,
@@ -2706,7 +2706,7 @@ mod tests {
             gyro: Vector3::new(0.0, 0.0, 0.0),
         };
 
-        ekf.predict(&imu_data, 0.1);
+        ekf.predict(&imu_data, 0.1).unwrap();
 
         // Just verify prediction completed without panic
         assert_eq!(ekf.mean_state.len(), 15);
@@ -2719,8 +2719,8 @@ mod tests {
     fn ekf_with_velocity_measurement() {
         // Test EKF with velocity measurement
         let mut ekf = ExtendedKalmanFilter::new(
-            UKF_PARAMS,
-            IMU_BIASES.to_vec(),
+            &UKF_PARAMS,
+            &IMU_BIASES,
             COVARIANCE_DIAGONAL.to_vec(),
             DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
             true,
@@ -2734,7 +2734,7 @@ mod tests {
             vertical_noise_std: 0.5,
         };
 
-        ekf.update(&vel_meas);
+        ekf.update(&vel_meas).unwrap();
 
         // Verify update completed
         assert_eq!(ekf.mean_state.len(), 15);
@@ -2744,8 +2744,8 @@ mod tests {
     fn ekf_with_position_velocity_measurement() {
         // Test EKF with combined position and velocity measurement
         let mut ekf = ExtendedKalmanFilter::new(
-            UKF_PARAMS,
-            IMU_BIASES.to_vec(),
+            &UKF_PARAMS,
+            &IMU_BIASES,
             COVARIANCE_DIAGONAL.to_vec(),
             DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
             true,
@@ -2762,7 +2762,7 @@ mod tests {
             velocity_noise_std: 0.5,
         };
 
-        ekf.update(&meas);
+        ekf.update(&meas).unwrap();
 
         // Verify update completed
         assert_eq!(ekf.mean_state.len(), 15);
@@ -2786,8 +2786,8 @@ mod tests {
         };
 
         let mut ekf = ExtendedKalmanFilter::new(
-            initial_state,
-            IMU_BIASES.to_vec(),
+            &initial_state,
+            &IMU_BIASES,
             COVARIANCE_DIAGONAL.to_vec(),
             DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
             true,
@@ -2798,7 +2798,7 @@ mod tests {
             reference_altitude: 95.0,
         };
 
-        ekf.update(&alt_meas);
+        ekf.update(&alt_meas).unwrap();
 
         // Should pull altitude toward 100m
         assert!(ekf.mean_state[2] > 90.0 && ekf.mean_state[2] < 110.0);
@@ -2822,8 +2822,8 @@ mod tests {
         };
 
         let mut ekf = ExtendedKalmanFilter::new(
-            initial_state,
-            IMU_BIASES.to_vec(),
+            &initial_state,
+            &IMU_BIASES,
             vec![
                 1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8,
                 1e-8,
@@ -2844,7 +2844,7 @@ mod tests {
                 accel: Vector3::new(0.0, 0.0, 0.0), // Free fall - no measured acceleration
                 gyro: Vector3::new(0.0, 0.0, 0.0),
             };
-            ekf.predict(&imu_data, dt);
+            ekf.predict(&imu_data, dt).unwrap();
         }
 
         // After 1 second of free fall, should have accumulated vertical velocity
@@ -2869,7 +2869,7 @@ mod tests {
             horizontal_noise_std: 5.0,
             vertical_noise_std: 2.0,
         };
-        ekf.update(&measurement);
+        ekf.update(&measurement).unwrap();
 
         // After measurement update, estimate should remain close to measurement
         assert_approx_eq!(ekf.mean_state[2], final_altitude, 5.0);
@@ -2893,8 +2893,8 @@ mod tests {
         };
 
         let mut ekf = ExtendedKalmanFilter::new(
-            initial_state,
-            IMU_BIASES.to_vec(),
+            &initial_state,
+            &IMU_BIASES,
             vec![
                 1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8,
                 1e-8,
@@ -2915,7 +2915,7 @@ mod tests {
                 accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
                 gyro: Vector3::new(0.0, 0.0, 0.0),
             };
-            ekf.predict(&imu_data, dt);
+            ekf.predict(&imu_data, dt).unwrap();
         }
 
         // Velocity should remain near zero
@@ -2938,7 +2938,7 @@ mod tests {
             horizontal_noise_std: 0.5,
             vertical_noise_std: 0.5,
         };
-        ekf.update(&vel_measurement);
+        ekf.update(&vel_measurement).unwrap();
 
         // After update, velocities should remain near zero
         assert_approx_eq!(ekf.mean_state[3], 0.0, 0.5);
@@ -2964,8 +2964,8 @@ mod tests {
         };
 
         let mut ekf = ExtendedKalmanFilter::new(
-            initial_state,
-            IMU_BIASES.to_vec(),
+            &initial_state,
+            &IMU_BIASES,
             vec![
                 1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8,
                 1e-8,
@@ -2987,7 +2987,7 @@ mod tests {
                 accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
                 gyro: Vector3::new(0.0, 0.0, 0.0),
             };
-            ekf.predict(&imu_data, dt);
+            ekf.predict(&imu_data, dt).unwrap();
         }
 
         // Latitude should have increased (moving north)
@@ -3016,7 +3016,7 @@ mod tests {
             vertical_noise_std: 2.0,
             velocity_noise_std: 0.5,
         };
-        ekf.update(&meas);
+        ekf.update(&meas).unwrap();
 
         // After measurement, velocities should be close to measured values
         assert_approx_eq!(ekf.mean_state[3], 10.0, 1.0);
@@ -3041,8 +3041,8 @@ mod tests {
         };
 
         let mut ekf = ExtendedKalmanFilter::new(
-            initial_state,
-            IMU_BIASES.to_vec(),
+            &initial_state,
+            &IMU_BIASES,
             vec![
                 1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8,
                 1e-8,
@@ -3064,7 +3064,7 @@ mod tests {
                 accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
                 gyro: Vector3::new(0.0, 0.0, 0.0),
             };
-            ekf.predict(&imu_data, dt);
+            ekf.predict(&imu_data, dt).unwrap();
         }
 
         // Longitude should have increased (moving east)
@@ -3094,7 +3094,7 @@ mod tests {
             horizontal_noise_std: 5.0,
             vertical_noise_std: 2.0,
         };
-        ekf.update(&pos_meas);
+        ekf.update(&pos_meas).unwrap();
 
         // Position should remain close to measurement
         assert_approx_eq!(ekf.mean_state[1], final_lon, 0.01);
@@ -3108,7 +3108,7 @@ mod tests {
             horizontal_noise_std: 0.5,
             vertical_noise_std: 0.5,
         };
-        ekf.update(&vel_meas);
+        ekf.update(&vel_meas).unwrap();
 
         // After measurement, velocities should be close to measured values
         assert_approx_eq!(ekf.mean_state[3], 0.0, 0.5);
@@ -3134,8 +3134,8 @@ mod tests {
         };
 
         let mut ekf = ExtendedKalmanFilter::new(
-            initial_state,
-            IMU_BIASES.to_vec(),
+            &initial_state,
+            &IMU_BIASES,
             vec![
                 1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8,
                 1e-8,
@@ -3158,7 +3158,7 @@ mod tests {
                 accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
                 gyro: Vector3::new(0.0, 0.0, 0.0),
             };
-            ekf.predict(&imu_data, dt);
+            ekf.predict(&imu_data, dt).unwrap();
         }
 
         // Both latitude and longitude should have increased
@@ -3182,7 +3182,7 @@ mod tests {
             vertical_noise_std: 2.0,
             velocity_noise_std: 0.5,
         };
-        ekf.update(&meas);
+        ekf.update(&meas).unwrap();
 
         // After measurement, state should be well-constrained
         assert_approx_eq!(ekf.mean_state[3], 10.0, 1.0);
@@ -3194,8 +3194,8 @@ mod tests {
     fn ekf_covariance_reduction() {
         // Test that measurement updates reduce covariance
         let mut ekf = ExtendedKalmanFilter::new(
-            UKF_PARAMS,
-            IMU_BIASES.to_vec(),
+            &UKF_PARAMS,
+            &IMU_BIASES,
             vec![1.0; 15], // Start with high uncertainty
             DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
             true,
@@ -3212,7 +3212,7 @@ mod tests {
             horizontal_noise_std: 1.0,
             vertical_noise_std: 1.0,
         };
-        ekf.update(&measurement);
+        ekf.update(&measurement).unwrap();
 
         // Get final covariance trace
         let final_trace: f64 = (0..15).map(|i| ekf.covariance[(i, i)]).sum();
@@ -3242,8 +3242,8 @@ mod tests {
         };
 
         let mut ekf = ExtendedKalmanFilter::new(
-            initial_state,
-            IMU_BIASES.to_vec(),
+            &initial_state,
+            &IMU_BIASES,
             COVARIANCE_DIAGONAL.to_vec(),
             DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
             true,
@@ -3257,7 +3257,7 @@ mod tests {
             horizontal_noise_std: 5.0,
             vertical_noise_std: 2.0,
         };
-        ekf.update(&measurement);
+        ekf.update(&measurement).unwrap();
 
         // Angles should be wrapped to [0, 2*pi] range
         assert!(ekf.mean_state[6] >= 0.0 && ekf.mean_state[6] <= 2.0 * std::f64::consts::PI);
@@ -3277,8 +3277,8 @@ mod tests {
     #[test]
     fn eskf_position_error_injection_is_in_radians() {
         let mut eskf = ErrorStateKalmanFilter::new(
-            UKF_PARAMS,
-            IMU_BIASES.to_vec(),
+            &UKF_PARAMS,
+            &IMU_BIASES,
             COVARIANCE_DIAGONAL.to_vec(),
             DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
         );
@@ -3325,8 +3325,8 @@ mod tests {
     fn eskf_is_insensitive_to_tiny_input_perturbation() {
         fn run(perturb: f64) -> DVector<f64> {
             let mut eskf = ErrorStateKalmanFilter::new(
-                UKF_PARAMS,
-                IMU_BIASES.to_vec(),
+                &UKF_PARAMS,
+                &IMU_BIASES,
                 vec![1e-12; 15],
                 DMatrix::from_diagonal(&DVector::from_vec(vec![1e-12; 15])),
             );
@@ -3338,7 +3338,7 @@ mod tests {
                     accel: Vector3::new(0.05 * t.cos() * (1.0 + perturb), -0.03 * t.sin(), 9.81),
                     gyro: Vector3::new(0.001, -0.002, 0.01),
                 };
-                eskf.predict(&imu, dt);
+                eskf.predict(&imu, dt).unwrap();
 
                 if step % 25 == 0 {
                     let meas = crate::measurements::GPSPositionMeasurement {
@@ -3348,7 +3348,7 @@ mod tests {
                         horizontal_noise_std: 3.0,
                         vertical_noise_std: 5.0,
                     };
-                    eskf.update(&meas);
+                    eskf.update(&meas).unwrap();
                 }
             }
             eskf.get_estimate()
@@ -3384,8 +3384,8 @@ mod tests {
     fn eskf_construction() {
         // Test ESKF construction
         let eskf = ErrorStateKalmanFilter::new(
-            UKF_PARAMS,
-            IMU_BIASES.to_vec(),
+            &UKF_PARAMS,
+            &IMU_BIASES,
             COVARIANCE_DIAGONAL.to_vec(),
             DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
         );
@@ -3409,8 +3409,8 @@ mod tests {
     fn eskf_debug_display() {
         // Test Debug and Display implementations for ESKF
         let eskf = ErrorStateKalmanFilter::new(
-            UKF_PARAMS,
-            IMU_BIASES.to_vec(),
+            &UKF_PARAMS,
+            &IMU_BIASES,
             COVARIANCE_DIAGONAL.to_vec(),
             DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
         );
@@ -3430,8 +3430,8 @@ mod tests {
     fn eskf_quaternion_normalization() {
         // Test that quaternion remains normalized after predict/update cycles
         let mut eskf = ErrorStateKalmanFilter::new(
-            UKF_PARAMS,
-            IMU_BIASES.to_vec(),
+            &UKF_PARAMS,
+            &IMU_BIASES,
             COVARIANCE_DIAGONAL.to_vec(),
             DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
         );
@@ -3442,7 +3442,7 @@ mod tests {
                 accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
                 gyro: Vector3::new(0.01, 0.01, 0.01), // Small rotation
             };
-            eskf.predict(&imu_data, 0.01);
+            eskf.predict(&imu_data, 0.01).unwrap();
 
             let measurement = GPSPositionMeasurement {
                 latitude: 0.0,
@@ -3451,7 +3451,7 @@ mod tests {
                 horizontal_noise_std: 5.0,
                 vertical_noise_std: 2.0,
             };
-            eskf.update(&measurement);
+            eskf.update(&measurement).unwrap();
         }
 
         // Verify quaternion is still normalized
@@ -3463,8 +3463,8 @@ mod tests {
     fn eskf_error_reset_after_update() {
         // Test that error state is reset to zero after measurement update
         let mut eskf = ErrorStateKalmanFilter::new(
-            UKF_PARAMS,
-            IMU_BIASES.to_vec(),
+            &UKF_PARAMS,
+            &IMU_BIASES,
             vec![1e-3; 15], // Higher initial uncertainty
             DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
         );
@@ -3474,7 +3474,7 @@ mod tests {
             accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
             gyro: Vector3::zeros(),
         };
-        eskf.predict(&imu_data, 1.0);
+        eskf.predict(&imu_data, 1.0).unwrap();
 
         // Update with measurement
         let measurement = GPSPositionMeasurement {
@@ -3484,7 +3484,7 @@ mod tests {
             horizontal_noise_std: 5.0,
             vertical_noise_std: 2.0,
         };
-        eskf.update(&measurement);
+        eskf.update(&measurement).unwrap();
 
         // Verify error state is reset to zero after update
         for i in 0..15 {
@@ -3514,8 +3514,8 @@ mod tests {
         let true_gyro_bias = Vector3::new(0.01, 0.015, 0.02);
 
         let mut eskf = ErrorStateKalmanFilter::new(
-            initial_state,
-            vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // Start with zero bias estimate
+            &initial_state,
+            &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // Start with zero bias estimate
             vec![1e-6; 15],
             DMatrix::from_diagonal(&DVector::from_vec(vec![
                 1e-9, 1e-9, 1e-6, 1e-6, 1e-6, 1e-6, 1e-9, 1e-9, 1e-9, 1e-6, 1e-6,
@@ -3530,7 +3530,7 @@ mod tests {
                 accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)) + true_accel_bias,
                 gyro: true_gyro_bias,
             };
-            eskf.predict(&imu_data, 0.1);
+            eskf.predict(&imu_data, 0.1).unwrap();
 
             // Perfect measurements to help converge
             let measurement = GPSPositionMeasurement {
@@ -3540,7 +3540,7 @@ mod tests {
                 horizontal_noise_std: 1.0,
                 vertical_noise_std: 0.5,
             };
-            eskf.update(&measurement);
+            eskf.update(&measurement).unwrap();
         }
 
         // Verify biases remain bounded (not diverging)
@@ -3571,8 +3571,8 @@ mod tests {
         };
 
         let mut eskf = ErrorStateKalmanFilter::new(
-            initial_state,
-            IMU_BIASES.to_vec(),
+            &initial_state,
+            &IMU_BIASES,
             vec![
                 1e-6, 1e-6, 1.0, 0.1, 0.1, 0.1, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6, 1e-8, 1e-8,
                 1e-8,
@@ -3592,7 +3592,7 @@ mod tests {
                 accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
                 gyro: Vector3::zeros(),
             };
-            eskf.predict(&imu_data, dt);
+            eskf.predict(&imu_data, dt).unwrap();
         }
 
         // Verify state remained approximately constant
@@ -3609,8 +3609,8 @@ mod tests {
     fn eskf_with_velocity_measurement() {
         // Test ESKF with velocity measurement
         let mut eskf = ErrorStateKalmanFilter::new(
-            UKF_PARAMS,
-            IMU_BIASES.to_vec(),
+            &UKF_PARAMS,
+            &IMU_BIASES,
             COVARIANCE_DIAGONAL.to_vec(),
             DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
         );
@@ -3623,7 +3623,7 @@ mod tests {
             vertical_noise_std: 0.5,
         };
 
-        eskf.update(&vel_meas);
+        eskf.update(&vel_meas).unwrap();
 
         // Verify update completed and error state is reset
         let state = eskf.get_estimate();
@@ -3637,8 +3637,8 @@ mod tests {
     fn eskf_covariance_reduction() {
         // Test that measurement updates reduce covariance
         let mut eskf = ErrorStateKalmanFilter::new(
-            UKF_PARAMS,
-            IMU_BIASES.to_vec(),
+            &UKF_PARAMS,
+            &IMU_BIASES,
             vec![1.0; 15], // Start with high uncertainty
             DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
         );
@@ -3654,7 +3654,7 @@ mod tests {
             horizontal_noise_std: 1.0,
             vertical_noise_std: 1.0,
         };
-        eskf.update(&measurement);
+        eskf.update(&measurement).unwrap();
 
         // Get final covariance trace
         let final_trace: f64 = (0..15).map(|i| eskf.error_covariance[(i, i)]).sum();
@@ -3684,8 +3684,8 @@ mod tests {
         };
 
         let mut eskf = ErrorStateKalmanFilter::new(
-            initial_state,
-            IMU_BIASES.to_vec(),
+            &initial_state,
+            &IMU_BIASES,
             COVARIANCE_DIAGONAL.to_vec(),
             DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
         );
@@ -3698,7 +3698,7 @@ mod tests {
             horizontal_noise_std: 5.0,
             vertical_noise_std: 2.0,
         };
-        eskf.update(&measurement);
+        eskf.update(&measurement).unwrap();
 
         // Get state (which wraps angles)
         let state = eskf.get_estimate();
@@ -3727,8 +3727,8 @@ mod tests {
         };
 
         let mut eskf = ErrorStateKalmanFilter::new(
-            initial_state,
-            IMU_BIASES.to_vec(),
+            &initial_state,
+            &IMU_BIASES,
             COVARIANCE_DIAGONAL.to_vec(),
             DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
         );
@@ -3739,7 +3739,7 @@ mod tests {
                 accel: Vector3::new(0.0, 0.0, earth::gravity(&0.785, &100.0)),
                 gyro: Vector3::new(0.5, 0.5, 0.5), // Large rotation rates
             };
-            eskf.predict(&imu_data, 0.01);
+            eskf.predict(&imu_data, 0.01).unwrap();
         }
 
         // Verify quaternion is still normalized (no singularities)
@@ -3797,14 +3797,14 @@ mod tests {
 
         // ESKF: both unit modes must yield the same nominal quaternion...
         let eskf_rad = ErrorStateKalmanFilter::new(
-            mk(false),
-            IMU_BIASES.to_vec(),
+            &mk(false),
+            &IMU_BIASES,
             COVARIANCE_DIAGONAL.to_vec(),
             DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
         );
         let eskf_deg = ErrorStateKalmanFilter::new(
-            mk(true),
-            IMU_BIASES.to_vec(),
+            &mk(true),
+            &IMU_BIASES,
             COVARIANCE_DIAGONAL.to_vec(),
             DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
         );
@@ -3826,19 +3826,14 @@ mod tests {
         assert_approx_eq!(eskf_rad.nominal_quaternion[3], expected.k, 1e-12);
 
         // EKF/UKF: degree inputs must land in the mean state as radians.
-        let ekf = ExtendedKalmanFilter::new(
-            mk(true),
-            IMU_BIASES.to_vec(),
-            vec![1e-6; 15],
-            q15.clone(),
-            true,
-        );
+        let ekf =
+            ExtendedKalmanFilter::new(&mk(true), &IMU_BIASES, vec![1e-6; 15], q15.clone(), true);
         assert_approx_eq!(ekf.mean_state[6], roll_rad, 1e-12);
         assert_approx_eq!(ekf.mean_state[7], pitch_rad, 1e-12);
         assert_approx_eq!(ekf.mean_state[8], yaw_rad, 1e-12);
         let ukf = UnscentedKalmanFilter::new(
-            mk(true),
-            IMU_BIASES.to_vec(),
+            &mk(true),
+            &IMU_BIASES,
             None,
             vec![1e-6; 15],
             q15,
@@ -3855,8 +3850,8 @@ mod tests {
     #[test]
     fn eskf_inject_clamps_biases_to_physical_bounds() {
         let mut eskf = ErrorStateKalmanFilter::new(
-            InitialState::default(),
-            IMU_BIASES.to_vec(),
+            &InitialState::default(),
+            &IMU_BIASES,
             COVARIANCE_DIAGONAL.to_vec(),
             DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
         );

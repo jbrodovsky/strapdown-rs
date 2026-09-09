@@ -2,7 +2,7 @@
 use chrono::{DateTime, Datelike, Utc};
 use nalgebra::Vector3;
 use rand::SeedableRng;
-use rand_distr::{Distribution, Normal};
+use rand_distr::Distribution;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -282,17 +282,25 @@ impl Default for GnssDegradationConfig {
 
 impl GnssDegradationConfig {
     /// Write the configuration to a JSON file (pretty-printed).
+    /// # Errors
+    /// If the file cannot be created or written, or the records cannot be
+    /// serialised as JSON.
     pub fn to_json<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
         let file = File::create(path)?;
         serde_json::to_writer_pretty(file, self).map_err(io::Error::other)
     }
 
     /// Read the configuration from a JSON file.
+    /// # Errors
+    /// If the file cannot be read, or its contents are not valid JSON.
     pub fn from_json<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let file = File::open(path)?;
         serde_json::from_reader(file).map_err(io::Error::other)
     }
     /// Write the configuration as YAML.
+    /// # Errors
+    /// If the file cannot be created or written, or the records cannot be
+    /// serialised as YAML.
     pub fn to_yaml<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
         let mut file = File::create(path)?;
         let s = serde_yaml::to_string(self).map_err(io::Error::other)?;
@@ -300,17 +308,24 @@ impl GnssDegradationConfig {
     }
 
     /// Read the configuration from YAML.
+    /// # Errors
+    /// If the file cannot be read, or its contents are not valid YAML.
     pub fn from_yaml<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let file = File::open(path)?;
         serde_yaml::from_reader(file).map_err(io::Error::other)
     }
     /// Write the configuration as TOML.
+    /// # Errors
+    /// If the file cannot be created or written, or the records cannot be
+    /// serialised as TOML.
     pub fn to_toml<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
         let mut file = File::create(path)?;
         let s = toml::to_string(self).map_err(io::Error::other)?;
         file.write_all(s.as_bytes())
     }
     /// Read the configuration from TOML.
+    /// # Errors
+    /// If the file cannot be read, or its contents are not valid TOML.
     pub fn from_toml<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let mut s = String::new();
         let mut file = File::open(path)?;
@@ -318,6 +333,9 @@ impl GnssDegradationConfig {
         toml::from_str(&s).map_err(io::Error::other)
     }
     /// Generic write: choose format by file extension (.json/.yaml/.yml/.toml)
+    /// # Errors
+    /// If the file cannot be created or written, or the records cannot be
+    /// serialised as the inferred format.
     pub fn to_file<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
         let p = path.as_ref();
         let ext = p
@@ -335,6 +353,8 @@ impl GnssDegradationConfig {
         }
     }
     /// Generic read: choose format by file extension (.json/.yaml/.yml/.toml)
+    /// # Errors
+    /// If the file cannot be read, or its contents are not valid the inferred format.
     pub fn from_file<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let p = path.as_ref();
         let ext = p
