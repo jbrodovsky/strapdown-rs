@@ -134,7 +134,8 @@ pub fn state_transition_jacobian(
     let c_bn = state.attitude.matrix(); // Body-to-nav rotation matrix
 
     // Earth model parameters
-    let (r_n, r_e, _) = earth::principal_radii(&lat, &alt);
+    // Degrees, like the `to_degrees()` calls immediately below -- `lat` is radians (#292).
+    let (r_n, r_e, _) = earth::principal_radii(&lat.to_degrees(), &alt);
     let _g = earth::gravity(&lat.to_degrees(), &alt); // Reserved for future use
     let omega_ie = earth::earth_rate_lla(&lat.to_degrees());
     let omega_en = earth::transport_rate(&lat.to_degrees(), &alt, &vel);

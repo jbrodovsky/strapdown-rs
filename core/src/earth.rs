@@ -537,7 +537,7 @@ pub fn gravity_anomaly(
 /// (East-West), and Earth's rotation rate.
 ///
 /// # Arguments
-/// - `latitude` - The WGS84 latitude in radians
+/// - `latitude` - The WGS84 latitude in degrees
 /// - `altitude` - The WGS84 altitude in meters
 /// - `north_velocity` - The northward velocity component in m/s
 /// - `east_velocity` - The eastward velocity component in m/s
@@ -546,7 +546,7 @@ pub fn gravity_anomaly(
 /// The Eötvös correction in m/s^2
 pub fn eotvos(latitude: &f64, altitude: &f64, north_velocity: &f64, east_velocity: &f64) -> f64 {
     let (_, _, r_p) = principal_radii(latitude, altitude);
-    2.0 * RATE * *east_velocity * latitude.cos()
+    2.0 * RATE * *east_velocity * latitude.to_radians().cos()
         + (north_velocity.powi(2) + east_velocity.powi(2)) / r_p
 }
 

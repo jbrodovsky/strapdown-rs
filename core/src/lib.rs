@@ -780,7 +780,8 @@ fn velocity_update(state: &StrapdownState, specific_force: Vector3<f64>, dt: f64
 /// # Returns
 /// * A tuple (latitude, longitude, altitude) representing the updated position in radians and meters.
 pub fn position_update(state: &StrapdownState, velocity: Vector3<f64>, dt: f64) -> (f64, f64, f64) {
-    let (r_n, r_e_0, _) = earth::principal_radii(&state.latitude, &state.altitude);
+    // `principal_radii` takes degrees; every other call site converts first (#292).
+    let (r_n, r_e_0, _) = earth::principal_radii(&state.latitude.to_degrees(), &state.altitude);
     let lat_0 = state.latitude;
     let alt_0 = state.altitude;
     // Altitude update
@@ -789,7 +790,7 @@ pub fn position_update(state: &StrapdownState, velocity: Vector3<f64>, dt: f64) 
     let lat_1: f64 = state.latitude
         + 0.5 * (state.velocity_north / (r_n + state.altitude) + velocity[0] / (r_n + alt_1)) * dt;
     // Longitude update
-    let (_, r_e_1, _) = earth::principal_radii(&lat_1, &alt_1);
+    let (_, r_e_1, _) = earth::principal_radii(&lat_1.to_degrees(), &alt_1);
     let cos_lat0 = lat_0.cos().max(1e-6); // Guard against cos(lat) --> 0 near poles
     let cos_lat1 = lat_1.cos().max(1e-6);
     let lon_1: f64 = state.longitude
@@ -1788,5 +1789,72 @@ mod tests {
         assert_approx_eq!(final_state.velocity_vertical, 0.0, 0.01);
         assert_approx_eq!(final_state.latitude, initial_state.latitude, 1e-6);
         assert_approx_eq!(final_state.longitude, initial_state.longitude, 1e-6);
+    }
+
+    /// Regression test for #292: `position_update` passed `state.latitude` --
+    /// radians -- straight into `earth::principal_radii`, which takes degrees.
+    ///
+    /// The bug is invisible to an end-to-end error metric (it perturbs the
+    /// integration rate by ~0.5% at mid latitudes and every filter shares it),
+    /// so this pins the units at the boundary instead: the radii a northward
+    /// step integrates against must be the radii for the latitude it is at.
+    #[test]
+    fn position_update_uses_degrees_for_principal_radii() {
+        // Mid-latitude, where deg-vs-rad is maximally wrong: 40 deg is 0.698
+        // rad, and `principal_radii` would have evaluated at 0.698 *degrees*,
+        // i.e. essentially at the equator.
+        let latitude_deg = 40.0_f64;
+        let altitude = 0.0_f64;
+
+        let state = StrapdownState {
+            latitude: latitude_deg.to_radians(),
+            longitude: 0.0,
+            altitude,
+            velocity_north: 1.0,
+            velocity_east: 0.0,
+            velocity_vertical: 0.0,
+            attitude: Rotation3::identity(),
+            is_enu: false,
+        };
+
+        let dt = 1.0;
+        let (lat_1, _, _) = position_update(&state, Vector3::new(1.0, 0.0, 0.0), dt);
+
+        // 1 m/s north for 1 s advances latitude by 1/(r_n + h) radians, with
+        // `r_n` taken at 40 deg -- not at 40 rad-read-as-deg.
+        let (r_n_deg, _, _) = earth::principal_radii(&latitude_deg, &altitude);
+        let expected = state.latitude + 1.0 / (r_n_deg + altitude);
+        assert_approx_eq!(lat_1, expected, 1e-15);
+
+        // And the buggy reading must be measurably different, or this test
+        // would pass against the defect it exists to catch.
+        let (r_n_rad, _, _) = earth::principal_radii(&state.latitude, &altitude);
+        let buggy = state.latitude + 1.0 / (r_n_rad + altitude);
+        assert!(
+            (lat_1 - buggy).abs() > 1e-12,
+            "degrees and radians readings of principal_radii are indistinguishable here, \
+             so this test cannot detect #292 (r_n_deg={r_n_deg}, r_n_rad={r_n_rad})"
+        );
+    }
+
+    /// Every `principal_radii` caller must agree on units. #292 was found in
+    /// `position_update`; the same defect was present in
+    /// `linearize::state_transition_jacobian`, and `earth::eotvos` took the
+    /// cosine of a degree value. This checks the invariant they all share:
+    /// the meridian radius is largest at the poles and smallest at the equator.
+    #[test]
+    fn principal_radii_is_monotonic_in_degrees() {
+        let (r_n_equator, _, _) = earth::principal_radii(&0.0, &0.0);
+        let (r_n_mid, _, _) = earth::principal_radii(&45.0, &0.0);
+        let (r_n_pole, _, _) = earth::principal_radii(&90.0, &0.0);
+        assert!(
+            r_n_equator < r_n_mid && r_n_mid < r_n_pole,
+            "meridian radius must increase toward the poles when the argument is \
+             degrees: {r_n_equator} / {r_n_mid} / {r_n_pole}"
+        );
+        // A radians-valued latitude of 90 deg (1.571) read as degrees lands
+        // near the equator, which is exactly how #292 hid.
+        let (r_n_pole_as_rad, _, _) = earth::principal_radii(&std::f64::consts::FRAC_PI_2, &0.0);
+        assert!(r_n_pole_as_rad < r_n_mid);
     }
 }
