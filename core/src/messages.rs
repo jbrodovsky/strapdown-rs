@@ -246,7 +246,7 @@ pub enum GnssFaultModel {
 /// };
 /// ```
 /// Default seed value for reproducible simulations
-fn default_seed() -> u64 {
+const fn default_seed() -> u64 {
     42
 }
 
@@ -272,7 +272,7 @@ pub struct GnssDegradationConfig {
 
 impl Default for GnssDegradationConfig {
     fn default() -> Self {
-        GnssDegradationConfig {
+        Self {
             scheduler: GnssScheduler::default(),
             fault: GnssFaultModel::default(),
             seed: default_seed(),
@@ -323,10 +323,10 @@ impl GnssDegradationConfig {
         let ext = p
             .extension()
             .and_then(|s| s.to_str())
-            .map(|s| s.to_lowercase());
+            .map(str::to_lowercase);
         match ext.as_deref() {
             Some("json") => self.to_json(p),
-            Some("yaml") | Some("yml") => self.to_yaml(p),
+            Some("yaml" | "yml") => self.to_yaml(p),
             Some("toml") => self.to_toml(p),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -340,10 +340,10 @@ impl GnssDegradationConfig {
         let ext = p
             .extension()
             .and_then(|s| s.to_str())
-            .map(|s| s.to_lowercase());
+            .map(str::to_lowercase);
         match ext.as_deref() {
             Some("json") => Self::from_json(p),
-            Some("yaml") | Some("yml") => Self::from_yaml(p),
+            Some("yaml" | "yml") => Self::from_yaml(p),
             Some("toml") => Self::from_toml(p),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -426,6 +426,33 @@ pub enum Event {
         elapsed_s: f64,
     },
 }
+
+impl std::fmt::Debug for Event {
+    /// `Event::Measurement` carries a `Box<dyn MeasurementModel>`, and that trait
+    /// deliberately has no `Debug` supertrait -- requiring one would force it on
+    /// every downstream measurement model. The payload is therefore elided and
+    /// only the discriminant and timing are shown.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Imu {
+                dt_s,
+                imu,
+                elapsed_s,
+            } => f
+                .debug_struct("Event::Imu")
+                .field("dt_s", dt_s)
+                .field("imu", imu)
+                .field("elapsed_s", elapsed_s)
+                .finish(),
+            Self::Measurement { elapsed_s, .. } => f
+                .debug_struct("Event::Measurement")
+                .field("meas", &"<dyn MeasurementModel>")
+                .field("elapsed_s", elapsed_s)
+                .finish(),
+        }
+    }
+}
+#[derive(Debug)]
 pub struct EventStream {
     pub start_time: DateTime<Utc>,
     pub events: Vec<Event>,
@@ -569,26 +596,26 @@ fn ar1_step(x: &mut f64, rho: f64, sigma: f64, rng: &mut rand::rngs::StdRng) {
 /// > to scale it and return it (and update the function signature/uses accordingly).
 ///
 /// # Behavior by variant
-/// - **`GnssFaultModel::None`**  
+/// - **`GnssFaultModel::None`**\
 ///   Returns inputs unchanged (baseline).
 ///
-/// - **`GnssFaultModel::Degraded`**  
+/// - **`GnssFaultModel::Degraded`**\
 ///   Adds AR(1)-correlated errors to position (N/E/U, meters) and velocity
 ///   (N/E, m/s). The position error is mapped to Δlat/Δlon via an ellipsoidal
 ///   small-offset conversion. The advertised horizontal/velocity standard
 ///   deviations are multiplied by `r_scale`.
 ///
-/// - **`GnssFaultModel::SlowBias`**  
+/// - **`GnssFaultModel::SlowBias`**\
 ///   Integrates a slowly drifting N/E bias (m) with optional slow rotation of
 ///   drift direction and small random-walk perturbation. A small consistent
 ///   velocity bias (N/E, m/s) is also applied to keep the corruption plausible.
 ///
-/// - **`GnssFaultModel::Hijack`**  
+/// - **`GnssFaultModel::Hijack`**\
 ///   Applies a constant N/E offset (meters) within a time window
 ///   `[start_s, start_s + duration_s]`, mapping it to Δlat/Δlon. Outside the
 ///   window, measurements pass through unchanged.
 ///
-/// - **`GnssFaultModel::Combo`**  
+/// - **`GnssFaultModel::Combo`**\
 ///   Intended to compose multiple effects by feeding the output of one model as
 ///   the input to the next. (Wire up the call loop to `apply_fault` for each
 ///   sub-model if composition is desired.)
@@ -1168,13 +1195,10 @@ mod tests {
         let events = build_event_stream(&records, &config);
 
         // Find GNSS events
-        let measurements: Vec<&Event> = events
+        let gnss_events: Vec<&Event> = events
             .events
             .iter()
             .filter(|e| matches!(e, Event::Measurement { .. }))
-            .collect();
-        let gnss_events: Vec<&Event> = measurements
-            .into_iter()
             .filter(|e| {
                 if let Event::Measurement { meas, .. } = e {
                     meas.as_any().is::<GPSPositionAndVelocityMeasurement>()
@@ -1298,14 +1322,14 @@ mod tests {
 
         // Check measurements before, during, and after hijack
         for (time, meas) in gnss_by_time {
-            if !(1.0 - 1e-6..=2.0 + 1e-6).contains(&time) {
-                // Before hijack or after hijack: positions should be near original
-                assert!((meas.latitude - original_lat).abs() < 1e-6);
-                assert!((meas.longitude - original_lon).abs() < 1e-6);
-            } else {
+            if (1.0 - 1e-6..=2.0 + 1e-6).contains(&time) {
                 // During hijack: positions should be offset
                 assert!((meas.latitude - original_lat).abs() > 1e-6);
                 assert!((meas.longitude - original_lon).abs() > 1e-6);
+            } else {
+                // Before hijack or after hijack: positions should be near original
+                assert!((meas.latitude - original_lat).abs() < 1e-6);
+                assert!((meas.longitude - original_lon).abs() < 1e-6);
             }
         }
     }

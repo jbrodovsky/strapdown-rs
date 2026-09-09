@@ -382,6 +382,8 @@ pub fn meters_ned_to_dlat_dlon(lat_rad: f64, alt_m: f64, d_n: f64, d_e: f64) -> 
 /// println!("Distance: {:.1} km", d / 1000.0);
 /// ```
 pub fn haversine_distance(lat1_rad: f64, lon1_rad: f64, lat2_rad: f64, lon2_rad: f64) -> f64 {
+    const R: f64 = 6_371_000.0; // mean Earth radius in meters
+
     let dlat = lat2_rad - lat1_rad;
     let dlon = lon2_rad - lon1_rad;
 
@@ -390,7 +392,6 @@ pub fn haversine_distance(lat1_rad: f64, lon1_rad: f64, lat2_rad: f64, lon2_rad:
 
     let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
 
-    const R: f64 = 6_371_000.0; // mean Earth radius in meters
     R * c
 }
 
@@ -756,7 +757,7 @@ pub fn magnetic_inclination(latitude: &f64, longitude: &f64, altitude: &f64) -> 
     let b_vector = calculate_magnetic_field(latitude, longitude, altitude);
 
     // Horizontal component magnitude (North-East plane)
-    let b_h = (b_vector[0].powi(2) + b_vector[1].powi(2)).sqrt();
+    let b_h = b_vector[0].hypot(b_vector[1]);
 
     // Calculate inclination (dip angle)
     // Positive downward, negative upward
@@ -803,7 +804,7 @@ pub fn magnetic_anomaly(
 ) -> f64 {
     // f64::NAN * latitude * longitude * altitude * mag_x * mag_y * mag_z // Placeholder for magnetic anomaly calculation to squash warnings
     let obs = (mag_x.powi(2) + mag_y.powi(2) + mag_z.powi(2)).sqrt();
-    obs - (magnetic_field.f().value as f64)
+    obs - f64::from(magnetic_field.f().value)
 }
 // === Unit tests ===
 #[cfg(test)]
@@ -971,7 +972,7 @@ mod tests {
         let lat = 40.0_f64.to_radians();
         let lon = -75.0_f64.to_radians();
         let d = haversine_distance(lat, lon, lat, lon);
-        assert!(d.abs() < 1e-9, "Zero distance should be ~0, got {}", d);
+        assert!(d.abs() < 1e-9, "Zero distance should be ~0, got {d}");
     }
 
     #[test]
@@ -982,9 +983,7 @@ mod tests {
         let err = (d - expected).abs();
         assert!(
             err < 1e-6 * expected,
-            "Error too large: got {}, expected {}",
-            d,
-            expected
+            "Error too large: got {d}, expected {expected}"
         );
     }
 
@@ -996,9 +995,7 @@ mod tests {
         let err = (d - expected).abs();
         assert!(
             err < 1e-6 * expected,
-            "Error too large: got {}, expected {}",
-            d,
-            expected
+            "Error too large: got {d}, expected {expected}"
         );
     }
 
@@ -1057,8 +1054,7 @@ mod tests {
         );
         assert!(
             rel_alt > 900.0 && rel_alt < 1200.0,
-            "Relative altitude should be around 1000m, got {}",
-            rel_alt
+            "Relative altitude should be around 1000m, got {rel_alt}"
         );
 
         // Test with custom temperature
@@ -1085,8 +1081,7 @@ mod tests {
         );
         assert!(
             pressure > 88000.0 && pressure < 91000.0,
-            "Pressure at 1000m should be around 89875 Pa, got {}",
-            pressure
+            "Pressure at 1000m should be around 89875 Pa, got {pressure}"
         );
 
         // Test at 5000m altitude
@@ -1151,8 +1146,7 @@ mod tests {
         // Inclination should be a finite number
         assert!(
             inclination.is_finite(),
-            "Inclination should be finite, got {}",
-            inclination
+            "Inclination should be finite, got {inclination}"
         );
 
         // Test at equator - inclination should be relatively small
@@ -1177,8 +1171,7 @@ mod tests {
         // Declination should be a finite number
         assert!(
             declination.is_finite(),
-            "Declination should be finite, got {}",
-            declination
+            "Declination should be finite, got {declination}"
         );
 
         // Test at different location with non-zero altitude

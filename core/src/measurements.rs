@@ -526,7 +526,7 @@ impl MagnetometerYawMeasurement {
         );
 
         match field {
-            Ok(f) => f.declination().get::<degree>() as f64 * std::f64::consts::PI / 180.0,
+            Ok(f) => f64::from(f.declination().get::<degree>()) * std::f64::consts::PI / 180.0,
             Err(_) => 0.0, // Return 0 declination if WMM fails (e.g., position out of range)
         }
     }
@@ -817,7 +817,7 @@ mod tests {
         assert_approx_eq!(z[0], 50.0, EPS);
 
         // Display string
-        let s = format!("{}", meas);
+        let s = format!("{meas}");
         assert!(s.contains("rel_alt") && s.contains("ref_alt"));
     }
 
@@ -827,7 +827,7 @@ mod tests {
         // pos.latitude = 1.0;
         // pos.longitude = 2.0;
         // pos.altitude = 3.0;
-        let boxed: Box<dyn MeasurementModel> = Box::new(pos.clone());
+        let boxed: Box<dyn MeasurementModel> = Box::new(pos);
         // downcast via as_any
         let any = boxed.as_any();
         let down = any
@@ -836,7 +836,7 @@ mod tests {
         assert!((down.latitude).abs() < EPS);
 
         // Display formatting
-        let s = format!("{}", down);
+        let s = format!("{down}");
         assert!(s.contains("GPSPositionMeasurement"));
     }
 
@@ -1028,7 +1028,7 @@ mod tests {
             day_of_year: 1,
         };
 
-        let s = format!("{}", meas);
+        let s = format!("{meas}");
         assert!(s.contains("MagnetometerYawMeasurement"));
         assert!(s.contains("20.00"));
         assert!(s.contains("true")); // apply_declination

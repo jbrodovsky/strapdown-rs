@@ -78,23 +78,23 @@ pub enum ReliefResolution {
 impl Display for ReliefResolution {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let res = match self {
-            ReliefResolution::OneDegree => "01d",
-            ReliefResolution::ThirtyMinutes => "30m",
-            ReliefResolution::TwentyMinutes => "20m",
-            ReliefResolution::FifteenMinutes => "15m",
-            ReliefResolution::TenMinutes => "10m",
-            ReliefResolution::SixMinutes => "06m",
-            ReliefResolution::FiveMinutes => "05m",
-            ReliefResolution::FourMinutes => "04m",
-            ReliefResolution::ThreeMinutes => "03m",
-            ReliefResolution::TwoMinutes => "02m",
-            ReliefResolution::OneMinute => "01m",
-            ReliefResolution::ThirtySeconds => "30s",
-            ReliefResolution::FifteenSeconds => "15s",
-            ReliefResolution::ThreeSeconds => "03s",
-            ReliefResolution::OneSecond => "01s",
+            Self::OneDegree => "01d",
+            Self::ThirtyMinutes => "30m",
+            Self::TwentyMinutes => "20m",
+            Self::FifteenMinutes => "15m",
+            Self::TenMinutes => "10m",
+            Self::SixMinutes => "06m",
+            Self::FiveMinutes => "05m",
+            Self::FourMinutes => "04m",
+            Self::ThreeMinutes => "03m",
+            Self::TwoMinutes => "02m",
+            Self::OneMinute => "01m",
+            Self::ThirtySeconds => "30s",
+            Self::FifteenSeconds => "15s",
+            Self::ThreeSeconds => "03s",
+            Self::OneSecond => "01s",
         };
-        write!(f, "{}", res)
+        write!(f, "{res}")
     }
 }
 /// Resolution values for gravity maps
@@ -116,19 +116,19 @@ impl Display for GravityResolution {
     /// Convert the resolution to a string. This can be used for calling the GMT library
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let res = match self {
-            GravityResolution::OneDegree => "01d",
-            GravityResolution::ThirtyMinutes => "30m",
-            GravityResolution::TwentyMinutes => "20m",
-            GravityResolution::FifteenMinutes => "15m",
-            GravityResolution::TenMinutes => "10m",
-            GravityResolution::SixMinutes => "06m",
-            GravityResolution::FiveMinutes => "05m",
-            GravityResolution::FourMinutes => "04m",
-            GravityResolution::ThreeMinutes => "03m",
-            GravityResolution::TwoMinutes => "02m",
-            GravityResolution::OneMinute => "01m",
+            Self::OneDegree => "01d",
+            Self::ThirtyMinutes => "30m",
+            Self::TwentyMinutes => "20m",
+            Self::FifteenMinutes => "15m",
+            Self::TenMinutes => "10m",
+            Self::SixMinutes => "06m",
+            Self::FiveMinutes => "05m",
+            Self::FourMinutes => "04m",
+            Self::ThreeMinutes => "03m",
+            Self::TwoMinutes => "02m",
+            Self::OneMinute => "01m",
         };
-        write!(f, "{}", res)
+        write!(f, "{res}")
     }
 }
 /// Resolution values for magnetic maps
@@ -149,18 +149,18 @@ impl Display for MagneticResolution {
     /// Convert the resolution to a string. This can be used for calling the GMT library
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let res = match self {
-            MagneticResolution::OneDegree => "01d",
-            MagneticResolution::ThirtyMinutes => "30m",
-            MagneticResolution::TwentyMinutes => "20m",
-            MagneticResolution::FifteenMinutes => "15m",
-            MagneticResolution::TenMinutes => "10m",
-            MagneticResolution::SixMinutes => "06m",
-            MagneticResolution::FiveMinutes => "05m",
-            MagneticResolution::FourMinutes => "04m",
-            MagneticResolution::ThreeMinutes => "03m",
-            MagneticResolution::TwoMinutes => "02m",
+            Self::OneDegree => "01d",
+            Self::ThirtyMinutes => "30m",
+            Self::TwentyMinutes => "20m",
+            Self::FifteenMinutes => "15m",
+            Self::TenMinutes => "10m",
+            Self::SixMinutes => "06m",
+            Self::FiveMinutes => "05m",
+            Self::FourMinutes => "04m",
+            Self::ThreeMinutes => "03m",
+            Self::TwoMinutes => "02m",
         };
-        write!(f, "{}", res)
+        write!(f, "{res}")
     }
 }
 /// Enum for the different types of maps. A GeoMap is defined by its measurement type and resolution.
@@ -173,13 +173,14 @@ pub enum GeophysicalMeasurementType {
 impl Display for GeophysicalMeasurementType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            GeophysicalMeasurementType::Relief(res) => write!(f, "Relief {}", res),
-            GeophysicalMeasurementType::Gravity(res) => write!(f, "Gravity {}", res),
-            GeophysicalMeasurementType::Magnetic(res) => write!(f, "Magnetic {}", res),
+            Self::Relief(res) => write!(f, "Relief {res}"),
+            Self::Gravity(res) => write!(f, "Gravity {res}"),
+            Self::Magnetic(res) => write!(f, "Magnetic {res}"),
         }
     }
 }
-/// Struct for the GeoMap object
+/// Struct for the GeoMap object.
+///
 /// This struct contains the latitude and longitude vectors, the data matrix, and the type of map
 /// The data matrix is a 2D matrix of data values, where the rows are the latitudes and the columns
 /// are the longitudes. The data values are the values at the corresponding lat/lon points.
@@ -240,13 +241,13 @@ impl GeoMap {
     /// let map_type = GeophysicalMeasurementType::Relief(ReliefResolution::OneDegree);
     /// let map = GeoMap::new(lats, lons, data, map_type);
     /// ```
-    pub fn new(
+    pub const fn new(
         lats: DVector<f64>,
         lons: DVector<f64>,
         data: DMatrix<f64>,
         map_type: GeophysicalMeasurementType,
     ) -> Self {
-        GeoMap {
+        Self {
             lats,
             lons,
             data,
@@ -272,7 +273,7 @@ impl GeoMap {
     pub fn load_geomap(
         filename: PathBuf,
         map_type: GeophysicalMeasurementType,
-    ) -> Result<GeoMap, String> {
+    ) -> Result<Self, String> {
         // Open the netcdf file
         let file = match netcdf::open(filename) {
             Ok(file) => file,
@@ -290,35 +291,35 @@ impl GeoMap {
         let lons: Vec<f64> = lons.get_values(..).unwrap();
         let data: Vec<f64> = data.get_values(..).unwrap();
         // Convert the data to DVector
-        let lats = DVector::from_vec(lats.to_vec());
-        let lons = DVector::from_vec(lons.to_vec());
+        let lats = DVector::from_vec(lats);
+        let lons = DVector::from_vec(lons);
         // Convert the data to DMatrix
         let data = DMatrix::from_row_slice(lats.len(), lons.len(), &data);
         // Create the GeoMap object
-        Ok(GeoMap::new(lats, lons, data, map_type))
+        Ok(Self::new(lats, lons, data, map_type))
     }
     /// Get the latitude vector
     /// # Returns
     /// - A reference to the latitude vector
-    pub fn get_lats(&self) -> &DVector<f64> {
+    pub const fn get_lats(&self) -> &DVector<f64> {
         &self.lats
     }
     /// Get the longitude vector
     /// # Returns
     /// - A reference to the longitude vector
-    pub fn get_lons(&self) -> &DVector<f64> {
+    pub const fn get_lons(&self) -> &DVector<f64> {
         &self.lons
     }
     /// Get the data matrix
     /// # Returns
     /// - A reference to the data matrix
-    pub fn get_data(&self) -> &DMatrix<f64> {
+    pub const fn get_data(&self) -> &DMatrix<f64> {
         &self.data
     }
     /// Get the map type
     /// # Returns
     /// - A reference to the map type
-    pub fn get_map_type(&self) -> &GeophysicalMeasurementType {
+    pub const fn get_map_type(&self) -> &GeophysicalMeasurementType {
         &self.map_type
     }
     /// Get the map type as a string
@@ -356,22 +357,20 @@ impl GeoMap {
     /// - Panics if the lat/lon are not in the map
     pub fn get_point(&self, lat: &f64, lon: &f64) -> Option<f64> {
         // Check if the lat/lon are within the bounds of the map
-        if lat < &self.lats[0] || lat > &self.lats[self.lats.len() - 1] {
-            panic!(
-                "Latitude out of bounds: {} not in [{}, {}]",
-                lat,
-                self.lats[0],
-                self.lats[self.lats.len() - 1]
-            );
-        }
-        if lon < &self.lons[0] || lon > &self.lons[self.lons.len() - 1] {
-            panic!(
-                "Longitude out of bounds: {} not in [{}, {}]",
-                lon,
-                self.lons[0],
-                self.lons[self.lons.len() - 1]
-            );
-        }
+        assert!(
+            !(lat < &self.lats[0] || lat > &self.lats[self.lats.len() - 1]),
+            "Latitude out of bounds: {} not in [{}, {}]",
+            lat,
+            self.lats[0],
+            self.lats[self.lats.len() - 1]
+        );
+        assert!(
+            !(lon < &self.lons[0] || lon > &self.lons[self.lons.len() - 1]),
+            "Longitude out of bounds: {} not in [{}, {}]",
+            lon,
+            self.lons[0],
+            self.lons[self.lons.len() - 1]
+        );
         // Check if the lat/lon are at the origin or the end of the map
         if lat == &self.lats[0] && lon == &self.lons[0] {
             // If the lat/lon are at the origin, return the first data point
@@ -395,7 +394,7 @@ impl GeoMap {
             let lon1_index = lon_index - 1;
             let a = self.data[(lat_index, lon_index)];
             let b = self.data[(lat_index, lon1_index)];
-            debug!("Bilinear interpolation edge case - a: {}, b: {}", a, b);
+            debug!("Bilinear interpolation edge case - a: {a}, b: {b}");
             let lon_diff = self.lons[lon_index] - self.lons[lon1_index];
             let result = ((a - b) / lon_diff) * (lon - self.lons[lon1_index]) + b;
             return Some(result);
@@ -413,13 +412,13 @@ impl GeoMap {
             return Some(((a - b) / lat_diff) * (lat - self.lats[lat1_index]) + b);
         }
         // If the lat/lon are not on the edge, use normal bilinear interpolation
-        self.bilinear_interpolation(lat, lon)
+        Some(self.bilinear_interpolation(*lat, *lon))
     }
     /// Bilinear interpolation helper method for get_point
-    fn bilinear_interpolation(&self, lat: &f64, lon: &f64) -> Option<f64> {
+    fn bilinear_interpolation(&self, lat: f64, lon: f64) -> f64 {
         // Find the indices that surround the point
-        let lat2_index: usize = self.lats.iter().position(|&x| x >= *lat).unwrap();
-        let lon2_index: usize = self.lons.iter().position(|&x| x >= *lon).unwrap();
+        let lat2_index: usize = self.lats.iter().position(|&x| x >= lat).unwrap();
+        let lon2_index: usize = self.lons.iter().position(|&x| x >= lon).unwrap();
         let lat1_index: usize = lat2_index - 1;
         let lon1_index: usize = lon2_index - 1;
         // Get the four surrounding points
@@ -437,7 +436,7 @@ impl GeoMap {
         let w12: f64 = ((lon2 - lon) * (lat - lat1)) / ((lon2 - lon1) * (lat2 - lat1));
         let w21: f64 = ((lon - lon1) * (lat2 - lat)) / ((lon2 - lon1) * (lat2 - lat1));
         let w22: f64 = ((lon - lon1) * (lat - lat1)) / ((lon2 - lon1) * (lat2 - lat1));
-        Some(w11 * q11 + w12 * q12 + w21 * q21 + w22 * q22)
+        w11 * q11 + w12 * q12 + w21 * q21 + w22 * q22
     }
 
     /// Compute numerical gradient of the map at a given point (lat, lon)
@@ -572,7 +571,7 @@ impl MeasurementModel for GravityMeasurement {
     fn get_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
         // Return the observed gravity anomaly as the measurement vector.
         // Use provided state if available (for per-particle updates), otherwise fallback to stored state.
-        let anomaly = if let Some((lat, alt, v_n, v_e)) = self.extract_state_inputs(state) {
+        let anomaly = if let Some((lat, alt, v_n, v_e)) = Self::extract_state_inputs(state) {
             gravity_anomaly(&lat, &alt, &v_n, &v_e, &self.gravity_observed)
         } else {
             self.get_anomaly()
@@ -608,7 +607,7 @@ impl MeasurementModel for GravityMeasurement {
 }
 
 impl GravityMeasurement {
-    fn extract_state_inputs(&self, state: &DVector<f64>) -> Option<(f64, f64, f64, f64)> {
+    fn extract_state_inputs(state: &DVector<f64>) -> Option<(f64, f64, f64, f64)> {
         if state.len() >= 5
             && state[0].is_finite()
             && state[2].is_finite()
@@ -684,7 +683,7 @@ impl GeophysicalAnomalyMeasurementModel for MagneticAnomalyMeasurement {
             Date::from_ordinal_date(self.year, self.day).unwrap(),
         )
         .expect("Failed to create GeomagneticField");
-        self.mag_obs - magnetic_field.f().value as f64
+        self.mag_obs - f64::from(magnetic_field.f().value)
     }
     fn set_state(&mut self, state: &StrapdownState) {
         self.latitude = state.latitude.to_degrees();
@@ -705,16 +704,12 @@ impl MeasurementModel for MagneticAnomalyMeasurement {
     fn get_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
         // Return the observed magnetic anomaly as the measurement vector.
         // Use provided state if available (for per-particle updates), otherwise fallback to stored state.
-        let anomaly = if let Some((lat_deg, lon_deg, alt)) = self.extract_state_inputs(state) {
+        let anomaly = if let Some((lat_deg, lon_deg, alt)) = Self::extract_state_inputs(state) {
             // Clamp altitude to valid WMM range to prevent errors
             let alt_clamped = alt.clamp(WMM_MIN_ALTITUDE_M, WMM_MAX_ALTITUDE_M);
 
             if (alt - alt_clamped).abs() > 1.0 {
-                log::warn!(
-                    "Altitude {} m out of WMM bounds, clamped to {} m",
-                    alt,
-                    alt_clamped
-                );
+                log::warn!("Altitude {alt} m out of WMM bounds, clamped to {alt_clamped} m");
             }
 
             let magnetic_field = GeomagneticField::new(
@@ -725,11 +720,10 @@ impl MeasurementModel for MagneticAnomalyMeasurement {
             )
             .unwrap_or_else(|e| {
                 panic!(
-                    "Failed to create GeomagneticField at lat={}, lon={}, alt={} (clamped: {}): {:?}",
-                    lat_deg, lon_deg, alt, alt_clamped, e
+                    "Failed to create GeomagneticField at lat={lat_deg}, lon={lon_deg}, alt={alt} (clamped: {alt_clamped}): {e:?}"
                 )
             });
-            self.mag_obs - magnetic_field.f().value as f64
+            self.mag_obs - f64::from(magnetic_field.f().value)
         } else {
             self.get_anomaly()
         };
@@ -764,7 +758,7 @@ impl MeasurementModel for MagneticAnomalyMeasurement {
 }
 
 impl MagneticAnomalyMeasurement {
-    fn extract_state_inputs(&self, state: &DVector<f64>) -> Option<(f64, f64, f64)> {
+    fn extract_state_inputs(state: &DVector<f64>) -> Option<(f64, f64, f64)> {
         if state.len() >= 3 && state[0].is_finite() && state[1].is_finite() && state[2].is_finite()
         {
             Some((state[0].to_degrees(), state[1].to_degrees(), state[2]))
@@ -897,7 +891,7 @@ pub fn build_event_stream(
     geo_frequency_s: Option<f64>,
 ) -> EventStream {
     let start_time = records[0].time;
-    let bias_count = gravity_map.is_some() as usize + magnetic_map.is_some() as usize;
+    let bias_count = usize::from(gravity_map.is_some()) + usize::from(magnetic_map.is_some());
     let records_with_elapsed: Vec<(f64, &TestDataRecord)> = records
         .iter()
         .map(|r| ((r.time - start_time).num_milliseconds() as f64 / 1000.0, r))
@@ -1255,7 +1249,7 @@ mod tests {
     fn test_gravity_anomaly_measurement() {
         let map = Rc::new(create_test_gravity_map());
         let measurement = GravityMeasurement {
-            map: map.clone(),
+            map,
             noise_std: 100.0,
             gravity_observed: GP,
             latitude: 0.0,
@@ -1283,7 +1277,7 @@ mod tests {
     fn test_magnetic_anomaly_measurement() {
         let map = Rc::new(create_test_magnetic_map());
         let measurement = MagneticAnomalyMeasurement {
-            map: map.clone(),
+            map,
             noise_std: 100.0,
             mag_obs: (20000.0_f64.powi(2) + 5000.0_f64.powi(2) + 45000.0_f64.powi(2)).sqrt(),
             latitude: 40.5,
@@ -1313,7 +1307,7 @@ mod tests {
     fn test_measurement_sigma_points() {
         let map = Rc::new(create_test_gravity_map());
         let measurement = GravityMeasurement {
-            map: map.clone(),
+            map,
             noise_std: 100.0,
             gravity_observed: 9.8,
             latitude: f64::NAN,
@@ -1389,20 +1383,20 @@ mod tests {
         assert!(!event_stream.events.is_empty());
 
         // Should have IMU events
-        let imu_events: Vec<_> = event_stream
-            .events
-            .iter()
-            .filter(|e| matches!(e, Event::Imu { .. }))
-            .collect();
-        assert!(!imu_events.is_empty());
+        assert!(
+            event_stream
+                .events
+                .iter()
+                .any(|e| matches!(e, Event::Imu { .. }))
+        );
 
         // Should have measurement events (GNSS + geophysical)
-        let measurement_events: Vec<_> = event_stream
-            .events
-            .iter()
-            .filter(|e| matches!(e, Event::Measurement { .. }))
-            .collect();
-        assert!(!measurement_events.is_empty());
+        assert!(
+            event_stream
+                .events
+                .iter()
+                .any(|e| matches!(e, Event::Measurement { .. }))
+        );
     }
 
     #[test]
@@ -1496,7 +1490,7 @@ mod tests {
         };
 
         let measurement2 = GravityMeasurement {
-            map: map.clone(),
+            map,
             noise_std: 150.0,
             gravity_observed: 9.8,
             latitude: f64::NAN,
@@ -1576,7 +1570,7 @@ mod tests {
         );
 
         // Count gravity measurement events
-        let gravity_events: Vec<_> = event_stream
+        let gravity_events = event_stream
             .events
             .iter()
             .filter(|event| {
@@ -1586,7 +1580,7 @@ mod tests {
                     false
                 }
             })
-            .collect();
+            .count();
 
         // Test with no frequency limit (should have more measurements)
         let event_stream_no_limit = build_event_stream(
@@ -1599,7 +1593,7 @@ mod tests {
             None,
         );
 
-        let gravity_events_no_limit: Vec<_> = event_stream_no_limit
+        let gravity_events_no_limit = event_stream_no_limit
             .events
             .iter()
             .filter(|event| {
@@ -1609,10 +1603,10 @@ mod tests {
                     false
                 }
             })
-            .collect();
+            .count();
 
         // With frequency limit, we should have fewer or equal number of measurements
-        assert!(gravity_events.len() <= gravity_events_no_limit.len());
+        assert!(gravity_events <= gravity_events_no_limit);
     }
 
     #[test]
@@ -1640,7 +1634,7 @@ mod tests {
     fn test_gravity_measurement_jacobian() {
         let map = Rc::new(create_test_gravity_map());
         let measurement = GravityMeasurement {
-            map: map.clone(),
+            map,
             noise_std: 100.0,
             gravity_observed: 9.8,
             latitude: 41.0_f64.to_radians(),
@@ -1680,7 +1674,7 @@ mod tests {
     fn test_magnetic_measurement_jacobian() {
         let map = Rc::new(create_test_magnetic_map());
         let measurement = MagneticAnomalyMeasurement {
-            map: map.clone(),
+            map,
             noise_std: 100.0,
             mag_obs: 48000.0,
             latitude: 41.0,
@@ -1723,7 +1717,7 @@ mod tests {
         let map = Rc::new(create_test_gravity_map());
         let measurement: Box<dyn strapdown::measurements::MeasurementModel> =
             Box::new(GravityMeasurement {
-                map: map.clone(),
+                map,
                 noise_std: 100.0,
                 gravity_observed: 9.8,
                 latitude: 41.0_f64.to_radians(),
@@ -1757,7 +1751,7 @@ mod tests {
         let map = Rc::new(create_test_magnetic_map());
         let measurement: Box<dyn strapdown::measurements::MeasurementModel> =
             Box::new(MagneticAnomalyMeasurement {
-                map: map.clone(),
+                map,
                 noise_std: 100.0,
                 mag_obs: 48000.0,
                 latitude: 41.0,

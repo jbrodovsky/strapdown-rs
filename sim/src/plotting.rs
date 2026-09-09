@@ -18,7 +18,7 @@ use strapdown::sim::{NavigationResult, TestDataRecord};
 ///
 /// # Returns
 /// Distance in meters
-pub fn haversine_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+pub(crate) fn haversine_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     const EARTH_RADIUS_M: f64 = 6_371_000.0;
 
     let lat1_rad = lat1.to_radians();
@@ -48,7 +48,7 @@ pub fn haversine_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
 ///
 /// # Returns
 /// Result indicating success or error
-pub fn plot_performance(
+pub(crate) fn plot_performance(
     nav_results: &[NavigationResult],
     gps_records: &[TestDataRecord],
     output_path: &Path,

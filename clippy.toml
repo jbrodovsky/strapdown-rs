@@ -1,0 +1,21 @@
+# Clippy configuration (queue 100, issue #253).
+#
+# The zero-panic policy of #254 targets *library* code. Tests legitimately
+# unwrap and panic -- that is how they assert -- so exempt them here rather
+# than sprinkling `#[allow]` through every test module. This is what keeps the
+# `unwrap_used`/`expect_used`/`panic` warn counts pointed at the 49 real call
+# sites in library code instead of the ~130 in tests.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
+# Match the documented MSRV so clippy does not suggest APIs newer than the
+# `rust-version` pin in Cargo.toml and the `rust` pin in pixi.toml.
+msrv = "1.91"
+
+# Filter and mechanization constructors legitimately take a full set of
+# independent physical parameters (initial state, covariance, process noise,
+# lever arm, frame flags). The default threshold of 7 flags them without
+# pointing at anything that would be clearer as a struct today; #262's
+# `InsEngine` builder is the actual fix, so this stays relaxed until then.
+too-many-arguments-threshold = 10

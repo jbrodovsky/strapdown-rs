@@ -105,6 +105,10 @@ const ESKF_INITIAL_COVARIANCE: [f64; 15] = [
     0.008, 0.008, 0.008, // gyroscope bias covariance (rad/s) - 8x default
 ];
 /// Error statistics for a navigation solution
+#[allow(
+    clippy::struct_field_names,
+    reason = "every field is an error metric; dropping the `_error` suffix would make `mean_horizontal` and `rms_altitude` ambiguous against the non-error quantities in scope"
+)]
 #[derive(Debug, Clone)]
 struct ErrorStats {
     /// Mean horizontal position error (meters)
@@ -137,7 +141,7 @@ struct ErrorStats {
 
 impl ErrorStats {
     /// Create a new ErrorStats with all zeros
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             mean_horizontal_error: 0.0,
             min_horizontal_error: 0.0,
@@ -212,16 +216,13 @@ fn compute_error_metrics(results: &[NavigationResult], records: &[TestDataRecord
             );
 
             if i < 3 {
-                println!("Record {}: horizontal_error={:.2}m", i, horizontal_error);
+                println!("Record {i}: horizontal_error={horizontal_error:.2}m");
             }
 
             // Skip invalid errors (NaN or Inf)
             if !horizontal_error.is_finite() {
                 if i < 10 || horizontal_errors.len() < 10 {
-                    println!(
-                        "WARNING: Skipping non-finite horizontal_error at index {}",
-                        i
-                    );
+                    println!("WARNING: Skipping non-finite horizontal_error at index {i}");
                 }
                 continue;
             }
@@ -271,11 +272,11 @@ fn compute_error_metrics(results: &[NavigationResult], records: &[TestDataRecord
             horizontal_errors.iter().sum::<f64>() / horizontal_errors.len() as f64;
         stats.min_horizontal_error = horizontal_errors
             .iter()
-            .cloned()
+            .copied()
             .fold(f64::INFINITY, f64::min);
         stats.max_horizontal_error = horizontal_errors
             .iter()
-            .cloned()
+            .copied()
             .fold(f64::NEG_INFINITY, f64::max);
         stats.rms_horizontal_error = (horizontal_errors.iter().map(|e| e.powi(2)).sum::<f64>()
             / horizontal_errors.len() as f64)
@@ -286,7 +287,7 @@ fn compute_error_metrics(results: &[NavigationResult], records: &[TestDataRecord
         sorted_horizontal.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let mid = sorted_horizontal.len() / 2;
         stats.median_horizontal_error = if sorted_horizontal.len() % 2 == 0 {
-            (sorted_horizontal[mid - 1] + sorted_horizontal[mid]) / 2.0
+            f64::midpoint(sorted_horizontal[mid - 1], sorted_horizontal[mid])
         } else {
             sorted_horizontal[mid]
         };
@@ -297,11 +298,11 @@ fn compute_error_metrics(results: &[NavigationResult], records: &[TestDataRecord
             altitude_errors.iter().sum::<f64>() / altitude_errors.len() as f64;
         stats.min_altitude_error = altitude_errors
             .iter()
-            .cloned()
+            .copied()
             .fold(f64::INFINITY, f64::min);
         stats.max_altitude_error = altitude_errors
             .iter()
-            .cloned()
+            .copied()
             .fold(f64::NEG_INFINITY, f64::max);
         stats.rms_altitude_error = (altitude_errors.iter().map(|e| e.powi(2)).sum::<f64>()
             / altitude_errors.len() as f64)
@@ -312,7 +313,7 @@ fn compute_error_metrics(results: &[NavigationResult], records: &[TestDataRecord
         sorted_altitude.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let mid = sorted_altitude.len() / 2;
         stats.median_altitude_error = if sorted_altitude.len() % 2 == 0 {
-            (sorted_altitude[mid - 1] + sorted_altitude[mid]) / 2.0
+            f64::midpoint(sorted_altitude[mid - 1], sorted_altitude[mid])
         } else {
             sorted_altitude[mid]
         };
@@ -448,8 +449,7 @@ fn run_rbpf_with_cfg(
     let stream_events_len = stream.events.len();
     for (i, event) in stream.events.into_iter().enumerate() {
         let elapsed_s = match &event {
-            Event::Imu { elapsed_s, .. } => *elapsed_s,
-            Event::Measurement { elapsed_s, .. } => *elapsed_s,
+            Event::Imu { elapsed_s, .. } | Event::Measurement { elapsed_s, .. } => *elapsed_s,
         };
         let ts = start_time + chrono::Duration::milliseconds((elapsed_s * 1000.0).round() as i64);
 
@@ -1840,8 +1840,8 @@ fn test_filter_comparison() {
     let mut ekf = ExtendedKalmanFilter::new(
         initial_state.clone(),
         vec![0.0; 6],
-        initial_covariance.clone(),
-        process_noise.clone(),
+        initial_covariance,
+        process_noise,
         true,
     );
     let stream_ekf = build_event_stream(&records, &cfg);
@@ -2089,7 +2089,7 @@ fn test_filter_output_length_matches_input() {
     );
 
     let input_length = records.len();
-    println!("Testing with {} input records", input_length);
+    println!("Testing with {input_length} input records");
 
     // Test dead reckoning
     let dr_results = dead_reckoning(&records);
@@ -2144,10 +2144,10 @@ fn test_filter_output_length_matches_input() {
 
     // Test EKF
     let mut ekf = ExtendedKalmanFilter::new(
-        initial_state.clone(),
-        imu_biases.clone(),
-        initial_covariance.clone(),
-        process_noise.clone(),
+        initial_state,
+        imu_biases,
+        initial_covariance,
+        process_noise,
         true,
     );
 
@@ -2171,8 +2171,5 @@ fn test_filter_output_length_matches_input() {
     // ESKF length coverage lives in test_eskf_output_length_matches_input,
     // re-enabled when the vertical-channel divergence fix (#286) landed.
 
-    println!(
-        "\n✅ All filters produce output length matching input length: {}",
-        input_length
-    );
+    println!("\n✅ All filters produce output length matching input length: {input_length}");
 }

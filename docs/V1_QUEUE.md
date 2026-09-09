@@ -33,7 +33,7 @@ git worktree.
 
 | # | Branch | Issues | Summary | Merge point |
 |---|---|---|---|---|
-| 100 | [`v1/p-lint-config`](queue/p-lint-config.md) | #253, #263 | Lint config (warn-level) + feature gating | before everything |
+| 100 | [`v1/p-lint-config`](queue/p-lint-config.md) | #253, #263 | Lint config (**enforced**, not warn-level) + feature gating | before everything |
 | 101 | [`v1/p-imu-quality-cov`](queue/p-imu-quality-cov.md) | #257 | auto_covariance from IMUQuality | before PR 1 |
 | 102 | [`v1/p-calibration`](queue/p-calibration.md) | #256 | ImuCalibration | rebase onto PR 2 for the final signature |
 | 103 | [`v1/p-alignment`](queue/p-alignment.md) | #257 | Coarse alignment and initialisation | rebase onto PR 2 |
@@ -43,7 +43,7 @@ git worktree.
 
 | Issue | First | Then | Why |
 |---|---|---|---|
-| #253 | `v1/p-lint-config` (warn) | `v1/09-release` (deny) | Denying `unwrap_used` before #254 removes the unwraps forces `#[allow]` scaffolding that #254 then deletes. Pedantic's mechanical churn touches nearly every hunk PRs 2-9 also touch, so the deny flip lands when nothing is stacked above it. |
+| #253 | `v1/p-lint-config` (**all but the zero-panic lints**) | `v1/02-filter-api` (`unwrap_used`, `expect_used`, `panic`, `missing_errors_doc`, `missing_panics_doc`, `needless_pass_by_value`) | Superseded plan: the pedantic/nursery backlog was cleared in queue 100 rather than deferred to 9, so the strict gate is live for PRs 2-9 instead of arriving after them. The lints that remain off are the ones that need `StrapdownError` to be satisfiable at all, so they switch on in queue 2 alongside it -- not in queue 9. |
 | #255 | `v1/02-filter-api` (Delta-v/Delta-theta) | `v1/03-ned-default` (frame) | Two orthogonal risks. Separating them means an integration-metric shift is attributable to one change. |
 | #257 | `v1/p-imu-quality-cov` (`auto_covariance`) | `v1/p-alignment` (rest) | `auto_covariance` is needed to retune ESKF covariance during the #266 fix, so it lands before PR 1. |
 | #265 | `v1/p-release-automation` (CI) | `v1/09-release` (docs) | The CI half depends on nothing and can land at any time. |
@@ -74,8 +74,12 @@ Note that GitHub's rebase-merge **rewrites commit SHAs** even when the branch is
 fast-forward, which is why step 1 records the old tip and step 4 needs `--onto` rather than a
 plain `git rebase main`.
 
+Queue 100 cleared the pedantic/nursery backlog, so `cargo clippy --fix` no
+longer has tree-wide work to do; do not run it speculatively regardless, and
+note that its `use super::*` expansion is not feature-aware (it broke
+`--no-default-features` once already -- see the queue 100 outcome).
+
 Spine PRs are **rebase-merged, not squashed** -- squashing rewrites the base and forces a manual
 `--onto` on every subsequent rebase. Keep `cargo fmt` output in its own commit per branch; on a
-rebase conflict, `--skip` it and regenerate rather than resolving formatting by hand. Do not run
-`cargo clippy --fix` tree-wide before queue position 9.
+rebase conflict, `--skip` it and regenerate rather than resolving formatting by hand.
 

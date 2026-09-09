@@ -47,3 +47,109 @@ authors = ["James Brodovsky"]
 description = "A Rust library for strapdown inertial navigation systems"
 language = "en"
 src = "book/src"
+
+# --- Lints (queue 100, issue #253) -------------------------------------------
+#
+# These are enforced, not advisory: the blocking CI gate and `pixi run lint`
+# both run `cargo clippy ... -- -D warnings`, which promotes every warn below
+# to an error. The v1.0 queue originally deferred this to position 9 to avoid
+# churn colliding with positions 2-8, but enforcing now is the deliberate
+# choice -- the point of the strict groups is to catch defects while the
+# filter code is still being written, not after.
+#
+# Levels are `warn` rather than `deny` so that a local `cargo clippy` (no
+# `-D warnings`) still reports rather than halts, which keeps the inner
+# development loop usable. CI is what makes them binding.
+#
+# Anything allowed below is allowed *here*, once, with a reason -- never with a
+# scattered `#[allow]` at the call site.
+[workspace.lints.rust]
+rust_2018_idioms = { level = "warn", priority = -1 }
+unreachable_pub = "warn"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+
+# #254's zero-panic policy. These are the 48 library-code call sites that
+# issue #254 exists to remove, and they cannot go green here: several are real
+# panic paths that need somewhere to return an error to. `geonav/src/lib.rs:382`
+# panics on any coordinate outside the map bounds; `get_values(..).unwrap()`
+# panics on a malformed NetCDF file. Turning these into `Result` *is* queue
+# position 2, so they are enabled there, in the same commit as `StrapdownError`.
+# Left at `allow` here so the gate stays honest rather than green-by-exception.
+unwrap_used = "allow"     # -> queue 2 (#254)
+expect_used = "allow"     # -> queue 2 (#254)
+panic = "allow"           # -> queue 2 (#254)
+# Same dependency: `# Errors`/`# Panics` sections describe error types that
+# #254 replaces wholesale. Written there, against the final signatures.
+missing_errors_doc = "allow"   # -> queue 2 (#254)
+missing_panics_doc = "allow"   # -> queue 2 (#254)
+
+# Relaxed on purpose, with reasons.
+#
+# `similar_names` (60 hits) contradicts the documented naming convention: the
+# mechanization equations are transcribed from Groves and use deliberately
+# parallel names (`r_n`/`r_e`, `lat_0`/`lat_1`, `cos_lat0`/`cos_lat1`).
+# Renaming them to satisfy the lint would make them harder to check against
+# the reference, which is the opposite of what CLAUDE.md asks for.
+similar_names = "allow"
+# `doc_markdown` (197 hits) and `must_use_candidate` (88) are pure formatting
+# and signature noise with no defect signal; at warn they bury the ~470
+# warnings that do carry meaning.
+doc_markdown = "allow"
+must_use_candidate = "allow"
+# The crate is named for its domain; `strapdown::StrapdownState` is intentional.
+module_name_repetitions = "allow"
+# `suboptimal_flops` (81 hits) rewrites `a - b * c` into `b.mul_add(-c, a)`.
+# Rejected on three counts, having applied it and read the result:
+#   1. `mul_add` is a *fused* operation -- one rounding where the expression had
+#      two. That is a real change to floating-point results in the WGS84 radii,
+#      the Somigliana gravity model, the quaternion update and the UKF sigma
+#      weights. This crate has already lost days to a vertical channel that
+#      diverged from a 1e-14 perturbation (#266, #286); trading exactness for an
+#      unmeasured speculative speedup in that code is a bad bargain.
+#   2. It destroys the line-by-line correspondence with the Groves equations
+#      that CLAUDE.md asks the mechanization to preserve. Compare
+#      `(1.0 - e2 * sin_lat_sq).sqrt()` with
+#      `e2.mul_add(-sin_lat_sq, 1.0).sqrt()` against the textbook.
+#   3. Applied to haversine it emitted `(dlat/2.0).sin().mul_add((dlat/2.0).sin(), ..)`,
+#      recomputing the sine rather than reusing it.
+# `imprecise_flops` stays on: `ln_1p`/`exp_m1` are genuine accuracy wins.
+suboptimal_flops = "allow"
+# Numeric domain. `usize as f64` for particle counts and sample indices, and
+# `f64 as usize` for grid lookups, are the arithmetic this crate is made of;
+# every one is deliberate and bounds-checked by construction. Denying them
+# would mean ~70 call-site `#[allow]`s, which is worse than one decision here.
+cast_precision_loss = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+# WGS84 and Somigliana constants are written exactly as published
+# (6378137.0, 7.292115e-5). Digit grouping them would obscure the match.
+unreadable_literal = "allow"
+# All 7 hits compare exactly-representable values in tests (sign flips,
+# `0.5 * 10.0`), checked individually. `assert_approx_eq` is used where the
+# comparison is actually approximate, per CLAUDE.md.
+float_cmp = "allow"
+# Fires on `option_if_let_else` rewrites that turn a readable `if let` into a
+# nested `map_or_else` closure; a readability regression in the filter code.
+option_if_let_else = "allow"
+# 14 hits, all in the mechanization and CLI dispatch. Real signal, but the
+# decomposition belongs with #262's `InsEngine` extraction rather than as
+# drive-by splits that would conflict with every spine PR above this one.
+too_many_lines = "allow"
+# Nursery lint that fires on `pub(crate)` inside an already-private module and
+# asks for plain `pub`. In `strapdown-sim` (a binary crate) `pub(crate)` is the
+# more informative spelling -- it says "crate-internal by intent", not "public
+# by accident" -- so this one is declined on readability grounds.
+redundant_pub_crate = "allow"
+# All 12 hits are on public constructors -- `UnscentedKalmanFilter::new`,
+# `ErrorStateKalmanFilter::new`, `initialize_ukf`, `build_event_stream` -- that
+# take `InitialState` and `Vec<f64>` by value. Switching them to borrows is a
+# breaking signature change across all three filter impls, ~14 doc examples and
+# the unit tests, which is precisely the churn queue position 2 (#254/#255) is
+# scheduled to do in one pass. Fixed there, against the final signatures.
+# (The `Rc<GeoMap>` parameters in geonav are by-value on purpose: cloning an
+# `Rc` is a refcount bump and the callee stores it.)
+needless_pass_by_value = "allow"   # -> queue 2 (#254/#255)

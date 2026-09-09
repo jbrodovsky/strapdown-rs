@@ -34,15 +34,16 @@ use nalgebra::linalg::{Cholesky, SymmetricEigen};
 /// * `None` if the matrix is not square or another fundamental issue prevents computation (though
 ///   this implementation tries to be robust for positive semi-definite cases).
 pub fn matrix_square_root(matrix: &DMatrix<f64>) -> DMatrix<f64> {
-    assert!(
-        matrix.is_square(),
-        "matrix_square_root: matrix must be square"
-    );
     // Tunable guards (conservative defaults for double precision INS scales)
     const INITIAL_JITTER: f64 = 1e-12;
     const MAX_JITTER: f64 = 1e-6;
     const MAX_TRIES: usize = 6;
     const EIGEN_FLOOR: f64 = 1e-12;
+
+    assert!(
+        matrix.is_square(),
+        "matrix_square_root: matrix must be square"
+    );
     // 1) Symmetrize to kill round-off asymmetry
     let p = symmetrize(matrix);
     // 2) Cholesky (fast path)
@@ -124,7 +125,7 @@ fn evd_symmetric_sqrt_with_floor(p: &DMatrix<f64>, floor: f64) -> DMatrix<f64> {
         }
     }
 
-    let sqrt_vals = lambdas.map(|l| l.sqrt());
+    let sqrt_vals = lambdas.map(f64::sqrt);
     let sigma_half = DMatrix::<f64>::from_diagonal(&sqrt_vals);
     &u * sigma_half * u.transpose()
 }
@@ -284,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "matrix_square_root: matrix must be square")]
     fn t_public_non_square_panics() {
         let m = DMatrix::<f64>::zeros(3, 2);
         let _ = matrix_square_root(&m);
