@@ -24,7 +24,7 @@
 
 use std::any::Any;
 use std::fmt::{Debug, Display};
-use std::path::PathBuf;
+use std::path::Path;
 use std::rc::Rc;
 
 use anyhow::Result;
@@ -268,8 +268,8 @@ impl GeoMap {
     /// # Example
     /// ```ignore
     /// use geonav::{GeoMap, ReliefResolution, GeophysicalMeasurementType};
-    /// use std::path::PathBuf;
-    /// let map = GeoMap::load_geomap(PathBuf::from("path/to/file.nc"), GeophysicalMeasurementType::Relief(ReliefResolution::OneDegree));
+    /// use std::path::{Path, PathBuf};
+    /// let map = GeoMap::load_geomap(&PathBuf::from("path/to/file.nc"), GeophysicalMeasurementType::Relief(ReliefResolution::OneDegree));
     /// ```
     /// # Errors
     /// [`StrapdownError::MapLoad`] if the file cannot be opened, does not carry the `lat`,
@@ -280,15 +280,15 @@ impl GeoMap {
     /// instead, so the `Err` variant was unreachable. The final shape check is new: a
     /// transposed or multi-band grid used to panic inside `DMatrix::from_row_slice`.
     pub fn load_geomap(
-        filename: PathBuf,
+        filename: &Path,
         map_type: GeophysicalMeasurementType,
-    ) -> Result<GeoMap, StrapdownError> {
+    ) -> Result<Self, StrapdownError> {
         let map_err = |detail: String| StrapdownError::MapLoad {
-            path: filename.clone(),
+            path: filename.to_path_buf(),
             detail,
         };
         // Open the netcdf file
-        let file = netcdf::open(&filename)
+        let file = netcdf::open(filename)
             .map_err(|e| map_err(format!("could not open the NetCDF file: {e}")))?;
         // Get the lat/lon variables
         let lats = file
@@ -379,9 +379,9 @@ impl GeoMap {
     /// # Example
     /// ```ignore
     /// use geonav::{GeoMap, GeophysicalMeasurementType, ReliefResolution};
-    /// use std::path::PathBuf;
+    /// use std::path::{Path, PathBuf};
     ///
-    /// let map = GeoMap::load_geomap(PathBuf::from("path/to/file.nc"), GeophysicalMeasurementType::Relief(ReliefResolution::OneDegree));
+    /// let map = GeoMap::load_geomap(&PathBuf::from("path/to/file.nc"), GeophysicalMeasurementType::Relief(ReliefResolution::OneDegree));
     /// let value = map.get_point(&1.5, &1.5);
     /// ```
     ///
@@ -823,7 +823,7 @@ impl GeophysicalAnomalyMeasurementModel for MagneticAnomalyMeasurement {
                 self.latitude, self.longitude
             ),
         })?;
-        Ok(self.mag_obs - magnetic_field.f().value as f64)
+        Ok(self.mag_obs - f64::from(magnetic_field.f().value))
     }
     fn set_state(&mut self, state: &StrapdownState) {
         self.latitude = state.latitude.to_degrees();
@@ -870,7 +870,7 @@ impl MeasurementModel for MagneticAnomalyMeasurement {
                     "unavailable at lat={lat_deg}, lon={lon_deg}, alt={alt} (clamped {alt_clamped}): {e:?}"
                 ),
             })?;
-            self.mag_obs - magnetic_field.f().value as f64
+            self.mag_obs - f64::from(magnetic_field.f().value)
         } else {
             self.get_anomaly()?
         };
@@ -1037,6 +1037,12 @@ impl MeasurementModel for CombinedGeophysicalMeasurement {
 /// * `magnetic_map` - Optional magnetic map for measurements
 /// * `magnetic_noise_std` - Standard deviation for magnetic measurement noise (if magnetic_map is Some)
 /// * `geo_frequency_s` - Frequency in seconds for geophysical measurements (None for every available measurement)
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the `Rc<GeoMap>` handles are stored by the measurements this builds; cloning an \
+              `Rc` is a refcount bump, so taking them by value is cheaper than borrowing and \
+              cloning internally"
+)]
 pub fn build_event_stream(
     records: &[TestDataRecord],
     cfg: &GnssDegradationConfig,

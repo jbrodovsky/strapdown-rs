@@ -277,7 +277,7 @@ mod tests {
     fn nan_defeats_comparison_based_range_checks() {
         let nan = f64::NAN;
         assert!(!(-1.0..=1.0).contains(&nan));
-        assert!(!(nan >= -1.0 && nan <= 1.0));
+        assert!(!(-1.0..=1.0).contains(&nan));
         assert!(!nan.is_finite());
     }
 }

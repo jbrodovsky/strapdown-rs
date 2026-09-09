@@ -36,7 +36,17 @@ use crate::StrapdownError;
 /// # Errors
 /// [`StrapdownError::NotSquare`] if `matrix` is not square. The documented contract always
 /// said so; until the zero-panic work of #254 the signature simply could not express it.
+///
+/// # Panics
+/// Does not panic. The eigenvalue fallback floors negative eigenvalues rather than failing,
+/// so every input that is square yields a result.
 pub fn matrix_square_root(matrix: &DMatrix<f64>) -> Result<DMatrix<f64>, StrapdownError> {
+    // Tunable guards (conservative defaults for double precision INS scales)
+    const INITIAL_JITTER: f64 = 1e-12;
+    const MAX_JITTER: f64 = 1e-6;
+    const MAX_TRIES: usize = 6;
+    const EIGEN_FLOOR: f64 = 1e-12;
+
     if !matrix.is_square() {
         return Err(StrapdownError::NotSquare {
             what: "matrix_square_root",
@@ -44,11 +54,6 @@ pub fn matrix_square_root(matrix: &DMatrix<f64>) -> Result<DMatrix<f64>, Strapdo
             cols: matrix.ncols(),
         });
     }
-    // Tunable guards (conservative defaults for double precision INS scales)
-    const INITIAL_JITTER: f64 = 1e-12;
-    const MAX_JITTER: f64 = 1e-6;
-    const MAX_TRIES: usize = 6;
-    const EIGEN_FLOOR: f64 = 1e-12;
 
     assert!(
         matrix.is_square(),
@@ -332,11 +337,23 @@ mod tests {
         assert!(approx_eq(&back, &p_sym, 1e-8));
     }
 
+    /// Was `t_public_non_square_panics`. The precondition the doc always described is now
+    /// returned rather than asserted (#254).
     #[test]
-    #[should_panic(expected = "matrix_square_root: matrix must be square")]
-    fn t_public_non_square_panics() {
+    fn t_public_non_square_errors() {
         let m = DMatrix::<f64>::zeros(3, 2);
-        let _ = matrix_square_root(&m).unwrap();
+        let got = matrix_square_root(&m);
+        assert!(
+            matches!(
+                got,
+                Err(StrapdownError::NotSquare {
+                    rows: 3,
+                    cols: 2,
+                    ..
+                })
+            ),
+            "expected NotSquare{{rows: 3, cols: 2}}, got {got:?}"
+        );
     }
 
     #[test]

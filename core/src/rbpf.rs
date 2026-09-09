@@ -497,7 +497,7 @@ impl RaoBlackwellizedParticleFilter {
         }
 
         if self.config.recenter_after_update {
-            self.recenter_errors();
+            self.recenter_errors()?;
         }
 
         self.maybe_resample();
@@ -547,7 +547,7 @@ impl RaoBlackwellizedParticleFilter {
         }
 
         if self.config.recenter_after_update {
-            self.recenter_errors();
+            self.recenter_errors()?;
         }
 
         self.maybe_resample();
@@ -611,7 +611,9 @@ impl RaoBlackwellizedParticleFilter {
         DVector::from_vec(state)
     }
 
-    fn recenter_errors(&mut self) {
+    /// # Errors
+    /// Propagated from [`crate::linearize::apply_eskf_correction`].
+    fn recenter_errors(&mut self) -> Result<(), StrapdownError> {
         let mut mean_pos = Vector3::zeros();
         let mut mean_lin = DVector::<f64>::zeros(self.linear_state_dim());
         for particle in &self.particles {
@@ -646,7 +648,7 @@ impl RaoBlackwellizedParticleFilter {
                 0.0,
             ])
         };
-        crate::linearize::apply_eskf_correction(&mut self.nominal, &delta_x);
+        crate::linearize::apply_eskf_correction(&mut self.nominal, &delta_x)?;
 
         for particle in &mut self.particles {
             particle.position_error -= mean_pos;
@@ -656,6 +658,7 @@ impl RaoBlackwellizedParticleFilter {
         }
 
         self.linear_update_applied = false;
+        Ok(())
     }
 
     fn maybe_resample(&mut self) {
@@ -730,8 +733,8 @@ mod tests {
         let mut rbpf = RaoBlackwellizedParticleFilter::new(nominal, config).unwrap();
 
         for (imu, gps) in imu_data.iter().zip(gps_measurements.iter()) {
-            rbpf.predict(imu, dt);
-            rbpf.update(gps);
+            rbpf.predict(imu, dt).unwrap();
+            rbpf.update(gps).unwrap();
         }
 
         let weight_sum: f64 = rbpf.particles.iter().map(|p| p.weight).sum();
@@ -799,7 +802,7 @@ mod tests {
             horizontal_noise_std: 5.0,
             vertical_noise_std: 2.0,
         };
-        rbpf.update(&meas);
+        rbpf.update(&meas).unwrap();
 
         let weight_sum: f64 = rbpf.particles.iter().map(|p| p.weight).sum();
         assert_approx_eq!(weight_sum, 1.0, 1e-9);
@@ -1023,10 +1026,10 @@ mod tests {
             day_of_year: 1,
         };
         for _ in 0..50 {
-            rbpf.predict(&imu, 0.1);
-            rbpf.update(&gps);
-            rbpf.update(&baro);
-            rbpf.update(&mag);
+            rbpf.predict(&imu, 0.1).unwrap();
+            rbpf.update(&gps).unwrap();
+            rbpf.update(&baro).unwrap();
+            rbpf.update(&mag).unwrap();
         }
         let reference = rbpf.particles[0].linear_cov.clone();
         for (i, particle) in rbpf.particles.iter().enumerate().skip(1) {

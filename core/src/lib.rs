@@ -387,7 +387,7 @@ impl TryFrom<Vec<f64>> for IMUData {
                 got: vec.len(),
             });
         }
-        Ok(IMUData {
+        Ok(Self {
             accel: Vector3::new(vec[0], vec[1], vec[2]),
             gyro: Vector3::new(vec[3], vec[4], vec[5]),
         })
@@ -445,7 +445,7 @@ impl TryFrom<Vec<f64>> for VelocityData {
                 got: data.len(),
             });
         }
-        Ok(VelocityData {
+        Ok(Self {
             linear: Vector3::new(data[0], data[1], data[2]),
             angular: Vector3::new(data[3], data[4], data[5]),
         })
@@ -580,6 +580,12 @@ impl StrapdownState {
     /// * `velocity_down` - Down velocity in m/s.
     /// * `attitude` - Rotation3<f64> attitude matrix.
     /// * `in_degrees` - If true, angles are provided in degrees and will be converted to radians.
+    ///
+    /// # Errors
+    /// [`StrapdownError::OutOfRange`] if latitude, longitude or altitude is outside the range
+    /// the local-level mechanization is valid over. Note the latitude bound is +/-pi/2, not
+    /// +/-pi: anything past the pole is a sign-convention or column-order mistake in the
+    /// input rather than a position.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         latitude: f64,
@@ -591,7 +597,7 @@ impl StrapdownState {
         attitude: Rotation3<f64>,
         in_degrees: bool,
         is_enu: Option<bool>,
-    ) -> Result<StrapdownState, StrapdownError> {
+    ) -> Result<Self, StrapdownError> {
         let latitude = if in_degrees {
             latitude.to_radians()
         } else {
@@ -631,7 +637,7 @@ impl StrapdownState {
             });
         }
 
-        Ok(StrapdownState {
+        Ok(Self {
             latitude,
             longitude,
             altitude,
@@ -696,7 +702,7 @@ impl TryFrom<&[f64]> for StrapdownState {
             });
         }
         let attitude = Rotation3::from_euler_angles(slice[6], slice[7], slice[8]);
-        StrapdownState::new(
+        Self::new(
             slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], attitude,
             false, // angles are in radians
             None,
@@ -742,8 +748,10 @@ pub(crate) fn normal_with_std(sigma: f64) -> rand_distr::Normal<f64> {
     rand_distr::Normal::new(0.0, sigma).expect("literal standard deviation must be valid")
 }
 
-/// Local Level Frame form of the forward kinematics equations. Corresponds to section 5.4 Local-Navigation Frame Equations
-/// from the book _Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems, Second Edition_
+/// Local Level Frame form of the forward kinematics equations.
+///
+/// Corresponds to section 5.4 Local-Navigation Frame Equations from the book
+/// _Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems, Second Edition_
 /// by Paul D. Groves; Second Edition.
 ///
 /// This function implements the forward kinematics equations for the strapdown navigation system. It takes
@@ -1288,6 +1296,10 @@ pub(crate) fn calculate_constant_velocity_acceleration(
 ///
 /// # Returns
 /// * Tuple of (IMU data vector, GPS measurements vector, true states vector)
+///
+/// # Panics
+/// If the generated trajectory leaves the range the mechanization is valid over, which means
+/// the scenario parameters are unusable. Test-only, so failing loudly is the point.
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub fn generate_scenario_data(
@@ -1519,7 +1531,7 @@ mod tests {
             gyro: Vector3::new(0.0, 0.0, 0.0), // No rotation
         };
         let dt = 1.0; // Example time step in seconds
-        forward(&mut state, imu_data, dt);
+        mechanize(&mut state, &ImuSample::from_rates(&imu_data, dt)).unwrap();
         // After a forward step, the state should still be approximately at rest (considering numerical errors,
         // Coriolis, transport rate, etc. numerical errors should be small)
         assert_approx_eq!(state.latitude, 0.0, 1e-6);
@@ -1677,7 +1689,7 @@ mod tests {
             gyro: Vector3::new(0.0, 0.0, 0.1), // Gyro data for yawing
         };
         let dt = 1.0;
-        forward(&mut state, imu_data, dt);
+        mechanize(&mut state, &ImuSample::from_rates(&imu_data, dt)).unwrap();
         let (_, _, yaw) = state.attitude.euler_angles();
         assert!((yaw - 0.1).abs() < 1e-3);
     }
@@ -1693,7 +1705,7 @@ mod tests {
             gyro: Vector3::new(0.1, 0.0, 0.0), // Gyro data for rolling
         };
         let dt = 1.0;
-        forward(&mut state, imu_data, dt);
+        mechanize(&mut state, &ImuSample::from_rates(&imu_data, dt)).unwrap();
 
         //let (roll, _, _) = state.attitude.euler_angles();
         let roll = state.attitude.euler_angles().0;
@@ -1711,7 +1723,7 @@ mod tests {
             gyro: Vector3::new(0.0, 0.1, 0.0), // Gyro data for pitching
         };
         let dt = 1.0;
-        forward(&mut state, imu_data, dt);
+        mechanize(&mut state, &ImuSample::from_rates(&imu_data, dt)).unwrap();
         let (_, pitch, _) = state.attitude.euler_angles();
         assert_approx_eq!(pitch, 0.1, 1e-3); // 0.1 rad initial + 0.1 rad
     }
@@ -1775,7 +1787,7 @@ mod tests {
         let attitude = Rotation3::from_euler_angles(0.1, 0.2, 0.3);
         let state =
             StrapdownState::new(45.0, -122.0, 100.0, 1.0, 2.0, 3.0, attitude, true, None).unwrap();
-        let debug_str = format!("{:?}", state);
+        let debug_str = format!("{state:?}");
         assert!(debug_str.contains("StrapdownState"));
         assert!(debug_str.contains("latitude"));
         assert!(debug_str.contains("45"));
@@ -1786,7 +1798,7 @@ mod tests {
         let attitude = Rotation3::from_euler_angles(0.1, 0.2, 0.3);
         let state =
             StrapdownState::new(45.0, -122.0, 100.0, 1.0, 2.0, 3.0, attitude, true, None).unwrap();
-        let display_str = format!("{}", state);
+        let display_str = format!("{state}");
         assert!(display_str.contains("StrapdownState"));
         assert!(display_str.contains("45"));
         assert!(display_str.contains("lat"));

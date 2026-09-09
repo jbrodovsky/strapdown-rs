@@ -1,4 +1,11 @@
 //! Comprehensive integration tests for INS filters using real data
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "integration tests are a separate crate target, so `clippy.toml`'s \
+              allow-unwrap-in-tests -- which only covers `#[cfg(test)]` items -- does not \
+              reach them; unwrapping is how these assert"
+)]
 //!
 //! This module contains end-to-end integration tests for the strapdown inertial navigation
 //! filters using real data recorded from a MEMS-grade IMU. See [mems-nav-dataset](www.github.com/jbrodovsky/mems-nav-dataset).
@@ -597,8 +604,8 @@ fn test_ukf_closed_loop_on_real_data() {
     let process_noise = DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec()));
 
     let mut ukf = UnscentedKalmanFilter::new(
-        initial_state,
-        imu_biases,
+        &initial_state,
+        &imu_biases,
         None, // No measurement bias
         initial_covariance,
         process_noise,
@@ -752,8 +759,8 @@ fn test_ukf_with_degraded_gnss() {
     let process_noise = DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec()));
 
     let mut ukf = UnscentedKalmanFilter::new(
-        initial_state,
-        imu_biases,
+        &initial_state,
+        &imu_biases,
         None,
         initial_covariance,
         process_noise,
@@ -851,8 +858,8 @@ fn test_ukf_outperforms_dead_reckoning() {
     let process_noise = DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec()));
 
     let mut ukf = UnscentedKalmanFilter::new(
-        initial_state,
-        imu_biases,
+        &initial_state,
+        &imu_biases,
         None,
         initial_covariance,
         process_noise,
@@ -932,8 +939,8 @@ fn test_ekf_closed_loop_on_real_data() {
     // Initialize EKF (note: EKF constructor differs from UKF - no measurement bias parameter,
     // uses use_biases flag instead of optional measurement_bias)
     let mut ekf = ExtendedKalmanFilter::new(
-        initial_state,
-        vec![0.0; 6], // Zero initial bias estimates
+        &initial_state,
+        &[0.0; 6], // Zero initial bias estimates
         initial_covariance,
         process_noise,
         true, // use_biases (15-state configuration)
@@ -1089,8 +1096,8 @@ fn test_ekf_with_degraded_gnss() {
     let process_noise = DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec()));
 
     let mut ekf = ExtendedKalmanFilter::new(
-        initial_state,
-        vec![0.0; 6],
+        &initial_state,
+        &[0.0; 6],
         initial_covariance,
         process_noise,
         true, // 15-state with biases
@@ -1233,8 +1240,8 @@ fn test_ekf_outperforms_dead_reckoning() {
     let process_noise = DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec()));
 
     let mut ekf = ExtendedKalmanFilter::new(
-        initial_state,
-        vec![0.0; 6],
+        &initial_state,
+        &[0.0; 6],
         initial_covariance,
         process_noise,
         true, // 15-state
@@ -1312,8 +1319,8 @@ fn test_eskf_closed_loop_on_real_data() {
 
     // Initialize ESKF
     let mut eskf = ErrorStateKalmanFilter::new(
-        initial_state,
-        vec![0.0; 6], // Zero initial bias estimates
+        &initial_state,
+        &[0.0; 6], // Zero initial bias estimates
         initial_error_covariance,
         process_noise,
     );
@@ -1497,8 +1504,8 @@ fn test_eskf_with_degraded_gnss() {
     let process_noise = DMatrix::from_diagonal(&DVector::from_vec(ESKF_PROCESS_NOISE.to_vec()));
 
     let mut eskf = ErrorStateKalmanFilter::new(
-        initial_state,
-        vec![0.0; 6],
+        &initial_state,
+        &[0.0; 6],
         initial_error_covariance,
         process_noise,
     );
@@ -1609,8 +1616,8 @@ fn test_eskf_outperforms_dead_reckoning() {
     let process_noise = DMatrix::from_diagonal(&DVector::from_vec(ESKF_PROCESS_NOISE.to_vec()));
 
     let mut eskf = ErrorStateKalmanFilter::new(
-        initial_state,
-        vec![0.0; 6], // Zero initial bias estimates
+        &initial_state,
+        &[0.0; 6], // Zero initial bias estimates
         initial_error_covariance,
         process_noise,
     );
@@ -1697,8 +1704,8 @@ fn test_eskf_stability_high_dynamics() {
     let process_noise = DMatrix::from_diagonal(&DVector::from_vec(ESKF_PROCESS_NOISE.to_vec()));
 
     let mut eskf = ErrorStateKalmanFilter::new(
-        initial_state,
-        vec![0.0; 6], // Zero initial bias estimates
+        &initial_state,
+        &[0.0; 6], // Zero initial bias estimates
         initial_error_covariance,
         process_noise,
     );
@@ -1822,8 +1829,8 @@ fn test_filter_comparison() {
     let process_noise = DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec()));
 
     let mut ukf = UnscentedKalmanFilter::new(
-        initial_state.clone(),
-        vec![0.0; 6],
+        &initial_state,
+        &[0.0; 6],
         None,
         initial_covariance.clone(),
         process_noise.clone(),
@@ -1838,8 +1845,8 @@ fn test_filter_comparison() {
 
     // Run EKF
     let mut ekf = ExtendedKalmanFilter::new(
-        initial_state.clone(),
-        vec![0.0; 6],
+        &initial_state,
+        &[0.0; 6],
         initial_covariance,
         process_noise,
         true,
@@ -1854,8 +1861,8 @@ fn test_filter_comparison() {
     let process_noise = DMatrix::from_diagonal(&DVector::from_vec(ESKF_PROCESS_NOISE.to_vec()));
 
     let mut eskf = ErrorStateKalmanFilter::new(
-        initial_state,
-        vec![0.0; 6], // Zero initial bias estimates
+        &initial_state,
+        &[0.0; 6], // Zero initial bias estimates
         initial_error_covariance,
         process_noise,
     );
@@ -2115,8 +2122,8 @@ fn test_filter_output_length_matches_input() {
 
     // Test UKF
     let mut ukf = UnscentedKalmanFilter::new(
-        initial_state.clone(),
-        imu_biases.clone(),
+        &initial_state,
+        &imu_biases,
         None, // No measurement bias
         initial_covariance.clone(),
         process_noise.clone(),
@@ -2144,8 +2151,8 @@ fn test_filter_output_length_matches_input() {
 
     // Test EKF
     let mut ekf = ExtendedKalmanFilter::new(
-        initial_state,
-        imu_biases,
+        &initial_state,
+        &imu_biases,
         initial_covariance,
         process_noise,
         true,

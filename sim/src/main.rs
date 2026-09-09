@@ -517,17 +517,18 @@ fn process_file(
 
             let results = match filter_config.filter {
                 FilterType::Ukf => {
-                    let mut ukf = initialize_ukf(records[0].clone(), UkfConfig::default())?;
+                    let mut ukf = initialize_ukf(&records[0].clone(), UkfConfig::default())?;
                     info!("Initialized UKF");
                     run_closed_loop(&mut ukf, event_stream, None, Some(execution_limits))
                 }
                 FilterType::Ekf => {
-                    let mut ekf = initialize_ekf(records[0].clone(), None, None, None, None, true)?;
+                    let mut ekf =
+                        initialize_ekf(&records[0].clone(), None, None, None, None, true)?;
                     info!("Initialized EKF");
                     run_closed_loop(&mut ekf, event_stream, None, Some(execution_limits))
                 }
                 FilterType::Eskf => {
-                    let mut eskf = initialize_eskf(records[0].clone(), None, None, None, None)?;
+                    let mut eskf = initialize_eskf(&records[0].clone(), None, None, None, None)?;
                     info!("Initialized ESKF");
                     run_closed_loop(&mut eskf, event_stream, None, Some(execution_limits))
                 }
@@ -591,7 +592,7 @@ fn process_file(
                         };
                         let measurement_type =
                             GeophysicalMeasurementType::Gravity(convert_resolution_gravity(res));
-                        Some(Rc::new(GeoMap::load_geomap(map_path, measurement_type)?))
+                        Some(Rc::new(GeoMap::load_geomap(&map_path, measurement_type)?))
                     } else {
                         None
                     };
@@ -603,7 +604,7 @@ fn process_file(
                         };
                         let measurement_type =
                             GeophysicalMeasurementType::Magnetic(convert_resolution_magnetic(res));
-                        Some(Rc::new(GeoMap::load_geomap(map_path, measurement_type)?))
+                        Some(Rc::new(GeoMap::load_geomap(&map_path, measurement_type)?))
                     } else {
                         None
                     };
@@ -911,7 +912,7 @@ fn run_single_closed_loop_simulation(
     let results = match filter_type {
         FilterType::Ukf => {
             let mut ukf = initialize_ukf(
-                records[0].clone(),
+                &records[0].clone(),
                 UkfConfig {
                     ukf_alpha: Some(ukf_alpha),
                     ukf_beta: Some(ukf_beta),
@@ -923,12 +924,12 @@ fn run_single_closed_loop_simulation(
             run_closed_loop(&mut ukf, event_stream, None, Some(execution_limits))
         }
         FilterType::Ekf => {
-            let mut ekf = initialize_ekf(records[0].clone(), None, None, None, None, true)?;
+            let mut ekf = initialize_ekf(&records[0].clone(), None, None, None, None, true)?;
             info!("Initialized EKF");
             run_closed_loop(&mut ekf, event_stream, None, Some(execution_limits))
         }
         FilterType::Eskf => {
-            let mut eskf = initialize_eskf(records[0].clone(), None, None, None, None)?;
+            let mut eskf = initialize_eskf(&records[0].clone(), None, None, None, None)?;
             info!("Initialized ESKF");
             run_closed_loop(&mut eskf, event_stream, None, Some(execution_limits))
         }
@@ -1300,7 +1301,7 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
             info!("Loading gravity map from: {}", map_path.display());
             let measurement_type =
                 GeophysicalMeasurementType::Gravity(convert_resolution_gravity(res));
-            let map = Rc::new(GeoMap::load_geomap(map_path, measurement_type)?);
+            let map = Rc::new(GeoMap::load_geomap(&map_path, measurement_type)?);
             info!(
                 "Loaded gravity map with {} x {} grid points",
                 map.get_lats().len(),
@@ -1321,7 +1322,7 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
             info!("Loading magnetic map from: {}", map_path.display());
             let measurement_type =
                 GeophysicalMeasurementType::Magnetic(convert_resolution_magnetic(res));
-            let map = Rc::new(GeoMap::load_geomap(map_path, measurement_type)?);
+            let map = Rc::new(GeoMap::load_geomap(&map_path, measurement_type)?);
             info!(
                 "Loaded magnetic map with {} x {} grid points",
                 map.get_lats().len(),
@@ -1383,7 +1384,7 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                 }
 
                 let mut ukf = initialize_ukf(
-                    records[0].clone(),
+                    &records[0].clone(),
                     UkfConfig {
                         attitude_covariance: None,
                         imu_biases: None,
@@ -1445,8 +1446,8 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                     DMatrix::from_diagonal(&nalgebra::DVector::from_vec(process_noise_vec));
 
                 let mut ekf = ExtendedKalmanFilter::new(
-                    initial_state,
-                    imu_biases,
+                    &initial_state,
+                    &imu_biases,
                     covariance_diagonal,
                     process_noise,
                     true,
@@ -1517,7 +1518,7 @@ fn run_rbpf_event_loop(
     let sim_duration_s = event_stream.events.last().map_or(0.0, |event| match event {
         Event::Imu { elapsed_s, .. } | Event::Measurement { elapsed_s, .. } => *elapsed_s,
     });
-    let mut execution_monitor = ExecutionMonitor::new(execution_limits.clone(), sim_duration_s);
+    let mut execution_monitor = ExecutionMonitor::new(&execution_limits.clone(), sim_duration_s);
 
     let (mean, cov) = rbpf.estimate();
     results.push(NavigationResult::from_particle_filter(
@@ -1606,7 +1607,7 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
                     info!("Loading gravity map from: {}", map_path.display());
                     let measurement_type =
                         GeophysicalMeasurementType::Gravity(convert_resolution_gravity(res));
-                    Some(Rc::new(GeoMap::load_geomap(map_path, measurement_type)?))
+                    Some(Rc::new(GeoMap::load_geomap(&map_path, measurement_type)?))
                 } else {
                     None
                 };
@@ -1619,7 +1620,7 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
                     info!("Loading magnetic map from: {}", map_path.display());
                     let measurement_type =
                         GeophysicalMeasurementType::Magnetic(convert_resolution_magnetic(res));
-                    Some(Rc::new(GeoMap::load_geomap(map_path, measurement_type)?))
+                    Some(Rc::new(GeoMap::load_geomap(&map_path, measurement_type)?))
                 } else {
                     None
                 };
