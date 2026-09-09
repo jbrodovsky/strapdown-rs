@@ -37,3 +37,6 @@ tempfile.workspace = true
 [[bin]]
 name = "strapdown-sim"
 path = "src/main.rs"
+
+[lints]
+workspace = true

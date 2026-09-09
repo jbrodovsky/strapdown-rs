@@ -92,6 +92,7 @@ pub struct RbpfParticle {
 }
 
 /// Rao-Blackwellized particle filter implementation.
+#[derive(Debug)]
 pub struct RaoBlackwellizedParticleFilter {
     config: RbpfConfig,
     particles: Vec<RbpfParticle>,
@@ -101,7 +102,7 @@ pub struct RaoBlackwellizedParticleFilter {
 }
 
 impl RaoBlackwellizedParticleFilter {
-    fn linear_state_dim(&self) -> usize {
+    const fn linear_state_dim(&self) -> usize {
         LINEAR_STATE_DIM_BASE + self.config.extra_state_dim
     }
     /// Create a new RBPF with particles initialized around the nominal state.
@@ -170,7 +171,7 @@ impl RaoBlackwellizedParticleFilter {
     }
 
     /// Access the nominal INS state.
-    pub fn nominal_state(&self) -> &StrapdownState {
+    pub const fn nominal_state(&self) -> &StrapdownState {
         &self.nominal
     }
 

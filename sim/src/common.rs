@@ -17,11 +17,14 @@ use std::path::{Path, PathBuf};
 ///
 /// # Errors
 /// Returns an error if the log file cannot be opened or logger initialization fails.
-pub fn init_logger(log_level: &str, log_file: Option<&PathBuf>) -> Result<(), Box<dyn Error>> {
+pub(crate) fn init_logger(
+    log_level: &str,
+    log_file: Option<&PathBuf>,
+) -> Result<(), Box<dyn Error>> {
     use std::io::Write;
 
     let level = log_level.parse::<log::LevelFilter>().unwrap_or_else(|_| {
-        eprintln!("Invalid log level '{}', defaulting to 'info'", log_level);
+        eprintln!("Invalid log level '{log_level}', defaulting to 'info'");
         log::LevelFilter::Info
     });
 
@@ -63,7 +66,7 @@ pub fn init_logger(log_level: &str, log_file: Option<&PathBuf>) -> Result<(), Bo
 ///
 /// # Errors
 /// Returns an error if the path does not exist or is neither a file nor directory.
-pub fn validate_input_path(input: &Path) -> Result<(), Box<dyn Error>> {
+pub(crate) fn validate_input_path(input: &Path) -> Result<(), Box<dyn Error>> {
     if !input.exists() {
         return Err(format!("Input path '{}' does not exist.", input.display()).into());
     }
@@ -90,7 +93,7 @@ pub fn validate_input_path(input: &Path) -> Result<(), Box<dyn Error>> {
 /// - The input file is not a CSV
 /// - No CSV files are found in the directory
 /// - The path is neither a file nor directory
-pub fn get_csv_files(input: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+pub(crate) fn get_csv_files(input: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
     if input.is_file() {
         if input.extension().and_then(|s| s.to_str()) != Some("csv") {
             return Err(format!("Input file '{}' is not a CSV file.", input.display()).into());
@@ -98,7 +101,7 @@ pub fn get_csv_files(input: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
         Ok(vec![input.to_path_buf()])
     } else if input.is_dir() {
         let mut csv_files: Vec<PathBuf> = std::fs::read_dir(input)?
-            .filter_map(|entry| entry.ok())
+            .filter_map(std::result::Result::ok)
             .map(|entry| entry.path())
             .filter(|path| {
                 path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("csv")
@@ -130,7 +133,7 @@ pub fn get_csv_files(input: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
 ///
 /// # Errors
 /// Returns an error if directory creation fails.
-pub fn validate_output_path(output: &Path) -> Result<(), Box<dyn Error>> {
+pub(crate) fn validate_output_path(output: &Path) -> Result<(), Box<dyn Error>> {
     if !output.exists() {
         std::fs::create_dir_all(output)?;
     }
@@ -149,7 +152,7 @@ pub fn validate_output_path(output: &Path) -> Result<(), Box<dyn Error>> {
 ///
 /// # Panics
 /// Exits the process if user enters 'q' or 'Q'.
-pub fn read_user_input() -> Option<String> {
+pub(crate) fn read_user_input() -> Option<String> {
     let mut input = String::new();
     io::stdin()
         .read_line(&mut input)
@@ -173,7 +176,7 @@ pub fn read_user_input() -> Option<String> {
 ///
 /// # Returns
 /// The configuration filename entered by the user.
-pub fn prompt_config_name() -> String {
+pub(crate) fn prompt_config_name() -> String {
     loop {
         println!(
             "Please name your configuration file with extension (.toml, .json, .yaml) or 'q' to quit:"
@@ -191,7 +194,7 @@ pub fn prompt_config_name() -> String {
 ///
 /// # Returns
 /// The configuration file path entered by the user.
-pub fn prompt_config_path() -> String {
+pub(crate) fn prompt_config_path() -> String {
     loop {
         println!("Please specify the output configuration file path (or 'q' to quit):");
         if let Some(input) = read_user_input() {
@@ -205,7 +208,7 @@ pub fn prompt_config_path() -> String {
 ///
 /// # Returns
 /// The input path entered by the user.
-pub fn prompt_input_path() -> String {
+pub(crate) fn prompt_input_path() -> String {
     loop {
         println!(
             "Please specify the input location, either a single CSV file or a directory containing them. ('q' to quit):"
@@ -221,7 +224,7 @@ pub fn prompt_input_path() -> String {
 ///
 /// # Returns
 /// The output path entered by the user.
-pub fn prompt_output_path() -> String {
+pub(crate) fn prompt_output_path() -> String {
     loop {
         println!("Please specify the output location to save output data. ('q' to quit):");
         if let Some(input) = read_user_input() {
@@ -241,20 +244,19 @@ pub fn prompt_output_path() -> String {
 ///
 /// # Returns
 /// The validated f64 value.
-pub fn prompt_f64_with_default(prompt_text: &str, default: f64, min_val: f64, max_val: f64) -> f64 {
+pub(crate) fn prompt_f64_with_default(
+    prompt_text: &str,
+    default: f64,
+    min_val: f64,
+    max_val: f64,
+) -> f64 {
     loop {
-        println!(
-            "{} (press Enter for {}, or 'q' to quit):",
-            prompt_text, default
-        );
+        println!("{prompt_text} (press Enter for {default}, or 'q' to quit):");
         match read_user_input() {
             None => return default,
             Some(input) => match input.parse::<f64>() {
                 Ok(val) if val >= min_val && val <= max_val => return val,
-                Ok(_) => println!(
-                    "Error: Value must be between {} and {}.\n",
-                    min_val, max_val
-                ),
+                Ok(_) => println!("Error: Value must be between {min_val} and {max_val}.\n"),
                 Err(_) => println!("Error: Please enter a valid number.\n"),
             },
         }

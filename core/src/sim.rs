@@ -116,6 +116,10 @@ where
 /// Fields correspond to columns in the CSV, with appropriate renaming for Rust style.
 /// This struct is setup to capture the data recorded from the [Sensor Logger](https://www.tszheichoi.com/sensorlogger) app.
 /// Primarily, this represents IMU data as (relative to the device) and GPS data.
+#[allow(
+    clippy::unsafe_derive_deserialize,
+    reason = "the only `unsafe` here is `Mmap::map` on a file handle; it relies on no invariant of this record"
+)]
 #[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct TestDataRecord {
     /// Date-time string: YYYY-MM-DD hh:mm:ss+UTCTZ
@@ -347,7 +351,7 @@ impl TestDataRecord {
             .iter()
             .map(|r| {
                 hdf5::types::VarLenAscii::from_ascii(&r.time.to_rfc3339())
-                    .map_err(|e| anyhow::anyhow!("Failed to encode timestamp as ASCII: {}", e))
+                    .map_err(|e| anyhow::anyhow!("Failed to encode timestamp as ASCII: {e}"))
             })
             .collect();
         let timestamps = timestamps?;
@@ -400,7 +404,7 @@ impl TestDataRecord {
     }
     /// Writes a vector of TestDataRecord structs to an MCAP file.
     ///
-    /// **Note**: This method uses MessagePack encoding. Due to CSV-specific field deserializers  
+    /// **Note**: This method uses MessagePack encoding. Due to CSV-specific field deserializers\
     /// in TestDataRecord, direct MCAP deserialization may have limitations. For production use,
     /// consider converting to NavigationResult or using CSV format for TestDataRecord.
     ///
@@ -540,10 +544,10 @@ impl TestDataRecord {
             let mut records = Vec::with_capacity(n);
             for i in 0..n {
                 let time = DateTime::parse_from_rfc3339(timestamps[i].as_str())
-                    .map_err(|e| anyhow::anyhow!("Failed to parse timestamp: {}", e))?
+                    .map_err(|e| anyhow::anyhow!("Failed to parse timestamp: {e}"))?
                     .with_timezone(&Utc);
 
-                records.push(TestDataRecord {
+                records.push(Self {
                     time,
                     bearing_accuracy: bearing_accuracy[i],
                     speed_accuracy: speed_accuracy[i],
@@ -751,7 +755,7 @@ impl TestDataRecord {
                 .ok_or_else(|| anyhow::anyhow!("Invalid timestamp"))?
                 .with_timezone(&Utc);
 
-            records.push(TestDataRecord {
+            records.push(Self {
                 time,
                 bearing_accuracy: bearing_accuracy[i],
                 speed_accuracy: speed_accuracy[i],
@@ -791,8 +795,8 @@ impl TestDataRecord {
 
     /// Reads an MCAP file and returns a vector of TestDataRecord structs.
     ///
-    /// **Note**: Due to CSV-specific field deserializers in TestDataRecord, MCAP deserialization  
-    /// may fail. For production use, consider using CSV format for TestDataRecord or convert  
+    /// **Note**: Due to CSV-specific field deserializers in TestDataRecord, MCAP deserialization\
+    /// may fail. For production use, consider using CSV format for TestDataRecord or convert\
     /// to NavigationResult which fully supports MCAP.
     ///
     /// # Arguments
@@ -856,6 +860,10 @@ pub struct NEDCovariance {
 ///
 /// It can be used across different types of navigation simulations such as dead reckoning,
 /// Kalman filtering, or any other navigation algorithm.
+#[allow(
+    clippy::unsafe_derive_deserialize,
+    reason = "the only `unsafe` here is `Mmap::map` on a file handle; it relies on no invariant of this record"
+)]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NavigationResult {
     /// Timestamp corresponding to the state
@@ -925,7 +933,7 @@ pub struct NavigationResult {
 }
 impl Default for NavigationResult {
     fn default() -> Self {
-        NavigationResult {
+        Self {
             timestamp: Utc::now(),
             latitude: 0.0,
             longitude: 0.0,
@@ -963,7 +971,7 @@ impl Default for NavigationResult {
 impl NavigationResult {
     /// Creates a new NavigationResult with default values.
     pub fn new() -> Self {
-        NavigationResult::default() // add in validation
+        Self::default() // add in validation
     }
 
     /// Writes the NavigationResult to a CSV file.
@@ -1041,7 +1049,7 @@ impl NavigationResult {
             .iter()
             .map(|r| {
                 hdf5::types::VarLenAscii::from_ascii(&r.timestamp.to_rfc3339())
-                    .map_err(|e| anyhow::anyhow!("Failed to encode timestamp as ASCII: {}", e))
+                    .map_err(|e| anyhow::anyhow!("Failed to encode timestamp as ASCII: {e}"))
             })
             .collect();
         let timestamps = timestamps?;
@@ -1177,10 +1185,10 @@ impl NavigationResult {
             let mut records = Vec::with_capacity(n);
             for i in 0..n {
                 let timestamp = DateTime::parse_from_rfc3339(timestamps[i].as_str())
-                    .map_err(|e| anyhow::anyhow!("Failed to parse timestamp: {}", e))?
+                    .map_err(|e| anyhow::anyhow!("Failed to parse timestamp: {e}"))?
                     .with_timezone(&Utc);
 
-                records.push(NavigationResult {
+                records.push(Self {
                     timestamp,
                     latitude: latitude[i],
                     longitude: longitude[i],
@@ -1391,7 +1399,7 @@ impl NavigationResult {
                 .ok_or_else(|| anyhow::anyhow!("Invalid timestamp"))?
                 .with_timezone(&Utc);
 
-            records.push(NavigationResult {
+            records.push(Self {
                 timestamp,
                 latitude: latitude[i],
                 longitude: longitude[i],
@@ -1577,7 +1585,7 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>)> for NavigationResult {
         //     Angle::new::<radian>(state[1] as f32),
         //     wmm_date,
         // );
-        NavigationResult {
+        Self {
             timestamp: *timestamp,
             latitude: state[0].to_degrees(),
             longitude: state[1].to_degrees(),
@@ -1630,7 +1638,7 @@ impl From<(&DateTime<Utc>, &UnscentedKalmanFilter)> for NavigationResult {
     fn from((timestamp, ukf): (&DateTime<Utc>, &UnscentedKalmanFilter)) -> Self {
         let state = &ukf.get_estimate();
         let covariance = ukf.get_certainty();
-        NavigationResult {
+        Self {
             timestamp: *timestamp,
             latitude: state[0].to_degrees(),
             longitude: state[1].to_degrees(),
@@ -1670,7 +1678,7 @@ impl From<(&DateTime<Utc>, &crate::kalman::ExtendedKalmanFilter)> for Navigation
     fn from((timestamp, ekf): (&DateTime<Utc>, &crate::kalman::ExtendedKalmanFilter)) -> Self {
         let state = &ekf.get_estimate();
         let covariance = ekf.get_certainty();
-        NavigationResult {
+        Self {
             timestamp: *timestamp,
             latitude: state[0].to_degrees(),
             longitude: state[1].to_degrees(),
@@ -1755,7 +1763,7 @@ impl From<(&DateTime<Utc>, &StrapdownState)> for NavigationResult {
         //    Angle::new::<radian>(state.longitude as f32),
         //    wmm_date,
         //);
-        NavigationResult {
+        Self {
             timestamp: *timestamp,
             latitude: state.latitude.to_degrees(),
             longitude: state.longitude.to_degrees(),
@@ -1814,7 +1822,7 @@ impl NavigationResult {
             "Particle filter covariance must be 9x9"
         );
 
-        NavigationResult {
+        Self {
             timestamp: *timestamp,
             latitude: mean[0].to_degrees(),
             longitude: mean[1].to_degrees(),
@@ -1939,27 +1947,19 @@ pub fn run_closed_loop<F: NavigationFilter>(
     let mut results: Vec<NavigationResult> = Vec::with_capacity(stream.events.len());
     let total = stream.events.len();
     let mut monitor = HealthMonitor::new(health_limits.unwrap_or_default());
-    let sim_duration_s = stream
-        .events
-        .last()
-        .map(|event| match event {
-            Event::Imu { elapsed_s, .. } => *elapsed_s,
-            Event::Measurement { elapsed_s, .. } => *elapsed_s,
-        })
-        .unwrap_or(0.0);
+    let sim_duration_s = stream.events.last().map_or(0.0, |event| match event {
+        Event::Imu { elapsed_s, .. } | Event::Measurement { elapsed_s, .. } => *elapsed_s,
+    });
     let mut execution_monitor =
         execution_limits.map(|limits| ExecutionMonitor::new(limits, sim_duration_s));
 
-    info!(
-        "Starting closed-loop navigation filter with {} events",
-        total
-    );
+    info!("Starting closed-loop navigation filter with {total} events");
 
     // Store the initial state (before processing any events)
     let mean = filter.get_estimate();
     let cov = filter.get_certainty();
     results.push(NavigationResult::from((&start_time, &mean, &cov)));
-    debug!("Initial filter state at {}: {:?}", start_time, mean);
+    debug!("Initial filter state at {start_time}: {mean:?}");
     let mut last_ts = Some(start_time);
 
     for (i, event) in stream.events.into_iter().enumerate() {
@@ -2000,8 +2000,7 @@ pub fn run_closed_loop<F: NavigationFilter>(
 
         // Compute wall-clock time for this event
         let elapsed_s = match &event {
-            Event::Imu { elapsed_s, .. } => *elapsed_s,
-            Event::Measurement { elapsed_s, .. } => *elapsed_s,
+            Event::Imu { elapsed_s, .. } | Event::Measurement { elapsed_s, .. } => *elapsed_s,
         };
         let ts = start_time + Duration::milliseconds((elapsed_s * 1000.0).round() as i64);
 
@@ -2012,7 +2011,7 @@ pub fn run_closed_loop<F: NavigationFilter>(
                 let mean = filter.get_estimate();
                 let cov = filter.get_certainty();
                 if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
-                    log::error!("Health fail after propagate at {} (#{i}): {e}", ts);
+                    log::error!("Health fail after propagate at {ts} (#{i}): {e}");
                     bail!(e);
                 }
             }
@@ -2021,7 +2020,7 @@ pub fn run_closed_loop<F: NavigationFilter>(
                 let mean = filter.get_estimate();
                 let cov = filter.get_certainty();
                 if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
-                    log::error!("Health fail after measurement update at {} (#{i}): {e}", ts);
+                    log::error!("Health fail after measurement update at {ts} (#{i}): {e}");
                     bail!(e);
                 }
             }
@@ -2041,7 +2040,7 @@ pub fn run_closed_loop<F: NavigationFilter>(
                     let mean = filter.get_estimate();
                     let cov = filter.get_certainty();
                     results.push(NavigationResult::from((&prev_ts, &mean, &cov)));
-                    debug!("Filter state at {}: {:?}", ts, mean);
+                    debug!("Filter state at {ts}: {mean:?}");
                 }
             }
             last_ts = Some(ts);
@@ -2052,7 +2051,7 @@ pub fn run_closed_loop<F: NavigationFilter>(
             let mean = filter.get_estimate();
             let cov = filter.get_certainty();
             results.push(NavigationResult::from((&ts, &mean, &cov)));
-            debug!("Filter state at {}: {:?}", ts, mean);
+            debug!("Filter state at {ts}: {mean:?}");
             last_ts = Some(ts);
         }
     }
@@ -2203,18 +2202,15 @@ pub fn initialize_ukf(initial_pose: TestDataRecord, config: UkfConfig) -> Unscen
         None => covariance_diagonal.extend(vec![1e-9; 3]), // Default values if not provided
     }
     // extend the covariance diagonal if imu biases are provided
-    let imu_biases = match config.imu_biases {
-        Some(imu_biases) => {
-            covariance_diagonal.extend(match config.imu_biases_covariance {
-                Some(imu_cov) => imu_cov,
-                None => vec![1e-3; 6], // Default covariance if not provided
-            });
-            imu_biases
-        }
-        None => {
-            covariance_diagonal.extend(vec![1e-3; 6]);
-            vec![1e-3; 6] // Default values if not provided
-        }
+    let imu_biases = if let Some(imu_biases) = config.imu_biases {
+        covariance_diagonal.extend(match config.imu_biases_covariance {
+            Some(imu_cov) => imu_cov,
+            None => vec![1e-3; 6], // Default covariance if not provided
+        });
+        imu_biases
+    } else {
+        covariance_diagonal.extend(vec![1e-3; 6]);
+        vec![1e-3; 6] // Default values if not provided
     };
     // extend the covariance diagonal if other states are provided
     let other_states = match config.other_states {
@@ -2228,15 +2224,15 @@ pub fn initialize_ukf(initial_pose: TestDataRecord, config: UkfConfig) -> Unscen
         None => None,
     };
     assert!(
-        covariance_diagonal.len() == 15 + other_states.as_ref().map_or(0, |v| v.len()),
+        covariance_diagonal.len() == 15 + other_states.as_ref().map_or(0, std::vec::Vec::len),
         "Covariance diagonal length mismatch: expected {}, got {}",
-        15 + other_states.as_ref().map_or(0, |v| v.len()),
+        15 + other_states.as_ref().map_or(0, std::vec::Vec::len),
         covariance_diagonal.len()
     );
     assert!(
-        process_noise_diagonal.len() == 15 + other_states.as_ref().map_or(0, |v| v.len()),
+        process_noise_diagonal.len() == 15 + other_states.as_ref().map_or(0, std::vec::Vec::len),
         "Process noise diagonal length mismatch: expected {}, got {}",
-        15 + other_states.as_ref().map_or(0, |v| v.len()),
+        15 + other_states.as_ref().map_or(0, std::vec::Vec::len),
         process_noise_diagonal.len()
     );
     assert!(
@@ -2364,25 +2360,22 @@ pub fn initialize_ekf(
 
     // Add IMU bias covariance if using biases
     let imu_biases_vec = if use_biases {
-        match imu_biases {
-            Some(biases) => {
-                assert!(biases.len() == 6, "IMU biases must have 6 elements");
-                covariance_diagonal.extend(match imu_biases_covariance {
-                    Some(imu_cov) => {
-                        assert!(
-                            imu_cov.len() == 6,
-                            "IMU bias covariance must have 6 elements"
-                        );
-                        imu_cov
-                    }
-                    None => vec![1e-3; 6],
-                });
-                biases
-            }
-            None => {
-                covariance_diagonal.extend(vec![1e-3; 6]);
-                vec![0.0; 6]
-            }
+        if let Some(biases) = imu_biases {
+            assert!(biases.len() == 6, "IMU biases must have 6 elements");
+            covariance_diagonal.extend(match imu_biases_covariance {
+                Some(imu_cov) => {
+                    assert!(
+                        imu_cov.len() == 6,
+                        "IMU bias covariance must have 6 elements"
+                    );
+                    imu_cov
+                }
+                None => vec![1e-3; 6],
+            });
+            biases
+        } else {
+            covariance_diagonal.extend(vec![1e-3; 6]);
+            vec![0.0; 6]
         }
     } else {
         vec![0.0; 6] // Not used in 9-state, but required by constructor
@@ -2587,13 +2580,15 @@ pub fn print_sim_status<F: NavigationFilter>(filter: &F) {
     let pos_rms = (pos_std_lat.powi(2) + pos_std_lon.powi(2) + pos_std_alt.powi(2)).sqrt();
 
     debug!(
-        "\rPos: ({:.6}°, {:.6}°, {:.1}m) | σ: ({:.2e}°, {:.2e}°, {:.2}m) | RMS: {:.2e}",
-        lat, lon, alt, pos_std_lat, pos_std_lon, pos_std_alt, pos_rms
+        "\rPos: ({lat:.6}°, {lon:.6}°, {alt:.1}m) | σ: ({pos_std_lat:.2e}°, {pos_std_lon:.2e}°, {pos_std_alt:.2}m) | RMS: {pos_rms:.2e}"
     );
 }
 
 pub mod execution {
-    use super::*;
+    use super::{
+        DEFAULT_MAX_NO_PROGRESS_S, DEFAULT_MAX_WALL_CLOCK_RATIO, DEFAULT_MAX_WALL_CLOCK_S, Debug,
+        Deserialize, Instant, Result, Serialize, StdDuration, bail, f64,
+    };
 
     /// Configuration for execution timeout limits in simulations.
     ///
@@ -2619,15 +2614,15 @@ pub mod execution {
         pub max_no_progress_s: f64,
     }
 
-    fn default_max_wall_clock_ratio() -> f64 {
+    const fn default_max_wall_clock_ratio() -> f64 {
         DEFAULT_MAX_WALL_CLOCK_RATIO
     }
 
-    fn default_max_wall_clock_s() -> f64 {
+    const fn default_max_wall_clock_s() -> f64 {
         DEFAULT_MAX_WALL_CLOCK_S
     }
 
-    fn default_max_no_progress_s() -> f64 {
+    const fn default_max_no_progress_s() -> f64 {
         DEFAULT_MAX_NO_PROGRESS_S
     }
 
@@ -2734,12 +2729,12 @@ pub mod execution {
         /// monitor.mark_progress();
         /// # Ok::<(), anyhow::Error>(())
         /// ```
-        pub fn check(&mut self, context: &str) -> Result<()> {
+        pub fn check(&self, context: &str) -> Result<()> {
             self.check_at(context, Instant::now())
         }
 
         /// [`Self::check`] against an explicit instant. See [`Self::new_at`].
-        pub(crate) fn check_at(&mut self, context: &str, now: Instant) -> Result<()> {
+        pub(crate) fn check_at(&self, context: &str, now: Instant) -> Result<()> {
             if let Some(max_wall_clock) = self.max_wall_clock
                 && now.duration_since(self.start_time) > max_wall_clock
             {
@@ -2768,7 +2763,7 @@ pub mod execution {
         }
 
         /// [`Self::mark_progress`] against an explicit instant. See [`Self::new_at`].
-        pub(crate) fn mark_progress_at(&mut self, now: Instant) {
+        pub(crate) const fn mark_progress_at(&mut self, now: Instant) {
             self.last_progress = now;
         }
     }
@@ -2778,10 +2773,11 @@ pub mod execution {
         max_ratio: f64,
         max_wall_clock_s: f64,
     ) -> Option<StdDuration> {
-        let mut max_s = None;
-        if sim_duration_s > 0.0 && max_ratio > 0.0 {
-            max_s = Some(sim_duration_s * max_ratio);
-        }
+        let mut max_s = if sim_duration_s > 0.0 && max_ratio > 0.0 {
+            Some(sim_duration_s * max_ratio)
+        } else {
+            None
+        };
         if max_wall_clock_s > 0.0 {
             max_s = Some(match max_s {
                 Some(current) => current.min(max_wall_clock_s),
@@ -2800,7 +2796,7 @@ pub mod execution {
 }
 
 pub mod health {
-    use super::*;
+    use super::{Debug, Result, bail, f64};
 
     #[derive(Clone, Debug)]
     pub struct HealthLimits {
@@ -2836,7 +2832,7 @@ pub mod health {
     }
 
     impl HealthMonitor {
-        pub fn new(limits: HealthLimits) -> Self {
+        pub const fn new(limits: HealthLimits) -> Self {
             Self {
                 limits,
                 consec_nis_pos_fail: 0,
@@ -3003,7 +2999,7 @@ pub struct FaultArgs {
 }
 
 /// Build GNSS scheduler from CLI arguments
-pub fn build_scheduler(a: &SchedulerArgs) -> GnssScheduler {
+pub const fn build_scheduler(a: &SchedulerArgs) -> GnssScheduler {
     match a.sched {
         SchedKind::Passthrough => GnssScheduler::PassThrough,
         SchedKind::Fixed => GnssScheduler::FixedInterval {
@@ -3019,7 +3015,7 @@ pub fn build_scheduler(a: &SchedulerArgs) -> GnssScheduler {
 }
 
 /// Build GNSS fault model from CLI arguments
-pub fn build_fault(a: &FaultArgs) -> GnssFaultModel {
+pub const fn build_fault(a: &FaultArgs) -> GnssFaultModel {
     match a.fault {
         FaultKind::None => GnssFaultModel::None,
         FaultKind::Degraded => GnssFaultModel::Degraded {
@@ -3159,27 +3155,27 @@ pub struct ParticleFilterConfig {
     pub zero_vertical_velocity_std_mps: f64,
 }
 
-fn default_zero_vertical_velocity() -> bool {
+const fn default_zero_vertical_velocity() -> bool {
     true
 }
 
-fn default_zero_vertical_velocity_std_mps() -> f64 {
+const fn default_zero_vertical_velocity_std_mps() -> f64 {
     0.1
 }
 
-fn default_ukf_alpha() -> f64 {
+const fn default_ukf_alpha() -> f64 {
     1e-3
 }
 
-fn default_ukf_beta() -> f64 {
+const fn default_ukf_beta() -> f64 {
     2.0
 }
 
-fn default_ukf_kappa() -> f64 {
+const fn default_ukf_kappa() -> f64 {
     0.0
 }
 
-fn default_num_particles() -> usize {
+const fn default_num_particles() -> usize {
     100
 }
 
@@ -3187,11 +3183,11 @@ fn default_position_init_std_m() -> Vec<f64> {
     vec![10.0, 10.0, 5.0]
 }
 
-fn default_velocity_init_std_mps() -> f64 {
+const fn default_velocity_init_std_mps() -> f64 {
     1.0
 }
 
-fn default_attitude_init_std_rad() -> f64 {
+const fn default_attitude_init_std_rad() -> f64 {
     0.1
 }
 
@@ -3199,19 +3195,19 @@ fn default_position_process_noise_std_m() -> Vec<f64> {
     vec![1.0, 1.0, 1.0]
 }
 
-fn default_velocity_process_noise_std_mps() -> f64 {
+const fn default_velocity_process_noise_std_mps() -> f64 {
     1e-3
 }
 
-fn default_attitude_process_noise_std_rad() -> f64 {
+const fn default_attitude_process_noise_std_rad() -> f64 {
     0.01
 }
 
-fn default_geo_bias_init_std() -> f64 {
+const fn default_geo_bias_init_std() -> f64 {
     1.0
 }
 
-fn default_geo_bias_process_noise_std() -> f64 {
+const fn default_geo_bias_process_noise_std() -> f64 {
     1e-3
 }
 
@@ -3250,14 +3246,14 @@ pub enum LogLevel {
 
 impl LogLevel {
     /// Convert LogLevel to string representation
-    pub fn as_str(&self) -> &'static str {
+    pub const fn as_str(&self) -> &'static str {
         match self {
-            LogLevel::Off => "off",
-            LogLevel::Error => "error",
-            LogLevel::Warn => "warn",
-            LogLevel::Info => "info",
-            LogLevel::Debug => "debug",
-            LogLevel::Trace => "trace",
+            Self::Off => "off",
+            Self::Error => "error",
+            Self::Warn => "warn",
+            Self::Info => "info",
+            Self::Debug => "debug",
+            Self::Trace => "trace",
         }
     }
 }
@@ -3273,7 +3269,7 @@ pub struct LoggingConfig {
     pub file: Option<String>,
 }
 
-fn default_log_level() -> LogLevel {
+const fn default_log_level() -> LogLevel {
     LogLevel::Info
 }
 
@@ -3337,7 +3333,7 @@ fn default_output() -> String {
     "output.csv".to_string()
 }
 
-fn default_seed() -> u64 {
+const fn default_seed() -> u64 {
     42
 }
 
@@ -3408,10 +3404,10 @@ impl SimulationConfig {
         let ext = p
             .extension()
             .and_then(|s| s.to_str())
-            .map(|s| s.to_lowercase());
+            .map(str::to_lowercase);
         match ext.as_deref() {
             Some("json") => self.to_json(p),
-            Some("yaml") | Some("yml") => self.to_yaml(p),
+            Some("yaml" | "yml") => self.to_yaml(p),
             Some("toml") => self.to_toml(p),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -3426,10 +3422,10 @@ impl SimulationConfig {
         let ext = p
             .extension()
             .and_then(|s| s.to_str())
-            .map(|s| s.to_lowercase());
+            .map(str::to_lowercase);
         match ext.as_deref() {
             Some("json") => Self::from_json(p),
-            Some("yaml") | Some("yml") => Self::from_yaml(p),
+            Some("yaml" | "yml") => Self::from_yaml(p),
             Some("toml") => Self::from_toml(p),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -3535,11 +3531,11 @@ pub struct GeophysicalConfig {
     pub geo_frequency_s: Option<f64>,
 }
 
-fn default_gravity_noise_std() -> f64 {
+const fn default_gravity_noise_std() -> f64 {
     100.0
 }
 
-fn default_magnetic_noise_std() -> f64 {
+const fn default_magnetic_noise_std() -> f64 {
     150.0
 }
 
@@ -3659,10 +3655,10 @@ impl GeonavSimulationConfig {
         let ext = p
             .extension()
             .and_then(|s| s.to_str())
-            .map(|s| s.to_lowercase());
+            .map(str::to_lowercase);
         match ext.as_deref() {
             Some("json") => self.to_json(p),
-            Some("yaml") | Some("yml") => self.to_yaml(p),
+            Some("yaml" | "yml") => self.to_yaml(p),
             Some("toml") => self.to_toml(p),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -3677,10 +3673,10 @@ impl GeonavSimulationConfig {
         let ext = p
             .extension()
             .and_then(|s| s.to_str())
-            .map(|s| s.to_lowercase());
+            .map(str::to_lowercase);
         match ext.as_deref() {
             Some("json") => Self::from_json(p),
-            Some("yaml") | Some("yml") => Self::from_yaml(p),
+            Some("yaml" | "yml") => Self::from_yaml(p),
             Some("toml") => Self::from_toml(p),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -3758,19 +3754,19 @@ impl Default for SyntheticInitialState {
     }
 }
 
-fn default_sample_rate_hz() -> f64 {
+const fn default_sample_rate_hz() -> f64 {
     10.0
 }
 
-fn default_gnss_horizontal_noise_m() -> f64 {
+const fn default_gnss_horizontal_noise_m() -> f64 {
     2.5
 }
 
-fn default_gnss_vertical_noise_m() -> f64 {
+const fn default_gnss_vertical_noise_m() -> f64 {
     5.0
 }
 
-fn default_baro_noise_std_pa() -> f64 {
+const fn default_baro_noise_std_pa() -> f64 {
     50.0
 }
 
@@ -3819,14 +3815,14 @@ impl SyntheticConfig {
         let ext = p
             .extension()
             .and_then(|s| s.to_str())
-            .map(|s| s.to_lowercase());
+            .map(str::to_lowercase);
         match ext.as_deref() {
             Some("json") => {
                 let json = serde_json::to_string_pretty(self)
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
                 std::fs::write(p, json)
             }
-            Some("yaml") | Some("yml") => {
+            Some("yaml" | "yml") => {
                 let yaml = serde_yaml::to_string(self)
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
                 std::fs::write(p, yaml)
@@ -3849,12 +3845,12 @@ impl SyntheticConfig {
         let ext = p
             .extension()
             .and_then(|s| s.to_str())
-            .map(|s| s.to_lowercase());
+            .map(str::to_lowercase);
         let contents = std::fs::read_to_string(p)?;
         match ext.as_deref() {
             Some("json") => serde_json::from_str(&contents)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)),
-            Some("yaml") | Some("yml") => serde_yaml::from_str(&contents)
+            Some("yaml" | "yml") => serde_yaml::from_str(&contents)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)),
             Some("toml") => {
                 toml::from_str(&contents).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
@@ -3975,12 +3971,12 @@ pub fn generate_synthetic(
     // Draw per-trajectory bias offsets (constant for the full run)
     let accel_bias = {
         let sigma = config.imu_quality.accel_bias_instability_mps2();
-        let dist = Normal::new(0.0_f64, sigma).unwrap_or(Normal::new(0.0, 1e-6).unwrap());
+        let dist = Normal::new(0.0_f64, sigma).unwrap_or_else(|_| Normal::new(0.0, 1e-6).unwrap());
         Vector3::new(rng.sample(dist), rng.sample(dist), rng.sample(dist))
     };
     let gyro_bias = {
         let sigma = config.imu_quality.gyro_bias_instability_dph();
-        let dist = Normal::new(0.0_f64, sigma).unwrap_or(Normal::new(0.0, 1e-9).unwrap());
+        let dist = Normal::new(0.0_f64, sigma).unwrap_or_else(|_| Normal::new(0.0, 1e-9).unwrap());
         Vector3::new(rng.sample(dist), rng.sample(dist), rng.sample(dist))
     };
 
@@ -3991,15 +3987,15 @@ pub fn generate_synthetic(
         config.imu_quality.gyro_angle_random_walk() * (config.sample_rate_hz / 3600.0_f64).sqrt();
 
     let accel_noise_dist =
-        Normal::new(0.0_f64, accel_noise_sigma).unwrap_or(Normal::new(0.0, 1e-6).unwrap());
+        Normal::new(0.0_f64, accel_noise_sigma).unwrap_or_else(|_| Normal::new(0.0, 1e-6).unwrap());
     let gyro_noise_dist =
-        Normal::new(0.0_f64, gyro_noise_sigma).unwrap_or(Normal::new(0.0, 1e-9).unwrap());
+        Normal::new(0.0_f64, gyro_noise_sigma).unwrap_or_else(|_| Normal::new(0.0, 1e-9).unwrap());
     let gnss_h_dist = Normal::new(0.0_f64, config.gnss_horizontal_noise_m)
-        .unwrap_or(Normal::new(0.0, 1.0).unwrap());
+        .unwrap_or_else(|_| Normal::new(0.0, 1.0).unwrap());
     let gnss_v_dist = Normal::new(0.0_f64, config.gnss_vertical_noise_m)
-        .unwrap_or(Normal::new(0.0, 1.0).unwrap());
-    let baro_dist =
-        Normal::new(0.0_f64, config.baro_noise_std_pa).unwrap_or(Normal::new(0.0, 1.0).unwrap());
+        .unwrap_or_else(|_| Normal::new(0.0, 1.0).unwrap());
+    let baro_dist = Normal::new(0.0_f64, config.baro_noise_std_pa)
+        .unwrap_or_else(|_| Normal::new(0.0, 1.0).unwrap());
 
     // Fixed epoch start time for reproducibility
     let start_time: chrono::DateTime<Utc> = "2025-01-01T00:00:00Z"
@@ -4095,7 +4091,7 @@ pub fn generate_synthetic(
             true_pressure + rng.sample(baro_dist)
         };
 
-        let speed = (state.velocity_north.powi(2) + state.velocity_east.powi(2)).sqrt();
+        let speed = state.velocity_north.hypot(state.velocity_east);
         let bearing = state.velocity_east.atan2(state.velocity_north).to_degrees();
 
         // Gravity vector in body frame (NED: [0,0,g])
@@ -4168,7 +4164,7 @@ mod tests {
         for t in 0..3600 {
             // Each second, latitude increases by dlat = (v / R) * (180/pi)
             let dlat: f64 =
-                (velocity_mps * t as f64) / earth_radius * (180.0 / std::f64::consts::PI);
+                (velocity_mps * f64::from(t)) / earth_radius * (180.0 / std::f64::consts::PI);
             let time_str: String = format!("2023-01-01 00:{:02}:{:02}+00:00", t / 60, t % 60);
 
             records.push(TestDataRecord {
@@ -4692,7 +4688,7 @@ mod tests {
             bearing: 90.0,
             ..Default::default()
         };
-        let display_str = format!("{}", rec);
+        let display_str = format!("{rec}");
         assert!(display_str.contains("37"));
         assert!(display_str.contains("-122"));
         assert!(display_str.contains("100"));
@@ -4714,7 +4710,7 @@ mod tests {
             yaw: 0.3,
             ..Default::default()
         };
-        let ukf = initialize_ukf(rec.clone(), UkfConfig::default());
+        let ukf = initialize_ukf(rec, UkfConfig::default());
         let timestamp = Utc::now();
         let nav_result = NavigationResult::from((&timestamp, &ukf));
 
@@ -4877,7 +4873,7 @@ mod tests {
             max_wall_clock_s: 0.0,
             max_no_progress_s: 0.010,
         };
-        let mut monitor = ExecutionMonitor::new_at(limits, 1.0, t0);
+        let monitor = ExecutionMonitor::new_at(limits, 1.0, t0);
 
         let result = monitor.check_at("test", at(t0, 20));
         assert!(result.is_err());
@@ -4893,7 +4889,7 @@ mod tests {
             max_wall_clock_s: 0.0,
             max_no_progress_s: 0.100,
         };
-        let mut monitor = ExecutionMonitor::new_at(limits, 1.0, t0);
+        let monitor = ExecutionMonitor::new_at(limits, 1.0, t0);
 
         assert!(
             monitor.check_at("test", at(t0, 99)).is_ok(),
@@ -4936,7 +4932,7 @@ mod tests {
             max_wall_clock_s: 0.010,
             max_no_progress_s: 0.0,
         };
-        let mut monitor = ExecutionMonitor::new_at(limits, 1.0, t0);
+        let monitor = ExecutionMonitor::new_at(limits, 1.0, t0);
 
         let result = monitor.check_at("test", at(t0, 20));
         assert!(result.is_err());
@@ -5003,7 +4999,7 @@ mod tests {
             max_wall_clock_s: 0.0,
             max_no_progress_s: 0.0,
         };
-        let mut monitor = ExecutionMonitor::new_at(limits, 1.0, t0);
+        let monitor = ExecutionMonitor::new_at(limits, 1.0, t0);
 
         // All timeouts disabled: an hour of no progress is still fine.
         assert!(monitor.check_at("test", at(t0, 3_600_000)).is_ok());
@@ -5017,7 +5013,7 @@ mod tests {
             max_wall_clock_s: -1.0,
             max_no_progress_s: -1.0,
         };
-        let mut monitor = ExecutionMonitor::new_at(limits, 1.0, t0);
+        let monitor = ExecutionMonitor::new_at(limits, 1.0, t0);
 
         assert!(monitor.check_at("test", at(t0, 3_600_000)).is_ok());
     }
@@ -5033,7 +5029,7 @@ mod tests {
             max_wall_clock_s: 0.200,
             max_no_progress_s: 0.0,
         };
-        let mut monitor = ExecutionMonitor::new_at(limits, 2.0, t0);
+        let monitor = ExecutionMonitor::new_at(limits, 2.0, t0);
         assert!(monitor.check_at("test", at(t0, 200)).is_ok());
         assert!(monitor.check_at("test", at(t0, 201)).is_err());
 
@@ -5043,7 +5039,7 @@ mod tests {
             max_wall_clock_s: 5.0,
             max_no_progress_s: 0.0,
         };
-        let mut monitor = ExecutionMonitor::new_at(limits, 2.0, t0);
+        let monitor = ExecutionMonitor::new_at(limits, 2.0, t0);
         assert!(monitor.check_at("test", at(t0, 500)).is_ok());
         assert!(monitor.check_at("test", at(t0, 501)).is_err());
     }
@@ -5683,7 +5679,7 @@ mod tests {
             ..Default::default()
         };
         let custom_noise = vec![1e-7; 15];
-        let ekf = initialize_ekf(rec, None, None, None, Some(custom_noise.clone()), true);
+        let ekf = initialize_ekf(rec, None, None, None, Some(custom_noise), true);
         // Verify EKF was created successfully
         assert_eq!(ekf.get_estimate().len(), 15);
     }
@@ -5779,35 +5775,26 @@ mod tests {
         // Verify
         assert_eq!(read_records.len(), records.len());
         for (i, (original, read)) in records.iter().zip(read_records.iter()).enumerate() {
-            assert_eq!(
-                original.time, read.time,
-                "Timestamp mismatch at index {}",
-                i
-            );
+            assert_eq!(original.time, read.time, "Timestamp mismatch at index {i}");
             assert!(
                 (original.latitude - read.latitude).abs() < 1e-10,
-                "Latitude mismatch at index {}",
-                i
+                "Latitude mismatch at index {i}"
             );
             assert!(
                 (original.longitude - read.longitude).abs() < 1e-10,
-                "Longitude mismatch at index {}",
-                i
+                "Longitude mismatch at index {i}"
             );
             assert!(
                 (original.altitude - read.altitude).abs() < 1e-10,
-                "Altitude mismatch at index {}",
-                i
+                "Altitude mismatch at index {i}"
             );
             assert!(
                 (original.speed - read.speed).abs() < 1e-10,
-                "Speed mismatch at index {}",
-                i
+                "Speed mismatch at index {i}"
             );
             assert!(
                 (original.bearing - read.bearing).abs() < 1e-10,
-                "Bearing mismatch at index {}",
-                i
+                "Bearing mismatch at index {i}"
             );
         }
     }
@@ -5865,48 +5852,39 @@ mod tests {
         for (i, (original, read)) in results.iter().zip(read_results.iter()).enumerate() {
             assert_eq!(
                 original.timestamp, read.timestamp,
-                "Timestamp mismatch at index {}",
-                i
+                "Timestamp mismatch at index {i}"
             );
             assert!(
                 (original.latitude - read.latitude).abs() < 1e-10,
-                "Latitude mismatch at index {}",
-                i
+                "Latitude mismatch at index {i}"
             );
             assert!(
                 (original.longitude - read.longitude).abs() < 1e-10,
-                "Longitude mismatch at index {}",
-                i
+                "Longitude mismatch at index {i}"
             );
             assert!(
                 (original.altitude - read.altitude).abs() < 1e-10,
-                "Altitude mismatch at index {}",
-                i
+                "Altitude mismatch at index {i}"
             );
             assert!(
                 (original.velocity_north - read.velocity_north).abs() < 1e-10,
-                "Velocity north mismatch at index {}",
-                i
+                "Velocity north mismatch at index {i}"
             );
             assert!(
                 (original.velocity_east - read.velocity_east).abs() < 1e-10,
-                "Velocity east mismatch at index {}",
-                i
+                "Velocity east mismatch at index {i}"
             );
             assert!(
                 (original.roll - read.roll).abs() < 1e-10,
-                "Roll mismatch at index {}",
-                i
+                "Roll mismatch at index {i}"
             );
             assert!(
                 (original.pitch - read.pitch).abs() < 1e-10,
-                "Pitch mismatch at index {}",
-                i
+                "Pitch mismatch at index {i}"
             );
             assert!(
                 (original.yaw - read.yaw).abs() < 1e-10,
-                "Yaw mismatch at index {}",
-                i
+                "Yaw mismatch at index {i}"
             );
         }
     }
@@ -6008,7 +5986,7 @@ mod tests {
             ..Default::default()
         };
 
-        let results = vec![result1.clone(), result2.clone()];
+        let results = vec![result1, result2];
 
         // Write to MCAP
         NavigationResult::to_mcap(&results, &temp_file)
@@ -6032,43 +6010,35 @@ mod tests {
         for (i, (original, read)) in results.iter().zip(read_results.iter()).enumerate() {
             assert_eq!(
                 original.timestamp, read.timestamp,
-                "Result {} timestamp should match",
-                i
+                "Result {i} timestamp should match"
             );
             assert!(
                 (original.latitude - read.latitude).abs() < 1e-6,
-                "Result {} latitude should match",
-                i
+                "Result {i} latitude should match"
             );
             assert!(
                 (original.longitude - read.longitude).abs() < 1e-6,
-                "Result {} longitude should match",
-                i
+                "Result {i} longitude should match"
             );
             assert!(
                 (original.altitude - read.altitude).abs() < 1e-6,
-                "Result {} altitude should match",
-                i
+                "Result {i} altitude should match"
             );
             assert!(
                 (original.velocity_north - read.velocity_north).abs() < 1e-6,
-                "Result {} velocity_north should match",
-                i
+                "Result {i} velocity_north should match"
             );
             assert!(
                 (original.roll - read.roll).abs() < 1e-6,
-                "Result {} roll should match",
-                i
+                "Result {i} roll should match"
             );
             assert!(
                 (original.pitch - read.pitch).abs() < 1e-6,
-                "Result {} pitch should match",
-                i
+                "Result {i} pitch should match"
             );
             assert!(
                 (original.yaw - read.yaw).abs() < 1e-6,
-                "Result {} yaw should match",
-                i
+                "Result {i} yaw should match"
             );
         }
 

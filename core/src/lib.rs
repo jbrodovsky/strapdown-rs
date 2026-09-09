@@ -258,43 +258,43 @@ pub enum IMUQuality {
 }
 impl IMUQuality {
     /// Get typical gyro bias instability in degrees per hour for the given IMU quality in radians per hour
-    pub fn gyro_bias_instability_dph(&self) -> f64 {
+    pub const fn gyro_bias_instability_dph(&self) -> f64 {
         match self {
-            IMUQuality::Consumer => 100.0_f64.to_radians(),
-            IMUQuality::Industrial => 50.0_f64.to_radians(),
-            IMUQuality::Tactical => 1.0_f64.to_radians(),
-            IMUQuality::Navigation => 0.01_f64.to_radians(),
-            IMUQuality::Strategic => 0.0001_f64.to_radians(),
+            Self::Consumer => 100.0_f64.to_radians(),
+            Self::Industrial => 50.0_f64.to_radians(),
+            Self::Tactical => 1.0_f64.to_radians(),
+            Self::Navigation => 0.01_f64.to_radians(),
+            Self::Strategic => 0.0001_f64.to_radians(),
         }
     }
     /// Get typical gyro angle random walk in radians per root hour for the given IMU quality
-    pub fn gyro_angle_random_walk(&self) -> f64 {
+    pub const fn gyro_angle_random_walk(&self) -> f64 {
         match self {
-            IMUQuality::Consumer => 1.0_f64.to_radians(),
-            IMUQuality::Industrial => 0.1_f64.to_radians(),
-            IMUQuality::Tactical => 0.01_f64.to_radians(),
-            IMUQuality::Navigation => 0.005_f64.to_radians(),
-            IMUQuality::Strategic => 0.0005_f64.to_radians(),
+            Self::Consumer => 1.0_f64.to_radians(),
+            Self::Industrial => 0.1_f64.to_radians(),
+            Self::Tactical => 0.01_f64.to_radians(),
+            Self::Navigation => 0.005_f64.to_radians(),
+            Self::Strategic => 0.0005_f64.to_radians(),
         }
     }
     /// Get typical accelerometer bias instability in m/s^2 for the given IMU quality
-    pub fn accel_bias_instability_mps2(&self) -> f64 {
+    pub const fn accel_bias_instability_mps2(&self) -> f64 {
         match self {
-            IMUQuality::Consumer => 0.1,
-            IMUQuality::Industrial => 0.05,
-            IMUQuality::Tactical => 0.001,
-            IMUQuality::Navigation => 0.0001,
-            IMUQuality::Strategic => 0.00001,
+            Self::Consumer => 0.1,
+            Self::Industrial => 0.05,
+            Self::Tactical => 0.001,
+            Self::Navigation => 0.0001,
+            Self::Strategic => 0.00001,
         }
     }
     /// Get typical accelerometer velocity random walk in m/s/√h for the given IMU quality
-    pub fn accel_velocity_random_walk(&self) -> f64 {
+    pub const fn accel_velocity_random_walk(&self) -> f64 {
         match self {
-            IMUQuality::Consumer => 0.1,
-            IMUQuality::Industrial => 0.03,
-            IMUQuality::Tactical => 0.01,
-            IMUQuality::Navigation => 0.005,
-            IMUQuality::Strategic => 0.0001,
+            Self::Consumer => 0.1,
+            Self::Industrial => 0.03,
+            Self::Tactical => 0.01,
+            Self::Navigation => 0.005,
+            Self::Strategic => 0.0001,
         }
     }
     /// Get typical process noise matrix for gyro bias
@@ -340,12 +340,11 @@ impl Display for IMUData {
 impl From<Vec<f64>> for IMUData {
     /// Creates a Vec<f64> of length 6 (3 for accel, 3 for gyro) from an IMUData instance.
     fn from(vec: Vec<f64>) -> Self {
-        if vec.len() != 6 {
-            panic!(
-                "IMUData must be initialized with a vector of length 6 (3 for accel, 3 for gyro)"
-            );
-        }
-        IMUData {
+        assert!(
+            vec.len() == 6,
+            "IMUData must be initialized with a vector of length 6 (3 for accel, 3 for gyro)"
+        );
+        Self {
             accel: Vector3::new(vec[0], vec[1], vec[2]),
             gyro: Vector3::new(vec[3], vec[4], vec[5]),
         }
@@ -377,7 +376,7 @@ impl InputModel for IMUData {
     }
     /// Get the measurement / input as a vector
     fn get_vector(&self) -> DVector<f64> {
-        DVector::from_vec(self.accel.iter().chain(self.gyro.iter()).cloned().collect())
+        DVector::from_vec(self.accel.iter().chain(self.gyro.iter()).copied().collect())
     }
 }
 /// Basic structure for holding velocity input data for simplified navigation filters
@@ -390,12 +389,11 @@ pub struct VelocityData {
 }
 impl From<Vec<f64>> for VelocityData {
     fn from(data: Vec<f64>) -> Self {
-        if data.len() != 6 {
-            panic!(
-                "VelocityData must be initialized with a vector of length 6 (3 for linear, 3 for angular)"
-            );
-        }
-        VelocityData {
+        assert!(
+            data.len() == 6,
+            "VelocityData must be initialized with a vector of length 6 (3 for linear, 3 for angular)"
+        );
+        Self {
             linear: Vector3::new(data[0], data[1], data[2]),
             angular: Vector3::new(data[3], data[4], data[5]),
         }
@@ -403,7 +401,7 @@ impl From<Vec<f64>> for VelocityData {
 }
 impl From<(Vector3<f64>, Vector3<f64>)> for VelocityData {
     fn from(data: (Vector3<f64>, Vector3<f64>)) -> Self {
-        VelocityData {
+        Self {
             linear: data.0,
             angular: data.1,
         }
@@ -411,7 +409,7 @@ impl From<(Vector3<f64>, Vector3<f64>)> for VelocityData {
 }
 impl From<Vector6<f64>> for VelocityData {
     fn from(data: Vector6<f64>) -> Self {
-        VelocityData {
+        Self {
             linear: Vector3::new(data[0], data[1], data[2]),
             angular: Vector3::new(data[3], data[4], data[5]),
         }
@@ -434,13 +432,14 @@ impl InputModel for VelocityData {
             self.linear
                 .iter()
                 .chain(self.angular.iter())
-                .cloned()
+                .copied()
                 .collect(),
         )
     }
 }
 
 /// Basic structure for holding the strapdown mechanization state in the form of position, velocity, and attitude.
+///
 /// Attitude is stored in matrix form (rotation or direction cosine matrix, users choice and only impacts filter
 /// implementation) and position and velocity are stored as vectors. For computational simplicity, latitude and
 /// longitude are stored as radians.
@@ -482,7 +481,7 @@ impl Debug for StrapdownState {
                     yaw.to_degrees()
                 ),
             )
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 impl Display for StrapdownState {
@@ -505,7 +504,7 @@ impl Display for StrapdownState {
 }
 impl Default for StrapdownState {
     fn default() -> Self {
-        StrapdownState {
+        Self {
             latitude: 0.0,
             longitude: 0.0,
             altitude: 0.0,
@@ -540,7 +539,7 @@ impl StrapdownState {
         attitude: Rotation3<f64>,
         in_degrees: bool,
         is_enu: Option<bool>,
-    ) -> StrapdownState {
+    ) -> Self {
         let latitude = if in_degrees {
             latitude.to_radians()
         } else {
@@ -561,11 +560,10 @@ impl StrapdownState {
         );
         assert!(
             (-30_000.0..=30_000.0).contains(&altitude),
-            "Strapdown equations and the local level frame are only valid within 30 km above mean sea level and maximum ocean depth is ~11 km. Given altitude: {} m, please check your input and sign conventions.",
-            altitude
+            "Strapdown equations and the local level frame are only valid within 30 km above mean sea level and maximum ocean depth is ~11 km. Given altitude: {altitude} m, please check your input and sign conventions."
         );
 
-        StrapdownState {
+        Self {
             latitude,
             longitude,
             altitude,
@@ -620,7 +618,7 @@ impl TryFrom<&[f64]> for StrapdownState {
             return Err("Slice must have length 9 for StrapdownState");
         }
         let attitude = Rotation3::from_euler_angles(slice[6], slice[7], slice[8]);
-        Ok(StrapdownState::new(
+        Ok(Self::new(
             slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], attitude,
             false, // angles are in radians
             None,
@@ -637,18 +635,20 @@ impl TryFrom<Vec<f64>> for StrapdownState {
 impl From<StrapdownState> for DVector<f64> {
     /// Converts a StrapdownState to a DVector<f64> in NED order, angles in radians.
     fn from(state: StrapdownState) -> Self {
-        DVector::from_vec(state.into())
+        Self::from_vec(state.into())
     }
 }
 impl From<&StrapdownState> for DVector<f64> {
     /// Converts a reference to StrapdownState to a DVector<f64> in NED order, angles in radians.
     fn from(state: &StrapdownState) -> Self {
-        DVector::from_vec(state.into())
+        Self::from_vec(state.into())
     }
 }
 
-/// Local Level Frame form of the forward kinematics equations. Corresponds to section 5.4 Local-Navigation Frame Equations
-/// from the book _Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems, Second Edition_
+/// Local Level Frame form of the forward kinematics equations.
+///
+/// Corresponds to section 5.4 Local-Navigation Frame Equations from the book
+/// _Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems, Second Edition_
 /// by Paul D. Groves; Second Edition.
 ///
 /// This function implements the forward kinematics equations for the strapdown navigation system. It takes
@@ -1451,7 +1451,7 @@ mod tests {
             accel: Vector3::new(1.0, 2.0, 3.0),
             gyro: Vector3::new(0.1, 0.2, 0.3),
         };
-        let display_str = format!("{}", imu);
+        let display_str = format!("{imu}");
         assert!(display_str.contains("1.0000"));
         assert!(display_str.contains("2.0000"));
         assert!(display_str.contains("3.0000"));
@@ -1491,7 +1491,7 @@ mod tests {
     fn test_strapdown_state_debug() {
         let attitude = Rotation3::from_euler_angles(0.1, 0.2, 0.3);
         let state = StrapdownState::new(45.0, -122.0, 100.0, 1.0, 2.0, 3.0, attitude, true, None);
-        let debug_str = format!("{:?}", state);
+        let debug_str = format!("{state:?}");
         assert!(debug_str.contains("StrapdownState"));
         assert!(debug_str.contains("latitude"));
         assert!(debug_str.contains("45"));
@@ -1501,7 +1501,7 @@ mod tests {
     fn test_strapdown_state_display() {
         let attitude = Rotation3::from_euler_angles(0.1, 0.2, 0.3);
         let state = StrapdownState::new(45.0, -122.0, 100.0, 1.0, 2.0, 3.0, attitude, true, None);
-        let display_str = format!("{}", state);
+        let display_str = format!("{state}");
         assert!(display_str.contains("StrapdownState"));
         assert!(display_str.contains("45"));
         assert!(display_str.contains("lat"));
@@ -1743,7 +1743,7 @@ mod tests {
         let duration_seconds = 3600; // 1 hour
         let sample_rate_hz = 1;
 
-        let (_imu_data, _gps_measurements, true_states) = generate_scenario_data(
+        let (_imu_data, gps_measurements, true_states) = generate_scenario_data(
             initial_state,
             duration_seconds,
             sample_rate_hz,
@@ -1756,7 +1756,7 @@ mod tests {
 
         // Check final state - everything should remain constant
         let final_state = true_states.last().unwrap();
-        let final_gps = _gps_measurements.last().unwrap();
+        let final_gps = gps_measurements.last().unwrap();
 
         // Verify GPS measurements are in degrees
         assert!(

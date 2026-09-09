@@ -29,7 +29,7 @@ use common::{
     validate_output_path,
 };
 use log::{error, info};
-use nalgebra::{Rotation3, Vector3};
+use nalgebra::{DMatrix, Rotation3, Vector3};
 use rayon::prelude::*;
 use std::error::Error;
 use std::path::{Path, PathBuf};
@@ -460,7 +460,7 @@ struct CreateConfigArgs {
     mode: SimulationMode,
 }
 
-fn execution_limits_from_args(args: &SimArgs) -> ExecutionLimits {
+const fn execution_limits_from_args(args: &SimArgs) -> ExecutionLimits {
     ExecutionLimits {
         max_wall_clock_ratio: args.max_wall_clock_ratio,
         max_wall_clock_s: args.max_wall_clock_s,
@@ -519,12 +519,12 @@ fn process_file(
                 FilterType::Ukf => {
                     let mut ukf = initialize_ukf(records[0].clone(), UkfConfig::default());
                     info!("Initialized UKF");
-                    run_closed_loop(&mut ukf, event_stream, None, Some(execution_limits.clone()))
+                    run_closed_loop(&mut ukf, event_stream, None, Some(execution_limits))
                 }
                 FilterType::Ekf => {
                     let mut ekf = initialize_ekf(records[0].clone(), None, None, None, None, true);
                     info!("Initialized EKF");
-                    run_closed_loop(&mut ekf, event_stream, None, Some(execution_limits.clone()))
+                    run_closed_loop(&mut ekf, event_stream, None, Some(execution_limits))
                 }
                 FilterType::Eskf => {
                     let mut eskf = initialize_eskf(records[0].clone(), None, None, None, None);
@@ -550,7 +550,7 @@ fn process_file(
                                 info!("Performance plot generated successfully");
                             }
                             Err(e) => {
-                                error!("Failed to generate performance plot: {}", e);
+                                error!("Failed to generate performance plot: {e}");
                                 // Don't fail the entire process if plotting fails
                             }
                         }
@@ -566,7 +566,7 @@ fn process_file(
                     Ok(())
                 }
                 Err(e) => {
-                    error!("Error running closed-loop simulation: {}", e);
+                    error!("Error running closed-loop simulation: {e}");
                     Err(e.into())
                 }
             }
@@ -670,7 +670,8 @@ fn process_file(
                 rbpf_defaults.position_process_noise_std_m
             };
             #[cfg(feature = "geonav")]
-            let geo_bias_dim = gravity_map.is_some() as usize + magnetic_map.is_some() as usize;
+            let geo_bias_dim =
+                usize::from(gravity_map.is_some()) + usize::from(magnetic_map.is_some());
             #[cfg(not(feature = "geonav"))]
             let geo_bias_dim = 0usize;
             let mut rbpf = RaoBlackwellizedParticleFilter::new(
@@ -718,7 +719,7 @@ fn process_file(
                         info!("Performance plot generated successfully");
                     }
                     Err(e) => {
-                        error!("Failed to generate performance plot: {}", e);
+                        error!("Failed to generate performance plot: {e}");
                     }
                 }
             }
@@ -861,7 +862,7 @@ fn run_from_config(
             }
         }
         if failures > 0 {
-            error!("{} file(s) failed to process", failures);
+            error!("{failures} file(s) failed to process");
         }
     }
 
@@ -904,12 +905,12 @@ fn run_single_closed_loop_simulation(
                 },
             );
             info!("Initialized UKF");
-            run_closed_loop(&mut ukf, event_stream, None, Some(execution_limits.clone()))
+            run_closed_loop(&mut ukf, event_stream, None, Some(execution_limits))
         }
         FilterType::Ekf => {
             let mut ekf = initialize_ekf(records[0].clone(), None, None, None, None, true);
             info!("Initialized EKF");
-            run_closed_loop(&mut ekf, event_stream, None, Some(execution_limits.clone()))
+            run_closed_loop(&mut ekf, event_stream, None, Some(execution_limits))
         }
         FilterType::Eskf => {
             let mut eskf = initialize_eskf(records[0].clone(), None, None, None, None);
@@ -926,7 +927,7 @@ fn run_single_closed_loop_simulation(
             Ok(())
         }
         Err(e) => {
-            error!("Error running closed-loop simulation: {}", e);
+            error!("Error running closed-loop simulation: {e}");
             Err(e.into())
         }
     }
@@ -1082,7 +1083,7 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
         FilterType::Ekf => "Extended Kalman Filter (EKF)",
         FilterType::Eskf => "Error-State Kalman Filter (ESKF)",
     };
-    info!("Running in closed-loop mode with {}", filter_name);
+    info!("Running in closed-loop mode with {filter_name}");
 
     // Get all CSV files to process
     let csv_files = get_csv_files(&args.sim.input)?;
@@ -1113,7 +1114,7 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
             seed: args.seed,
         };
 
-        info!("Using GNSS degradation config: {:?}", gnss_degradation);
+        info!("Using GNSS degradation config: {gnss_degradation:?}");
         let output_file = Path::new(&args.sim.output).join(input_file);
 
         // Run simulation using the common helper function
@@ -1158,7 +1159,7 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
 
 /// Convert GeoResolution to GravityResolution
 #[cfg(feature = "geonav")]
-fn convert_resolution_gravity(resolution: GeoResolution) -> GravityResolution {
+const fn convert_resolution_gravity(resolution: GeoResolution) -> GravityResolution {
     match resolution {
         GeoResolution::OneDegree => GravityResolution::OneDegree,
         GeoResolution::ThirtyMinutes => GravityResolution::ThirtyMinutes,
@@ -1170,14 +1171,13 @@ fn convert_resolution_gravity(resolution: GeoResolution) -> GravityResolution {
         GeoResolution::FourMinutes => GravityResolution::FourMinutes,
         GeoResolution::ThreeMinutes => GravityResolution::ThreeMinutes,
         GeoResolution::TwoMinutes => GravityResolution::TwoMinutes,
-        GeoResolution::OneMinute => GravityResolution::OneMinute,
         _ => GravityResolution::OneMinute,
     }
 }
 
 /// Convert GeoResolution to MagneticResolution
 #[cfg(feature = "geonav")]
-fn convert_resolution_magnetic(resolution: GeoResolution) -> MagneticResolution {
+const fn convert_resolution_magnetic(resolution: GeoResolution) -> MagneticResolution {
     match resolution {
         GeoResolution::OneDegree => MagneticResolution::OneDegree,
         GeoResolution::ThirtyMinutes => MagneticResolution::ThirtyMinutes,
@@ -1188,7 +1188,6 @@ fn convert_resolution_magnetic(resolution: GeoResolution) -> MagneticResolution 
         GeoResolution::FiveMinutes => MagneticResolution::FiveMinutes,
         GeoResolution::FourMinutes => MagneticResolution::FourMinutes,
         GeoResolution::ThreeMinutes => MagneticResolution::ThreeMinutes,
-        GeoResolution::TwoMinutes => MagneticResolution::TwoMinutes,
         _ => MagneticResolution::TwoMinutes,
     }
 }
@@ -1205,7 +1204,7 @@ fn find_gravity_map(input_path: &Path) -> Result<PathBuf, Box<dyn Error>> {
         .ok_or("Cannot determine input file stem")?
         .to_string_lossy();
 
-    let map_file = input_dir.join(format!("{}_gravity.nc", input_stem));
+    let map_file = input_dir.join(format!("{input_stem}_gravity.nc"));
 
     if map_file.exists() {
         Ok(map_file)
@@ -1226,7 +1225,7 @@ fn find_magnetic_map(input_path: &Path) -> Result<PathBuf, Box<dyn Error>> {
         .ok_or("Cannot determine input file stem")?
         .to_string_lossy();
 
-    let map_file = input_dir.join(format!("{}_magnetic.nc", input_stem));
+    let map_file = input_dir.join(format!("{input_stem}_magnetic.nc"));
 
     if map_file.exists() {
         Ok(map_file)
@@ -1246,10 +1245,7 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
         FilterType::Ekf => "Extended Kalman Filter (EKF)",
         FilterType::Eskf => "Error-State Kalman Filter (ESKF)",
     };
-    info!(
-        "Running geophysical navigation in closed-loop mode with {}",
-        filter_name
-    );
+    info!("Running geophysical navigation in closed-loop mode with {filter_name}");
 
     // Validate that at least one geophysical map is configured
     if args.geo.gravity_resolution.is_none() && args.geo.magnetic_resolution.is_none() {
@@ -1349,7 +1345,8 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
         info!("Built event stream with {} events", events.events.len());
 
         // Determine number of geophysical states
-        let num_geo_states = gravity_map.is_some() as usize + magnetic_map.is_some() as usize;
+        let num_geo_states =
+            usize::from(gravity_map.is_some()) + usize::from(magnetic_map.is_some());
 
         // Run simulation based on filter type
         let results = match args.filter {
@@ -1421,7 +1418,6 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                 ];
                 covariance_diagonal.extend(vec![1.0; num_geo_states]);
 
-                use nalgebra::DMatrix;
                 let mut process_noise_vec = vec![
                     1e-9, 1e-9, 1e-6, // Position process noise
                     1e-6, 1e-6, 1e-6, // Velocity process noise
@@ -1503,14 +1499,9 @@ fn run_rbpf_event_loop(
     let start_time = event_stream.start_time;
     let mut results = Vec::with_capacity(event_stream.events.len());
     let mut monitor = HealthMonitor::new(HealthLimits::default());
-    let sim_duration_s = event_stream
-        .events
-        .last()
-        .map(|event| match event {
-            Event::Imu { elapsed_s, .. } => *elapsed_s,
-            Event::Measurement { elapsed_s, .. } => *elapsed_s,
-        })
-        .unwrap_or(0.0);
+    let sim_duration_s = event_stream.events.last().map_or(0.0, |event| match event {
+        Event::Imu { elapsed_s, .. } | Event::Measurement { elapsed_s, .. } => *elapsed_s,
+    });
     let mut execution_monitor = ExecutionMonitor::new(execution_limits.clone(), sim_duration_s);
 
     let (mean, cov) = rbpf.estimate();
@@ -1521,10 +1512,9 @@ fn run_rbpf_event_loop(
     ));
     let mut last_ts = start_time;
 
-    for event in event_stream.events.into_iter() {
+    for event in event_stream.events {
         let elapsed_s = match &event {
-            Event::Imu { elapsed_s, .. } => *elapsed_s,
-            Event::Measurement { elapsed_s, .. } => *elapsed_s,
+            Event::Imu { elapsed_s, .. } | Event::Measurement { elapsed_s, .. } => *elapsed_s,
         };
         let ts = start_time + chrono::Duration::milliseconds((elapsed_s * 1000.0).round() as i64);
 
@@ -1644,7 +1634,7 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
         };
 
         #[cfg(feature = "geonav")]
-        let geo_bias_dim = gravity_map.is_some() as usize + magnetic_map.is_some() as usize;
+        let geo_bias_dim = usize::from(gravity_map.is_some()) + usize::from(magnetic_map.is_some());
         #[cfg(not(feature = "geonav"))]
         let geo_bias_dim = 0usize;
 
@@ -2003,7 +1993,6 @@ fn prompt_log_level() -> strapdown::sim::LogLevel {
 fn prompt_log_file() -> Option<String> {
     println!("Please specify a log file path (press Enter to log to stderr, or 'q' to quit):");
     match read_user_input() {
-        None => None,
         Some(input) if !input.trim().is_empty() => Some(input),
         _ => None,
     }
@@ -2020,8 +2009,8 @@ fn prompt_enable_geophysical() -> bool {
         print!("Choice: ");
         let _ = io::stdout().flush();
 
-        match read_user_input() {
-            Some(input) => match input.to_lowercase().as_str() {
+        if let Some(input) = read_user_input() {
+            match input.to_lowercase().as_str() {
                 "y" | "yes" => return true,
                 "n" | "no" => return false,
                 "q" | "quit" => {
@@ -2030,13 +2019,10 @@ fn prompt_enable_geophysical() -> bool {
                 }
                 _ => {
                     println!("Invalid input. Please enter 'y', 'n', or 'q' to quit.");
-                    continue;
                 }
-            },
-            None => {
-                println!("Invalid input. Please enter 'y', 'n', or 'q' to quit.");
-                continue;
             }
+        } else {
+            println!("Invalid input. Please enter 'y', 'n', or 'q' to quit.");
         }
     }
 }
@@ -2062,7 +2048,7 @@ fn prompt_geo_resolution(measurement_type: &str) -> strapdown::sim::GeoResolutio
     use strapdown::sim::GeoResolution;
 
     loop {
-        println!("\nSelect {} map resolution:", measurement_type);
+        println!("\nSelect {measurement_type} map resolution:");
         println!("  1. One Degree");
         println!("  2. Thirty Minutes");
         println!("  3. Twenty Minutes");
@@ -2107,7 +2093,6 @@ fn prompt_geo_resolution(measurement_type: &str) -> strapdown::sim::GeoResolutio
                     println!(
                         "Invalid choice. Please enter a number between 1 and 15, or 'q' to quit."
                     );
-                    continue;
                 }
             },
             None => return GeoResolution::OneMinute,
@@ -2126,20 +2111,21 @@ fn prompt_gravity_config() -> Option<GeoMeasurementConfig> {
         print!("Choice: ");
         let _ = io::stdout().flush();
 
-        match read_user_input() {
-            Some(input) => match input.to_lowercase().as_str() {
+        if let Some(input) = read_user_input() {
+            match input.to_lowercase().as_str() {
                 "y" | "yes" => {
                     let resolution = prompt_geo_resolution("gravity");
 
                     println!("\nGravity measurement bias (mGal) [0.0]: ");
                     let bias = match read_user_input() {
-                        Some(input) if !input.is_empty() => match input.parse::<f64>() {
-                            Ok(v) => Some(v),
-                            Err(_) => {
+                        Some(input) if !input.is_empty() => {
+                            if let Ok(v) = input.parse::<f64>() {
+                                Some(v)
+                            } else {
                                 println!("Invalid number. Using default (0.0).");
                                 None
                             }
-                        },
+                        }
                         _ => None,
                     };
 
@@ -2165,13 +2151,10 @@ fn prompt_gravity_config() -> Option<GeoMeasurementConfig> {
                 }
                 _ => {
                     println!("Invalid input. Please enter 'y', 'n', or 'q' to quit.");
-                    continue;
                 }
-            },
-            None => {
-                println!("Invalid input. Please enter 'y', 'n', or 'q' to quit.");
-                continue;
             }
+        } else {
+            println!("Invalid input. Please enter 'y', 'n', or 'q' to quit.");
         }
     }
 }
@@ -2187,20 +2170,21 @@ fn prompt_magnetic_config() -> Option<GeoMeasurementConfig> {
         print!("Choice: ");
         let _ = io::stdout().flush();
 
-        match read_user_input() {
-            Some(input) => match input.to_lowercase().as_str() {
+        if let Some(input) = read_user_input() {
+            match input.to_lowercase().as_str() {
                 "y" | "yes" => {
                     let resolution = prompt_geo_resolution("magnetic");
 
                     println!("\nMagnetic measurement bias (nT) [0.0]: ");
                     let bias = match read_user_input() {
-                        Some(input) if !input.is_empty() => match input.parse::<f64>() {
-                            Ok(v) => Some(v),
-                            Err(_) => {
+                        Some(input) if !input.is_empty() => {
+                            if let Ok(v) = input.parse::<f64>() {
+                                Some(v)
+                            } else {
                                 println!("Invalid number. Using default (0.0).");
                                 None
                             }
-                        },
+                        }
                         _ => None,
                     };
 
@@ -2226,13 +2210,10 @@ fn prompt_magnetic_config() -> Option<GeoMeasurementConfig> {
                 }
                 _ => {
                     println!("Invalid input. Please enter 'y', 'n', or 'q' to quit.");
-                    continue;
                 }
-            },
-            None => {
-                println!("Invalid input. Please enter 'y', 'n', or 'q' to quit.");
-                continue;
             }
+        } else {
+            println!("Invalid input. Please enter 'y', 'n', or 'q' to quit.");
         }
     }
 }
@@ -2266,10 +2247,7 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
     let config_name = prompt_config_name();
     let save_path = prompt_config_path();
 
-    println!(
-        "\nCreating configuration file at: {}/{}\n",
-        save_path, config_name
-    );
+    println!("\nCreating configuration file at: {save_path}/{config_name}\n");
     let input_path = prompt_input_path();
     let output_path = prompt_output_path();
     let mode = prompt_simulation_mode();
@@ -2333,14 +2311,14 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
             let geo_frequency_s = prompt_geo_measurement_frequency();
 
             let (gravity_resolution, gravity_bias, gravity_noise_std, gravity_map_file) =
-                gravity_config
-                    .map(|(res, bias, noise, map)| (Some(res), bias, noise, map))
-                    .unwrap_or((None, None, None, None));
+                gravity_config.map_or((None, None, None, None), |(res, bias, noise, map)| {
+                    (Some(res), bias, noise, map)
+                });
 
             let (magnetic_resolution, magnetic_bias, magnetic_noise_std, magnetic_map_file) =
-                magnetic_config
-                    .map(|(res, bias, noise, map)| (Some(res), bias, noise, map))
-                    .unwrap_or((None, None, None, None));
+                magnetic_config.map_or((None, None, None, None), |(res, bias, noise, map)| {
+                    (Some(res), bias, noise, map)
+                });
 
             Some(strapdown::sim::GeophysicalConfig {
                 gravity_resolution,
@@ -2361,7 +2339,7 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
     // Build the complete configuration
     let config = SimulationConfig {
         input: input_path,
-        output: output_path.clone(),
+        output: output_path,
         mode,
         seed,
         parallel,

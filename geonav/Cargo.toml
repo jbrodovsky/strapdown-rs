@@ -36,3 +36,6 @@ path = "src/lib.rs"
 # Note: The geonav-sim binary has been consolidated into strapdown-sim.
 # Use: cargo build --package strapdown-sim --features geonav
 # Run: strapdown-sim cl --geo --gravity-resolution ...
+
+[lints]
+workspace = true

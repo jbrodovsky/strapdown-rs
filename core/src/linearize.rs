@@ -1158,6 +1158,10 @@ mod tests {
     /// below the first-order terms.
     #[test]
     fn test_error_state_jacobian_matches_nonlinear_propagation() {
+        // O(dt^2) terms the first-order Jacobian omits reach ~7e-4 at this dt; anything
+        // above 5e-3 is a first-order structural error.
+        const TOLERANCE: f64 = 5e-3;
+
         const DT: f64 = 0.02;
         let accel = Vector3::new(0.6, -1.1, 9.9);
         let gyro = Vector3::new(0.03, -0.02, 0.05);
@@ -1222,10 +1226,6 @@ mod tests {
             1e-5, 1e-5, 1e-1, 1e-3, 1e-3, 1e-3, 1e-5, 1e-5, 1e-5, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6,
             1e-6,
         ];
-        // O(dt^2) terms the first-order Jacobian omits reach ~7e-4 at this dt; anything
-        // above 5e-3 is a first-order structural error.
-        const TOLERANCE: f64 = 5e-3;
-
         // Columns 9..15 (the bias errors) are excluded. `forward` stores attitude via
         // `Rotation3::from_matrix`, an iterative orthonormalising projection whose own
         // derivative is not unity, and differencing through it reports d(theta)/d(b_g)
@@ -1350,9 +1350,8 @@ mod tests {
         let gap = (analytic - global_form).abs().max() / scale;
         assert!(
             gap > 1e-2,
-            "F's velocity/attitude block matches the global convention (gap {:e}); \
-             the local (body-frame) form -C_b^n [f^b]_x dt is required -- see #266",
-            gap
+            "F's velocity/attitude block matches the global convention (gap {gap:e}); \
+             the local (body-frame) form -C_b^n [f^b]_x dt is required -- see #266"
         );
     }
 
@@ -1508,7 +1507,7 @@ mod tests {
             errors.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap());
             eprintln!("Top 5 errors:");
             for (i, j, err) in errors.iter().take(5) {
-                eprintln!("  ({}, {}): {:.10e}", i, j, err);
+                eprintln!("  ({i}, {j}): {err:.10e}");
             }
         }
 
@@ -1516,8 +1515,7 @@ mod tests {
         let max_error = (&f_analytic - &f_numeric).abs().max();
         assert!(
             max_error < 1e-6,
-            "Max error {} exceeds threshold for stationary state",
-            max_error
+            "Max error {max_error} exceeds threshold for stationary state"
         );
     }
 
@@ -1546,8 +1544,7 @@ mod tests {
         let max_error = (&f_analytic - &f_numeric).abs().max();
         assert!(
             max_error < 1e-5,
-            "Max error {} exceeds threshold for moving state. Note: errors ~1e-5 are expected due to nonlinear coupling in trapezoidal integration.",
-            max_error
+            "Max error {max_error} exceeds threshold for moving state. Note: errors ~1e-5 are expected due to nonlinear coupling in trapezoidal integration."
         );
     }
 

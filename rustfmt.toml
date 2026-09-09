@@ -1,0 +1,12 @@
+# rustfmt configuration (queue 100, issue #253).
+#
+# Only stable options are set here: CI runs `cargo fmt --all -- --check` on
+# stable, so a nightly-only key would silently do nothing and make formatting
+# less enforceable rather than more.
+#
+# Both values below are rustfmt's current defaults. They are pinned explicitly
+# so that a future change to those defaults reformats the tree only when the
+# pin is deliberately updated, rather than as a surprise diff across ~27k lines
+# on whatever toolchain CI happens to pick up.
+edition = "2024"
+max_width = 100

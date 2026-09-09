@@ -112,7 +112,7 @@ impl InitialState {
             pitch = wrap_to_2pi(pitch);
             yaw = wrap_to_2pi(yaw);
         }
-        InitialState {
+        Self {
             latitude,
             longitude,
             altitude,
@@ -161,7 +161,7 @@ impl Debug for UnscentedKalmanFilter {
             .field("process_noise", &self.process_noise)
             .field("lambda", &self.lambda)
             .field("state_size", &self.state_size)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 impl Display for UnscentedKalmanFilter {
@@ -209,7 +209,7 @@ impl UnscentedKalmanFilter {
         alpha: f64,
         beta: f64,
         kappa: f64,
-    ) -> UnscentedKalmanFilter {
+    ) -> Self {
         let mut mean = if initial_state.in_degrees {
             vec![
                 initial_state.latitude.to_radians(),
@@ -237,7 +237,7 @@ impl UnscentedKalmanFilter {
         };
         mean.extend(imu_biases);
         if let Some(ref other_states) = other_states {
-            mean.extend(other_states.iter().cloned());
+            mean.extend(other_states.iter().copied());
         }
         let state_size = mean.len();
         let mean_state = DVector::from_vec(mean);
@@ -247,12 +247,12 @@ impl UnscentedKalmanFilter {
         let mut weights_cov = DVector::zeros(2 * state_size + 1);
         weights_mean[0] = lambda / (state_size as f64 + lambda);
         weights_cov[0] = lambda / (state_size as f64 + lambda) + (1.0 - alpha * alpha + beta);
-        for i in 1..(2 * state_size + 1) {
+        for i in 1..=(2 * state_size) {
             let w = 1.0 / (2.0 * (state_size as f64 + lambda));
             weights_mean[i] = w;
             weights_cov[i] = w;
         }
-        UnscentedKalmanFilter {
+        Self {
             mean_state,
             covariance,
             process_noise,
@@ -281,11 +281,7 @@ impl UnscentedKalmanFilter {
         }
         pts
     }
-    fn robust_kalman_gain(
-        &mut self,
-        cross_covariance: &DMatrix<f64>,
-        s: &DMatrix<f64>,
-    ) -> DMatrix<f64> {
+    fn robust_kalman_gain(cross_covariance: &DMatrix<f64>, s: &DMatrix<f64>) -> DMatrix<f64> {
         // Compute a numerically robust Kalman gain K = P_xz * S^{-1} using a
         // symmetric positive-definite solver. This helps avoid instability when
         // the innovation covariance `s` is poorly conditioned.
@@ -401,7 +397,7 @@ impl NavigationFilter for UnscentedKalmanFilter {
             let state_diff = sigma_points.column(i) - &self.mean_state;
             cross_covariance += self.weights_cov[i] * state_diff * measurement_diff.transpose();
         }
-        let k = self.robust_kalman_gain(&cross_covariance, &s);
+        let k = Self::robust_kalman_gain(&cross_covariance, &s);
         let mut innovation = measurement.get_measurement(&self.mean_state) - &z_hat;
         // Keep angular innovations on the circle (see `wrap_residual`, #286).
         // (The sigma-point spread above is left linearised: with a sane yaw
@@ -639,7 +635,7 @@ impl ExtendedKalmanFilter {
         covariance_diagonal: Vec<f64>,
         process_noise: DMatrix<f64>,
         use_biases: bool,
-    ) -> ExtendedKalmanFilter {
+    ) -> Self {
         // Construct initial state vector
         let mut mean = if initial_state.in_degrees {
             vec![
@@ -683,7 +679,7 @@ impl ExtendedKalmanFilter {
         let mean_state = DVector::from_vec(mean);
         let covariance = DMatrix::<f64>::from_diagonal(&DVector::from_vec(covariance_diagonal));
 
-        ExtendedKalmanFilter {
+        Self {
             mean_state,
             covariance,
             process_noise,
@@ -1063,7 +1059,7 @@ impl NavigationFilter for ExtendedKalmanFilter {
 /// # References
 ///
 /// - Sola, J. "Quaternion kinematics for the error-state Kalman filter" (2017)
-/// - Groves, P. D. "Principles of GNSS, Inertial, and Multisensor Integrated  
+/// - Groves, P. D. "Principles of GNSS, Inertial, and Multisensor Integrated\
 ///   Navigation Systems, 2nd Edition", Chapter 14
 /// - Trawny, N. & Roumeliotis, S. "Indirect Kalman Filter for 3D Attitude Estimation" (2005)
 ///
@@ -1173,7 +1169,7 @@ impl Debug for ErrorStateKalmanFilter {
             .field("error_covariance", &self.error_covariance)
             .field("process_noise", &self.process_noise)
             .field("is_enu", &self.is_enu)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -1257,7 +1253,7 @@ impl ErrorStateKalmanFilter {
         imu_biases: Vec<f64>,
         error_covariance_diagonal: Vec<f64>,
         process_noise: DMatrix<f64>,
-    ) -> ErrorStateKalmanFilter {
+    ) -> Self {
         // Convert initial Euler angles to quaternion for nominal state.
         // `from_euler_angles` takes radians unconditionally, so degree inputs
         // must be converted here. (This was previously inverted -- radian
@@ -1300,7 +1296,7 @@ impl ErrorStateKalmanFilter {
         let error_covariance =
             DMatrix::from_diagonal(&DVector::from_vec(error_covariance_diagonal));
 
-        ErrorStateKalmanFilter {
+        Self {
             nominal_latitude,
             nominal_longitude,
             nominal_altitude: initial_state.altitude,
@@ -1824,7 +1820,7 @@ mod tests {
         let ukf = UnscentedKalmanFilter::new(
             UKF_PARAMS,
             IMU_BIASES.to_vec(),
-            Some(measurement_bias.clone()),
+            Some(measurement_bias),
             vec![1e-3; 18],
             DMatrix::from_diagonal(&DVector::from_vec(vec![1e-3; 18])),
             ALPHA,
@@ -1932,12 +1928,12 @@ mod tests {
         );
 
         // Test Debug
-        let debug_str = format!("{:?}", ukf);
+        let debug_str = format!("{ukf:?}");
         assert!(debug_str.contains("UKF"));
         assert!(debug_str.contains("mean_state"));
 
         // Test Display
-        let display_str = format!("{}", ukf);
+        let display_str = format!("{ukf}");
         assert!(display_str.contains("UnscentedKalmanFilter"));
         assert!(display_str.contains("covariance"));
     }
@@ -2173,16 +2169,14 @@ mod tests {
         let final_vd = ukf.mean_state[5];
         assert!(
             final_vd < -5.0,
-            "Expected significant vertical velocity, got {}",
-            final_vd
+            "Expected significant vertical velocity, got {final_vd}"
         );
 
         // Altitude should have decreased
         let final_altitude = ukf.mean_state[2];
         assert!(
             final_altitude < 100.0,
-            "Expected altitude decrease, got {}",
-            final_altitude
+            "Expected altitude decrease, got {final_altitude}"
         );
 
         // Apply measurement update with GPS position
@@ -2324,9 +2318,7 @@ mod tests {
         let final_lat = ukf.mean_state[0];
         assert!(
             final_lat > initial_lat,
-            "Expected latitude increase, got initial: {} final: {}",
-            initial_lat,
-            final_lat
+            "Expected latitude increase, got initial: {initial_lat} final: {final_lat}"
         );
 
         // Northward velocity should remain approximately constant
@@ -2406,9 +2398,7 @@ mod tests {
         let final_lon = ukf.mean_state[1];
         assert!(
             final_lon > initial_lon,
-            "Expected longitude increase, got initial: {} final: {}",
-            initial_lon,
-            final_lon
+            "Expected longitude increase, got initial: {initial_lon} final: {final_lon}"
         );
 
         // Eastward velocity should remain approximately constant
@@ -2574,12 +2564,12 @@ mod tests {
         );
 
         // Test Debug
-        let debug_str = format!("{:?}", ekf);
+        let debug_str = format!("{ekf:?}");
         assert!(debug_str.contains("EKF"));
         assert!(debug_str.contains("mean_state"));
 
         // Test Display
-        let display_str = format!("{}", ekf);
+        let display_str = format!("{ekf}");
         assert!(display_str.contains("ExtendedKalmanFilter"));
         assert!(display_str.contains("covariance"));
     }
@@ -2816,16 +2806,14 @@ mod tests {
         let final_vd = ekf.mean_state[5];
         assert!(
             final_vd < -5.0,
-            "Expected significant vertical velocity, got {}",
-            final_vd
+            "Expected significant vertical velocity, got {final_vd}"
         );
 
         // Altitude should have decreased
         let final_altitude = ekf.mean_state[2];
         assert!(
             final_altitude < 100.0,
-            "Expected altitude decrease, got {}",
-            final_altitude
+            "Expected altitude decrease, got {final_altitude}"
         );
 
         // Apply measurement update with GPS position
@@ -2961,9 +2949,7 @@ mod tests {
         let final_lat = ekf.mean_state[0];
         assert!(
             final_lat > initial_lat,
-            "Expected latitude increase, got initial: {} final: {}",
-            initial_lat,
-            final_lat
+            "Expected latitude increase, got initial: {initial_lat} final: {final_lat}"
         );
 
         // Northward velocity should remain approximately constant
@@ -3040,9 +3026,7 @@ mod tests {
         let final_lon = ekf.mean_state[1];
         assert!(
             final_lon > initial_lon,
-            "Expected longitude increase, got initial: {} final: {}",
-            initial_lon,
-            final_lon
+            "Expected longitude increase, got initial: {initial_lon} final: {final_lon}"
         );
 
         // Eastward velocity should remain approximately constant
@@ -3191,9 +3175,7 @@ mod tests {
         // Covariance should decrease after measurement update
         assert!(
             final_trace < initial_trace,
-            "Covariance should decrease after measurement update: {} >= {}",
-            final_trace,
-            initial_trace
+            "Covariance should decrease after measurement update: {final_trace} >= {initial_trace}"
         );
     }
 
@@ -3389,12 +3371,12 @@ mod tests {
         );
 
         // Test Debug
-        let debug_str = format!("{:?}", eskf);
+        let debug_str = format!("{eskf:?}");
         assert!(debug_str.contains("ESKF"));
         assert!(debug_str.contains("nominal_position"));
 
         // Test Display
-        let display_str = format!("{}", eskf);
+        let display_str = format!("{eskf}");
         assert!(display_str.contains("ErrorStateKalmanFilter"));
         assert!(display_str.contains("nominal_quaternion"));
     }
@@ -3635,9 +3617,7 @@ mod tests {
         // Covariance should decrease after measurement update
         assert!(
             final_trace < initial_trace,
-            "Covariance should decrease after measurement update: {} >= {}",
-            final_trace,
-            initial_trace
+            "Covariance should decrease after measurement update: {final_trace} >= {initial_trace}"
         );
     }
 
@@ -3919,8 +3899,7 @@ mod tests {
             .fold(0.0_f64, f64::max);
         assert!(
             max_diff > 0.05,
-            "FD and analytic attitude columns should differ at high pitch, max diff {}",
-            max_diff
+            "FD and analytic attitude columns should differ at high pitch, max diff {max_diff}"
         );
     }
 }
