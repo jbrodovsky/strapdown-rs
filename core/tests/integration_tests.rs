@@ -45,7 +45,9 @@ use strapdown::messages::{
     Event, GnssDegradationConfig, GnssFaultModel, GnssScheduler, build_event_stream,
 };
 use strapdown::rbpf::{RaoBlackwellizedParticleFilter, RbpfConfig};
-use strapdown::sim::{NavigationResult, TestDataRecord, dead_reckoning, run_closed_loop};
+use strapdown::sim::{
+    NavigationResult, TestDataRecord, dead_reckoning, initialize_eskf, run_closed_loop,
+};
 
 use nalgebra::{DMatrix, DVector, Quaternion, Rotation3, UnitQuaternion, Vector3};
 
@@ -111,6 +113,66 @@ const ESKF_INITIAL_COVARIANCE: [f64; 15] = [
     0.08, 0.08, 0.08, // accelerometer bias covariance (m/s²) - 8x default
     0.008, 0.008, 0.008, // gyroscope bias covariance (rad/s) - 8x default
 ];
+/// Anti-windup caps the ESKF clamps its bias estimates to (`kalman.rs`, #286).
+///
+/// Orders of magnitude above legitimate consumer-MEMS turn-on biases (~0.1 m/s^2,
+/// ~0.01 rad/s) and far below the runaway values a persistently faulty aiding sensor
+/// otherwise produces -- 9.2 m/s^2 and 6.5 rad/s on this very dataset before #286.
+const MAX_ACCEL_BIAS_MPS2: f64 = 2.0;
+const MAX_GYRO_BIAS_RPS: f64 = 0.05;
+
+/// Assert the bias estimates stayed bounded at *every* sample, not just the last one.
+///
+/// #258 asks for boundedness across the whole run, and the distinction matters: checking
+/// only the final estimate cannot tell a filter whose biases never moved from one that
+/// wound up to a runaway value mid-run and was dragged back by a later fix. The clamp in
+/// `inject_error_state` guarantees the final value regardless, so a final-sample assertion
+/// tests the clamp rather than the filter.
+fn assert_bias_estimates_bounded(results: &[NavigationResult], context: &str) {
+    let accel_peak = |pick: fn(&NavigationResult) -> f64| {
+        results
+            .iter()
+            .map(|r| pick(r).abs())
+            .fold(0.0_f64, f64::max)
+    };
+    println!(
+        "{context}: peak |bias| accel=[{:.4}, {:.4}, {:.4}] m/s^2, gyro=[{:.5}, {:.5}, {:.5}] rad/s",
+        accel_peak(|r| r.acc_bias_x),
+        accel_peak(|r| r.acc_bias_y),
+        accel_peak(|r| r.acc_bias_z),
+        accel_peak(|r| r.gyro_bias_x),
+        accel_peak(|r| r.gyro_bias_y),
+        accel_peak(|r| r.gyro_bias_z),
+    );
+
+    for (i, result) in results.iter().enumerate() {
+        for (axis, bias) in [
+            ("x", result.acc_bias_x),
+            ("y", result.acc_bias_y),
+            ("z", result.acc_bias_z),
+        ] {
+            assert!(
+                bias.is_finite() && bias.abs() <= MAX_ACCEL_BIAS_MPS2,
+                "{context}: accel bias {axis} left its physical bound at sample {i} of {}: \
+                 {bias:.3} m/s^2 exceeds {MAX_ACCEL_BIAS_MPS2} (see #258, #286)",
+                results.len()
+            );
+        }
+        for (axis, bias) in [
+            ("x", result.gyro_bias_x),
+            ("y", result.gyro_bias_y),
+            ("z", result.gyro_bias_z),
+        ] {
+            assert!(
+                bias.is_finite() && bias.abs() <= MAX_GYRO_BIAS_RPS,
+                "{context}: gyro bias {axis} left its physical bound at sample {i} of {}: \
+                 {bias:.4} rad/s exceeds {MAX_GYRO_BIAS_RPS} (see #258, #286)",
+                results.len()
+            );
+        }
+    }
+}
+
 /// Error statistics for a navigation solution
 #[allow(
     clippy::struct_field_names,
@@ -1427,31 +1489,15 @@ fn test_eskf_closed_loop_on_real_data() {
         stats.max_altitude_error
     );
 
-    // Bias plausibility (#286): bias estimates must stay within the anti-windup
-    // caps that bound them (2.0 m/s², 0.05 rad/s -- orders of magnitude above
-    // legitimate consumer-MEMS biases). Before the #286 fixes these reached
-    // 9.2 m/s² and 6.5 rad/s on this same run.
+    // Bias plausibility (#286, #258): estimates must stay within the anti-windup caps
+    // that bound them at every sample of the run, not merely at the end. Before the
+    // #286 fixes these reached 9.2 m/s² and 6.5 rad/s on this same data.
+    assert_bias_estimates_bounded(&results, "ESKF closed-loop");
     let final_est = eskf.get_estimate();
     println!(
         "Final biases: accel=[{:.4}, {:.4}, {:.4}] m/s², gyro=[{:.5}, {:.5}, {:.5}] rad/s",
         final_est[9], final_est[10], final_est[11], final_est[12], final_est[13], final_est[14]
     );
-    for i in 9..12 {
-        assert!(
-            final_est[i].abs() <= 2.0,
-            "ESKF accel bias {} should stay plausible, got {:.3} m/s² (see #286)",
-            i - 9,
-            final_est[i]
-        );
-    }
-    for i in 12..15 {
-        assert!(
-            final_est[i].abs() <= 0.05,
-            "ESKF gyro bias {} should stay plausible, got {:.4} rad/s (see #286)",
-            i - 12,
-            final_est[i]
-        );
-    }
 
     // Verify no NaN or infinite values in results
     for result in &results {
@@ -1595,6 +1641,11 @@ fn test_eskf_with_degraded_gnss() {
         assert!(result.longitude.is_finite());
         assert!(result.altitude.is_finite());
     }
+
+    // Degraded aiding is the condition bias windup showed up under (#286): halving the
+    // fix rate doubles the interval a mis-scaled correction has to accumulate over before
+    // the next measurement pulls it back.
+    assert_bias_estimates_bounded(&results, "ESKF degraded GNSS");
 }
 
 /// Test that closed-loop ESKF outperforms dead reckoning
@@ -1805,6 +1856,116 @@ fn test_eskf_stability_high_dynamics() {
         max_horizontal_limit,
         stats.max_horizontal_error
     );
+}
+
+/// The construction path a user of the default filter actually takes (#258).
+///
+/// Every other ESKF test in this file builds the filter from `ESKF_INITIAL_COVARIANCE` and
+/// `ESKF_PROCESS_NOISE`, which are test-local tuning constants. Now that `FilterType`
+/// defaults to `Eskf`, the tuning a `strapdown-sim closed-loop` run gets is
+/// `initialize_eskf`'s -- five orders of magnitude tighter on the bias states -- and until
+/// this test existed nothing exercised it end to end. Promoting a filter to the default
+/// without covering the default's own initialisation would ship the untested path.
+#[test]
+fn test_eskf_default_initialization_on_real_data() {
+    /// Samples the vertical channel is allowed to settle over: 30 s at this recording's 1 Hz.
+    const SETTLING_SAMPLES: usize = 30;
+
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let test_data_path = Path::new(manifest_dir).join("tests/test_data.csv");
+    let records = load_test_data(&test_data_path);
+    assert!(!records.is_empty(), "test data should not be empty");
+
+    // Every optional argument `None`: exactly what `strapdown-sim` passes.
+    let mut eskf = initialize_eskf(&records[0], None, None, None, None)
+        .expect("the default ESKF initialisation must succeed on real data");
+
+    let cfg = GnssDegradationConfig {
+        scheduler: GnssScheduler::PassThrough,
+        fault: GnssFaultModel::None,
+        ..Default::default()
+    };
+    let results = run_closed_loop(&mut eskf, build_event_stream(&records, &cfg), None, None)
+        .expect("the default ESKF must complete the full run");
+    assert_eq!(
+        results.len(),
+        records.len(),
+        "the filter must emit one solution per input record"
+    );
+
+    let stats = compute_error_metrics(&results, &records);
+    println!("\n=== ESKF Default Initialization ===");
+    println!(
+        "Horizontal Error: rms={:.2}m, max={:.2}m",
+        stats.rms_horizontal_error, stats.max_horizontal_error
+    );
+    println!(
+        "Altitude Error: rms={:.2}m, max={:.2}m",
+        stats.rms_altitude_error, stats.max_altitude_error
+    );
+
+    // Held to the same standard as `test_eskf_closed_loop_on_real_data`, so the default
+    // tuning cannot quietly be the worse of the two. It is currently the better one:
+    // 23.5 m rms / 37.9 m peak horizontal against that test's 23.5 m / 40.1 m.
+    assert!(
+        stats.rms_horizontal_error < 40.0,
+        "default-initialised ESKF RMS horizontal error should be under 40m, got {:.2}m",
+        stats.rms_horizontal_error
+    );
+    assert!(
+        stats.max_horizontal_error < 60.0,
+        "default-initialised ESKF max horizontal error should be under 60m, got {:.2}m",
+        stats.max_horizontal_error
+    );
+    assert!(
+        stats.rms_altitude_error < 10.0,
+        "default-initialised ESKF RMS altitude error should be under 10m, got {:.2}m",
+        stats.rms_altitude_error
+    );
+
+    // The vertical channel is unobservable at t=0: the filter starts with zero vertical
+    // velocity and no knowledge of the accelerometer bias, and needs a few GNSS fixes
+    // before it can separate the two. That settling transient peaks at 42.6 m on sample 3
+    // of this 1 Hz recording and is bounded separately from the steady state, which is the
+    // quantity a vertical-channel regression would move. Excluding it wholesale would hide
+    // a divergence, so it gets its own, looser ceiling rather than no ceiling.
+    let settled_max_altitude_error = results
+        .iter()
+        .zip(records.iter())
+        .skip(SETTLING_SAMPLES)
+        .map(|(result, record)| (result.altitude - record.altitude).abs())
+        .fold(0.0_f64, f64::max);
+    println!("Altitude Error after settling: max={settled_max_altitude_error:.2}m");
+    assert!(
+        stats.max_altitude_error < 100.0,
+        "default-initialised ESKF altitude settling transient should be under 100m, got {:.2}m",
+        stats.max_altitude_error
+    );
+    // ~3x margin over the 12.3 m observed across the remaining 5,336 samples, and far
+    // below the 385 m peak the pre-#286 vertical divergence produced.
+    assert!(
+        settled_max_altitude_error < 40.0,
+        "default-initialised ESKF max altitude error after settling should be under 40m, got {settled_max_altitude_error:.2}m"
+    );
+
+    // On this tuning the anti-windup clamp never engages -- unlike the looser test-local
+    // covariance, where it fires on 76 of the 5,366 samples. So here the bound below is a
+    // statement about the estimator rather than about the clamp.
+    assert_bias_estimates_bounded(&results, "ESKF default initialization");
+    for (i, result) in results.iter().enumerate() {
+        for (axis, bias) in [
+            ("x", result.gyro_bias_x),
+            ("y", result.gyro_bias_y),
+            ("z", result.gyro_bias_z),
+        ] {
+            assert!(
+                bias.abs() < MAX_GYRO_BIAS_RPS,
+                "gyro bias {axis} reached the anti-windup clamp at sample {i} \
+                 ({bias:.5} rad/s): the default tuning is no longer estimating the bias, \
+                 it is being held by the clamp (#258)"
+            );
+        }
+    }
 }
 
 /// Test comparison of all three filter types (UKF, EKF, ESKF)

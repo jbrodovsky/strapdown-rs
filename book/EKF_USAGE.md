@@ -169,8 +169,11 @@ The EKF is now fully integrated into the simulator and can be used via command l
 # Run closed-loop simulation with EKF (linearized Jacobians)
 strapdown-sim closed-loop --filter ekf --input data.csv --output results.csv
 
-# Run with UKF (default, sigma point propagation)
+# Run with UKF (sigma point propagation)
 strapdown-sim closed-loop --filter ukf --input data.csv --output results.csv
+
+# Run with the ESKF (the default; omitting --filter selects it)
+strapdown-sim closed-loop --filter eskf --input data.csv --output results.csv
 
 # With GNSS degradation config
 strapdown-sim closed-loop --filter ekf --config gnss_config.toml --input data.csv --output results.csv
@@ -179,7 +182,9 @@ strapdown-sim closed-loop --filter ekf --config gnss_config.toml --input data.cs
 strapdown-sim closed-loop --help
 ```
 
-The `--filter` option accepts either `ukf` or `ekf`, with `ukf` as the default for backward compatibility.
+The `--filter` option accepts `eskf`, `ukf` or `ekf`. Since #258 the default is `eskf`, the
+15-state error-state filter: it estimates the IMU biases online rather than carrying whatever
+turn-on bias the sensor happened to have, which the 9-state UKF and EKF cannot observe.
 
 ## Performance Characteristics
 

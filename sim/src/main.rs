@@ -329,8 +329,8 @@ struct ClosedLoopSimArgs {
     #[command(flatten)]
     sim: SimArgs,
 
-    /// Filter type to use for closed-loop navigation
-    #[arg(long, value_enum, default_value_t = FilterType::Ukf)]
+    /// Filter type to use for closed-loop navigation (default: the 15-state ESKF)
+    #[arg(long, value_enum, default_value_t = FilterType::default())]
     filter: FilterType,
 
     /// UKF alpha parameter (sigma point spread)
@@ -1754,21 +1754,21 @@ fn prompt_simulation_mode() -> SimulationMode {
     }
 }
 
-/// Prompt for filter type (UKF or EKF) with validation
+/// Prompt for filter type with validation
 fn prompt_filter_type() -> FilterType {
     loop {
         println!(
             "Please specify the filter type you would like:\n\
-            [1] - Unscented Kalman Filter (UKF)\n\
-            [2] - Extended Kalman Filter (EKF)\n\
-            [3] - Error-State Kalman Filter (ESKF)\n\
+            [1] - Error-State Kalman Filter (ESKF, default)\n\
+            [2] - Unscented Kalman Filter (UKF)\n\
+            [3] - Extended Kalman Filter (EKF)\n\
             [q] - Quit\n"
         );
         if let Some(input) = read_user_input() {
             match input.as_str() {
-                "1" => return FilterType::Ukf,
-                "2" => return FilterType::Ekf,
-                "3" => return FilterType::Eskf,
+                "1" => return FilterType::Eskf,
+                "2" => return FilterType::Ukf,
+                "3" => return FilterType::Ekf,
                 _ => println!("Error: Invalid selection. Please enter 1, 2, 3, or q.\n"),
             }
         }

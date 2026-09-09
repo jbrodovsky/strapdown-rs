@@ -3235,18 +3235,24 @@ pub enum SimulationMode {
 }
 
 /// Filter type for closed-loop mode
+///
+/// The default is [`FilterType::Eskf`] (#258). The 15-state error-state filter estimates
+/// accelerometer and gyroscope biases online and carries attitude as a quaternion corrected
+/// multiplicatively, so it neither accumulates the turn-on bias the 9-state filters have no
+/// way to observe nor linearizes about Euler angles. The UKF and EKF remain selectable and
+/// are unchanged by this default.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "clap", derive(ValueEnum))]
 #[serde(rename_all = "kebab-case")]
 #[derive(Default)]
 pub enum FilterType {
-    /// Unscented Kalman Filter
+    /// Error-State Kalman Filter (ESKF) with multiplicative attitude error. The default.
     #[default]
+    Eskf,
+    /// Unscented Kalman Filter
     Ukf,
     /// Extended Kalman Filter
     Ekf,
-    /// Error-State Kalman Filter (ESKF) with multiplicative attitude error
-    Eskf,
 }
 
 /// Particle filter type selection
@@ -3267,7 +3273,7 @@ pub enum ParticleFilterType {
 /// Closed-loop specific configuration
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ClosedLoopConfig {
-    /// Filter type (UKF or EKF)
+    /// Filter type; defaults to the 15-state ESKF.
     #[serde(default)]
     pub filter: FilterType,
     /// UKF alpha parameter (spread of sigma points)
@@ -3284,7 +3290,7 @@ pub struct ClosedLoopConfig {
 impl Default for ClosedLoopConfig {
     fn default() -> Self {
         Self {
-            filter: FilterType::Ukf,
+            filter: FilterType::default(),
             ukf_alpha: default_ukf_alpha(),
             ukf_beta: default_ukf_beta(),
             ukf_kappa: default_ukf_kappa(),
@@ -3765,7 +3771,7 @@ pub struct GeonavSimulationConfig {
     pub input: String,
     /// Output CSV file path (relative or absolute)
     pub output: String,
-    /// Filter type (UKF or EKF)
+    /// Filter type; defaults to the 15-state ESKF.
     #[serde(default)]
     pub filter: FilterType,
     /// Random number generator seed
@@ -3793,7 +3799,7 @@ impl Default for GeonavSimulationConfig {
         Self {
             input: "input.csv".to_string(),
             output: "output.csv".to_string(),
-            filter: FilterType::Ukf,
+            filter: FilterType::default(),
             seed: default_seed(),
             parallel: false,
             generate_plot: false,
