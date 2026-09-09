@@ -150,13 +150,18 @@ pub(crate) fn validate_output_path(output: &Path) -> Result<(), Box<dyn Error>> 
 /// - `None` if user enters empty input or presses Enter
 /// - `Some(String)` with the trimmed input otherwise
 ///
+/// Returns `None` when stdin cannot be read, which is the normal case when the tool runs
+/// non-interactively — piped input, a closed stdin, or a batch invocation. That used to
+/// panic, so a CLI that also supports batch mode aborted rather than falling back.
+///
 /// # Panics
 /// Exits the process if user enters 'q' or 'Q'.
 pub(crate) fn read_user_input() -> Option<String> {
     let mut input = String::new();
-    io::stdin()
-        .read_line(&mut input)
-        .expect("Failed to read line");
+    if let Err(e) = io::stdin().read_line(&mut input) {
+        log::warn!("could not read from stdin: {e}");
+        return None;
+    }
     let input = input.trim();
 
     if input.eq_ignore_ascii_case("q") {

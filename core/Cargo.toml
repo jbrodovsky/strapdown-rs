@@ -54,6 +54,7 @@ rand_distr.workspace = true
 csv.workspace = true
 log.workspace = true
 anyhow.workspace = true
+thiserror.workspace = true
 netcdf = { workspace = true, optional = true }
 world_magnetic_model.workspace = true
 clap = { workspace = true, optional = true }

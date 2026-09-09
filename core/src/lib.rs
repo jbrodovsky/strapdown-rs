@@ -149,6 +149,7 @@
 //! This top-level module provides a public API for each step of the forward mechanization equations, allowing users to
 //! easily pass data in and out.
 pub mod earth;
+pub mod error;
 pub mod kalman;
 pub mod linalg;
 pub mod linearize;
@@ -157,6 +158,8 @@ pub mod messages;
 pub mod particle;
 pub mod rbpf;
 pub mod sim;
+
+pub use error::StrapdownError;
 
 use nalgebra::{DMatrix, DVector, Matrix3, Rotation3, Vector3, Vector6};
 
@@ -171,11 +174,39 @@ use crate::measurements::MeasurementModel;
 /// Generic Bayesian Navigation filter trait that provides the generic
 /// interface used across all types of Bayesian based filters
 pub trait NavigationFilter {
-    fn predict<C: InputModel>(&mut self, control_input: &C, dt: f64);
-    fn update<M: MeasurementModel + ?Sized>(&mut self, measurement: &M);
+    /// Propagate the state forward by `dt` using an inertial input.
+    ///
+    /// Takes `&dyn InputModel` rather than a generic parameter deliberately: every
+    /// implementation immediately erased the type with `as_any().downcast_ref()`, so the
+    /// generic bought a monomorphization and a panic and nothing else. Erasing it here is
+    /// what makes this trait object-safe, which issue #262's `InsEngine` requires.
+    ///
+    /// # Errors
+    /// [`StrapdownError::UnsupportedInput`] if the filter cannot interpret `control_input`,
+    /// or any numerical failure arising from the propagation.
+    fn predict(&mut self, control_input: &dyn InputModel, dt: f64) -> Result<(), StrapdownError>;
+
+    /// Correct the state with a measurement.
+    ///
+    /// # Errors
+    /// Measurement-specific failures. Callers should consult
+    /// [`StrapdownError::is_recoverable`]: a recoverable error means this measurement
+    /// should be skipped and the run continued, not that the state is invalid.
+    fn update(&mut self, measurement: &dyn MeasurementModel) -> Result<(), StrapdownError>;
+
+    /// The current state estimate.
     fn get_estimate(&self) -> DVector<f64>;
+
+    /// The current estimate covariance.
     fn get_certainty(&self) -> DMatrix<f64>;
 }
+
+/// Compile-time proof that [`NavigationFilter`] is object-safe.
+///
+/// This is the acceptance criterion easiest to satisfy accidentally-not: nothing in the
+/// crate constructs a `dyn NavigationFilter` yet, so a regression would go unnoticed until
+/// #262 tried to build one.
+const _: fn(&dyn NavigationFilter) = |_| {};
 /// Generic input model trait for all types of control inputs
 ///
 /// Control inputs are really just measurements that are used to
@@ -337,17 +368,29 @@ impl Display for IMUData {
         )
     }
 }
-impl From<Vec<f64>> for IMUData {
-    /// Creates a Vec<f64> of length 6 (3 for accel, 3 for gyro) from an IMUData instance.
-    fn from(vec: Vec<f64>) -> Self {
-        assert!(
-            vec.len() == 6,
-            "IMUData must be initialized with a vector of length 6 (3 for accel, 3 for gyro)"
-        );
-        Self {
+impl TryFrom<Vec<f64>> for IMUData {
+    type Error = StrapdownError;
+
+    /// Builds an [`IMUData`] from `[a_x, a_y, a_z, g_x, g_y, g_z]`.
+    ///
+    /// `TryFrom` rather than `From`: the conversion has a length precondition, and the
+    /// vectors it is fed come from parsed CSV, HDF5 and NetCDF records, where a short or
+    /// malformed row is a data problem to report rather than a reason to abort (#254).
+    ///
+    /// # Errors
+    /// [`StrapdownError::DimensionMismatch`] if `vec` is not exactly 6 elements.
+    fn try_from(vec: Vec<f64>) -> Result<Self, Self::Error> {
+        if vec.len() != 6 {
+            return Err(StrapdownError::DimensionMismatch {
+                what: "IMUData [a_x, a_y, a_z, g_x, g_y, g_z]",
+                expected: 6,
+                got: vec.len(),
+            });
+        }
+        Ok(IMUData {
             accel: Vector3::new(vec[0], vec[1], vec[2]),
             gyro: Vector3::new(vec[3], vec[4], vec[5]),
-        }
+        })
     }
 }
 impl From<IMUData> for Vec<f64> {
@@ -387,16 +430,25 @@ pub struct VelocityData {
     /// Angular velocities in rad/s
     pub angular: Vector3<f64>,
 }
-impl From<Vec<f64>> for VelocityData {
-    fn from(data: Vec<f64>) -> Self {
-        assert!(
-            data.len() == 6,
-            "VelocityData must be initialized with a vector of length 6 (3 for linear, 3 for angular)"
-        );
-        Self {
+impl TryFrom<Vec<f64>> for VelocityData {
+    type Error = StrapdownError;
+
+    /// Builds a [`VelocityData`] from `[v_n, v_e, v_d, w_x, w_y, w_z]`.
+    ///
+    /// # Errors
+    /// [`StrapdownError::DimensionMismatch`] if `data` is not exactly 6 elements.
+    fn try_from(data: Vec<f64>) -> Result<Self, Self::Error> {
+        if data.len() != 6 {
+            return Err(StrapdownError::DimensionMismatch {
+                what: "VelocityData [v_n, v_e, v_d, w_x, w_y, w_z]",
+                expected: 6,
+                got: data.len(),
+            });
+        }
+        Ok(VelocityData {
             linear: Vector3::new(data[0], data[1], data[2]),
             angular: Vector3::new(data[3], data[4], data[5]),
-        }
+        })
     }
 }
 impl From<(Vector3<f64>, Vector3<f64>)> for VelocityData {
@@ -539,7 +591,7 @@ impl StrapdownState {
         attitude: Rotation3<f64>,
         in_degrees: bool,
         is_enu: Option<bool>,
-    ) -> Self {
+    ) -> Result<StrapdownState, StrapdownError> {
         let latitude = if in_degrees {
             latitude.to_radians()
         } else {
@@ -550,20 +602,36 @@ impl StrapdownState {
         } else {
             longitude
         };
-        assert!(
-            (-std::f64::consts::PI..=std::f64::consts::PI).contains(&latitude),
-            "Latitude must be in the range [-π, π]"
-        );
-        assert!(
-            (-std::f64::consts::PI..=std::f64::consts::PI).contains(&longitude),
-            "Longitude must be in the range [-π, π]"
-        );
-        assert!(
-            (-30_000.0..=30_000.0).contains(&altitude),
-            "Strapdown equations and the local level frame are only valid within 30 km above mean sea level and maximum ocean depth is ~11 km. Given altitude: {altitude} m, please check your input and sign conventions."
-        );
+        // Latitude is bounded by ±π/2, not ±π. The old check accepted values up to 180°,
+        // which is not a latitude at all -- a sign-convention or column-order mistake in the
+        // input would sail through it. Note `!contains` also rejects NaN, since every
+        // comparison against NaN is false.
+        if !(-std::f64::consts::FRAC_PI_2..=std::f64::consts::FRAC_PI_2).contains(&latitude) {
+            return Err(StrapdownError::OutOfRange {
+                what: "latitude (radians)",
+                value: latitude,
+                min: -std::f64::consts::FRAC_PI_2,
+                max: std::f64::consts::FRAC_PI_2,
+            });
+        }
+        if !(-std::f64::consts::PI..=std::f64::consts::PI).contains(&longitude) {
+            return Err(StrapdownError::OutOfRange {
+                what: "longitude (radians)",
+                value: longitude,
+                min: -std::f64::consts::PI,
+                max: std::f64::consts::PI,
+            });
+        }
+        if !(-30_000.0..=30_000.0).contains(&altitude) {
+            return Err(StrapdownError::OutOfRange {
+                what: "altitude (m)",
+                value: altitude,
+                min: -30_000.0,
+                max: 30_000.0,
+            });
+        }
 
-        Self {
+        Ok(StrapdownState {
             latitude,
             longitude,
             altitude,
@@ -572,7 +640,7 @@ impl StrapdownState {
             velocity_vertical,
             attitude,
             is_enu: is_enu.unwrap_or(true),
-        }
+        })
     }
     // --- From/Into trait implementations for StrapdownState <-> Vec<f64> and &[f64] ---
 }
@@ -611,22 +679,33 @@ impl From<&StrapdownState> for Vec<f64> {
     }
 }
 impl TryFrom<&[f64]> for StrapdownState {
-    type Error = &'static str;
-    /// Attempts to create a StrapdownState from a slice of 9 elements assuming angles are in radians.
+    type Error = StrapdownError;
+
+    /// Attempts to create a `StrapdownState` from a slice of 9 elements, angles in radians.
+    ///
+    /// # Errors
+    /// [`StrapdownError::DimensionMismatch`] if the slice is not 9 elements, or
+    /// [`StrapdownError::OutOfRange`] from [`StrapdownState::new`] if a position component
+    /// is outside the range the mechanization is valid over.
     fn try_from(slice: &[f64]) -> Result<Self, Self::Error> {
         if slice.len() != 9 {
-            return Err("Slice must have length 9 for StrapdownState");
+            return Err(StrapdownError::DimensionMismatch {
+                what: "StrapdownState [lat, lon, alt, v_n, v_e, v_d, roll, pitch, yaw]",
+                expected: 9,
+                got: slice.len(),
+            });
         }
         let attitude = Rotation3::from_euler_angles(slice[6], slice[7], slice[8]);
-        Ok(Self::new(
+        StrapdownState::new(
             slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], attitude,
             false, // angles are in radians
             None,
-        ))
+        )
     }
 }
 impl TryFrom<Vec<f64>> for StrapdownState {
-    type Error = &'static str;
+    type Error = StrapdownError;
+
     /// Attempts to create a StrapdownState from a Vec<f64> of length 9 (NED order, radians).
     fn try_from(vec: Vec<f64>) -> Result<Self, Self::Error> {
         Self::try_from(vec.as_slice())
@@ -645,10 +724,26 @@ impl From<&StrapdownState> for DVector<f64> {
     }
 }
 
-/// Local Level Frame form of the forward kinematics equations.
+/// Build a zero-mean normal distribution from a standard deviation known to be valid.
 ///
-/// Corresponds to section 5.4 Local-Navigation Frame Equations from the book
-/// _Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems, Second Edition_
+/// `Normal::new` is fallible only for a negative or non-finite standard deviation. A handful
+/// of call sites pass a positive literal constant as a fallback, where failure is impossible
+/// but `unwrap` still trips the zero-panic lints. Routing them through one function means a
+/// single documented allow instead of a scattering of undocumented `unwrap`s (#254).
+///
+/// # Panics
+/// If `sigma` is negative or non-finite. Only call this with a literal constant; use
+/// `Normal::new` directly for any value derived from input.
+#[expect(
+    clippy::expect_used,
+    reason = "callers pass a positive literal constant, so this cannot fail"
+)]
+pub(crate) fn normal_with_std(sigma: f64) -> rand_distr::Normal<f64> {
+    rand_distr::Normal::new(0.0, sigma).expect("literal standard deviation must be valid")
+}
+
+/// Local Level Frame form of the forward kinematics equations. Corresponds to section 5.4 Local-Navigation Frame Equations
+/// from the book _Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems, Second Edition_
 /// by Paul D. Groves; Second Edition.
 ///
 /// This function implements the forward kinematics equations for the strapdown navigation system. It takes
@@ -1246,7 +1341,8 @@ mod tests {
     fn rest() {
         // Test the forward mechanization with a state at rest
         let attitude = Rotation3::identity();
-        let mut state = StrapdownState::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, None);
+        let mut state =
+            StrapdownState::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, None).unwrap();
         assert_eq!(state.velocity_north, 0.0);
         assert_eq!(state.velocity_east, 0.0);
         assert_eq!(state.velocity_vertical, 0.0);
@@ -1282,7 +1378,8 @@ mod tests {
         let attitude = Rotation3::from_euler_angles(0.0, 0.0, 0.1); // 0.1 rad yaw
         let state = StrapdownState::new(
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, None, // angles provided in radians
-        );
+        )
+        .unwrap();
         assert_approx_eq!(state.attitude.euler_angles().2, 0.1, 1e-6); // Check initial yaw
         let gyros = Vector3::new(0.0, 0.0, 0.1); // Gyro data for yawing
         let dt = 1.0; // Example time step in seconds
@@ -1297,7 +1394,8 @@ mod tests {
         let attitude = Rotation3::from_euler_angles(0.1, 0.0, 0.0); // 0.1 rad yaw
         let state = StrapdownState::new(
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, None, // angles provided in radians
-        );
+        )
+        .unwrap();
         assert_approx_eq!(state.attitude.euler_angles().0, 0.1, 1e-6); // Check initial roll
         let gyros = Vector3::new(0.10, 0.0, 0.0); // Gyro data for yawing
         let dt = 1.0; // Example time step in seconds
@@ -1312,7 +1410,8 @@ mod tests {
         let attitude = Rotation3::from_euler_angles(0.0, 0.1, 0.0); // 0.1 rad yaw
         let state = StrapdownState::new(
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, None, // angles provided in radians
-        );
+        )
+        .unwrap();
         assert_approx_eq!(state.attitude.euler_angles().1, 0.1, 1e-6); // Check initial yaw
         let gyros = Vector3::new(0.0, 0.1, 0.0); // Gyro data for yawing
         let dt = 1.0; // Example time step in seconds
@@ -1367,7 +1466,8 @@ mod tests {
     #[test]
     fn test_freefall() {
         let attitude = Rotation3::identity();
-        let state = StrapdownState::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, None);
+        let state =
+            StrapdownState::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, None).unwrap();
         // This is a stub: actual forward propagation logic should be tested in integration with the mechanization equations.
         assert_eq!(state.latitude, 0.0);
         assert_eq!(state.longitude, 0.0);
@@ -1402,7 +1502,8 @@ mod tests {
     fn test_forward_yawing() {
         // Yaw rate only, expect yaw to increase by gyro_z * dt
         let attitude = nalgebra::Rotation3::identity();
-        let mut state = StrapdownState::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, None);
+        let mut state =
+            StrapdownState::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, None).unwrap();
         let imu_data = IMUData {
             accel: Vector3::new(0.0, 0.0, 0.0),
             gyro: Vector3::new(0.0, 0.0, 0.1), // Gyro data for yawing
@@ -1417,7 +1518,8 @@ mod tests {
     fn test_forward_rolling() {
         // Roll rate only, expect roll to increase by gyro_x * dt
         let attitude = nalgebra::Rotation3::identity();
-        let mut state = StrapdownState::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, None);
+        let mut state =
+            StrapdownState::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, None).unwrap();
         let imu_data = IMUData {
             accel: Vector3::new(0.0, 0.0, 0.0),
             gyro: Vector3::new(0.1, 0.0, 0.0), // Gyro data for rolling
@@ -1434,7 +1536,8 @@ mod tests {
     fn test_forward_pitching() {
         // Pitch rate only, expect pitch to increase by gyro_y * dt
         let attitude = nalgebra::Rotation3::identity();
-        let mut state = StrapdownState::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, None);
+        let mut state =
+            StrapdownState::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, false, None).unwrap();
         let imu_data = IMUData {
             accel: Vector3::new(0.0, 0.0, 0.0),
             gyro: Vector3::new(0.0, 0.1, 0.0), // Gyro data for pitching
@@ -1462,7 +1565,7 @@ mod tests {
     #[test]
     fn test_imudata_from_vec() {
         let vec = vec![1.0, 2.0, 3.0, 0.1, 0.2, 0.3];
-        let imu: IMUData = vec.into();
+        let imu = IMUData::try_from(vec).unwrap();
         assert_eq!(imu.accel[0], 1.0);
         assert_eq!(imu.accel[1], 2.0);
         assert_eq!(imu.accel[2], 3.0);
@@ -1471,11 +1574,22 @@ mod tests {
         assert_eq!(imu.gyro[2], 0.3);
     }
 
+    /// Was `test_imudata_from_vec_wrong_length`, a `#[should_panic]`. A short row from a
+    /// parsed sensor file is a data problem to report, not grounds for aborting (#254).
     #[test]
-    #[should_panic(expected = "IMUData must be initialized with a vector of length 6")]
-    fn test_imudata_from_vec_wrong_length() {
-        let vec = vec![1.0, 2.0, 3.0];
-        let _imu: IMUData = vec.into();
+    fn test_imudata_from_vec_wrong_length_errors() {
+        let got = IMUData::try_from(vec![1.0, 2.0, 3.0]);
+        assert!(
+            matches!(
+                got,
+                Err(StrapdownError::DimensionMismatch {
+                    expected: 6,
+                    got: 3,
+                    ..
+                })
+            ),
+            "expected DimensionMismatch{{expected: 6, got: 3}}, got {got:?}"
+        );
     }
 
     #[test]
@@ -1491,8 +1605,9 @@ mod tests {
     #[test]
     fn test_strapdown_state_debug() {
         let attitude = Rotation3::from_euler_angles(0.1, 0.2, 0.3);
-        let state = StrapdownState::new(45.0, -122.0, 100.0, 1.0, 2.0, 3.0, attitude, true, None);
-        let debug_str = format!("{state:?}");
+        let state =
+            StrapdownState::new(45.0, -122.0, 100.0, 1.0, 2.0, 3.0, attitude, true, None).unwrap();
+        let debug_str = format!("{:?}", state);
         assert!(debug_str.contains("StrapdownState"));
         assert!(debug_str.contains("latitude"));
         assert!(debug_str.contains("45"));
@@ -1501,38 +1616,87 @@ mod tests {
     #[test]
     fn test_strapdown_state_display() {
         let attitude = Rotation3::from_euler_angles(0.1, 0.2, 0.3);
-        let state = StrapdownState::new(45.0, -122.0, 100.0, 1.0, 2.0, 3.0, attitude, true, None);
-        let display_str = format!("{state}");
+        let state =
+            StrapdownState::new(45.0, -122.0, 100.0, 1.0, 2.0, 3.0, attitude, true, None).unwrap();
+        let display_str = format!("{}", state);
         assert!(display_str.contains("StrapdownState"));
         assert!(display_str.contains("45"));
         assert!(display_str.contains("lat"));
     }
 
     #[test]
-    #[should_panic(expected = "Latitude must be in the range")]
     fn test_strapdown_state_new_invalid_latitude() {
         let attitude = Rotation3::identity();
-        let _state = StrapdownState::new(200.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, true, None);
+        let got = StrapdownState::new(200.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, true, None);
+        assert!(
+            matches!(
+                got,
+                Err(StrapdownError::OutOfRange {
+                    what: "latitude (radians)",
+                    ..
+                })
+            ),
+            "expected OutOfRange on latitude, got {got:?}"
+        );
+    }
+
+    /// The bound used to be ±π, which accepted 100° as a latitude. Anything past ±90° is a
+    /// sign-convention or column-order mistake in the input, not a position.
+    #[test]
+    fn test_strapdown_state_rejects_latitude_past_the_pole() {
+        let attitude = Rotation3::identity();
+        let got = StrapdownState::new(100.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, true, None);
+        assert!(
+            matches!(
+                got,
+                Err(StrapdownError::OutOfRange {
+                    what: "latitude (radians)",
+                    ..
+                })
+            ),
+            "100 degrees is not a latitude; expected OutOfRange, got {got:?}"
+        );
+        // 90 degrees exactly is the pole and remains valid.
+        assert!(StrapdownState::new(90.0, 0.0, 0.0, 0.0, 0.0, 0.0, attitude, true, None).is_ok());
     }
 
     #[test]
-    #[should_panic(expected = "Longitude must be in the range")]
     fn test_strapdown_state_new_invalid_longitude() {
         let attitude = Rotation3::identity();
-        let _state = StrapdownState::new(0.0, 200.0, 0.0, 0.0, 0.0, 0.0, attitude, true, None);
+        let got = StrapdownState::new(0.0, 200.0, 0.0, 0.0, 0.0, 0.0, attitude, true, None);
+        assert!(
+            matches!(
+                got,
+                Err(StrapdownError::OutOfRange {
+                    what: "longitude (radians)",
+                    ..
+                })
+            ),
+            "expected OutOfRange on longitude, got {got:?}"
+        );
     }
 
     #[test]
-    #[should_panic(expected = "Strapdown equations and the local level frame are only valid")]
     fn test_strapdown_state_new_invalid_altitude() {
         let attitude = Rotation3::identity();
-        let _state = StrapdownState::new(0.0, 0.0, 50000.0, 0.0, 0.0, 0.0, attitude, true, None);
+        let got = StrapdownState::new(0.0, 0.0, 50000.0, 0.0, 0.0, 0.0, attitude, true, None);
+        assert!(
+            matches!(
+                got,
+                Err(StrapdownError::OutOfRange {
+                    what: "altitude (m)",
+                    ..
+                })
+            ),
+            "expected OutOfRange on altitude, got {got:?}"
+        );
     }
 
     #[test]
     fn test_strapdown_state_new_with_degrees() {
         let attitude = Rotation3::identity();
-        let state = StrapdownState::new(45.0, -122.0, 100.0, 0.0, 0.0, 0.0, attitude, true, None);
+        let state =
+            StrapdownState::new(45.0, -122.0, 100.0, 0.0, 0.0, 0.0, attitude, true, None).unwrap();
         assert_approx_eq!(state.latitude, 45.0_f64.to_radians(), 1e-6);
         assert_approx_eq!(state.longitude, -122.0_f64.to_radians(), 1e-6);
     }
@@ -1540,7 +1704,8 @@ mod tests {
     #[test]
     fn test_strapdown_state_new_with_radians() {
         let attitude = Rotation3::identity();
-        let state = StrapdownState::new(1.0, -2.0, 100.0, 0.0, 0.0, 0.0, attitude, false, None);
+        let state =
+            StrapdownState::new(1.0, -2.0, 100.0, 0.0, 0.0, 0.0, attitude, false, None).unwrap();
         assert_eq!(state.latitude, 1.0);
         assert_eq!(state.longitude, -2.0);
     }

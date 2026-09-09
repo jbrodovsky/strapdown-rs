@@ -32,6 +32,8 @@ rand_distr = "0.5.1"
 csv = "1.3.1"
 log = "0.4"
 anyhow = "1.0.99"
+# Already resolved transitively at 2.0.18, so declaring it directly adds no build cost.
+thiserror = "2.0"
 clap = { version = "4.5.4", features = ["derive"] }
 netcdf = "0.12.0"
 world_magnetic_model = "0.4.0"

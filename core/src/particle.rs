@@ -61,17 +61,12 @@ pub trait Particle: Any {
     /// Returns the state vector of the particle
     fn state(&self) -> DVector<f64>;
 
-    /// Sets the state vector of the particle
+    /// Sets the state vector of the particle.
     ///
-    /// The default implementation will panic if called. Implementors of this
-    /// trait should override this method to update their internal state
-    /// representation.
-    fn set_state(&mut self, _state: DVector<f64>) {
-        panic!(
-            "Particle::set_state is not implemented for this type. \
-             Please provide an implementation in your Particle impl."
-        );
-    }
+    /// Required rather than defaulted: this previously had a default body that panicked, so
+    /// an implementor who forgot to override it got a runtime abort instead of a compile
+    /// error. Making it required moves that failure to where it belongs (#254).
+    fn set_state(&mut self, state: DVector<f64>);
 
     /// Returns the current weight of the particle
     fn weight(&self) -> f64;

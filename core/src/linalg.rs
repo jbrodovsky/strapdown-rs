@@ -1,7 +1,7 @@
 //! Linear algebra helpers for robust covariance square roots.
 //!
 //! Public API:
-//!     pub fn matrix_square_root(matrix: &DMatrix<f64>) -> DMatrix<f64>
+//!     pub fn matrix_square_root(matrix: &DMatrix<f64>) -> Result<DMatrix<f64>, StrapdownError>
 //!
 //! Internal pipeline (each step isolated for testing):
 //!     - symmetrize()
@@ -18,6 +18,8 @@
 use nalgebra::DMatrix;
 use nalgebra::linalg::{Cholesky, SymmetricEigen};
 
+use crate::StrapdownError;
+
 /// Compute a robust symmetric square root `S` such that approximately `matrix ≈ S * Sᵀ`.
 ///
 /// Attempts Cholesky decomposition first (yielding L such that matrix = L * L^T).
@@ -28,12 +30,20 @@ use nalgebra::linalg::{Cholesky, SymmetricEigen};
 /// * `matrix` - The `DMatrix<f64>` to find the square root of. It's assumed to be symmetric and square.
 ///
 /// # Returns
-/// * `Some(DMatrix<f64>)` containing a matrix square root.
-///   The result from Cholesky is lower triangular. The result from eigenvalue decomposition is symmetric.
-///   In both cases, if the result is `M`, then `matrix` approx `M * M.transpose()`.
-/// * `None` if the matrix is not square or another fundamental issue prevents computation (though
-///   this implementation tries to be robust for positive semi-definite cases).
-pub fn matrix_square_root(matrix: &DMatrix<f64>) -> DMatrix<f64> {
+/// A matrix square root `M` such that `matrix` approx `M * M.transpose()`. The result from
+/// Cholesky is lower triangular; the result from eigenvalue decomposition is symmetric.
+///
+/// # Errors
+/// [`StrapdownError::NotSquare`] if `matrix` is not square. The documented contract always
+/// said so; until the zero-panic work of #254 the signature simply could not express it.
+pub fn matrix_square_root(matrix: &DMatrix<f64>) -> Result<DMatrix<f64>, StrapdownError> {
+    if !matrix.is_square() {
+        return Err(StrapdownError::NotSquare {
+            what: "matrix_square_root",
+            rows: matrix.nrows(),
+            cols: matrix.ncols(),
+        });
+    }
     // Tunable guards (conservative defaults for double precision INS scales)
     const INITIAL_JITTER: f64 = 1e-12;
     const MAX_JITTER: f64 = 1e-6;
@@ -48,14 +58,14 @@ pub fn matrix_square_root(matrix: &DMatrix<f64>) -> DMatrix<f64> {
     let p = symmetrize(matrix);
     // 2) Cholesky (fast path)
     if let Some(s) = chol_sqrt(&p) {
-        return s;
+        return Ok(s);
     }
     // 3) Jittered Cholesky
     if let Some(s) = chol_sqrt_with_jitter(&p, INITIAL_JITTER, MAX_JITTER, MAX_TRIES) {
-        return s;
+        return Ok(s);
     }
     // 4) EVD fallback with eigenvalue floor — symmetric square root
-    evd_symmetric_sqrt_with_floor(&p, EIGEN_FLOOR)
+    Ok(evd_symmetric_sqrt_with_floor(&p, EIGEN_FLOOR))
 }
 /// Symmetrize a matrix: P ← 0.5 (P + Pᵀ)
 ///
@@ -146,22 +156,39 @@ impl Default for SolveOptions {
         }
     }
 }
-/// Solve A X = B for SPD-ish A via Cholesky, with jitter retries.
-/// Returns None if all attempts fail.
+/// Solve `A X = B` for SPD-ish `A` via Cholesky, with jitter retries.
+///
+/// # Errors
+/// * [`StrapdownError::NotSquare`] if `A` is not square.
+/// * [`StrapdownError::DimensionMismatch`] if `A` and `B` have different row counts.
+/// * [`StrapdownError::SingularMatrix`] if every jittered Cholesky attempt fails, which in
+///   practice means a diverged or collapsed covariance.
 pub fn chol_solve_spd(
     a: &DMatrix<f64>,
     b: &DMatrix<f64>,
     opt: SolveOptions,
-) -> Option<DMatrix<f64>> {
-    assert!(a.is_square(), "chol_solve_spd: A must be square");
-    assert_eq!(a.nrows(), b.nrows(), "chol_solve_spd: A and B incompatible");
+) -> Result<DMatrix<f64>, StrapdownError> {
+    if !a.is_square() {
+        return Err(StrapdownError::NotSquare {
+            what: "chol_solve_spd",
+            rows: a.nrows(),
+            cols: a.ncols(),
+        });
+    }
+    if a.nrows() != b.nrows() {
+        return Err(StrapdownError::DimensionMismatch {
+            what: "chol_solve_spd right-hand side rows",
+            expected: a.nrows(),
+            got: b.nrows(),
+        });
+    }
 
     // Symmetrize first (SPD drift is common).
     let a_sym = symmetrize(a);
 
     // Try plain Cholesky
     if let Some(ch) = Cholesky::new(a_sym.clone()) {
-        return Some(ch.solve(b));
+        return Ok(ch.solve(b));
     }
 
     // Jitter ramp
@@ -173,26 +200,47 @@ pub fn chol_solve_spd(
             a_j[(i, i)] += jitter;
         }
         if let Some(ch) = Cholesky::new(a_j) {
-            return Some(ch.solve(b));
+            return Ok(ch.solve(b));
         }
         jitter *= 10.0;
         if jitter > opt.max_jitter {
             break;
         }
     }
-    None
+    Err(StrapdownError::SingularMatrix {
+        what: "chol_solve_spd",
+        dim: n,
+    })
 }
 
 /// Robust SPD solve with sane defaults:
 /// - Cholesky + jitter (preferred)
 /// - Last resort: explicit inverse
-pub fn robust_spd_solve(a: &DMatrix<f64>, b: &DMatrix<f64>) -> DMatrix<f64> {
-    if let Some(x) = chol_solve_spd(a, b, SolveOptions::default()) {
-        x
-    } else if let Some(inv) = symmetrize(a).try_inverse() {
-        &inv * b
-    } else {
-        panic!("robust_spd_solve: A is not invertible (even after jitter).");
+///
+/// # Errors
+/// * [`StrapdownError::NotSquare`] / [`StrapdownError::DimensionMismatch`] propagated from
+///   [`chol_solve_spd`] — these are caller errors and are returned verbatim rather than
+///   falling through to the inverse, which would fail for the same reason.
+/// * [`StrapdownError::SingularMatrix`] if neither the jittered Cholesky nor an explicit
+///   inverse succeeds.
+pub fn robust_spd_solve(
+    a: &DMatrix<f64>,
+    b: &DMatrix<f64>,
+) -> Result<DMatrix<f64>, StrapdownError> {
+    match chol_solve_spd(a, b, SolveOptions::default()) {
+        Ok(x) => Ok(x),
+        // Only a genuine factorization failure justifies the explicit-inverse fallback; a
+        // shape error would fail identically and should surface as itself.
+        Err(StrapdownError::SingularMatrix { .. }) => symmetrize(a).try_inverse().map_or_else(
+            || {
+                Err(StrapdownError::SingularMatrix {
+                    what: "robust_spd_solve",
+                    dim: a.nrows(),
+                })
+            },
+            |inv| Ok(&inv * b),
+        ),
+        Err(other) => Err(other),
     }
 }
 
@@ -265,7 +313,7 @@ mod tests {
     #[test]
     fn t_public_identity() {
         let i = DMatrix::<f64>::identity(4, 4);
-        let s = matrix_square_root(&i);
+        let s = matrix_square_root(&i).unwrap();
         assert!(approx_eq(&s, &i, 1e-14));
         let back = &s * s.transpose();
         assert!(approx_eq(&back, &i, 1e-12));
@@ -278,7 +326,7 @@ mod tests {
         p[(2, 2)] -= 1e-10;
         p[(0, 2)] += 1e-12; // asymmetry
 
-        let s = matrix_square_root(&p);
+        let s = matrix_square_root(&p).unwrap();
         let back = &s * s.transpose();
         let p_sym = symmetrize(&p);
         assert!(approx_eq(&back, &p_sym, 1e-8));
@@ -288,7 +336,7 @@ mod tests {
     #[should_panic(expected = "matrix_square_root: matrix must be square")]
     fn t_public_non_square_panics() {
         let m = DMatrix::<f64>::zeros(3, 2);
-        let _ = matrix_square_root(&m);
+        let _ = matrix_square_root(&m).unwrap();
     }
 
     #[test]
@@ -350,7 +398,7 @@ mod tests {
         // Create a matrix that will fail Cholesky but succeed with EVD
         let m = DMatrix::from_row_slice(2, 2, &[1.0, 2.0, 2.0, 1.0]); // Has negative eigenvalue
 
-        let s = matrix_square_root(&m);
+        let s = matrix_square_root(&m).unwrap();
         let back = &s * s.transpose();
 
         // Result should be symmetric and close to symmetrized input
@@ -405,7 +453,7 @@ mod tests {
         let a = DMatrix::from_row_slice(2, 2, &[4.0, 2.0, 2.0, 3.0]);
         let b = DMatrix::from_row_slice(2, 1, &[6.0, 5.0]);
 
-        let x = robust_spd_solve(&a, &b);
+        let x = robust_spd_solve(&a, &b).unwrap();
         let result = &a * &x;
 
         assert!(approx_eq(&result, &b, 1e-10));
@@ -418,7 +466,7 @@ mod tests {
         a[(0, 1)] = 1e-8; // Small asymmetry
         let b = DMatrix::from_row_slice(2, 1, &[1.0, 2.0]);
 
-        let x = robust_spd_solve(&a, &b);
+        let x = robust_spd_solve(&a, &b).unwrap();
         let a_sym = symmetrize(&a);
         let result = &a_sym * &x;
 
@@ -433,26 +481,49 @@ mod tests {
 
         // This may panic or may handle it gracefully depending on implementation
         // We test that it at least executes
-        let result = std::panic::catch_unwind(|| robust_spd_solve(&a, &b));
+        let result = std::panic::catch_unwind(|| robust_spd_solve(&a, &b)).unwrap();
 
         // Expect either panic or some result
         assert!(result.is_err() || result.is_ok());
     }
 
+    /// Was `t_chol_solve_spd_non_square_panic`. The precondition is now reported rather
+    /// than asserted (#254); the test still pins the same contract.
     #[test]
-    #[should_panic(expected = "chol_solve_spd: A must be square")]
-    fn t_chol_solve_spd_non_square_panic() {
+    fn t_chol_solve_spd_non_square_errors() {
         let a = DMatrix::<f64>::zeros(3, 2);
         let b = DMatrix::<f64>::zeros(3, 1);
-        let _ = chol_solve_spd(&a, &b, SolveOptions::default());
+        let got = chol_solve_spd(&a, &b, SolveOptions::default());
+        assert!(
+            matches!(
+                got,
+                Err(StrapdownError::NotSquare {
+                    rows: 3,
+                    cols: 2,
+                    ..
+                })
+            ),
+            "expected NotSquare{{rows: 3, cols: 2}}, got {got:?}"
+        );
     }
 
+    /// Was `t_chol_solve_spd_incompatible_panic`.
     #[test]
-    #[should_panic(expected = "chol_solve_spd: A and B incompatible")]
-    fn t_chol_solve_spd_incompatible_panic() {
+    fn t_chol_solve_spd_incompatible_errors() {
         let a = DMatrix::<f64>::identity(2, 2);
         let b = DMatrix::<f64>::zeros(3, 1);
-        let _ = chol_solve_spd(&a, &b, SolveOptions::default());
+        let got = chol_solve_spd(&a, &b, SolveOptions::default());
+        assert!(
+            matches!(
+                got,
+                Err(StrapdownError::DimensionMismatch {
+                    expected: 2,
+                    got: 3,
+                    ..
+                })
+            ),
+            "expected DimensionMismatch{{expected: 2, got: 3}}, got {got:?}"
+        );
     }
 
     #[test]
@@ -469,8 +540,8 @@ mod tests {
 
         let result = chol_solve_spd(&a, &b, opts);
         assert!(
-            result.is_none(),
-            "Should return None when jitter limit exceeded"
+            matches!(result, Err(StrapdownError::SingularMatrix { .. })),
+            "should report SingularMatrix when the jitter limit is exceeded, got {result:?}"
         );
     }
 
@@ -490,12 +561,12 @@ mod tests {
         // Force chol_solve_spd to fail by using very restrictive options
         let chol_result = chol_solve_spd(&a, &b, opts);
         assert!(
-            chol_result.is_none(),
-            "Cholesky should fail with restrictive jitter"
+            matches!(chol_result, Err(StrapdownError::SingularMatrix { .. })),
+            "Cholesky should report SingularMatrix with restrictive jitter, got {chol_result:?}"
         );
 
         // Now test robust solver which should use inverse
-        let x = robust_spd_solve(&a, &b);
+        let x = robust_spd_solve(&a, &b).unwrap();
         let a_sym = symmetrize(&a);
         let result = &a_sym * &x;
         assert!(approx_eq(&result, &b, 1e-6));
@@ -509,7 +580,7 @@ mod tests {
 
         // robust_spd_solve may panic or may handle it via jitter
         // We test that it either panics or succeeds (doesn't hang)
-        let result = std::panic::catch_unwind(|| robust_spd_solve(&a, &b));
+        let result = std::panic::catch_unwind(|| robust_spd_solve(&a, &b)).unwrap();
 
         // Either panic (Err) or succeed (Ok) - both are acceptable
         // The key is that it terminates
