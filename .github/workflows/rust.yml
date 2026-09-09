@@ -23,7 +23,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned to the declared MSRV rather than `stable`, deliberately.
+      #
+      # `[workspace.lints]` enforces clippy's pedantic and nursery groups with `-D warnings`.
+      # Those groups gain lints every Rust release, so against a floating `stable` the gate is
+      # not reproducible: unrelated PRs go red six weeks after they were written, and
+      # `pixi run lint` (which uses the pinned 1.91) cannot predict the result. That is not a
+      # hypothetical -- it broke this very PR, on lints that did not exist locally.
+      #
+      # Keep this in sync with `rust-version` in Cargo.toml and the `rust` pin in pixi.toml.
+      # Trade-off: CI no longer catches breakage introduced by newer toolchains. A scheduled
+      # job on `stable`, non-blocking, is the usual way to recover that signal.
+      - uses: dtolnay/rust-toolchain@1.91
         with:
           components: clippy
 
@@ -46,7 +57,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned to the MSRV -- see the note in the `minimal` job above.
+      - uses: dtolnay/rust-toolchain@1.91
         with:
           components: clippy, rustfmt
 
