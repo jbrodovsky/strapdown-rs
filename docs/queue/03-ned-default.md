@@ -67,17 +67,21 @@ flip cannot move it and any future movement is attributable to something else.
   output (NED) are indistinguishable once loaded. Honouring the NED default there would break
   every ENU recording with no way to opt back in; the frame has to become a caller-supplied
   option first, which is a signature change across those four functions and the CLI --
-  queue 7's `InsEngine` builder. Symptom until then: `strapdown-sim syn` emits NED, so
-  dead-reckoning its output through those ENU entry points double-counts gravity and falls
-  at 2 g.
+  queue 7's `InsEngine` builder (#262). Symptom until then: `strapdown-sim syn` emits NED,
+  so dead-reckoning its output through those ENU entry points double-counts gravity and
+  falls at 2 g. Tracked in #296.
 - **`earth::transport_rate` disagrees with Groves 5.44 in both frames** -- sign-flipped on all
   three components, `R_N`/`R_E` swapped, and the third component built from `v_N` where Groves
   uses `v_E`. Verified against a numerical differentiation of `C_n^e` along the trajectory.
   Wrong independently of the frame default, so fixing it here would have moved every
-  integration number for an unrelated reason.
+  integration number for an unrelated reason. Tracked in #297.
 - **ENU support is only skin-deep.** Inside `velocity_update` only the gravity term consults
   `is_enu`; the Earth-rate and transport-rate terms keep their NED formulation in both frames.
   So the two views of one state drift apart by the Coriolis asymmetry (~2e-5 m of altitude
   over a 0.1 s step at 20 m/s). Part of why NED is the default now rather than the alternative.
+
+Also filed while working this queue position, unrelated to the frame: #298, where
+`strapdown-sim` creates its `-o` path as a directory and overwrites the input CSV with the
+results.
 
 Part of the [v1.0 work queue](../V1_QUEUE.md) / [project board](https://github.com/users/jbrodovsky/projects/7).
