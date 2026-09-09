@@ -137,6 +137,15 @@ pub trait MeasurementModel: Any {
     /// assert_eq!(h_matrix.ncols(), 9);
     /// ```
     fn get_jacobian(&self, state: &DVector<f64>) -> DMatrix<f64>;
+
+    /// Wrap angular components of an innovation vector into (-π, π].
+    ///
+    /// The default is the identity: most measurements live in R^n and need no
+    /// wrapping. Angular measurements must override this. A `z`/`z_hat` pair
+    /// straddling the branch cut otherwise produces phantom ±2π innovations;
+    /// an error-state injection cannot survive those because the small-angle
+    /// quaternion approximation is invalid at 350° (see #286).
+    fn wrap_residual(&self, _residual: &mut DVector<f64>) {}
 }
 
 /// GPS position measurement model
@@ -540,11 +549,16 @@ impl MeasurementModel for MagnetometerYawMeasurement {
         // Extract roll and pitch from state for tilt compensation
         let roll = if state.len() > 6 { state[6] } else { 0.0 };
         let pitch = if state.len() > 7 { state[7] } else { 0.0 };
-        let yaw = if state.len() > 8 { state[8] } else { 0.0 };
 
-        // Compute tilt-compensated magnetic vector
-        //let mut heading = self.compute_tilt_compensated_heading(roll, pitch);
-        let attitude = Rotation3::from_euler_angles(roll, pitch, yaw);
+        // Compute tilt-compensated magnetic vector.
+        //
+        // Only roll and pitch enter here: levelling the sensor must not use
+        // yaw, otherwise the "measurement" becomes a function of the estimated
+        // yaw and the innovation double-counts yaw error (the estimated yaw
+        // rotates the vector one way in `z` and appears again in `z_hat`,
+        // destabilising the attitude/bias loop -- see #286). Yaw is observed
+        // through `get_expected_measurement`, not through the sensor rotation.
+        let attitude = Rotation3::from_euler_angles(roll, pitch, 0.0);
         let mag_vector = attitude * Vector3::new(self.mag_x, self.mag_y, self.mag_z);
         let mut heading = mag_vector.y.atan2(mag_vector.x);
 
@@ -577,6 +591,16 @@ impl MeasurementModel for MagnetometerYawMeasurement {
         let nav_state = jacobian_state(state);
         crate::linearize::magnetometer_yaw_jacobian(&nav_state, self.mag_x, self.mag_y, self.mag_z)
     }
+
+    fn wrap_residual(&self, residual: &mut DVector<f64>) {
+        // Single yaw component: keep the innovation on the circle so a
+        // z/z_hat pair straddling 0/2π does not inject a phantom ±2π kick.
+        if !residual.is_empty() {
+            residual[0] = (residual[0] + std::f64::consts::PI)
+                .rem_euclid(2.0 * std::f64::consts::PI)
+                - std::f64::consts::PI;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -585,6 +609,58 @@ mod tests {
     use assert_approx_eq::assert_approx_eq;
 
     const EPS: f64 = 1e-12;
+
+    /// #286: the tilt-compensated yaw must not depend on estimated yaw.
+    ///
+    /// Levelling the sensor uses roll/pitch only; rotating by yaw would make
+    /// the measurement a function of the estimate and double-count yaw error
+    /// in the innovation.
+    #[test]
+    fn mag_yaw_measurement_ignores_estimated_yaw() {
+        let m = MagnetometerYawMeasurement {
+            mag_x: 20.0,
+            mag_y: 5.0,
+            mag_z: -45.0,
+            noise_std: 0.2,
+            apply_declination: false,
+            year: 2025,
+            day_of_year: 1,
+        };
+        let z_at = |yaw: f64| {
+            m.get_measurement(&DVector::from_vec(vec![
+                0.7, -1.3, 100.0, 0.0, 0.0, 0.0, 0.16, -0.4, yaw,
+            ]))[0]
+        };
+        let z0 = z_at(0.2);
+        for yaw in [0.0, 1.0, 2.5, 5.0, -1.2] {
+            assert_approx_eq!(z_at(yaw), z0, 1e-12);
+        }
+    }
+
+    /// #286: angular residuals wrap onto the circle.
+    #[test]
+    fn mag_wrap_residual_keeps_innovation_on_circle() {
+        let m = MagnetometerYawMeasurement {
+            mag_x: 20.0,
+            mag_y: 5.0,
+            mag_z: -45.0,
+            noise_std: 0.2,
+            apply_declination: false,
+            year: 2025,
+            day_of_year: 1,
+        };
+        // z/z_hat straddling the branch cut must not produce a ±2π kick.
+        let mut r = DVector::from_vec(vec![6.1]);
+        m.wrap_residual(&mut r);
+        assert_approx_eq!(r[0], 6.1 - 2.0 * std::f64::consts::PI, 1e-12);
+        let mut r = DVector::from_vec(vec![-5.0]);
+        m.wrap_residual(&mut r);
+        assert_approx_eq!(r[0], -5.0 + 2.0 * std::f64::consts::PI, 1e-12);
+        // Small residuals pass through untouched.
+        let mut r = DVector::from_vec(vec![0.5]);
+        m.wrap_residual(&mut r);
+        assert_approx_eq!(r[0], 0.5, EPS);
+    }
 
     #[test]
     fn gps_position_vector_noise_and_sigma_points() {
