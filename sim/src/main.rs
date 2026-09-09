@@ -656,7 +656,7 @@ fn process_file(
                 attitude,
                 // ENU, matching `initialize_*` in `strapdown::sim`. Sensor Logger exports
                 // are ENU-convention; `syn` emits NED and needs the frame to become a CLI
-                // option first (queue 7's `InsEngine` builder).
+                // option first (queue 7's `InsEngine` builder); see #296.
                 is_enu: true,
             };
 
@@ -1425,7 +1425,7 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                     in_degrees: true,
                     // ENU, matching `initialize_*` in `strapdown::sim`. Sensor Logger exports
                     // are ENU-convention; `syn` emits NED and needs the frame to become a CLI
-                    // option first (queue 7's `InsEngine` builder).
+                    // option first (queue 7's `InsEngine` builder); see #296.
                     is_enu: true,
                 };
 
@@ -1672,7 +1672,7 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
             attitude,
             // ENU, matching `initialize_*` in `strapdown::sim`. Sensor Logger exports
             // are ENU-convention; `syn` emits NED and needs the frame to become a CLI
-            // option first (queue 7's `InsEngine` builder).
+            // option first (queue 7's `InsEngine` builder); see #296.
             is_enu: true,
         };
 

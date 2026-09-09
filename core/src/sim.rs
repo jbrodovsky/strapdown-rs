@@ -1959,7 +1959,7 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Result<Vec<NavigationResult
         // Deliberately ENU and deliberately still hardcoded; see the note in
         // `initialize_ukf`. `TestDataRecord` carries no frame tag, so honouring the NED
         // default here would break every ENU recording with no way to opt back in. The
-        // frame becomes a caller-supplied option in queue 7's `InsEngine` builder.
+        // frame becomes a caller-supplied option in queue 7's `InsEngine` builder (#296).
         is_enu: true,
     };
     // Store the initial state and metadata
@@ -2313,10 +2313,10 @@ pub fn initialize_ukf(
         // break every ENU recording with no way to opt back in, so the frame has to become a
         // caller-supplied option first. That is a signature change across
         // `dead_reckoning`/`initialize_ukf`/`initialize_ekf`/`initialize_eskf` and the CLI,
-        // which is queue 7's `InsEngine` builder, not this PR's default flip.
+        // which is queue 7's `InsEngine` builder (#262), not this PR's default flip.
         //
         // Known symptom until then: `strapdown-sim syn` emits NED, so dead-reckoning it
-        // through this ENU path double-counts gravity and falls at 2 g. Tracked separately.
+        // through this ENU path double-counts gravity and falls at 2 g. Tracked in #296.
         is_enu: true,
     };
     let process_noise_diagonal = match config.process_noise_diagonal {
@@ -2462,7 +2462,7 @@ pub fn initialize_ekf(
         // Deliberately ENU and deliberately still hardcoded; see the note in
         // `initialize_ukf`. `TestDataRecord` carries no frame tag, so honouring the NED
         // default here would break every ENU recording with no way to opt back in. The
-        // frame becomes a caller-supplied option in queue 7's `InsEngine` builder.
+        // frame becomes a caller-supplied option in queue 7's `InsEngine` builder (#296).
         is_enu: true,
     };
 
@@ -2639,7 +2639,7 @@ pub fn initialize_eskf(
         // Deliberately ENU and deliberately still hardcoded; see the note in
         // `initialize_ukf`. `TestDataRecord` carries no frame tag, so honouring the NED
         // default here would break every ENU recording with no way to opt back in. The
-        // frame becomes a caller-supplied option in queue 7's `InsEngine` builder.
+        // frame becomes a caller-supplied option in queue 7's `InsEngine` builder (#296).
         is_enu: true,
     };
 
