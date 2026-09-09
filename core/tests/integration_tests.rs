@@ -83,36 +83,24 @@ const DEFAULT_INITIAL_COVARIANCE: [f64; 15] = [
 /// Below this threshold, the comparison is not meaningful as the vehicle may be stationary
 const MIN_DRIFT_FOR_COMPARISON: f64 = 5.0;
 
-/// ESKF-specific process noise covariance (15-state)
-/// Tuned values (8x default) to balance stability and accuracy
-/// Higher values prevent divergence while maintaining reasonable performance
-const ESKF_PROCESS_NOISE: [f64; 15] = [
-    8e-6, // latitude noise (8x default)
-    8e-6, // longitude noise (8x default)
-    8e-6, // altitude noise (8x default)
-    8e-3, // velocity north noise (8x default)
-    8e-3, // velocity east noise (8x default)
-    8e-3, // velocity down noise (8x default)
-    8e-5, // roll noise (8x default)
-    8e-5, // pitch noise (8x default)
-    8e-5, // yaw noise (8x default)
-    8e-6, // acc bias x noise (8x default)
-    8e-6, // acc bias y noise (8x default)
-    8e-6, // acc bias z noise (8x default)
-    8e-8, // gyro bias x noise (8x default)
-    8e-8, // gyro bias y noise (8x default)
-    8e-8, // gyro bias z noise (8x default)
-];
-
-/// ESKF-specific initial covariance (15-state)
-/// Higher uncertainty (8x default) for stability
-const ESKF_INITIAL_COVARIANCE: [f64; 15] = [
-    8e-6, 8e-6, 8.0, // position covariance (lat, lon, alt) - 8m altitude uncertainty
-    0.8, 0.8, 0.8, // velocity covariance (m/s) - 8x default
-    0.08, 0.08, 0.08, // attitude covariance (radians) - 8x default
-    0.08, 0.08, 0.08, // accelerometer bias covariance (m/s²) - 8x default
-    0.008, 0.008, 0.008, // gyroscope bias covariance (rad/s) - 8x default
-];
+/// The ESKF tuning under test is the shipped one, not a test-local copy.
+///
+/// These used to be independent constants -- an initial covariance whose bias entries were
+/// five orders of magnitude looser than `initialize_eskf`'s and a process noise 8x the
+/// library default -- with nothing recording which of the two tunings was intended. The
+/// answer is that there is only one, so these now alias the library's, and a change to the
+/// tuning a `strapdown-sim` user gets is a change to what this suite measures.
+///
+/// What the old test-local tuning cost, measured on `test_data.csv` with full GNSS aiding:
+/// its 8x bias-state process noise carried the gyro-bias estimate into the anti-windup
+/// clamp on 76 of the 5,366 samples, including the last, where gyro bias y sat at exactly
+/// the 0.05 rad/s cap. Attribution is unambiguous -- holding the initial covariance and
+/// scaling only the bias entries of Q reproduces the saturation (37 clamped samples at 8x,
+/// none at 4x), while scaling only the nine navigation-state entries does not (none) -- so
+/// what those runs demonstrated about the bias estimates was the clamp, not the estimator.
+/// `strapdown::sim::ESKF_INITIAL_ERROR_COVARIANCE` documents the priors themselves.
+const ESKF_INITIAL_COVARIANCE: [f64; 15] = strapdown::sim::ESKF_INITIAL_ERROR_COVARIANCE;
+const ESKF_PROCESS_NOISE: [f64; 15] = strapdown::sim::DEFAULT_PROCESS_NOISE;
 /// Anti-windup caps the ESKF clamps its bias estimates to (`kalman.rs`, #286).
 ///
 /// Orders of magnitude above legitimate consumer-MEMS turn-on biases (~0.1 m/s^2,
@@ -1442,9 +1430,7 @@ fn test_eskf_closed_loop_on_real_data() {
         stats.mean_velocity_vertical_error
     );
 
-    // Assert error bounds - ESKF with 5x process noise tuning
-    // Performance reflects trade-off between stability (no divergence) and accuracy
-    // These bounds are based on empirical performance with real MEMS-grade IMU data
+    // Assert error bounds on the shipped ESKF tuning (see ESKF_INITIAL_COVARIANCE above).
 
     // Horizontal bounds are physical, not fitted. With continuous GNSS aiding at a
     // few metres of position noise, a correctly closed loosely-coupled filter must
@@ -1457,10 +1443,13 @@ fn test_eskf_closed_loop_on_real_data() {
     let max_horizontal_limit = 60.0;
 
     // Vertical bounds, tightened when #286 landed. The UKF achieves 2.8 m rms /
-    // 12.1 m peak on this data; the ESKF is at 2.4 m / 9.2 m. Limits carry ~4x
-    // margin: any return of the vertical-channel divergence (previously 119 m
-    // rms / 385 m peak) trips them immediately, while healthy-filter codegen
-    // jitter across platforms cannot.
+    // 12.1 m peak on this data and the ESKF now sits alongside it at 2.8 m / 12.3 m.
+    // It used to read 2.4 m / 9.2 m: dropping the test-local 8x process noise for the
+    // shipped tuning gave up 0.4 m of vertical rms, which is what the 8x bias-state
+    // random walk was buying by letting the bias estimates run into the anti-windup
+    // clamp. Limits keep ~3.5x margin, so any return of the vertical-channel
+    // divergence (previously 119 m rms / 385 m peak) trips them immediately while
+    // healthy-filter codegen jitter across platforms cannot.
     let rms_altitude_limit = 10.0;
     let max_altitude_limit = 40.0;
 
@@ -1605,8 +1594,8 @@ fn test_eskf_with_degraded_gnss() {
     // Error bounds for degraded GNSS (2s update intervals).
     //
     // Re-enabled and tightened when #286 landed: with 2 s fixes the healthy
-    // ESKF sits at 23.7 m horizontal rms / 40.1 m peak and 3.6 m altitude rms /
-    // 12.9 m peak -- barely above the full-rate numbers (23.5 / 2.4 m), since
+    // ESKF sits at 23.7 m horizontal rms / 40.0 m peak and 3.9 m altitude rms /
+    // 14.5 m peak -- barely above the full-rate numbers (23.5 / 2.8 m), since
     // 2 s of MEMS dead-reckoning drift is small next to the fix noise floor.
     // Limits carry ~2.5-4.5x margin: the previous 1000/3500/400/3000 m ceilings
     // were vacuous (any non-divergent filter passed) and are replaced with
@@ -1740,25 +1729,12 @@ fn test_eskf_stability_high_dynamics() {
     // Create initial state from first record
     let initial_state = create_initial_state(&records[0]);
 
-    // Initialize ESKF with more aggressive process noise to simulate high dynamics
-    // Higher uncertainty values to accommodate rapid maneuvers and accelerations
-    let _initial_error_covariance = vec![
-        1e-6, 1e-6, 1.0, // position error (same as default)
-        0.5, 0.5, 0.5, // velocity error (5x default - allows for higher acceleration)
-        0.05, 0.05, 0.05, // attitude error (5x default - allows for rapid rotations)
-        0.05, 0.05, 0.05, // accel bias error (5x default - less confident in bias)
-        0.005, 0.005, 0.005, // gyro bias error (5x default - less confident in bias)
-    ];
-
-    // Increased process noise for high dynamics
-    // 10x velocity noise and 10x attitude noise to accommodate rapid changes
-    let _process_noise_values = vec![
-        1e-5, 1e-5, 1e-5, // position noise (10x default)
-        1e-2, 1e-2, 1e-2, // velocity noise (10x default for high dynamics)
-        1e-4, 1e-4, 1e-4, // attitude noise (10x default for rapid maneuvers)
-        1e-5, 1e-5, 1e-5, // accel bias noise (10x default)
-        1e-7, 1e-7, 1e-7, // gyro bias noise (10x default)
-    ];
+    // This test does not apply a distinct high-dynamics tuning, and did not before: a
+    // 5x covariance and a 10x process noise sat here `_`-prefixed and unused. They are
+    // removed rather than left to imply a tuning the test never applied. What it
+    // actually exercises is that the shipped tuning stays finite and keeps the
+    // quaternion normalised across the run; a real high-dynamics variant would need a
+    // dataset segment with the dynamics to match and is separate work.
     let initial_error_covariance = ESKF_INITIAL_COVARIANCE.to_vec();
     let process_noise = DMatrix::from_diagonal(&DVector::from_vec(ESKF_PROCESS_NOISE.to_vec()));
 
@@ -1860,12 +1836,14 @@ fn test_eskf_stability_high_dynamics() {
 
 /// The construction path a user of the default filter actually takes (#258).
 ///
-/// Every other ESKF test in this file builds the filter from `ESKF_INITIAL_COVARIANCE` and
-/// `ESKF_PROCESS_NOISE`, which are test-local tuning constants. Now that `FilterType`
-/// defaults to `Eskf`, the tuning a `strapdown-sim closed-loop` run gets is
-/// `initialize_eskf`'s -- five orders of magnitude tighter on the bias states -- and until
-/// this test existed nothing exercised it end to end. Promoting a filter to the default
-/// without covering the default's own initialisation would ship the untested path.
+/// Every other ESKF test in this file hands `ErrorStateKalmanFilter::new` a covariance and
+/// an `InitialState` the suite assembled itself. Now that `FilterType` defaults to `Eskf`,
+/// what a `strapdown-sim closed-loop` run actually executes is `initialize_eskf`, and until
+/// this test existed nothing exercised it end to end. The two now share a tuning, so what
+/// is left to cover here is the entry point itself, called exactly as `strapdown-sim` calls
+/// it: every optional argument `None`, and an `InitialState` built from the record's own
+/// roll/pitch/yaw in degrees rather than from Euler angles derived from the record
+/// quaternion the way `create_initial_state` does. That difference is visible below.
 #[test]
 fn test_eskf_default_initialization_on_real_data() {
     /// Samples the vertical channel is allowed to settle over: 30 s at this recording's 1 Hz.
@@ -1904,9 +1882,10 @@ fn test_eskf_default_initialization_on_real_data() {
         stats.rms_altitude_error, stats.max_altitude_error
     );
 
-    // Held to the same standard as `test_eskf_closed_loop_on_real_data`, so the default
-    // tuning cannot quietly be the worse of the two. It is currently the better one:
-    // 23.5 m rms / 37.9 m peak horizontal against that test's 23.5 m / 40.1 m.
+    // Held to the same standard as `test_eskf_closed_loop_on_real_data`. Horizontally the
+    // two runs are indistinguishable -- 23.5 m rms / 37.9 m peak, to the centimetre -- which
+    // is what continuous GNSS aiding should produce regardless of how the initial attitude
+    // was assembled. The vertical channel is where the two differ; see below.
     assert!(
         stats.rms_horizontal_error < 40.0,
         "default-initialised ESKF RMS horizontal error should be under 40m, got {:.2}m",
@@ -1925,8 +1904,10 @@ fn test_eskf_default_initialization_on_real_data() {
 
     // The vertical channel is unobservable at t=0: the filter starts with zero vertical
     // velocity and no knowledge of the accelerometer bias, and needs a few GNSS fixes
-    // before it can separate the two. That settling transient peaks at 42.6 m on sample 3
-    // of this 1 Hz recording and is bounded separately from the steady state, which is the
+    // before it can separate the two. That settling transient peaks at 19.2 m on sample 3
+    // of this 1 Hz recording -- it was 42.6 m while the initial altitude error covariance
+    // was 1e-4 m², a 1 cm standard deviation that left the filter refusing the very
+    // correction it needed. It is bounded separately from the steady state, which is the
     // quantity a vertical-channel regression would move. Excluding it wholesale would hide
     // a divergence, so it gets its own, looser ceiling rather than no ceiling.
     let settled_max_altitude_error = results
@@ -1948,9 +1929,11 @@ fn test_eskf_default_initialization_on_real_data() {
         "default-initialised ESKF max altitude error after settling should be under 40m, got {settled_max_altitude_error:.2}m"
     );
 
-    // On this tuning the anti-windup clamp never engages -- unlike the looser test-local
-    // covariance, where it fires on 76 of the 5,366 samples. So here the bound below is a
-    // statement about the estimator rather than about the clamp.
+    // The anti-windup clamp never engages on this tuning: peak |gyro bias| is 0.0284 rad/s
+    // against the 0.05 rad/s cap. So the bound below is a statement about the estimator
+    // rather than about the clamp -- which is the whole reason the tuning is what it is,
+    // and which the test-local constants could not say while their 8x bias-state process
+    // noise was firing the clamp on 76 of the 5,366 samples.
     assert_bias_estimates_bounded(&results, "ESKF default initialization");
     for (i, result) in results.iter().enumerate() {
         for (axis, bias) in [
