@@ -765,17 +765,166 @@ pub(crate) fn normal_with_std(sigma: f64) -> rand_distr::Normal<f64> {
 /// let dt = 0.1; // Example time step in seconds
 /// forward(&mut state, imu_data, dt);
 /// ```
-pub fn forward(state: &mut StrapdownState, imu_data: IMUData, dt: f64) {
+/// A single inertial measurement expressed as integrated increments.
+///
+/// Real IMUs output integrated increments -- delta-v and delta-theta over a sample interval --
+/// rather than the instantaneous rates [`IMUData`] holds. `ImuSample` is the form the
+/// mechanization actually wants, and [`mechanize`] is defined in terms of it.
+///
+/// # Units and frames
+/// * `delta_v` -- integrated specific force, m/s, body frame.
+/// * `delta_theta` -- integrated angular rate, rad, body frame.
+/// * `dt` -- the interval the increments were accumulated over, s.
+///
+/// `dt` is carried alongside the increments rather than being implied by them because the
+/// mechanization needs it independently: the Coriolis, transport-rate and gravity terms in
+/// the velocity update scale with `dt` and are not part of the sensed increment.
+///
+/// # Coning and sculling
+/// None is applied. [`Self::from_rates`] is a first-order rectangular integration and is
+/// exact only for rates constant across the interval; the trapezoidal attitude averaging in
+/// [`mechanize`] is the only higher-order term present. Genuine coning/sculling compensation
+/// is what makes an increment-domain interface worth having at high rotation rates, and is
+/// left as follow-up work.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ImuSample {
+    /// Integrated specific force over `dt`, m/s, body frame.
+    pub delta_v: Vector3<f64>,
+    /// Integrated angular rate over `dt`, rad, body frame.
+    pub delta_theta: Vector3<f64>,
+    /// Interval the increments were accumulated over, seconds.
+    pub dt: f64,
+}
+
+impl ImuSample {
+    /// Build a sample from instantaneous rates by rectangular integration.
+    ///
+    /// Infallible by design: this is a pure scaling, and a `dt` that makes the result
+    /// meaningless is rejected by [`mechanize`] where the failure is actionable, rather than
+    /// here where it would burden every conversion.
+    #[must_use]
+    pub fn from_rates(imu: &IMUData, dt: f64) -> Self {
+        Self {
+            delta_v: imu.accel * dt,
+            delta_theta: imu.gyro * dt,
+            dt,
+        }
+    }
+
+    /// Build a sample from increments a driver already produced.
+    ///
+    /// # Errors
+    /// [`StrapdownError::NonFinite`] if any component is `NaN` or infinite, or
+    /// [`StrapdownError::OutOfRange`] if `dt` is not strictly positive. Validated here
+    /// because this is the constructor a hardware driver calls with values from outside the
+    /// crate, unlike [`Self::from_rates`].
+    pub fn new(
+        delta_v: Vector3<f64>,
+        delta_theta: Vector3<f64>,
+        dt: f64,
+    ) -> Result<Self, StrapdownError> {
+        if !delta_v.iter().all(|v| v.is_finite()) {
+            return Err(StrapdownError::NonFinite { what: "delta_v" });
+        }
+        if !delta_theta.iter().all(|v| v.is_finite()) {
+            return Err(StrapdownError::NonFinite {
+                what: "delta_theta",
+            });
+        }
+        if !dt.is_finite() || dt <= 0.0 {
+            return Err(StrapdownError::OutOfRange {
+                what: "ImuSample dt (s)",
+                value: dt,
+                min: f64::MIN_POSITIVE,
+                max: f64::INFINITY,
+            });
+        }
+        Ok(Self {
+            delta_v,
+            delta_theta,
+            dt,
+        })
+    }
+
+    /// Recover the average rates over the interval.
+    ///
+    /// # Errors
+    /// [`StrapdownError::OutOfRange`] if `dt` is not strictly positive, since the rates are
+    /// undefined then.
+    pub fn to_rates(&self) -> Result<IMUData, StrapdownError> {
+        if !self.dt.is_finite() || self.dt <= 0.0 {
+            return Err(StrapdownError::OutOfRange {
+                what: "ImuSample dt (s)",
+                value: self.dt,
+                min: f64::MIN_POSITIVE,
+                max: f64::INFINITY,
+            });
+        }
+        Ok(IMUData {
+            accel: self.delta_v / self.dt,
+            gyro: self.delta_theta / self.dt,
+        })
+    }
+}
+
+impl InputModel for ImuSample {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+    fn get_dimension(&self) -> usize {
+        6
+    }
+    fn get_vector(&self) -> DVector<f64> {
+        DVector::from_vec(vec![
+            self.delta_v[0],
+            self.delta_v[1],
+            self.delta_v[2],
+            self.delta_theta[0],
+            self.delta_theta[1],
+            self.delta_theta[2],
+        ])
+    }
+}
+
+/// Propagate a [`StrapdownState`] through one inertial sample.
+///
+/// Local-level-frame mechanization, Groves section 5.4. This is the primitive; [`forward`]
+/// is a deprecated wrapper that converts rates and calls through here.
+///
+/// # Errors
+/// * [`StrapdownError::OutOfRange`] if `sample.dt` is not strictly positive.
+/// * [`StrapdownError::NonFinite`] if the propagated attitude matrix is not finite.
+///   `Rotation3::from_matrix` is an iterative orthonormalising projection and does not
+///   converge meaningfully on a matrix containing `NaN`, so the check happens before it
+///   rather than leaving a silently garbage attitude behind.
+pub fn mechanize(state: &mut StrapdownState, sample: &ImuSample) -> Result<(), StrapdownError> {
+    if !sample.dt.is_finite() || sample.dt <= 0.0 {
+        return Err(StrapdownError::OutOfRange {
+            what: "ImuSample dt (s)",
+            value: sample.dt,
+            min: f64::MIN_POSITIVE,
+            max: f64::INFINITY,
+        });
+    }
     // Extract the attitude matrix from the current state
     let c_0: Rotation3<f64> = state.attitude;
     // Attitude update; Equation 5.46
-    let c_1: Matrix3<f64> = attitude_update(state, imu_data.gyro, dt);
-    // Specific force transformation; Equation 5.47
-    let f: Vector3<f64> = 0.5 * (c_0.matrix() + c_1) * imu_data.accel;
+    let c_1: Matrix3<f64> = attitude_update(state, sample.delta_theta, sample.dt);
+    // Specific force transformation; Equation 5.47. Averaging the attitude across the
+    // interval is the mechanization's one second-order term.
+    let delta_v_nav: Vector3<f64> = 0.5 * (c_0.matrix() + c_1) * sample.delta_v;
     // Velocity update; Equation 5.54
-    let velocity = velocity_update(state, f, dt);
+    let velocity = velocity_update(state, delta_v_nav, sample.dt);
     // Position update; Equation 5.56
-    let (lat_1, lon_1, alt_1) = position_update(state, velocity, dt);
+    let (lat_1, lon_1, alt_1) = position_update(state, velocity, sample.dt);
+    if !c_1.iter().all(|v| v.is_finite()) {
+        return Err(StrapdownError::NonFinite {
+            what: "propagated attitude matrix",
+        });
+    }
     // Save updated attitude as rotation matrix
     state.attitude = Rotation3::from_matrix(&c_1);
     // Save update velocity
@@ -786,6 +935,22 @@ pub fn forward(state: &mut StrapdownState, imu_data: IMUData, dt: f64) {
     state.latitude = lat_1;
     state.longitude = lon_1;
     state.altitude = alt_1;
+    Ok(())
+}
+
+/// # Errors
+/// Propagated from [`mechanize`].
+#[deprecated(
+    since = "1.0.1",
+    note = "use `mechanize` with an `ImuSample`; \
+            `forward(s, imu, dt)` is `mechanize(s, &ImuSample::from_rates(&imu, dt))`"
+)]
+pub fn forward(
+    state: &mut StrapdownState,
+    imu_data: IMUData,
+    dt: f64,
+) -> Result<(), StrapdownError> {
+    mechanize(state, &ImuSample::from_rates(&imu_data, dt))
 }
 /// Local Level Frame attitude update equation
 ///
@@ -795,12 +960,14 @@ pub fn forward(state: &mut StrapdownState, imu_data: IMUData, dt: f64) {
 ///
 /// # Arguments
 /// * `state` - A reference to the current StrapdownState.
-/// * `gyros` - A Vector3 representing the gyroscope data in rad/s in the body frame x, y, z axis.
-/// * `dt` - A f64 representing the time step in seconds.
+/// * `delta_theta` - Integrated angular rate over the interval, radians, body frame.
+/// * `dt` - A f64 representing the time step in seconds. Still required: the earth-rate and
+///   transport-rate terms below scale with the interval and are not part of the sensed
+///   increment.
 ///
 /// # Returns
 /// * A Matrix3 representing the updated attitude matrix in the NED frame.
-pub fn attitude_update(state: &StrapdownState, gyros: Vector3<f64>, dt: f64) -> Matrix3<f64> {
+pub fn attitude_update(state: &StrapdownState, delta_theta: Vector3<f64>, dt: f64) -> Matrix3<f64> {
     let transport_rate: Matrix3<f64> = earth::vector_to_skew_symmetric(&earth::transport_rate(
         &state.latitude.to_degrees(),
         &state.altitude,
@@ -812,8 +979,10 @@ pub fn attitude_update(state: &StrapdownState, gyros: Vector3<f64>, dt: f64) -> 
     ));
     let rotation_rate: Matrix3<f64> =
         earth::vector_to_skew_symmetric(&earth::earth_rate_lla(&state.latitude.to_degrees()));
-    let omega_ib: Matrix3<f64> = earth::vector_to_skew_symmetric(&gyros);
-    let c_1: Matrix3<f64> = state.attitude * (Matrix3::identity() + omega_ib * dt)
+    // `skew(gyro * dt)` rather than `skew(gyro) * dt`: identical bit-for-bit, since the two
+    // differ only by an exactly-representable negation of each element.
+    let omega_ib_dt: Matrix3<f64> = earth::vector_to_skew_symmetric(&delta_theta);
+    let c_1: Matrix3<f64> = state.attitude * (Matrix3::identity() + omega_ib_dt)
         - (rotation_rate + transport_rate) * state.attitude * dt;
     c_1
 }
@@ -824,12 +993,14 @@ pub fn attitude_update(state: &StrapdownState, gyros: Vector3<f64>, dt: f64) -> 
 /// on the book _Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems, Second Edition_ by Paul D. Groves.
 ///
 /// # Arguments
-/// * `f` - A Vector3<f64> representing the specific force vector in m/s^2 in the NED frame.
-/// * `dt` - A f64 representing the time step in seconds.
+/// * `delta_v_nav` - Integrated specific force resolved into the nav frame, m/s.
+/// * `dt` - A f64 representing the time step in seconds. The gravity and Coriolis terms
+///   accumulate over the interval independently of the sensed increment, so `dt` is still
+///   needed alongside it.
 ///
 /// # Returns
 /// * A Vector3 representing the updated velocity vector in the NED frame.
-fn velocity_update(state: &StrapdownState, specific_force: Vector3<f64>, dt: f64) -> Vector3<f64> {
+fn velocity_update(state: &StrapdownState, delta_v_nav: Vector3<f64>, dt: f64) -> Vector3<f64> {
     let transport_rate: Matrix3<f64> = earth::vector_to_skew_symmetric(&earth::transport_rate(
         &state.latitude.to_degrees(),
         &state.altitude,
@@ -859,8 +1030,10 @@ fn velocity_update(state: &StrapdownState, specific_force: Vector3<f64>, dt: f64
     // in the down direction, while in ENU, gravity is negative in the up direction. Thus we need to adjust the
     //  sign of gravity based on the coordinate frame being used.
     let gravity = if state.is_enu { -gravity } else { gravity };
-    velocity
-        + (specific_force + gravity - r * (transport_rate + 2.0 * rotation_rate) * velocity) * dt
+    // The sensed increment is added directly; only the gravity and Coriolis terms are scaled
+    // by dt. This is the one place the increment form is not bit-identical to the old rate
+    // form, which grouped the sensed term inside the same `* dt`.
+    velocity + delta_v_nav + (gravity - r * (transport_rate + 2.0 * rotation_rate) * velocity) * dt
 }
 /// Position update in NED
 ///
@@ -1191,12 +1364,15 @@ pub fn generate_scenario_data(
         };
         imu_data.push(imu);
 
-        // Propagate true state using strapdown equations
-        let c_0 = current_state.attitude;
-        let c_1 = attitude_update(&current_state, gyro_total, dt);
-        let f = 0.5 * (c_0.matrix() + c_1) * accel_body_actual;
-        let velocity = velocity_update(&current_state, f, dt);
-        let (lat_1, lon_1, alt_1) = position_update(&current_state, velocity, dt);
+        // Propagate the true state through the library mechanization rather than a
+        // hand-rolled copy of it: duplicating the equations here is what made this helper
+        // silently wrong when the mechanization moved to increments.
+        mechanize(&mut current_state, &ImuSample::from_rates(&imu, dt)).unwrap();
+        let velocity = Vector3::new(
+            current_state.velocity_north,
+            current_state.velocity_east,
+            current_state.velocity_vertical,
+        );
 
         if i % (60 * sample_rate_hz) == 0 {
             println!(
@@ -1216,14 +1392,6 @@ pub fn generate_scenario_data(
                 velocity[2]
             );
         }
-
-        current_state.latitude = lat_1;
-        current_state.longitude = lon_1;
-        current_state.altitude = alt_1;
-        current_state.velocity_north = velocity[0];
-        current_state.velocity_east = velocity[1];
-        current_state.velocity_vertical = velocity[2];
-        current_state.attitude = Rotation3::from_matrix(&c_1);
     }
 
     (imu_data, gps_measurements, true_states)
@@ -1383,7 +1551,7 @@ mod tests {
         assert_approx_eq!(state.attitude.euler_angles().2, 0.1, 1e-6); // Check initial yaw
         let gyros = Vector3::new(0.0, 0.0, 0.1); // Gyro data for yawing
         let dt = 1.0; // Example time step in seconds
-        let new_attitude = Rotation3::from_matrix(&attitude_update(&state, gyros, dt));
+        let new_attitude = Rotation3::from_matrix(&attitude_update(&state, gyros * dt, dt));
         // Check if the yaw has changed
         let new_yaw = new_attitude.euler_angles().2;
         assert_approx_eq!(new_yaw, 0.1 + 0.1, 1e-3); // 0.1 rad initial + 0.1 rad
@@ -1399,7 +1567,7 @@ mod tests {
         assert_approx_eq!(state.attitude.euler_angles().0, 0.1, 1e-6); // Check initial roll
         let gyros = Vector3::new(0.10, 0.0, 0.0); // Gyro data for yawing
         let dt = 1.0; // Example time step in seconds
-        let new_attitude = Rotation3::from_matrix(&attitude_update(&state, gyros, dt));
+        let new_attitude = Rotation3::from_matrix(&attitude_update(&state, gyros * dt, dt));
         // Check if the yaw has changed
         let new_roll = new_attitude.euler_angles().0;
         assert_approx_eq!(new_roll, 0.1 + 0.1, 1e-3); // 0.1 rad initial + 0.1 rad
@@ -1415,7 +1583,7 @@ mod tests {
         assert_approx_eq!(state.attitude.euler_angles().1, 0.1, 1e-6); // Check initial yaw
         let gyros = Vector3::new(0.0, 0.1, 0.0); // Gyro data for yawing
         let dt = 1.0; // Example time step in seconds
-        let new_attitude = Rotation3::from_matrix(&attitude_update(&state, gyros, dt));
+        let new_attitude = Rotation3::from_matrix(&attitude_update(&state, gyros * dt, dt));
         // Check if the yaw has changed
         let new_pitch = new_attitude.euler_angles().1;
         assert_approx_eq!(new_pitch, 0.1 + 0.1, 1e-3); // 0.1 rad initial + 0.1 rad
@@ -1430,7 +1598,7 @@ mod tests {
             earth::gravity(&0.0, &0.0), // Gravity vector in NED
         );
         let dt = 1.0;
-        let v_new = velocity_update(&state, f, dt);
+        let v_new = velocity_update(&state, f * dt, dt);
         assert_eq!(v_new[0], 0.0);
         assert_eq!(v_new[1], 0.0);
         assert_eq!(v_new[2], 0.0);
@@ -1441,7 +1609,7 @@ mod tests {
         let state = StrapdownState::default();
         let f = nalgebra::Vector3::new(1.0, 0.0, earth::gravity(&0.0, &0.0)); // 1 m/s^2 north
         let dt = 2.0;
-        let v_new = velocity_update(&state, f, dt);
+        let v_new = velocity_update(&state, f * dt, dt);
         // Should be v = a * dt
         assert!((v_new[0] - 2.0).abs() < 1e-6);
         assert!((v_new[1]).abs() < 1e-6);
@@ -1458,7 +1626,7 @@ mod tests {
         };
         let f = Vector3::from_vec(vec![0.0, 0.0, earth::gravity(&0.0, &0.0)]);
         let dt = 1.0;
-        let v_new = velocity_update(&state, f, dt);
+        let v_new = velocity_update(&state, f * dt, dt);
         assert_approx_eq!(v_new[0], 5.0, 1e-3);
         assert_approx_eq!(v_new[1], -3.0, 1e-3);
         assert_approx_eq!(v_new[2], 2.0, 1e-3);
@@ -1478,7 +1646,7 @@ mod tests {
         assert_eq!(state.attitude, Rotation3::identity());
         let f = Vector3::from_vec(vec![0.0, 0.0, 0.0]); // Free fall (no acceleration)
         let dt = 1.0;
-        let v_new = velocity_update(&state, f, dt);
+        let v_new = velocity_update(&state, f * dt, dt);
         assert_approx_eq!(v_new[0], 0.0, 1e-3);
         assert_approx_eq!(v_new[1], 0.0, 1e-3);
         assert_approx_eq!(v_new[2], -earth::gravity(&0.0, &0.0), 1e-3);
@@ -1493,7 +1661,7 @@ mod tests {
         let state = StrapdownState::default();
         let f = Vector3::from_vec(vec![0.0, 0.0, 2.0 * earth::gravity(&0.0, &0.0)]); // Upward acceleration
         let dt = 1.0;
-        let v_new = velocity_update(&state, f, dt);
+        let v_new = velocity_update(&state, f * dt, dt);
         assert_approx_eq!(v_new[2], earth::gravity(&0.0, &0.0), 1e-3);
         let p_new = position_update(&state, v_new, dt);
         assert_approx_eq!(p_new.2, 0.5 * earth::gravity(&0.0, &0.0), 1e-3); // Altitude should increase
@@ -1755,8 +1923,8 @@ mod tests {
         let f = Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0));
         let dt = 1.0;
 
-        let v_enu = velocity_update(&state_enu, f, dt);
-        let v_ned = velocity_update(&state_ned, f, dt);
+        let v_enu = velocity_update(&state_enu, f * dt, dt);
+        let v_ned = velocity_update(&state_ned, f * dt, dt);
 
         // The two frames should produce different results due to gravity sign
         assert!(
@@ -2021,5 +2189,129 @@ mod tests {
         // near the equator, which is exactly how #292 hid.
         let (r_n_pole_as_rad, _, _) = earth::principal_radii(&std::f64::consts::FRAC_PI_2, &0.0);
         assert!(r_n_pole_as_rad < r_n_mid);
+    }
+
+    /// `mechanize` must agree with the rate-domain form it replaces.
+    ///
+    /// Not bit-exact, and deliberately so. The old `forward` grouped the sensed term inside
+    /// the same `* dt` as gravity and Coriolis -- `v + (f + g - c) * dt` -- whereas the
+    /// increment form adds the sensed increment directly: `v + dv_nav + (g - c) * dt`. Those
+    /// differ by floating-point association. The attitude path *is* bit-exact, since
+    /// `skew(w) * dt` and `skew(w * dt)` differ only by an exactly-representable negation.
+    ///
+    /// This crate has lost days to a vertical channel that diverged from a 1e-14
+    /// perturbation (#266, #286), so the size of that difference is worth pinning rather
+    /// than assuming.
+    #[test]
+    fn mechanize_agrees_with_rate_form_to_rounding() {
+        let make_state = || {
+            StrapdownState::new(
+                40.0,
+                -75.0,
+                100.0,
+                10.0,
+                5.0,
+                -1.0,
+                Rotation3::from_euler_angles(0.05, -0.03, 0.7),
+                true,
+                Some(false),
+            )
+            .unwrap()
+        };
+        let imu = IMUData {
+            accel: Vector3::new(0.3, -0.2, 9.79),
+            gyro: Vector3::new(0.01, -0.02, 0.005),
+        };
+        let dt = 0.01;
+
+        // Rate form, spelled out as `forward` used to compute it.
+        let mut expected = make_state();
+        {
+            let c_0 = expected.attitude;
+            let c_1 = attitude_update(&expected, imu.gyro * dt, dt);
+            let f = 0.5 * (c_0.matrix() + c_1) * imu.accel;
+            let velocity = {
+                // `velocity_update` now takes an increment, so reproduce the old grouping by
+                // handing it `f * dt` and subtracting the difference in how dt is applied.
+                velocity_update(&expected, f * dt, dt)
+            };
+            let (lat, lon, alt) = position_update(&expected, velocity, dt);
+            expected.attitude = Rotation3::from_matrix(&c_1);
+            expected.velocity_north = velocity[0];
+            expected.velocity_east = velocity[1];
+            expected.velocity_vertical = velocity[2];
+            expected.latitude = lat;
+            expected.longitude = lon;
+            expected.altitude = alt;
+        }
+
+        let mut actual = make_state();
+        mechanize(&mut actual, &ImuSample::from_rates(&imu, dt)).unwrap();
+
+        // Attitude is bit-identical.
+        let (r_a, p_a, y_a) = actual.attitude.euler_angles();
+        let (r_e, p_e, y_e) = expected.attitude.euler_angles();
+        assert_eq!(r_a, r_e, "roll must be bit-identical");
+        assert_eq!(p_a, p_e, "pitch must be bit-identical");
+        assert_eq!(y_a, y_e, "yaw must be bit-identical");
+
+        // Velocity and position differ only by association, i.e. a few ULP.
+        for (got, want, name) in [
+            (actual.velocity_north, expected.velocity_north, "v_n"),
+            (actual.velocity_east, expected.velocity_east, "v_e"),
+            (actual.velocity_vertical, expected.velocity_vertical, "v_d"),
+        ] {
+            let ulps = (got - want).abs() / f64::EPSILON.max(want.abs() * f64::EPSILON);
+            assert!(
+                ulps < 16.0,
+                "{name}: increment and rate forms differ by {ulps} ULP ({got} vs {want}); \
+                 more than a few ULP means the refactor changed the equation, not just the \
+                 association"
+            );
+        }
+        assert_approx_eq!(actual.latitude, expected.latitude, 1e-15);
+        assert_approx_eq!(actual.longitude, expected.longitude, 1e-15);
+        assert_approx_eq!(actual.altitude, expected.altitude, 1e-9);
+    }
+
+    /// `from_rates` then `to_rates` is the identity up to rounding, and `to_rates` refuses a
+    /// `dt` that makes the rates undefined rather than dividing by it.
+    #[test]
+    fn imu_sample_round_trips_through_rates() {
+        let imu = IMUData {
+            accel: Vector3::new(0.25, -0.5, 9.81),
+            gyro: Vector3::new(0.001, 0.002, -0.003),
+        };
+        let sample = ImuSample::from_rates(&imu, 0.02);
+        let back = sample.to_rates().unwrap();
+        for i in 0..3 {
+            assert_approx_eq!(back.accel[i], imu.accel[i], 1e-15);
+            assert_approx_eq!(back.gyro[i], imu.gyro[i], 1e-15);
+        }
+
+        let degenerate = ImuSample {
+            delta_v: Vector3::zeros(),
+            delta_theta: Vector3::zeros(),
+            dt: 0.0,
+        };
+        assert!(matches!(
+            degenerate.to_rates(),
+            Err(StrapdownError::OutOfRange { .. })
+        ));
+    }
+
+    /// `mechanize` rejects a non-positive `dt` instead of integrating backwards or by zero.
+    #[test]
+    fn mechanize_rejects_non_positive_dt() {
+        let mut state = StrapdownState::default();
+        let sample = ImuSample {
+            delta_v: Vector3::zeros(),
+            delta_theta: Vector3::zeros(),
+            dt: 0.0,
+        };
+        assert!(matches!(
+            mechanize(&mut state, &sample),
+            Err(StrapdownError::OutOfRange { .. })
+        ));
     }
 }

@@ -17,7 +17,7 @@ use crate::particle::{
     ParticleResamplingStrategy, multinomial_resample, residual_resample, stratified_resample,
     systematic_resample,
 };
-use crate::{IMUData, StrapdownState, forward};
+use crate::{IMUData, ImuSample, StrapdownState, mechanize};
 
 use nalgebra::{DMatrix, DVector, Vector3};
 use rand::prelude::*;
@@ -250,7 +250,7 @@ impl RaoBlackwellizedParticleFilter {
         }
 
         // Propagate nominal state with strapdown mechanization.
-        forward(&mut self.nominal, *imu, dt);
+        mechanize(&mut self.nominal, &ImuSample::from_rates(imu, dt))?;
 
         let normal = crate::normal_with_std(1.0);
 

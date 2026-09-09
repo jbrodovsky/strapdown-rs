@@ -512,7 +512,7 @@ fn test_dead_reckoning_on_real_data() {
     );
 
     // Run dead reckoning
-    let results = dead_reckoning(&records);
+    let results = dead_reckoning(&records).unwrap();
 
     // Verify results
     assert_eq!(
@@ -839,7 +839,7 @@ fn test_ukf_outperforms_dead_reckoning() {
     );
 
     // Run dead reckoning
-    let dr_results = dead_reckoning(&records);
+    let dr_results = dead_reckoning(&records).unwrap();
     let dr_stats = compute_error_metrics(&dr_results, &records);
 
     // Run UKF
@@ -1224,7 +1224,7 @@ fn test_ekf_outperforms_dead_reckoning() {
     );
 
     // Run dead reckoning
-    let dr_results = dead_reckoning(&records);
+    let dr_results = dead_reckoning(&records).unwrap();
     let dr_stats = compute_error_metrics(&dr_results, &records);
 
     // Run EKF
@@ -1600,7 +1600,7 @@ fn test_eskf_outperforms_dead_reckoning() {
     );
 
     // Run dead reckoning
-    let dr_results = dead_reckoning(&records);
+    let dr_results = dead_reckoning(&records).unwrap();
     let dr_stats = compute_error_metrics(&dr_results, &records);
 
     // Run ESKF
@@ -2092,7 +2092,7 @@ fn test_filter_output_length_matches_input() {
     println!("Testing with {input_length} input records");
 
     // Test dead reckoning
-    let dr_results = dead_reckoning(&records);
+    let dr_results = dead_reckoning(&records).unwrap();
     assert_eq!(
         dr_results.len(),
         input_length,
