@@ -424,10 +424,11 @@ const RBPF_PARTICLES: usize = 500;
 /// Particle count for the degraded-GNSS RBPF test.
 ///
 /// Kept at 5000 as the reference configuration: with the #267 fixes (wrapped
-/// angular likelihoods, proposal matched to the fault scale) the error is now
-/// monotonic in particle count (250→2000: 150→125→109→111 m median) and robust
-/// across seeds (117-136 m at 500 particles), so this asserts a bound rather
-/// than the old 5000-or-bust coincidence.
+/// angular likelihoods, proposal matched to the fault scale) the error
+/// decreases with particle count and then plateaus (250→2000: 150→125→109→111 m
+/// median; the 2000-vs-1000 wiggle is within seed noise, measured at 15% spread
+/// across seeds) and is robust across seeds (117-136 m at 500 particles), so
+/// this asserts a bound rather than the old 5000-or-bust coincidence.
 const RBPF_DEGRADED_PARTICLES: usize = 5000;
 
 fn run_rbpf_with_cfg(

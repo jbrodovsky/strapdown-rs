@@ -34,12 +34,14 @@ pub struct RbpfConfig {
     pub position_init_std_m: Vector3<f64>,
     pub velocity_init_std_mps: f64,
     pub attitude_init_std_rad: f64,
-    /// Per-sample position proposal spread (m). Covers ordinary IMU
-    /// dead-reckoning uncertainty between fixes. Under faulted or very sparse
-    /// aiding (e.g. the reference degraded profile with `sigma_pos_m: 3.0`
-    /// wander and 5 s fixes) this starves the particle cloud -- raise it
-    /// explicitly in that configuration (see #267), rather than here: a
-    /// wider default proposal measurably degrades clean stationary tracking.
+    /// Position proposal scale (m per second of sample period). The predict
+    /// step scales it by the IMU sample interval (`pos_noise = std * dt`), so
+    /// the effective per-step standard deviation is this value times `dt_s`.
+    /// It must cover unmodelled position wander between fixes: under the
+    /// reference degraded profile (`Degraded { sigma_pos_m: 3.0 }`, 5 s fixes)
+    /// the default 1 m starves the particle cloud (see #267) -- raise it
+    /// explicitly in that configuration. Kept at 1 m here because a wider
+    /// default proposal measurably degrades clean stationary tracking.
     pub position_process_noise_std_m: Vector3<f64>,
     pub velocity_process_noise_std_mps: f64,
     pub attitude_process_noise_std_rad: f64,
@@ -242,18 +244,18 @@ impl RaoBlackwellizedParticleFilter {
         // bit-identical to the per-particle computation it replaces. Only the
         // per-particle noise draws and state propagation stay in the loop, in
         // the same order, keeping the RNG stream untouched.
-        let Some(shared_cov) = self.particles.first().map(|p| p.linear_cov.clone()) else {
+        let Some(first) = self.particles.first() else {
             return;
         };
-        let n = &f_nl_full * &shared_cov * f_nl_full.transpose() + &q_n;
+        let n = &f_nl_full * &first.linear_cov * f_nl_full.transpose() + &q_n;
         let n = symmetrize(&n);
         let n_inv = n
             .clone()
             .try_inverse()
             .unwrap_or_else(|| DMatrix::identity(POSITION_STATE_DIM, POSITION_STATE_DIM));
-        let l = &f_ll_full * &shared_cov * f_nl_full.transpose() * n_inv;
+        let l = &f_ll_full * &first.linear_cov * f_nl_full.transpose() * n_inv;
         let mut p_new =
-            &f_ll_full * &shared_cov * f_ll_full.transpose() + &q_l - &l * &n * l.transpose();
+            &f_ll_full * &first.linear_cov * f_ll_full.transpose() + &q_l - &l * &n * l.transpose();
         p_new = symmetrize(&p_new);
         for i in 0..linear_dim {
             p_new[(i, i)] += 1e-9;
@@ -288,7 +290,7 @@ impl RaoBlackwellizedParticleFilter {
 
             particle.position_error = x_n_pred;
             particle.linear_state = x_l_pred;
-            particle.linear_cov = p_new.clone();
+            particle.linear_cov.clone_from(&p_new);
         }
     }
 
