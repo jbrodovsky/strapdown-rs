@@ -649,15 +649,13 @@ fn test_ukf_closed_loop_on_real_data() {
         stats.mean_velocity_vertical_error
     );
 
-    // Assert error bounds - these should be reasonable for a working filter with GNSS
-    // With good GNSS, horizontal error should be within a few meters RMS
-    //
-    // Healthy-filter horizontal rms on this data is ~24 m (UKF/EKF/ESKF agree to
-    // within a few meters), an order of magnitude above the ~4.7 m fix noise
-    // floor because of dynamics, so the bounds below are ~1.6x the observed
-    // healthy value: tight enough that any divergence trips them instantly
-    // (dead reckoning is at 5e6 m), loose enough that floating-point codegen
-    // differences between platforms cannot (see #288: 39.0 m carried 2% margin).
+    // Assert error bounds: they should hold for a healthy aided filter on this
+    // data. The three filters agree at ~24 m horizontal rms, an order of
+    // magnitude above the ~4.7 m fix noise floor because of dynamics, so the
+    // bounds below are ~1.6x the observed healthy value: tight enough that any
+    // divergence trips them instantly (dead reckoning is at 5e6 m), loose
+    // enough that floating-point codegen differences between platforms cannot
+    // cross them (see #288: the old 39.0 m bound carried only 2% margin).
     let rms_horizontal_limit = 40.0;
     let max_horizontal_limit = 60.0;
     let rms_altitude_limit = 50.0;
