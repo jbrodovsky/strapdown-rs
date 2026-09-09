@@ -177,10 +177,15 @@ The Free Core implementation must achieve the following capabilities:
 
 ### Coordinate Conventions
 - **Navigation frame**: local-level frame (latitude, longitude, altitude)
-  - Default convention is East-North-Up (ENU) but NED is also supported
-  - Users control via `is_enu` boolean flags and sign conventions
-  - Vertical velocity: positive up in ENU, positive down in NED
-  - Valid altitude range: [-11,000m, 30,000m] for ENU; [11,000m, -30,000m] for NED
+  - Default convention is North-East-Down (NED), matching Groves; ENU is an explicit opt-in
+  - Users control via `is_enu` boolean flags and sign conventions; `StrapdownState::to_ned`
+    and `to_enu` convert an existing state between the two
+  - Vertical velocity: positive down in NED, positive up in ENU
+  - `altitude` is height above the ellipsoid -- positive up -- in **both** frames, valid over
+    [-11,000m, 30,000m]. It is not a "down" coordinate in NED
+  - Known gap: `sim::dead_reckoning` and `sim::initialize_*` still hardcode ENU, because
+    `TestDataRecord` carries no frame tag. `strapdown-sim syn` emits NED, so dead-reckoning
+    its output through those ENU entry points double-counts gravity
 - **Attitude representation**: Direction cosine matrices (DCM), Euler angles (XYZ rotation)
 - **Position**: WGS84 geodetic (lat/lon in degrees, altitude in meters)
 - **Velocities**: Local-level frame (m/s)

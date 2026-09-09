@@ -25,7 +25,8 @@ use nalgebra::{DMatrix, DVector, Rotation3, UnitQuaternion, Vector3};
 /// indicates whether the provided angles/lat/lon are in degrees; the
 /// constructor will normalize and convert angles to radians when required.
 /// The `is_enu` flag determines whether the navigation frame is ENU (true)
-/// or NED (false) for internal mechanization.
+/// or NED (false) for internal mechanization. It defaults to NED, matching
+/// [`StrapdownState`](crate::StrapdownState) and the rest of the crate.
 ///
 /// Field units and conventions:
 /// - `latitude`, `longitude`: degrees if `in_degrees==true`, otherwise radians
@@ -37,8 +38,9 @@ use nalgebra::{DMatrix, DVector, Rotation3, UnitQuaternion, Vector3};
 ///
 /// ```rust
 /// use strapdown::kalman::InitialState;
+/// // `None` selects the crate default, NED. Pass `Some(true)` for ENU.
 /// let init = InitialState::new(45.0, -122.0, 100.0, 0.0, 0.0, 0.0,
-///                              0.0, 0.0, 0.0, true, Some(true));
+///                              0.0, 0.0, 0.0, true, None);
 /// ```
 #[derive(Clone, Debug, Default)]
 pub struct InitialState {
@@ -61,7 +63,7 @@ impl InitialState {
     /// degrees (when `in_degrees==true`) or already in radians. When degrees
     /// are provided the values are normalized and converted to radians for
     /// internal use. The optional `is_enu` parameter selects the local-frame
-    /// convention (defaults to ENU when omitted).
+    /// convention (defaults to NED when omitted).
     ///
     /// # Arguments
     ///
@@ -75,7 +77,7 @@ impl InitialState {
     /// * `pitch` - Pitch angle (degrees if `in_degrees==true`)
     /// * `yaw` - Yaw angle (degrees if `in_degrees==true`)
     /// * `in_degrees` - If true the latitude/longitude/angles are provided in degrees
-    /// * `is_enu` - Optional: use ENU frame if true, NED if false (defaults to ENU)
+    /// * `is_enu` - Optional: use ENU frame if true, NED if false (defaults to NED)
     ///
     /// # Returns
     ///
@@ -104,7 +106,7 @@ impl InitialState {
         } else {
             longitude
         };
-        let is_enu = is_enu.unwrap_or(true);
+        let is_enu = is_enu.unwrap_or(false);
         if in_degrees {
             roll = wrap_to_360(roll).to_radians();
             pitch = wrap_to_360(pitch).to_radians();

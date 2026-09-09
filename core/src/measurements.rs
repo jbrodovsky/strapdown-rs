@@ -63,7 +63,10 @@ fn jacobian_state(state: &DVector<f64>) -> Result<StrapdownState, StrapdownError
         velocity_east: state[4],
         velocity_vertical: state[5],
         attitude: Rotation3::from_euler_angles(state[6], state[7], state[8]),
-        is_enu: false,
+        // Frame follows the crate default (NED) rather than restating a bare `false`.
+        // The filter state vector carries no frame tag, so this is the only convention
+        // available here -- it agreed with nothing while the crate defaulted to ENU.
+        ..StrapdownState::default()
     })
 }
 

@@ -30,7 +30,7 @@
 //!     10.0, 5.0, 0.0,        // velocity
 //!     Rotation3::identity(), // attitude
 //!     true,                  // in_degrees
-//!     Some(true),            // is_enu
+//!     None,                  // is_enu (None = the crate default, NED)
 //! ).unwrap();
 //!
 //! // Get Jacobians for EKF predict/update
@@ -55,7 +55,7 @@
 //!
 //! # Coordinate Conventions
 //!
-//! - Default frame is East-North-Up (ENU) but NED is also supported via `is_enu` flag
+//! - Default frame is North-East-Down (NED); ENU is supported via the `is_enu` flag
 //! - Gravity is positive down (NED) or negative up (ENU)
 //! - Latitude is constrained to [-π/2, π/2] (±90°)
 //! - Longitude and yaw are wrapped to [-π, π]
@@ -109,7 +109,7 @@ use nalgebra::{DMatrix, DVector, Rotation3, Vector3};
 ///     10.0, 5.0, 0.0,        // velocities (m/s)
 ///     Rotation3::identity(),  // attitude
 ///     true,                   // in_degrees
-///     None,                   // is_enu (defaults to true)
+///     None,                   // is_enu (defaults to NED)
 /// ).unwrap();
 /// let accel = Vector3::new(0.0, 0.0, 9.81);
 /// let gyro = Vector3::new(0.0, 0.0, 0.0);

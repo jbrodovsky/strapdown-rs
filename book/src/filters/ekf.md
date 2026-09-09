@@ -65,7 +65,7 @@ let initial_state = InitialState {
     pitch: 0.0,
     yaw: 0.0,
     in_degrees: true,
-    is_enu: true,
+    is_enu: false, // NED, the crate default; set true for ENU data
 };
 
 // Initialize 9-state EKF (no biases)

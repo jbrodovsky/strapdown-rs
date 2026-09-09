@@ -55,13 +55,30 @@
 //! - $v_n$, $v_e$, and $v_v$ are the local level frame (NED/ENU) velocities (m/s) along the north axis, east axis, and vertical axis.
 //! - $\phi$, $\theta$, and $\psi$ are the Euler angles (radians) representing the orientation of the body frame relative to the local level frame (XYZ Euler rotation).
 //!
-//! The default coordinate convention is in East-North-Up. However this is somewhat loosely controlled by the codebase largely by
-//! user defined positive/negative sign conventions. For example, the tests in this main module that test the forward
-//! propagation of the strapdown equations assume an ENU frame (thus gravitational acceleration is negative in along the vertical axis).
-//! In free-fall, (no relative acceleration in the body frame), the vertical velocity should increase negatively (down is negative), and
-//! thus the altitude should decrease. Users must be consistent in their use of coordinate conventions throughout the codebase, primarily
-//! in their definition of positive and negative accelerations and forces with respect to the vertical axis. This crate will not attempt
-//! to correct, sanitize, or assume a given convention. Users must dictate it by various `is_enu` boolean flags and strict sign conventions.
+//! ### Frame convention: NED by default
+//!
+//! The canonical frame is **North-East-Down**, matching Groves and standard aerospace practice.
+//! [`StrapdownState::default`], [`StrapdownState::new`] and [`kalman::InitialState::new`] all
+//! produce NED states unless told otherwise. In NED the vertical axis points *down*: gravity is
+//! positive along it, and a body in free-fall gains positive `velocity_vertical` while losing
+//! altitude.
+//!
+//! East-North-Up remains supported, but it is now an explicit opt-in rather than the default --
+//! set `is_enu: true` (or pass `Some(true)` to the constructors). In ENU the vertical axis points
+//! *up*, gravity is negative along it, and free-fall drives `velocity_vertical` negative.
+//!
+//! Note that `altitude` is height above the ellipsoid -- positive up -- in **both** frames. Only
+//! `velocity_vertical` and the gravity sign change with the frame; the position update accounts
+//! for this internally, so `altitude` always decreases in free-fall regardless of convention.
+//!
+//! [`StrapdownState::to_ned`] and [`StrapdownState::to_enu`] convert an existing state between the
+//! two, flipping `velocity_vertical` and the attitude's vertical axis. Use them at the boundary
+//! when ingesting data recorded in the other convention; the crate will not guess a convention or
+//! silently correct one for you.
+//!
+//! Which convention your *sensor data* follows is a property of the data, not of this crate. A
+//! device whose accelerometer reads `+g` along its up-axis at rest is ENU-convention, and feeding
+//! it to a NED state without conversion double-counts gravity.
 //!
 //! This mechanization and coordinate frame is only valid for positions relatively close to the Earth's surface (within 30 km above mean sea level).
 //! Above that it is more common to use the Earth-Centered Earth-Fixed (ECEF) frame for navigation. Additionally, the deepest ocean trenches
@@ -69,9 +86,8 @@
 //! implements general sanity checks to ensure that the position states remain within valid bounds, given a specific coordinate frame:
 //! - Latitude: [-90 deg, 90 deg]
 //! - Longitude: [-180 deg, 180 deg]
-//! - Altitude:
-//!   - [-11,000 m, 30,000 m] for East-North-Up
-//!   - [11,000 m, -30,000 m] for North-East-Down
+//! - Altitude: [-11,000 m, 30,000 m] in both frames. `altitude` is height above the ellipsoid,
+//!   positive up, irrespective of `is_enu`; it is not a "down" coordinate in NED.
 //!
 //! ### Strapdown equations in the Local-Level Frame
 //!
@@ -507,11 +523,14 @@ pub struct StrapdownState {
     pub velocity_north: f64,
     /// Velocity east in m/s (NED frame)
     pub velocity_east: f64,
-    /// Vertical velocity in m/s (positive up in ENU, positive down in NED)
+    /// Vertical velocity in m/s (positive down in NED, the default; positive up in ENU)
     pub velocity_vertical: f64,
     /// Attitude as a rotation matrix
     pub attitude: Rotation3<f64>,
-    /// Flag for ENU (true) or NED (false) frame, default is ENU (true)
+    /// Flag for ENU (true) or NED (false) frame. Defaults to NED (false).
+    ///
+    /// See the crate-level "Frame convention" section; [`StrapdownState::to_enu`] and
+    /// [`StrapdownState::to_ned`] convert between the two.
     pub is_enu: bool,
 }
 impl Debug for StrapdownState {
@@ -564,7 +583,7 @@ impl Default for StrapdownState {
             velocity_east: 0.0,
             velocity_vertical: 0.0,
             attitude: Rotation3::identity(),
-            is_enu: true,
+            is_enu: false,
         }
     }
 }
@@ -577,9 +596,12 @@ impl StrapdownState {
     /// * `altitude` - Altitude in meters.
     /// * `velocity_north` - North velocity in m/s.
     /// * `velocity_east` - East velocity in m/s.
-    /// * `velocity_down` - Down velocity in m/s.
+    /// * `velocity_vertical` - Vertical velocity in m/s: positive *down* in NED (the default),
+    ///   positive *up* in ENU.
     /// * `attitude` - Rotation3<f64> attitude matrix.
     /// * `in_degrees` - If true, angles are provided in degrees and will be converted to radians.
+    /// * `is_enu` - Frame convention: `Some(true)` for ENU, `Some(false)` or `None` for NED
+    ///   (the default).
     ///
     /// # Errors
     /// [`StrapdownError::OutOfRange`] if latitude, longitude or altitude is outside the range
@@ -645,8 +667,77 @@ impl StrapdownState {
             velocity_east,
             velocity_vertical,
             attitude,
-            is_enu: is_enu.unwrap_or(true),
+            is_enu: is_enu.unwrap_or(false),
         })
+    }
+
+    /// Reinterpret this state in the opposite vertical convention.
+    ///
+    /// The navigation frame here is ordered (north, east, vertical), so ENU and NED differ by
+    /// a single reflection of the vertical axis. A reflection alone is improper -- it would
+    /// take the attitude matrix out of SO(3) -- so the vertical axis of the *body* frame is
+    /// flipped alongside it. That is the physically meaningful pairing: a sensor whose third
+    /// axis points up, resolved into a frame whose third axis points up, becomes a sensor
+    /// whose third axis points down resolved into a frame whose third axis points down. The
+    /// two reflections compose to a proper rotation, so `C' = F C F` with `F = diag(1, 1, -1)`
+    /// stays orthonormal (exactly -- it only negates elements).
+    ///
+    /// `altitude` is untouched: it is height above the ellipsoid, positive up, in both frames.
+    fn flip_vertical(&self) -> Self {
+        let f = Matrix3::new(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, -1.0);
+        Self {
+            velocity_vertical: -self.velocity_vertical,
+            attitude: Rotation3::from_matrix_unchecked(f * self.attitude.matrix() * f),
+            is_enu: !self.is_enu,
+            ..*self
+        }
+    }
+
+    /// Convert this state to the NED convention, the crate default.
+    ///
+    /// A no-op when the state is already NED. See [`flip_vertical`](Self::flip_vertical) for
+    /// what the conversion does to velocity and attitude.
+    ///
+    /// # Example
+    /// ```rust
+    /// use strapdown::StrapdownState;
+    /// // A state recorded up-positive: climbing at 3 m/s.
+    /// let enu = StrapdownState { velocity_vertical: 3.0, is_enu: true, ..Default::default() };
+    /// let ned = enu.to_ned();
+    /// assert!(!ned.is_enu);
+    /// // Same motion, down-positive: descending at -3 m/s, i.e. still climbing.
+    /// assert!((ned.velocity_vertical + 3.0).abs() < 1e-12);
+    /// ```
+    #[must_use]
+    pub fn to_ned(&self) -> Self {
+        if self.is_enu {
+            self.flip_vertical()
+        } else {
+            *self
+        }
+    }
+
+    /// Convert this state to the ENU convention.
+    ///
+    /// A no-op when the state is already ENU. See [`flip_vertical`](Self::flip_vertical) for
+    /// what the conversion does to velocity and attitude.
+    ///
+    /// # Example
+    /// ```rust
+    /// use strapdown::StrapdownState;
+    /// // The default is NED, so vertical velocity is down-positive: descending at 3 m/s.
+    /// let ned = StrapdownState { velocity_vertical: 3.0, ..Default::default() };
+    /// let enu = ned.to_enu();
+    /// assert!(enu.is_enu);
+    /// assert!((enu.velocity_vertical + 3.0).abs() < 1e-12);
+    /// ```
+    #[must_use]
+    pub fn to_enu(&self) -> Self {
+        if self.is_enu {
+            *self
+        } else {
+            self.flip_vertical()
+        }
     }
     // --- From/Into trait implementations for StrapdownState <-> Vec<f64> and &[f64] ---
 }
@@ -1050,18 +1141,28 @@ fn velocity_update(state: &StrapdownState, delta_v_nav: Vector3<f64>, dt: f64) -
 ///
 /// # Arguments
 /// * `state` - A reference to the current StrapdownState containing the position and velocity.
-/// * `velocity` - A Vector3 representing the velocity vector in m/s in the NED frame.
+/// * `velocity` - A Vector3 of (north, east, vertical) velocity in m/s. The vertical component
+///   follows `state.is_enu`: positive down in NED, positive up in ENU.
 /// * `dt` - A f64 representing the time step in seconds.
 ///
 /// # Returns
-/// * A tuple (latitude, longitude, altitude) representing the updated position in radians and meters.
+/// * A tuple (latitude, longitude, altitude) representing the updated position in radians and
+///   meters. `altitude` is height above the ellipsoid, positive up, in both frames.
 pub fn position_update(state: &StrapdownState, velocity: Vector3<f64>, dt: f64) -> (f64, f64, f64) {
     // `principal_radii` takes degrees; every other call site converts first (#292).
     let (r_n, r_e_0, _) = earth::principal_radii(&state.latitude.to_degrees(), &state.altitude);
     let lat_0 = state.latitude;
     let alt_0 = state.altitude;
-    // Altitude update
-    let alt_1 = alt_0 + 0.5 * (state.velocity_vertical + velocity[2]) * dt;
+    // Altitude update.
+    //
+    // `altitude` is height above the ellipsoid -- positive *up* -- in both frames, but
+    // `velocity_vertical` is positive *down* in NED. Integrating it into altitude therefore
+    // needs the frame's sign, which this line did not apply: under NED a body in free-fall
+    // gained 4.9 m in the first second instead of losing it. Harmless while the crate
+    // defaulted to ENU and every caller went along with it; load-bearing now that NED is the
+    // default. Guarded by `free_fall_loses_altitude_in_both_frames`.
+    let vertical_rate_up = if state.is_enu { 1.0 } else { -1.0 };
+    let alt_1 = alt_0 + vertical_rate_up * 0.5 * (state.velocity_vertical + velocity[2]) * dt;
     // Latitude update
     let lat_1: f64 = state.latitude
         + 0.5 * (state.velocity_north / (r_n + state.altitude) + velocity[0] / (r_n + alt_1)) * dt;
@@ -1526,8 +1627,10 @@ mod tests {
         assert_eq!(state.velocity_north, 0.0);
         assert_eq!(state.velocity_east, 0.0);
         assert_eq!(state.velocity_vertical, 0.0);
+        // NED (the default): a body at rest senses the normal force holding it up, which is
+        // *negative* along the down axis.
         let imu_data = IMUData {
-            accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
+            accel: Vector3::new(0.0, 0.0, -earth::gravity(&0.0, &0.0)),
             gyro: Vector3::new(0.0, 0.0, 0.0), // No rotation
         };
         let dt = 1.0; // Example time step in seconds
@@ -1602,12 +1705,12 @@ mod tests {
     }
     #[test]
     fn test_velocity_update_zero_force() {
-        // Zero specific force, velocity should remain unchanged
-        let state = StrapdownState::default();
+        // Gravity-cancelling specific force, velocity should remain unchanged.
+        let state = StrapdownState::default(); // NED
         let f = nalgebra::Vector3::new(
             0.0,
             0.0,
-            earth::gravity(&0.0, &0.0), // Gravity vector in NED
+            -earth::gravity(&0.0, &0.0), // Normal force: negative along NED's down axis
         );
         let dt = 1.0;
         let v_new = velocity_update(&state, f * dt, dt);
@@ -1618,8 +1721,8 @@ mod tests {
     #[test]
     fn test_velocity_update_constant_force() {
         // Constant specific force in north direction, expect velocity to increase linearly
-        let state = StrapdownState::default();
-        let f = nalgebra::Vector3::new(1.0, 0.0, earth::gravity(&0.0, &0.0)); // 1 m/s^2 north
+        let state = StrapdownState::default(); // NED
+        let f = nalgebra::Vector3::new(1.0, 0.0, -earth::gravity(&0.0, &0.0)); // 1 m/s^2 north
         let dt = 2.0;
         let v_new = velocity_update(&state, f * dt, dt);
         // Should be v = a * dt
@@ -1636,7 +1739,7 @@ mod tests {
             velocity_vertical: 2.0,
             ..Default::default()
         };
-        let f = Vector3::from_vec(vec![0.0, 0.0, earth::gravity(&0.0, &0.0)]);
+        let f = Vector3::from_vec(vec![0.0, 0.0, -earth::gravity(&0.0, &0.0)]);
         let dt = 1.0;
         let v_new = velocity_update(&state, f * dt, dt);
         assert_approx_eq!(v_new[0], 5.0, 1e-3);
@@ -1656,27 +1759,31 @@ mod tests {
         assert_eq!(state.velocity_east, 0.0);
         assert_eq!(state.velocity_vertical, 0.0);
         assert_eq!(state.attitude, Rotation3::identity());
-        let f = Vector3::from_vec(vec![0.0, 0.0, 0.0]); // Free fall (no acceleration)
+        let f = Vector3::from_vec(vec![0.0, 0.0, 0.0]); // Free fall (zero specific force)
         let dt = 1.0;
         let v_new = velocity_update(&state, f * dt, dt);
         assert_approx_eq!(v_new[0], 0.0, 1e-3);
         assert_approx_eq!(v_new[1], 0.0, 1e-3);
-        assert_approx_eq!(v_new[2], -earth::gravity(&0.0, &0.0), 1e-3);
+        // NED: falling is *positive* vertical velocity.
+        assert_approx_eq!(v_new[2], earth::gravity(&0.0, &0.0), 1e-3);
         let p_new = position_update(&state, v_new, dt);
         assert_approx_eq!(p_new.0, 0.0, 1e-3);
         assert_approx_eq!(p_new.1, 0.0, 1e-3);
-        assert_approx_eq!(p_new.2, -0.5 * earth::gravity(&0.0, &0.0), 1e-3); // Altitude should decrease
+        // ...and altitude still decreases, because altitude is height in both frames.
+        assert_approx_eq!(p_new.2, -0.5 * earth::gravity(&0.0, &0.0), 1e-3);
     }
     #[test]
     fn vertical_acceleration() {
-        // Test vertical acceleration
+        // Test vertical acceleration. NED: a net upward acceleration of 1 g is a specific
+        // force of -2 g along the down axis (1 g to cancel gravity, 1 g to climb).
         let state = StrapdownState::default();
-        let f = Vector3::from_vec(vec![0.0, 0.0, 2.0 * earth::gravity(&0.0, &0.0)]); // Upward acceleration
+        let f = Vector3::from_vec(vec![0.0, 0.0, -2.0 * earth::gravity(&0.0, &0.0)]);
         let dt = 1.0;
         let v_new = velocity_update(&state, f * dt, dt);
-        assert_approx_eq!(v_new[2], earth::gravity(&0.0, &0.0), 1e-3);
+        // Climbing is negative vertical velocity in NED.
+        assert_approx_eq!(v_new[2], -earth::gravity(&0.0, &0.0), 1e-3);
         let p_new = position_update(&state, v_new, dt);
-        assert_approx_eq!(p_new.2, 0.5 * earth::gravity(&0.0, &0.0), 1e-3); // Altitude should increase
+        assert_approx_eq!(p_new.2, 0.5 * earth::gravity(&0.0, &0.0), 1e-3); // Altitude increases
     }
     #[test]
     fn test_forward_yawing() {
@@ -1925,9 +2032,9 @@ mod tests {
     #[test]
     fn test_velocity_update_enu_vs_ned() {
         // Test that ENU and NED frames handle gravity signs differently
-        let state_enu = StrapdownState::default(); // is_enu = true by default
-        let state_ned = StrapdownState {
-            is_enu: false,
+        let state_ned = StrapdownState::default(); // is_enu = false (NED) by default
+        let state_enu = StrapdownState {
+            is_enu: true,
             ..Default::default()
         };
 
@@ -2325,5 +2432,148 @@ mod tests {
             mechanize(&mut state, &sample),
             Err(StrapdownError::OutOfRange { .. })
         ));
+    }
+
+    /// The crate default is NED, not ENU.
+    #[test]
+    fn default_frame_is_ned() {
+        assert!(!StrapdownState::default().is_enu);
+        let built = StrapdownState::new(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            Rotation3::identity(),
+            false,
+            None,
+        )
+        .unwrap();
+        assert!(!built.is_enu, "`None` must select NED, not ENU");
+        assert!(!crate::kalman::InitialState::default().is_enu);
+        assert!(
+            !crate::kalman::InitialState::new(
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, true, None
+            )
+            .is_enu,
+            "`InitialState::new(None)` must agree with `InitialState::default()`"
+        );
+    }
+
+    /// Altitude is height above the ellipsoid in *both* frames, so a body in free fall loses
+    /// altitude either way -- only the sign of `velocity_vertical` differs.
+    ///
+    /// This is the regression guard for the vertical-channel sign in `position_update`. Before
+    /// the NED default landed, the altitude integration ignored the frame and a NED free-fall
+    /// *gained* 4.9 m in the first second.
+    #[test]
+    fn free_fall_loses_altitude_in_both_frames() {
+        let g = earth::gravity(&0.0, &1000.0);
+        let free_fall = ImuSample {
+            delta_v: Vector3::zeros(),
+            delta_theta: Vector3::zeros(),
+            dt: 1.0,
+        };
+
+        let mut ned = StrapdownState {
+            altitude: 1000.0,
+            ..Default::default()
+        };
+        mechanize(&mut ned, &free_fall).unwrap();
+        assert!(!ned.is_enu);
+        assert_approx_eq!(ned.velocity_vertical, g, 1e-3); // down-positive
+        assert_approx_eq!(ned.altitude, 1000.0 - 0.5 * g, 1e-3);
+
+        let mut enu = StrapdownState {
+            altitude: 1000.0,
+            is_enu: true,
+            ..Default::default()
+        };
+        mechanize(&mut enu, &free_fall).unwrap();
+        assert_approx_eq!(enu.velocity_vertical, -g, 1e-3); // up-positive
+        assert_approx_eq!(enu.altitude, 1000.0 - 0.5 * g, 1e-3);
+
+        // Same physical trajectory, expressed two ways.
+        assert_approx_eq!(ned.altitude, enu.altitude, 1e-9);
+        assert_approx_eq!(ned.velocity_vertical, -enu.velocity_vertical, 1e-9);
+    }
+
+    /// `to_enu`/`to_ned` flip the convention, are no-ops in their own frame, and round-trip.
+    #[test]
+    fn frame_conversions_round_trip() {
+        let ned = StrapdownState {
+            altitude: 500.0,
+            velocity_north: 4.0,
+            velocity_east: -2.0,
+            velocity_vertical: 3.0, // descending, NED
+            attitude: Rotation3::from_euler_angles(0.2, -0.3, 1.1),
+            ..Default::default()
+        };
+
+        let enu = ned.to_enu();
+        assert!(enu.is_enu);
+        assert_approx_eq!(enu.velocity_vertical, -3.0, 1e-12);
+        // Horizontal channel and altitude are untouched.
+        assert_approx_eq!(enu.velocity_north, 4.0, 1e-12);
+        assert_approx_eq!(enu.velocity_east, -2.0, 1e-12);
+        assert_approx_eq!(enu.altitude, 500.0, 1e-12);
+
+        // The converted attitude is still a rotation, not a reflection.
+        assert_approx_eq!(enu.attitude.matrix().determinant(), 1.0, 1e-12);
+
+        // Round trip is exact -- the conversion only negates elements.
+        let back = enu.to_ned();
+        assert!(!back.is_enu);
+        assert_approx_eq!(back.velocity_vertical, 3.0, 1e-15);
+        let delta = back.attitude.matrix() - ned.attitude.matrix();
+        assert_approx_eq!(delta.abs().max(), 0.0, 1e-15);
+
+        // Converting to the frame you are already in changes nothing.
+        assert!(!ned.to_ned().is_enu);
+        assert_approx_eq!(ned.to_ned().velocity_vertical, 3.0, 1e-15);
+        assert!(enu.to_enu().is_enu);
+        assert_approx_eq!(enu.to_enu().velocity_vertical, -3.0, 1e-15);
+    }
+
+    /// The frame flip is confined to the state: `to_enu`/`to_ned` reinterpret velocity and
+    /// attitude, and leave position and the horizontal channel alone.
+    ///
+    /// It deliberately does *not* claim that propagating the two views produces identical
+    /// trajectories. Inside [`velocity_update`] only the gravity term consults `is_enu`; the
+    /// Earth-rate and transport-rate terms keep their NED formulation in both frames. So the
+    /// two views drift apart by the Coriolis asymmetry -- around 2e-5 m of altitude over a
+    /// 0.1 s step at 20 m/s. That is a real limitation of the ENU path, and part of why NED
+    /// is now the default rather than the alternative.
+    #[test]
+    fn frame_conversion_preserves_horizontal_channel_and_position() {
+        let ned = StrapdownState {
+            latitude: 0.7,
+            longitude: -0.3,
+            altitude: 1000.0,
+            velocity_north: 20.0,
+            velocity_east: 5.0,
+            velocity_vertical: -1.0,
+            attitude: Rotation3::from_euler_angles(0.05, 0.02, 0.4),
+            ..Default::default()
+        };
+        let enu = ned.to_enu();
+
+        assert_approx_eq!(enu.latitude, ned.latitude, 1e-15);
+        assert_approx_eq!(enu.longitude, ned.longitude, 1e-15);
+        assert_approx_eq!(enu.altitude, ned.altitude, 1e-15);
+        assert_approx_eq!(enu.velocity_north, ned.velocity_north, 1e-15);
+        assert_approx_eq!(enu.velocity_east, ned.velocity_east, 1e-15);
+        assert_approx_eq!(enu.velocity_vertical, -ned.velocity_vertical, 1e-15);
+
+        // The body-frame vertical axis flips with the nav frame, so a body-frame vector
+        // resolved through either attitude gives the same horizontal components and an
+        // opposite vertical one.
+        let v_body = Vector3::new(1.0, 2.0, 3.0);
+        let in_ned = ned.attitude * v_body;
+        let in_enu = enu.attitude * Vector3::new(v_body[0], v_body[1], -v_body[2]);
+        assert_approx_eq!(in_enu[0], in_ned[0], 1e-15);
+        assert_approx_eq!(in_enu[1], in_ned[1], 1e-15);
+        assert_approx_eq!(in_enu[2], -in_ned[2], 1e-15);
     }
 }
