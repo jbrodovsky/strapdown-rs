@@ -1893,9 +1893,7 @@ mod tests {
             gyro: Vector3::new(0.0, 0.0, 0.0), // No rotation
         };
         ukf.predict(&imu_data, dt);
-        assert!(
-            ukf.mean_state.len() == 15 //+ measurement_bias.len()
-        );
+        assert_eq!(ukf.mean_state.len(), 15);
         let measurement = GPSPositionMeasurement {
             latitude: 0.0,
             longitude: 0.0,
