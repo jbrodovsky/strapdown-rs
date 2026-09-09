@@ -23,7 +23,12 @@ doc = "cargo doc --workspace --no-deps"
 coverage = "cargo tarpaulin --workspace --timeout 600"
 code = "code ."
 
-# `lint` mirrors the CI gate exactly; `lint-fix` applies what it can.
+# `lint` mirrors the CI gate's *flags* exactly, but not necessarily its *toolchain*: CI uses
+# `dtolnay/rust-toolchain@stable` while this environment pins the declared MSRV (1.91). With
+# pedantic and nursery enforced, a newer clippy adds lints that pass here and fail there --
+# which is exactly how PR #279 broke. Forward-looking `allow`s go in the root Cargo.toml,
+# guarded by `unknown_lints = "allow"` so they are inert on the older toolchain.
+# `lint-fix` applies what it can.
 lint = "cargo clippy --workspace --all-targets --all-features -- -D warnings"
 lint-fix = "cargo clippy --workspace --all-targets --all-features --fix --allow-dirty -- -D warnings"
 fmt = "cargo fmt --all"

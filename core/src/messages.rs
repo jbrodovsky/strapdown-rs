@@ -206,7 +206,7 @@ pub enum GnssFaultModel {
     ///
     /// The output of one model is fed as the input to the next. This allows
     /// combining e.g. `SlowBias` with a `Hijack` to simulate multi-stage spoofing.
-    Combo(Vec<GnssFaultModel>),
+    Combo(Vec<Self>),
 }
 
 /// Configuration container for GNSS degradation in simulation.

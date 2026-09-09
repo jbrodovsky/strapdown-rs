@@ -64,6 +64,11 @@ src = "book/src"
 # Anything allowed below is allowed *here*, once, with a reason -- never with a
 # scattered `#[allow]` at the call site.
 [workspace.lints.rust]
+# Required because the clippy table below names lints that do not exist in every
+# toolchain the project builds on. An `allow` for an unknown lint is itself a warning,
+# which `-D warnings` would turn into an error -- so without this, adding a forward-looking
+# allow breaks the older toolchain and omitting it breaks the newer one.
+unknown_lints = "allow"
 rust_2018_idioms = { level = "warn", priority = -1 }
 unreachable_pub = "warn"
 missing_debug_implementations = "warn"
@@ -118,6 +123,14 @@ module_name_repetitions = "allow"
 #      recomputing the sine rather than reusing it.
 # `imprecise_flops` stays on: `ln_1p`/`exp_m1` are genuine accuracy wins.
 suboptimal_flops = "allow"
+# `manual_midpoint` rewrites `0.5 * (a + b)` into `f64::midpoint(a, b)`. Declined for the
+# same reason as `suboptimal_flops` above: `midpoint` is specified to round differently in
+# order to avoid overflow, and all three hits are inside `position_update`, i.e. the
+# mechanization itself. The values being averaged are velocities and latitude rates in the
+# ordinary f64 range, so there is no overflow to avoid -- only a rounding change, in the one
+# place this crate can least afford one. It also obscures the trapezoidal-integration form
+# that matches Groves Eq. 5.56.
+manual_midpoint = "allow"
 # Numeric domain. `usize as f64` for particle counts and sample indices, and
 # `f64 as usize` for grid lookups, are the arithmetic this crate is made of;
 # every one is deliberate and bounds-checked by construction. Denying them
