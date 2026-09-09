@@ -322,6 +322,53 @@ fn imu_from_input(
         })
 }
 
+/// Relative tolerance for reconciling an [`ImuSample`]'s own `dt` with the `dt` argument
+/// [`NavigationFilter::predict`](crate::NavigationFilter::predict) is called with.
+///
+/// Not exact equality: a caller that derives both from the same pair of timestamps can
+/// legitimately land a few ulps apart. Anything looser would let a genuinely wrong rate
+/// through, which is the defect this check exists to prevent.
+const TIMESTEP_AGREEMENT_RELATIVE_TOLERANCE: f64 = 1e-9;
+
+/// Resolve an [`InputModel`](crate::InputModel) trait object into the [`ImuSample`] the
+/// increment-domain filters mechanize with.
+///
+/// Accepts both forms of inertial input. An [`ImuSample`] is taken as given -- it is what a
+/// real IMU emits and what [`mechanize`] consumes. An [`IMUData`] is rectangular-integrated
+/// over `dt` by [`ImuSample::from_rates`], which is exactly the conversion the deprecated
+/// [`forward`](crate::forward) performed, so callers still holding rates are unaffected.
+///
+/// # Errors
+/// * [`StrapdownError::InconsistentTimestep`] if `input` is an [`ImuSample`] whose `dt`
+///   disagrees with `dt`. Preferring one silently would make the integration rate quietly
+///   wrong rather than loudly absent.
+/// * [`StrapdownError::UnsupportedInput`] if `input` is neither inertial form -- `VelocityData`
+///   also implements [`InputModel`](crate::InputModel), so the type system permits it here.
+fn imu_sample_from_input(
+    input: &dyn crate::InputModel,
+    filter: &'static str,
+    dt: f64,
+) -> Result<ImuSample, StrapdownError> {
+    if let Some(sample) = input.as_any().downcast_ref::<ImuSample>() {
+        let scale = sample.dt.abs().max(dt.abs()).max(f64::MIN_POSITIVE);
+        if (sample.dt - dt).abs() > TIMESTEP_AGREEMENT_RELATIVE_TOLERANCE * scale {
+            return Err(StrapdownError::InconsistentTimestep {
+                sample_dt: sample.dt,
+                arg_dt: dt,
+            });
+        }
+        return Ok(*sample);
+    }
+    input
+        .as_any()
+        .downcast_ref::<IMUData>()
+        .map(|imu| ImuSample::from_rates(imu, dt))
+        .ok_or(StrapdownError::UnsupportedInput {
+            filter,
+            expected: "ImuSample or IMUData",
+        })
+}
+
 impl NavigationFilter for UnscentedKalmanFilter {
     /// Predict step for the UKF: propagate sigma points through the mechanization.
     ///
@@ -1557,16 +1604,26 @@ impl NavigationFilter for ErrorStateKalmanFilter {
     ///
     /// # Arguments
     ///
-    /// * `imu_data` - IMU measurements (specific force and angular rate)
-    /// * `dt` - Time step in seconds
+    /// * `control_input` - an [`ImuSample`] (integrated $\Delta v$ / $\Delta\theta$) or,
+    ///   for callers still holding instantaneous rates, an [`IMUData`].
+    /// * `dt` - Time step in seconds. When `control_input` is an [`ImuSample`] this must
+    ///   agree with the sample's own `dt`; see the Errors section.
+    ///
+    /// # Errors
+    /// * [`StrapdownError::UnsupportedInput`] if `control_input` is neither inertial form.
+    /// * [`StrapdownError::InconsistentTimestep`] if an [`ImuSample`]'s `dt` disagrees with
+    ///   the `dt` argument.
+    /// * [`StrapdownError::OutOfRange`] or [`StrapdownError::NonFinite`] propagated from
+    ///   [`mechanize`].
     ///
     /// # Mathematical Details
     ///
-    /// Nominal state propagation uses the bias-corrected IMU measurements:
+    /// Nominal state propagation uses the bias-corrected increments. The biases are rates,
+    /// so the correction is each bias integrated across the same interval:
     /// $$
     /// \begin{aligned}
-    /// f^b &= f^b_{\text{measured}} - b_a \\\\
-    /// \omega^b &= \omega^b_{\text{measured}} - b_g
+    /// \Delta v^b &= \Delta v^b_{\text{measured}} - b_a \Delta t \\\\
+    /// \Delta\theta^b &= \Delta\theta^b_{\text{measured}} - b_g \Delta t
     /// \end{aligned}
     /// $$
     ///
@@ -1582,12 +1639,23 @@ impl NavigationFilter for ErrorStateKalmanFilter {
         control_input: &dyn crate::InputModel,
         dt: f64,
     ) -> Result<(), StrapdownError> {
-        let imu_data = imu_from_input(control_input, "ErrorStateKalmanFilter")?;
-        let imu_data = &imu_data;
+        let sample = imu_sample_from_input(control_input, "ErrorStateKalmanFilter", dt)?;
 
-        // Compensate IMU measurements for biases
-        let corrected_accel = imu_data.accel - self.nominal_accel_bias;
-        let corrected_gyro = imu_data.gyro - self.nominal_gyro_bias;
+        // Compensate the sensed increments for the estimated biases. Biases are rates
+        // (m/s^2, rad/s) and the increments are their integrals, so the correction is the
+        // bias integrated over the same interval. Doing this in the increment domain rather
+        // than converting back to rates keeps a sample that arrived as genuine delta-v /
+        // delta-theta from making a lossy round trip through a division by `dt`.
+        let corrected_sample = ImuSample {
+            delta_v: sample.delta_v - self.nominal_accel_bias * sample.dt,
+            delta_theta: sample.delta_theta - self.nominal_gyro_bias * sample.dt,
+            dt: sample.dt,
+        };
+        // The error-state Jacobian is derived in the rate domain (Groves 14.2), so it needs
+        // the average rates over the interval rather than the increments themselves.
+        let corrected_rates = corrected_sample.to_rates()?;
+        let corrected_accel = corrected_rates.accel;
+        let corrected_gyro = corrected_rates.gyro;
 
         // ===== Nominal State Propagation (Nonlinear) =====
 
@@ -1614,14 +1682,7 @@ impl NavigationFilter for ErrorStateKalmanFilter {
         };
 
         // Propagate nominal state using full strapdown mechanization
-        let corrected_imu = IMUData {
-            accel: corrected_accel,
-            gyro: corrected_gyro,
-        };
-        mechanize(
-            &mut nominal_state,
-            &ImuSample::from_rates(&corrected_imu, dt),
-        )?;
+        mechanize(&mut nominal_state, &corrected_sample)?;
 
         // Update nominal state from propagation
         self.nominal_latitude = nominal_state.latitude;
@@ -1647,7 +1708,7 @@ impl NavigationFilter for ErrorStateKalmanFilter {
             &nominal_state,
             &corrected_accel,
             &corrected_gyro,
-            dt,
+            corrected_sample.dt,
         );
 
         // Propagate error covariance: P = F * P * F^T + Q
@@ -3382,6 +3443,123 @@ mod tests {
         );
     }
 
+    /// #258: the ESKF's propagation interface is the increment domain.
+    ///
+    /// Rates remain accepted, and the two must agree exactly: `ImuSample::from_rates` is the
+    /// same rectangular integration the filter used to perform internally, so routing an
+    /// `IMUData` through it may not perturb a single bit of the resulting state.
+    #[test]
+    fn eskf_predicts_identically_from_a_sample_and_from_rates() {
+        let dt = 0.02;
+        let imu = IMUData {
+            accel: Vector3::new(0.35, -0.12, earth::gravity(&0.0, &0.0)),
+            gyro: Vector3::new(0.004, -0.011, 0.007),
+        };
+
+        let build = || {
+            ErrorStateKalmanFilter::new(
+                &UKF_PARAMS,
+                // Non-zero biases: the increment-domain correction subtracts `bias * dt`
+                // where the rate-domain one subtracted `bias`, so a zero bias would let a
+                // wrong correction pass unnoticed.
+                &[0.05, -0.03, 0.02, 1e-3, -2e-3, 5e-4],
+                COVARIANCE_DIAGONAL.to_vec(),
+                DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
+            )
+        };
+
+        let mut from_rates = build();
+        let mut from_sample = build();
+        let sample = ImuSample::from_rates(&imu, dt);
+
+        for _ in 0..25 {
+            from_rates.predict(&imu, dt).unwrap();
+            from_sample.predict(&sample, dt).unwrap();
+        }
+
+        let expected = from_rates.get_estimate();
+        let actual = from_sample.get_estimate();
+        for i in 0..15 {
+            assert_eq!(
+                expected[i], actual[i],
+                "state {i} differs between the rate and increment inputs: \
+                 {} vs {}",
+                expected[i], actual[i]
+            );
+        }
+        assert_eq!(
+            from_rates.error_covariance, from_sample.error_covariance,
+            "error covariance differs between the rate and increment inputs"
+        );
+    }
+
+    /// A sample carries the interval its increments were accumulated over. If that
+    /// disagrees with the `dt` the filter is stepped by, one of the two is wrong and
+    /// neither can be preferred silently -- that is how #292 happened.
+    #[test]
+    fn eskf_predict_rejects_a_sample_whose_dt_disagrees() {
+        let mut eskf = ErrorStateKalmanFilter::new(
+            &UKF_PARAMS,
+            &IMU_BIASES,
+            COVARIANCE_DIAGONAL.to_vec(),
+            DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
+        );
+        let sample = ImuSample {
+            delta_v: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0) * 0.02),
+            delta_theta: Vector3::zeros(),
+            dt: 0.02,
+        };
+
+        let err = eskf
+            .predict(&sample, 0.01)
+            .expect_err("a 2x timestep disagreement must be rejected");
+        assert!(
+            matches!(
+                err,
+                StrapdownError::InconsistentTimestep {
+                    sample_dt,
+                    arg_dt
+                } if (sample_dt - 0.02).abs() < 1e-12 && (arg_dt - 0.01).abs() < 1e-12
+            ),
+            "expected InconsistentTimestep, got {err:?}"
+        );
+
+        // Rounding-level disagreement is not a defect: a caller deriving both from the same
+        // timestamps can legitimately land a few ulps apart.
+        eskf.predict(&sample, 0.02 * (1.0 + 1e-15))
+            .expect("a few ulps of disagreement must still propagate");
+    }
+
+    /// `InputModel` admits `VelocityData` too, so the type system permits an input the ESKF
+    /// cannot mechanize. It must be reported, not aborted on.
+    #[test]
+    fn eskf_predict_rejects_a_non_inertial_input() {
+        let mut eskf = ErrorStateKalmanFilter::new(
+            &UKF_PARAMS,
+            &IMU_BIASES,
+            COVARIANCE_DIAGONAL.to_vec(),
+            DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
+        );
+        let velocity = crate::VelocityData {
+            linear: Vector3::new(1.0, 0.0, 0.0),
+            angular: Vector3::zeros(),
+        };
+
+        let err = eskf
+            .predict(&velocity, 0.02)
+            .expect_err("VelocityData is not an inertial input");
+        assert!(
+            matches!(
+                err,
+                StrapdownError::UnsupportedInput {
+                    filter: "ErrorStateKalmanFilter",
+                    expected: "ImuSample or IMUData",
+                }
+            ),
+            "expected UnsupportedInput, got {err:?}"
+        );
+    }
+
     #[test]
     fn eskf_construction() {
         // Test ESKF construction
@@ -3486,7 +3664,26 @@ mod tests {
             horizontal_noise_std: 5.0,
             vertical_noise_std: 2.0,
         };
+        let before = eskf.get_estimate();
         eskf.update(&measurement).unwrap();
+        let after = eskf.get_estimate();
+
+        // The reset assertion below is only meaningful if a correction was actually
+        // computed and injected. Without this, a no-op update would satisfy it trivially:
+        // the error state starts at zero. The measurement sits north-east of and above the
+        // nominal state, so the injection must move all three position components towards
+        // it (#258).
+        assert!(
+            after[0] > before[0] && after[1] > before[1] && after[2] > before[2],
+            "update injected no correction: position went from \
+             [{:e}, {:e}, {:.3}] to [{:e}, {:e}, {:.3}]",
+            before[0],
+            before[1],
+            before[2],
+            after[0],
+            after[1],
+            after[2]
+        );
 
         // Verify error state is reset to zero after update
         for i in 0..15 {
