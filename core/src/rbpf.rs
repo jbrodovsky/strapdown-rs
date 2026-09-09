@@ -34,6 +34,12 @@ pub struct RbpfConfig {
     pub position_init_std_m: Vector3<f64>,
     pub velocity_init_std_mps: f64,
     pub attitude_init_std_rad: f64,
+    /// Per-sample position proposal spread (m). Covers ordinary IMU
+    /// dead-reckoning uncertainty between fixes. Under faulted or very sparse
+    /// aiding (e.g. the reference degraded profile with `sigma_pos_m: 3.0`
+    /// wander and 5 s fixes) this starves the particle cloud -- raise it
+    /// explicitly in that configuration (see #267), rather than here: a
+    /// wider default proposal measurably degrades clean stationary tracking.
     pub position_process_noise_std_m: Vector3<f64>,
     pub velocity_process_noise_std_mps: f64,
     pub attitude_process_noise_std_rad: f64,
@@ -228,26 +234,37 @@ impl RaoBlackwellizedParticleFilter {
 
         let normal = Normal::new(0.0, 1.0).unwrap();
 
+        // Conditional covariance recursion, computed once per step instead of
+        // once per particle per step. It depends only on the shared
+        // transition/noise matrices and the particle covariance, which stays
+        // identical across particles (see
+        // `rbpf_particle_covariances_stay_identical`, #268), so this is
+        // bit-identical to the per-particle computation it replaces. Only the
+        // per-particle noise draws and state propagation stay in the loop, in
+        // the same order, keeping the RNG stream untouched.
+        let Some(shared_cov) = self.particles.first().map(|p| p.linear_cov.clone()) else {
+            return;
+        };
+        let n = &f_nl_full * &shared_cov * f_nl_full.transpose() + &q_n;
+        let n = symmetrize(&n);
+        let n_inv = n
+            .clone()
+            .try_inverse()
+            .unwrap_or_else(|| DMatrix::identity(POSITION_STATE_DIM, POSITION_STATE_DIM));
+        let l = &f_ll_full * &shared_cov * f_nl_full.transpose() * n_inv;
+        let mut p_new =
+            &f_ll_full * &shared_cov * f_ll_full.transpose() + &q_l - &l * &n * l.transpose();
+        p_new = symmetrize(&p_new);
+        for i in 0..linear_dim {
+            p_new[(i, i)] += 1e-9;
+        }
+        let q_sqrt = matrix_square_root(&n);
+
         for particle in &mut self.particles {
             let x_n = particle.position_error;
             let x_l = particle.linear_state.clone();
             let x_n_vec = DVector::from_vec(vec![x_n[0], x_n[1], x_n[2]]);
 
-            let n = &f_nl_full * &particle.linear_cov * f_nl_full.transpose() + &q_n;
-            let n = symmetrize(&n);
-            let n_inv = n
-                .clone()
-                .try_inverse()
-                .unwrap_or_else(|| DMatrix::identity(POSITION_STATE_DIM, POSITION_STATE_DIM));
-            let l = &f_ll_full * &particle.linear_cov * f_nl_full.transpose() * n_inv;
-            let mut p_new = &f_ll_full * &particle.linear_cov * f_ll_full.transpose() + &q_l
-                - &l * &n * l.transpose();
-            p_new = symmetrize(&p_new);
-            for i in 0..linear_dim {
-                p_new[(i, i)] += 1e-9;
-            }
-
-            let q_sqrt = matrix_square_root(&n);
             let noise_vec = DVector::from_iterator(
                 POSITION_STATE_DIM,
                 (0..POSITION_STATE_DIM).map(|_| normal.sample(&mut self.rng)),
@@ -271,7 +288,7 @@ impl RaoBlackwellizedParticleFilter {
 
             particle.position_error = x_n_pred;
             particle.linear_state = x_l_pred;
-            particle.linear_cov = p_new;
+            particle.linear_cov = p_new.clone();
         }
     }
 
@@ -452,7 +469,10 @@ impl RaoBlackwellizedParticleFilter {
             let state = self.particle_state_vector_full(particle);
             let z = measurement.get_measurement(&state);
             let z_hat = measurement.get_expected_measurement(&state);
-            let residual = z - z_hat;
+            let mut residual = z - z_hat;
+            // Keep angular residuals on the circle; an unwrapped ±2π mag
+            // residual would flatten the likelihood of every particle (#267).
+            measurement.wrap_residual(&mut residual);
 
             let log_likelihood = gaussian_log_likelihood(&residual, &measurement.get_noise());
             let log_w = particle.weight.ln() + log_likelihood;
@@ -888,5 +908,78 @@ mod tests {
         // Expect eastward motion; RBPF estimate should reflect it.
         assert!(mean[1] > initial_state.longitude);
         assert_solution_close_to_truth(&mean, truth, 50.0, 25.0, 1.0);
+    }
+
+    /// #268: every particle's conditional covariance stays identical.
+    ///
+    /// The linear-state covariance recursion depends only on the shared
+    /// transition/noise matrices and the particle's own covariance -- never on
+    /// the particle state, weight, or measurement value -- and every update
+    /// applies the same H/R to each particle. All particles start from the
+    /// same clone, so they must remain bit-identical forever. This invariant
+    /// is what allows hoisting the recursion out of the per-particle loop.
+    #[test]
+    fn rbpf_particle_covariances_stay_identical() {
+        use crate::measurements::{
+            GPSPositionAndVelocityMeasurement, MagnetometerYawMeasurement,
+            RelativeAltitudeMeasurement,
+        };
+
+        let nominal = StrapdownState {
+            latitude: 0.7,
+            longitude: -1.3,
+            altitude: 100.0,
+            velocity_north: 5.0,
+            velocity_east: 2.0,
+            velocity_vertical: 0.0,
+            attitude: Rotation3::identity(),
+            is_enu: true,
+        };
+        let config = RbpfConfig {
+            num_particles: 20,
+            seed: 42,
+            ..RbpfConfig::default()
+        };
+        let mut rbpf = RaoBlackwellizedParticleFilter::new(nominal, config);
+        let imu = IMUData {
+            accel: Vector3::new(0.1, 0.05, 9.81),
+            gyro: Vector3::new(0.001, -0.002, 0.0005),
+        };
+        let gps = GPSPositionAndVelocityMeasurement {
+            latitude: 0.7,
+            longitude: -1.3,
+            altitude: 100.0,
+            northward_velocity: 5.0,
+            eastward_velocity: 2.0,
+            horizontal_noise_std: 5.0,
+            vertical_noise_std: 2.0,
+            velocity_noise_std: 0.5,
+        };
+        let baro = RelativeAltitudeMeasurement {
+            relative_altitude: 0.5,
+            reference_altitude: 100.0,
+        };
+        let mag = MagnetometerYawMeasurement {
+            mag_x: 20.0,
+            mag_y: 5.0,
+            mag_z: -45.0,
+            noise_std: 0.2,
+            apply_declination: false,
+            year: 2025,
+            day_of_year: 1,
+        };
+        for _ in 0..50 {
+            rbpf.predict(&imu, 0.1);
+            rbpf.update(&gps);
+            rbpf.update(&baro);
+            rbpf.update(&mag);
+        }
+        let reference = rbpf.particles[0].linear_cov.clone();
+        for (i, particle) in rbpf.particles.iter().enumerate().skip(1) {
+            assert_eq!(
+                particle.linear_cov, reference,
+                "particle {i} covariance diverged from particle 0 (see #268)"
+            );
+        }
     }
 }
