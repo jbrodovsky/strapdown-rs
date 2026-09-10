@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Branch** | `v1/05-filters` |
-| **Base** | `v1/04-eskf-primary` |
+| **Base** | `main` (retargeted after #273 merged) |
 | **Issues** | #259 |
 | **Queue position** | 5 |
 
