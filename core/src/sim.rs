@@ -219,6 +219,55 @@ pub struct TestDataRecord {
     pub grav_x: f64,
 }
 impl TestDataRecord {
+    /// The record's attitude as a rotation matrix, taken from its quaternion.
+    ///
+    /// Use this rather than feeding `roll`/`pitch`/`yaw` to
+    /// [`nalgebra::Rotation3::from_euler_angles`]. Those three fields are radians, but they
+    /// are *not* nalgebra's intrinsic XYZ sequence: the Sensor Logger app this format comes
+    /// from reports them in its own convention, and the two disagree by more than a sign.
+    /// On the first sample of `core/tests/test_data.csv` the record's
+    /// `(roll, pitch, yaw)` is `(0.163, -1.340, 0.179)` while the same attitude recovered
+    /// from `(qw, qx, qy, qz)` is `(1.343, 0.037, -0.021)`: roll and pitch have effectively
+    /// traded places.
+    ///
+    /// The consequence is not cosmetic. Rotating that sample's accelerometer reading into
+    /// the navigation frame gives `(-0.000, 0.005, 9.725)` m/s^2 through the quaternion --
+    /// specific force almost exactly along ENU up, which is what a near-stationary start
+    /// must produce -- against `(-5.226, 8.187, 0.496)` through the raw Euler angles, which
+    /// smears a full gravity across the horizontal axes and leaves the vertical channel with
+    /// nothing to cancel. Propagated, that is an uncancelled ~9.8 m/s^2 that compounds: it
+    /// took `dead_reckoning` to -1.7e16 m of altitude over this recording's 5,366 samples,
+    /// finite on Linux and over the edge into the non-finite check on Windows.
+    ///
+    /// The quaternion is the authoritative attitude in this format. A record whose
+    /// quaternion is all-NaN or zero-norm yields the identity rotation, matching how the
+    /// rest of this module treats absent fields.
+    #[must_use]
+    pub fn attitude(&self) -> nalgebra::Rotation3<f64> {
+        let q = nalgebra::Quaternion::new(self.qw, self.qx, self.qy, self.qz);
+        if !q.coords.iter().all(|c| c.is_finite()) || q.norm() < f64::EPSILON {
+            return nalgebra::Rotation3::identity();
+        }
+        nalgebra::UnitQuaternion::from_quaternion(q).into()
+    }
+
+    /// The record's GNSS ground track as north/east velocity components, in m/s.
+    ///
+    /// `bearing` is stored in **degrees**; converting it is the caller's job and was twice
+    /// forgotten, so it is done here once. `speed` or `bearing` being NaN yields `(0.0, 0.0)`
+    /// rather than propagating the NaN into a filter's initial state.
+    #[must_use]
+    pub fn ground_track_velocity(&self) -> (f64, f64) {
+        if !self.speed.is_finite() || !self.bearing.is_finite() {
+            return (0.0, 0.0);
+        }
+        let bearing_rad = self.bearing.to_radians();
+        (
+            self.speed * bearing_rad.cos(),
+            self.speed * bearing_rad.sin(),
+        )
+    }
+
     /// Reads a CSV file and returns a vector of `TestDataRecord` structs.
     ///
     /// # Arguments
@@ -1943,17 +1992,18 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Result<Vec<NavigationResult
     let mut results = Vec::with_capacity(records.len());
     // Initialize the StrapdownState with the first record
     let first_record = &records[0];
-    let attitude = nalgebra::Rotation3::from_euler_angles(
-        first_record.roll,
-        first_record.pitch,
-        first_record.yaw,
-    );
+    // Attitude comes from the record's quaternion, not its Euler angles -- see
+    // `TestDataRecord::attitude` for why the two are not interchangeable and what feeding
+    // the raw angles here used to cost. `is_enu: true` is correct for this format: through
+    // the quaternion, the first sample's specific force lands on ENU up at +9.7 m/s^2.
+    let attitude = first_record.attitude();
+    let (velocity_north, velocity_east) = first_record.ground_track_velocity();
     let mut state = StrapdownState {
         latitude: first_record.latitude.to_radians(),
         longitude: first_record.longitude.to_radians(),
         altitude: first_record.altitude,
-        velocity_north: first_record.speed * first_record.bearing.cos(),
-        velocity_east: first_record.speed * first_record.bearing.sin(),
+        velocity_north,
+        velocity_east,
         velocity_vertical: 0.0, // initial velocities
         attitude,
         is_enu: true,
@@ -4300,6 +4350,7 @@ pub fn generate_synthetic(
 
         let speed = state.velocity_north.hypot(state.velocity_east);
         let bearing = state.velocity_east.atan2(state.velocity_north).to_degrees();
+        let attitude_quaternion = nalgebra::UnitQuaternion::from_rotation_matrix(&state.attitude);
 
         // Gravity vector in body frame (NED: [0,0,g])
         let g = earth::gravity(&state.latitude.to_degrees(), &state.altitude);
@@ -4321,13 +4372,19 @@ pub fn generate_synthetic(
             speed_accuracy: config.gnss_horizontal_noise_m,
             vertical_accuracy: config.gnss_vertical_noise_m,
             horizontal_accuracy: config.gnss_horizontal_noise_m,
-            roll: roll.to_degrees(),
-            pitch: pitch.to_degrees(),
-            yaw: yaw.to_degrees(),
-            qw: state.attitude.euler_angles().2.cos(),
-            qx: 0.0,
-            qy: 0.0,
-            qz: 0.0,
+            // `TestDataRecord` documents roll/pitch/yaw as radians, and the quaternion is
+            // what every consumer now reads the attitude from (`TestDataRecord::attitude`).
+            // Both were wrong here: the angles were written in degrees, and the quaternion
+            // was `(cos(yaw), 0, 0, 0)` -- not a unit quaternion, and it discarded roll,
+            // pitch and the sign of yaw. A synthetic CSV fed back through `cl` or
+            // `dead_reckoning` therefore started from an attitude unrelated to its own truth.
+            roll,
+            pitch,
+            yaw,
+            qw: attitude_quaternion.w,
+            qx: attitude_quaternion.i,
+            qy: attitude_quaternion.j,
+            qz: attitude_quaternion.k,
             acc_x: out_acc[0],
             acc_y: out_acc[1],
             acc_z: out_acc[2],
@@ -4354,6 +4411,7 @@ pub fn generate_synthetic(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use assert_approx_eq::assert_approx_eq;
     use chrono::Utc;
     use std::fs::File;
     use std::path::Path;
@@ -4412,6 +4470,195 @@ mod tests {
         }
         records
     }
+    /// A record with every field zeroed except the ones a test sets.
+    fn blank_record() -> TestDataRecord {
+        let mut r = generate_northward_motion_records().swap_remove(0);
+        r.speed = 0.0;
+        r.bearing = 0.0;
+        r
+    }
+
+    #[test]
+    fn test_attitude_uses_quaternion_not_euler_angles() {
+        // The first sample of `core/tests/test_data.csv`. Its Euler fields and its quaternion
+        // describe the same attitude in two different conventions, which is the whole reason
+        // `attitude()` exists.
+        let mut r = blank_record();
+        r.roll = 0.162_628_241_479_396_78;
+        r.pitch = -1.339_523_780_345_916_8;
+        r.yaw = 0.179_200_585_931_539_5;
+        r.qw = 0.782_8;
+        r.qx = 0.622_0;
+        r.qy = 0.008_1;
+        r.qz = -0.019_7;
+
+        let via_quaternion = r.attitude();
+        let via_euler = nalgebra::Rotation3::from_euler_angles(r.roll, r.pitch, r.yaw);
+
+        // The two disagree, and by much more than rounding: if they ever agree, the recording
+        // convention changed and this helper's reason for existing needs re-checking.
+        let disagreement = (via_quaternion.matrix() - via_euler.matrix()).abs().max();
+        assert!(
+            disagreement > 0.1,
+            "quaternion- and Euler-derived attitudes should differ for this record, \
+             got max element difference {disagreement}"
+        );
+
+        // `attitude()` must reproduce the quaternion exactly.
+        let expected: nalgebra::Rotation3<f64> = nalgebra::UnitQuaternion::from_quaternion(
+            nalgebra::Quaternion::new(r.qw, r.qx, r.qy, r.qz),
+        )
+        .into();
+        let reproduction_error = (via_quaternion.matrix() - expected.matrix()).abs().max();
+        assert!(
+            reproduction_error < 1e-12,
+            "attitude() should reproduce the quaternion exactly, off by {reproduction_error}"
+        );
+    }
+
+    #[test]
+    fn test_attitude_cancels_gravity_in_enu() {
+        // This is the property the bug violated. Rotating the first sample's accelerometer
+        // reading into the navigation frame must give specific force along ENU up and
+        // essentially nothing horizontal, because the vehicle was near stationary.
+        let mut r = blank_record();
+        r.qw = 0.782_8;
+        r.qx = 0.622_0;
+        r.qy = 0.008_1;
+        r.qz = -0.019_7;
+        r.acc_x = -0.361_2;
+        r.acc_y = 9.467_4;
+        r.acc_z = 2.194_5;
+
+        let f_nav = r.attitude().matrix() * Vector3::new(r.acc_x, r.acc_y, r.acc_z);
+        assert!(
+            f_nav[0].abs() < 0.1 && f_nav[1].abs() < 0.1,
+            "horizontal specific force should be ~0 at a stationary start, got ({}, {})",
+            f_nav[0],
+            f_nav[1]
+        );
+        assert!(
+            (f_nav[2] - 9.7).abs() < 0.2,
+            "vertical specific force should be ~+g (ENU up), got {}",
+            f_nav[2]
+        );
+    }
+
+    #[test]
+    fn test_attitude_falls_back_to_identity_on_unusable_quaternion() {
+        let mut nan = blank_record();
+        nan.qw = f64::NAN;
+        nan.qx = f64::NAN;
+        nan.qy = f64::NAN;
+        nan.qz = f64::NAN;
+        assert_eq!(nan.attitude(), nalgebra::Rotation3::identity());
+
+        let mut zero = blank_record();
+        zero.qw = 0.0;
+        zero.qx = 0.0;
+        zero.qy = 0.0;
+        zero.qz = 0.0;
+        assert_eq!(zero.attitude(), nalgebra::Rotation3::identity());
+    }
+
+    #[test]
+    fn test_ground_track_velocity_treats_bearing_as_degrees() {
+        let mut due_east = blank_record();
+        due_east.speed = 10.0;
+        due_east.bearing = 90.0;
+        let (north, east) = due_east.ground_track_velocity();
+        assert_approx_eq!(north, 0.0, 1e-12);
+        assert_approx_eq!(east, 10.0, 1e-12);
+
+        // 90 read as radians instead of degrees gives cos(90 rad) = -0.448, which is the
+        // bug this helper removes.
+        assert!(
+            (north - 10.0 * 90.0_f64.cos()).abs() > 1.0,
+            "bearing must be converted from degrees, not consumed as radians"
+        );
+
+        let mut due_south = blank_record();
+        due_south.speed = 4.0;
+        due_south.bearing = 180.0;
+        let (north, east) = due_south.ground_track_velocity();
+        assert_approx_eq!(north, -4.0, 1e-12);
+        assert_approx_eq!(east, 0.0, 1e-12);
+    }
+
+    #[test]
+    fn test_ground_track_velocity_is_zero_when_fields_are_nan() {
+        let mut no_speed = blank_record();
+        no_speed.speed = f64::NAN;
+        no_speed.bearing = 45.0;
+        assert_eq!(no_speed.ground_track_velocity(), (0.0, 0.0));
+
+        let mut no_bearing = blank_record();
+        no_bearing.speed = 5.0;
+        no_bearing.bearing = f64::NAN;
+        assert_eq!(no_bearing.ground_track_velocity(), (0.0, 0.0));
+    }
+
+    #[test]
+    fn test_synthetic_attitude_round_trips_through_the_record() {
+        // A synthetic CSV must be readable by the same consumers as a real one. Both
+        // representations it writes were previously wrong -- Euler angles in degrees where
+        // the struct documents radians, and a `(cos(yaw), 0, 0, 0)` placeholder quaternion --
+        // so a trajectory fed back through `cl` or `dead_reckoning` began from an attitude
+        // unrelated to the truth it was generated from. Rolling and pitching here, not just
+        // yawing, is the point: the old placeholder could not represent either.
+        let config = SyntheticConfig {
+            output: String::new(),
+            initial_state: SyntheticInitialState {
+                latitude_deg: 40.0,
+                longitude_deg: -76.0,
+                altitude_m: 100.0,
+                velocity_north_mps: 20.0,
+                velocity_east_mps: 5.0,
+                velocity_down_mps: 0.0,
+                roll_deg: 12.0,
+                pitch_deg: -7.0,
+                yaw_deg: 143.0,
+                angular_velocity_x_dps: 3.0,
+                angular_velocity_y_dps: -2.0,
+                angular_velocity_z_dps: 5.0,
+                is_enu: false,
+            },
+            duration_s: 10.0,
+            sample_rate_hz: 10.0,
+            imu_quality: crate::IMUQuality::Navigation,
+            seed: 42,
+            no_noise: true,
+            gnss_horizontal_noise_m: 2.5,
+            gnss_vertical_noise_m: 5.0,
+            baro_noise_std_pa: 50.0,
+        };
+        let mut rng = rand::SeedableRng::seed_from_u64(42);
+        let (truth, records) = generate_synthetic(&config, &mut rng).expect("generation");
+        assert_eq!(truth.len(), records.len());
+
+        for (i, (t, r)) in truth.iter().zip(records.iter()).enumerate() {
+            let expected = nalgebra::Rotation3::from_euler_angles(t.roll, t.pitch, t.yaw);
+            let error = (r.attitude().matrix() - expected.matrix()).abs().max();
+            assert!(
+                error < 1e-9,
+                "record {i} attitude should reproduce the truth attitude, off by {error}"
+            );
+            // And the Euler fields are radians, as the struct documents.
+            assert_approx_eq!(r.roll, t.roll, 1e-12);
+            assert_approx_eq!(r.pitch, t.pitch, 1e-12);
+            assert_approx_eq!(r.yaw, t.yaw, 1e-12);
+        }
+
+        // The written quaternion is a real unit quaternion.
+        for (i, r) in records.iter().enumerate() {
+            let norm = (r.qw * r.qw + r.qx * r.qx + r.qy * r.qy + r.qz * r.qz).sqrt();
+            assert!(
+                (norm - 1.0).abs() < 1e-12,
+                "record {i} quaternion should be unit-length, got {norm}"
+            );
+        }
+    }
+
     #[test]
     fn test_generate_northward_motion_records_end_latitude() {
         let records = generate_northward_motion_records();

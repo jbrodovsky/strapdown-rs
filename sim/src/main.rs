@@ -29,7 +29,7 @@ use common::{
     validate_output_path,
 };
 use log::{error, info};
-use nalgebra::{DMatrix, Rotation3, Vector3};
+use nalgebra::{DMatrix, Vector3};
 use rayon::prelude::*;
 use std::error::Error;
 use std::path::{Path, PathBuf};
@@ -645,13 +645,16 @@ fn process_file(
             let event_stream = build_event_stream(&records, &config.gnss_degradation);
 
             let first = &records[0];
-            let attitude = Rotation3::from_euler_angles(first.roll, first.pitch, first.yaw);
+            // Quaternion, not Euler angles: `TestDataRecord`'s roll/pitch/yaw are a
+            // different convention from nalgebra's XYZ. See `TestDataRecord::attitude`.
+            let attitude = first.attitude();
+            let (velocity_north, velocity_east) = first.ground_track_velocity();
             let nominal = strapdown::StrapdownState {
                 latitude: first.latitude.to_radians(),
                 longitude: first.longitude.to_radians(),
                 altitude: first.altitude,
-                velocity_north: first.speed * first.bearing.to_radians().cos(),
-                velocity_east: first.speed * first.bearing.to_radians().sin(),
+                velocity_north,
+                velocity_east,
                 velocity_vertical: 0.0,
                 attitude,
                 is_enu: true,
@@ -1655,13 +1658,16 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
         let geo_bias_dim = 0usize;
 
         let first = &records[0];
-        let attitude = Rotation3::from_euler_angles(first.roll, first.pitch, first.yaw);
+        // Quaternion, not Euler angles: `TestDataRecord`'s roll/pitch/yaw are a different
+        // convention from nalgebra's XYZ. See `TestDataRecord::attitude`.
+        let attitude = first.attitude();
+        let (velocity_north, velocity_east) = first.ground_track_velocity();
         let nominal = strapdown::StrapdownState {
             latitude: first.latitude.to_radians(),
             longitude: first.longitude.to_radians(),
             altitude: first.altitude,
-            velocity_north: first.speed * first.bearing.to_radians().cos(),
-            velocity_east: first.speed * first.bearing.to_radians().sin(),
+            velocity_north,
+            velocity_east,
             velocity_vertical: 0.0,
             attitude,
             is_enu: true,
