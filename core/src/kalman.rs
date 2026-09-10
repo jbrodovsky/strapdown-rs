@@ -21,9 +21,11 @@ use nalgebra::{DMatrix, DVector, Rotation3, UnitQuaternion, Vector3};
 /// This struct contains the minimal navigation state required to initialize
 /// either the UKF or EKF implementations in this module. Fields represent
 /// a local-level navigation solution (latitude, longitude, altitude, NED/ENU
-/// velocity components, and Euler attitude angles). The `in_degrees` flag
-/// indicates whether the provided angles/lat/lon are in degrees; the
-/// constructor will normalize and convert angles to radians when required.
+/// velocity components, and Euler attitude angles). Storage is *unit-tagged*
+/// rather than normalized: `latitude` and `longitude` are held in whatever
+/// units they were supplied in, and the `in_degrees` flag says which. The
+/// filter constructors read that flag back and convert to radians only when
+/// it is set, so the flag must always travel with the values.
 /// The `is_enu` flag determines whether the navigation frame is ENU (true)
 /// or NED (false) for internal mechanization. It defaults to NED, matching
 /// [`StrapdownState`](crate::StrapdownState) and the rest of the crate.
@@ -32,7 +34,8 @@ use nalgebra::{DMatrix, DVector, Rotation3, UnitQuaternion, Vector3};
 /// - `latitude`, `longitude`: degrees if `in_degrees==true`, otherwise radians
 /// - `altitude`: meters
 /// - velocities: m/s (north, east, vertical)
-/// - `roll`, `pitch`, `yaw`: radians internally (constructor normalizes)
+/// - `roll`, `pitch`, `yaw`: degrees if `in_degrees==true`, otherwise radians,
+///   matching the position fields -- which is what the filter constructors assume
 ///
 /// # Example
 ///
@@ -60,10 +63,22 @@ impl InitialState {
     /// Create a new `InitialState`, normalizing/convertng angles as required.
     ///
     /// The constructor accepts latitude/longitude and Euler angles either in
-    /// degrees (when `in_degrees==true`) or already in radians. When degrees
-    /// are provided the values are normalized and converted to radians for
-    /// internal use. The optional `is_enu` parameter selects the local-frame
-    /// convention (defaults to NED when omitted).
+    /// degrees (when `in_degrees==true`) or already in radians. It wraps each
+    /// value into range *in the units it was given* and stores it that way,
+    /// tagged by `in_degrees`; it does not normalize the stored position to
+    /// radians. Converting to radians is the filter constructors' job, which
+    /// they do exactly when `in_degrees` is set. The optional `is_enu`
+    /// parameter selects the local-frame convention (defaults to NED when
+    /// omitted).
+    ///
+    /// # Known inconsistency (attitude)
+    ///
+    /// The Euler angles do not yet follow that contract: on the degrees path
+    /// this constructor converts `roll`/`pitch`/`yaw` to radians while leaving
+    /// `in_degrees == true`, so a filter constructor converts them a second
+    /// time -- 45 degrees is stored as 0.785 and reaches the filter as 0.0137
+    /// rad. Only zero attitude survives the round trip. Until that is fixed,
+    /// prefer a struct literal when seeding a non-zero attitude in degrees.
     ///
     /// # Arguments
     ///
@@ -81,10 +96,10 @@ impl InitialState {
     ///
     /// # Returns
     ///
-    /// A normalized `InitialState`. Latitude and longitude are stored in the units they
-    /// were supplied in (each wrapped in those units) alongside the `in_degrees` flag, so
-    /// that the filter constructors -- which convert only when the flag is set -- read
-    /// them back consistently.
+    /// An `InitialState` whose latitude and longitude are wrapped into range and stored
+    /// in the units they were supplied in, alongside the `in_degrees` flag, so that the
+    /// filter constructors -- which convert only when the flag is set -- read them back
+    /// consistently.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         latitude: f64,
