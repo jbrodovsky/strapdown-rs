@@ -47,7 +47,8 @@ use rand::SeedableRng;
 use rand::rngs::StdRng;
 #[cfg(feature = "geonav")]
 use std::rc::Rc;
-#[cfg(feature = "geonav")]
+// Unconditional since #259: the RBPF event loop drives the filter through this trait, not
+// through inherent methods, so it is needed with or without the geonav feature.
 use strapdown::NavigationFilter;
 #[cfg(feature = "geonav")]
 use strapdown::kalman::{ExtendedKalmanFilter, InitialState};
@@ -370,7 +371,7 @@ struct ParticleFilterSimArgs {
     sim: SimArgs,
 
     /// Particle filter type
-    #[arg(long, value_enum, default_value_t = ParticleFilterType::Standard)]
+    #[arg(long, value_enum, default_value_t = ParticleFilterType::RaoBlackwellized)]
     filter_type: ParticleFilterType,
 
     /// RNG seed for stochastic processes
@@ -1570,10 +1571,6 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
     validate_input_path(&args.sim.input)?;
     validate_output_path(&args.sim.output)?;
 
-    if !matches!(args.filter_type, ParticleFilterType::RaoBlackwellized) {
-        return Err("Only Rao-Blackwellized particle filter is implemented in this mode".into());
-    }
-
     let csv_files = get_csv_files(&args.sim.input)?;
     let is_multiple = csv_files.len() > 1;
     let execution_limits = execution_limits_from_args(&args.sim);
@@ -1711,9 +1708,16 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
             ..RbpfConfig::default()
         };
 
-        let mut rbpf = RaoBlackwellizedParticleFilter::new(nominal, config)?;
-
-        let results = run_rbpf_event_loop(&mut rbpf, event_stream, &execution_limits)?;
+        // `ParticleFilterType` has a single variant today (#259 removed the two that were
+        // advertised but never implemented). Dispatching on it anyway keeps adding a second
+        // concrete filter a matter of extending this match rather than rediscovering that
+        // the flag was never read.
+        let results = match args.filter_type {
+            ParticleFilterType::RaoBlackwellized => {
+                let mut rbpf = RaoBlackwellizedParticleFilter::new(nominal, config)?;
+                run_rbpf_event_loop(&mut rbpf, event_stream, &execution_limits)?
+            }
+        };
 
         let output_file = args.sim.output.join(input_file.file_name().ok_or_else(|| {
             std::io::Error::new(
