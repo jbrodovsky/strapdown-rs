@@ -9,7 +9,7 @@ use crate::linalg::{matrix_square_root, robust_spd_solve, symmetrize};
 use crate::measurements::MeasurementModel;
 use crate::{
     IMUData, ImuSample, NavigationFilter, StrapdownState, mechanize, wrap_to_2pi, wrap_to_180,
-    wrap_to_360,
+    wrap_to_360, wrap_to_pi,
 };
 
 use std::fmt::{self, Debug, Display};
@@ -81,7 +81,10 @@ impl InitialState {
     ///
     /// # Returns
     ///
-    /// A normalized `InitialState` with internal angles in radians when returned.
+    /// A normalized `InitialState`. Latitude and longitude are stored in the units they
+    /// were supplied in (each wrapped in those units) alongside the `in_degrees` flag, so
+    /// that the filter constructors -- which convert only when the flag is set -- read
+    /// them back consistently.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         latitude: f64,
@@ -96,15 +99,16 @@ impl InitialState {
         in_degrees: bool,
         is_enu: Option<bool>,
     ) -> Self {
-        let latitude = if in_degrees {
-            latitude
+        // The filter constructors read `in_degrees` back off the stored struct and convert
+        // only when it is `true`, so the radian path must store *radians*. It previously
+        // converted latitude to degrees while leaving `in_degrees == false`, so a caller
+        // passing 40 deg N (0.698 rad) had it stored as 40.0 and then consumed as 40
+        // radians -- and longitude, left alone, disagreed with it. Each branch now wraps
+        // in its own units and stores what the constructors expect.
+        let (latitude, longitude) = if in_degrees {
+            (latitude, wrap_to_180(longitude))
         } else {
-            latitude.to_degrees()
-        };
-        let longitude = if in_degrees {
-            wrap_to_180(longitude)
-        } else {
-            longitude
+            (latitude, wrap_to_pi(longitude))
         };
         let is_enu = is_enu.unwrap_or(false);
         if in_degrees {
@@ -4043,6 +4047,120 @@ mod tests {
         assert_approx_eq!(ukf.mean_state[6], roll_rad, 1e-12);
         assert_approx_eq!(ukf.mean_state[7], pitch_rad, 1e-12);
         assert_approx_eq!(ukf.mean_state[8], yaw_rad, 1e-12);
+    }
+
+    /// `InitialState::new` in radians must agree with the equivalent struct literal.
+    ///
+    /// The radian branch used to store `latitude.to_degrees()` while leaving
+    /// `in_degrees == false`, so the filter constructors -- which convert only
+    /// when `in_degrees` is true -- consumed 40 deg N (0.698 rad) as the number
+    /// 40 *radians*. Longitude was passed through untouched, so the two did not
+    /// even agree with each other.
+    #[test]
+    fn initial_state_new_in_radians_matches_struct_literal() {
+        let latitude_rad: f64 = 40.0_f64.to_radians();
+        let longitude_rad: f64 = (-75.0_f64).to_radians();
+
+        let constructed = InitialState::new(
+            latitude_rad,
+            longitude_rad,
+            100.0,
+            1.0,
+            2.0,
+            3.0,
+            0.1626,
+            -0.9395,
+            0.1792,
+            false,
+            None,
+        );
+        let literal = InitialState {
+            latitude: latitude_rad,
+            longitude: longitude_rad,
+            altitude: 100.0,
+            northward_velocity: 1.0,
+            eastward_velocity: 2.0,
+            vertical_velocity: 3.0,
+            roll: 0.1626,
+            pitch: -0.9395,
+            yaw: 0.1792,
+            in_degrees: false,
+            is_enu: false,
+        };
+
+        // The stored fields are already radians, so the two agree before any filter sees them.
+        assert_approx_eq!(constructed.latitude, literal.latitude, 1e-15);
+        assert_approx_eq!(constructed.longitude, literal.longitude, 1e-15);
+
+        let eskf = |initial_state: &InitialState| {
+            ErrorStateKalmanFilter::new(
+                initial_state,
+                &IMU_BIASES,
+                COVARIANCE_DIAGONAL.to_vec(),
+                DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
+            )
+        };
+        let from_constructor = eskf(&constructed);
+        let from_literal = eskf(&literal);
+        assert_approx_eq!(
+            from_constructor.nominal_latitude,
+            from_literal.nominal_latitude,
+            1e-15
+        );
+        assert_approx_eq!(
+            from_constructor.nominal_longitude,
+            from_literal.nominal_longitude,
+            1e-15
+        );
+        // ...and both are the radians that went in, not degrees read as radians.
+        assert_approx_eq!(from_constructor.nominal_latitude, latitude_rad, 1e-15);
+        assert_approx_eq!(from_constructor.nominal_longitude, longitude_rad, 1e-15);
+
+        // Same for the EKF and UKF, which read lat/lon into the mean state.
+        let q15 = DMatrix::identity(15, 15);
+        let ekf_constructed =
+            ExtendedKalmanFilter::new(&constructed, &IMU_BIASES, vec![1e-6; 15], q15.clone(), true);
+        let ekf_literal =
+            ExtendedKalmanFilter::new(&literal, &IMU_BIASES, vec![1e-6; 15], q15.clone(), true);
+        assert_approx_eq!(
+            ekf_constructed.mean_state[0],
+            ekf_literal.mean_state[0],
+            1e-15
+        );
+        assert_approx_eq!(
+            ekf_constructed.mean_state[1],
+            ekf_literal.mean_state[1],
+            1e-15
+        );
+        assert_approx_eq!(ekf_constructed.mean_state[0], latitude_rad, 1e-15);
+        assert_approx_eq!(ekf_constructed.mean_state[1], longitude_rad, 1e-15);
+
+        let ukf = |initial_state: &InitialState| {
+            UnscentedKalmanFilter::new(
+                initial_state,
+                &IMU_BIASES,
+                None,
+                vec![1e-6; 15],
+                q15.clone(),
+                1e-3,
+                2.0,
+                0.0,
+            )
+        };
+        let ukf_constructed = ukf(&constructed);
+        let ukf_literal = ukf(&literal);
+        assert_approx_eq!(
+            ukf_constructed.mean_state[0],
+            ukf_literal.mean_state[0],
+            1e-15
+        );
+        assert_approx_eq!(
+            ukf_constructed.mean_state[1],
+            ukf_literal.mean_state[1],
+            1e-15
+        );
+        assert_approx_eq!(ukf_constructed.mean_state[0], latitude_rad, 1e-15);
+        assert_approx_eq!(ukf_constructed.mean_state[1], longitude_rad, 1e-15);
     }
 
     /// #286: bias injection clamps to physically plausible bounds.
