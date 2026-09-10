@@ -1743,6 +1743,23 @@ fn test_eskf_output_stays_valid_across_full_run() {
     // Run closed-loop filter
     let results = run_closed_loop(&mut eskf, stream, None, None).expect("ESKF should complete");
 
+    // Everything below this line is per-sample, and every per-sample assertion in a `for`
+    // loop is vacuously true over an empty series. `compute_error_metrics` fails the same
+    // way from the other side: it starts its accumulators at zero and returns them
+    // untouched when nothing matches, so the bounds at the end of this test would pass on
+    // no data at all. Pin the length first, and pin it to `records.len()` rather than to
+    // "non-empty" -- a filter that emitted one solution and stopped is exactly the
+    // regression that would otherwise slip through here. This is also the only absolute
+    // length check the ESKF has: `test_filter_comparison` asserts only that the three
+    // filters agree with *each other*, which all three being short would satisfy.
+    assert_eq!(
+        results.len(),
+        records.len(),
+        "the ESKF must emit one solution per input record; got {} for {} records",
+        results.len(),
+        records.len()
+    );
+
     // Verify all results are valid (no NaN or Inf)
     for (i, result) in results.iter().enumerate() {
         assert!(
@@ -2222,8 +2239,12 @@ fn test_filter_output_length_matches_input() {
         input_length
     );
 
-    // ESKF length coverage lives in test_eskf_output_length_matches_input,
-    // re-enabled when the vertical-channel divergence fix (#286) landed.
+    // ESKF length coverage lives in test_eskf_output_stays_valid_across_full_run, which
+    // asserts one solution per input record on the same data. This comment previously
+    // named `test_eskf_output_length_matches_input`, which is not in this file and does
+    // not appear to have ever been -- so until that assertion was added the ESKF had no
+    // absolute length coverage anywhere, only the relative check in
+    // `test_filter_comparison`.
 
     println!("\n✅ All filters produce output length matching input length: {input_length}");
 }
