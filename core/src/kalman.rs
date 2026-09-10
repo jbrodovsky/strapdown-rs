@@ -318,29 +318,6 @@ impl UnscentedKalmanFilter {
         Ok(kt.transpose())
     }
 }
-/// Resolve an [`InputModel`](crate::InputModel) trait object into the [`IMUData`] the
-/// Kalman-family filters mechanize with.
-///
-/// Replaces three copies of `downcast_ref::<IMUData>().expect(..)`. The trait admits any
-/// `InputModel` — `VelocityData` implements it too — so the type system permits exactly what
-/// those `expect`s forbade. This reports that as an error instead of aborting.
-///
-/// # Errors
-/// [`StrapdownError::UnsupportedInput`] if `input` is not [`IMUData`].
-fn imu_from_input(
-    input: &dyn crate::InputModel,
-    filter: &'static str,
-) -> Result<IMUData, StrapdownError> {
-    input
-        .as_any()
-        .downcast_ref::<IMUData>()
-        .copied()
-        .ok_or(StrapdownError::UnsupportedInput {
-            filter,
-            expected: "IMUData",
-        })
-}
-
 /// Relative tolerance for reconciling an [`ImuSample`]'s own `dt` with the `dt` argument
 /// [`NavigationFilter::predict`](crate::NavigationFilter::predict) is called with.
 ///
@@ -363,7 +340,7 @@ const TIMESTEP_AGREEMENT_RELATIVE_TOLERANCE: f64 = 1e-9;
 ///   wrong rather than loudly absent.
 /// * [`StrapdownError::UnsupportedInput`] if `input` is neither inertial form -- `VelocityData`
 ///   also implements [`InputModel`](crate::InputModel), so the type system permits it here.
-fn imu_sample_from_input(
+pub(crate) fn imu_sample_from_input(
     input: &dyn crate::InputModel,
     filter: &'static str,
     dt: f64,
@@ -393,15 +370,36 @@ impl NavigationFilter for UnscentedKalmanFilter {
     ///
     /// # Arguments
     ///
-    /// * `control_input` - An `InputModel` implementing type (expected `IMUData`).
-    /// * `dt` - Time step in seconds.
+    /// * `control_input` - an [`ImuSample`] (integrated $\Delta v$ / $\Delta\theta$) or,
+    ///   for callers still holding instantaneous rates, an [`IMUData`].
+    /// * `dt` - Time step in seconds. When `control_input` is an [`ImuSample`] this must
+    ///   agree with the sample's own `dt`; see the Errors section.
+    ///
+    /// # Errors
+    /// * [`StrapdownError::UnsupportedInput`] if `control_input` is neither inertial form.
+    /// * [`StrapdownError::InconsistentTimestep`] if an [`ImuSample`]'s `dt` disagrees with
+    ///   the `dt` argument.
+    /// * [`StrapdownError::OutOfRange`] or [`StrapdownError::NonFinite`] propagated from
+    ///   [`mechanize`], or [`StrapdownError::NotSquare`] from the sigma-point square root.
+    ///
+    /// # Bias compensation
+    ///
+    /// Each sigma point carries its own bias hypothesis in states 9..15, so the correction
+    /// is applied per sigma point rather than once to the shared input. Biases are rates and
+    /// the sensed quantities are their integrals, so the correction is each bias integrated
+    /// over the interval -- the same increment-domain form the ESKF uses:
+    /// $$
+    /// \begin{aligned}
+    /// \Delta v^b &= \Delta v^b_{\text{measured}} - b_a \Delta t \\\\
+    /// \Delta\theta^b &= \Delta\theta^b_{\text{measured}} - b_g \Delta t
+    /// \end{aligned}
+    /// $$
     fn predict(
         &mut self,
         control_input: &dyn crate::InputModel,
         dt: f64,
     ) -> Result<(), StrapdownError> {
-        let imu_input = imu_from_input(control_input, "UnscentedKalmanFilter")?;
-        let imu_input = &imu_input;
+        let sample = imu_sample_from_input(control_input, "UnscentedKalmanFilter", dt)?;
 
         let mut sigma_points = self.get_sigma_points()?;
         for i in 0..sigma_points.ncols() {
@@ -420,29 +418,27 @@ impl NavigationFilter for UnscentedKalmanFilter {
                 ),
                 is_enu: self.is_enu,
             };
-            let accel_biases = if self.state_size >= 15 {
-                DVector::from_vec(vec![
-                    sigma_point_vec[9],
-                    sigma_point_vec[10],
-                    sigma_point_vec[11],
-                ])
+            let (accel_biases, gyro_biases) = if self.state_size >= 15 {
+                (
+                    Vector3::new(sigma_point_vec[9], sigma_point_vec[10], sigma_point_vec[11]),
+                    Vector3::new(
+                        sigma_point_vec[12],
+                        sigma_point_vec[13],
+                        sigma_point_vec[14],
+                    ),
+                )
             } else {
-                DVector::from_vec(vec![0.0, 0.0, 0.0])
+                (Vector3::zeros(), Vector3::zeros())
             };
-            let gyro_biases = if self.state_size >= 15 {
-                DVector::from_vec(vec![
-                    sigma_point_vec[12],
-                    sigma_point_vec[13],
-                    sigma_point_vec[14],
-                ])
-            } else {
-                DVector::from_vec(vec![0.0, 0.0, 0.0])
+            // Correct in the increment domain rather than dividing back out to rates: a
+            // sample that arrived as genuine delta-v / delta-theta then never makes a lossy
+            // round trip through `dt`.
+            let corrected_sample = ImuSample {
+                delta_v: sample.delta_v - accel_biases * sample.dt,
+                delta_theta: sample.delta_theta - gyro_biases * sample.dt,
+                dt: sample.dt,
             };
-            let imu_data = IMUData {
-                accel: imu_input.accel - &accel_biases,
-                gyro: imu_input.gyro - &gyro_biases,
-            };
-            mechanize(&mut state, &ImuSample::from_rates(&imu_data, dt))?;
+            mechanize(&mut state, &corrected_sample)?;
             sigma_point_vec[0] = state.latitude;
             sigma_point_vec[1] = state.longitude;
             sigma_point_vec[2] = state.altitude;
@@ -805,8 +801,17 @@ impl NavigationFilter for ExtendedKalmanFilter {
     ///
     /// # Arguments
     ///
-    /// * `imu_data` - IMU measurements (specific force and angular rate)
-    /// * `dt` - Time step in seconds
+    /// * `control_input` - an [`ImuSample`] (integrated $\Delta v$ / $\Delta\theta$) or,
+    ///   for callers still holding instantaneous rates, an [`IMUData`].
+    /// * `dt` - Time step in seconds. When `control_input` is an [`ImuSample`] this must
+    ///   agree with the sample's own `dt`; see the Errors section.
+    ///
+    /// # Errors
+    /// * [`StrapdownError::UnsupportedInput`] if `control_input` is neither inertial form.
+    /// * [`StrapdownError::InconsistentTimestep`] if an [`ImuSample`]'s `dt` disagrees with
+    ///   the `dt` argument.
+    /// * [`StrapdownError::OutOfRange`] or [`StrapdownError::NonFinite`] propagated from
+    ///   [`mechanize`].
     ///
     /// # Mathematical Details
     ///
@@ -834,8 +839,7 @@ impl NavigationFilter for ExtendedKalmanFilter {
         control_input: &dyn crate::InputModel,
         dt: f64,
     ) -> Result<(), StrapdownError> {
-        let imu_data = imu_from_input(control_input, "ExtendedKalmanFilter")?;
-        let imu_data = &imu_data;
+        let sample = imu_sample_from_input(control_input, "ExtendedKalmanFilter", dt)?;
 
         // Extract current state
         let mut state = StrapdownState {
@@ -856,36 +860,36 @@ impl NavigationFilter for ExtendedKalmanFilter {
         // Extract biases if present
         let (accel_biases, gyro_biases) = if self.use_biases && self.state_size >= 15 {
             (
-                DVector::from_vec(vec![
-                    self.mean_state[9],
-                    self.mean_state[10],
-                    self.mean_state[11],
-                ]),
-                DVector::from_vec(vec![
+                Vector3::new(self.mean_state[9], self.mean_state[10], self.mean_state[11]),
+                Vector3::new(
                     self.mean_state[12],
                     self.mean_state[13],
                     self.mean_state[14],
-                ]),
+                ),
             )
         } else {
-            (
-                DVector::from_vec(vec![0.0, 0.0, 0.0]),
-                DVector::from_vec(vec![0.0, 0.0, 0.0]),
-            )
+            (Vector3::zeros(), Vector3::zeros())
         };
 
-        // Compensate IMU measurements for biases
-        let corrected_imu = IMUData {
-            accel: imu_data.accel - &accel_biases,
-            gyro: imu_data.gyro - &gyro_biases,
+        // Compensate the sensed increments for the estimated biases. Biases are rates and
+        // the increments are their integrals, so the correction is each bias integrated
+        // across the interval -- the same increment-domain form the ESKF uses, which keeps
+        // a genuine delta-v / delta-theta sample off a lossy round trip through `dt`.
+        let corrected_sample = ImuSample {
+            delta_v: sample.delta_v - accel_biases * sample.dt,
+            delta_theta: sample.delta_theta - gyro_biases * sample.dt,
+            dt: sample.dt,
         };
+        // The state-transition Jacobian is derived in the rate domain, so it needs the
+        // average rates over the interval rather than the increments themselves.
+        let corrected_rates = corrected_sample.to_rates()?;
 
         // Compute state transition Jacobian F (before propagation)
         let f_matrix = crate::linearize::state_transition_jacobian(
             &state,
-            &corrected_imu.accel,
-            &corrected_imu.gyro,
-            dt,
+            &corrected_rates.accel,
+            &corrected_rates.gyro,
+            corrected_sample.dt,
         );
 
         // Extend F to full state size if using biases or augmented states
@@ -904,7 +908,7 @@ impl NavigationFilter for ExtendedKalmanFilter {
         };
 
         // Nonlinear state propagation
-        mechanize(&mut state, &ImuSample::from_rates(&corrected_imu, dt))?;
+        mechanize(&mut state, &corrected_sample)?;
 
         // Update state vector with propagated values
         self.mean_state[0] = state.latitude;

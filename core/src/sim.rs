@@ -3255,19 +3255,29 @@ pub enum FilterType {
     Ekf,
 }
 
-/// Particle filter type selection
+/// Particle filter type selection.
+///
+/// One variant, deliberately. This enum previously also advertised `Standard` (all states
+/// as particles) and `Velocity` (position-only particles with externally supplied
+/// velocities); neither was ever implemented, and `Standard` was the *default*, so
+/// `strapdown-sim particle-filter` failed on its own defaults with "Only
+/// Rao-Blackwellized particle filter is implemented in this mode". They were removed in
+/// queue 5 (#259) rather than implemented: [`particle`](crate::particle) is documented as
+/// a template-style module of building blocks -- resampling strategies and the
+/// [`Particle`](crate::particle::Particle) trait -- for users assembling their own filter,
+/// not as a filter itself.
+///
+/// The enum is kept rather than collapsed away so that adding a second concrete filter
+/// stays a non-breaking change to the config schema.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "clap", derive(ValueEnum))]
 #[serde(rename_all = "kebab-case")]
 #[derive(Default)]
 pub enum ParticleFilterType {
-    /// Standard particle filter (all states as particles)
+    /// Rao-Blackwellized particle filter (position as particles, velocity/attitude/extra
+    /// states as per-particle Kalman filters). The default, and currently the only variant.
     #[default]
-    Standard,
-    /// Rao-Blackwellized particle filter (position as particles, velocity/attitude/biases as per-particle filters)
     RaoBlackwellized,
-    /// Velocity-based particle filter (position-only particles, velocities supplied externally)
-    Velocity,
 }
 
 /// Closed-loop specific configuration
