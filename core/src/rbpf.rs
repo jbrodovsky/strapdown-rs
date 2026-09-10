@@ -7,6 +7,7 @@
 
 use crate::StrapdownError;
 use crate::earth::METERS_TO_DEGREES;
+use crate::kalman::imu_sample_from_input;
 use crate::linalg::{matrix_square_root, symmetrize};
 use crate::linearize::state_transition_jacobian;
 use crate::measurements::{
@@ -17,7 +18,7 @@ use crate::particle::{
     ParticleResamplingStrategy, multinomial_resample, residual_resample, stratified_resample,
     systematic_resample,
 };
-use crate::{IMUData, ImuSample, StrapdownState, mechanize};
+use crate::{ImuSample, InputModel, NavigationFilter, StrapdownState, mechanize};
 
 use nalgebra::{DMatrix, DVector, Vector3};
 use rand::prelude::*;
@@ -187,14 +188,23 @@ impl RaoBlackwellizedParticleFilter {
         &self.nominal
     }
 
-    /// Predict step using IMU data.
+    /// Propagate the particle cloud through one inertial sample.
+    ///
+    /// The body of [`NavigationFilter::predict`]; kept as an inherent method taking a
+    /// resolved [`ImuSample`] so the trait impl is only the input-resolution shim.
     ///
     /// # Errors
-    /// Propagates [`StrapdownError::NotSquare`] from the process-noise square root. The RBPF
-    /// keeps its inherent methods rather than adopting [`NavigationFilter`] — that is queue
-    /// position 5 (#259) — but it still owes the zero-panic contract of #254.
-    pub fn predict(&mut self, imu: &IMUData, dt: f64) -> Result<(), StrapdownError> {
-        let f = state_transition_jacobian(&self.nominal, &imu.accel, &imu.gyro, dt);
+    /// [`StrapdownError::OutOfRange`] if `sample.dt` is not strictly positive (the rates the
+    /// Jacobian needs are undefined then), and [`StrapdownError::NotSquare`] from the
+    /// process-noise square root.
+    fn predict_sample(&mut self, sample: &ImuSample) -> Result<(), StrapdownError> {
+        // The state-transition Jacobian is derived in the rate domain, so it needs the
+        // average rates over the interval rather than the increments themselves. The RBPF
+        // carries no bias states -- its linear state is velocity, attitude and any extra
+        // states -- so there is nothing to compensate the increments for first.
+        let rates = sample.to_rates()?;
+        let dt = sample.dt;
+        let f = state_transition_jacobian(&self.nominal, &rates.accel, &rates.gyro, dt);
         let linear_dim = LINEAR_STATE_DIM_BASE + self.config.extra_state_dim;
 
         let f_nn = f
@@ -250,7 +260,7 @@ impl RaoBlackwellizedParticleFilter {
         }
 
         // Propagate nominal state with strapdown mechanization.
-        mechanize(&mut self.nominal, &ImuSample::from_rates(imu, dt))?;
+        mechanize(&mut self.nominal, sample)?;
 
         let normal = crate::normal_with_std(1.0);
 
@@ -314,13 +324,17 @@ impl RaoBlackwellizedParticleFilter {
         Ok(())
     }
 
-    /// Update step using a measurement model.
+    /// Reweight the particle cloud against a measurement.
+    ///
+    /// The body of [`NavigationFilter::update`]. Generic rather than taking `&dyn
+    /// MeasurementModel` because the downcasts below are what select the specialised
+    /// position/velocity paths, and a monomorphised call site keeps them cheap.
     ///
     /// # Errors
     /// Propagates measurement failures — chiefly a geophysical model whose particle has
     /// drifted off the loaded map. Callers should consult
     /// [`StrapdownError::is_recoverable`] and skip the measurement rather than abort.
-    pub fn update<M: MeasurementModel + ?Sized>(
+    fn update_with<M: MeasurementModel + ?Sized>(
         &mut self,
         measurement: &M,
     ) -> Result<(), StrapdownError> {
@@ -694,6 +708,54 @@ impl RaoBlackwellizedParticleFilter {
     }
 }
 
+impl NavigationFilter for RaoBlackwellizedParticleFilter {
+    /// Predict step: propagate the nominal trajectory and the particle cloud.
+    ///
+    /// # Arguments
+    ///
+    /// * `control_input` - an [`ImuSample`] (integrated $\Delta v$ / $\Delta\theta$) or,
+    ///   for callers still holding instantaneous rates, an
+    ///   [`IMUData`](crate::IMUData).
+    /// * `dt` - Time step in seconds. When `control_input` is an [`ImuSample`] this must
+    ///   agree with the sample's own `dt`; see the Errors section.
+    ///
+    /// # Errors
+    /// * [`StrapdownError::UnsupportedInput`] if `control_input` is neither inertial form.
+    /// * [`StrapdownError::InconsistentTimestep`] if an [`ImuSample`]'s `dt` disagrees with
+    ///   the `dt` argument.
+    /// * [`StrapdownError::OutOfRange`] or [`StrapdownError::NonFinite`] propagated from
+    ///   [`mechanize`], or [`StrapdownError::NotSquare`] from the process-noise square root.
+    fn predict(&mut self, control_input: &dyn InputModel, dt: f64) -> Result<(), StrapdownError> {
+        let sample = imu_sample_from_input(control_input, "RaoBlackwellizedParticleFilter", dt)?;
+        self.predict_sample(&sample)
+    }
+
+    /// Update step: reweight the particle cloud against a measurement.
+    ///
+    /// # Errors
+    /// Propagates measurement failures — chiefly a geophysical model whose particle has
+    /// drifted off the loaded map. Callers should consult
+    /// [`StrapdownError::is_recoverable`] and skip the measurement rather than abort.
+    fn update(&mut self, measurement: &dyn MeasurementModel) -> Result<(), StrapdownError> {
+        self.update_with(measurement)
+    }
+
+    /// The weighted mean of the 9-state navigation solution.
+    ///
+    /// Computed from the particle cloud on each call; [`Self::estimate`] returns the mean
+    /// and covariance together and is cheaper when both are wanted.
+    fn get_estimate(&self) -> DVector<f64> {
+        self.estimate().0
+    }
+
+    /// The weighted covariance of the 9-state navigation solution.
+    ///
+    /// See [`Self::get_estimate`] on computing both in one pass.
+    fn get_certainty(&self) -> DMatrix<f64> {
+        self.estimate().1
+    }
+}
+
 fn gaussian_log_likelihood(residual: &DVector<f64>, noise: &DMatrix<f64>) -> f64 {
     if residual.iter().any(|v| !v.is_finite()) {
         return f64::NEG_INFINITY;
@@ -709,7 +771,7 @@ fn gaussian_log_likelihood(residual: &DVector<f64>, noise: &DMatrix<f64>) -> f64
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{earth, generate_scenario_data};
+    use crate::{IMUData, earth, generate_scenario_data};
     use assert_approx_eq::assert_approx_eq;
     use nalgebra::Rotation3;
 
