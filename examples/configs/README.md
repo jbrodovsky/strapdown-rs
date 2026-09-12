@@ -147,7 +147,7 @@ To create a custom scenario:
 ```yaml
 # All measurements pass through
 scheduler:
-  kind: passthrough
+  kind: pass_through
 
 # Fixed interval updates
 scheduler:
@@ -157,11 +157,19 @@ scheduler:
 
 # Duty cycle (ON/OFF periods)
 scheduler:
-  kind: duty
+  kind: duty_cycle
   on_s: 30.0
   off_s: 60.0
-  phase_s: 0.0
+  start_phase_s: 0.0   # note: not `phase_s`, which belongs to fixed_interval
 ```
+
+> **Config files and CLI flags use different names for the same thing.** In a config file the
+> scheduler kinds are `pass_through`, `fixed_interval` and `duty_cycle`, matching the
+> `GnssScheduler` variants. The equivalent CLI flags are `--sched passthrough|fixed|duty`, and
+> the duty phase is `--duty-phase-s` rather than `--phase-s`. A misspelled `kind` does not
+> error: every field has a default, so the section is silently dropped and the run proceeds
+> with no degradation at all. `core/tests/example_configs.rs` guards the files in this
+> directory against exactly that.
 
 ### Fault Model Options
 
@@ -181,7 +189,7 @@ fault:
 
 # Slow drifting bias
 fault:
-  kind: slowbias
+  kind: slow_bias
   drift_n_mps: 0.02
   drift_e_mps: 0.0
   q_bias: 1e-6

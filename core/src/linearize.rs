@@ -995,7 +995,7 @@ pub fn zaru_jacobian(_state: &StrapdownState) -> DMatrix<f64> {
 /// ```text
 /// C_corrected = (I - [δθ]×) * C_nominal ≈ C_error * C_nominal
 /// ```
-/// where [δθ]× is the skew-symmetric matrix of the attitude error angles.
+/// where `[δθ]×` is the skew-symmetric matrix of the attitude error angles.
 ///
 /// # Arguments
 ///

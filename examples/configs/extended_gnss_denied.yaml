@@ -10,10 +10,10 @@
 # period at a rate proportional to IMU quality. For smartphone-grade
 # MEMS IMUs, expect drift of ~10-50m per minute.
 scheduler:
-  kind: duty
+  kind: duty_cycle
   on_s: 60.0      # 1 minute GNSS available
   off_s: 300.0    # 5 minutes GNSS denied
-  phase_s: 0.0
+  start_phase_s: 0.0
 fault:
   kind: none
 seed: 42

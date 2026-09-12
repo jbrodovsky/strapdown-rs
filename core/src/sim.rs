@@ -2046,13 +2046,13 @@ const MAX_CONSECUTIVE_REJECTIONS: usize = 100;
 /// It iterates through the event stream, performs prediction and update steps, checks health limits,
 /// and records navigation results. While generic, this is really only intended for Kalman-filter
 /// family navigation filters because particle filter style navigation filters have the additional
-/// step of resampling. For particle filter type filters, use [run_closed_loop_pf] instead.
+/// step of resampling. For particle filter type filters, use the particle-filter loop instead.
 ///
 /// # Innovation gating
 ///
 /// Whether measurements are gated is the filter's business, not this function's:
 /// install a gate with
-/// [`NavigationFilter::set_innovation_gate`](crate::NavigationFilter::set_innovation_gate)
+/// [`NavigationFilter::set_innovation_gate`]
 /// before calling. This loop counts and logs what the gate rejected, and feeds every
 /// update's NIS to the [`HealthMonitor`] so a run that is gating *everything* -- the
 /// signature of a diverged filter rather than an unlucky one -- trips the
@@ -2068,7 +2068,7 @@ const MAX_CONSECUTIVE_REJECTIONS: usize = 100;
 /// * `Vec<NavigationResult>` - A vector of navigation results
 /// # Errors
 /// If propagation fails, if a non-recoverable measurement error occurs, if the health or
-/// execution monitor trips, or if more than [`MAX_CONSECUTIVE_REJECTIONS`] measurements are
+/// execution monitor trips, or if more than `MAX_CONSECUTIVE_REJECTIONS` measurements are
 /// rejected in a row. Recoverable measurement failures are skipped and counted instead.
 pub fn run_closed_loop<F: NavigationFilter>(
     filter: &mut F,

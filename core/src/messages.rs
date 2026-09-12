@@ -650,7 +650,7 @@ fn ar1_step(x: &mut f64, rho: f64, sigma: f64, rng: &mut rand::rngs::StdRng) {
 /// # Numerical notes
 /// - Conversion from N/E meter offsets to Δlat/Δlon uses WGS-84 principal radii
 ///   with a small `cos(lat)` clamp near the poles to avoid singularities.
-/// - AR(1) updates use a Normal(0, σ) innovation each step; see [`ar1_step`].
+/// - AR(1) updates use a Normal(0, σ) innovation each step.
 ///
 /// # Examples
 /// ```
@@ -854,8 +854,9 @@ pub fn apply_fault(
 /// - [`GnssScheduler::PassThrough`]: emit a GNSS event at every record step.
 /// - [`GnssScheduler::FixedInterval`]: emit when `elapsed_s >= next_emit_time`,
 ///   then advance `next_emit_time += interval_s` (with initial `phase_s`).
-/// - [`GnssScheduler::DutyCycle`]: toggle ON/OFF windows of lengths `on_s`/`off_s`
-///   starting at `start_phase_s`; emit only at the boundary into the ON window.
+/// - [`GnssScheduler::DutyCycle`]: emit at every record step that falls inside an ON
+///   window. The timeline is `start_phase_s` of initial ON, then `off_s` OFF and `on_s` ON
+///   repeating. See `duty_cycle_is_on`.
 ///
 /// # Corruption semantics
 /// The truth-like GNSS (lat/lon/alt + velocity derived from `speed`/`bearing`)
@@ -900,6 +901,40 @@ pub fn apply_fault(
 /// let events = build_event_stream(&records, &cfg);
 /// // feed into your event-driven filter loop
 /// ```
+/// Tolerance for comparing a sample's elapsed time against a scheduler boundary.
+///
+/// Elapsed times are reconstructed from millisecond timestamps, so a sample that should land
+/// exactly on a boundary can arrive a few ULP short of it. Without the slack a 1 Hz stream
+/// against a whole-second window drops or gains a fix depending on rounding.
+const DUTY_CYCLE_EPSILON_S: f64 = 1e-9;
+
+/// Whether a [`GnssScheduler::DutyCycle`] is inside an ON window at `elapsed_s`.
+///
+/// The timeline is `start_phase_s` of initial ON, then `off_s` OFF and `on_s` ON repeating,
+/// which is what "initial phase offset before the first ON/OFF toggle" describes: the first
+/// toggle takes the scheduler out of its initial ON state.
+///
+/// Computed from `elapsed_s` directly rather than by stepping a toggle once per sample. The
+/// stepping version emitted a fix only on the sample where the state flipped *into* ON and
+/// returned `false` for every other sample in the window, so `on_s: 1800.0, off_s: 600.0`
+/// delivered two fixes across an 89-minute recording instead of roughly four thousand
+/// (#312). Deriving the state from the clock also means a window shorter than the sample
+/// interval cannot leave the scheduler a boundary behind for the rest of the run.
+fn duty_cycle_is_on(elapsed_s: f64, on_s: f64, off_s: f64, start_phase_s: f64) -> bool {
+    if elapsed_s + DUTY_CYCLE_EPSILON_S < start_phase_s {
+        return true;
+    }
+    let cycle_s = on_s + off_s;
+    if cycle_s <= 0.0 || !cycle_s.is_finite() {
+        // A non-positive or non-finite cycle cannot describe an outage. Deliver every fix
+        // rather than withholding all of them: silently suppressing GNSS is the failure mode
+        // #312 was, and it is much harder to notice than an outage that does not happen.
+        return true;
+    }
+    let into_cycle = (elapsed_s - start_phase_s).rem_euclid(cycle_s);
+    into_cycle + DUTY_CYCLE_EPSILON_S >= off_s
+}
+
 pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfig) -> EventStream {
     let start_time = records[0].time;
     let records_with_elapsed: Vec<(f64, &TestDataRecord)> = records
@@ -909,13 +944,12 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
     let mut events = Vec::with_capacity(records_with_elapsed.len() * 2);
     let mut st = FaultState::new(cfg.seed);
 
-    // Scheduler state
+    // Scheduler state. Only `FixedInterval` needs any: `PassThrough` emits unconditionally
+    // and `DutyCycle` derives its window from the elapsed clock, see `duty_cycle_is_on`.
     let mut next_emit_time = match cfg.scheduler {
-        GnssScheduler::PassThrough => 0.0,
         GnssScheduler::FixedInterval { phase_s, .. } => phase_s,
-        GnssScheduler::DutyCycle { start_phase_s, .. } => start_phase_s,
+        GnssScheduler::PassThrough | GnssScheduler::DutyCycle { .. } => 0.0,
     };
-    let mut duty_on = true;
     // Through preprocessing we assert that the first record must have a NED position
     // but it may or may not have IMU or other such measurements.
     let reference_altitude = records[0].altitude;
@@ -953,16 +987,11 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
                     false
                 }
             }
-            GnssScheduler::DutyCycle { on_s, off_s, .. } => {
-                let window = if duty_on { on_s } else { off_s };
-                if *t1 + 1e-9 >= next_emit_time {
-                    duty_on = !duty_on;
-                    next_emit_time += window;
-                    duty_on // only emit when toggling into ON
-                } else {
-                    false
-                }
-            }
+            GnssScheduler::DutyCycle {
+                on_s,
+                off_s,
+                start_phase_s,
+            } => duty_cycle_is_on(*t1, on_s, off_s, start_phase_s),
         };
 
         if should_emit {
@@ -1181,22 +1210,114 @@ mod tests {
         };
         //
         let events = build_event_stream(&records, &config);
-        //assert!(events.len() == 60, "{}", format!("Expected 60 events, found: {}", events.len()));
-        // We should only have GNSS events when turning ON
-        // (so at 0.0s, 2.0s, 4.0s, ...)
-        let measurements: Vec<&Event> = events
+        let measurements = events
             .events
             .iter()
             .filter(|e| matches!(e, Event::Measurement { .. }))
-            .collect();
-        // We initialize off of the first event and only get GNSS updates every two seconds starting from 1.0
-        // (60 - 1) // 2 = 29 + 59 baro + 59 mag = 147
-        assert!(measurements.len() >= 2);
-        assert!(
-            measurements.len() == 147,
-            "{}",
-            format!("Expected 147 GNSS events, found: {}", measurements.len())
+            .count();
+
+        // `windows(2)` emits one step per record after the first, so t1 runs 1..=59: 59
+        // steps, each carrying an unscheduled baro and mag measurement. With `on_s: 1.0,
+        // off_s: 1.0, start_phase_s: 0.0` the cycle is 2 s of OFF-then-ON, so odd seconds
+        // are ON: 30 of the 59 steps carry a GNSS fix.
+        //
+        // This previously expected 147, i.e. 29 fixes, which was the #312 bug written down
+        // as a requirement: the scheduler emitted only on the sample where the window
+        // toggled into ON rather than throughout it. The old comment said so in as many
+        // words -- "We should only have GNSS events when turning ON".
+        assert_eq!(
+            measurements,
+            30 + 59 + 59,
+            "expected 30 GNSS fixes plus 59 baro and 59 mag"
         );
+    }
+
+    /// A duty cycle must withhold GNSS for the whole OFF window and deliver it for the whole
+    /// ON window -- the property #312 broke, and the one a toggle-counting test cannot see.
+    #[test]
+    fn test_duty_cycle_emits_throughout_on_window() {
+        // 1 Hz for 100 s, 20 s ON then 10 s OFF, no initial phase.
+        let records = create_test_records(100, 1.0);
+        let config = GnssDegradationConfig {
+            scheduler: GnssScheduler::DutyCycle {
+                on_s: 20.0,
+                off_s: 10.0,
+                start_phase_s: 20.0,
+            },
+            fault: GnssFaultModel::None,
+            ..Default::default()
+        };
+
+        let stream = build_event_stream(&records, &config);
+        // The GNSS fix is the only multi-dimensional measurement in the stream; baro and mag
+        // are scalar and are not scheduled.
+        let fix_times: Vec<f64> = stream
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                Event::Measurement { meas, elapsed_s } if meas.get_dimension() > 1 => {
+                    Some(*elapsed_s)
+                }
+                _ => None,
+            })
+            .collect();
+
+        // Timeline: ON [0, 20), OFF [20, 30), ON [30, 50), OFF [50, 60), ON [60, 80),
+        // OFF [80, 90), ON [90, 100).
+        let expect_on = |t: f64| {
+            let into = (t - 20.0).rem_euclid(30.0);
+            t < 20.0 || into >= 10.0
+        };
+        for t in 1..100 {
+            let t = f64::from(t);
+            let delivered = fix_times.iter().any(|fix| (fix - t).abs() < 1e-6);
+            assert_eq!(
+                delivered,
+                expect_on(t),
+                "at t={t} s the fix should{} have been delivered",
+                if expect_on(t) { "" } else { " not" }
+            );
+        }
+
+        // And the counts, so a regression that shifts every window by one still fails.
+        assert_eq!(
+            fix_times.len(),
+            (1..100).filter(|t| expect_on(f64::from(*t))).count(),
+            "delivered fix count should match the ON windows"
+        );
+    }
+
+    /// A configuration that cannot describe an outage must not silently suppress all GNSS.
+    ///
+    /// Withholding every fix is far harder to notice than an outage that fails to happen --
+    /// it looks like a filter problem, not a config problem -- so a degenerate cycle passes
+    /// fixes through instead.
+    #[test]
+    fn test_duty_cycle_with_degenerate_cycle_passes_fixes_through() {
+        let records = create_test_records(20, 1.0);
+        for (on_s, off_s) in [(0.0, 0.0), (-5.0, 0.0)] {
+            let config = GnssDegradationConfig {
+                scheduler: GnssScheduler::DutyCycle {
+                    on_s,
+                    off_s,
+                    start_phase_s: 0.0,
+                },
+                fault: GnssFaultModel::None,
+                ..Default::default()
+            };
+            let stream = build_event_stream(&records, &config);
+            let fixes = stream
+                .events
+                .iter()
+                .filter(|event| {
+                    matches!(event, Event::Measurement { meas, .. } if meas.get_dimension() > 1)
+                })
+                .count();
+            assert_eq!(
+                fixes, 19,
+                "on_s={on_s}, off_s={off_s} should deliver every fix, not withhold them"
+            );
+        }
     }
     #[test]
     fn test_degraded_fault_model() {

@@ -1,7 +1,7 @@
 //! Linear algebra helpers for robust covariance square roots.
 //!
 //! Public API:
-//!     pub fn matrix_square_root(matrix: &DMatrix<f64>) -> Result<DMatrix<f64>, StrapdownError>
+//!     pub fn matrix_square_root(matrix: &`DMatrix<f64>`) -> Result<`DMatrix<f64>`, StrapdownError>
 //!
 //! Internal pipeline (each step isolated for testing):
 //!     - symmetrize()

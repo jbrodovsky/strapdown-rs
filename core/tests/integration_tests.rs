@@ -3015,3 +3015,145 @@ fn test_full_lifecycle_through_ins_engine() {
         recovered.rms
     );
 }
+
+/// The ESKF must recover after GNSS returns, not just survive the outage (#264).
+///
+/// Reinstated with the `DutyCycle` fix (#312). It was written during queue 8 and removed
+/// again when the scheduler turned out to deliver two fixes across the whole recording
+/// regardless of configuration, which made every window here meaningless. It is the
+/// end-to-end check that the fix actually schedules: if `DutyCycle` regresses to emitting
+/// only at window boundaries, the aided windows below stop being aided and this fails.
+///
+/// Surviving an outage is the easy half, and the degraded-GNSS tests above already cover it.
+/// What this adds is that error comes back *down* once fixes resume. A filter whose
+/// covariance has collapsed, or whose biases have wound up, keeps coasting after aiding
+/// returns and never reconverges -- and its whole-run RMSE can still look acceptable, because
+/// most of the run is aided.
+#[test]
+fn test_eskf_recovers_from_gnss_outage() {
+    // Two cycles of 25 minutes aided then 5 minutes dark, so recovery is shown to repeat
+    // rather than being one lucky window. Five minutes rather than the lifecycle test's two:
+    // `run_closed_loop` also feeds per-sample baro and mag aiding, which are not scheduled
+    // and keep the vertical and heading channels from running open loop, so the horizontal
+    // drift here is milder than pure coasting.
+    const ON_S: f64 = 1500.0;
+    const OFF_S: f64 = 300.0;
+
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let test_data_path = Path::new(manifest_dir).join("tests/test_data.csv");
+    let records = load_test_data(&test_data_path);
+
+    let initial_state = create_initial_state(&records[0]);
+    let mut eskf = build_eskf(&initial_state);
+
+    let cfg = GnssDegradationConfig {
+        scheduler: GnssScheduler::DutyCycle {
+            on_s: ON_S,
+            off_s: OFF_S,
+            start_phase_s: ON_S,
+        },
+        fault: GnssFaultModel::None,
+        ..Default::default()
+    };
+    let stream = build_event_stream(&records, &cfg);
+    let results = run_closed_loop(&mut eskf, stream, None, None)
+        .expect("ESKF should complete the duty-cycled stream");
+
+    let start = records[0].time;
+    // Horizontal error of every result whose elapsed time falls in `[from, to)`.
+    let window = |from: f64, to: f64| -> Vec<f64> {
+        results
+            .iter()
+            .filter(|result| {
+                let elapsed = (result.timestamp - start).num_milliseconds() as f64 / 1000.0;
+                elapsed >= from && elapsed < to
+            })
+            .filter_map(|result| {
+                records
+                    .iter()
+                    .find(|record| record.time == result.timestamp)
+                    .map(|record| {
+                        haversine_distance(
+                            result.latitude.to_radians(),
+                            result.longitude.to_radians(),
+                            record.latitude.to_radians(),
+                            record.longitude.to_radians(),
+                        )
+                    })
+            })
+            .filter(|error| error.is_finite())
+            .collect()
+    };
+
+    // Timeline: ON [0, 1500), OFF [1500, 1800), ON [1800, 3300), OFF [3300, 3600),
+    // ON [3600, 5100), OFF [5100, end].
+    //
+    // Each "recovered" window is sampled at the same offset into its ON window as the
+    // "aided" baseline is into the first one -- the last 300 s of it. Comparing a window
+    // 300 s after aiding resumed against a baseline measured 1200 s in would penalise the
+    // filter for settling time the baseline was given and the comparison was not, which is
+    // a property of the windows rather than of the filter.
+    let before = summarize(&window(1200.0, 1500.0));
+    let outage = summarize(&window(1500.0, 1800.0));
+    let recovered = summarize(&window(3000.0, 3300.0));
+    let second_outage = summarize(&window(3300.0, 3600.0));
+    let after_second = summarize(&window(4800.0, 5100.0));
+
+    println!("\n=== ESKF GNSS outage recovery ===");
+    for (label, stats) in [
+        ("aided     (1200-1500 s)", before),
+        ("outage 1  (1500-1800 s)", outage),
+        ("recovered (3000-3300 s)", recovered),
+        ("outage 2  (3300-3600 s)", second_outage),
+        ("recovered (4800-5100 s)", after_second),
+    ] {
+        println!(
+            "{label}: mean={:.2} m median={:.2} m max={:.2} m rms={:.2} m",
+            stats.mean, stats.median, stats.max, stats.rms
+        );
+    }
+
+    assert!(
+        outage.max > before.max,
+        "the outage should actually deprive the filter: peak error during the outage \
+         ({:.2} m) was no worse than while aided ({:.2} m). Before #312 this failed because \
+         `DutyCycle` withheld GNSS everywhere, making the aided windows the drifting ones",
+        outage.max,
+        before.max
+    );
+
+    // Recovery is the point, and it is asserted against the normal operating bound rather
+    // than against the pre-outage window.
+    //
+    // The settled error is not the same in every ON window -- 15 m in the first, 31 m in the
+    // second, 22 m in the third -- because the dominant term is the sample-alignment one
+    // described in the module documentation, which scales with ground speed. The windows
+    // cover different stretches of driving, so a ratio against one of them would be
+    // measuring the route rather than the filter. `MAX_HORIZONTAL_RMSE_M` is the ceiling the
+    // healthy filters are held to across the whole run, so returning beneath it *is* the
+    // statement that the filter is operating normally again.
+    for (label, stats) in [("first", recovered), ("second", after_second)] {
+        assert!(
+            stats.rms < MAX_HORIZONTAL_RMSE_M,
+            "after the {label} outage the ESKF should be back under the {MAX_HORIZONTAL_RMSE_M} m \
+             operating bound, but it sits at {:.2} m rms -- it is still coasting",
+            stats.rms
+        );
+    }
+
+    // And the recovery must be a collapse, not a drift back. Two orders of magnitude is far
+    // below the ~650x actually observed, but far above anything a filter that merely stopped
+    // getting worse could produce.
+    for (label, outage_stats, recovered_stats) in [
+        ("first", outage, recovered),
+        ("second", second_outage, after_second),
+    ] {
+        assert!(
+            recovered_stats.rms * 100.0 < outage_stats.rms,
+            "the {label} recovery should drop the error by at least 100x: {:.0} m during the \
+             outage against {:.2} m after it",
+            outage_stats.rms,
+            recovered_stats.rms
+        );
+    }
+}

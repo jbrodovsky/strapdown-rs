@@ -949,7 +949,7 @@ impl InsEngine {
     /// measurement.
     ///
     /// Off by default, matching the filters themselves. See
-    /// [`InnovationGate`](crate::gating::InnovationGate) for what the two variants mean and
+    /// [`InnovationGate`] for what the two variants mean and
     /// why a chi-squared gate is usually the right one.
     ///
     /// # Returns
