@@ -104,7 +104,7 @@ pub enum ParticleResamplingStrategy {
     /// Systematic resampling: deterministic selection with random offset
     #[default]
     Systematic,
-    /// Stratified resampling: divide [0,1] into N strata and sample once per stratum
+    /// Stratified resampling: divide `[0,1]` into N strata and sample once per stratum
     Stratified,
     /// Residual resampling: deterministic selection of high-weight particles, then random sampling for remainder
     Residual,
@@ -212,7 +212,7 @@ pub fn systematic_resample<R: Rng>(weights: &[f64], num_samples: usize, rng: &mu
 
 /// Stratified resampling algorithm
 ///
-/// Divides [0,1] into N equal strata and samples once per stratum.
+/// Divides `[0,1]` into N equal strata and samples once per stratum.
 /// Provides lower variance than multinomial resampling while maintaining
 /// randomness compared to systematic resampling.
 ///

@@ -1,8 +1,8 @@
 scheduler:
-  kind: duty
+  kind: duty_cycle
   on_s: 10.0
   off_s: 3.0
-  phase_s: 0.0
+  start_phase_s: 0.0
 fault:
   kind: hijack
   start_s: 150.0

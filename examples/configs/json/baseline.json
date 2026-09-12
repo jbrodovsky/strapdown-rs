@@ -2,9 +2,3 @@
   "name": "baseline",
   "args": ["--sched", "passthrough", "--fault", "none", "--seed", "42"]
 }
-
-{
-    "scheduler": {
-        "kind   ": "passthrough"
-    },
-}

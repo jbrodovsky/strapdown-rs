@@ -65,30 +65,43 @@ src = "book/src"
 #
 # Anything allowed below is allowed *here*, once, with a reason -- never with a
 # scattered `#[allow]` at the call site.
+# Lint levels are `deny`, not `warn` (#253, queue 9).
+#
+# CI has run `-D warnings` since queue 100, so the gate itself is not new -- what changes is
+# that a plain `cargo clippy` or `cargo build` now fails the same way CI does, instead of
+# printing a warning a developer can scroll past and rediscover in CI ten minutes later.
+#
+# Safe for anyone consuming these crates as dependencies: Cargo builds dependencies with
+# `--cap-lints allow`, so these levels apply only when this workspace is built directly.
+#
+# The real cost is toolchain drift. `pedantic` and `nursery` are lint *groups*, so a newer
+# clippy can add a lint this code has never been checked against and fail a build that passed
+# yesterday. That was already true of CI's `-D warnings`; `unknown_lints` below is what keeps
+# the reverse case -- an allow for a lint an older toolchain does not have -- from breaking.
 [workspace.lints.rust]
 # Required because the clippy table below names lints that do not exist in every
 # toolchain the project builds on. An `allow` for an unknown lint is itself a warning,
 # which `-D warnings` would turn into an error -- so without this, adding a forward-looking
 # allow breaks the older toolchain and omitting it breaks the newer one.
 unknown_lints = "allow"
-rust_2018_idioms = { level = "warn", priority = -1 }
-unreachable_pub = "warn"
-missing_debug_implementations = "warn"
+rust_2018_idioms = { level = "deny", priority = -1 }
+unreachable_pub = "deny"
+missing_debug_implementations = "deny"
 
 [workspace.lints.clippy]
-pedantic = { level = "warn", priority = -1 }
-nursery = { level = "warn", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
 
 # #254's zero-panic policy, now enforced. The 49 library call sites these named are
 # gone; `StrapdownError` gives every one of them somewhere to return to. Tests are
 # exempted in `clippy.toml`, so these point only at library code.
-unwrap_used = "warn"
-expect_used = "warn"
-panic = "warn"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
 # Enabled with them: the error and panic sections describe `StrapdownError`, which
 # did not exist when these were deferred.
-missing_errors_doc = "warn"
-missing_panics_doc = "warn"
+missing_errors_doc = "deny"
+missing_panics_doc = "deny"
 
 # Relaxed on purpose, with reasons.
 #
@@ -158,4 +171,4 @@ redundant_pub_crate = "allow"
 # Enabled with the rest. The `Rc<GeoMap>` parameters in geonav remain by-value on
 # purpose -- cloning an `Rc` is a refcount bump and the callee stores it -- so any
 # that resurface there should be judged, not mechanically borrowed.
-needless_pass_by_value = "warn"
+needless_pass_by_value = "deny"

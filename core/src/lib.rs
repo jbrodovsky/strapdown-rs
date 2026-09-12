@@ -26,7 +26,7 @@
 //!
 //! This crate is organized into several modules:
 //! - [earth]: Contains functions and constants related to Earth models, coordinate transformations, and geodetic calculations.
-//! - [engine]: Contains the high-level [`InsEngine`](engine::InsEngine) builder API, the user-facing entry point.
+//! - [engine]: Contains the high-level [`InsEngine`] builder API, the user-facing entry point.
 //! - [kalman]: Contains the implementation of Kalman-style navigation filters (including nonlinear variants)
 //! - [linalg]: Contains linear algebra utilities and helper functions.
 //! - [linearize]: Contains analytic Jacobians for strapdown mechanization and measurement models (for EKF/ESKF/RBPF-EKF).
@@ -220,7 +220,7 @@ pub trait NavigationFilter {
     ///
     /// A filter with no gate configured always reports `accepted: true` and still
     /// reports the NIS, which is what
-    /// [`sim::health::HealthMonitor`](crate::sim::health::HealthMonitor) consumes to
+    /// [`sim::health::HealthMonitor`] consumes to
     /// notice a filter that has diverged rather than merely been unlucky.
     ///
     /// # Errors
@@ -237,7 +237,7 @@ pub trait NavigationFilter {
     /// Defaults to a no-op returning `false`, so a filter that does not implement
     /// gating -- because its update is not a Gaussian innovation test -- reports that
     /// honestly instead of silently ignoring the request. All three Kalman-family
-    /// filters in [`kalman`](crate::kalman) override it.
+    /// filters in [`kalman`] override it.
     ///
     /// # Returns
     /// `true` if the filter will honour the gate.
@@ -302,7 +302,7 @@ pub trait InputModel {
 /// default values.
 ///
 /// Benchmarks for typical IMU grades are shown below. While these are not strict definitions the power-law distribution and order of magnitude
-/// is typical for the associated application. [1]:
+/// is typical for the associated application \[1\].
 ///
 /// | IMU Grade  | Gyro Bias Instability (°/h) | Gyro ARW (°/√h) | Accel Bias Instability (m/s^2) | Accel VRW (m/s/√h) | Typical Tech         |
 /// |------------|-----------------------------|-----------------|--------------------------------|--------------------|----------------------|
@@ -316,9 +316,9 @@ pub trait InputModel {
 /// set the process noise for velocity states (standard deviations). The bias instability terms can be used to set the process
 /// noise for gyro and accelerometer bias states if those are included in the filter state vector.
 /// # References
-/// - [1] https://www.advancednavigation.com/tech-articles/mems-vs-fog-what-inertial-system-should-you-choose/
-/// - [2] https://www.vectornav.com/resources/detail/what-is-an-inertial-measurement-unit
-/// - [3] Principles of GNSS, Inertial, and Multisensor Navigation Systems. Chapter 4.4.1, Paul D. Groves, 2nd Edition. Table 4.1
+/// 1. [MEMS vs FOG: what inertial system should you choose?](https://www.advancednavigation.com/tech-articles/mems-vs-fog-what-inertial-system-should-you-choose/)
+/// 2. [What is an inertial measurement unit?](https://www.vectornav.com/resources/detail/what-is-an-inertial-measurement-unit)
+/// 3. Principles of GNSS, Inertial, and Multisensor Navigation Systems. Chapter 4.4.1, Paul D. Groves, 2nd Edition. Table 4.1
 ///
 #[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -445,7 +445,7 @@ impl TryFrom<Vec<f64>> for IMUData {
     }
 }
 impl From<IMUData> for Vec<f64> {
-    /// Converts an IMUData instance to a Vec<f64> of length 6 (3 for accel, 3 for gyro).
+    /// Converts an IMUData instance to a `Vec<f64>` of length 6 (3 for accel, 3 for gyro).
     fn from(data: IMUData) -> Self {
         vec![
             data.accel[0],
@@ -633,7 +633,7 @@ impl StrapdownState {
     /// * `velocity_east` - East velocity in m/s.
     /// * `velocity_vertical` - Vertical velocity in m/s: positive *down* in NED (the default),
     ///   positive *up* in ENU.
-    /// * `attitude` - Rotation3<f64> attitude matrix.
+    /// * `attitude` - `Rotation3<f64>` attitude matrix.
     /// * `in_degrees` - If true, angles are provided in degrees and will be converted to radians.
     /// * `is_enu` - Frame convention: `Some(true)` for ENU, `Some(false)` or `None` for NED
     ///   (the default).
@@ -730,7 +730,7 @@ impl StrapdownState {
 
     /// Convert this state to the NED convention, the crate default.
     ///
-    /// A no-op when the state is already NED. See [`flip_vertical`](Self::flip_vertical) for
+    /// A no-op when the state is already NED. See `flip_vertical` for
     /// what the conversion does to velocity and attitude.
     ///
     /// # Example
@@ -754,7 +754,7 @@ impl StrapdownState {
 
     /// Convert this state to the ENU convention.
     ///
-    /// A no-op when the state is already ENU. See [`flip_vertical`](Self::flip_vertical) for
+    /// A no-op when the state is already ENU. See `flip_vertical` for
     /// what the conversion does to velocity and attitude.
     ///
     /// # Example
@@ -777,7 +777,7 @@ impl StrapdownState {
     // --- From/Into trait implementations for StrapdownState <-> Vec<f64> and &[f64] ---
 }
 impl From<StrapdownState> for Vec<f64> {
-    /// Converts a StrapdownState to a Vec<f64> in NED order, angles in radians.
+    /// Converts a StrapdownState to a `Vec<f64>` in NED order, angles in radians.
     fn from(state: StrapdownState) -> Self {
         let (roll, pitch, yaw) = state.attitude.euler_angles();
         vec![
@@ -794,7 +794,7 @@ impl From<StrapdownState> for Vec<f64> {
     }
 }
 impl From<&StrapdownState> for Vec<f64> {
-    /// Converts a reference to StrapdownState to a Vec<f64> in NED order, angles in radians.
+    /// Converts a reference to StrapdownState to a `Vec<f64>` in NED order, angles in radians.
     fn from(state: &StrapdownState) -> Self {
         let (roll, pitch, yaw) = state.attitude.euler_angles();
         vec![
@@ -838,19 +838,19 @@ impl TryFrom<&[f64]> for StrapdownState {
 impl TryFrom<Vec<f64>> for StrapdownState {
     type Error = StrapdownError;
 
-    /// Attempts to create a StrapdownState from a Vec<f64> of length 9 (NED order, radians).
+    /// Attempts to create a StrapdownState from a `Vec<f64>` of length 9 (NED order, radians).
     fn try_from(vec: Vec<f64>) -> Result<Self, Self::Error> {
         Self::try_from(vec.as_slice())
     }
 }
 impl From<StrapdownState> for DVector<f64> {
-    /// Converts a StrapdownState to a DVector<f64> in NED order, angles in radians.
+    /// Converts a StrapdownState to a `DVector<f64>` in NED order, angles in radians.
     fn from(state: StrapdownState) -> Self {
         Self::from_vec(state.into())
     }
 }
 impl From<&StrapdownState> for DVector<f64> {
-    /// Converts a reference to StrapdownState to a DVector<f64> in NED order, angles in radians.
+    /// Converts a reference to StrapdownState to a `DVector<f64>` in NED order, angles in radians.
     fn from(state: &StrapdownState) -> Self {
         Self::from_vec(state.into())
     }

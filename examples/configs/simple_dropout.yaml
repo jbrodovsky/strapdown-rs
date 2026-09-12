@@ -9,10 +9,10 @@
 # Expected behavior: Position should coast accurately during
 # short outages and quickly reconverge when GNSS returns.
 scheduler:
-  kind: duty
+  kind: duty_cycle
   on_s: 120.0     # 2 minutes GNSS available
   off_s: 30.0     # 30 seconds GNSS denied
-  phase_s: 0.0
+  start_phase_s: 0.0
 fault:
   kind: none
 seed: 42

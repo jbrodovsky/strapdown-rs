@@ -10,7 +10,7 @@ Markdown: [![status](https://joss.theoj.org/papers/5079592cc860d1435482a4a7764ed
 
 Strapdown-rs is a straightforward strapdown inertial navigation system (INS) implementation in Rust. It is designed to be simple and easy to understand, making it a great starting point for those interested in learning about or implementing strapdown INS algorithms. It is currently under active development.
 
-**📖 [Full Documentation](https://jbrodovsky.github.io/strapdown-rs/)** | **📚 [API Documentation](https://docs.rs/strapdown-core)** | **🔧 [Example Configurations](examples/configs/)**
+**📖 [Full Documentation](https://jbrodovsky.github.io/strapdown-rs/)** | **📚 [API Documentation](https://docs.rs/strapdown-core)** | **▶️ [Runnable Examples](#runnable-examples)** | **🔧 [Example Configurations](examples/configs/)**
 
 The primary contributions of this project are:
 
@@ -23,6 +23,34 @@ Additionally experimental research is being conducted on improving the accuracy 
 ## Installation
 
 To use `strapdown-rs`, you can add it as a dependency in your `Cargo.toml` file: `cargo add strapdown-rs`. You can install the whole package or just the core library. Similarly you can install the simulation binary `cargo install strapdown-sim`.
+
+## Runnable examples
+
+Two worked examples live in [`core/examples/`](core/examples/). Both are self-contained --
+they generate their own trajectory, so there is no dataset to fetch first.
+
+```bash
+# Minimal InsEngine usage: propagate IMU, fuse GNSS, read the solution.
+cargo run -p strapdown-core --example basic_ins
+
+# Dead-reckoning through a GNSS outage, and recovery when the signal returns.
+cargo run -p strapdown-core --example gnss_outage
+```
+
+`basic_ins` is the one to read first: it is the propagate/update/read loop that every
+application is built around, on a trajectory simple enough to check by hand. It is also the
+place the specific-force sign convention is spelled out, which is the single most common way
+to get a first integration wrong -- an accelerometer at rest reads **-9.81 m/s² on the down
+axis** in NED, because it senses the ground pushing up.
+
+`gnss_outage` is the one to read second. It shows the error staying flat while aided, growing
+while coasting, and collapsing on recovery -- and then explains why the coasting error is
+several times *smaller* than double-integrating the accelerometer bias would predict. The
+answer is that the filter absorbed most of the bias into a fraction of a degree of pitch,
+because position and velocity aiding cannot tell those two apart.
+
+For scenario-driven runs of the same ideas through the CLI rather than in code, see
+[`examples/configs/`](examples/configs/).
 
 ## Summary
 

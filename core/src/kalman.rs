@@ -2,7 +2,7 @@
 //!
 //! This module contains the traditional Kalman filter style implementation of strapdown
 //! inertial navigation systems. These filter build on the dead-reckoning functions
-//! provided in the top-level [lib] module.
+//! provided in the [crate] root module.
 
 use crate::StrapdownError;
 use crate::gating::{InnovationGate, UpdateOutcome, normalized_innovation_squared};
@@ -27,7 +27,7 @@ use nalgebra::{DMatrix, DVector, Rotation3, UnitQuaternion, Vector3};
 /// constructor will normalize and convert angles to radians when required.
 /// The `is_enu` flag determines whether the navigation frame is ENU (true)
 /// or NED (false) for internal mechanization. It defaults to NED, matching
-/// [`StrapdownState`](crate::StrapdownState) and the rest of the crate.
+/// [`StrapdownState`] and the rest of the crate.
 ///
 /// Field units and conventions:
 /// - `latitude`, `longitude`: degrees if `in_degrees==true`, otherwise radians
