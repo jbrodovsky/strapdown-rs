@@ -630,6 +630,37 @@ fn test_dead_reckoning_on_real_data() {
         stats.mean_velocity_vertical_error
     );
 
+    // Gravity must cancel on the very first propagation step.
+    //
+    // This is the one dead-reckoning quantity worth bounding, and the only reason it needs
+    // bounding is that it was wrong. `dead_reckoning` built its initial attitude by feeding
+    // the record's Euler fields to `Rotation3::from_euler_angles`, but those fields are a
+    // different convention (see `TestDataRecord::attitude`), so gravity was rotated into the
+    // horizontal axes and the vertical channel had nothing to cancel. One 1 s step then left
+    // 9.31 m/s of vertical velocity -- a full uncancelled g -- and compounded from there to
+    // 1.7e16 m of altitude by the end of the run, finite on Linux and over the edge into
+    // `mechanize`'s non-finite check on Windows.
+    //
+    // The bound is physical: this recording starts with a near-stationary vehicle, so once
+    // gravity is removed the residual vertical specific force is the vehicle's own motion
+    // plus sensor error, far under 1 m/s^2. After one second that is well under 1 m/s. The
+    // run sits at 0.075 m/s, so the limit carries ~13x margin while still catching the
+    // 9.31 m/s failure by a factor of 9.
+    //
+    // Nothing else here is bounded by value on purpose. Unaided dead reckoning over 5,366 s
+    // of consumer-MEMS data genuinely diverges -- the vertical channel is unstable without
+    // aiding and accel bias integrates as t^2 -- and inventing a ceiling for that would be
+    // fitting a number, not deriving one. What the rest of this test asserts is that the
+    // run completes and stays finite, which is what the three `*_outperforms_dead_reckoning`
+    // comparisons need from it.
+    let first_step_vertical_velocity = results[1].velocity_vertical.abs();
+    assert!(
+        first_step_vertical_velocity < 1.0,
+        "gravity should cancel on the first step, leaving |v_vertical| well under 1 m/s; \
+         got {first_step_vertical_velocity:.4} m/s. A value near 9.8 means the initial \
+         attitude is in the wrong Euler convention again."
+    );
+
     // Dead reckoning will drift over time, but should not produce NaN or infinite values
     for result in &results {
         assert!(
