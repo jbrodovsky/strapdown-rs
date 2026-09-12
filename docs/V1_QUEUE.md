@@ -57,22 +57,37 @@ git config rebase.updateRefs true   # carries downstream branch tips when the ba
 
 ### Merging a spine PR
 
-Order matters. GitHub **auto-closes** a PR when its base branch is deleted, and then permanently
-refuses to reopen it if the head was force-pushed in the meantime -- which a stack rebase always
-does. Queue position 1 was lost this way once (#270, replaced by #285). So:
+GitHub now treats these branches as a first-class **stack** and does the restacking itself.
+The manual recipe this section used to carry no longer runs: `gh pr merge --rebase` is refused
+("must be merged using the asynchronous merge REST API"), `PUT .../pulls/<N>/merge` returns 403
+with the same redirection, and retargeting the child with
+`PATCH .../pulls/<N+1> -f base=main` returns 422 ("Cannot change the base branch because the
+pull request is part of a stack"). Merge through the async endpoint instead:
 
 ```bash
-OLD=$(git rev-parse origin/v1/0N-current)      # 1. record the tip BEFORE merging
-gh pr merge <N> --rebase                       # 2. merge WITHOUT --delete-branch
-gh api -X PATCH repos/OWNER/REPO/pulls/<N+1> -f base=main   # 3. retarget the child FIRST
-git rebase --onto origin/main "$OLD" v1/0N+1-next           # 4. then rebase
-git push --force-with-lease origin v1/0N+1-next
-git push origin --delete v1/0N-current         # 5. only now delete the merged branch
+HEAD_SHA=$(git rev-parse origin/v1/0N-current)   # the head you actually reviewed and tested
+gh api -X PUT repos/OWNER/REPO/pulls/<N>/merge-async \
+  -f merge_method=rebase -f sha="$HEAD_SHA"      # -> {"status":"pending","details":{"uuid":...}}
+gh api repos/OWNER/REPO/pulls/<N>/merge-async/<uuid> --jq '.status'   # poll until != pending
 ```
 
-Note that GitHub's rebase-merge **rewrites commit SHAs** even when the branch is a
-fast-forward, which is why step 1 records the old tip and step 4 needs `--onto` rather than a
-plain `git rebase main`.
+Passing `sha=` pins the merge to the head you verified, so a push landing while you look away
+fails the merge rather than silently shipping.
+
+On merge GitHub retargets the child PR's base to `main` and force-pushes the child branch
+rebased onto the new `main`, so there is nothing left to rebase by hand. `git fetch --prune`
+and confirm.
+
+Deleting the merged branch is the one step still worth care. GitHub **auto-closes** a PR when
+its base branch is deleted, and then permanently refuses to reopen it if the head was
+force-pushed in the meantime -- which the restack always does. Queue position 1 was lost this
+way once (#270, replaced by #285). By the time you get here the child's base is already `main`,
+so this is safe; confirm it rather than assume it:
+
+```bash
+gh api repos/OWNER/REPO/pulls/<N+1> --jq '.base.ref'   # must print "main"
+git push origin --delete v1/0N-current
+```
 
 Queue 100 cleared the pedantic/nursery backlog, so `cargo clippy --fix` no
 longer has tree-wide work to do; do not run it speculatively regardless, and
