@@ -1751,13 +1751,52 @@ fn test_eskf_outperforms_dead_reckoning() {
     }
 }
 
-/// Test ESKF stability with high dynamics
+/// Every sample the ESKF emits over the full run is a usable navigation solution.
 ///
-/// This test verifies that ESKF maintains stable estimates and proper quaternion
-/// normalization even with high dynamics (rapid maneuvers, large accelerations).
-/// This is a key advantage of the error-state formulation.
+/// This is the per-sample validity sweep for the shipped tuning: position, velocity *and*
+/// attitude, at all 5,366 samples, reported with the index of the first sample that fails.
+/// Accuracy and bias plausibility for this same run are asserted in
+/// `test_eskf_closed_loop_on_real_data`; what is unique here is the attitude channel, which
+/// no other test in this suite looks at. `get_estimate` builds roll/pitch/yaw by converting
+/// the nominal quaternion to a rotation and wrapping the Euler angles, so a nominal
+/// quaternion that stopped being unit-length -- the invariant `ErrorStateKalmanFilter`'s
+/// documentation leads with -- surfaces here as a non-finite angle before it is large
+/// enough to move the position error. `wrap_to_2pi` is the source of the `[0, 2*pi]` bound;
+/// it passes NaN through unchanged, which is why finiteness is asserted separately.
+///
+/// ## This test used to claim it exercised high dynamics. It never did.
+///
+/// It ran `test_data.csv` through the same tuning, the same `PassThrough` scheduler and the
+/// same code path as `test_eskf_closed_loop_on_real_data`, down to identical metrics. A "5x
+/// default" initial covariance and a "10x default" process noise sat in the body
+/// `_`-prefixed and unused, implying a tuning that was never applied; they are gone.
+///
+/// A genuine high-dynamics variant was investigated and is not currently derivable:
+///
+/// - **The dataset has no high-dynamics segment to cut.** `test_data.csv` is a road drive:
+///   angular rate is 0.54 deg/s median and 9.8 deg/s at the 99th percentile, with 2 of its
+///   5,366 samples above 50 deg/s and a peak of 54.5 deg/s, and horizontal specific force
+///   -- sqrt(|f|^2 - g^2) -- peaks at 4.2 m/s^2 (0.43 g). There is no
+///   window in it that is dynamic by any useful definition, and the full run -- which
+///   contains whatever dynamics exist -- is already covered.
+/// - **`sim::generate_synthetic` cannot produce linear dynamics at all.** It propagates
+///   constant nav-frame velocity by construction (`compute_perfect_imu` solves for the
+///   specific force that holds `v_dot = 0`), so the only stressor it offers is body angular
+///   rate.
+/// - **Its angular-rate runs are not clean enough to bound.** Measured against the generator's
+///   own truth trajectory with 1 Hz GNSS at 2.5 m noise: at a navigation-grade IMU and *zero*
+///   angular rate the ESKF already sits at 12.7 m rms / 79.4 m peak horizontal at 50 Hz, and
+///   error is not monotone in angular rate: at 10 Hz a 30/15/20 deg/s run comes in *under*
+///   the zero-rate run, 5.1 m rms against 5.9 m. A bound drawn
+///   from those runs would be pinned to an unexplained baseline rather than to the dynamics,
+///   which is the practice this file's bounds exist to avoid. At consumer grade the bias
+///   estimates sit on the anti-windup clamp even at zero angular rate, so the clamp, not the
+///   estimator, would be what such a test measured.
+///
+/// Making the synthetic generator produce accelerating trajectories, and explaining its
+/// zero-dynamics baseline, are both prerequisites for a real high-dynamics test.
 #[test]
-fn test_eskf_stability_high_dynamics() {
+fn test_eskf_output_stays_valid_across_full_run() {
     // Load test data
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let test_data_path = Path::new(manifest_dir).join("tests/test_data.csv");
@@ -1771,25 +1810,7 @@ fn test_eskf_stability_high_dynamics() {
     // Create initial state from first record
     let initial_state = create_initial_state(&records[0]);
 
-    // Initialize ESKF with more aggressive process noise to simulate high dynamics
-    // Higher uncertainty values to accommodate rapid maneuvers and accelerations
-    let _initial_error_covariance = vec![
-        1e-6, 1e-6, 1.0, // position error (same as default)
-        0.5, 0.5, 0.5, // velocity error (5x default - allows for higher acceleration)
-        0.05, 0.05, 0.05, // attitude error (5x default - allows for rapid rotations)
-        0.05, 0.05, 0.05, // accel bias error (5x default - less confident in bias)
-        0.005, 0.005, 0.005, // gyro bias error (5x default - less confident in bias)
-    ];
-
-    // Increased process noise for high dynamics
-    // 10x velocity noise and 10x attitude noise to accommodate rapid changes
-    let _process_noise_values = vec![
-        1e-5, 1e-5, 1e-5, // position noise (10x default)
-        1e-2, 1e-2, 1e-2, // velocity noise (10x default for high dynamics)
-        1e-4, 1e-4, 1e-4, // attitude noise (10x default for rapid maneuvers)
-        1e-5, 1e-5, 1e-5, // accel bias noise (10x default)
-        1e-7, 1e-7, 1e-7, // gyro bias noise (10x default)
-    ];
+    // The shipped tuning, the same one `strapdown-sim` and every other ESKF test here use.
     let initial_error_covariance = ESKF_INITIAL_COVARIANCE.to_vec();
     let process_noise = DMatrix::from_diagonal(&DVector::from_vec(ESKF_PROCESS_NOISE.to_vec()));
 
@@ -1810,8 +1831,24 @@ fn test_eskf_stability_high_dynamics() {
     let stream = build_event_stream(&records, &cfg);
 
     // Run closed-loop filter
-    let results = run_closed_loop(&mut eskf, stream, None, None)
-        .expect("ESKF with high dynamics should complete");
+    let results = run_closed_loop(&mut eskf, stream, None, None).expect("ESKF should complete");
+
+    // Everything below this line is per-sample, and every per-sample assertion in a `for`
+    // loop is vacuously true over an empty series. `compute_error_metrics` fails the same
+    // way from the other side: it starts its accumulators at zero and returns them
+    // untouched when nothing matches, so the bounds at the end of this test would pass on
+    // no data at all. Pin the length first, and pin it to `records.len()` rather than to
+    // "non-empty" -- a filter that emitted one solution and stopped is exactly the
+    // regression that would otherwise slip through here. This is also the only absolute
+    // length check the ESKF has: `test_filter_comparison` asserts only that the three
+    // filters agree with *each other*, which all three being short would satisfy.
+    assert_eq!(
+        results.len(),
+        records.len(),
+        "the ESKF must emit one solution per input record; got {} for {} records",
+        results.len(),
+        records.len()
+    );
 
     // Verify all results are valid (no NaN or Inf)
     for (i, result) in results.iter().enumerate() {
@@ -1851,12 +1888,33 @@ fn test_eskf_stability_high_dynamics() {
             i,
             result.velocity_vertical
         );
+
+        // Attitude channel. `get_estimate` reads roll/pitch/yaw off the nominal quaternion
+        // and passes them through `wrap_to_2pi`, so a nominal quaternion that stopped being
+        // unit-length lands here as NaN -- `wrap_to_2pi` neither rejects nor normalises it,
+        // both of its loop conditions being false for NaN -- rather than as an out-of-range
+        // angle. Hence: finite first, then inside the wrap's `[0, 2*pi]` codomain.
+        for (name, angle) in [
+            ("roll", result.roll),
+            ("pitch", result.pitch),
+            ("yaw", result.yaw),
+        ] {
+            assert!(
+                angle.is_finite(),
+                "{name} should be finite at step {i}: {angle} (a non-finite Euler angle here \
+                 means the nominal quaternion lost unit length)"
+            );
+            assert!(
+                (0.0..=std::f64::consts::TAU).contains(&angle),
+                "{name} should lie in wrap_to_2pi's [0, 2pi] codomain at step {i}, got {angle}"
+            );
+        }
     }
 
     // Compute error metrics to verify reasonable performance
     let stats = compute_error_metrics(&results, &records);
 
-    println!("\n=== ESKF High Dynamics Stability Test ===");
+    println!("\n=== ESKF Full-Run Validity ===");
     println!(
         "RMS Horizontal Error: {:.2}m, Max: {:.2}m",
         stats.rms_horizontal_error, stats.max_horizontal_error
@@ -1872,18 +1930,24 @@ fn test_eskf_stability_high_dynamics() {
     // tight enough to the observed value that macOS and Windows failed them at 2121.97 m
     // purely on floating-point code generation. With the loop closed the run sits at
     // 24 m rms, so bound it where a GNSS-aided filter physically belongs.
-    let rms_horizontal_limit = 100.0;
-    let max_horizontal_limit = 250.0;
+    //
+    // These are `test_eskf_closed_loop_on_real_data`'s limits, not looser ones. This is
+    // that same run -- same tuning, same scheduler, same records -- so a second, weaker
+    // ceiling on the same numbers would only record that this test was once believed to be
+    // doing something harder. The tripwire it is here to trip is divergence, and the
+    // shared limits trip it with room to spare.
+    let rms_horizontal_limit = 40.0;
+    let max_horizontal_limit = 60.0;
     assert!(
         stats.rms_horizontal_error < rms_horizontal_limit,
-        "RMS horizontal error should remain bounded with high dynamics, expected and error less than {:.2}m, got {:.2}m",
+        "ESKF RMS horizontal error should stay under {:.2}m across the full run, got {:.2}m",
         rms_horizontal_limit,
         stats.rms_horizontal_error
     );
 
     assert!(
         stats.max_horizontal_error < max_horizontal_limit,
-        "Maximum horizontal error should remain bounded with high dynamics, expected less than {:.2}m, got {:.2}m",
+        "ESKF maximum horizontal error should stay under {:.2}m across the full run, got {:.2}m",
         max_horizontal_limit,
         stats.max_horizontal_error
     );
@@ -2375,8 +2439,12 @@ fn test_filter_output_length_matches_input() {
         input_length
     );
 
-    // ESKF length coverage lives in test_eskf_output_length_matches_input,
-    // re-enabled when the vertical-channel divergence fix (#286) landed.
+    // ESKF length coverage lives in test_eskf_output_stays_valid_across_full_run, which
+    // asserts one solution per input record on the same data. This comment previously
+    // named `test_eskf_output_length_matches_input`, which is not in this file and does
+    // not appear to have ever been -- so until that assertion was added the ESKF had no
+    // absolute length coverage anywhere, only the relative check in
+    // `test_filter_comparison`.
 
     println!("\n✅ All filters produce output length matching input length: {input_length}");
 }
