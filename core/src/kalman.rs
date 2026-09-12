@@ -33,7 +33,13 @@ use nalgebra::{DMatrix, DVector, Rotation3, UnitQuaternion, Vector3};
 /// - `latitude`, `longitude`: degrees if `in_degrees==true`, otherwise radians
 /// - `altitude`: meters
 /// - velocities: m/s (north, east, vertical)
-/// - `roll`, `pitch`, `yaw`: radians internally (constructor normalizes)
+/// - `roll`, `pitch`, `yaw`: degrees if `in_degrees==true`, otherwise radians --
+///   the same rule as the position fields, which is what the filter constructors assume
+///
+/// Storage is *unit-tagged* rather than normalized: every angular field is held in the
+/// units it was supplied in and `in_degrees` says which, so the flag has to travel with
+/// the values. Converting to radians is the filter constructors' job, and they do it
+/// exactly when the flag is set.
 ///
 /// # Example
 ///
@@ -109,9 +115,18 @@ impl InitialState {
         };
         let is_enu = is_enu.unwrap_or(false);
         if in_degrees {
-            roll = wrap_to_360(roll).to_radians();
-            pitch = wrap_to_360(pitch).to_radians();
-            yaw = wrap_to_360(yaw).to_radians();
+            // Wrapped in degrees and *stored* in degrees, matching latitude and longitude
+            // above. Converting to radians here while leaving `in_degrees == true` made
+            // every filter constructor convert a second time -- `if initial_state.in_degrees
+            // { roll.to_radians() }` -- so a 45 degree seed was stored as 0.785 and reached
+            // the filter as 0.0137 rad. Only a zero attitude survived the round trip, which
+            // is why it went unnoticed: the workspace's other seeds are struct literals, and
+            // the one caller that used this constructor with a non-zero heading was #262's
+            // `InsEngine`, whose lever-arm compensation rotates by the estimate and so was
+            // quietly resolving the antenna offset along the wrong axis.
+            roll = wrap_to_360(roll);
+            pitch = wrap_to_360(pitch);
+            yaw = wrap_to_360(yaw);
         } else {
             roll = wrap_to_2pi(roll);
             pitch = wrap_to_2pi(pitch);

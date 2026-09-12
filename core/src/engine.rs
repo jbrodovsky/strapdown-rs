@@ -82,6 +82,7 @@ use crate::measurements::{GPSPositionMeasurement, GPSVelocityMeasurement, Measur
 // `DEFAULT_PROCESS_NOISE` is a tuning constant for the 15-state filters rather than a
 // simulation-only value; it lives in `sim` for historical reasons. Reusing it here keeps the
 // engine's default tuning identical to the one the ESKF integration suite validates.
+use crate::gating::{InnovationGate, UpdateOutcome};
 use crate::sim::DEFAULT_PROCESS_NOISE;
 use crate::{ImuSample, InputModel, NavigationFilter, StrapdownError};
 
@@ -195,7 +196,10 @@ impl Debug for InsEngineBuilder {
         f.debug_struct("InsEngineBuilder")
             .field("config", &self.config)
             .field("initial_state", &self.initial_state)
-            .field("filter", &self.filter.as_ref().map(|_| "<dyn NavigationFilter>"))
+            .field(
+                "filter",
+                &self.filter.as_ref().map(|_| "<dyn NavigationFilter>"),
+            )
             .field("frame_set", &self.frame_set)
             .finish()
     }
@@ -353,10 +357,7 @@ impl InsEngineBuilder {
     }
 
     /// Construct the default 15-state ESKF from the configuration.
-    fn build_default_filter(
-        &self,
-        is_enu: bool,
-    ) -> Result<ErrorStateKalmanFilter, StrapdownError> {
+    fn build_default_filter(&self, is_enu: bool) -> Result<ErrorStateKalmanFilter, StrapdownError> {
         let process_noise = validate_diagonal(
             self.config.process_noise_diagonal.as_deref(),
             &DEFAULT_PROCESS_NOISE,
@@ -840,11 +841,7 @@ impl InsEngine {
     ///
     /// # Errors
     /// As [`predict`](Self::predict).
-    pub fn predict_rates(
-        &mut self,
-        imu: &crate::IMUData,
-        dt: f64,
-    ) -> Result<(), StrapdownError> {
+    pub fn predict_rates(&mut self, imu: &crate::IMUData, dt: f64) -> Result<(), StrapdownError> {
         self.predict(&ImuSample::from_rates(imu, dt))
     }
 
@@ -858,6 +855,10 @@ impl InsEngine {
     /// # Errors
     /// [`StrapdownError::MeasurementUnavailable`] or [`StrapdownError::OutOfRange`] if the
     /// fix is malformed, otherwise whatever the underlying filter's `update` returns.
+    ///
+    /// # Returns
+    /// The [`UpdateOutcome`] of the *position* leg. When a gate is installed and that leg is
+    /// rejected, the velocity leg is skipped too and the state is left untouched.
     ///
     /// # Example
     /// ```rust
@@ -877,7 +878,7 @@ impl InsEngine {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn update_gnss(&mut self, fix: &GnssFix) -> Result<(), StrapdownError> {
+    pub fn update_gnss(&mut self, fix: &GnssFix) -> Result<UpdateOutcome, StrapdownError> {
         fix.validate()?;
         let solution = self.nav_solution();
         let attitude = solution.attitude();
@@ -891,13 +892,21 @@ impl InsEngine {
             self.is_enu,
         );
 
-        self.filter.update(&GPSPositionMeasurement {
+        let outcome = self.filter.update(&GPSPositionMeasurement {
             latitude: latitude.to_degrees(),
             longitude: longitude.to_degrees(),
             altitude,
             horizontal_noise_std: fix.horizontal_noise_std,
             vertical_noise_std: fix.vertical_noise_std,
         })?;
+
+        // A fix whose position the gate disbelieved has no more credible velocity: both
+        // legs come from the same receiver at the same epoch, and a multipath or spoofed
+        // fix corrupts them together. Applying the velocity anyway would let exactly the
+        // measurement the gate just rejected back into the state through the other door.
+        if !outcome.accepted {
+            return Ok(outcome);
+        }
 
         if let Some(velocity) = fix.velocity {
             let velocity_offset =
@@ -910,7 +919,7 @@ impl InsEngine {
                 vertical_noise_std: fix.velocity_noise_std,
             })?;
         }
-        Ok(())
+        Ok(outcome)
     }
 
     /// Correct the state with any other measurement model.
@@ -924,8 +933,30 @@ impl InsEngine {
     /// Whatever the underlying filter's `update` returns. A
     /// [recoverable](StrapdownError::is_recoverable) error means this measurement should be
     /// skipped and the run continued.
-    pub fn update(&mut self, measurement: &dyn MeasurementModel) -> Result<(), StrapdownError> {
+    ///
+    /// # Returns
+    /// The [`UpdateOutcome`], so a caller can see the NIS the update was judged on and
+    /// whether the correction was applied. An outcome with `accepted == false` is not an
+    /// error: the gate did what it was configured to do and the state is unchanged.
+    pub fn update(
+        &mut self,
+        measurement: &dyn MeasurementModel,
+    ) -> Result<UpdateOutcome, StrapdownError> {
         self.filter.update(measurement)
+    }
+
+    /// Install (or clear, with `None`) the innovation gate the filter applies to every
+    /// measurement.
+    ///
+    /// Off by default, matching the filters themselves. See
+    /// [`InnovationGate`](crate::gating::InnovationGate) for what the two variants mean and
+    /// why a chi-squared gate is usually the right one.
+    ///
+    /// # Returns
+    /// `true` if the underlying filter honours the gate. Every filter in
+    /// [`kalman`](crate::kalman) and the RBPF do.
+    pub fn set_innovation_gate(&mut self, gate: Option<InnovationGate>) -> bool {
+        self.filter.set_innovation_gate(gate)
     }
 
     /// The current estimate, in degrees, metres and m/s.
@@ -1021,7 +1052,6 @@ impl InsEngine {
         let state = self.filter.get_estimate();
         rates.gyro - Vector3::new(state[12], state[13], state[14])
     }
-
 }
 
 /// Convert the horizontal position variances from radians squared to metres squared.
@@ -1117,7 +1147,10 @@ mod tests {
             self.0.borrow_mut().predicts += 1;
             Ok(())
         }
-        fn update(&mut self, measurement: &dyn MeasurementModel) -> Result<(), StrapdownError> {
+        fn update(
+            &mut self,
+            measurement: &dyn MeasurementModel,
+        ) -> Result<UpdateOutcome, StrapdownError> {
             let mut recorder = self.0.borrow_mut();
             if let Some(position) = measurement
                 .as_any()
@@ -1130,7 +1163,11 @@ mod tests {
             {
                 recorder.velocities.push(velocity.clone());
             }
-            Ok(())
+            // This recorder exists to capture what the engine hands the filter, not to
+            // filter: it applies no correction, so there is no innovation to score. A
+            // zero NIS reports "nothing was inconsistent", which is the truthful answer
+            // for a filter whose state never moves.
+            Ok(UpdateOutcome::accepted(0.0, measurement.get_dimension()))
         }
         fn get_estimate(&self) -> DVector<f64> {
             DVector::from_vec(self.0.borrow().estimate.clone())
@@ -1289,7 +1326,10 @@ mod tests {
             .unwrap_err();
         assert!(matches!(
             error,
-            StrapdownError::InvalidConfiguration { field: "filter", .. }
+            StrapdownError::InvalidConfiguration {
+                field: "filter",
+                ..
+            }
         ));
     }
 
@@ -1355,13 +1395,8 @@ mod tests {
     fn the_altitude_offset_changes_sign_with_the_frame() {
         let latitude = TEST_LATITUDE_DEG.to_radians();
         let offset = Vector3::new(0.0, 0.0, 2.0);
-        let (_, _, ned_altitude) = shift_position_by_offset(
-            latitude,
-            0.0,
-            TEST_ALTITUDE_M,
-            &offset,
-            false,
-        );
+        let (_, _, ned_altitude) =
+            shift_position_by_offset(latitude, 0.0, TEST_ALTITUDE_M, &offset, false);
         let (_, _, enu_altitude) =
             shift_position_by_offset(latitude, 0.0, TEST_ALTITUDE_M, &offset, true);
         // NED: the offset points down, so the antenna is below the IMU and the IMU is higher.
@@ -1411,8 +1446,14 @@ mod tests {
     fn a_zero_lever_arm_passes_the_fix_through_unchanged() {
         let recorder = Recorder::new(recorder_estimate(0.0, [0.0; 3]));
         let mut engine = engine_with_recorder(&recorder, [0.0; 3], false);
-        let fix = GnssFix::position(TEST_LATITUDE_DEG, TEST_LONGITUDE_DEG, TEST_ALTITUDE_M, 5.0, 10.0)
-            .with_velocity([1.0, 2.0, 3.0], 0.2);
+        let fix = GnssFix::position(
+            TEST_LATITUDE_DEG,
+            TEST_LONGITUDE_DEG,
+            TEST_ALTITUDE_M,
+            5.0,
+            10.0,
+        )
+        .with_velocity([1.0, 2.0, 3.0], 0.2);
         engine.update_gnss(&fix).unwrap();
 
         let recorded = recorder.borrow();
