@@ -5,6 +5,7 @@
 //! provided in the top-level [lib] module.
 
 use crate::StrapdownError;
+use crate::gating::{InnovationGate, UpdateOutcome, normalized_innovation_squared};
 use crate::linalg::{matrix_square_root, robust_spd_solve, symmetrize};
 use crate::measurements::MeasurementModel;
 use crate::{
@@ -21,11 +22,9 @@ use nalgebra::{DMatrix, DVector, Rotation3, UnitQuaternion, Vector3};
 /// This struct contains the minimal navigation state required to initialize
 /// either the UKF or EKF implementations in this module. Fields represent
 /// a local-level navigation solution (latitude, longitude, altitude, NED/ENU
-/// velocity components, and Euler attitude angles). Storage is *unit-tagged*
-/// rather than normalized: `latitude` and `longitude` are held in whatever
-/// units they were supplied in, and the `in_degrees` flag says which. The
-/// filter constructors read that flag back and convert to radians only when
-/// it is set, so the flag must always travel with the values.
+/// velocity components, and Euler attitude angles). The `in_degrees` flag
+/// indicates whether the provided angles/lat/lon are in degrees; see the note
+/// on unit-tagged storage below for what that flag means downstream.
 /// The `is_enu` flag determines whether the navigation frame is ENU (true)
 /// or NED (false) for internal mechanization. It defaults to NED, matching
 /// [`StrapdownState`](crate::StrapdownState) and the rest of the crate.
@@ -34,8 +33,13 @@ use nalgebra::{DMatrix, DVector, Rotation3, UnitQuaternion, Vector3};
 /// - `latitude`, `longitude`: degrees if `in_degrees==true`, otherwise radians
 /// - `altitude`: meters
 /// - velocities: m/s (north, east, vertical)
-/// - `roll`, `pitch`, `yaw`: degrees if `in_degrees==true`, otherwise radians,
-///   matching the position fields -- which is what the filter constructors assume
+/// - `roll`, `pitch`, `yaw`: degrees if `in_degrees==true`, otherwise radians --
+///   the same rule as the position fields, which is what the filter constructors assume
+///
+/// Storage is *unit-tagged* rather than normalized: every angular field is held in the
+/// units it was supplied in and `in_degrees` says which, so the flag has to travel with
+/// the values. Converting to radians is the filter constructors' job, and they do it
+/// exactly when the flag is set.
 ///
 /// # Example
 ///
@@ -127,9 +131,18 @@ impl InitialState {
         };
         let is_enu = is_enu.unwrap_or(false);
         if in_degrees {
-            roll = wrap_to_360(roll).to_radians();
-            pitch = wrap_to_360(pitch).to_radians();
-            yaw = wrap_to_360(yaw).to_radians();
+            // Wrapped in degrees and *stored* in degrees, matching latitude and longitude
+            // above. Converting to radians here while leaving `in_degrees == true` made
+            // every filter constructor convert a second time -- `if initial_state.in_degrees
+            // { roll.to_radians() }` -- so a 45 degree seed was stored as 0.785 and reached
+            // the filter as 0.0137 rad. Only a zero attitude survived the round trip, which
+            // is why it went unnoticed: the workspace's other seeds are struct literals, and
+            // the one caller that used this constructor with a non-zero heading was #262's
+            // `InsEngine`, whose lever-arm compensation rotates by the estimate and so was
+            // quietly resolving the antenna offset along the wrong axis.
+            roll = wrap_to_360(roll);
+            pitch = wrap_to_360(pitch);
+            yaw = wrap_to_360(yaw);
         } else {
             roll = wrap_to_2pi(roll);
             pitch = wrap_to_2pi(pitch);
@@ -150,6 +163,73 @@ impl InitialState {
         }
     }
 }
+/// Widen a measurement Jacobian to the filter's state dimension.
+///
+/// Most `MeasurementModel` implementations return a 9-column Jacobian: they observe
+/// navigation states and say nothing about IMU biases, so the bias columns are zero
+/// and the model has no reason to know how many of them the filter carries. A few --
+/// [`ZaruMeasurement`](crate::measurements::ZaruMeasurement) is the motivating case --
+/// observe a bias directly and must return the full width. Padding on the right is
+/// correct for the first kind and a no-op for the second, so one helper covers both
+/// and the filters stop caring which they were handed.
+///
+/// # Errors
+/// [`StrapdownError::DimensionMismatch`] if the Jacobian is *wider* than the state.
+/// That is a measurement built for a bigger filter than the one running it -- ZARU
+/// against a 9-state EKF, say -- and padding cannot rescue it.
+fn expand_measurement_jacobian(
+    jacobian: DMatrix<f64>,
+    state_size: usize,
+) -> Result<DMatrix<f64>, StrapdownError> {
+    let (rows, cols) = (jacobian.nrows(), jacobian.ncols());
+    if cols == state_size {
+        return Ok(jacobian);
+    }
+    if cols > state_size {
+        return Err(StrapdownError::DimensionMismatch {
+            what: "measurement Jacobian columns exceed filter state size",
+            expected: state_size,
+            got: cols,
+        });
+    }
+    let mut expanded = DMatrix::<f64>::zeros(rows, state_size);
+    expanded.view_mut((0, 0), (rows, cols)).copy_from(&jacobian);
+    Ok(expanded)
+}
+
+/// Score an innovation against the filter's gate and report the decision.
+///
+/// Factored out of all three filters because the statistic, the comparison and the
+/// log line are identical in each; only the way `innovation` and `S` were arrived at
+/// differs.
+///
+/// # Errors
+/// Whatever [`normalized_innovation_squared`] returns -- in practice a singular
+/// innovation covariance, which is a reason to skip the measurement rather than
+/// apply a correction computed from it.
+fn evaluate_gate(
+    gate: Option<InnovationGate>,
+    innovation: &DVector<f64>,
+    innovation_covariance: &DMatrix<f64>,
+    filter_name: &str,
+) -> Result<UpdateOutcome, StrapdownError> {
+    let dof = innovation.len();
+    let nis = normalized_innovation_squared(innovation, innovation_covariance)?;
+    if let Some(gate) = gate
+        && !gate.accepts(nis, dof)
+    {
+        // `debug`, not `warn`: `run_closed_loop` already warns once with the
+        // total, and a run that gates a lot would otherwise bury every other
+        // message under one line per rejected fix.
+        log::debug!(
+            "{filter_name}: measurement gated out, NIS = {nis:.3} > {:.3} (dof {dof})",
+            gate.threshold(dof)
+        );
+        return Ok(UpdateOutcome::rejected(nis, dof));
+    }
+    Ok(UpdateOutcome::accepted(nis, dof))
+}
+
 /// Unscented Kalman Filter (UKF) implementation for strapdown navigation.
 ///
 /// The UKF approximates the posterior distribution using a deterministic set
@@ -175,6 +255,8 @@ pub struct UnscentedKalmanFilter {
     weights_mean: DVector<f64>,
     weights_cov: DVector<f64>,
     is_enu: bool,
+    /// Innovation gate applied by `update`; `None` accepts every measurement.
+    innovation_gate: Option<InnovationGate>,
 }
 impl Debug for UnscentedKalmanFilter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -284,6 +366,7 @@ impl UnscentedKalmanFilter {
             weights_mean,
             weights_cov,
             is_enu: initial_state.is_enu,
+            innovation_gate: None,
         }
     }
     /// # Errors
@@ -470,7 +553,10 @@ impl NavigationFilter for UnscentedKalmanFilter {
     /// # Arguments
     ///
     /// * `measurement` - A measurement model implementing `MeasurementModel`.
-    fn update(&mut self, measurement: &dyn MeasurementModel) -> Result<(), StrapdownError> {
+    fn update(
+        &mut self,
+        measurement: &dyn MeasurementModel,
+    ) -> Result<UpdateOutcome, StrapdownError> {
         //let measurement_sigma_points = measurement.get_sigma_points(&self.get_sigma_points());
         let mut measurement_sigma_points =
             DMatrix::<f64>::zeros(measurement.get_dimension(), 2 * self.state_size + 1);
@@ -488,6 +574,21 @@ impl NavigationFilter for UnscentedKalmanFilter {
             s += self.weights_cov[i] * &diff * &diff.transpose();
         }
         s += measurement.get_noise();
+
+        let mut innovation = measurement.get_measurement(&self.mean_state)? - &z_hat;
+        // Keep angular innovations on the circle (see `wrap_residual`, #286).
+        // (The sigma-point spread above is left linearised: with a sane yaw
+        // uncertainty the points do not straddle the cut.)
+        measurement.wrap_residual(&mut innovation);
+
+        // Gate before the cross-covariance and the gain: a rejected measurement must
+        // leave the state untouched, and there is no point paying for a gain that
+        // will not be applied.
+        let outcome = evaluate_gate(self.innovation_gate, &innovation, &s, "UKF")?;
+        if !outcome.accepted {
+            return Ok(outcome);
+        }
+
         let sigma_points = self.get_sigma_points()?;
         let mut cross_covariance =
             DMatrix::<f64>::zeros(self.state_size, measurement.get_dimension());
@@ -497,11 +598,6 @@ impl NavigationFilter for UnscentedKalmanFilter {
             cross_covariance += self.weights_cov[i] * state_diff * measurement_diff.transpose();
         }
         let k = Self::robust_kalman_gain(&cross_covariance, &s)?;
-        let mut innovation = measurement.get_measurement(&self.mean_state)? - &z_hat;
-        // Keep angular innovations on the circle (see `wrap_residual`, #286).
-        // (The sigma-point spread above is left linearised: with a sane yaw
-        // uncertainty the points do not straddle the cut.)
-        measurement.wrap_residual(&mut innovation);
         self.mean_state += &k * innovation;
         self.mean_state[6] = wrap_to_2pi(self.mean_state[6]);
         self.mean_state[7] = wrap_to_2pi(self.mean_state[7]);
@@ -514,7 +610,12 @@ impl NavigationFilter for UnscentedKalmanFilter {
         for i in 0..self.state_size {
             self.covariance[(i, i)] += eps;
         }
-        Ok(())
+        Ok(outcome)
+    }
+
+    fn set_innovation_gate(&mut self, gate: Option<InnovationGate>) -> bool {
+        self.innovation_gate = gate;
+        true
     }
     /// Return the current mean state estimate.
     fn get_estimate(&self) -> DVector<f64> {
@@ -671,6 +772,8 @@ pub struct ExtendedKalmanFilter {
     use_biases: bool,
     /// Coordinate frame flag (true for ENU, false for NED)
     is_enu: bool,
+    /// Innovation gate applied by `update`; `None` accepts every measurement.
+    innovation_gate: Option<InnovationGate>,
 }
 
 impl Debug for ExtendedKalmanFilter {
@@ -682,6 +785,7 @@ impl Debug for ExtendedKalmanFilter {
             .field("state_size", &self.state_size)
             .field("use_biases", &self.use_biases)
             .field("is_enu", &self.is_enu)
+            .field("innovation_gate", &self.innovation_gate)
             .finish()
     }
 }
@@ -786,6 +890,7 @@ impl ExtendedKalmanFilter {
             state_size,
             use_biases,
             is_enu: initial_state.is_enu,
+            innovation_gate: None,
         }
     }
 }
@@ -981,7 +1086,10 @@ impl NavigationFilter for ExtendedKalmanFilter {
     ///
     /// where $z$ is the actual measurement and $h(\bar{x})$ is the expected
     /// measurement given the predicted state.
-    fn update(&mut self, measurement: &dyn MeasurementModel) -> Result<(), StrapdownError> {
+    fn update(
+        &mut self,
+        measurement: &dyn MeasurementModel,
+    ) -> Result<UpdateOutcome, StrapdownError> {
         // Jacobian FIRST, deliberately. A geophysical model whose estimate has left the
         // loaded map reports that as an error here, whereas `get_expected_measurement`
         // returns NaN for the same condition. Evaluating the expected measurement first
@@ -991,37 +1099,31 @@ impl NavigationFilter for ExtendedKalmanFilter {
         // Get expected measurement from current state
         let z_hat = measurement.get_expected_measurement(&self.mean_state);
 
-        // Extend H to full state size if using biases or augmented states
-        let h_matrix = if self.use_biases && self.state_size >= 15 {
-            let meas_dim = measurement.get_dimension();
-            let mut h_ext = DMatrix::<f64>::zeros(meas_dim, self.state_size);
-            h_ext.view_mut((0, 0), (meas_dim, 9)).copy_from(&h_9state);
-            // Measurement typically doesn't depend on biases or augmented states
-            // (zero columns for those states)
-            h_ext
-        } else if self.state_size > 9 {
-            // Handle augmented states without biases (should not happen, but be defensive)
-            let meas_dim = measurement.get_dimension();
-            let mut h_ext = DMatrix::<f64>::zeros(meas_dim, self.state_size);
-            h_ext.view_mut((0, 0), (meas_dim, 9)).copy_from(&h_9state);
-            h_ext
-        } else {
-            h_9state
-        };
+        // Widen H to the filter's state size. Most models observe navigation states
+        // only and return 9 columns; a bias-observing model (ZARU) returns the full
+        // width and passes through unchanged.
+        let h_matrix = expand_measurement_jacobian(h_9state, self.state_size)?;
 
         // Innovation covariance: S = H * P * H^T + R
         let s = &h_matrix * &self.covariance * h_matrix.transpose() + measurement.get_noise();
+
+        // Innovation (measurement residual): nu = z - z_hat
+        let mut innovation = measurement.get_measurement(&self.mean_state)? - &z_hat;
+        // Keep angular innovations on the circle (see `wrap_residual`, #286).
+        measurement.wrap_residual(&mut innovation);
+
+        // Gate before the gain, so a rejected measurement costs one solve and leaves
+        // both the state and the covariance exactly as they were.
+        let outcome = evaluate_gate(self.innovation_gate, &innovation, &s, "EKF")?;
+        if !outcome.accepted {
+            return Ok(outcome);
+        }
 
         // Kalman gain: K = P * H^T * S^(-1)
         let k = self.covariance.clone()
             * h_matrix.transpose()
             * robust_spd_solve(&symmetrize(&s), &DMatrix::identity(s.nrows(), s.ncols()))?
                 .transpose();
-
-        // Innovation (measurement residual): nu = z - z_hat
-        let mut innovation = measurement.get_measurement(&self.mean_state)? - &z_hat;
-        // Keep angular innovations on the circle (see `wrap_residual`, #286).
-        measurement.wrap_residual(&mut innovation);
 
         // State update: x = x + K * nu
         self.mean_state += &k * innovation;
@@ -1045,7 +1147,12 @@ impl NavigationFilter for ExtendedKalmanFilter {
         for i in 0..self.state_size {
             self.covariance[(i, i)] += eps;
         }
-        Ok(())
+        Ok(outcome)
+    }
+
+    fn set_innovation_gate(&mut self, gate: Option<InnovationGate>) -> bool {
+        self.innovation_gate = gate;
+        true
     }
 
     /// Get the current state estimate
@@ -1256,6 +1363,9 @@ pub struct ErrorStateKalmanFilter {
 
     /// Coordinate frame flag (true for ENU, false for NED)
     is_enu: bool,
+
+    /// Innovation gate applied by `update`; `None` accepts every measurement.
+    innovation_gate: Option<InnovationGate>,
 }
 
 impl Debug for ErrorStateKalmanFilter {
@@ -1423,6 +1533,7 @@ impl ErrorStateKalmanFilter {
             error_covariance,
             process_noise,
             is_enu: initial_state.is_enu,
+            innovation_gate: None,
         }
     }
 
@@ -1773,9 +1884,15 @@ impl NavigationFilter for ErrorStateKalmanFilter {
     /// $$
     ///
     /// Error injection and reset (see `inject_error_state` for details)
-    fn update(&mut self, measurement: &dyn MeasurementModel) -> Result<(), StrapdownError> {
-        // Create nominal state vector for measurement prediction (9-state format)
-        let mut nominal_state_vec = DVector::zeros(9);
+    fn update(
+        &mut self,
+        measurement: &dyn MeasurementModel,
+    ) -> Result<UpdateOutcome, StrapdownError> {
+        // Nominal state vector for measurement prediction, in the 15-state layout the
+        // error state uses. The bias entries matter: ZARU observes the gyro bias
+        // directly, and a 9-element nominal vector would have left it nothing to
+        // predict from.
+        let mut nominal_state_vec = DVector::zeros(15);
         nominal_state_vec[0] = self.nominal_latitude;
         nominal_state_vec[1] = self.nominal_longitude;
         nominal_state_vec[2] = self.nominal_altitude;
@@ -1795,20 +1912,25 @@ impl NavigationFilter for ErrorStateKalmanFilter {
         nominal_state_vec[7] = euler.1; // pitch
         nominal_state_vec[8] = euler.2; // yaw
 
+        // Biases, in `get_estimate` order: 3 accelerometer then 3 gyroscope.
+        // Left unwrapped and unrounded -- this vector is a linearization point, not
+        // an output.
+        for axis in 0..3 {
+            nominal_state_vec[9 + axis] = self.nominal_accel_bias[axis];
+            nominal_state_vec[12 + axis] = self.nominal_gyro_bias[axis];
+        }
+
         // Get expected measurement from nominal state
         let z_hat = measurement.get_expected_measurement(&nominal_state_vec);
 
         // Measurement Jacobian, supplied by the measurement model itself.
         // Every `MeasurementModel` implementor is required to provide this, so new
         // measurement types (ZUPT/ZARU, geophysical anomalies) work here without
-        // the filter needing to know about them.
-        let h_9state = measurement.get_jacobian(&nominal_state_vec)?;
-
-        // Extend H to full 15-state error state (add zero columns for bias states)
+        // the filter needing to know about them. Nine-column Jacobians are padded
+        // into the bias block; a ZARU Jacobian already spans all fifteen.
         let meas_dim = measurement.get_dimension();
-        let mut h_error = DMatrix::<f64>::zeros(meas_dim, 15);
-        h_error.view_mut((0, 0), (meas_dim, 9)).copy_from(&h_9state);
-        // Measurement doesn't depend on biases (columns 9-14 remain zero)
+        let mut h_error =
+            expand_measurement_jacobian(measurement.get_jacobian(&nominal_state_vec)?, 15)?;
 
         // Innovation (measurement residual): nu = z - z_hat. Computed here
         // (rather than below) because the attitude-column correction needs it.
@@ -1840,6 +1962,14 @@ impl NavigationFilter for ErrorStateKalmanFilter {
         // Innovation covariance: S = H * P * H^T + R
         let s = &h_error * &self.error_covariance * h_error.transpose() + measurement.get_noise();
 
+        // Gate before injecting anything. The ESKF makes this ordering load-bearing
+        // rather than merely tidy: `inject_error_state` mutates the nominal state and
+        // zeroes the error state, so there is no "undo" once the correction starts.
+        let outcome = evaluate_gate(self.innovation_gate, &innovation, &s, "ESKF")?;
+        if !outcome.accepted {
+            return Ok(outcome);
+        }
+
         // Kalman gain: K = P * H^T * S^(-1)
         let k = self.error_covariance.clone()
             * h_error.transpose()
@@ -1860,7 +1990,12 @@ impl NavigationFilter for ErrorStateKalmanFilter {
             &i_kh * &self.error_covariance * i_kh.transpose() + &k * r * k.transpose();
 
         self.regularize_covariance();
-        Ok(())
+        Ok(outcome)
+    }
+
+    fn set_innovation_gate(&mut self, gate: Option<InnovationGate>) -> bool {
+        self.innovation_gate = gate;
+        true
     }
 
     /// Get the current nominal state estimate

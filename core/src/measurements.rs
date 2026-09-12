@@ -649,6 +649,365 @@ impl MeasurementModel for MagnetometerYawMeasurement {
     }
 }
 
+/// Default pseudo-measurement noise for [`ZuptMeasurement`], m/s per axis.
+///
+/// A ZUPT is not a sensor reading, so its "noise" is really a statement of how
+/// literally the filter should take the constraint. 0.01 m/s says the platform is
+/// stationary to within a centimetre per second, which is tight enough to arrest
+/// velocity drift within a few updates and loose enough to absorb the residual
+/// vibration of a running engine. Tightening it much further makes the update
+/// nearly deterministic, which is a good way to collapse the velocity covariance
+/// and then have the filter refuse the GNSS fix that follows the stop.
+pub const DEFAULT_ZUPT_NOISE_MPS: f64 = 0.01;
+
+/// Default pseudo-measurement noise for [`ZaruMeasurement`], rad/s per axis.
+///
+/// Sized for the angle-random-walk floor of a consumer MEMS gyro over a one-second
+/// window. As with ZUPT this is a confidence statement rather than a sensor spec:
+/// it should be at or above the gyro's own noise over the averaging interval, or
+/// the filter will read that noise as bias and chase it.
+pub const DEFAULT_ZARU_NOISE_RPS: f64 = 1.0e-3;
+
+/// Zero-velocity update (ZUPT) pseudo-measurement.
+///
+/// Asserts that the local-level-frame velocity is zero. Valid only while the
+/// platform is genuinely stationary -- see [`StationaryDetector`] for the decision,
+/// which this type deliberately does not make for itself: the detector needs a
+/// window of IMU history, and a measurement model is handed one state at a time.
+///
+/// # Why it works
+///
+/// Velocity error is the integral of accelerometer error, and position error the
+/// integral of that. Pinning velocity to zero during a stop does not merely stop
+/// the position drift for the duration; because the filter's velocity error is
+/// correlated with its accelerometer bias error, the correction propagates back
+/// into the bias estimate and the solution is better *after* the stop than it was
+/// before. That is the whole reason to bother: an unaided stop is the cheapest
+/// observability a strapdown system ever gets.
+///
+/// # Example
+///
+/// ```rust
+/// use nalgebra::DVector;
+/// use strapdown::measurements::{MeasurementModel, ZuptMeasurement};
+///
+/// let zupt = ZuptMeasurement::default();
+/// // The state thinks it is moving north at 0.3 m/s; the pseudo-measurement says 0.
+/// let state = DVector::from_vec(vec![0.79, -2.13, 100.0, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0]);
+/// let innovation =
+///     zupt.get_measurement(&state).unwrap() - zupt.get_expected_measurement(&state);
+/// assert!((innovation[0] + 0.3).abs() < 1e-12);
+/// ```
+///
+/// # References
+///
+/// - Groves 2nd ed., Section 15.2.1
+///
+/// [`StationaryDetector`]: crate::stationary::StationaryDetector
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ZuptMeasurement {
+    /// Per-axis pseudo-measurement standard deviation, m/s.
+    pub velocity_noise_std: f64,
+}
+
+impl Default for ZuptMeasurement {
+    fn default() -> Self {
+        Self {
+            velocity_noise_std: DEFAULT_ZUPT_NOISE_MPS,
+        }
+    }
+}
+
+impl ZuptMeasurement {
+    /// Build a ZUPT with an explicit per-axis standard deviation.
+    ///
+    /// # Errors
+    /// [`StrapdownError::OutOfRange`] if `velocity_noise_std` is not finite and
+    /// strictly positive. A zero standard deviation gives a singular `R`, and the
+    /// resulting Kalman gain is not something to discover at runtime.
+    pub fn new(velocity_noise_std: f64) -> Result<Self, StrapdownError> {
+        if !velocity_noise_std.is_finite() || velocity_noise_std <= 0.0 {
+            return Err(StrapdownError::OutOfRange {
+                what: "ZUPT velocity noise std (m/s)",
+                value: velocity_noise_std,
+                min: f64::MIN_POSITIVE,
+                max: f64::INFINITY,
+            });
+        }
+        Ok(Self { velocity_noise_std })
+    }
+}
+
+impl Display for ZuptMeasurement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ZuptMeasurement(noise: {} m/s)", self.velocity_noise_std)
+    }
+}
+
+impl MeasurementModel for ZuptMeasurement {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+    fn get_dimension(&self) -> usize {
+        3
+    }
+    fn get_measurement(&self, _state: &DVector<f64>) -> Result<DVector<f64>, StrapdownError> {
+        // The constraint itself: the platform is not moving.
+        Ok(DVector::zeros(3))
+    }
+    fn get_noise(&self) -> DMatrix<f64> {
+        DMatrix::from_diagonal(&DVector::from_vec(vec![
+            self.velocity_noise_std.powi(2),
+            self.velocity_noise_std.powi(2),
+            self.velocity_noise_std.powi(2),
+        ]))
+    }
+    fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
+        if state.len() < 9 {
+            // Short states cannot occur through any filter in this crate; returning
+            // the constraint value makes the innovation zero rather than panicking
+            // in a method with no way to report. `get_jacobian` rejects the same
+            // state, which is where the caller sees the problem.
+            return DVector::zeros(3);
+        }
+        DVector::from_vec(vec![state[3], state[4], state[5]])
+    }
+    fn get_jacobian(&self, state: &DVector<f64>) -> Result<DMatrix<f64>, StrapdownError> {
+        let nav_state = jacobian_state(state)?;
+        Ok(crate::linearize::zupt_jacobian(&nav_state))
+    }
+}
+
+/// Zero-angular-rate update (ZARU) pseudo-measurement.
+///
+/// Asserts that a stationary platform's gyroscopes read nothing but their own bias
+/// plus the Earth rate, making the measurement a direct observation of gyro bias.
+///
+/// # State requirement
+///
+/// ZARU observes states 12..15 and therefore **requires a filter that carries gyro
+/// bias states**: the 15-state [`ErrorStateKalmanFilter`] (the crate default) or an
+/// [`ExtendedKalmanFilter`] built with `use_biases = true`. Applied to a 9-state
+/// filter it returns [`StrapdownError::DimensionMismatch`] rather than quietly
+/// correcting nothing, because "the update ran and changed no state" is
+/// indistinguishable from "the update worked" in a log.
+///
+/// # Measurement model
+///
+/// ```text
+/// z    = omega_measured                          (raw body-frame gyro, rad/s)
+/// h(x) = b_g + C_n^b(attitude) * omega_ie^n(lat)
+/// ```
+///
+/// The Earth-rate term is carried in `h` rather than subtracted from `z` so that
+/// `z` stays a raw sensor reading. Its attitude dependence is real but of order the
+/// Earth rate itself (7.3e-5 rad/s), well under the noise floor of the MEMS
+/// hardware this crate targets, so the Jacobian's attitude block is left at zero;
+/// [`set_earth_rate_compensation`] turns the term off entirely for a unit whose
+/// noise swamps it.
+///
+/// # Example
+///
+/// ```rust
+/// use nalgebra::DVector;
+/// use strapdown::measurements::{MeasurementModel, ZaruMeasurement};
+///
+/// // A stationary gyro reading 0.002 rad/s about z is reading its own bias.
+/// let zaru = ZaruMeasurement::from_gyro([0.0, 0.0, 0.002]);
+/// let mut state = DVector::zeros(15);
+/// let innovation =
+///     zaru.get_measurement(&state).unwrap() - zaru.get_expected_measurement(&state);
+/// // The filter currently estimates zero bias, so the whole reading is innovation.
+/// assert!((innovation[2] - 0.002).abs() < 1e-9);
+///
+/// // Only the gyro-bias block is observable.
+/// let h = zaru.get_jacobian(&state).unwrap();
+/// assert_eq!((h.nrows(), h.ncols()), (3, 15));
+/// ```
+///
+/// # References
+///
+/// - Groves 2nd ed., Section 15.2.2
+///
+/// [`ErrorStateKalmanFilter`]: crate::kalman::ErrorStateKalmanFilter
+/// [`ExtendedKalmanFilter`]: crate::kalman::ExtendedKalmanFilter
+/// [`set_earth_rate_compensation`]: ZaruMeasurement::set_earth_rate_compensation
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ZaruMeasurement {
+    /// Measured body-frame angular rate, rad/s.
+    pub angular_rate: Vector3<f64>,
+    /// Per-axis pseudo-measurement standard deviation, rad/s.
+    pub angular_rate_noise_std: f64,
+    /// Whether `h(x)` includes the sensed Earth rate.
+    pub compensate_earth_rate: bool,
+}
+
+impl Default for ZaruMeasurement {
+    fn default() -> Self {
+        Self {
+            angular_rate: Vector3::zeros(),
+            angular_rate_noise_std: DEFAULT_ZARU_NOISE_RPS,
+            compensate_earth_rate: true,
+        }
+    }
+}
+
+impl ZaruMeasurement {
+    /// Build a ZARU from a measured body-frame angular rate, with default noise.
+    #[must_use]
+    pub fn from_gyro(angular_rate: [f64; 3]) -> Self {
+        Self {
+            angular_rate: Vector3::from_column_slice(&angular_rate),
+            ..Self::default()
+        }
+    }
+
+    /// Build a ZARU with an explicit per-axis standard deviation.
+    ///
+    /// # Errors
+    /// [`StrapdownError::OutOfRange`] if `angular_rate_noise_std` is not finite and
+    /// strictly positive, or [`StrapdownError::NonFinite`] if any rate component is
+    /// not finite.
+    pub fn new(
+        angular_rate: Vector3<f64>,
+        angular_rate_noise_std: f64,
+    ) -> Result<Self, StrapdownError> {
+        if !angular_rate.iter().all(|v| v.is_finite()) {
+            return Err(StrapdownError::NonFinite {
+                what: "ZARU angular rate",
+            });
+        }
+        if !angular_rate_noise_std.is_finite() || angular_rate_noise_std <= 0.0 {
+            return Err(StrapdownError::OutOfRange {
+                what: "ZARU angular rate noise std (rad/s)",
+                value: angular_rate_noise_std,
+                min: f64::MIN_POSITIVE,
+                max: f64::INFINITY,
+            });
+        }
+        Ok(Self {
+            angular_rate,
+            angular_rate_noise_std,
+            compensate_earth_rate: true,
+        })
+    }
+
+    /// Include or omit the sensed Earth rate in `h(x)`.
+    ///
+    /// Leave it on for tactical-grade hardware, where 7.3e-5 rad/s is a resolvable
+    /// quantity and omitting it biases the gyro-bias estimate by that much. Turn it
+    /// off when reproducing a reference implementation that ignores it.
+    #[must_use]
+    pub const fn set_earth_rate_compensation(mut self, compensate: bool) -> Self {
+        self.compensate_earth_rate = compensate;
+        self
+    }
+
+    /// Earth rate resolved into the body frame for the given state, rad/s.
+    ///
+    /// Returns zero when compensation is disabled or the state is too short to
+    /// carry an attitude.
+    fn sensed_earth_rate(&self, state: &DVector<f64>) -> Vector3<f64> {
+        if !self.compensate_earth_rate || state.len() < 9 {
+            return Vector3::zeros();
+        }
+        // `earth_rate_lla` takes degrees and returns the NED local-level vector;
+        // the state carries latitude in radians.
+        let earth_rate_ned = crate::earth::earth_rate_lla(&state[0].to_degrees());
+        // `from_euler_angles` builds C_b^n (body to nav), so its transpose resolves
+        // a nav-frame vector into the body frame.
+        let body_to_nav = Rotation3::from_euler_angles(state[6], state[7], state[8]);
+        body_to_nav.inverse() * earth_rate_ned
+    }
+
+    /// Reject a state that cannot carry gyro biases.
+    fn require_bias_states(state: &DVector<f64>) -> Result<(), StrapdownError> {
+        if state.len() < 15 {
+            return Err(StrapdownError::DimensionMismatch {
+                what: "ZARU state vector (requires gyro bias states 12..15)",
+                expected: 15,
+                got: state.len(),
+            });
+        }
+        Ok(())
+    }
+}
+
+impl Display for ZaruMeasurement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "ZaruMeasurement(rate: [{:.3e}, {:.3e}, {:.3e}] rad/s, noise: {} rad/s)",
+            self.angular_rate[0],
+            self.angular_rate[1],
+            self.angular_rate[2],
+            self.angular_rate_noise_std
+        )
+    }
+}
+
+impl MeasurementModel for ZaruMeasurement {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+    fn get_dimension(&self) -> usize {
+        3
+    }
+    /// The raw body-frame gyro reading.
+    ///
+    /// # Errors
+    /// [`StrapdownError::DimensionMismatch`] if `state` is shorter than 15 elements.
+    /// The reading itself does not depend on the state; the check lives here because
+    /// this is the one `Result`-returning method every filter calls, and a 9-state
+    /// filter applying ZARU has to be told rather than silently corrected by nothing.
+    fn get_measurement(&self, state: &DVector<f64>) -> Result<DVector<f64>, StrapdownError> {
+        Self::require_bias_states(state)?;
+        Ok(DVector::from_vec(vec![
+            self.angular_rate[0],
+            self.angular_rate[1],
+            self.angular_rate[2],
+        ]))
+    }
+    fn get_noise(&self) -> DMatrix<f64> {
+        DMatrix::from_diagonal(&DVector::from_vec(vec![
+            self.angular_rate_noise_std.powi(2),
+            self.angular_rate_noise_std.powi(2),
+            self.angular_rate_noise_std.powi(2),
+        ]))
+    }
+    fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
+        let earth_rate_body = self.sensed_earth_rate(state);
+        if state.len() < 15 {
+            // Rejected by `get_measurement`/`get_jacobian`; predict the Earth-rate
+            // term alone rather than index past the end of a short state.
+            return DVector::from_vec(vec![
+                earth_rate_body[0],
+                earth_rate_body[1],
+                earth_rate_body[2],
+            ]);
+        }
+        DVector::from_vec(vec![
+            state[12] + earth_rate_body[0],
+            state[13] + earth_rate_body[1],
+            state[14] + earth_rate_body[2],
+        ])
+    }
+    /// The 3x15 gyro-bias Jacobian.
+    ///
+    /// # Errors
+    /// [`StrapdownError::DimensionMismatch`] if `state` is shorter than 15 elements.
+    fn get_jacobian(&self, state: &DVector<f64>) -> Result<DMatrix<f64>, StrapdownError> {
+        Self::require_bias_states(state)?;
+        let nav_state = jacobian_state(state)?;
+        Ok(crate::linearize::zaru_jacobian(&nav_state))
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1092,5 +1451,225 @@ mod tests {
             down.is_some(),
             "Should be able to downcast MagnetometerYawMeasurement"
         );
+    }
+
+    // ---------------------------------------------------------------- ZUPT / ZARU
+
+    /// A 15-state vector with the navigation block filled in and zero biases.
+    fn state_15(velocity: [f64; 3], attitude: [f64; 3]) -> DVector<f64> {
+        let mut state = DVector::zeros(15);
+        state[0] = std::f64::consts::FRAC_PI_4; // 45 deg N, radians
+        state[1] = -2.1293;
+        state[2] = 100.0;
+        state[3] = velocity[0];
+        state[4] = velocity[1];
+        state[5] = velocity[2];
+        state[6] = attitude[0];
+        state[7] = attitude[1];
+        state[8] = attitude[2];
+        state
+    }
+
+    #[test]
+    fn zupt_innovation_is_the_negated_velocity() {
+        let zupt = ZuptMeasurement::default();
+        let state = state_15([0.3, -0.7, 0.05], [0.0, 0.0, 0.0]);
+        let innovation =
+            zupt.get_measurement(&state).unwrap() - zupt.get_expected_measurement(&state);
+        assert_approx_eq!(innovation[0], -0.3, EPS);
+        assert_approx_eq!(innovation[1], 0.7, EPS);
+        assert_approx_eq!(innovation[2], -0.05, EPS);
+    }
+
+    #[test]
+    fn zupt_constrains_all_three_velocity_axes() {
+        // The vertical channel is the one that most needs the constraint, so a ZUPT
+        // that quietly skipped v_d would be worse than useless.
+        let zupt = ZuptMeasurement::default();
+        let h = zupt.get_jacobian(&state_15([0.0; 3], [0.0; 3])).unwrap();
+        assert_eq!((h.nrows(), h.ncols()), (3, 9));
+        for (row, column) in (3..6).enumerate() {
+            assert_approx_eq!(h[(row, column)], 1.0, EPS);
+        }
+        // Nothing but velocity is observed.
+        assert_approx_eq!(h.view((0, 0), (3, 3)).iter().sum::<f64>(), 0.0, EPS);
+        assert_approx_eq!(h.view((0, 6), (3, 3)).iter().sum::<f64>(), 0.0, EPS);
+    }
+
+    #[test]
+    fn zupt_pseudo_measurement_is_zero_regardless_of_state() {
+        let zupt = ZuptMeasurement::default();
+        for velocity in [[0.0; 3], [10.0, -4.0, 1.0], [-100.0, 100.0, -100.0]] {
+            let z = zupt.get_measurement(&state_15(velocity, [0.0; 3])).unwrap();
+            assert_approx_eq!(z.norm(), 0.0, EPS);
+        }
+    }
+
+    #[test]
+    fn zupt_noise_is_the_configured_variance() {
+        let zupt = ZuptMeasurement::new(0.05).unwrap();
+        let r = zupt.get_noise();
+        assert_eq!((r.nrows(), r.ncols()), (3, 3));
+        for axis in 0..3 {
+            assert_approx_eq!(r[(axis, axis)], 0.0025, EPS);
+        }
+    }
+
+    #[test]
+    fn zupt_rejects_a_degenerate_noise_value() {
+        // A zero standard deviation gives a singular R; the resulting gain is not
+        // something to discover at runtime.
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert!(ZuptMeasurement::new(bad).is_err(), "accepted std {bad}");
+        }
+    }
+
+    #[test]
+    fn zupt_reports_a_short_state_through_the_jacobian() {
+        let zupt = ZuptMeasurement::default();
+        let short = DVector::zeros(5);
+        assert!(matches!(
+            zupt.get_jacobian(&short).unwrap_err(),
+            StrapdownError::DimensionMismatch { .. }
+        ));
+        // The infallible predictor must not index past the end while doing so.
+        assert_approx_eq!(zupt.get_expected_measurement(&short).norm(), 0.0, EPS);
+    }
+
+    #[test]
+    fn zaru_innovation_is_the_uncompensated_bias_error() {
+        // A stationary gyro reading 0.002 rad/s is reading its own bias. With the
+        // filter estimating zero bias, the whole reading is innovation.
+        let zaru = ZaruMeasurement::from_gyro([0.0, 0.0, 0.002]).set_earth_rate_compensation(false);
+        let state = state_15([0.0; 3], [0.0; 3]);
+        let innovation =
+            zaru.get_measurement(&state).unwrap() - zaru.get_expected_measurement(&state);
+        assert_approx_eq!(innovation[2], 0.002, EPS);
+
+        // Once the filter has learned that bias, the innovation vanishes -- which is
+        // what "the update has converged" has to look like.
+        let mut learned = state;
+        learned[14] = 0.002;
+        let converged =
+            zaru.get_measurement(&learned).unwrap() - zaru.get_expected_measurement(&learned);
+        assert_approx_eq!(converged.norm(), 0.0, EPS);
+    }
+
+    #[test]
+    fn zaru_observes_only_the_gyro_bias_block() {
+        let zaru = ZaruMeasurement::default();
+        let h = zaru.get_jacobian(&state_15([0.0; 3], [0.0; 3])).unwrap();
+        assert_eq!((h.nrows(), h.ncols()), (3, 15));
+        for (row, column) in (12..15).enumerate() {
+            assert_approx_eq!(h[(row, column)], 1.0, EPS);
+        }
+        // Position, velocity, attitude and accelerometer bias are all unobserved:
+        // a stationary gyro reading says nothing about where the platform is.
+        assert_approx_eq!(h.view((0, 0), (3, 12)).iter().sum::<f64>(), 0.0, EPS);
+    }
+
+    #[test]
+    fn zaru_requires_a_filter_that_carries_gyro_biases() {
+        // Against a 9-state filter ZARU would correct nothing at all, and "the update
+        // ran and changed no state" is indistinguishable from "the update worked" in
+        // a log. Both Result-returning entry points have to say so.
+        let zaru = ZaruMeasurement::default();
+        let nine_state = DVector::zeros(9);
+        assert!(matches!(
+            zaru.get_measurement(&nine_state).unwrap_err(),
+            StrapdownError::DimensionMismatch {
+                expected: 15,
+                got: 9,
+                ..
+            }
+        ));
+        assert!(matches!(
+            zaru.get_jacobian(&nine_state).unwrap_err(),
+            StrapdownError::DimensionMismatch {
+                expected: 15,
+                got: 9,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn zaru_earth_rate_term_is_resolved_into_the_body_frame() {
+        // At 45 deg N with a level, north-facing platform, Earth rate in NED is
+        // (w cos lat, 0, -w sin lat) and the body frame coincides with it.
+        let zaru = ZaruMeasurement::default();
+        let state = state_15([0.0; 3], [0.0, 0.0, 0.0]);
+        let predicted = zaru.get_expected_measurement(&state);
+        let rate = crate::earth::RATE;
+        let latitude = state[0];
+        assert_approx_eq!(predicted[0], rate * latitude.cos(), 1e-15);
+        assert_approx_eq!(predicted[1], 0.0, 1e-15);
+        assert_approx_eq!(predicted[2], -rate * latitude.sin(), 1e-15);
+    }
+
+    #[test]
+    fn zaru_earth_rate_term_rotates_with_attitude() {
+        // Yawed 90 deg east, the north component of Earth rate should appear on the
+        // body y axis instead of x. This is the term's only attitude dependence.
+        let zaru = ZaruMeasurement::default();
+        let level_north = zaru.get_expected_measurement(&state_15([0.0; 3], [0.0; 3]));
+        let yawed = zaru
+            .get_expected_measurement(&state_15([0.0; 3], [0.0, 0.0, std::f64::consts::FRAC_PI_2]));
+        assert_approx_eq!(yawed[1], -level_north[0], 1e-15);
+        assert_approx_eq!(yawed[0], 0.0, 1e-15);
+        // Rotating about the down axis cannot change the down component.
+        assert_approx_eq!(yawed[2], level_north[2], 1e-15);
+    }
+
+    #[test]
+    fn zaru_earth_rate_compensation_can_be_disabled() {
+        let compensated = ZaruMeasurement::default();
+        let plain = ZaruMeasurement::default().set_earth_rate_compensation(false);
+        let state = state_15([0.0; 3], [0.0; 3]);
+        assert!(compensated.get_expected_measurement(&state).norm() > 0.0);
+        assert_approx_eq!(plain.get_expected_measurement(&state).norm(), 0.0, EPS);
+    }
+
+    #[test]
+    fn zaru_earth_rate_term_is_small_enough_to_ignore_in_the_jacobian() {
+        // The Jacobian leaves the attitude block at zero even though the Earth-rate
+        // term does depend on attitude. That is only defensible while the term is far
+        // below the noise floor it is being compared against -- check the premise
+        // rather than trusting the comment.
+        let zaru = ZaruMeasurement::default();
+        let earth_rate_magnitude = zaru
+            .get_expected_measurement(&state_15([0.0; 3], [0.0; 3]))
+            .norm();
+        assert!(
+            earth_rate_magnitude < 0.1 * DEFAULT_ZARU_NOISE_RPS,
+            "Earth rate {earth_rate_magnitude} is no longer negligible against the \
+             {DEFAULT_ZARU_NOISE_RPS} rad/s noise floor; the attitude block now matters"
+        );
+    }
+
+    #[test]
+    fn zaru_noise_is_the_configured_variance() {
+        let zaru = ZaruMeasurement::new(Vector3::zeros(), 0.002).unwrap();
+        let r = zaru.get_noise();
+        for axis in 0..3 {
+            assert_approx_eq!(r[(axis, axis)], 4.0e-6, EPS);
+        }
+    }
+
+    #[test]
+    fn zaru_rejects_degenerate_construction() {
+        for bad in [0.0, -1.0, f64::NAN] {
+            assert!(ZaruMeasurement::new(Vector3::zeros(), bad).is_err());
+        }
+        assert!(matches!(
+            ZaruMeasurement::new(Vector3::new(f64::NAN, 0.0, 0.0), 1e-3).unwrap_err(),
+            StrapdownError::NonFinite { .. }
+        ));
+    }
+
+    #[test]
+    fn zupt_and_zaru_report_their_dimensions() {
+        assert_eq!(ZuptMeasurement::default().get_dimension(), 3);
+        assert_eq!(ZaruMeasurement::default().get_dimension(), 3);
     }
 }
