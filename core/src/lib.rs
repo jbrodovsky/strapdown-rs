@@ -1146,7 +1146,6 @@ fn velocity_update(state: &StrapdownState, delta_v_nav: Vector3<f64>, dt: f64) -
     ));
     let rotation_rate: Matrix3<f64> =
         earth::vector_to_skew_symmetric(&earth::earth_rate_lla(&state.latitude.to_degrees()));
-    let r = earth::ecef_to_lla(&state.latitude.to_degrees(), &state.longitude.to_degrees());
     let velocity: Vector3<f64> = Vector3::new(
         state.velocity_north,
         state.velocity_east,
@@ -1167,7 +1166,12 @@ fn velocity_update(state: &StrapdownState, delta_v_nav: Vector3<f64>, dt: f64) -
     // The sensed increment is added directly; only the gravity and Coriolis terms are scaled
     // by dt. This is the one place the increment form is not bit-identical to the old rate
     // form, which grouped the sensed term inside the same `* dt`.
-    velocity + delta_v_nav + (gravity - r * (transport_rate + 2.0 * rotation_rate) * velocity) * dt
+    //
+    // The Coriolis and transport terms carry no frame transform: `transport_rate`,
+    // `earth_rate_lla` and `velocity` are all already resolved in the local-level frame, so
+    // 5.54 forms the cross product directly. Until #319 this line multiplied them by
+    // `earth::ecef_to_lla`, which belongs to neither the equation nor the frame.
+    velocity + delta_v_nav + (gravity - (transport_rate + 2.0 * rotation_rate) * velocity) * dt
 }
 /// Position update in NED
 ///
@@ -1395,9 +1399,6 @@ pub(crate) fn calculate_constant_velocity_acceleration(
     let rotation_rate =
         earth::vector_to_skew_symmetric(&earth::earth_rate_lla(&state.latitude.to_degrees()));
 
-    // Get geocentric radius factor
-    let r = earth::ecef_to_lla(&state.latitude.to_degrees(), &state.longitude.to_degrees());
-
     // Get gravity in local-level frame
     let mut gravity = Vector3::new(
         0.0,
@@ -1406,10 +1407,13 @@ pub(crate) fn calculate_constant_velocity_acceleration(
     );
     gravity = if state.is_enu { -gravity } else { gravity };
 
-    // For constant velocity: specific_force + gravity - r*(transport_rate + 2*rotation_rate)*velocity = 0
-    // Therefore: specific_force = r*(transport_rate + 2*rotation_rate)*velocity - gravity
-
-    r * (transport_rate + 2.0 * rotation_rate) * target_velocity - gravity
+    // For constant velocity: specific_force + gravity - (transport_rate + 2*rotation_rate)*velocity = 0
+    // Therefore: specific_force = (transport_rate + 2*rotation_rate)*velocity - gravity
+    //
+    // This has to stay the exact inverse of `velocity_update`, or the generated scenario
+    // will not hold the commanded velocity. Both dropped the spurious `ecef_to_lla`
+    // rotation in #319.
+    (transport_rate + 2.0 * rotation_rate) * target_velocity - gravity
 }
 
 /// Helper function to generate IMU data and GPS measurements for a given scenario
@@ -1764,6 +1768,49 @@ mod tests {
         assert!((v_new[0] - 2.0).abs() < 1e-6);
         assert!((v_new[1]).abs() < 1e-6);
         assert!((v_new[2]).abs() < 1e-6);
+    }
+    #[test]
+    fn velocity_update_coriolis_term_is_a_bare_cross_product() {
+        // Groves 5.54 subtracts `(Omega_en^n + 2 Omega_ie^n) v` with no frame transform on
+        // it. Until #319 this carried a spurious `earth::ecef_to_lla` factor, which the
+        // tests above could not see: they sit at 0 N, 0 E, where that matrix is a
+        // permutation whose effect is under their 1e-3 tolerance. Build the expectation
+        // here with an explicit cross product -- no skew matrices, no rotations -- at a
+        // latitude and longitude where a stray transform cannot hide.
+        let latitude: f64 = 45.0;
+        let longitude: f64 = 10.0;
+        let altitude: f64 = 1000.0;
+        let state = StrapdownState {
+            latitude: latitude.to_radians(),
+            longitude: longitude.to_radians(),
+            altitude,
+            velocity_north: 100.0,
+            velocity_east: 50.0,
+            velocity_vertical: -4.0,
+            attitude: Rotation3::identity(),
+            is_enu: false,
+        };
+        let velocity: Vector3<f64> = Vector3::new(100.0, 50.0, -4.0);
+        let omega_en: Vector3<f64> = earth::transport_rate(&latitude, &altitude, &velocity);
+        let omega_ie: Vector3<f64> = earth::earth_rate_lla(&latitude);
+        let coriolis: Vector3<f64> = (omega_en + 2.0 * omega_ie).cross(&velocity);
+        let gravity: Vector3<f64> = Vector3::new(0.0, 0.0, earth::gravity(&latitude, &altitude));
+
+        let dt: f64 = 10.0;
+        let delta_v_nav: Vector3<f64> = Vector3::new(0.3, -0.2, 0.1);
+        let expected: Vector3<f64> = velocity + delta_v_nav + (gravity - coriolis) * dt;
+        let actual: Vector3<f64> = velocity_update(&state, delta_v_nav, dt);
+
+        for axis in 0..3 {
+            assert_approx_eq!(actual[axis], expected[axis], 1e-12);
+        }
+        // The comparison is only meaningful if the term it pins is larger than the
+        // tolerance by a wide margin. At these speeds it is ~0.16 m/s over the interval.
+        assert!(
+            (coriolis * dt).norm() > 0.1,
+            "Coriolis term too small for this test to be sensitive: {} m/s",
+            (coriolis * dt).norm()
+        );
     }
     #[test]
     fn test_velocity_update_initial_velocity() {
