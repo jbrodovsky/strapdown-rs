@@ -260,12 +260,15 @@ pub fn ecef_to_eci(time: f64) -> Matrix3<f64> {
 /// position. The local-level frame is defined by the tangent to the ellipsoidal surface at the sensor's
 /// position. The local level frame is defined by the WGS84 latitude and longitude.
 ///
+/// This is `C_e^n`, Groves equation 2.150; its rows are the North, East and Down axes
+/// resolved in ECEF, so the result is NED regardless of any caller's `is_enu` flag.
+///
 /// # Arguments
 /// - `latitude` - The WGS84 latitude in degrees
 /// - `longitude` - The WGS84 longitude in degrees
 ///
 /// # Returns
-/// A 3x3 rotation matrix that converts from the ECEF frame to the local-level frame
+/// A 3x3 rotation matrix that converts from the ECEF frame to the local-level (NED) frame
 ///
 /// # Example
 /// ```rust
@@ -280,8 +283,8 @@ pub fn ecef_to_lla(latitude: &f64, longitude: &f64) -> Matrix3<f64> {
     let lon: f64 = (*longitude).to_radians();
 
     let mut rot: Matrix3<f64> = Matrix3::zeros();
-    rot[(0, 0)] = -lon.sin() * lat.cos();
-    rot[(0, 1)] = -lon.sin() * lat.sin();
+    rot[(0, 0)] = -lat.sin() * lon.cos();
+    rot[(0, 1)] = -lat.sin() * lon.sin();
     rot[(0, 2)] = lat.cos();
     rot[(1, 0)] = -lon.sin();
     rot[(1, 1)] = lon.cos();
@@ -874,6 +877,30 @@ mod tests {
         assert_approx_eq!(grav[2], GP, 1e-2);
     }
     #[test]
+    fn gravitation_centrifugal_term_deflects_north() {
+        // `gravitation` is the only caller of `ecef_to_lla` left after #319, and the two
+        // cases above sit at the equator and the pole, where row 0 of `C_e^n` cannot be
+        // told apart from the pre-#319 version. Away from those, the centrifugal vector
+        // -w^2 (x, y, 0) picks up a North component through row 0:
+        //
+        //     north = w^2 (r_e + h) sin(L) cos(L),  east = 0  (exactly, at any longitude)
+        //
+        // This is the plumb-line deflection, ~0.017 m/s^2 at 45 degrees. The pre-#319
+        // matrix put a longitude-dependent number here instead.
+        for longitude in [0.0_f64, 45.0, -122.0, 179.0] {
+            let latitude: f64 = 45.0;
+            let altitude: f64 = 1000.0;
+            let (_, r_e, _) = principal_radii(&latitude, &altitude);
+            let grav: Vector3<f64> = super::gravitation(&latitude, &longitude, &altitude);
+            let expected_north: f64 = RATE.powi(2)
+                * (r_e + altitude)
+                * latitude.to_radians().sin()
+                * latitude.to_radians().cos();
+            assert_approx_eq!(grav[0], expected_north, 1e-9);
+            assert_approx_eq!(grav[1], 0.0, 1e-12);
+        }
+    }
+    #[test]
     fn magnetic_radial_field() {
         // Using magnetic co-latitude [0, 180]
         let lat: f64 = 0.0;
@@ -910,34 +937,57 @@ mod tests {
         assert_approx_eq!(rot_t[(2, 2)], 1.0, 1e-7);
     }
     #[test]
-    fn ecef_to_lla() {
-        let latitude: f64 = 45.0;
-        let longitude: f64 = 90.0;
+    fn ecef_to_lla_is_a_rotation() {
+        // The pre-#319 implementation restated its own expression here and so never
+        // noticed that the matrix was not orthonormal: with the latitude and longitude
+        // trig swapped in row 0, `C C^T` was visibly not the identity and `det C` was
+        // 0.60 at 45 N, 10 E. Assert the defining property instead.
+        for (latitude, longitude) in [
+            (45.0_f64, 10.0_f64),
+            (0.0, 0.0),
+            (-33.9, 151.2),
+            (89.9, -179.9),
+            (71.0, -156.0),
+        ] {
+            let rot: Matrix3<f64> = super::ecef_to_lla(&latitude, &longitude);
+            let identity: Matrix3<f64> = rot * rot.transpose();
+            for row in 0..3 {
+                for col in 0..3 {
+                    let expected = if row == col { 1.0 } else { 0.0 };
+                    assert_approx_eq!(identity[(row, col)], expected, 1e-12);
+                }
+            }
+            assert_approx_eq!(rot.determinant(), 1.0, 1e-12);
+        }
+    }
+    #[test]
+    fn ecef_to_lla_maps_the_axes_where_they_belong() {
+        // On the equator at the prime meridian the ECEF axes line up with NED exactly:
+        // x_ecef points up (so -x is Down), y_ecef points East, z_ecef points North.
+        let rot: Matrix3<f64> = super::ecef_to_lla(&0.0, &0.0);
+        let north: Vector3<f64> = rot * Vector3::new(0.0, 0.0, 1.0);
+        let east: Vector3<f64> = rot * Vector3::new(0.0, 1.0, 0.0);
+        let down: Vector3<f64> = rot * Vector3::new(-1.0, 0.0, 0.0);
+        assert_approx_eq!(north[0], 1.0, 1e-12);
+        assert_approx_eq!(east[1], 1.0, 1e-12);
+        assert_approx_eq!(down[2], 1.0, 1e-12);
+        // At the north pole the ECEF z axis is straight up, i.e. Down is -z.
+        let polar: Matrix3<f64> = super::ecef_to_lla(&90.0, &0.0);
+        let up: Vector3<f64> = polar * Vector3::new(0.0, 0.0, 1.0);
+        assert_approx_eq!(up[2], -1.0, 1e-12);
+        // Row 2 of `C_e^n` is the Down axis in ECEF: the inward radial direction.
+        let latitude: f64 = 37.0;
+        let longitude: f64 = -122.0;
         let rot: Matrix3<f64> = super::ecef_to_lla(&latitude, &longitude);
-        assert_approx_eq!(
-            rot[(0, 0)],
-            -longitude.to_radians().sin() * latitude.to_radians().cos(),
-            1e-7
+        let radial_outward: Vector3<f64> = Vector3::new(
+            latitude.to_radians().cos() * longitude.to_radians().cos(),
+            latitude.to_radians().cos() * longitude.to_radians().sin(),
+            latitude.to_radians().sin(),
         );
-        assert_approx_eq!(
-            rot[(0, 1)],
-            -longitude.to_radians().sin() * latitude.to_radians().sin(),
-            1e-7
-        );
-        assert_approx_eq!(rot[(0, 2)], latitude.to_radians().cos(), 1e-7);
-        assert_approx_eq!(rot[(1, 0)], -longitude.to_radians().sin(), 1e-7);
-        assert_approx_eq!(rot[(1, 1)], longitude.to_radians().cos(), 1e-7);
-        assert_approx_eq!(
-            rot[(2, 0)],
-            -latitude.to_radians().cos() * longitude.to_radians().cos(),
-            1e-7
-        );
-        assert_approx_eq!(
-            rot[(2, 1)],
-            -latitude.to_radians().cos() * longitude.to_radians().sin(),
-            1e-7
-        );
-        assert_approx_eq!(rot[(2, 2)], -latitude.to_radians().sin(), 1e-7);
+        let down: Vector3<f64> = rot * radial_outward;
+        assert_approx_eq!(down[0], 0.0, 1e-12);
+        assert_approx_eq!(down[1], 0.0, 1e-12);
+        assert_approx_eq!(down[2], -1.0, 1e-12);
     }
     #[test]
     fn lla_to_ecef() {
