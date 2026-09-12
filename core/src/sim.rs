@@ -62,6 +62,7 @@ use clap::{Args, ValueEnum};
 
 use crate::NavigationFilter;
 use crate::earth::METERS_TO_DEGREES;
+use crate::gating::InnovationGate;
 use crate::kalman::{InitialState, UnscentedKalmanFilter};
 use crate::messages::{Event, EventStream, GnssFaultModel, GnssScheduler};
 
@@ -1997,6 +1998,16 @@ const MAX_CONSECUTIVE_REJECTIONS: usize = 100;
 /// family navigation filters because particle filter style navigation filters have the additional
 /// step of resampling. For particle filter type filters, use [run_closed_loop_pf] instead.
 ///
+/// # Innovation gating
+///
+/// Whether measurements are gated is the filter's business, not this function's:
+/// install a gate with
+/// [`NavigationFilter::set_innovation_gate`](crate::NavigationFilter::set_innovation_gate)
+/// before calling. This loop counts and logs what the gate rejected, and feeds every
+/// update's NIS to the [`HealthMonitor`] so a run that is gating *everything* -- the
+/// signature of a diverged filter rather than an unlucky one -- trips the
+/// consecutive-exceedance limit instead of silently degrading to dead reckoning.
+///
 /// # Arguments
 /// * `filter` - Mutable reference to a type implementing NavigationFilter
 /// * `stream` - Event stream containing IMU and measurement events
@@ -2020,6 +2031,7 @@ pub fn run_closed_loop<F: NavigationFilter>(
     let total = stream.events.len();
     let mut monitor = HealthMonitor::new(health_limits.unwrap_or_default());
     let mut rejected_measurements: usize = 0;
+    let mut gated_measurements: usize = 0;
     let mut consecutive_rejections: usize = 0;
     let sim_duration_s = stream.events.last().map_or(0.0, |event| match event {
         Event::Imu { elapsed_s, .. } | Event::Measurement { elapsed_s, .. } => *elapsed_s,
@@ -2093,8 +2105,11 @@ pub fn run_closed_loop<F: NavigationFilter>(
                 }
             }
             Event::Measurement { meas, .. } => {
-                match filter.update(meas.as_ref()) {
-                    Ok(()) => consecutive_rejections = 0,
+                let outcome = match filter.update(meas.as_ref()) {
+                    Ok(outcome) => {
+                        consecutive_rejections = 0;
+                        outcome
+                    }
                     // A measurement the filter cannot use -- an off-map geophysical sample,
                     // an unavailable external model -- leaves the state untouched and valid.
                     // Aborting on it would make geophysical aiding unusable at map edges,
@@ -2116,10 +2131,22 @@ pub fn run_closed_loop<F: NavigationFilter>(
                         log::error!("Filter update failed at {ts} (#{i}): {e}");
                         bail!(e);
                     }
+                };
+                if !outcome.accepted {
+                    gated_measurements += 1;
+                    log::debug!(
+                        "Measurement gated out at {ts} (#{i}): NIS = {:.3} on {} dof",
+                        outcome.nis,
+                        outcome.dof
+                    );
                 }
                 let mean = filter.get_estimate();
                 let cov = filter.get_certainty();
-                if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
+                // The real NIS, at last. `HealthMonitor` counts consecutive
+                // exceedances, which is the check the per-measurement gate cannot
+                // make: gating rejects outliers one at a time and would happily
+                // reject every fix of a diverged run without ever saying so.
+                if let Err(e) = monitor.check(mean.as_slice(), &cov, Some(outcome.nis)) {
                     log::error!("Health fail after measurement update at {ts} (#{i}): {e}");
                     bail!(e);
                 }
@@ -2161,6 +2188,14 @@ pub fn run_closed_loop<F: NavigationFilter>(
     if rejected_measurements > 0 {
         log::warn!(
             "closed-loop run completed with {rejected_measurements} of {total} events rejected as unusable measurements"
+        );
+    }
+    // Reported separately from the line above: "unusable" means the measurement could
+    // not be evaluated, "gated out" means it was evaluated and disbelieved. Folding
+    // them together would hide a filter that is quietly refusing every valid fix.
+    if gated_measurements > 0 {
+        log::warn!(
+            "closed-loop run completed with {gated_measurements} of {total} events gated out by the innovation test"
         );
     }
     Ok(results)
@@ -3295,6 +3330,21 @@ pub struct ClosedLoopConfig {
     /// UKF kappa parameter (secondary spread control)
     #[serde(default = "default_ukf_kappa")]
     pub ukf_kappa: f64,
+    /// Innovation gate applied to every measurement update.
+    ///
+    /// `None` -- the default -- accepts every measurement, which is the behaviour
+    /// every run of this crate has had up to now. Gating is opt-in rather than on by
+    /// default because switching it on changes the trajectory of every existing
+    /// scenario, and that is a decision to make against the ground-truth validation
+    /// suite rather than as a side effect of adding the capability.
+    ///
+    /// Deserializes from either form:
+    /// ```yaml
+    /// innovation_gate: { chi_squared: { confidence: 0.999 } }
+    /// innovation_gate: { fixed: { threshold: 25.0 } }
+    /// ```
+    #[serde(default)]
+    pub innovation_gate: Option<InnovationGate>,
 }
 
 impl Default for ClosedLoopConfig {
@@ -3304,6 +3354,7 @@ impl Default for ClosedLoopConfig {
             ukf_alpha: default_ukf_alpha(),
             ukf_beta: default_ukf_beta(),
             ukf_kappa: default_ukf_kappa(),
+            innovation_gate: None,
         }
     }
 }

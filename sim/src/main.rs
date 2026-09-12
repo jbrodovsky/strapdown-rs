@@ -29,7 +29,7 @@ use common::{
     validate_output_path,
 };
 use log::{error, info};
-use nalgebra::{DMatrix, Rotation3, Vector3};
+use nalgebra::{Rotation3, Vector3};
 use rayon::prelude::*;
 use std::error::Error;
 use std::path::{Path, PathBuf};
@@ -50,6 +50,7 @@ use std::rc::Rc;
 // Unconditional since #259: the RBPF event loop drives the filter through this trait, not
 // through inherent methods, so it is needed with or without the geonav feature.
 use strapdown::NavigationFilter;
+use strapdown::gating::InnovationGate;
 #[cfg(feature = "geonav")]
 use strapdown::kalman::{ExtendedKalmanFilter, InitialState};
 use strapdown::sim::HealthLimits;
@@ -350,6 +351,16 @@ struct ClosedLoopSimArgs {
     #[arg(long, default_value_t = 42)]
     seed: u64,
 
+    /// Reject measurements whose NIS exceeds this chi-squared confidence level.
+    ///
+    /// Omitted, every measurement is accepted -- the behaviour of every release so
+    /// far. Given (e.g. `--gate-confidence 0.999`), each update is tested against the
+    /// chi-squared quantile for that measurement's own degrees of freedom, so one
+    /// number stays meaningful across 1-DOF baro, 3-DOF position and 5-DOF
+    /// position+velocity aiding. Must lie strictly inside (0, 1).
+    #[arg(long, value_name = "PROBABILITY")]
+    gate_confidence: Option<f64>,
+
     /// GNSS scheduler settings (dropouts / reduced rate)
     #[command(flatten)]
     scheduler: SchedulerArgs,
@@ -520,17 +531,20 @@ fn process_file(
                 FilterType::Ukf => {
                     let mut ukf = initialize_ukf(&records[0].clone(), UkfConfig::default())?;
                     info!("Initialized UKF");
+                    ukf.set_innovation_gate(filter_config.innovation_gate);
                     run_closed_loop(&mut ukf, event_stream, None, Some(execution_limits))
                 }
                 FilterType::Ekf => {
                     let mut ekf =
                         initialize_ekf(&records[0].clone(), None, None, None, None, true)?;
                     info!("Initialized EKF");
+                    ekf.set_innovation_gate(filter_config.innovation_gate);
                     run_closed_loop(&mut ekf, event_stream, None, Some(execution_limits))
                 }
                 FilterType::Eskf => {
                     let mut eskf = initialize_eskf(&records[0].clone(), None, None, None, None)?;
                     info!("Initialized ESKF");
+                    eskf.set_innovation_gate(filter_config.innovation_gate);
                     run_closed_loop(&mut eskf, event_stream, None, Some(execution_limits))
                 }
             };
@@ -904,6 +918,7 @@ fn run_single_closed_loop_simulation(
     ukf_alpha: f64,
     ukf_beta: f64,
     ukf_kappa: f64,
+    innovation_gate: Option<InnovationGate>,
 ) -> Result<(), Box<dyn Error>> {
     // Build event stream from records and GNSS degradation config
     let event_stream = build_event_stream(records, gnss_degradation);
@@ -925,16 +940,19 @@ fn run_single_closed_loop_simulation(
                 },
             )?;
             info!("Initialized UKF");
+            ukf.set_innovation_gate(innovation_gate);
             run_closed_loop(&mut ukf, event_stream, None, Some(execution_limits))
         }
         FilterType::Ekf => {
             let mut ekf = initialize_ekf(&records[0].clone(), None, None, None, None, true)?;
             info!("Initialized EKF");
+            ekf.set_innovation_gate(innovation_gate);
             run_closed_loop(&mut ekf, event_stream, None, Some(execution_limits))
         }
         FilterType::Eskf => {
             let mut eskf = initialize_eskf(&records[0].clone(), None, None, None, None)?;
             info!("Initialized ESKF");
+            eskf.set_innovation_gate(innovation_gate);
             run_closed_loop(&mut eskf, event_stream, None, Some(execution_limits))
         }
     };
@@ -1105,6 +1123,16 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
     };
     info!("Running in closed-loop mode with {filter_name}");
 
+    // Built before the per-file loop on purpose: an out-of-range confidence should
+    // be reported once, up front, not after the first file has already been written.
+    let innovation_gate = args
+        .gate_confidence
+        .map(InnovationGate::chi_squared)
+        .transpose()?;
+    if let Some(gate) = innovation_gate {
+        info!("Innovation gating enabled: {gate:?}");
+    }
+
     // Get all CSV files to process
     let csv_files = get_csv_files(&args.sim.input)?;
     let is_multiple = csv_files.len() > 1;
@@ -1147,6 +1175,7 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
             args.ukf_alpha,
             args.ukf_beta,
             args.ukf_kappa,
+            innovation_gate,
         ) {
             Ok(()) => {
                 // Success - result logging is handled by the helper function
@@ -1449,8 +1478,9 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                     1e-9, 1e-9, 1e-9, // Gyro bias process noise
                 ];
                 process_noise_vec.extend(vec![1e-9; num_geo_states]);
-                let process_noise =
-                    DMatrix::from_diagonal(&nalgebra::DVector::from_vec(process_noise_vec));
+                let process_noise = nalgebra::DMatrix::from_diagonal(&nalgebra::DVector::from_vec(
+                    process_noise_vec,
+                ));
 
                 let mut ekf = ExtendedKalmanFilter::new(
                     &initial_state,
