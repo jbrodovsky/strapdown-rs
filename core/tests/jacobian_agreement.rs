@@ -27,7 +27,9 @@
 //!    rotation-vector form says exactly zero.
 
 use nalgebra::{Rotation3, Vector3};
-use strapdown::linearize::{euler_state_transition_jacobian, state_transition_jacobian};
+use strapdown::linearize::{
+    error_state_transition_jacobian, euler_state_transition_jacobian, state_transition_jacobian,
+};
 use strapdown::{IMUData, ImuSample, StrapdownState, mechanize};
 
 const LABELS: [&str; 9] = [
@@ -139,8 +141,15 @@ fn euler_jacobian_matches_the_mechanization_in_both_frames() {
 /// The altitude row is frame-dependent, and getting it wrong is a pure sign flip.
 ///
 /// Called out separately from the sweep above because it is the one entry whose *sign* is
-/// decided by the frame, and a sign flip in a position/velocity coupling is what makes a
-/// vertical channel run away rather than merely mistune.
+/// decided by the frame, and because a sign flip in a position/velocity coupling does not
+/// merely mistune a filter -- it inverts the altitude/vertical-velocity feedback loop, so the
+/// vertical channel grows without bound from any seed error while a run seeded exactly on
+/// truth stays perfectly stable. That combination is what made it survive so long: #307 in
+/// `state_transition_jacobian` and #303 in `error_state_transition_jacobian` were the same
+/// mistake in two functions.
+///
+/// All three Jacobians are checked, because all three carry the entry and all three had it
+/// wrong at some point.
 #[test]
 fn altitude_row_follows_the_frame() {
     let dt = 0.01;
@@ -152,13 +161,14 @@ fn altitude_row_follows_the_frame() {
         for analytic in [
             euler_state_transition_jacobian(&state, &imu.accel, &imu.gyro, dt),
             state_transition_jacobian(&state, &imu.accel, &imu.gyro, dt),
+            error_state_transition_jacobian(&state, &imu.accel, &imu.gyro, dt),
         ] {
             let actual = analytic[(2, 5)];
             assert!(
                 (actual - expected).abs() < 1e-12,
                 "in {} d(alt)/d(v_vertical) should be {expected:.3e}, got {actual:.3e}. \
                  `altitude` is positive up in both frames but `velocity_vertical` is positive \
-                 down in NED, so this entry changes sign with the frame",
+                 down in NED, so this entry changes sign with the frame (#303, #307)",
                 if is_enu { "ENU" } else { "NED" }
             );
         }
