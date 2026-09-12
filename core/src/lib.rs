@@ -26,6 +26,7 @@
 //!
 //! This crate is organized into several modules:
 //! - [earth]: Contains functions and constants related to Earth models, coordinate transformations, and geodetic calculations.
+//! - [engine]: Contains the high-level [`InsEngine`](engine::InsEngine) builder API, the user-facing entry point.
 //! - [kalman]: Contains the implementation of Kalman-style navigation filters (including nonlinear variants)
 //! - [linalg]: Contains linear algebra utilities and helper functions.
 //! - [linearize]: Contains analytic Jacobians for strapdown mechanization and measurement models (for EKF/ESKF/RBPF-EKF).
@@ -165,6 +166,7 @@
 //! This top-level module provides a public API for each step of the forward mechanization equations, allowing users to
 //! easily pass data in and out.
 pub mod earth;
+pub mod engine;
 pub mod error;
 pub mod kalman;
 pub mod linalg;
@@ -175,6 +177,7 @@ pub mod particle;
 pub mod rbpf;
 pub mod sim;
 
+pub use engine::{GnssFix, InsEngine, InsEngineBuilder, InsEngineConfig, NavSolution};
 pub use error::StrapdownError;
 
 use nalgebra::{DMatrix, DVector, Matrix3, Rotation3, Vector3, Vector6};
