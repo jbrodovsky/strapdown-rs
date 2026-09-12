@@ -565,12 +565,25 @@ fn every_filter_rejects_a_non_inertial_input() {
 /// domain the increments arrive in, and the ESKF's numbers here are bit-identical before and
 /// after that change.
 ///
-/// Re-enable when the Jacobians are fixed. Do not widen the bounds to make it pass.
+/// Re-enable when the ESKF converges. Do not widen the bounds to make it pass.
+///
+/// Half of this is already fixed: the EKF diverged here for the same reason it diverged on
+/// real data (#307) -- `state_transition_jacobian` expressed the attitude columns as a
+/// rotation vector while the EKF's state holds Euler angles. With
+/// `euler_state_transition_jacobian` the EKF now ends this scenario 0.000 m from truth, and
+/// the UKF and RBPF were always fine. Only the ESKF still runs away, at 31 km from a 20 m
+/// seed, which points at `error_state_transition_jacobian` rather than at the shared one.
 #[test]
-#[ignore = "ESKF and EKF diverge from any non-zero seed error -- pre-existing, #303"]
+#[ignore = "ESKF diverges from any non-zero seed error (31 km from a 20 m seed); the EKF half was the Euler parametrisation and is fixed (#307), the ESKF half remains -- #303"]
 fn all_filters_converge_from_a_displaced_seed() {
     let scenario = build_scenario(SEEDED_POSITION_ERROR_M);
     let truth = scenario.truth.last().unwrap();
+
+    // Every filter is run and reported before anything is asserted. Failing on the first one
+    // hides the others, and which filters diverge is the whole diagnostic here -- it is what
+    // separated the EKF's Euler-parametrisation defect (#307, fixed) from whatever remains in
+    // the ESKF.
+    let mut failures = Vec::new();
 
     for (name, mut filter) in all_filters(&scenario, &[0.0; 6]) {
         let estimate = run(filter.as_mut(), &scenario);
@@ -579,13 +592,20 @@ fn all_filters_converge_from_a_displaced_seed() {
             "{name}: horizontal {horizontal:.3} m from a {SEEDED_POSITION_ERROR_M:.0} m seed error"
         );
 
-        assert!(
-            estimate.iter().take(9).all(|v| v.is_finite()),
-            "{name} produced a non-finite navigation state: {estimate:?}"
-        );
-        assert!(
-            horizontal <= MAX_HORIZONTAL_ERROR_M,
-            "{name} horizontal error {horizontal:.3} m exceeds {MAX_HORIZONTAL_ERROR_M:.3} m"
-        );
+        if !estimate.iter().take(9).all(|v| v.is_finite()) {
+            failures.push(format!("{name}: produced a non-finite navigation state"));
+        } else if horizontal > MAX_HORIZONTAL_ERROR_M {
+            failures.push(format!(
+                "{name}: horizontal error {horizontal:.3} m exceeds {MAX_HORIZONTAL_ERROR_M:.3} m"
+            ));
+        }
     }
+
+    assert!(
+        failures.is_empty(),
+        "{} of the filters failed to converge from a {SEEDED_POSITION_ERROR_M:.0} m seed \
+         error:\n  {}",
+        failures.len(),
+        failures.join("\n  ")
+    );
 }

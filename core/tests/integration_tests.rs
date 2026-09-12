@@ -1163,7 +1163,6 @@ fn test_ukf_outperforms_dead_reckoning() {
 /// 2. Position errors remain bounded
 /// 3. The filter performs comparably to UKF
 #[test]
-#[ignore = "EKF diverges on this dataset (~14,707 km final error); the real NIS now reaching HealthMonitor trips its consecutive-exceedance limit -- pre-existing, #307"]
 fn test_ekf_closed_loop_on_real_data() {
     // Load test data
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -1323,7 +1322,6 @@ fn test_ekf_closed_loop_on_real_data() {
 /// (uncorrupted fixes, dataset accuracies: horizontal sigma ~4.7 m, vertical
 /// sigma ~1.4 m), plus the per-sample baro/mag aiding present in every stream.
 #[test]
-#[ignore = "EKF diverges on this dataset (~14,707 km final error); the real NIS now reaching HealthMonitor trips its consecutive-exceedance limit -- pre-existing, #307"]
 fn test_ekf_with_degraded_gnss() {
     // Load test data
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -1467,7 +1465,6 @@ fn test_ekf_with_degraded_gnss() {
 /// the EKF produces lower errors than dead reckoning, demonstrating the benefit
 /// of GNSS-aided navigation.
 #[test]
-#[ignore = "EKF diverges on this dataset (~14,707 km final error); the real NIS now reaching HealthMonitor trips its consecutive-exceedance limit -- pre-existing, #307"]
 fn test_ekf_outperforms_dead_reckoning() {
     // Load test data
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -1534,6 +1531,19 @@ fn test_ekf_outperforms_dead_reckoning() {
             dr_stats.rms_horizontal_error
         );
     }
+
+    // The relative check above is necessary but nowhere near sufficient, and on its own it is
+    // what let #307 sit: dead reckoning ends this recording ~4,400 km out, so "better than
+    // dead reckoning" was satisfied by an EKF 14,707 km from truth on the far side of the
+    // planet. Hold it to the same absolute ceiling as every other healthy filter.
+    assert!(
+        ekf_stats.rms_horizontal_error < MAX_HORIZONTAL_RMSE_M,
+        "EKF horizontal RMSE should be under the {MAX_HORIZONTAL_RMSE_M} m operating bound, \
+         got {:.2} m. Beating dead reckoning is not evidence of a working filter when dead \
+         reckoning is at {:.0} m",
+        ekf_stats.rms_horizontal_error,
+        dr_stats.rms_horizontal_error
+    );
 }
 
 // ==================== Error-State Kalman Filter Integration Tests ====================
@@ -2153,7 +2163,6 @@ fn test_eskf_default_initialization_on_real_data() {
 /// It verifies that all filters produce reasonable results and helps understand their
 /// relative strengths.
 #[test]
-#[ignore = "fails on its EKF leg: the EKF diverges on this dataset (~14,707 km final error) and the real NIS now reaching HealthMonitor trips its consecutive-exceedance limit -- pre-existing, #307"]
 // #[ignore = "ESKF diverges on extended real-world datasets - requires further tuning"]
 fn test_filter_comparison() {
     // Load test data
@@ -2434,7 +2443,6 @@ fn test_rbpf_with_degraded_gnss() {
 /// produce output with the same number of records as the input data. This is critical for
 /// downstream analysis tools that expect aligned data streams.
 #[test]
-#[ignore = "fails on its EKF leg: the EKF diverges on this dataset (~14,707 km final error) and the real NIS now reaching HealthMonitor trips its consecutive-exceedance limit -- pre-existing, #307"]
 fn test_filter_output_length_matches_input() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let test_data_path = Path::new(manifest_dir).join("tests/test_data.csv");
@@ -2569,6 +2577,17 @@ fn build_ukf(initial_state: &InitialState) -> UnscentedKalmanFilter {
     )
 }
 
+/// Build an EKF on the shared default tuning.
+fn build_ekf(initial_state: &InitialState) -> ExtendedKalmanFilter {
+    ExtendedKalmanFilter::new(
+        initial_state,
+        &[0.0; 6],
+        DEFAULT_INITIAL_COVARIANCE.to_vec(),
+        DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec())),
+        true,
+    )
+}
+
 /// Build an ESKF on its own tuning.
 fn build_eskf(initial_state: &InitialState) -> ErrorStateKalmanFilter {
     ErrorStateKalmanFilter::new(
@@ -2618,10 +2637,9 @@ fn assert_reference_accuracy_matches_dataset(records: &[TestDataRecord]) {
 /// what this adds is the comparison, which is where a filter that has quietly regressed
 /// relative to its peers shows up.
 ///
-/// The EKF is absent because it diverges to ~14,707 km on this dataset (#307), which is why
-/// `test_filter_comparison` is `#[ignore]`d. Excluding it keeps this benchmark running --
-/// a benchmark that is skipped validates nothing -- and it should be added back as a fourth
-/// row when #307 is fixed.
+/// All four filters are covered. The EKF was excluded when this benchmark was written because
+/// it diverged to ~14,707 km on this dataset (#307); with the Euler-angle correction to
+/// `state_transition_jacobian` it tracks the others and is back in the table.
 #[test]
 fn test_rmse_benchmark_across_filters() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -2640,10 +2658,15 @@ fn test_rmse_benchmark_across_filters() {
     let eskf_stats =
         compute_error_metrics(&run_filter_on_clean_stream(&mut eskf, &records), &records);
 
+    let mut ekf = build_ekf(&initial_state);
+    let ekf_stats =
+        compute_error_metrics(&run_filter_on_clean_stream(&mut ekf, &records), &records);
+
     let rbpf_stats = compute_error_metrics(&run_rbpf(&records), &records);
 
     let benchmark = [
         ("UKF", &ukf_stats),
+        ("EKF", &ekf_stats),
         ("ESKF", &eskf_stats),
         ("RBPF", &rbpf_stats),
     ];

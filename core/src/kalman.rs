@@ -974,7 +974,7 @@ impl NavigationFilter for ExtendedKalmanFilter {
         let corrected_rates = corrected_sample.to_rates()?;
 
         // Compute state transition Jacobian F (before propagation)
-        let f_matrix = crate::linearize::state_transition_jacobian(
+        let f_matrix = crate::linearize::euler_state_transition_jacobian(
             &state,
             &corrected_rates.accel,
             &corrected_rates.gyro,

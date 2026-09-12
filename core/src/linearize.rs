@@ -119,11 +119,94 @@ use nalgebra::{DMatrix, DVector, Rotation3, Vector3};
 /// assert_eq!(f_matrix.nrows(), 9);
 /// assert_eq!(f_matrix.ncols(), 9);
 /// ```
+/// Map Euler-angle rates onto a navigation-frame rotation vector, $E(\Phi)$.
+///
+/// [`StrapdownState`] stores attitude as nalgebra's intrinsic XYZ Euler angles, so
+/// $C_b^n = R_z(\psi) R_y(\theta) R_x(\phi)$ and the nav-frame angular velocity is
+///
+/// $$ \omega = \dot\psi \hat z + \dot\theta (R_z \hat y) + \dot\phi (R_z R_y \hat x) $$
+///
+/// whose columns are exactly this matrix. It is what converts a Jacobian written in
+/// rotation-vector form into one with respect to the Euler angles the state actually holds.
+///
+/// Singular at $\theta = \pm 90°$ (gimbal lock), where the Euler parametrisation itself
+/// stops being a chart; callers fall back to the rotation-vector form there.
+fn euler_rate_matrix(roll: f64, pitch: f64, yaw: f64) -> nalgebra::Matrix3<f64> {
+    let rz = Rotation3::from_axis_angle(&Vector3::z_axis(), yaw);
+    let ry = Rotation3::from_axis_angle(&Vector3::y_axis(), pitch);
+    let _ = roll; // the roll axis is the body x-axis carried through R_z R_y
+    nalgebra::Matrix3::from_columns(&[(rz * ry) * Vector3::x(), rz * Vector3::y(), Vector3::z()])
+}
+
+/// How a Jacobian's attitude columns are parametrised.
+///
+/// The two consumers of the transition Jacobian hold attitude differently, and the blocks
+/// that touch attitude are genuinely different matrices as a result. Naming the choice keeps
+/// each filter's convention visible at the call site instead of implied by which function it
+/// happens to call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttitudeParametrization {
+    /// Attitude perturbations are a nav-frame rotation vector.
+    ///
+    /// What an error-state filter carries, and the form `δ(C f) = -[f^n×] δθ` is written in.
+    RotationVector,
+    /// Attitude perturbations are increments of the stored XYZ Euler angles.
+    ///
+    /// What a full-state filter whose state vector holds roll, pitch and yaw carries. Differs
+    /// from [`Self::RotationVector`] by the Euler-rate matrix `E(Φ)`, and the difference is
+    /// the same order as the terms themselves -- not a refinement (#307).
+    Euler,
+}
+
+/// Full-state transition Jacobian with rotation-vector attitude perturbations.
+///
+/// For error-state filters, whose attitude correction is a rotation vector. A full-state
+/// filter storing Euler angles wants [`euler_state_transition_jacobian`] instead.
+#[must_use]
 pub fn state_transition_jacobian(
     state: &StrapdownState,
     imu_accel: &Vector3<f64>,
-    _imu_gyro: &Vector3<f64>,
+    imu_gyro: &Vector3<f64>,
     dt: f64,
+) -> DMatrix<f64> {
+    transition_jacobian(
+        state,
+        imu_accel,
+        imu_gyro,
+        dt,
+        AttitudeParametrization::RotationVector,
+    )
+}
+
+/// Full-state transition Jacobian with Euler-angle attitude perturbations.
+///
+/// For a filter whose state vector holds roll, pitch and yaw directly -- the EKF. Using the
+/// rotation-vector form here is what drove #307: on a typical state a roll perturbation moves
+/// north velocity by 7.7e-2 where the rotation-vector form predicts exactly zero, so the gain
+/// was computed against the wrong sensitivity on every step and the filter diverged to
+/// ~14,707 km on `core/tests/test_data.csv`.
+#[must_use]
+pub fn euler_state_transition_jacobian(
+    state: &StrapdownState,
+    imu_accel: &Vector3<f64>,
+    imu_gyro: &Vector3<f64>,
+    dt: f64,
+) -> DMatrix<f64> {
+    transition_jacobian(
+        state,
+        imu_accel,
+        imu_gyro,
+        dt,
+        AttitudeParametrization::Euler,
+    )
+}
+
+fn transition_jacobian(
+    state: &StrapdownState,
+    imu_accel: &Vector3<f64>,
+    imu_gyro: &Vector3<f64>,
+    dt: f64,
+    attitude: AttitudeParametrization,
 ) -> DMatrix<f64> {
     let mut f = DMatrix::<f64>::identity(9, 9);
 
@@ -170,6 +253,29 @@ pub fn state_transition_jacobian(
     // Transform specific force to navigation frame
     let f_bn = c_bn * imu_accel;
 
+    // The Euler parametrisation at this state, and its inverse at the propagated state.
+    //
+    // Both attitude-bearing blocks below are naturally written for a rotation-vector
+    // perturbation. When the caller's state holds Euler angles they have to be converted;
+    // when it holds a rotation vector they are already right, and `E` is the identity here.
+    // Near gimbal lock `E` is singular and no conversion exists, so the rotation-vector form
+    // is kept -- wrong but bounded -- rather than inverting a near-singular matrix.
+    let use_euler = attitude == AttitudeParametrization::Euler;
+    let euler_matrix = if use_euler {
+        let (roll, pitch, yaw) = state.attitude.euler_angles();
+        euler_rate_matrix(roll, pitch, yaw)
+    } else {
+        nalgebra::Matrix3::identity()
+    };
+    let euler_matrix_next_inverse = if use_euler {
+        let next_attitude = crate::attitude_update(state, *imu_gyro * dt, dt);
+        let next_rotation = Rotation3::from_matrix_unchecked(next_attitude);
+        let (next_roll, next_pitch, next_yaw) = next_rotation.euler_angles();
+        euler_rate_matrix(next_roll, next_pitch, next_yaw).try_inverse()
+    } else {
+        Some(nalgebra::Matrix3::identity())
+    };
+
     // --- Position derivatives (rows 0-2) ---
     // Position update: lat(+) = lat(-) + v_n/(R_n+h)*dt + ...
     // ∂(lat(+))/∂(lat(-)): main term is identity, plus derivative terms
@@ -184,9 +290,14 @@ pub fn state_transition_jacobian(
     // ∂(lon(+))/∂(v_e): kinematic relationship
     f[(1, 4)] = 1.0 / ((r_e + alt) * cos_lat) * dt;
 
-    // Altitude update: simple kinematic
-    // ∂(alt(+))/∂(v_d)
-    f[(2, 5)] = dt;
+    // Altitude update: simple kinematic.
+    //
+    // `altitude` is height above the ellipsoid -- positive *up* -- in both frames, but
+    // `velocity_vertical` is positive *down* in NED. `position_update` integrates it with
+    // exactly this sign; the Jacobian has to agree or the filter believes climbing and
+    // descending are swapped. This was unconditionally `+dt`, which is right in ENU and
+    // backwards in NED -- the default frame since queue 3 (#307).
+    f[(2, 5)] = if state.is_enu { dt } else { -dt };
 
     // --- Velocity derivatives (rows 3-5) ---
     // Velocity update includes Coriolis, centrifugal, gravity, and specific force
@@ -216,14 +327,21 @@ pub fn state_transition_jacobian(
         f[(5, 2)] += dgravity_dalt * dt;
     }
 
-    // ∂(v(+))/∂(attitude): transformation of specific force
-    // f^n = C_b^n * f^b
-    // For small angle perturbations: δ(C*f) ≈ [f×] * δθ
-    // Using skew-symmetric: [f×] * θ = -[θ×] * f
+    // ∂(v(+))/∂(attitude): transformation of specific force.
+    //
+    // `δ(C f) = -[f^n×] δθ` holds for `δθ` a **rotation vector**, but this filter's state
+    // holds Euler angles, and the two are not interchangeable: at this state a roll
+    // perturbation moves `v_n` by 7.7e-2 where the rotation-vector form predicts exactly
+    // zero. Composing with `E(Φ)` converts the rotation-vector Jacobian into one with
+    // respect to the angles actually stored, which is what the EKF's covariance needs.
+    //
+    // This was the dominant error behind #307: the mismatch is the same order as the terms
+    // themselves, so the EKF's gain was computed against the wrong sensitivity on every step.
     let f_bn_skew = vector_to_skew_symmetric(&f_bn);
+    let d_velocity_d_euler = -f_bn_skew * euler_matrix;
     for i in 0..3 {
         for j in 0..3 {
-            f[(3 + i, 6 + j)] += -f_bn_skew[(i, j)] * dt;
+            f[(3 + i, 6 + j)] += d_velocity_d_euler[(i, j)] * dt;
         }
     }
 
@@ -232,10 +350,20 @@ pub fn state_transition_jacobian(
     // In error-state formulation: δε(+) ≈ δε(-) - (Ω_ie + Ω_en) × δε(-) * dt
     // This gives: Φ_ε = I - [Ω_ie + Ω_en]× * dt
 
+    // Same conversion on the attitude block itself. In rotation-vector form the transition is
+    // `I - [ω_in×] dt`; in Euler form it is that, sandwiched between the parametrisation at
+    // the output and input points: `E(Φ⁺)⁻¹ (I - [ω_in×] dt) E(Φ⁻)`. The sandwich is not a
+    // refinement -- the body rotation dominates it, so the off-diagonal terms it produces are
+    // ~2.9e-4 here against the ~7e-7 the rotation-vector form alone gives.
     let omega_in_skew = omega_ie_skew + omega_en_skew;
+    let rotation_vector_transition = nalgebra::Matrix3::identity() - omega_in_skew * dt;
+    let attitude_transition = euler_matrix_next_inverse.map_or_else(
+        || rotation_vector_transition,
+        |next_inverse| next_inverse * rotation_vector_transition * euler_matrix,
+    );
     for i in 0..3 {
         for j in 0..3 {
-            f[(6 + i, 6 + j)] += -omega_in_skew[(i, j)] * dt;
+            f[(6 + i, 6 + j)] = attitude_transition[(i, j)];
         }
     }
 
