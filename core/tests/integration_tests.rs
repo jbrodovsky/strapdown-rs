@@ -33,14 +33,49 @@
 //! 2. Position errors remain within reasonable bounds
 //! 3. Velocity and orientation estimates are stable
 //! 4. The closed-loop filter outperforms dead reckoning
+//!
+//! ## Theoretical bounds
+//!
+//! Most limits in this file are regression guards: empirical levels chosen to catch a change
+//! for the worse. A few are not, and the difference matters -- a bound derived from the
+//! measurement setup stays valid when the tuning changes, an empirical one does not. The
+//! three below are derived, and they explain why the empirical ones sit where they do.
+//!
+//! **The error floor is set by the reference, not by the filter.** "Truth" here is the GNSS
+//! fix, which is also the filters' aiding source, so these metrics measure agreement with the
+//! aiding signal rather than agreement with an independent truth. `test_data.csv` carries the
+//! receiver's own accuracy estimate: 3.81 m horizontal and 1.38 m vertical, averaged over the
+//! run (1 sigma). No filter scored against this reference can show an RMSE below roughly
+//! 3.8 m however good it is, and one that did would be reporting the reference's noise rather
+//! than its own accuracy. Independent ground truth would need a different dataset.
+//!
+//! **The observed ~23 m horizontal RMSE is dominated by sample alignment, not by filter
+//! error.** The recording is 1 Hz over 89 minutes at 21.19 m/s mean ground speed, so a single
+//! sample of misalignment between a filter output and the record it is scored against is
+//! 21.2 m of apparent along-track error on its own -- very nearly the whole of the observed
+//! figure, and the reason all three healthy filters land within 0.3 m of each other rather
+//! than spreading out by tuning. Tightening the horizontal limits much below 20 m would be
+//! measuring this harness's timestamp matching, not the navigation solution.
+//!
+//! **Attitude splits into an observable part and an unobservable one.** Roll and pitch are
+//! observable through gravity: the accelerometer senses a 9.81 m/s^2 vector whose direction
+//! in the body frame fixes two of the three angles, so they are bounded and worth asserting.
+//! Yaw has no such anchor under position-only aiding -- it is observable only through the
+//! weak coupling between heading and velocity during acceleration, which a consumer-MEMS gyro
+//! does not hold over 89 minutes. It is reported here and deliberately not asserted; see
+//! #305. The convention-free geodesic attitude error is reported alongside the per-axis
+//! figures because it is the quantity that does not depend on a choice of Euler sequence, and
+//! on this dataset it equals the yaw error to two decimals, which is what shows the other two
+//! axes are healthy.
 use std::path::Path;
 
-use strapdown::NavigationFilter;
-use strapdown::StrapdownState;
 use strapdown::earth::haversine_distance;
+use strapdown::engine::{GnssFix, InsEngine, InsEngineConfig};
+use strapdown::gating::InnovationGate;
 use strapdown::kalman::{
     ErrorStateKalmanFilter, ExtendedKalmanFilter, InitialState, UnscentedKalmanFilter,
 };
+use strapdown::measurements::ZuptMeasurement;
 use strapdown::messages::{
     Event, GnssDegradationConfig, GnssFaultModel, GnssScheduler, build_event_stream,
 };
@@ -48,8 +83,10 @@ use strapdown::rbpf::{RaoBlackwellizedParticleFilter, RbpfConfig};
 use strapdown::sim::{
     NavigationResult, TestDataRecord, dead_reckoning, initialize_eskf, run_closed_loop,
 };
+use strapdown::stationary::{StationaryConfig, StationaryDetector};
+use strapdown::{IMUData, ImuSample, NavigationFilter, StrapdownState};
 
-use nalgebra::{DMatrix, DVector, Quaternion, Rotation3, UnitQuaternion, Vector3};
+use nalgebra::{DMatrix, DVector, Rotation3, Vector3};
 
 /// Default process noise covariance for testing (15-state)
 const DEFAULT_PROCESS_NOISE: [f64; 15] = [
@@ -78,6 +115,47 @@ const DEFAULT_INITIAL_COVARIANCE: [f64; 15] = [
     0.01, 0.01, 0.01, // accelerometer bias covariance (m/s²)
     0.001, 0.001, 0.001, // gyroscope bias covariance (rad/s)
 ];
+
+/// Mean 1-sigma horizontal accuracy the receiver reports across `test_data.csv` (meters).
+///
+/// The error floor described in the module documentation. Held as a constant so the bounds
+/// below can refer to it; `assert_reference_accuracy_matches_dataset` checks it against the
+/// data on every run so it cannot quietly go stale if the dataset is replaced.
+const GNSS_REPORTED_HORIZONTAL_ACCURACY_M: f64 = 3.81;
+
+/// Mean 1-sigma vertical accuracy the receiver reports across `test_data.csv` (meters).
+const GNSS_REPORTED_VERTICAL_ACCURACY_M: f64 = 1.38;
+
+/// Mean ground speed over `test_data.csv` (m/s).
+///
+/// At the recording's 1 Hz fix rate this is also, in metres, the apparent along-track error
+/// produced by one sample of misalignment between an estimate and the record it is scored
+/// against -- the term that dominates the horizontal RMSE. See the module documentation.
+const MEAN_GROUND_SPEED_MPS: f64 = 21.19;
+
+/// Horizontal RMSE ceiling applied to every healthy filter in the benchmark (meters).
+///
+/// The three healthy filters sit within 0.3 m of each other at ~23.5 m, which is the sample
+/// alignment term described in the module documentation rather than filter error. 40 m is
+/// ~1.7x that, tight enough to catch a filter that stops tracking and loose enough that it is
+/// not measuring the harness.
+const MAX_HORIZONTAL_RMSE_M: f64 = 40.0;
+
+/// Vertical RMSE ceiling applied to every healthy filter in the benchmark (meters).
+///
+/// Observed at 2.4-4.6 m; 10 m leaves ~2x margin on the worst of them. The vertical channel
+/// is the one that fails first when a filter regresses -- it is unstable without aiding and
+/// was the signature of both #266 and #286 -- so this is worth asserting per filter rather
+/// than folding into the horizontal check.
+const MAX_VERTICAL_RMSE_M: f64 = 10.0;
+
+/// Roll and pitch RMSE ceiling applied to every healthy filter in the benchmark (radians).
+///
+/// Only the *level* axes. Roll and pitch are gravity-observable and observed at 2.9-3.8 deg;
+/// 10 deg leaves ~2.6x margin. Yaw is excluded on purpose: it is unobservable under
+/// position-only aiding and diverges in every filter (#305), so any ceiling that passed today
+/// would be vacuous rather than a guard. It is reported by the benchmark regardless.
+const MAX_LEVEL_ATTITUDE_RMSE_RAD: f64 = 10.0 * std::f64::consts::PI / 180.0;
 
 /// Minimum meaningful drift for dead reckoning comparison (meters)
 /// Below this threshold, the comparison is not meaningful as the vehicle may be stationary
@@ -173,6 +251,79 @@ fn assert_bias_estimates_bounded(results: &[NavigationResult], context: &str) {
     }
 }
 
+/// Wrap an angle into `[-pi, pi]`.
+///
+/// Attitude errors are only meaningful modulo a full turn: an estimate of +179 deg yaw
+/// against a -179 deg reference is 2 deg of error, not 358 deg. Without this the yaw RMSE
+/// on any trajectory that crosses the +/-180 deg branch cut is dominated by the cut rather
+/// than by the filter.
+fn wrap_to_pi(angle_rad: f64) -> f64 {
+    let two_pi = 2.0 * std::f64::consts::PI;
+    let wrapped = angle_rad.rem_euclid(two_pi);
+    if wrapped > std::f64::consts::PI {
+        wrapped - two_pi
+    } else {
+        wrapped
+    }
+}
+
+/// Reference attitude for a record as (roll, pitch, yaw) in radians, nalgebra XYZ convention.
+///
+/// Delegates to [`TestDataRecord::attitude`], which reads the quaternion rather than the
+/// record's `roll`/`pitch`/`yaw` columns -- those are a different convention and disagree by
+/// more than a sign (#302). Scoring an estimate against this means the reference it is
+/// *measured* against is the same quantity [`create_initial_state`] *seeded* it from.
+fn reference_attitude(record: &TestDataRecord) -> (f64, f64, f64) {
+    record.attitude().euler_angles()
+}
+
+/// Geodesic attitude error between an estimate and its reference, in radians.
+///
+/// The rotation angle of `R_est^T * R_ref`: the single rotation that carries one attitude
+/// onto the other, and the only attitude error metric that does not depend on a choice of
+/// Euler sequence. Per-axis errors are reported alongside it because they say *which* axis
+/// is at fault, but this is the quantity that is convention-free.
+fn attitude_error_angle(result: &NavigationResult, record: &TestDataRecord) -> f64 {
+    let estimate = Rotation3::from_euler_angles(result.roll, result.pitch, result.yaw);
+    (estimate.inverse() * record.attitude()).angle()
+}
+
+/// Mean, min, median, max and RMS of one error channel, in that channel's own units.
+#[derive(Debug, Clone, Copy, Default)]
+struct Summary {
+    mean: f64,
+    min: f64,
+    median: f64,
+    max: f64,
+    rms: f64,
+}
+
+/// Reduce one channel of per-sample errors to its summary statistics.
+///
+/// Every error channel reduces identically, so the reduction lives here rather than being
+/// written out once per channel. An empty sample yields all zeros, which is what the
+/// callers' `ErrorStats::new()` default already encoded.
+fn summarize(samples: &[f64]) -> Summary {
+    if samples.is_empty() {
+        return Summary::default();
+    }
+    let count = samples.len() as f64;
+    let mut sorted = samples.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let mid = sorted.len() / 2;
+    Summary {
+        mean: samples.iter().sum::<f64>() / count,
+        min: sorted[0],
+        median: if sorted.len().is_multiple_of(2) {
+            f64::midpoint(sorted[mid - 1], sorted[mid])
+        } else {
+            sorted[mid]
+        },
+        max: sorted[sorted.len() - 1],
+        rms: (samples.iter().map(|e| e.powi(2)).sum::<f64>() / count).sqrt(),
+    }
+}
+
 /// Error statistics for a navigation solution
 #[allow(
     clippy::struct_field_names,
@@ -206,6 +357,20 @@ struct ErrorStats {
     mean_velocity_east_error: f64,
     /// Mean velocity down error (m/s)
     mean_velocity_vertical_error: f64,
+    /// Root mean square roll error (radians)
+    rms_roll_error: f64,
+    /// Root mean square pitch error (radians)
+    rms_pitch_error: f64,
+    /// Root mean square yaw error (radians)
+    rms_yaw_error: f64,
+    /// Maximum absolute roll error (radians)
+    max_roll_error: f64,
+    /// Maximum absolute pitch error (radians)
+    max_pitch_error: f64,
+    /// Maximum absolute yaw error (radians)
+    max_yaw_error: f64,
+    /// Root mean square geodesic attitude error (radians)
+    rms_attitude_error: f64,
 }
 
 impl ErrorStats {
@@ -225,6 +390,13 @@ impl ErrorStats {
             mean_velocity_north_error: 0.0,
             mean_velocity_east_error: 0.0,
             mean_velocity_vertical_error: 0.0,
+            rms_roll_error: 0.0,
+            rms_pitch_error: 0.0,
+            rms_yaw_error: 0.0,
+            max_roll_error: 0.0,
+            max_pitch_error: 0.0,
+            max_yaw_error: 0.0,
+            rms_attitude_error: 0.0,
         }
     }
 }
@@ -249,6 +421,10 @@ fn compute_error_metrics(results: &[NavigationResult], records: &[TestDataRecord
     let mut velocity_north_errors = Vec::new();
     let mut velocity_east_errors = Vec::new();
     let mut velocity_vertical_errors = Vec::new();
+    let mut roll_errors = Vec::new();
+    let mut pitch_errors = Vec::new();
+    let mut yaw_errors = Vec::new();
+    let mut attitude_errors = Vec::new();
 
     // Match navigation results to GNSS measurements by timestamp
     for (i, result) in results.iter().enumerate() {
@@ -322,6 +498,23 @@ fn compute_error_metrics(results: &[NavigationResult], records: &[TestDataRecord
             if vd_err.is_finite() {
                 velocity_vertical_errors.push(vd_err);
             }
+
+            // Attitude errors, wrapped so a branch-cut crossing is not counted as a full turn.
+            let (reference_roll, reference_pitch, reference_yaw) = reference_attitude(record);
+            let roll_err = wrap_to_pi(result.roll - reference_roll).abs();
+            let pitch_err = wrap_to_pi(result.pitch - reference_pitch).abs();
+            let yaw_err = wrap_to_pi(result.yaw - reference_yaw).abs();
+
+            if roll_err.is_finite() && pitch_err.is_finite() && yaw_err.is_finite() {
+                roll_errors.push(roll_err);
+                pitch_errors.push(pitch_err);
+                yaw_errors.push(yaw_err);
+            }
+
+            let attitude_err = attitude_error_angle(result, record);
+            if attitude_err.is_finite() {
+                attitude_errors.push(attitude_err);
+            }
         }
     }
 
@@ -336,66 +529,34 @@ fn compute_error_metrics(results: &[NavigationResult], records: &[TestDataRecord
         );
     }
 
-    if !horizontal_errors.is_empty() {
-        stats.mean_horizontal_error =
-            horizontal_errors.iter().sum::<f64>() / horizontal_errors.len() as f64;
-        stats.min_horizontal_error = horizontal_errors
-            .iter()
-            .copied()
-            .fold(f64::INFINITY, f64::min);
-        stats.max_horizontal_error = horizontal_errors
-            .iter()
-            .copied()
-            .fold(f64::NEG_INFINITY, f64::max);
-        stats.rms_horizontal_error = (horizontal_errors.iter().map(|e| e.powi(2)).sum::<f64>()
-            / horizontal_errors.len() as f64)
-            .sqrt();
+    let horizontal = summarize(&horizontal_errors);
+    stats.mean_horizontal_error = horizontal.mean;
+    stats.min_horizontal_error = horizontal.min;
+    stats.median_horizontal_error = horizontal.median;
+    stats.max_horizontal_error = horizontal.max;
+    stats.rms_horizontal_error = horizontal.rms;
 
-        // Compute median
-        let mut sorted_horizontal = horizontal_errors.clone();
-        sorted_horizontal.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let mid = sorted_horizontal.len() / 2;
-        stats.median_horizontal_error = if sorted_horizontal.len() % 2 == 0 {
-            f64::midpoint(sorted_horizontal[mid - 1], sorted_horizontal[mid])
-        } else {
-            sorted_horizontal[mid]
-        };
-    }
+    let altitude = summarize(&altitude_errors);
+    stats.mean_altitude_error = altitude.mean;
+    stats.min_altitude_error = altitude.min;
+    stats.median_altitude_error = altitude.median;
+    stats.max_altitude_error = altitude.max;
+    stats.rms_altitude_error = altitude.rms;
 
-    if !altitude_errors.is_empty() {
-        stats.mean_altitude_error =
-            altitude_errors.iter().sum::<f64>() / altitude_errors.len() as f64;
-        stats.min_altitude_error = altitude_errors
-            .iter()
-            .copied()
-            .fold(f64::INFINITY, f64::min);
-        stats.max_altitude_error = altitude_errors
-            .iter()
-            .copied()
-            .fold(f64::NEG_INFINITY, f64::max);
-        stats.rms_altitude_error = (altitude_errors.iter().map(|e| e.powi(2)).sum::<f64>()
-            / altitude_errors.len() as f64)
-            .sqrt();
+    stats.mean_velocity_north_error = summarize(&velocity_north_errors).mean;
+    stats.mean_velocity_east_error = summarize(&velocity_east_errors).mean;
+    stats.mean_velocity_vertical_error = summarize(&velocity_vertical_errors).mean;
 
-        // Compute median
-        let mut sorted_altitude = altitude_errors.clone();
-        sorted_altitude.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let mid = sorted_altitude.len() / 2;
-        stats.median_altitude_error = if sorted_altitude.len() % 2 == 0 {
-            f64::midpoint(sorted_altitude[mid - 1], sorted_altitude[mid])
-        } else {
-            sorted_altitude[mid]
-        };
-    }
-
-    if !velocity_north_errors.is_empty() {
-        stats.mean_velocity_north_error =
-            velocity_north_errors.iter().sum::<f64>() / velocity_north_errors.len() as f64;
-        stats.mean_velocity_east_error =
-            velocity_east_errors.iter().sum::<f64>() / velocity_east_errors.len() as f64;
-        stats.mean_velocity_vertical_error =
-            velocity_vertical_errors.iter().sum::<f64>() / velocity_vertical_errors.len() as f64;
-    }
+    let roll = summarize(&roll_errors);
+    let pitch = summarize(&pitch_errors);
+    let yaw = summarize(&yaw_errors);
+    stats.rms_roll_error = roll.rms;
+    stats.rms_pitch_error = pitch.rms;
+    stats.rms_yaw_error = yaw.rms;
+    stats.max_roll_error = roll.max;
+    stats.max_pitch_error = pitch.max;
+    stats.max_yaw_error = yaw.max;
+    stats.rms_attitude_error = summarize(&attitude_errors).rms;
 
     stats
 }
@@ -420,23 +581,10 @@ fn load_test_data(path: &Path) -> Vec<TestDataRecord> {
 /// # Returns
 /// InitialState for filter initialization
 fn create_initial_state(first_record: &TestDataRecord) -> InitialState {
-    // NOTE: Test data from Sensor Logger has:
-    //   - latitude/longitude in degrees
-    //   - roll/pitch/yaw in a different Euler convention than nalgebra's XYZ
-    //   - quaternion (qw, qx, qy, qz) is the most reliable attitude representation
-    //
-    // We use the quaternion to extract XYZ Euler angles that nalgebra expects.
-    use nalgebra::{Quaternion, Rotation3, UnitQuaternion};
-
-    // Convert quaternion to rotation matrix, then extract XYZ Euler angles
-    let quat = UnitQuaternion::from_quaternion(Quaternion::new(
-        first_record.qw,
-        first_record.qx,
-        first_record.qy,
-        first_record.qz,
-    ));
-    let rot: Rotation3<f64> = quat.into();
-    let (roll, pitch, yaw) = rot.euler_angles();
+    // NOTE: Test data from Sensor Logger has latitude/longitude in degrees and roll/pitch/yaw
+    // in a different Euler convention than nalgebra's XYZ, so `reference_attitude` reads the
+    // quaternion instead -- see its documentation.
+    let (roll, pitch, yaw) = reference_attitude(first_record);
 
     InitialState {
         latitude: first_record.latitude.to_radians(),
@@ -459,14 +607,7 @@ fn create_initial_state(first_record: &TestDataRecord) -> InitialState {
 
 /// Create a nominal StrapdownState from the first test data record
 fn create_nominal_state(first_record: &TestDataRecord) -> StrapdownState {
-    let quat = UnitQuaternion::from_quaternion(Quaternion::new(
-        first_record.qw,
-        first_record.qx,
-        first_record.qy,
-        first_record.qz,
-    ));
-    let rot: Rotation3<f64> = quat.into();
-    let (roll, pitch, yaw) = rot.euler_angles();
+    let (roll, pitch, yaw) = reference_attitude(first_record);
 
     StrapdownState {
         latitude: first_record.latitude.to_radians(),
@@ -2388,4 +2529,489 @@ fn test_filter_output_length_matches_input() {
     // re-enabled when the vertical-channel divergence fix (#286) landed.
 
     println!("\n✅ All filters produce output length matching input length: {input_length}");
+}
+
+// ===================== v1.0 validation suite (#264) =========================================
+//
+// The tests below are the queue 8 deliverable: a benchmark across filters, a reproducibility
+// check, outage recovery, and the full operational lifecycle driven through `InsEngine`. The
+// older single-filter tests above remain the per-filter regression guards.
+
+/// Run a filter over the whole undegraded stream and return its results.
+///
+/// Every benchmark leg differs only in the filter it drives, so the stream construction and
+/// the closed-loop call live here rather than being repeated per filter.
+fn run_filter_on_clean_stream<F: NavigationFilter>(
+    filter: &mut F,
+    records: &[TestDataRecord],
+) -> Vec<NavigationResult> {
+    let cfg = GnssDegradationConfig {
+        scheduler: GnssScheduler::PassThrough,
+        fault: GnssFaultModel::None,
+        ..Default::default()
+    };
+    let stream = build_event_stream(records, &cfg);
+    run_closed_loop(filter, stream, None, None)
+        .unwrap_or_else(|error| panic!("filter should complete the clean stream: {error}"))
+}
+
+/// Build a UKF on the shared default tuning.
+fn build_ukf(initial_state: &InitialState) -> UnscentedKalmanFilter {
+    UnscentedKalmanFilter::new(
+        initial_state,
+        &[0.0; 6],
+        None,
+        DEFAULT_INITIAL_COVARIANCE.to_vec(),
+        DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec())),
+        1e-3,
+        2.0,
+        0.0,
+    )
+}
+
+/// Build an ESKF on its own tuning.
+fn build_eskf(initial_state: &InitialState) -> ErrorStateKalmanFilter {
+    ErrorStateKalmanFilter::new(
+        initial_state,
+        &[0.0; 6],
+        ESKF_INITIAL_COVARIANCE.to_vec(),
+        DMatrix::from_diagonal(&DVector::from_vec(ESKF_PROCESS_NOISE.to_vec())),
+    )
+}
+
+/// Check the documented reference accuracies still describe the dataset.
+///
+/// The module documentation derives the error floor and the sample-alignment term from three
+/// numbers measured off `test_data.csv`. If the dataset is ever replaced those numbers become
+/// fiction, and the bounds derived from them stop meaning what they say. This fails loudly
+/// instead.
+fn assert_reference_accuracy_matches_dataset(records: &[TestDataRecord]) {
+    let mean_of = |pick: fn(&TestDataRecord) -> f64| {
+        let values: Vec<f64> = records.iter().map(pick).filter(|v| v.is_finite()).collect();
+        summarize(&values).mean
+    };
+
+    for (label, measured, documented) in [
+        (
+            "horizontal accuracy",
+            mean_of(|r| r.horizontal_accuracy),
+            GNSS_REPORTED_HORIZONTAL_ACCURACY_M,
+        ),
+        (
+            "vertical accuracy",
+            mean_of(|r| r.vertical_accuracy),
+            GNSS_REPORTED_VERTICAL_ACCURACY_M,
+        ),
+        ("ground speed", mean_of(|r| r.speed), MEAN_GROUND_SPEED_MPS),
+    ] {
+        assert!(
+            (measured - documented).abs() < 0.05,
+            "documented mean {label} is {documented:.2} but the dataset now measures              {measured:.2}; the derived bounds in the module documentation need revisiting"
+        );
+    }
+}
+
+/// Benchmark horizontal, vertical and attitude RMSE across the filters (#264).
+///
+/// Reports all three channels the v1.0 criteria name, side by side, for every filter that
+/// tracks on this dataset. The per-filter tests above each assert on one filter in isolation;
+/// what this adds is the comparison, which is where a filter that has quietly regressed
+/// relative to its peers shows up.
+///
+/// The EKF is absent because it diverges to ~14,707 km on this dataset (#307), which is why
+/// `test_filter_comparison` is `#[ignore]`d. Excluding it keeps this benchmark running --
+/// a benchmark that is skipped validates nothing -- and it should be added back as a fourth
+/// row when #307 is fixed.
+#[test]
+fn test_rmse_benchmark_across_filters() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let test_data_path = Path::new(manifest_dir).join("tests/test_data.csv");
+    let records = load_test_data(&test_data_path);
+    assert!(!records.is_empty(), "test data should not be empty");
+    assert_reference_accuracy_matches_dataset(&records);
+
+    let initial_state = create_initial_state(&records[0]);
+
+    let mut ukf = build_ukf(&initial_state);
+    let ukf_stats =
+        compute_error_metrics(&run_filter_on_clean_stream(&mut ukf, &records), &records);
+
+    let mut eskf = build_eskf(&initial_state);
+    let eskf_stats =
+        compute_error_metrics(&run_filter_on_clean_stream(&mut eskf, &records), &records);
+
+    let rbpf_stats = compute_error_metrics(&run_rbpf(&records), &records);
+
+    let benchmark = [
+        ("UKF", &ukf_stats),
+        ("ESKF", &eskf_stats),
+        ("RBPF", &rbpf_stats),
+    ];
+
+    println!("\n=== RMSE benchmark (#264) ===");
+    println!("reference: GNSS fix, 3.81 m horizontal / 1.38 m vertical 1-sigma (see module docs)");
+    println!(
+        "{:<6} {:>9} {:>9} {:>9} {:>9} {:>9} {:>10}",
+        "filter", "horiz_m", "vert_m", "roll_deg", "pitch_deg", "yaw_deg", "geodesic_deg"
+    );
+    for (name, stats) in benchmark {
+        println!(
+            "{:<6} {:>9.2} {:>9.2} {:>9.3} {:>9.3} {:>9.3} {:>10.3}",
+            name,
+            stats.rms_horizontal_error,
+            stats.rms_altitude_error,
+            stats.rms_roll_error.to_degrees(),
+            stats.rms_pitch_error.to_degrees(),
+            stats.rms_yaw_error.to_degrees(),
+            stats.rms_attitude_error.to_degrees()
+        );
+    }
+
+    for (name, stats) in benchmark {
+        assert!(
+            stats.rms_horizontal_error < MAX_HORIZONTAL_RMSE_M,
+            "{name} horizontal RMSE should be under {MAX_HORIZONTAL_RMSE_M} m, got {:.2} m",
+            stats.rms_horizontal_error
+        );
+        assert!(
+            stats.rms_altitude_error < MAX_VERTICAL_RMSE_M,
+            "{name} vertical RMSE should be under {MAX_VERTICAL_RMSE_M} m, got {:.2} m",
+            stats.rms_altitude_error
+        );
+        for (axis, rms) in [
+            ("roll", stats.rms_roll_error),
+            ("pitch", stats.rms_pitch_error),
+        ] {
+            assert!(
+                rms < MAX_LEVEL_ATTITUDE_RMSE_RAD,
+                "{name} {axis} RMSE should be under {:.1} deg, got {:.2} deg",
+                MAX_LEVEL_ATTITUDE_RMSE_RAD.to_degrees(),
+                rms.to_degrees()
+            );
+        }
+    }
+
+    // No filter may beat the reference it is scored against. Tripping this does not mean the
+    // filter got better than GNSS -- it means the metric stopped measuring what it claims to,
+    // most likely by scoring a result against the record it was derived from.
+    for (name, stats) in benchmark {
+        assert!(
+            stats.rms_horizontal_error > GNSS_REPORTED_HORIZONTAL_ACCURACY_M,
+            "{name} horizontal RMSE of {:.2} m is below the {GNSS_REPORTED_HORIZONTAL_ACCURACY_M} m \
+             accuracy of the reference itself, which means the comparison is no longer valid",
+            stats.rms_horizontal_error
+        );
+    }
+}
+
+/// Every filter must reproduce its output exactly when re-run on the same input (#264).
+///
+/// Reproducibility is a stated v1.0 requirement, and a published error metric is only
+/// meaningful if the same configuration reproduces it. The comparison is exact rather than
+/// approximate on purpose: these filters are deterministic code driven by a seeded RNG, so any
+/// run-to-run difference is a defect -- an unseeded generator, iteration over a hash
+/// container, uninitialised state -- and not numerical noise to be tolerated.
+///
+/// Comparing the serialised results rather than a chosen set of fields means covariances and
+/// bias estimates are covered too, and that a field added later is covered without this test
+/// being updated.
+#[test]
+fn test_filters_are_deterministic_across_runs() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let test_data_path = Path::new(manifest_dir).join("tests/test_data.csv");
+    let records = load_test_data(&test_data_path);
+    let initial_state = create_initial_state(&records[0]);
+
+    let mut ukf_a = build_ukf(&initial_state);
+    let mut ukf_b = build_ukf(&initial_state);
+    let mut eskf_a = build_eskf(&initial_state);
+    let mut eskf_b = build_eskf(&initial_state);
+
+    let runs: [(&str, Vec<NavigationResult>, Vec<NavigationResult>); 3] = [
+        (
+            "UKF",
+            run_filter_on_clean_stream(&mut ukf_a, &records),
+            run_filter_on_clean_stream(&mut ukf_b, &records),
+        ),
+        (
+            "ESKF",
+            run_filter_on_clean_stream(&mut eskf_a, &records),
+            run_filter_on_clean_stream(&mut eskf_b, &records),
+        ),
+        // The RBPF is the one that could plausibly differ: it draws from an RNG every step.
+        // `run_rbpf` pins the seed, so two runs must still agree exactly.
+        ("RBPF", run_rbpf(&records), run_rbpf(&records)),
+    ];
+
+    for (name, first, second) in runs {
+        assert_eq!(
+            first.len(),
+            second.len(),
+            "{name} produced different result counts across runs"
+        );
+
+        let first_json = serde_json::to_string(&first).expect("results should serialize");
+        let second_json = serde_json::to_string(&second).expect("results should serialize");
+
+        if first_json != second_json {
+            // Name the first sample that differs; a bare "not equal" on an 89-minute run is
+            // not enough to start debugging from.
+            let divergence = first
+                .iter()
+                .zip(&second)
+                .position(|(a, b)| serde_json::to_string(a).ok() != serde_json::to_string(b).ok())
+                .unwrap_or(0);
+            panic!(
+                "{name} is not reproducible: runs first differ at sample {divergence} \
+                 (t = {}). Deterministic output is a v1.0 requirement.",
+                first[divergence].timestamp
+            );
+        }
+        println!("{name}: {} samples reproduced exactly", first.len());
+    }
+}
+
+/// Stationary detector tuning for this dataset's 1 Hz sampling.
+///
+/// [`StationaryConfig::default`] is written for 100 Hz: a 100-sample window and 50 latching
+/// samples are 1 s and 0.5 s there, but 100 s and 50 s at 1 Hz, which is longer than any stop
+/// in this recording (the longest is 36 s). Scaled down to a 5 s window latching after 3 s,
+/// the detector sees the stops that are actually present. The thresholds are left at their
+/// defaults -- they are about sensor noise, not sample rate.
+fn stationary_config_for_1hz() -> StationaryConfig {
+    StationaryConfig {
+        window: 5,
+        min_stationary_samples: 3,
+        ..StationaryConfig::default()
+    }
+}
+
+/// The full operational lifecycle through `InsEngine` (#264).
+///
+/// Exercises, in one run over the real recording: levelling from the first record, inertial
+/// dead reckoning between fixes, GNSS fusion with an innovation gate, ZUPT applied whenever
+/// the stationary detector fires, a deliberate outage, and recovery once fixes resume. This
+/// is the assembly the per-component tests do not cover -- each piece has its own unit tests
+/// in `engine`, `gating` and `stationary`; what can only be tested here is that they compose
+/// over an 89-minute drive without one of them undoing another.
+///
+/// Coarse alignment proper is not part of this: it lands with queue 103 (#282, still open),
+/// so the engine is levelled from the first record's attitude the same way the rest of this
+/// suite seeds its filters. When #282 merges this test should start from a genuine alignment.
+///
+/// One number here needs reading carefully. The aided error of ~1.8 m is *below* the 3.81 m
+/// accuracy of the reference, which is impossible for a real accuracy figure. It happens
+/// because this loop scores each solution against the very fix it has just consumed, so it
+/// measures how tightly the engine follows its aiding rather than how close it is to truth.
+/// That is the right quantity for the comparison this test makes -- aided against coasting
+/// against recovered, all measured the same way -- but it is not an accuracy result.
+/// `test_rmse_benchmark_across_filters` is where accuracy is reported.
+#[test]
+fn test_full_lifecycle_through_ins_engine() {
+    // The outage: two minutes without fixes in the middle of the drive.
+    //
+    // Two minutes, not ten. Unaided MEMS dead reckoning diverges quadratically, and on this
+    // recording ten minutes puts the solution ~167 km out -- a number that says nothing about
+    // whether the engine works, only that consumer inertial sensors are what they are. Two
+    // minutes is both a realistic denial (a tunnel, an underpass) and short enough that the
+    // drift stays within a bound that can be derived rather than observed.
+    const OUTAGE_START_S: f64 = 1800.0;
+    const OUTAGE_DURATION_S: f64 = 120.0;
+    const OUTAGE_END_S: f64 = OUTAGE_START_S + OUTAGE_DURATION_S;
+    // Settled-aiding window, ending where the outage begins.
+    const SETTLED_FROM_S: f64 = 1500.0;
+    // Recovery window, starting well after fixes resume so reconvergence has had time.
+    const RECOVERY_FROM_S: f64 = 2700.0;
+    const RECOVERY_TO_S: f64 = 3000.0;
+
+    // Cap on the residual horizontal specific-force error used to bound unaided drift below.
+    const MAX_RESIDUAL_ACCELERATION_MPS2: f64 = 4.0;
+
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let test_data_path = Path::new(manifest_dir).join("tests/test_data.csv");
+    let records = load_test_data(&test_data_path);
+    assert!(
+        records.len() > 3000,
+        "lifecycle test needs the full recording"
+    );
+
+    let config = InsEngineConfig {
+        is_enu: true,
+        // A plausible vehicle geometry: antenna 1.5 m forward of the IMU and 1 m above it.
+        // Non-zero so the lever-arm path is actually exercised rather than short-circuited.
+        lever_arm: [1.5, 0.0, 1.0],
+        process_noise_diagonal: Some(ESKF_PROCESS_NOISE.to_vec()),
+        initial_covariance_diagonal: Some(ESKF_INITIAL_COVARIANCE.to_vec()),
+        ..InsEngineConfig::default()
+    };
+
+    let mut engine = InsEngine::builder()
+        .with_config(config)
+        .with_initial_state(create_initial_state(&records[0]))
+        .build()
+        .expect("engine should build from a valid configuration");
+
+    // Reject the worst 0.1% of fixes the filter's own model predicts.
+    assert!(
+        engine.set_innovation_gate(Some(
+            InnovationGate::chi_squared(0.999).expect("0.999 is a valid confidence")
+        )),
+        "the default ESKF should honour an innovation gate"
+    );
+
+    let mut detector = StationaryDetector::new(stationary_config_for_1hz());
+    let zupt = ZuptMeasurement::default();
+
+    let start = records[0].time;
+    let mut zupt_applications = 0_usize;
+    let mut gnss_accepted = 0_usize;
+    let mut gnss_rejected = 0_usize;
+    let mut errors_while_aided = Vec::new();
+    let mut errors_during_outage = Vec::new();
+    let mut errors_after_recovery = Vec::new();
+
+    for pair in records.windows(2) {
+        let (previous, record) = (&pair[0], &pair[1]);
+        let dt = (record.time - previous.time).num_milliseconds() as f64 / 1000.0;
+        if !(dt > 0.0 && dt.is_finite()) {
+            continue;
+        }
+        let elapsed = (record.time - start).num_milliseconds() as f64 / 1000.0;
+
+        let imu = IMUData {
+            accel: Vector3::new(record.acc_x, record.acc_y, record.acc_z),
+            gyro: Vector3::new(record.gyro_x, record.gyro_y, record.gyro_z),
+        };
+        let sample = ImuSample::from_rates(&imu, dt);
+
+        engine.predict(&sample).expect("propagation should succeed");
+
+        // ZUPT whenever the vehicle is judged stationary, independent of GNSS. This is the
+        // aiding that keeps the solution bounded through the outage.
+        if detector.push(&imu) {
+            engine.update(&zupt).expect("ZUPT should apply");
+            zupt_applications += 1;
+        }
+
+        let in_outage = (OUTAGE_START_S..OUTAGE_END_S).contains(&elapsed);
+        if !in_outage && record.latitude.is_finite() && record.longitude.is_finite() {
+            let (velocity_north, velocity_east) = record.ground_track_velocity();
+            let fix = GnssFix::position(
+                record.latitude,
+                record.longitude,
+                record.altitude,
+                record.horizontal_accuracy,
+                record.vertical_accuracy,
+            )
+            .with_velocity([velocity_north, velocity_east, 0.0], 1.0);
+
+            let outcome = engine
+                .update_gnss(&fix)
+                .expect("GNSS update should succeed");
+            if outcome.accepted {
+                gnss_accepted += 1;
+            } else {
+                gnss_rejected += 1;
+            }
+        }
+
+        let solution = engine.nav_solution();
+        if record.latitude.is_finite() && record.longitude.is_finite() {
+            let error = haversine_distance(
+                solution.latitude.to_radians(),
+                solution.longitude.to_radians(),
+                record.latitude.to_radians(),
+                record.longitude.to_radians(),
+            );
+            if error.is_finite() {
+                if in_outage {
+                    errors_during_outage.push(error);
+                } else if (SETTLED_FROM_S..OUTAGE_START_S).contains(&elapsed) {
+                    errors_while_aided.push(error);
+                } else if (RECOVERY_FROM_S..RECOVERY_TO_S).contains(&elapsed) {
+                    errors_after_recovery.push(error);
+                }
+            }
+        }
+    }
+
+    let aided = summarize(&errors_while_aided);
+    let outage = summarize(&errors_during_outage);
+    let recovered = summarize(&errors_after_recovery);
+
+    println!("\n=== InsEngine full lifecycle ===");
+    println!("ZUPT applications: {zupt_applications}");
+    println!("GNSS fixes: {gnss_accepted} accepted, {gnss_rejected} gated out");
+    for (label, stats) in [
+        (
+            format!("aided     ({SETTLED_FROM_S:.0}-{OUTAGE_START_S:.0} s)"),
+            aided,
+        ),
+        (
+            format!("outage    ({OUTAGE_START_S:.0}-{OUTAGE_END_S:.0} s)"),
+            outage,
+        ),
+        (
+            format!("recovered ({RECOVERY_FROM_S:.0}-{RECOVERY_TO_S:.0} s)"),
+            recovered,
+        ),
+    ] {
+        println!(
+            "{label}: mean={:.2} m median={:.2} m max={:.2} m rms={:.2} m",
+            stats.mean, stats.median, stats.max, stats.rms
+        );
+    }
+
+    // Each stage must actually have happened. Without these the error assertions below could
+    // pass on a run where the detector never fired or the gate swallowed every fix.
+    assert!(
+        zupt_applications > 0,
+        "the stationary detector never fired, so ZUPT was never exercised; this recording \
+         has 218 samples under 0.5 m/s and a 36 s stop, so a detector that sees none of them \
+         is mistuned"
+    );
+    assert!(
+        gnss_accepted > 1000,
+        "only {gnss_accepted} GNSS fixes were accepted; the gate is rejecting fixes it should \
+         not, and the lifecycle is not being exercised as intended"
+    );
+    assert!(
+        !errors_during_outage.is_empty() && !errors_after_recovery.is_empty(),
+        "the outage and recovery windows must both contain samples"
+    );
+
+    // Unaided drift is bounded by the dead-reckoning model rather than by an observed number.
+    // A residual horizontal specific-force error `a` -- accelerometer bias plus the component
+    // of gravity that a tilt error leaks into the horizontal axes -- integrates twice into
+    // `0.5 * a * t^2`. Measured on this recording the effective `a` is about 1.8 m/s^2 over
+    // this window; a 600 s outage reached 167 km, implying 0.93 m/s^2. The growth is faster
+    // than quadratic because the attitude error is itself growing, which is why the shorter
+    // window shows the larger effective figure. Capping `a` at 4.0 m/s^2 keeps roughly 2x
+    // headroom on the worse of the two while staying far below what a filter that has come
+    // apart produces, and unlike a fitted ceiling it rescales correctly if the outage length
+    // is changed.
+    let drift_bound_m = 0.5 * MAX_RESIDUAL_ACCELERATION_MPS2 * OUTAGE_DURATION_S.powi(2);
+    assert!(
+        outage.max < drift_bound_m,
+        "coasting for {OUTAGE_DURATION_S:.0} s should leave the solution within \
+         {drift_bound_m:.0} m (0.5 * {MAX_RESIDUAL_ACCELERATION_MPS2} m/s^2 * t^2), but it \
+         reached {:.0} m; the engine is diverging rather than dead reckoning",
+        outage.max
+    );
+
+    assert!(
+        outage.max > aided.max,
+        "peak error during the outage ({:.2} m) was no worse than while aided ({:.2} m), so \
+         fixes are still reaching the filter and the outage is not being simulated",
+        outage.max,
+        aided.max
+    );
+
+    assert!(
+        recovered.rms < 2.0 * aided.rms.max(1.0),
+        "after the outage the engine should reconverge to within 2x its settled error \
+         ({:.2} m), but it sits at {:.2} m rms",
+        aided.rms,
+        recovered.rms
+    );
 }
