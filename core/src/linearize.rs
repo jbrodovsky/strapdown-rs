@@ -515,7 +515,20 @@ pub fn error_state_transition_jacobian(
     // δṗ_d = δv_d
     f[(0, 3)] = dt / r_n; // ∂(δp_n)/∂(δv_n)
     f[(1, 4)] = dt / (r_e * lat.cos()); // ∂(δp_e)/∂(δv_e)
-    f[(2, 5)] = dt; // ∂(δp_d)/∂(δv_d)
+    // ∂(δaltitude)/∂(δv_vertical), and it changes sign with the frame.
+    //
+    // The third position error is an **altitude** error: `ErrorStateKalmanFilter::
+    // inject_error_state` adds it straight onto `nominal_altitude`, which is height above the
+    // ellipsoid -- positive *up* -- in both frames. `velocity_vertical` is positive *down* in
+    // NED, and `position_update` integrates it with a matching sign flip.
+    //
+    // This was unconditionally `+dt`. In NED that tells the filter a positive vertical
+    // velocity *raises* altitude when it lowers it, which turns the altitude/vertical-velocity
+    // pair into positive feedback: the vertical channel then grows without bound from any
+    // non-zero seed error, while a run seeded exactly on truth stays stable because nothing
+    // ever excites it. That is precisely the signature reported in #303. NED has been the
+    // default frame since queue 3.
+    f[(2, 5)] = if state.is_enu { dt } else { -dt };
 
     // Note: Position error doesn't directly depend on attitude error or biases
 

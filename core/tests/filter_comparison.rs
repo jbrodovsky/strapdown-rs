@@ -565,16 +565,16 @@ fn every_filter_rejects_a_non_inertial_input() {
 /// domain the increments arrive in, and the ESKF's numbers here are bit-identical before and
 /// after that change.
 ///
-/// Re-enable when the ESKF converges. Do not widen the bounds to make it pass.
+/// Do not widen the bounds to make this pass.
 ///
-/// Half of this is already fixed: the EKF diverged here for the same reason it diverged on
-/// real data (#307) -- `state_transition_jacobian` expressed the attitude columns as a
-/// rotation vector while the EKF's state holds Euler angles. With
-/// `euler_state_transition_jacobian` the EKF now ends this scenario 0.000 m from truth, and
-/// the UKF and RBPF were always fine. Only the ESKF still runs away, at 31 km from a 20 m
-/// seed, which points at `error_state_transition_jacobian` rather than at the shared one.
+/// It was `#[ignore]`d for #303, where the EKF and ESKF both ran away from any non-zero seed
+/// error. Both halves turned out to be the same kind of defect -- an analytic Jacobian
+/// written in a different convention from the state it linearises -- but in different
+/// functions. The EKF's was `state_transition_jacobian` expressing attitude as a rotation
+/// vector when the state holds Euler angles (#307); the ESKF's was
+/// `error_state_transition_jacobian` mixing body-frame and navigation-frame attitude errors,
+/// plus an altitude/vertical-velocity sign that ignored the frame in both.
 #[test]
-#[ignore = "ESKF diverges from any non-zero seed error (31 km from a 20 m seed); the EKF half was the Euler parametrisation and is fixed (#307), the ESKF half remains -- #303"]
 fn all_filters_converge_from_a_displaced_seed() {
     let scenario = build_scenario(SEEDED_POSITION_ERROR_M);
     let truth = scenario.truth.last().unwrap();
@@ -605,6 +605,75 @@ fn all_filters_converge_from_a_displaced_seed() {
         failures.is_empty(),
         "{} of the filters failed to converge from a {SEEDED_POSITION_ERROR_M:.0} m seed \
          error:\n  {}",
+        failures.len(),
+        failures.join("\n  ")
+    );
+}
+
+/// Every filter must converge from a seed error in *any* channel, not just position.
+///
+/// #303 reported divergence from a 1 m altitude seed, a 0.05 m/s velocity seed and a
+/// 0.001 rad attitude seed as well as from position, and the position-only check above would
+/// not have caught a regression confined to one of the others. The vertical channel is the
+/// one worth being explicit about: the defect behind #303 was an altitude/vertical-velocity
+/// sign in `error_state_transition_jacobian` that made that pair positive feedback in NED, so
+/// an altitude seed is the most direct probe of it there is.
+///
+/// Seeding *exactly* on truth was always stable, in every filter, because nothing excited the
+/// bad term. That is why this seeds each channel in turn rather than trusting a clean start.
+#[test]
+fn every_filter_converges_from_a_seed_error_in_any_channel() {
+    /// A named perturbation applied to a filter's initial state.
+    type Seed = (&'static str, fn(&mut StrapdownState));
+
+    // Magnitudes from #303's table: routine initialisation errors, not stress values.
+    let seeds: [Seed; 4] = [
+        ("1 m altitude", |state| state.altitude += 1.0),
+        ("0.05 m/s vertical velocity", |state| {
+            state.velocity_vertical += 0.05;
+        }),
+        ("0.05 m/s north velocity", |state| {
+            state.velocity_north += 0.05;
+        }),
+        ("0.001 rad pitch", |state| {
+            state.attitude *= Rotation3::from_euler_angles(0.0, 0.001, 0.0);
+        }),
+    ];
+
+    let mut failures = Vec::new();
+
+    for (seed_name, apply_seed) in seeds {
+        let mut scenario = build_scenario(0.0);
+        apply_seed(&mut scenario.initial);
+        let truth = scenario.truth.last().unwrap();
+
+        for (name, mut filter) in all_filters(&scenario, &[0.0; 6]) {
+            let estimate = run(filter.as_mut(), &scenario);
+            let horizontal = horizontal_error_m(&estimate, truth);
+            let altitude = (estimate[2] - truth.altitude).abs();
+            println!(
+                "{seed_name:>28} | {name:<5} horizontal {horizontal:8.3} m, altitude {altitude:8.3} m"
+            );
+
+            if !estimate.iter().take(9).all(|v| v.is_finite()) {
+                failures.push(format!("{seed_name} / {name}: non-finite navigation state"));
+            } else if horizontal > MAX_HORIZONTAL_ERROR_M {
+                failures.push(format!(
+                    "{seed_name} / {name}: horizontal {horizontal:.3} m exceeds \
+                     {MAX_HORIZONTAL_ERROR_M:.3} m"
+                ));
+            } else if altitude > MAX_ALTITUDE_ERROR_M {
+                failures.push(format!(
+                    "{seed_name} / {name}: altitude {altitude:.3} m exceeds \
+                     {MAX_ALTITUDE_ERROR_M:.3} m"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "{} filter/seed combination(s) failed to converge:\n  {}",
         failures.len(),
         failures.join("\n  ")
     );
