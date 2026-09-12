@@ -168,6 +168,7 @@
 pub mod earth;
 pub mod engine;
 pub mod error;
+pub mod gating;
 pub mod kalman;
 pub mod linalg;
 pub mod linearize;
@@ -176,9 +177,11 @@ pub mod messages;
 pub mod particle;
 pub mod rbpf;
 pub mod sim;
+pub mod stationary;
 
 pub use engine::{GnssFix, InsEngine, InsEngineBuilder, InsEngineConfig, NavSolution};
 pub use error::StrapdownError;
+pub use gating::{InnovationGate, UpdateOutcome};
 
 use nalgebra::{DMatrix, DVector, Matrix3, Rotation3, Vector3, Vector6};
 
@@ -207,11 +210,40 @@ pub trait NavigationFilter {
 
     /// Correct the state with a measurement.
     ///
+    /// Returns an [`UpdateOutcome`] rather than `()` so the caller can see the
+    /// normalized innovation squared the update was judged on, and whether the
+    /// correction was actually applied. Three outcomes have to be distinguishable
+    /// here and only two of them are errors: the measurement was used, the
+    /// measurement was statistically rejected by the filter's
+    /// [`InnovationGate`] (state unchanged, no error -- the filter did what it was
+    /// configured to do), or the measurement could not be evaluated at all.
+    ///
+    /// A filter with no gate configured always reports `accepted: true` and still
+    /// reports the NIS, which is what
+    /// [`sim::health::HealthMonitor`](crate::sim::health::HealthMonitor) consumes to
+    /// notice a filter that has diverged rather than merely been unlucky.
+    ///
     /// # Errors
     /// Measurement-specific failures. Callers should consult
     /// [`StrapdownError::is_recoverable`]: a recoverable error means this measurement
     /// should be skipped and the run continued, not that the state is invalid.
-    fn update(&mut self, measurement: &dyn MeasurementModel) -> Result<(), StrapdownError>;
+    fn update(
+        &mut self,
+        measurement: &dyn MeasurementModel,
+    ) -> Result<UpdateOutcome, StrapdownError>;
+
+    /// Install (or clear, with `None`) the innovation gate used by [`update`](Self::update).
+    ///
+    /// Defaults to a no-op returning `false`, so a filter that does not implement
+    /// gating -- because its update is not a Gaussian innovation test -- reports that
+    /// honestly instead of silently ignoring the request. All three Kalman-family
+    /// filters in [`kalman`](crate::kalman) override it.
+    ///
+    /// # Returns
+    /// `true` if the filter will honour the gate.
+    fn set_innovation_gate(&mut self, _gate: Option<InnovationGate>) -> bool {
+        false
+    }
 
     /// The current state estimate.
     fn get_estimate(&self) -> DVector<f64>;

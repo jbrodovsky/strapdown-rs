@@ -873,6 +873,102 @@ pub fn magnetometer_yaw_jacobian(
     h
 }
 
+/// Compute measurement Jacobian (H) for a zero-velocity update (ZUPT)
+///
+/// A ZUPT asserts that the local-level-frame velocity is zero while the platform is
+/// stationary, so the pseudo-measurement is $h(x) = [v_n, v_e, v_d]^\top$ and the
+/// Jacobian is identical to [`gps_velocity_jacobian`]: the identity on the velocity
+/// block. It is given its own name because the two differ in everything except this
+/// matrix -- source, noise model, and the conditions under which they may be applied
+/// -- and a reader following the ZUPT path should not have to discover that it
+/// borrows the GNSS velocity Jacobian.
+///
+/// # Arguments
+///
+/// * `_state` - Current navigation state (unused; the model is linear in velocity)
+///
+/// # Returns
+///
+/// 3×9 measurement Jacobian matrix H for the zero-velocity pseudo-measurement
+///
+/// # Example
+///
+/// ```rust
+/// use strapdown::linearize::zupt_jacobian;
+/// use strapdown::StrapdownState;
+///
+/// let state = StrapdownState::default();
+/// let h = zupt_jacobian(&state);
+/// assert_eq!((h.nrows(), h.ncols()), (3, 9));
+/// assert_eq!(h[(0, 3)], 1.0);
+/// assert_eq!(h[(2, 5)], 1.0);
+/// ```
+///
+/// # References
+///
+/// - Groves 2nd ed., Section 15.2.1 (zero-velocity updates)
+pub fn zupt_jacobian(_state: &StrapdownState) -> DMatrix<f64> {
+    let mut h = DMatrix::<f64>::zeros(3, 9);
+    // The pseudo-measurement observes the velocity states directly: [v_n, v_e, v_d]
+    h[(0, 3)] = 1.0; // ∂(z_vn)/∂(v_n)
+    h[(1, 4)] = 1.0; // ∂(z_ve)/∂(v_e)
+    h[(2, 5)] = 1.0; // ∂(z_vd)/∂(v_d)
+    h
+}
+
+/// Compute measurement Jacobian (H) for a zero-angular-rate update (ZARU)
+///
+/// # Why this one is 15 columns
+///
+/// A stationary platform's gyroscopes read the Earth rate plus their own bias and
+/// nothing else. Subtracting the Earth rate leaves a direct observation of the gyro
+/// bias, so ZARU is a measurement on states 12..15 of the 15-state vector:
+///
+/// ```text
+/// z = omega_measured - C_n^b * omega_ie^n,    h(x) = [b_gx, b_gy, b_gz]
+/// ```
+///
+/// Angular rate is not a navigation state, so there is no 9-state form of this
+/// Jacobian -- a 9-state filter has nothing for ZARU to correct, and asking for one
+/// is a configuration error rather than something to paper over with a zero block.
+/// The other Jacobians in this module are 9 columns and are zero-padded by the
+/// filter; this one arrives at full width and is used as-is.
+///
+/// # Arguments
+///
+/// * `_state` - Current navigation state (unused; the model is linear in the bias)
+///
+/// # Returns
+///
+/// 3×15 measurement Jacobian matrix H for the zero-angular-rate pseudo-measurement
+///
+/// # Example
+///
+/// ```rust
+/// use strapdown::linearize::zaru_jacobian;
+/// use strapdown::StrapdownState;
+///
+/// let state = StrapdownState::default();
+/// let h = zaru_jacobian(&state);
+/// assert_eq!((h.nrows(), h.ncols()), (3, 15));
+/// assert_eq!(h[(0, 12)], 1.0);
+/// assert_eq!(h[(2, 14)], 1.0);
+/// // Nothing outside the gyro-bias block is observed.
+/// assert_eq!(h.view((0, 0), (3, 12)).iter().copied().sum::<f64>(), 0.0);
+/// ```
+///
+/// # References
+///
+/// - Groves 2nd ed., Section 15.2.2 (zero-angular-rate updates)
+pub fn zaru_jacobian(_state: &StrapdownState) -> DMatrix<f64> {
+    let mut h = DMatrix::<f64>::zeros(3, 15);
+    // The pseudo-measurement observes the gyro bias states directly.
+    h[(0, 12)] = 1.0; // ∂(z_gx)/∂(b_gx)
+    h[(1, 13)] = 1.0; // ∂(z_gy)/∂(b_gy)
+    h[(2, 14)] = 1.0; // ∂(z_gz)/∂(b_gz)
+    h
+}
+
 /// Apply an error-state correction to a StrapdownState
 ///
 /// This function implements the ESKF correction step, applying a computed error-state

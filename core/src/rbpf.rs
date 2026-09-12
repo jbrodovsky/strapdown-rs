@@ -7,6 +7,7 @@
 
 use crate::StrapdownError;
 use crate::earth::METERS_TO_DEGREES;
+use crate::gating::{InnovationGate, UpdateOutcome, normalized_innovation_squared};
 use crate::kalman::imu_sample_from_input;
 use crate::linalg::{matrix_square_root, symmetrize};
 use crate::linearize::state_transition_jacobian;
@@ -101,6 +102,8 @@ pub struct RaoBlackwellizedParticleFilter {
     nominal: StrapdownState,
     rng: StdRng,
     linear_update_applied: bool,
+    /// Innovation gate applied by `update`; `None` accepts every measurement.
+    innovation_gate: Option<InnovationGate>,
 }
 
 impl RaoBlackwellizedParticleFilter {
@@ -180,6 +183,7 @@ impl RaoBlackwellizedParticleFilter {
             nominal,
             rng,
             linear_update_applied: false,
+            innovation_gate: None,
         })
     }
 
@@ -387,6 +391,48 @@ impl RaoBlackwellizedParticleFilter {
         }
         cov = symmetrize(&cov);
         (mean, cov)
+    }
+
+    /// Score a measurement against the particle cloud summarised as a Gaussian.
+    ///
+    /// Always computes the NIS, gate or no gate, because
+    /// [`sim::health::HealthMonitor`](crate::sim::health::HealthMonitor) consumes it
+    /// to catch a filter that has diverged rather than merely been handed one bad
+    /// fix. The `estimate()` call this costs is the same one `run_closed_loop` makes
+    /// immediately afterwards for logging.
+    ///
+    /// # Errors
+    /// Whatever the measurement model returns when evaluated at the ensemble mean, or
+    /// a singular innovation covariance from
+    /// [`normalized_innovation_squared`](crate::gating::normalized_innovation_squared).
+    fn evaluate_ensemble_gate<M: MeasurementModel + ?Sized>(
+        &self,
+        measurement: &M,
+    ) -> Result<UpdateOutcome, StrapdownError> {
+        let (mean, covariance) = self.estimate();
+        // Jacobian first: a geophysical model off the edge of its map reports that
+        // here, whereas `get_expected_measurement` would quietly return NaN.
+        let h = measurement.get_jacobian(&mean)?;
+        let z_hat = measurement.get_expected_measurement(&mean);
+        let mut innovation = measurement.get_measurement(&mean)? - z_hat;
+        measurement.wrap_residual(&mut innovation);
+
+        let s = &h * &covariance * h.transpose() + measurement.get_noise();
+        let dof = innovation.len();
+        let nis = normalized_innovation_squared(&innovation, &s)?;
+        if let Some(gate) = self.innovation_gate
+            && !gate.accepts(nis, dof)
+        {
+            // `debug`, not `warn`: `run_closed_loop` already warns once with the
+            // total, and a run that gates a lot would otherwise bury every other
+            // message under one line per rejected fix.
+            log::debug!(
+                "RBPF: measurement gated out, NIS = {nis:.3} > {:.3} (dof {dof})",
+                gate.threshold(dof)
+            );
+            return Ok(UpdateOutcome::rejected(nis, dof));
+        }
+        Ok(UpdateOutcome::accepted(nis, dof))
     }
 
     /// Compute the effective sample size.
@@ -732,12 +778,36 @@ impl NavigationFilter for RaoBlackwellizedParticleFilter {
 
     /// Update step: reweight the particle cloud against a measurement.
     ///
+    /// # Innovation gating
+    ///
+    /// The NIS is evaluated against the *ensemble* mean and covariance, not against
+    /// any single particle: `estimate()` already summarises the cloud as a Gaussian,
+    /// and that summary is what the $\chi^2$ test assumes. This is an approximation
+    /// the Kalman filters do not need to make -- a multi-modal cloud has no
+    /// meaningful single innovation -- so treat a gated RBPF as a coarse outlier
+    /// screen rather than the consistency test it is for the EKF/UKF/ESKF. Its real
+    /// defence against a bad fix is that a fix no particle agrees with simply
+    /// contributes a flat likelihood.
+    ///
     /// # Errors
     /// Propagates measurement failures — chiefly a geophysical model whose particle has
     /// drifted off the loaded map. Callers should consult
     /// [`StrapdownError::is_recoverable`] and skip the measurement rather than abort.
-    fn update(&mut self, measurement: &dyn MeasurementModel) -> Result<(), StrapdownError> {
-        self.update_with(measurement)
+    fn update(
+        &mut self,
+        measurement: &dyn MeasurementModel,
+    ) -> Result<UpdateOutcome, StrapdownError> {
+        let outcome = self.evaluate_ensemble_gate(measurement)?;
+        if !outcome.accepted {
+            return Ok(outcome);
+        }
+        self.update_with(measurement)?;
+        Ok(outcome)
+    }
+
+    fn set_innovation_gate(&mut self, gate: Option<InnovationGate>) -> bool {
+        self.innovation_gate = gate;
+        true
     }
 
     /// The weighted mean of the 9-state navigation solution.
