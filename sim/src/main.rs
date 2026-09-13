@@ -25,8 +25,8 @@ mod plotting;
 use clap::{Args, Parser, Subcommand};
 use common::{
     get_csv_files, init_logger, prompt_config_name, prompt_config_path, prompt_f64_with_default,
-    prompt_input_path, prompt_output_path, read_user_input, validate_input_path,
-    validate_output_path,
+    prompt_input_path, prompt_output_path, read_user_input, resolve_output_path,
+    validate_input_path, validate_output_path,
 };
 use log::{error, info};
 use nalgebra::Vector3;
@@ -256,8 +256,11 @@ struct SimArgs {
     #[arg(short, long, value_parser)]
     input: PathBuf,
 
-    /// Output CSV file path
-    /// When processing multiple files, output filenames will be generated as: {output_stem}_{input_stem}.csv
+    /// Output CSV file path, or a directory to write results into
+    /// A path ending in .csv is treated as a file: a single input writes straight to it,
+    /// and multiple inputs write {output_stem}_{input_stem}.csv beside it.
+    /// Any other path is treated as a directory, and each input writes to its own file
+    /// name inside it. Writing results over an input file is refused.
     #[arg(short, long, value_parser)]
     output: PathBuf,
 
@@ -484,6 +487,7 @@ const fn execution_limits_from_args(args: &SimArgs) -> ExecutionLimits {
 fn process_file(
     input_file: &Path,
     output: &Path,
+    is_multiple: bool,
     config: &SimulationConfig,
 ) -> Result<(), Box<dyn Error>> {
     info!("Processing file: {}", input_file.display());
@@ -503,12 +507,7 @@ fn process_file(
             let results = dead_reckoning(&records)?;
             info!("Generated {} navigation results", results.len());
 
-            let output_file = output.join(input_file.file_name().ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!("Input file path '{}' has no filename", input_file.display()),
-                )
-            })?);
+            let output_file = resolve_output_path(output, input_file, is_multiple)?;
             NavigationResult::to_csv(&results, &output_file)?;
             info!("Results written to {}", output_file.display());
             Ok(())
@@ -549,14 +548,7 @@ fn process_file(
                 }
             };
 
-            // `get_csv_files` yields real files, so this always has a final component --
-            // but the coupling is not enforced by any type, so name the fallback rather
-            // than assert it.
-            let output_file = output.join(
-                input_file
-                    .file_name()
-                    .unwrap_or_else(|| std::ffi::OsStr::new("output.csv")),
-            );
+            let output_file = resolve_output_path(output, input_file, is_multiple)?;
             match results {
                 Ok(ref nav_results) => {
                     NavigationResult::to_csv(nav_results, &output_file)?;
@@ -734,14 +726,7 @@ fn process_file(
             // Geophysical measurements ride the same event stream as every other
             // measurement type, so there is no separate geo path here.
             let results = run_rbpf_event_loop(&mut rbpf, event_stream, &config.execution_limits)?;
-            // `get_csv_files` yields real files, so this always has a final component --
-            // but the coupling is not enforced by any type, so name the fallback rather
-            // than assert it.
-            let output_file = output.join(
-                input_file
-                    .file_name()
-                    .unwrap_or_else(|| std::ffi::OsStr::new("output.csv")),
-            );
+            let output_file = resolve_output_path(output, input_file, is_multiple)?;
             NavigationResult::to_csv(&results, &output_file)?;
             info!("Results written to {}", output_file.display());
 
@@ -860,7 +845,7 @@ fn run_from_config(
         let errors = Mutex::new(Vec::new());
 
         csv_files.par_iter().for_each(|input_file| {
-            match process_file(input_file, output, &config) {
+            match process_file(input_file, output, is_multiple, &config) {
                 Ok(()) => {}
                 Err(e) => {
                     error!("Error processing {}: {}", input_file.display(), e);
@@ -890,7 +875,7 @@ fn run_from_config(
         // Sequential processing
         let mut failures = 0usize;
         for input_file in &csv_files {
-            if let Err(e) = process_file(input_file, output, &config) {
+            if let Err(e) = process_file(input_file, output, is_multiple, &config) {
                 if !is_multiple {
                     return Err(e);
                 }
@@ -1067,13 +1052,7 @@ fn run_dead_reckoning(args: &SimArgs) -> Result<(), Box<dyn Error>> {
         info!("Generated {} navigation results", results.len());
 
         // Write results to CSV
-        let output_file =
-            Path::new(&args.output).join(input_file.file_name().ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!("Input file path '{}' has no filename", input_file.display()),
-                )
-            })?);
+        let output_file = resolve_output_path(&args.output, input_file, is_multiple)?;
         NavigationResult::to_csv(&results, &output_file)?;
         info!("Results written to {}", output_file.display());
     }
@@ -1166,7 +1145,7 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
         };
 
         info!("Using GNSS degradation config: {gnss_degradation:?}");
-        let output_file = Path::new(&args.sim.output).join(input_file);
+        let output_file = resolve_output_path(&args.sim.output, input_file, is_multiple)?;
 
         // Run simulation using the common helper function
         match run_single_closed_loop_simulation(
@@ -1509,12 +1488,7 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
         };
 
         // Write results
-        let output_file = args.sim.output.join(input_file.file_name().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("Input file path '{}' has no filename", input_file.display()),
-            )
-        })?);
+        let output_file = resolve_output_path(&args.sim.output, input_file, is_multiple)?;
 
         match results {
             Ok(ref nav_results) => {
@@ -1755,12 +1729,7 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
             }
         };
 
-        let output_file = args.sim.output.join(input_file.file_name().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("Input file path '{}' has no filename", input_file.display()),
-            )
-        })?);
+        let output_file = resolve_output_path(&args.sim.output, input_file, is_multiple)?;
 
         NavigationResult::to_csv(&results, &output_file)?;
         info!("Results written to {}", output_file.display());

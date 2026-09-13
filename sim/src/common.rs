@@ -124,20 +124,160 @@ pub(crate) fn get_csv_files(input: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>
     }
 }
 
-/// Validate output path and create parent directories if needed.
+/// Extensions that mark an `--output` value as naming a single result file.
 ///
-/// If the output path does not exist, it will be created as a directory.
+/// `--output` is overloaded: the shipped example configs use both `output = "output.csv"`
+/// (a file) and `output = "data/output"` (a directory to write per-input results into),
+/// so the extension is what distinguishes them.
+const OUTPUT_FILE_EXTENSIONS: [&str; 2] = ["csv", "parquet"];
+
+/// Whether `output` names a single result file rather than a directory to write into.
+///
+/// An existing directory always wins over the extension, so a real directory that happens
+/// to be named `results.csv` is still treated as a directory.
+pub(crate) fn output_names_a_file(output: &Path) -> bool {
+    if output.is_dir() {
+        return false;
+    }
+    output
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            OUTPUT_FILE_EXTENSIONS
+                .iter()
+                .any(|known| extension.eq_ignore_ascii_case(known))
+        })
+}
+
+/// Create the directory that results for `output` will be written into.
+///
+/// When `output` names a file (see [`output_names_a_file`]) this creates its *parent*.
+/// Creating `output` itself would turn `-o results.csv` into a directory named
+/// `results.csv` and send the results somewhere else entirely.
 ///
 /// # Arguments
-/// * `output` - Path to validate/create
+/// * `output` - The user's `--output` value, either a result file or a directory
 ///
 /// # Errors
 /// Returns an error if directory creation fails.
 pub(crate) fn validate_output_path(output: &Path) -> Result<(), Box<dyn Error>> {
-    if !output.exists() {
-        std::fs::create_dir_all(output)?;
+    let directory = if output_names_a_file(output) {
+        output.parent()
+    } else {
+        Some(output)
+    };
+
+    // A bare `-o results.csv` has an empty parent, which is the current directory and so
+    // needs no creating.
+    if let Some(directory) = directory
+        && !directory.as_os_str().is_empty()
+        && !directory.exists()
+    {
+        std::fs::create_dir_all(directory)?;
     }
     Ok(())
+}
+
+/// Resolve where the results for `input_file` are written, given the user's `--output`.
+///
+/// Two shapes are supported, matching what the shipped configs already use:
+///
+/// - `output` names a **file** (`-o results.csv`): a single input writes straight to it;
+///   multiple inputs write `{output_stem}_{input_stem}.{ext}` beside it, which is the
+///   naming the `--output` help text documents.
+/// - `output` names a **directory** (`-o results/`): each input writes to its own file
+///   name inside that directory.
+///
+/// # Errors
+/// Returns an error if `input_file` has no file name, or if the resolved output path is
+/// the input file itself.
+pub(crate) fn resolve_output_path(
+    output: &Path,
+    input_file: &Path,
+    is_multiple: bool,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let input_name = input_file.file_name().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("Input file path '{}' has no filename", input_file.display()),
+        )
+    })?;
+
+    let resolved = if output_names_a_file(output) {
+        if is_multiple {
+            let output_stem = output
+                .file_stem()
+                .unwrap_or_else(|| std::ffi::OsStr::new("output"));
+            let input_stem = Path::new(input_name)
+                .file_stem()
+                .unwrap_or_else(|| std::ffi::OsStr::new("input"));
+            let extension = output
+                .extension()
+                .unwrap_or_else(|| std::ffi::OsStr::new("csv"));
+
+            let mut file_name = output_stem.to_os_string();
+            file_name.push("_");
+            file_name.push(input_stem);
+            file_name.push(".");
+            file_name.push(extension);
+
+            match output.parent() {
+                Some(parent) if !parent.as_os_str().is_empty() => parent.join(file_name),
+                _ => PathBuf::from(file_name),
+            }
+        } else {
+            output.to_path_buf()
+        }
+    } else {
+        // `Path::join` replaces the base when its argument is absolute, so join the file
+        // name rather than the input path -- joining the path is how results ended up
+        // written over the input.
+        output.join(input_name)
+    };
+
+    if paths_point_to_same_file(&resolved, input_file) {
+        return Err(format!(
+            "Refusing to write results to '{}': that is the input file. \
+             Pass a different --output path.",
+            resolved.display()
+        )
+        .into());
+    }
+
+    Ok(resolved)
+}
+
+/// Whether two paths name the same file on disk.
+///
+/// The output path usually does not exist yet, so this canonicalises what it can -- the
+/// parent directory -- and compares that against the canonicalised input. Symlinks, `..`
+/// segments and a relative-vs-absolute spelling of the same file all compare equal.
+fn paths_point_to_same_file(left: &Path, right: &Path) -> bool {
+    match (
+        canonical_parent_and_name(left),
+        canonical_parent_and_name(right),
+    ) {
+        (Some(left), Some(right)) => left == right,
+        // A path whose parent does not exist cannot be an existing input file.
+        _ => false,
+    }
+}
+
+/// Canonicalise `path` by canonicalising its parent and re-attaching its file name.
+///
+/// Returns `None` when the parent does not exist or the path has no file name.
+fn canonical_parent_and_name(path: &Path) -> Option<PathBuf> {
+    let file_name = path.file_name()?;
+    let parent = path.parent().unwrap_or_else(|| Path::new(""));
+    let parent = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
+    parent
+        .canonicalize()
+        .ok()
+        .map(|parent| parent.join(file_name))
 }
 
 // ============================================================================
@@ -355,5 +495,139 @@ mod tests {
     fn test_validate_output_path_existing() {
         let dir = tempdir().unwrap();
         assert!(validate_output_path(dir.path()).is_ok());
+    }
+
+    // ------------------------------------------------------------------
+    // Regression tests for #298: results were written over the input CSV
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_validate_output_path_does_not_create_a_file_output_as_a_directory() {
+        // `-o results.csv` used to create a *directory* named `results.csv`, sending the
+        // results somewhere else -- in #298, on top of the input file.
+        let dir = tempdir().unwrap();
+        let output = dir.path().join("nested").join("results.csv");
+
+        validate_output_path(&output).unwrap();
+
+        assert!(
+            !output.exists(),
+            "the output file path must not be created as a directory"
+        );
+        assert!(
+            output.parent().unwrap().is_dir(),
+            "the parent directory must be created"
+        );
+    }
+
+    #[test]
+    fn test_validate_output_path_accepts_a_bare_file_name() {
+        // An empty parent is the current directory and needs no creating.
+        assert!(validate_output_path(Path::new("results.csv")).is_ok());
+        assert!(!Path::new("results.csv").exists());
+    }
+
+    #[test]
+    fn test_resolve_output_path_single_file_output_writes_exactly_there() {
+        let dir = tempdir().unwrap();
+        let input = dir.path().join("traj.csv");
+        File::create(&input).unwrap();
+        let output = dir.path().join("results.csv");
+
+        let resolved = resolve_output_path(&output, &input, false).unwrap();
+
+        assert_eq!(resolved, output);
+    }
+
+    #[test]
+    fn test_resolve_output_path_directory_output_joins_the_file_name() {
+        let dir = tempdir().unwrap();
+        let input = dir.path().join("traj.csv");
+        File::create(&input).unwrap();
+        let output_dir = dir.path().join("out");
+        std::fs::create_dir_all(&output_dir).unwrap();
+
+        let resolved = resolve_output_path(&output_dir, &input, false).unwrap();
+
+        assert_eq!(resolved, output_dir.join("traj.csv"));
+    }
+
+    #[test]
+    fn test_resolve_output_path_does_not_escape_the_output_directory() {
+        // The #298 bug: `get_csv_files` returns absolute paths and `Path::join` replaces
+        // the base when its argument is absolute, so joining the input *path* resolved to
+        // the input itself. Joining the file name is what keeps the result inside `-o`.
+        let dir = tempdir().unwrap();
+        let input_dir = dir.path().join("in");
+        std::fs::create_dir_all(&input_dir).unwrap();
+        let input = input_dir.join("traj.csv");
+        File::create(&input).unwrap();
+        assert!(input.is_absolute());
+
+        let output_dir = dir.path().join("out");
+        std::fs::create_dir_all(&output_dir).unwrap();
+
+        let resolved = resolve_output_path(&output_dir, &input, false).unwrap();
+
+        assert_eq!(resolved, output_dir.join("traj.csv"));
+        assert_ne!(resolved, input);
+    }
+
+    #[test]
+    fn test_resolve_output_path_multiple_files_use_the_documented_stem_naming() {
+        // `--output` documents: {output_stem}_{input_stem}.csv
+        let dir = tempdir().unwrap();
+        let input = dir.path().join("drive_a.csv");
+        File::create(&input).unwrap();
+        let output = dir.path().join("results.csv");
+
+        let resolved = resolve_output_path(&output, &input, true).unwrap();
+
+        assert_eq!(resolved, dir.path().join("results_drive_a.csv"));
+    }
+
+    #[test]
+    fn test_resolve_output_path_refuses_to_overwrite_the_input() {
+        let dir = tempdir().unwrap();
+        let input = dir.path().join("traj.csv");
+        File::create(&input).unwrap();
+
+        let error = resolve_output_path(&input, &input, false)
+            .expect_err("writing results over the input must be refused");
+
+        assert!(
+            error.to_string().contains("that is the input file"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_output_path_refuses_the_input_spelled_differently() {
+        // Same file reached through `.`, which a direct path comparison would miss.
+        let dir = tempdir().unwrap();
+        let input = dir.path().join("traj.csv");
+        File::create(&input).unwrap();
+        let disguised = dir.path().join(".").join("traj.csv");
+
+        let error = resolve_output_path(&disguised, &input, false)
+            .expect_err("writing results over the input must be refused");
+
+        assert!(
+            error.to_string().contains("that is the input file"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn test_output_names_a_file_prefers_an_existing_directory() {
+        let dir = tempdir().unwrap();
+        let oddly_named = dir.path().join("results.csv");
+        std::fs::create_dir_all(&oddly_named).unwrap();
+
+        assert!(!output_names_a_file(&oddly_named));
+        assert!(output_names_a_file(
+            &dir.path().join("results.csv").join("x.csv")
+        ));
+        assert!(!output_names_a_file(&dir.path().join("out")));
     }
 }
