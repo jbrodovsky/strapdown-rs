@@ -402,19 +402,30 @@ impl IMUQuality {
     /// Consistent with the per-sample sigma used by the synthetic IMU generator in
     /// [`crate::sim`], which scales the same coefficient by `sqrt(sample_rate_hz / 3600)`.
     ///
+    /// # Errors
+    /// [`StrapdownError::OutOfRange`] if `dt_seconds` is not finite or is negative. A
+    /// negative or `NaN` interval would produce a negative or `NaN` diagonal, which is not a
+    /// covariance; returning it would silently poison `P` on the next propagation. A zero
+    /// interval **is** accepted and yields a zero matrix -- no time elapsed, no noise
+    /// accumulated -- which is why the bound differs from [`ImuSample::new`], where a
+    /// zero-length sample is meaningless rather than merely empty.
+    ///
     /// # Example
     /// ```rust
     /// use strapdown::IMUQuality;
     ///
+    /// # fn main() -> Result<(), strapdown::StrapdownError> {
     /// // Consumer VRW is 0.1 m/s/sqrt(h); over a 0.01 s step the variance is
     /// // 0.1^2 * 0.01 / 3600.
-    /// let q = IMUQuality::Consumer.velocity_process_noise(0.01);
+    /// let q = IMUQuality::Consumer.velocity_process_noise(0.01)?;
     /// assert!((q[(0, 0)] - 0.1_f64.powi(2) * 0.01 / 3600.0).abs() < 1e-18);
+    /// # Ok(())
+    /// # }
     /// ```
-    #[must_use]
-    pub fn velocity_process_noise(&self, dt_seconds: f64) -> Matrix3<f64> {
+    pub fn velocity_process_noise(&self, dt_seconds: f64) -> Result<Matrix3<f64>, StrapdownError> {
+        validate_process_noise_interval(dt_seconds)?;
         let variance = self.accel_velocity_random_walk().powi(2) * dt_seconds / SECONDS_PER_HOUR;
-        Matrix3::<f64>::identity() * variance
+        Ok(Matrix3::<f64>::identity() * variance)
     }
 
     /// Process noise added to the attitude states over one propagation step of `dt` seconds.
@@ -428,19 +439,26 @@ impl IMUQuality {
     /// Returns rad^2 -- a variance, not a spectral density. See
     /// [`Self::velocity_process_noise`] for why `dt` is a parameter.
     ///
+    /// # Errors
+    /// [`StrapdownError::OutOfRange`] if `dt_seconds` is not finite or is negative; see
+    /// [`Self::velocity_process_noise`] for why zero is allowed and negatives are not.
+    ///
     /// # Example
     /// ```rust
     /// use strapdown::IMUQuality;
     ///
+    /// # fn main() -> Result<(), strapdown::StrapdownError> {
     /// // Consumer ARW is 1 deg/sqrt(h); over a 0.01 s step.
     /// let arw = 1.0_f64.to_radians();
-    /// let q = IMUQuality::Consumer.attitude_process_noise(0.01);
+    /// let q = IMUQuality::Consumer.attitude_process_noise(0.01)?;
     /// assert!((q[(0, 0)] - arw.powi(2) * 0.01 / 3600.0).abs() < 1e-18);
+    /// # Ok(())
+    /// # }
     /// ```
-    #[must_use]
-    pub fn attitude_process_noise(&self, dt_seconds: f64) -> Matrix3<f64> {
+    pub fn attitude_process_noise(&self, dt_seconds: f64) -> Result<Matrix3<f64>, StrapdownError> {
+        validate_process_noise_interval(dt_seconds)?;
         let variance = self.gyro_angle_random_walk().powi(2) * dt_seconds / SECONDS_PER_HOUR;
-        Matrix3::<f64>::identity() * variance
+        Ok(Matrix3::<f64>::identity() * variance)
     }
 
     /// Squared gyro bias instability.
@@ -656,7 +674,24 @@ pub const ERROR_STATE_DIMENSION: usize = 15;
 /// Sensor specifications are quoted per hour (bias instability) or per root hour (random
 /// walk); every filter state in this crate is per second. Conversions between the two go
 /// through this constant rather than a bare `3600.0`.
-const SECONDS_PER_HOUR: f64 = 3600.0;
+pub(crate) const SECONDS_PER_HOUR: f64 = 3600.0;
+
+/// Reject an interval that would turn a process-noise increment into something that is not a
+/// covariance.
+///
+/// Zero is allowed: no elapsed time means no accumulated noise, and a zero matrix is a
+/// perfectly valid thing to add to `P`.
+fn validate_process_noise_interval(dt_seconds: f64) -> Result<(), StrapdownError> {
+    if !dt_seconds.is_finite() || dt_seconds < 0.0 {
+        return Err(StrapdownError::OutOfRange {
+            what: "process noise interval (s)",
+            value: dt_seconds,
+            min: 0.0,
+            max: f64::INFINITY,
+        });
+    }
+    Ok(())
+}
 
 /// Nominal initialisation interval, in seconds, assumed by [`IMUQuality::auto_covariance`].
 ///
@@ -2299,7 +2334,9 @@ mod tests {
             (super::IMUQuality::Navigation, 0.005),
             (super::IMUQuality::Strategic, 0.0001),
         ] {
-            let q = quality.velocity_process_noise(dt);
+            let q = quality
+                .velocity_process_noise(dt)
+                .expect("finite positive dt");
             let expected = vrw * vrw * dt / 3600.0;
             for axis in 0..3 {
                 assert!(
@@ -2324,7 +2361,9 @@ mod tests {
         ];
         for (quality, arw_degrees) in cases {
             let arw = arw_degrees.to_radians();
-            let q = quality.attitude_process_noise(dt);
+            let q = quality
+                .attitude_process_noise(dt)
+                .expect("finite positive dt");
             let expected = arw * arw * dt / 3600.0;
             for axis in 0..3 {
                 assert!(
@@ -2345,15 +2384,15 @@ mod tests {
     fn process_noise_scales_linearly_with_the_interval() {
         let quality = super::IMUQuality::Industrial;
 
-        let single = quality.velocity_process_noise(0.01)[(0, 0)];
-        let double = quality.velocity_process_noise(0.02)[(0, 0)];
+        let single = quality.velocity_process_noise(0.01).unwrap()[(0, 0)];
+        let double = quality.velocity_process_noise(0.02).unwrap()[(0, 0)];
         assert!((double - 2.0 * single).abs() < single * 1e-12);
 
-        let single = quality.attitude_process_noise(0.01)[(0, 0)];
-        let double = quality.attitude_process_noise(0.02)[(0, 0)];
+        let single = quality.attitude_process_noise(0.01).unwrap()[(0, 0)];
+        let double = quality.attitude_process_noise(0.02).unwrap()[(0, 0)];
         assert!((double - 2.0 * single).abs() < single * 1e-12);
 
-        assert_eq!(quality.velocity_process_noise(0.0)[(0, 0)], 0.0);
+        assert_eq!(quality.velocity_process_noise(0.0).unwrap()[(0, 0)], 0.0);
     }
 
     /// Cross-check against the independent conversion the synthetic IMU generator already uses
@@ -2369,11 +2408,30 @@ mod tests {
         let sim_rate_sigma = quality.gyro_angle_random_walk() * (sample_rate_hz / 3600.0).sqrt();
         let integrated_variance = (sim_rate_sigma * dt).powi(2);
 
-        let q = quality.attitude_process_noise(dt)[(0, 0)];
+        let q = quality.attitude_process_noise(dt).unwrap()[(0, 0)];
         assert!(
             (q - integrated_variance).abs() < integrated_variance * 1e-12,
             "process noise {q} disagrees with sim-derived {integrated_variance}"
         );
+    }
+
+    /// A negative or non-finite interval would make a diagonal that is not a covariance.
+    /// Returning it would poison `P` silently on the next propagation, so it is refused.
+    #[test]
+    fn an_invalid_interval_is_refused() {
+        let quality = super::IMUQuality::Consumer;
+        for bad in [-0.01_f64, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(
+                quality.velocity_process_noise(bad).is_err(),
+                "velocity accepted dt = {bad}"
+            );
+            assert!(
+                quality.attitude_process_noise(bad).is_err(),
+                "attitude accepted dt = {bad}"
+            );
+        }
+        // Zero is not invalid: no elapsed time, no accumulated noise.
+        assert_eq!(quality.attitude_process_noise(0.0).unwrap()[(0, 0)], 0.0);
     }
 
     /// The deprecated helpers keep their historical values; they are a P0 bias variance, and
