@@ -91,6 +91,85 @@ pub const DEFAULT_PROCESS_NOISE: [f64; 15] = [
     1e-8, // gyro bias z noise
 ];
 
+/// Initial error-state covariance the ESKF is built with when the caller supplies none.
+///
+/// This is the single tuning the error-state filter carries. `initialize_eskf` starts from
+/// it (splicing in the attitude and bias overrides a caller passes), and the integration
+/// suite aliases it rather than keeping a second set of constants, so there is exactly one
+/// answer to "what covariance does the ESKF start with".
+///
+/// # Units
+///
+/// The horizontal position entries are **radians squared**, not m². The error-state
+/// transition Jacobian sets `f[(0, 3)] = dt / r_n`, converting a velocity error in m/s into
+/// a *radian* position-error rate, and the GNSS position Jacobian is the identity against a
+/// radian-valued measurement, so `inject_error_state` adds the position error state straight
+/// onto `nominal_latitude` (#266). Everything else is SI: m² for altitude, m²/s² for
+/// velocity, rad² for attitude, (m/s²)² and (rad/s)² for the biases.
+///
+/// # Where the values come from
+///
+/// *Position and velocity* state what is actually known at `t = 0`, when the filter has been
+/// initialised from a GNSS fix, rounded conservatively loose -- overstating the prior only
+/// means the first update leans on the measurement, while understating it makes the filter
+/// refuse a correction it needs:
+///
+/// - horizontal `(10 m / 6.371e6 m)² = 2.5e-12 rad²`, against the ~5 m a consumer receiver
+///   reports. The value this replaces, `1e-6`, was labelled m² but consumed as rad²: a
+///   1e-3 rad standard deviation, i.e. a **6.4 km** initial horizontal uncertainty.
+/// - altitude `(15 m)² = 225 m²`; GNSS vertical accuracy runs 1.5-2x horizontal. The value
+///   this replaces, `1e-4 m²`, was a 1 cm standard deviation, which is what produced the
+///   42.6 m vertical settling transient on the reference dataset (now 19.2 m).
+/// - velocity `(1 m/s)²`, against the 0.39 m/s speed accuracy the reference recording
+///   reports. The value this replaces, `1e-3`, was a 0.03 m/s standard deviation.
+///
+/// *Attitude* is unchanged at 1e-5 rad² (0.18°), which is optimistic for an attitude
+/// initialised from a handset's own orientation estimate; it is the one entry here still
+/// carrying an unexamined number, and callers can override it.
+///
+/// *The bias priors are deliberately tighter than the sensor class*, and that is the one
+/// choice here not read off a datasheet. A consumer-MEMS gyroscope's turn-on bias is
+/// roughly 0.5-1 °/s (0.009-0.017 rad/s, so ~1e-4 rad²/s² of variance) and an
+/// accelerometer's ~0.1 m/s² (~1e-2 (m/s²)²). Those are the numbers an honest prior would
+/// use, and on the reference dataset they do not survive contact with the estimator: at a
+/// sensor-class gyro prior the anti-windup clamp in `inject_error_state` engages by sample
+/// 2 of 5,366, and at a sensor-class accel prior the accelerometer bias runs into the 2.0
+/// m/s² cap. The bias states in this loosely-coupled setup are observed
+/// only through `bias -> tilt -> velocity` and absorb whatever else is unmodelled (initial
+/// attitude error, lever arm, time sync), so given the freedom of a sensor-class prior they
+/// park at the caps rather than converging -- and an estimate held by a clamp is not an
+/// estimate. Measured on the reference dataset, peak |gyro bias| stays at 0.0284 rad/s for
+/// every gyro prior up to 1e-7, is at the 0.05 rad/s cap by 1e-6, and starts tripping the
+/// clamp at 1e-5; peak |accel bias| stays at 0.62 m/s² up to 1e-5 and trips the 2.0 m/s²
+/// cap at 1e-3. The values below sit about two decades below those cliffs.
+///
+/// The 0.08 / 0.008 pair the integration suite used to carry is wrong in the other
+/// direction and by more: 0.008 rad²/s² is an 0.089 rad/s (5.1 °/s) standard deviation,
+/// five times the *worst* consumer-MEMS turn-on bias, and it saturated the gyro clamp on
+/// the very first update.
+pub const ESKF_INITIAL_ERROR_COVARIANCE: [f64; 15] = [
+    2.5e-12, // latitude error (rad²), (10 m)²
+    2.5e-12, // longitude error (rad²), (10 m)²
+    225.0,   // altitude error (m²), (15 m)²
+    1.0,     // north velocity error (m²/s²), (1 m/s)²
+    1.0,     // east velocity error (m²/s²), (1 m/s)²
+    1.0,     // vertical velocity error (m²/s²), (1 m/s)²
+    1e-5,    // roll error (rad²)
+    1e-5,    // pitch error (rad²)
+    1e-5,    // yaw error (rad²)
+    1e-6,    // accelerometer x bias error ((m/s²)²)
+    1e-6,    // accelerometer y bias error ((m/s²)²)
+    1e-6,    // accelerometer z bias error ((m/s²)²)
+    1e-8,    // gyroscope x bias error ((rad/s)²)
+    1e-8,    // gyroscope y bias error ((rad/s)²)
+    1e-8,    // gyroscope z bias error ((rad/s)²)
+];
+
+/// Index of the first attitude entry in [`ESKF_INITIAL_ERROR_COVARIANCE`].
+const ESKF_ATTITUDE_COVARIANCE_OFFSET: usize = 6;
+/// Index of the first IMU-bias entry in [`ESKF_INITIAL_ERROR_COVARIANCE`].
+const ESKF_BIAS_COVARIANCE_OFFSET: usize = 9;
+
 pub const DEFAULT_MAX_WALL_CLOCK_RATIO: f64 = 0.25;
 pub const DEFAULT_MAX_WALL_CLOCK_S: f64 = 1200.0;
 pub const DEFAULT_MAX_NO_PROGRESS_S: f64 = 600.0;
@@ -2672,43 +2751,33 @@ pub fn initialize_eskf(
         None => vec![0.0; 6],
     };
 
-    // Build error covariance diagonal
-    // This represents initial uncertainty in the error state (NOT nominal state)
-    let mut error_covariance_diagonal = vec![
-        1e-6, 1e-6, 1e-4, // position error covariance (m²)
-        1e-3, 1e-3, 1e-3, // velocity error covariance (m²/s²)
-    ];
+    // Build the error covariance diagonal. This is the initial uncertainty in the *error*
+    // state, not the nominal state; ESKF_INITIAL_ERROR_COVARIANCE documents every entry,
+    // including why the horizontal ones are rad² rather than m².
+    let mut error_covariance_diagonal = ESKF_INITIAL_ERROR_COVARIANCE.to_vec();
 
-    // Add attitude error covariance
-    error_covariance_diagonal.extend(match attitude_covariance {
-        Some(att_cov) => {
-            require_config(
-                att_cov.len() == 3,
-                "attitude_covariance",
-                format!("expected 3 elements, got {}", att_cov.len()),
-            )?;
-            att_cov
-        }
-        None => vec![1e-5; 3], // Default: small attitude uncertainty (rad²)
-    });
+    // Splice in the attitude override, if the caller supplied one.
+    if let Some(att_cov) = attitude_covariance {
+        require_config(
+            att_cov.len() == 3,
+            "attitude_covariance",
+            format!("expected 3 elements, got {}", att_cov.len()),
+        )?;
+        error_covariance_diagonal
+            [ESKF_ATTITUDE_COVARIANCE_OFFSET..ESKF_ATTITUDE_COVARIANCE_OFFSET + 3]
+            .copy_from_slice(&att_cov);
+    }
 
-    // Add IMU bias error covariance
-    error_covariance_diagonal.extend(match imu_biases_covariance {
-        Some(bias_cov) => {
-            require_config(
-                bias_cov.len() == 6,
-                "imu_biases_covariance",
-                format!("expected 6 elements, got {}", bias_cov.len()),
-            )?;
-            bias_cov
-        }
-        None => {
-            vec![
-                1e-6, 1e-6, 1e-6, // accel bias error covariance
-                1e-8, 1e-8, 1e-8, // gyro bias error covariance
-            ]
-        }
-    });
+    // Splice in the IMU bias override, if the caller supplied one.
+    if let Some(bias_cov) = imu_biases_covariance {
+        require_config(
+            bias_cov.len() == 6,
+            "imu_biases_covariance",
+            format!("expected 6 elements, got {}", bias_cov.len()),
+        )?;
+        error_covariance_diagonal[ESKF_BIAS_COVARIANCE_OFFSET..ESKF_BIAS_COVARIANCE_OFFSET + 6]
+            .copy_from_slice(&bias_cov);
+    }
 
     require_config(
         error_covariance_diagonal.len() == state_size,

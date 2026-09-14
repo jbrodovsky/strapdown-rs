@@ -63,8 +63,11 @@ steady state separately rather than excluding the transient, which would hide a 
 
 The test-local `ESKF_INITIAL_COVARIANCE` is loose enough on the bias states to drive the
 anti-windup clamp, and the two ESKF tunings in the tree now differ by five orders of magnitude
-with no note saying which is intended. Reconciling them is tuning work, not a correctness fix,
-and is left to queue 5 where the other filters are moved onto the same API.
+with no note saying which is intended. Reconciling them is tuning work, not a correctness fix.
+
+**Resolved** in [`04a-eskf-tuning`](04a-eskf-tuning.md), which collapses the two into the
+single documented `sim::ESKF_INITIAL_ERROR_COVARIANCE`. The tables above describe the tree as
+of this queue position and are superseded there.
 
 Part of the [v1.0 work queue](../V1_QUEUE.md) / [project board](https://github.com/users/jbrodovsky/projects/7).
 
