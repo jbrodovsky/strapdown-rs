@@ -339,7 +339,11 @@ pub enum IMUQuality {
     Strategic,
 }
 impl IMUQuality {
-    /// Get typical gyro bias instability in degrees per hour for the given IMU quality in radians per hour
+    /// Typical gyro bias instability for the given IMU quality, in **radians per hour**.
+    ///
+    /// Note the `_dph` suffix is a misnomer inherited from the grade table, which quotes
+    /// degrees per hour: the returned value is converted to radians. A consumer-grade figure
+    /// of 100 deg/h comes back as ~1.745 rad/h, so a caller needing rad/s must divide by 3600.
     pub const fn gyro_bias_instability_dph(&self) -> f64 {
         match self {
             Self::Consumer => 100.0_f64.to_radians(),
@@ -379,25 +383,112 @@ impl IMUQuality {
             Self::Strategic => 0.0001,
         }
     }
-    /// Get typical process noise matrix for gyro bias
+    /// Process noise added to the velocity states over one propagation step of `dt` seconds.
+    ///
+    /// Derived from the velocity random walk, whose defining property is that velocity error
+    /// grows as \\(\\sigma_v(\\tau) = K \\sqrt{\\tau}\\). The variance accumulated over an
+    /// interval is therefore \\(K^2 \\tau\\), and since [`Self::accel_velocity_random_walk`]
+    /// is quoted per root *hour* while `dt` is in seconds, the conversion is
+    /// \\(K^2 \\, dt / 3600\\).
+    ///
+    /// # Units
+    /// Returns (m/s)^2 -- a variance, not a spectral density. Both filters propagate as
+    /// \\(P_{k+1} = F P_k F^T + Q\\) with no internal `dt` scaling, so what they consume is
+    /// the per-step increment this returns. That is why `dt` is a parameter: the same IMU
+    /// grade yields a different `Q` at 100 Hz than at 1 Hz.
+    ///
+    /// Consistent with the per-sample sigma used by the synthetic IMU generator in
+    /// [`crate::sim`], which scales the same coefficient by `sqrt(sample_rate_hz / 3600)`.
+    ///
+    /// # Example
+    /// ```rust
+    /// use strapdown::IMUQuality;
+    ///
+    /// // Consumer VRW is 0.1 m/s/sqrt(h); over a 0.01 s step the variance is
+    /// // 0.1^2 * 0.01 / 3600.
+    /// let q = IMUQuality::Consumer.velocity_process_noise(0.01);
+    /// assert!((q[(0, 0)] - 0.1_f64.powi(2) * 0.01 / 3600.0).abs() < 1e-18);
+    /// ```
+    #[must_use]
+    pub fn velocity_process_noise(&self, dt_seconds: f64) -> Matrix3<f64> {
+        let variance = self.accel_velocity_random_walk().powi(2) * dt_seconds / SECONDS_PER_HOUR;
+        Matrix3::<f64>::identity() * variance
+    }
+
+    /// Process noise added to the attitude states over one propagation step of `dt` seconds.
+    ///
+    /// Derived from the angle random walk, whose defining property is that attitude error
+    /// grows as \\(\\sigma_\\theta(\\tau) = N \\sqrt{\\tau}\\), giving \\(N^2 \\tau\\) of
+    /// accumulated variance. [`Self::gyro_angle_random_walk`] is quoted per root *hour*, so
+    /// over `dt` seconds the increment is \\(N^2 \\, dt / 3600\\).
+    ///
+    /// # Units
+    /// Returns rad^2 -- a variance, not a spectral density. See
+    /// [`Self::velocity_process_noise`] for why `dt` is a parameter.
+    ///
+    /// # Example
+    /// ```rust
+    /// use strapdown::IMUQuality;
+    ///
+    /// // Consumer ARW is 1 deg/sqrt(h); over a 0.01 s step.
+    /// let arw = 1.0_f64.to_radians();
+    /// let q = IMUQuality::Consumer.attitude_process_noise(0.01);
+    /// assert!((q[(0, 0)] - arw.powi(2) * 0.01 / 3600.0).abs() < 1e-18);
+    /// ```
+    #[must_use]
+    pub fn attitude_process_noise(&self, dt_seconds: f64) -> Matrix3<f64> {
+        let variance = self.gyro_angle_random_walk().powi(2) * dt_seconds / SECONDS_PER_HOUR;
+        Matrix3::<f64>::identity() * variance
+    }
+
+    /// Squared gyro bias instability.
+    ///
+    /// # This is not a process noise
+    ///
+    /// Bias instability is the floor of the Allan deviation -- the steady-state spread of the
+    /// bias itself -- not the coefficient of the random walk that drives it. Squaring it
+    /// yields a *bias variance*, which belongs on the diagonal of the initial covariance
+    /// \\(P_0\\), not in \\(Q\\). Turning it into a process noise additionally requires a
+    /// bias correlation time, which this crate does not model and which no source in this
+    /// repository supplies; inventing one per IMU grade would be exactly the hand-picked
+    /// tuning this project avoids.
+    ///
+    /// Use `IMUQuality::auto_covariance` instead, which consumes this quantity correctly as an
+    /// initial-covariance term, with the per-hour to per-second conversion the bias state's
+    /// rad/s units require.
+    #[deprecated(
+        since = "1.0.0",
+        note = "not a process noise: this is a bias variance for P0, and it omits the per-hour \
+                to per-second conversion the gyro bias state needs. Use \
+                `IMUQuality::auto_covariance` for initial covariance."
+    )]
+    #[must_use]
     pub fn gyro_process_noise(&self) -> Matrix3<f64> {
         Matrix3::<f64>::identity() * self.gyro_bias_instability_dph().powi(2)
     }
-    /// Get typical process noise matrix for accel bias
+
+    /// Squared accelerometer bias instability.
+    ///
+    /// # This is not a process noise
+    ///
+    /// The same objection as [`Self::gyro_process_noise`]: bias instability is a steady-state
+    /// bias spread, so its square is a \\(P_0\\) term rather than a \\(Q\\) term, and deriving
+    /// a process noise from it needs a bias correlation time this crate does not model.
+    ///
+    /// Use `IMUQuality::auto_covariance` instead.
+    #[deprecated(
+        since = "1.0.0",
+        note = "not a process noise: this is a bias variance for P0. Use \
+                `IMUQuality::auto_covariance` for initial covariance."
+    )]
+    #[must_use]
     pub fn accel_process_noise(&self) -> Matrix3<f64> {
         Matrix3::<f64>::identity() * self.accel_bias_instability_mps2().powi(2)
     }
-    /// Get typical process noise matrix for velocity random walk
-    /// Note: this is typically applied to velocity states directly
-    pub fn velocity_process_noise(&self) -> Matrix3<f64> {
-        Matrix3::<f64>::identity() * self.accel_velocity_random_walk().powi(2)
-    }
-    /// Get typical proces noise matrix for angle random walk
-    /// Note: this is typically applied to the orientatio states directly
-    pub fn attitude_process_noise(&self) -> Matrix3<f64> {
-        Matrix3::<f64>::identity() * self.gyro_angle_random_walk().powi(2)
-    }
 }
+
+/// Seconds in an hour, for converting the per-hour IMU coefficients to per-second quantities.
+const SECONDS_PER_HOUR: f64 = 3600.0;
 /// Basic structure for holding raw IMU data in the form of sensed acceleration and angular rate vectors.
 ///
 /// The vectors are in the body frame of the vehicle and perceived by the IMU (i.e. not compensating for gravity).
@@ -1672,6 +1763,122 @@ mod tests {
         assert_eq!(super::wrap_to_180(180.0), 180.0);
         assert_eq!(super::wrap_to_180(-180.0), -180.0);
     }
+    // --- IMUQuality process noise ---------------------------------------------------------
+
+    /// Every grade, hand-computed: (RW^2 * dt) / 3600, isotropic on the diagonal, zero off it.
+    #[test]
+    fn velocity_process_noise_is_vrw_squared_over_the_interval() {
+        let dt = 0.01;
+        for (quality, vrw) in [
+            (super::IMUQuality::Consumer, 0.1),
+            (super::IMUQuality::Industrial, 0.03),
+            (super::IMUQuality::Tactical, 0.01),
+            (super::IMUQuality::Navigation, 0.005),
+            (super::IMUQuality::Strategic, 0.0001),
+        ] {
+            let q = quality.velocity_process_noise(dt);
+            let expected = vrw * vrw * dt / 3600.0;
+            for axis in 0..3 {
+                assert!(
+                    (q[(axis, axis)] - expected).abs() < expected * 1e-12,
+                    "{quality:?} axis {axis}: got {}, want {expected}",
+                    q[(axis, axis)]
+                );
+            }
+            assert_eq!(q[(0, 1)], 0.0, "{quality:?} should be isotropic");
+        }
+    }
+
+    #[test]
+    fn attitude_process_noise_is_arw_squared_over_the_interval() {
+        let dt = 0.01;
+        let cases: [(super::IMUQuality, f64); 5] = [
+            (super::IMUQuality::Consumer, 1.0),
+            (super::IMUQuality::Industrial, 0.1),
+            (super::IMUQuality::Tactical, 0.01),
+            (super::IMUQuality::Navigation, 0.005),
+            (super::IMUQuality::Strategic, 0.0005),
+        ];
+        for (quality, arw_degrees) in cases {
+            let arw = arw_degrees.to_radians();
+            let q = quality.attitude_process_noise(dt);
+            let expected = arw * arw * dt / 3600.0;
+            for axis in 0..3 {
+                assert!(
+                    (q[(axis, axis)] - expected).abs() < expected * 1e-12,
+                    "{quality:?} axis {axis}: got {}, want {expected}",
+                    q[(axis, axis)]
+                );
+            }
+            assert_eq!(q[(0, 1)], 0.0, "{quality:?} should be isotropic");
+        }
+    }
+
+    /// The bug this fix exists for: the old helpers returned a per-hour quantity that did not
+    /// depend on `dt` at all, so doubling the step size changed nothing. Process noise is a
+    /// per-step increment -- both filters do `P = F P F' + Q` with no internal `dt` scaling --
+    /// so it must scale linearly with the interval.
+    #[test]
+    fn process_noise_scales_linearly_with_the_interval() {
+        let quality = super::IMUQuality::Industrial;
+
+        let single = quality.velocity_process_noise(0.01)[(0, 0)];
+        let double = quality.velocity_process_noise(0.02)[(0, 0)];
+        assert!((double - 2.0 * single).abs() < single * 1e-12);
+
+        let single = quality.attitude_process_noise(0.01)[(0, 0)];
+        let double = quality.attitude_process_noise(0.02)[(0, 0)];
+        assert!((double - 2.0 * single).abs() < single * 1e-12);
+
+        assert_eq!(quality.velocity_process_noise(0.0)[(0, 0)], 0.0);
+    }
+
+    /// Cross-check against the independent conversion the synthetic IMU generator already uses
+    /// in `sim`: a per-sample rate sigma of `RW * sqrt(sample_rate_hz / 3600)`. Integrating
+    /// that rate noise over one step gives `sigma_rate * dt`, whose square must equal the
+    /// process noise increment. Two derivations, one number.
+    #[test]
+    fn process_noise_agrees_with_the_sim_per_sample_sigma() {
+        let quality = super::IMUQuality::Consumer;
+        let sample_rate_hz: f64 = 100.0;
+        let dt = 1.0 / sample_rate_hz;
+
+        let sim_rate_sigma = quality.gyro_angle_random_walk() * (sample_rate_hz / 3600.0).sqrt();
+        let integrated_variance = (sim_rate_sigma * dt).powi(2);
+
+        let q = quality.attitude_process_noise(dt)[(0, 0)];
+        assert!(
+            (q - integrated_variance).abs() < integrated_variance * 1e-12,
+            "process noise {q} disagrees with sim-derived {integrated_variance}"
+        );
+    }
+
+    /// The deprecated helpers keep their historical values; they are a P0 bias variance, and
+    /// the point of deprecating rather than changing them is that no behaviour moves.
+    #[test]
+    #[allow(deprecated)]
+    fn deprecated_bias_helpers_keep_their_values() {
+        let quality = super::IMUQuality::Consumer;
+        assert_eq!(
+            quality.gyro_process_noise()[(0, 0)],
+            quality.gyro_bias_instability_dph().powi(2)
+        );
+        assert_eq!(
+            quality.accel_process_noise()[(0, 0)],
+            quality.accel_bias_instability_mps2().powi(2)
+        );
+    }
+
+    /// `gyro_bias_instability_dph` returns radians per hour despite the `_dph` suffix.
+    #[test]
+    fn gyro_bias_instability_is_radians_per_hour() {
+        let consumer = super::IMUQuality::Consumer.gyro_bias_instability_dph();
+        assert!((consumer - 100.0_f64.to_radians()).abs() < 1e-15);
+        assert!((consumer - 1.7453292519943295).abs() < 1e-15);
+        // A caller needing rad/s divides by 3600.
+        assert!((consumer / 3600.0 - 4.848_136_811_095_361e-4).abs() < 1e-18);
+    }
+
     #[test]
     fn test_wrap_to_360() {
         assert_eq!(super::wrap_to_360(370.0), 10.0);
