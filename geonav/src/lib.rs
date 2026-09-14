@@ -684,22 +684,23 @@ pub trait GeophysicalAnomalyMeasurementModel: MeasurementModel {
     /// velocity), [`MagneticAnomalyMeasurement`] takes the position the World Magnetic Model
     /// is evaluated at, and [`CombinedGeophysicalMeasurement`] delegates to both. `state`
     /// stores latitude and longitude in radians; an implementor whose underlying model takes
-    /// degrees must convert — see the known issue on [`GravityMeasurement`], which does not.
+    /// degrees must convert. Both concrete implementors do: the World Magnetic Model and
+    /// [`gravity_anomaly`] are each specified in degrees.
     fn set_state(&mut self, state: &StrapdownState);
 }
 /// Gravity measurement model
 ///
-/// # Known issue
+/// Computes the free-air anomaly at the current state by differencing the observed gravity
+/// magnitude against Somigliana normal gravity, with the Eötvös correction for platform
+/// motion ([`gravity_anomaly`]). The expected measurement is read from a [`GeoMap`].
 ///
-/// Both of this type's anomaly paths currently hand [`gravity_anomaly`] a latitude in
-/// **radians**, while that function's contract is degrees:
-/// [`GeophysicalAnomalyMeasurementModel::set_state`] copies `state.latitude` straight out of
-/// the radian-valued [`StrapdownState`], and [`MeasurementModel::get_measurement`]'s
-/// per-particle path takes `state[0]` from the raw state vector without converting.
-/// [`MagneticAnomalyMeasurement`] converts on both of the equivalent paths; this type does
-/// not, so its computed anomaly is wrong away from the equator. The map lookup in
-/// [`MeasurementModel::get_expected_measurement`] is unaffected — it converts. Tracked as
-/// issue #330, to be fixed with its own regression test.
+/// # Latitude units
+///
+/// [`gravity_anomaly`] takes **degrees**, while [`StrapdownState`] stores radians, so both
+/// of this type's anomaly paths convert: [`GeophysicalAnomalyMeasurementModel::set_state`]
+/// and the per-particle path through [`Self::extract_state_inputs`]. Neither did before
+/// #330, which evaluated normal gravity near the equator whatever the true latitude -- a
+/// -2136 mGal error at 40 deg N, against map anomalies of tens of mGal.
 #[derive(Clone, Debug)]
 pub struct GravityMeasurement {
     /// Source map
@@ -708,9 +709,8 @@ pub struct GravityMeasurement {
     pub noise_std: f64,
     /// Observed gravity magnitude (m/s^2)
     pub gravity_observed: f64,
-    /// Current latitude, in **radians** as copied from [`StrapdownState`] — note that this
-    /// is the unit mismatch described in the type's known issue, since the
-    /// [`gravity_anomaly`] call it feeds expects degrees.
+    /// Current latitude in **degrees**, converted from the radian-valued
+    /// [`StrapdownState`] on the way in, because [`gravity_anomaly`] takes degrees (#330).
     latitude: f64,
     /// Current altitude (m)
     altitude: f64,
@@ -735,7 +735,13 @@ impl GeophysicalAnomalyMeasurementModel for GravityMeasurement {
         ))
     }
     fn set_state(&mut self, state: &StrapdownState) {
-        self.latitude = state.latitude;
+        // Degrees. `gravity_anomaly` documents and uses degrees -- it forwards to `gravity`
+        // and `eotvos`, both of which call `.to_radians()` internally -- while
+        // `StrapdownState` stores radians. Passing the radian value through evaluated the
+        // Somigliana model near the equator whatever the true latitude, a -2136 mGal error
+        // at 40 deg N against map anomalies of tens of mGal (#330). Same conversion
+        // `MagneticAnomalyMeasurement::set_state` has always done.
+        self.latitude = state.latitude.to_degrees();
         self.altitude = state.altitude;
         self.north_velocity = state.velocity_north;
         self.east_velocity = state.velocity_east;
@@ -790,6 +796,11 @@ impl MeasurementModel for GravityMeasurement {
 }
 
 impl GravityMeasurement {
+    /// Pull the `gravity_anomaly` inputs out of a raw filter state vector.
+    ///
+    /// Returns `(latitude_deg, altitude_m, north_velocity, east_velocity)`. The latitude is
+    /// converted, because `state[0]` is radians and `gravity_anomaly` takes degrees -- the
+    /// per-particle half of #330.
     fn extract_state_inputs(state: &DVector<f64>) -> Option<(f64, f64, f64, f64)> {
         if state.len() >= 5
             && state[0].is_finite()
@@ -797,7 +808,7 @@ impl GravityMeasurement {
             && state[3].is_finite()
             && state[4].is_finite()
         {
-            Some((state[0], state[2], state[3], state[4]))
+            Some((state[0].to_degrees(), state[2], state[3], state[4]))
         } else {
             None
         }
@@ -1464,6 +1475,81 @@ mod tests {
         let value = map.get_point(&40.5, &-73.5).unwrap();
         // Should be interpolated value between surrounding points
         assert!(value.abs() < 10.0);
+    }
+
+    /// #330: both of `GravityMeasurement`'s anomaly paths must hand `gravity_anomaly` a
+    /// latitude in **degrees**, not the radians `StrapdownState` stores.
+    ///
+    /// Asserted against an independently computed anomaly rather than against whatever the
+    /// code returns, and at 40 deg N rather than the equator -- at 0 deg the bug is
+    /// invisible, because 0 rad and 0 deg are the same number. That is exactly why the
+    /// pre-existing `test_gravity_anomaly_measurement` above, which seeds `latitude: 0.0`,
+    /// passed throughout.
+    #[test]
+    fn gravity_measurement_converts_latitude_to_degrees() {
+        let latitude_deg = 40.0_f64;
+        let altitude = 1000.0_f64;
+        let north_velocity = 12.0_f64;
+        let east_velocity = -4.0_f64;
+        let observed = GP + 3.0e-4;
+
+        let mut measurement = GravityMeasurement {
+            map: Rc::new(create_test_gravity_map()),
+            noise_std: 1.0,
+            gravity_observed: observed,
+            latitude: f64::NAN,
+            altitude: f64::NAN,
+            north_velocity: f64::NAN,
+            east_velocity: f64::NAN,
+            bias_from_end: None,
+        };
+
+        let state = StrapdownState::new(
+            latitude_deg,
+            -73.0,
+            altitude,
+            north_velocity,
+            east_velocity,
+            0.0,
+            nalgebra::Rotation3::identity(),
+            true, // in_degrees: the constructor converts to the radians the state stores
+            Some(false),
+        )
+        .unwrap();
+
+        // The oracle: `gravity_anomaly`'s own documented contract, evaluated in degrees.
+        let expected = gravity_anomaly(
+            &latitude_deg,
+            &altitude,
+            &north_velocity,
+            &east_velocity,
+            &observed,
+        );
+
+        // Path 1: the cached-state path.
+        measurement.set_state(&state);
+        assert_approx_eq!(measurement.get_anomaly().unwrap(), expected, 1e-12);
+
+        // Path 2: the per-particle path, which reads the raw state vector.
+        let state_vector: DVector<f64> = (&state).into();
+        let per_particle = measurement.get_measurement(&state_vector).unwrap();
+        assert_approx_eq!(per_particle[0], expected, 1e-12);
+
+        // Non-degenerate: passing radians instead would be wrong by ~2100 mGal here, four
+        // orders of magnitude above the tolerance above, so this test cannot pass by
+        // accident the way an equatorial one would.
+        let with_radians = gravity_anomaly(
+            &latitude_deg.to_radians(),
+            &altitude,
+            &north_velocity,
+            &east_velocity,
+            &observed,
+        );
+        assert!(
+            (with_radians - expected).abs() > 1e-2,
+            "the radians/degrees confusion should be worth >1e-2 m/s^2 at 40 deg N, got {}",
+            (with_radians - expected).abs()
+        );
     }
 
     #[test]
