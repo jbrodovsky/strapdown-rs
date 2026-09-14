@@ -165,6 +165,7 @@
 //!
 //! This top-level module provides a public API for each step of the forward mechanization equations, allowing users to
 //! easily pass data in and out.
+pub mod calibration;
 pub mod earth;
 pub mod engine;
 pub mod error;
