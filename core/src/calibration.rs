@@ -17,6 +17,20 @@
 //! place of specific force. The random noise \\(w\\) is not something a deterministic
 //! calibration can remove; it is what the filter's process noise is for.
 //!
+//! # \\(M\\) is stored as two fields, not one
+//!
+//! Groves writes \\(M\\) as a single 3x3. [`SensorErrorModel`] splits it: the diagonal goes
+//! in `scale_factor`, the off-diagonal in `misalignment`, and `misalignment`'s own diagonal
+//! must be zero. The split keeps every number in exactly one place -- a scale factor error
+//! written into both fields would leave the two silently disagreeing -- and it matches how
+//! the two quantities are measured and quoted separately.
+//!
+//! So if what you have is a full \\(M\\), from a lab report or a datasheet, do **not** pass
+//! it as `misalignment`; that is rejected at construction. Use
+//! [`SensorErrorModel::from_error_matrix`] or [`SensorCalibration::from_error_matrix`],
+//! which do the split for you, and [`SensorErrorModel::error_matrix`] to read the assembled
+//! \\(M\\) back out.
+//!
 //! # What is stored, and why
 //!
 //! This module stores the **forward error model** -- \\(b\\) and \\(M\\) exactly as Groves
@@ -139,6 +153,75 @@ pub struct SensorErrorModel {
     pub misalignment: [[f64; 3]; 3],
 }
 
+impl SensorErrorModel {
+    /// Build the parameters from a full Groves \\(M\\), splitting it across the two fields.
+    ///
+    /// This is the constructor to reach for when a calibration report gives \\(M\\) as one
+    /// 3x3 matrix, which is how Groves Section 4.4.1 writes it. The diagonal becomes
+    /// `scale_factor` and the off-diagonal becomes `misalignment`; passing the same matrix
+    /// directly as `misalignment` would instead be rejected, since that field's diagonal
+    /// must be zero.
+    ///
+    /// Element `[row][column]` of `error_matrix` is the contribution of the true `column`
+    /// axis to the measured `row` axis, so the diagonal is the per-axis scale factor error.
+    ///
+    /// # Example
+    /// ```rust
+    /// use strapdown::calibration::SensorErrorModel;
+    ///
+    /// // A full M: 1% scale factor error on x, 2 mrad of x-into-y cross-coupling.
+    /// let m = [
+    ///     [0.01, 0.0, 0.0],
+    ///     [0.002, 0.0, 0.0],
+    ///     [0.0, 0.0, 0.0],
+    /// ];
+    /// let parameters = SensorErrorModel::from_error_matrix([0.0; 3], m);
+    ///
+    /// assert_eq!(parameters.scale_factor, [0.01, 0.0, 0.0]);
+    /// assert_eq!(parameters.misalignment[1][0], 0.002);
+    /// assert_eq!(parameters.misalignment[0][0], 0.0);
+    /// // Round-trips back to the matrix it came from.
+    /// assert_eq!(parameters.error_matrix(), m);
+    /// ```
+    #[must_use]
+    pub const fn from_error_matrix(bias: [f64; 3], error_matrix: [[f64; 3]; 3]) -> Self {
+        Self {
+            bias,
+            scale_factor: [error_matrix[0][0], error_matrix[1][1], error_matrix[2][2]],
+            misalignment: [
+                [0.0, error_matrix[0][1], error_matrix[0][2]],
+                [error_matrix[1][0], 0.0, error_matrix[1][2]],
+                [error_matrix[2][0], error_matrix[2][1], 0.0],
+            ],
+        }
+    }
+
+    /// Reassemble Groves' \\(M\\) from the two stored fields.
+    ///
+    /// The inverse of [`Self::from_error_matrix`]. Use it to compare against a source that
+    /// quotes \\(M\\) whole, or to hand the model to code expecting the single-matrix form.
+    #[must_use]
+    pub const fn error_matrix(&self) -> [[f64; 3]; 3] {
+        [
+            [
+                self.scale_factor[0],
+                self.misalignment[0][1],
+                self.misalignment[0][2],
+            ],
+            [
+                self.misalignment[1][0],
+                self.scale_factor[1],
+                self.misalignment[1][2],
+            ],
+            [
+                self.misalignment[2][0],
+                self.misalignment[2][1],
+                self.scale_factor[2],
+            ],
+        ]
+    }
+}
+
 /// A validated, invertible calibration for one three-axis inertial sensor triad.
 ///
 /// Constructed from a [`SensorErrorModel`], which is checked for finiteness and
@@ -242,6 +325,36 @@ impl SensorCalibration {
             bias: Vector3::from(parameters.bias),
             correction,
         })
+    }
+
+    /// Build a calibration from a bias and a full Groves \\(M\\).
+    ///
+    /// Convenience for [`SensorErrorModel::from_error_matrix`] followed by
+    /// [`Self::from_parameters`]: it splits `error_matrix` into the scale factor diagonal and
+    /// the cross-coupling off-diagonal, so a matrix with a non-zero diagonal is accepted here
+    /// where [`Self::new`] would reject it as `misalignment`.
+    ///
+    /// # Errors
+    /// [`StrapdownError::NonFinite`] if any coefficient is `NaN` or infinite, or
+    /// [`StrapdownError::SingularMatrix`] if \\(I + M\\) is not invertible. The
+    /// misalignment-diagonal check cannot fire, since the split fills that diagonal with
+    /// zeros by construction.
+    ///
+    /// # Example
+    /// ```rust
+    /// use strapdown::calibration::SensorCalibration;
+    /// # fn main() -> Result<(), strapdown::StrapdownError> {
+    /// let m = [[0.01, 0.0, 0.0], [0.002, 0.0, 0.0], [0.0, 0.0, 0.0]];
+    /// let calibration = SensorCalibration::from_error_matrix([0.0; 3], m)?;
+    /// assert_eq!(calibration.scale_factor(), [0.01, 0.0, 0.0]);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn from_error_matrix(
+        bias: [f64; 3],
+        error_matrix: [[f64; 3]; 3],
+    ) -> Result<Self, StrapdownError> {
+        Self::from_parameters(SensorErrorModel::from_error_matrix(bias, error_matrix))
     }
 
     /// The identity calibration: removes nothing, changes nothing.
@@ -508,7 +621,9 @@ fn validate_zero_misalignment_diagonal(
                 field: "misalignment",
                 reason: format!(
                     "diagonal element [{axis}][{axis}] is {diagonal}, but must be zero; \
-                     per-axis scale factor errors belong in `scale_factor`"
+                     per-axis scale factor errors belong in `scale_factor`. If this is a \
+                     full Groves M, build it with `from_error_matrix`, which splits the \
+                     diagonal out for you"
                 ),
             });
         }
@@ -770,6 +885,61 @@ mod tests {
             SensorCalibration::new([0.0; 3], [0.0; 3], misalignment).unwrap_err(),
             StrapdownError::NonFinite { .. }
         ));
+    }
+
+    #[test]
+    fn from_error_matrix_splits_a_full_groves_matrix() {
+        // The exact matrix that `new` rejects when handed to `misalignment`.
+        let m = [[0.01, 0.003, 0.0], [0.002, -0.02, 0.0], [0.0, 0.004, 0.005]];
+
+        assert!(SensorCalibration::new([0.0; 3], [0.0; 3], m).is_err());
+
+        let parameters = SensorErrorModel::from_error_matrix([0.1, 0.2, 0.3], m);
+        assert_eq!(parameters.bias, [0.1, 0.2, 0.3]);
+        assert_eq!(parameters.scale_factor, [0.01, -0.02, 0.005]);
+        assert_eq!(
+            parameters.misalignment,
+            [[0.0, 0.003, 0.0], [0.002, 0.0, 0.0], [0.0, 0.004, 0.0]]
+        );
+        // The split is lossless.
+        assert_eq!(parameters.error_matrix(), m);
+    }
+
+    #[test]
+    fn from_error_matrix_agrees_with_the_split_constructor() {
+        let scale_factor = [0.01, -0.02, 0.005];
+        let misalignment = [[0.0, 0.003, 0.0], [0.002, 0.0, 0.0], [0.0, 0.004, 0.0]];
+        let bias = [0.05, 0.0, -0.01];
+
+        let split = SensorCalibration::new(bias, scale_factor, misalignment).unwrap();
+        let whole =
+            SensorCalibration::from_error_matrix(bias, split.parameters().error_matrix()).unwrap();
+
+        assert_eq!(split.parameters(), whole.parameters());
+
+        // Same correction applied to a real sample, not just the same stored numbers.
+        let raw = ImuSample::from_rates(
+            &IMUData {
+                accel: Vector3::new(0.3, -0.2, 9.7),
+                gyro: Vector3::zeros(),
+            },
+            0.01,
+        );
+        let by_split = split.correct_increment(&raw.delta_v, raw.dt);
+        let by_whole = whole.correct_increment(&raw.delta_v, raw.dt);
+        assert_approx_eq!(by_split[0], by_whole[0], 1e-15);
+        assert_approx_eq!(by_split[1], by_whole[1], 1e-15);
+        assert_approx_eq!(by_split[2], by_whole[2], 1e-15);
+    }
+
+    #[test]
+    fn error_matrix_round_trips_through_identity() {
+        let identity = SensorErrorModel::default();
+        assert_eq!(identity.error_matrix(), [[0.0; 3]; 3]);
+        assert_eq!(
+            SensorErrorModel::from_error_matrix([0.0; 3], [[0.0; 3]; 3]),
+            identity
+        );
     }
 
     #[test]
