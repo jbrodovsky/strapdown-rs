@@ -16,7 +16,8 @@ git worktree.
 
 **Status as of 2026-09-14.** Spine 0-7 are merged; `StrapdownError`, `ImuSample`, the 15-state
 ESKF, NIS gating, ZUPT/ZARU and `InsEngine` are all on `main`. Spine 8 and 9 are not started --
-no branch exists for either. Parallel 100-103 are done and 104 was closed as already-satisfied.
+no branch exists for either. Parallel 100-103 are all merged and 104 was closed as
+already-satisfied, so the parallel track is complete.
 
 That makes every *ordering* constraint this document used to carry historical. The parallel
 branches' old merge points ("before PR 1", "rebase onto PR 2") were satisfied by `main` itself
@@ -49,14 +50,15 @@ based on any of them.
 | # | Branch | Issues | Summary | Status |
 |---|---|---|---|---|
 | 100 | [`v1/p-lint-config`](queue/p-lint-config.md) | #253, #263 | Lint config (**enforced**, not warn-level) + feature gating | merged |
-| 101 | [`v1/p-imu-quality-cov`](queue/p-imu-quality-cov.md) | #257 | `auto_covariance` from `IMUQuality` | PR #280, implemented |
-| 102 | [`v1/p-calibration`](queue/p-calibration.md) | #256 | `ImuCalibration` | PR #281, implemented |
-| 103 | [`v1/p-alignment`](queue/p-alignment.md) | #257 | Coarse alignment and initialisation | PR #282, implemented |
-| 104 | [`v1/p-release-automation`](queue/p-release-automation.md) | #265 | CI and release workflow | **closed, won't implement** |
+| 101 | [`v1/p-imu-quality-cov`](queue/p-imu-quality-cov.md) | #257 | `auto_covariance` from `IMUQuality` | merged (#280) |
+| 102 | [`v1/p-calibration`](queue/p-calibration.md) | #256 | `ImuCalibration` | merged (#281) |
+| 103 | [`v1/p-alignment`](queue/p-alignment.md) | #257 | Coarse alignment and initialisation | merged (#282) |
+| 104 | `v1/p-release-automation` | #265 | CI and release workflow | **closed, won't implement** |
 
-101-103 were worked concurrently off current `main`, not stacked. Their only shared file is the
-`pub mod` block in `core/src/lib.rs`, where 102 and 103 each add one line; whichever merges
-second takes a one-line conflict in which both lines are kept.
+101-103 were worked concurrently off current `main`, not stacked, and all three merged. The
+concurrency cost exactly two conflicts, both in `core/src/lib.rs` and both one line: 102 and
+103 each add a `pub mod` declaration, and 101's `auto_covariance` shares the `impl IMUQuality`
+block with later work. Neither needed a decision -- both sides were kept.
 
 104 was closed because `main` already satisfied all three of its acceptance criteria: the CI
 matrix covers Linux, macOS and Windows, both jobs pin `dtolnay/rust-toolchain@1.91` to match
@@ -71,7 +73,7 @@ under #265 instead.
 |---|---|---|---|
 | #253 | `v1/p-lint-config` (**all but the zero-panic lints**) | `v1/02-filter-api` (`unwrap_used`, `expect_used`, `panic`, `missing_errors_doc`, `missing_panics_doc`, `needless_pass_by_value`) | Superseded plan: the pedantic/nursery backlog was cleared in queue 100 rather than deferred to 9, so the strict gate is live for PRs 2-9 instead of arriving after them. The lints that remain off are the ones that need `StrapdownError` to be satisfiable at all, so they switch on in queue 2 alongside it -- not in queue 9. |
 | #255 | `v1/02-filter-api` (Delta-v/Delta-theta) | `v1/03-ned-default` (frame) | Two orthogonal risks. Separating them means an integration-metric shift is attributable to one change. |
-| #257 | `v1/p-imu-quality-cov` (`auto_covariance`) | `v1/p-alignment` (rest) | The split held, the ordering did not: #266 was fixed in spine 1 before `auto_covariance` existed, so the "lands before PR 1" constraint expired unused. `auto_covariance` shipped as **opt-in** -- `engine::DEFAULT_INITIAL_COVARIANCE` and `sim::initialize_eskf` are unchanged, so no existing integration metric moved. Retuning the default remains #266's call. |
+| #257 | `v1/p-imu-quality-cov` (`auto_covariance`) | `v1/p-alignment` (rest) | Both halves are merged and #257 is closed. The split held, the ordering did not: #266 was fixed in spine 1 before `auto_covariance` existed, so the "lands before PR 1" constraint expired unused. `auto_covariance` shipped as **opt-in** -- `engine::DEFAULT_INITIAL_COVARIANCE` and `sim::initialize_eskf` are unchanged, so no existing integration metric moved. Retuning the default remains #266's call. |
 | #265 | ~~`v1/p-release-automation` (CI)~~ | `v1/09-release` (docs + the publish dry run) | The split is void: the CI half turned out to be already done on `main`, so 104 was closed rather than implemented. All of #265 now sits in spine 9. |
 
 ## Working the queue
