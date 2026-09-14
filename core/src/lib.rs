@@ -165,6 +165,8 @@
 //!
 //! This top-level module provides a public API for each step of the forward mechanization equations, allowing users to
 //! easily pass data in and out.
+pub mod alignment;
+pub mod calibration;
 pub mod earth;
 pub mod engine;
 pub mod error;
@@ -397,6 +399,281 @@ impl IMUQuality {
     pub fn attitude_process_noise(&self) -> Matrix3<f64> {
         Matrix3::<f64>::identity() * self.gyro_angle_random_walk().powi(2)
     }
+    /// Derive an initial error-state covariance diagonal (P0) from this IMU grade.
+    ///
+    /// The 15-state error covariance a filter starts from has to come from somewhere. Every
+    /// caller in this crate has so far started it from a hand-picked constant
+    /// ([`crate::sim::DEFAULT_PROCESS_NOISE`] reused verbatim as P0, in fact), which is
+    /// untraceable to any sensor: nothing in it says which IMU it describes or how well the
+    /// vehicle's initial position was known. This derives the same fifteen numbers from two
+    /// things that *are* knowable at initialisation -- the IMU's grade and the quality of
+    /// the fix that positioned it -- using only the accessors already on this enum.
+    ///
+    /// # What each block is derived from
+    ///
+    /// | States | Derived from | Units |
+    /// |---|---|---|
+    /// | 0-2, position | `uncertainty`, converted to angle through the WGS84 principal radii | rad², rad², m² |
+    /// | 3-5, velocity | `uncertainty`, widened by [`Self::accel_velocity_random_walk`] over one initialisation interval | m²/s² |
+    /// | 6-8, attitude | [`Self::gyro_angle_random_walk`] over the same interval, plus the levelling error an unknown accelerometer bias implies | rad² |
+    /// | 9-11, accel bias | [`Self::accel_bias_instability_mps2`] | (m/s²)² |
+    /// | 12-14, gyro bias | [`Self::gyro_bias_instability_dph`] | (rad/s)² |
+    ///
+    /// **Position.** The filter carries latitude and longitude in radians, so a metric
+    /// uncertainty becomes an angular variance through the meridian and transverse radii of
+    /// curvature (Groves §2.4.4, Eq. 2.105-2.106) -- the same radii
+    /// [`crate::position_update`] integrates position against. Altitude is already
+    /// metric and passes straight through.
+    ///
+    /// **Velocity.** The aiding source's velocity accuracy, plus the velocity error the
+    /// accelerometers alone accumulate over the nominal one-minute initialisation interval.
+    /// Velocity random walk is quoted per root hour, so its variance grows linearly in time:
+    /// σ² = VRW²·τ.
+    ///
+    /// **Attitude.** Two independent contributions, added as variances. The random part is
+    /// angle random walk over the same interval, σ² = ARW²·τ. The systematic part is the
+    /// levelling error a bias-instability-sized accelerometer bias produces when attitude is
+    /// initialised against gravity: a bias `b` tilts the sensed vertical by approximately
+    /// `b/g` radians (Groves §5.6.3, coarse levelling). Without the second term a
+    /// navigation-grade P0 would claim microradian attitude knowledge purely because a good
+    /// gyro drifts slowly, which no alignment procedure delivers.
+    ///
+    /// **Biases.** The turn-on value of a bias state is unknown to within the grade's own
+    /// bias instability, so the variance is that instability squared. Note the unit
+    /// conversion on the gyro: [`Self::gyro_bias_instability_dph`] returns radians per
+    /// *hour* despite its name, while the filter's gyro bias state is in radians per
+    /// *second*.
+    ///
+    /// # Limits
+    ///
+    /// The result is a diagonal, so it cannot express the correlation between tilt error and
+    /// accelerometer bias that the levelling term above comes from; both are carried at full
+    /// size, which is conservative rather than optimistic. Heading is treated like roll and
+    /// pitch: a caller whose initial yaw comes from a magnetometer or from gyrocompassing
+    /// should widen state 8 accordingly, since neither error is a function of IMU grade
+    /// alone.
+    ///
+    /// # Errors
+    ///
+    /// - [`StrapdownError::InvalidConfiguration`] if any field of `uncertainty` is not
+    ///   finite and strictly positive. A zero would make P0 singular.
+    /// - [`StrapdownError::OutOfRange`] if `latitude_degrees` is outside ±90 or
+    ///   `altitude_m` is outside the ±30 km band the mechanization is valid over.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use strapdown::{IMUQuality, InitialUncertainty};
+    ///
+    /// # fn main() -> Result<(), strapdown::StrapdownError> {
+    /// // A plain single-frequency GNSS fix at 40 N.
+    /// let uncertainty = InitialUncertainty {
+    ///     horizontal_position_m: 5.0,
+    ///     vertical_position_m: 10.0,
+    ///     velocity_mps: 0.5,
+    /// };
+    /// let initial_covariance = IMUQuality::Tactical.auto_covariance(uncertainty, 40.0, 100.0)?;
+    ///
+    /// // Latitude variance is 5 m expressed as an angle: about 7.9e-7 rad, one sigma.
+    /// assert!((initial_covariance[0].sqrt() - 7.86e-7).abs() < 1e-8);
+    /// // Altitude variance is metric and untouched.
+    /// assert!((initial_covariance[2] - 100.0).abs() < 1e-9);
+    /// // Accelerometer bias variance is the grade's bias instability, squared.
+    /// assert!((initial_covariance[9] - 1e-6).abs() < 1e-12);
+    ///
+    /// // Opt in by handing it to the engine in place of its built-in default.
+    /// let engine = strapdown::engine::InsEngine::builder()
+    ///     .with_initial_covariance(initial_covariance.to_vec())
+    ///     .build()?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn auto_covariance(
+        &self,
+        uncertainty: InitialUncertainty,
+        latitude_degrees: f64,
+        altitude_m: f64,
+    ) -> Result<[f64; ERROR_STATE_DIMENSION], StrapdownError> {
+        uncertainty.validate()?;
+        if !(-90.0..=90.0).contains(&latitude_degrees) {
+            return Err(StrapdownError::OutOfRange {
+                what: "latitude (degrees)",
+                value: latitude_degrees,
+                min: -90.0,
+                max: 90.0,
+            });
+        }
+        if !(-30_000.0..=30_000.0).contains(&altitude_m) {
+            return Err(StrapdownError::OutOfRange {
+                what: "altitude (m)",
+                value: altitude_m,
+                min: -30_000.0,
+                max: 30_000.0,
+            });
+        }
+
+        let (latitude_variance, longitude_variance) = horizontal_position_variance(
+            uncertainty.horizontal_position_m,
+            latitude_degrees,
+            altitude_m,
+        );
+        let altitude_variance = uncertainty.vertical_position_m.powi(2);
+
+        // Random-walk coefficients are quoted per root hour; their variances therefore grow
+        // linearly in elapsed time, expressed here in hours.
+        let initialization_interval_hours = INITIALIZATION_INTERVAL_S / SECONDS_PER_HOUR;
+        let velocity_variance = uncertainty.velocity_mps.powi(2)
+            + self.accel_velocity_random_walk().powi(2) * initialization_interval_hours;
+
+        // Coarse levelling ties attitude to the sensed gravity vector, so an unknown
+        // accelerometer bias `b` appears as a tilt of about `b/g` radians (Groves §5.6.3).
+        let levelling_variance = (self.accel_bias_instability_mps2()
+            / earth::gravity(&latitude_degrees, &altitude_m))
+        .powi(2);
+        let attitude_variance = self.gyro_angle_random_walk().powi(2)
+            * initialization_interval_hours
+            + levelling_variance;
+
+        let accel_bias_variance = self.accel_bias_instability_mps2().powi(2);
+        // `gyro_bias_instability_dph` returns radians per hour despite the name; the filter's
+        // gyro bias state is radians per second.
+        let gyro_bias_variance = (self.gyro_bias_instability_dph() / SECONDS_PER_HOUR).powi(2);
+
+        Ok([
+            latitude_variance,
+            longitude_variance,
+            altitude_variance,
+            velocity_variance,
+            velocity_variance,
+            velocity_variance,
+            attitude_variance,
+            attitude_variance,
+            attitude_variance,
+            accel_bias_variance,
+            accel_bias_variance,
+            accel_bias_variance,
+            gyro_bias_variance,
+            gyro_bias_variance,
+            gyro_bias_variance,
+        ])
+    }
+}
+/// Number of states in the error vector [`IMUQuality::auto_covariance`] sizes its output for.
+///
+/// Position, velocity, attitude, accelerometer bias and gyroscope bias, three each.
+pub const ERROR_STATE_DIMENSION: usize = 15;
+
+/// Seconds in an hour.
+///
+/// Sensor specifications are quoted per hour (bias instability) or per root hour (random
+/// walk); every filter state in this crate is per second. Conversions between the two go
+/// through this constant rather than a bare `3600.0`.
+const SECONDS_PER_HOUR: f64 = 3600.0;
+
+/// Nominal initialisation interval, in seconds, assumed by [`IMUQuality::auto_covariance`].
+///
+/// The span an INS is taken to have run on its own -- levelling against gravity, averaging
+/// its gyros -- between the fix that supplied [`InitialUncertainty`] and the first filter
+/// update. One minute is the conventional coarse-alignment dwell (Groves §5.6.3) and is
+/// long enough for the averaging to mean something without letting the grade's random walks
+/// dominate a term they should only widen.
+const INITIALIZATION_INTERVAL_S: f64 = 60.0;
+
+/// Smallest `cos(latitude)` used when converting an east-west distance to a longitude angle.
+///
+/// The conversion divides by `cos(latitude)`, which goes to zero at the poles and would send
+/// the longitude variance to infinity. Matches the guard already used in the position update
+/// so that P0 and the mechanization degrade identically at high latitude.
+const MIN_COSINE_LATITUDE: f64 = 1e-6;
+
+/// Caller-supplied a priori uncertainty for [`IMUQuality::auto_covariance`].
+///
+/// These are the terms an IMU grade cannot supply: how well the vehicle's initial position
+/// and velocity are known. They come from whatever fixed the vehicle before the run -- a
+/// GNSS receiver's reported horizontal, vertical and velocity accuracies, a surveyed point,
+/// or a known-stationary start.
+///
+/// All three are one-sigma standard deviations rather than variances, and all three must be
+/// finite and strictly positive: a zero makes the derived covariance singular.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct InitialUncertainty {
+    /// One-sigma horizontal position uncertainty, metres.
+    pub horizontal_position_m: f64,
+    /// One-sigma vertical position uncertainty, metres.
+    pub vertical_position_m: f64,
+    /// One-sigma velocity uncertainty, per axis, metres per second.
+    pub velocity_mps: f64,
+}
+
+impl Default for InitialUncertainty {
+    /// An unaided single-frequency GNSS fix: the same accuracies the synthetic GNSS model in
+    /// [`crate::sim`] generates its noise from, with a half-metre-per-second velocity.
+    fn default() -> Self {
+        Self {
+            horizontal_position_m: 2.5,
+            vertical_position_m: 5.0,
+            velocity_mps: 0.5,
+        }
+    }
+}
+
+impl InitialUncertainty {
+    /// Create an [`InitialUncertainty`] from one-sigma standard deviations in metres and
+    /// metres per second.
+    ///
+    /// The values are checked by [`IMUQuality::auto_covariance`], not here, so that a
+    /// configuration file can be deserialised into this struct and reported on at the point
+    /// it is used.
+    #[must_use]
+    pub const fn new(
+        horizontal_position_m: f64,
+        vertical_position_m: f64,
+        velocity_mps: f64,
+    ) -> Self {
+        Self {
+            horizontal_position_m,
+            vertical_position_m,
+            velocity_mps,
+        }
+    }
+
+    /// Reject any field that is not finite and strictly positive.
+    fn validate(self) -> Result<(), StrapdownError> {
+        for (field, value) in [
+            ("horizontal_position_m", self.horizontal_position_m),
+            ("vertical_position_m", self.vertical_position_m),
+            ("velocity_mps", self.velocity_mps),
+        ] {
+            if !value.is_finite() || value <= 0.0 {
+                return Err(StrapdownError::InvalidConfiguration {
+                    field,
+                    reason: format!(
+                        "initial uncertainty must be a finite, strictly positive standard deviation, got {value}"
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Convert a horizontal position uncertainty in metres to latitude and longitude variances.
+///
+/// Uses the WGS84 meridian and transverse radii of curvature (Groves §2.4.4), matching the
+/// radii the position update integrates against, so that P0 is expressed in exactly the
+/// units the filter's position states carry.
+fn horizontal_position_variance(
+    horizontal_position_m: f64,
+    latitude_degrees: f64,
+    altitude_m: f64,
+) -> (f64, f64) {
+    let (meridian_radius_m, transverse_radius_m, _) =
+        earth::principal_radii(&latitude_degrees, &altitude_m);
+    let cosine_latitude = latitude_degrees.to_radians().cos().max(MIN_COSINE_LATITUDE);
+    let latitude_variance = (horizontal_position_m / (meridian_radius_m + altitude_m)).powi(2);
+    let longitude_variance =
+        (horizontal_position_m / ((transverse_radius_m + altitude_m) * cosine_latitude)).powi(2);
+    (latitude_variance, longitude_variance)
 }
 /// Basic structure for holding raw IMU data in the form of sensed acceleration and angular rate vectors.
 ///
@@ -1664,6 +1941,254 @@ pub fn generate_scenario_data(
 mod tests {
     use super::*;
     use assert_approx_eq::assert_approx_eq;
+
+    /// Every IMU grade, so a new variant cannot be added without deciding what it means here.
+    const ALL_IMU_GRADES: [IMUQuality; 5] = [
+        IMUQuality::Consumer,
+        IMUQuality::Industrial,
+        IMUQuality::Tactical,
+        IMUQuality::Navigation,
+        IMUQuality::Strategic,
+    ];
+
+    /// A deliberately non-round fix: a degraded urban GNSS solution at a mid-latitude
+    /// airfield elevation, rather than defaults that would hide a dropped argument.
+    const AWKWARD_UNCERTAINTY: InitialUncertainty = InitialUncertainty::new(12.5, 37.5, 0.35);
+    const AWKWARD_LATITUDE_DEGREES: f64 = 51.4775;
+    const AWKWARD_ALTITUDE_M: f64 = 347.0;
+
+    #[test]
+    fn auto_covariance_has_one_variance_per_error_state() {
+        for quality in ALL_IMU_GRADES {
+            let covariance = quality
+                .auto_covariance(
+                    AWKWARD_UNCERTAINTY,
+                    AWKWARD_LATITUDE_DEGREES,
+                    AWKWARD_ALTITUDE_M,
+                )
+                .expect("a well formed uncertainty and position must produce a covariance");
+            assert_eq!(covariance.len(), ERROR_STATE_DIMENSION);
+            for (index, variance) in covariance.iter().enumerate() {
+                assert!(
+                    variance.is_finite() && *variance > 0.0,
+                    "{quality:?} state {index} variance must be finite and positive, got {variance}"
+                );
+            }
+        }
+    }
+
+    /// The bias blocks must be the bias-instability accessors, not a second table of numbers.
+    #[test]
+    fn auto_covariance_bias_variances_come_from_bias_instability() {
+        for quality in ALL_IMU_GRADES {
+            let covariance = quality
+                .auto_covariance(
+                    AWKWARD_UNCERTAINTY,
+                    AWKWARD_LATITUDE_DEGREES,
+                    AWKWARD_ALTITUDE_M,
+                )
+                .expect("a well formed uncertainty and position must produce a covariance");
+
+            let expected_accel = quality.accel_bias_instability_mps2().powi(2);
+            // Radians per hour from the accessor, radians per second in the filter state.
+            let expected_gyro = (quality.gyro_bias_instability_dph() / 3600.0).powi(2);
+            for axis in 0..3 {
+                assert_approx_eq!(covariance[9 + axis], expected_accel, expected_accel * 1e-12);
+                assert_approx_eq!(covariance[12 + axis], expected_gyro, expected_gyro * 1e-12);
+            }
+        }
+    }
+
+    /// The gyro bias block is in (rad/s)^2. Pinned separately from the accessor identity
+    /// above because an hour-to-second conversion left out is invisible to that test and
+    /// would inflate every gyro bias variance by 1.3e7.
+    #[test]
+    fn auto_covariance_gyro_bias_variance_is_per_second_not_per_hour() {
+        let covariance = IMUQuality::Consumer
+            .auto_covariance(AWKWARD_UNCERTAINTY, 0.0, 0.0)
+            .expect("a well formed uncertainty and position must produce a covariance");
+        // 100 deg/h is 4.848e-4 rad/s.
+        assert_approx_eq!(covariance[12].sqrt(), 4.848_136_8e-4, 1e-10);
+    }
+
+    /// Attitude is angle random walk over the initialisation interval plus the levelling
+    /// error an unknown accelerometer bias implies.
+    #[test]
+    fn auto_covariance_attitude_combines_random_walk_and_levelling() {
+        for quality in ALL_IMU_GRADES {
+            let covariance = quality
+                .auto_covariance(
+                    AWKWARD_UNCERTAINTY,
+                    AWKWARD_LATITUDE_DEGREES,
+                    AWKWARD_ALTITUDE_M,
+                )
+                .expect("a well formed uncertainty and position must produce a covariance");
+
+            let random_walk = quality.gyro_angle_random_walk().powi(2) * (60.0 / 3600.0);
+            let levelling = (quality.accel_bias_instability_mps2()
+                / earth::gravity(&AWKWARD_LATITUDE_DEGREES, &AWKWARD_ALTITUDE_M))
+            .powi(2);
+            let expected = random_walk + levelling;
+            for axis in 0..3 {
+                assert_approx_eq!(covariance[6 + axis], expected, expected * 1e-12);
+            }
+            assert!(
+                covariance[6] > random_walk,
+                "{quality:?} attitude variance must not be pure random walk"
+            );
+        }
+    }
+
+    /// Velocity is the caller's own uncertainty, widened by velocity random walk.
+    #[test]
+    fn auto_covariance_velocity_widens_the_supplied_uncertainty() {
+        for quality in ALL_IMU_GRADES {
+            let covariance = quality
+                .auto_covariance(
+                    AWKWARD_UNCERTAINTY,
+                    AWKWARD_LATITUDE_DEGREES,
+                    AWKWARD_ALTITUDE_M,
+                )
+                .expect("a well formed uncertainty and position must produce a covariance");
+
+            let expected = AWKWARD_UNCERTAINTY.velocity_mps.powi(2)
+                + quality.accel_velocity_random_walk().powi(2) * (60.0 / 3600.0);
+            for axis in 0..3 {
+                assert_approx_eq!(covariance[3 + axis], expected, expected * 1e-12);
+            }
+            assert!(
+                covariance[3] > AWKWARD_UNCERTAINTY.velocity_mps.powi(2),
+                "{quality:?} velocity variance must widen the supplied uncertainty"
+            );
+        }
+    }
+
+    /// Position uncertainty is metric on the way in and angular on the way out; the round
+    /// trip through the principal radii must return the metres that were supplied.
+    #[test]
+    fn auto_covariance_position_variance_round_trips_through_the_principal_radii() {
+        let covariance = IMUQuality::Industrial
+            .auto_covariance(
+                AWKWARD_UNCERTAINTY,
+                AWKWARD_LATITUDE_DEGREES,
+                AWKWARD_ALTITUDE_M,
+            )
+            .expect("a well formed uncertainty and position must produce a covariance");
+
+        let (meridian_radius_m, transverse_radius_m, _) =
+            earth::principal_radii(&AWKWARD_LATITUDE_DEGREES, &AWKWARD_ALTITUDE_M);
+        let northing_m = covariance[0].sqrt() * (meridian_radius_m + AWKWARD_ALTITUDE_M);
+        let easting_m = covariance[1].sqrt()
+            * (transverse_radius_m + AWKWARD_ALTITUDE_M)
+            * AWKWARD_LATITUDE_DEGREES.to_radians().cos();
+        assert_approx_eq!(northing_m, AWKWARD_UNCERTAINTY.horizontal_position_m, 1e-9);
+        assert_approx_eq!(easting_m, AWKWARD_UNCERTAINTY.horizontal_position_m, 1e-9);
+
+        // Altitude is already metric and must pass through untouched.
+        assert_approx_eq!(
+            covariance[2],
+            AWKWARD_UNCERTAINTY.vertical_position_m.powi(2),
+            1e-9
+        );
+    }
+
+    /// A metre of east-west error subtends more longitude the further north it is measured.
+    #[test]
+    fn auto_covariance_longitude_variance_grows_with_latitude() {
+        let equator = IMUQuality::Tactical
+            .auto_covariance(AWKWARD_UNCERTAINTY, 0.0, 0.0)
+            .expect("a well formed uncertainty and position must produce a covariance");
+        let high_latitude = IMUQuality::Tactical
+            .auto_covariance(AWKWARD_UNCERTAINTY, 70.0, 0.0)
+            .expect("a well formed uncertainty and position must produce a covariance");
+        assert!(high_latitude[1] > equator[1] * 8.0);
+        // Latitude is barely affected: the meridian radius grows by under 1% between the
+        // equator and 70 degrees, so its variance moves by under 2%.
+        assert_approx_eq!(high_latitude[0], equator[0], equator[0] * 0.03);
+        assert!(high_latitude[0] < equator[0]);
+    }
+
+    /// The pole is in range for latitude, and the cosine guard must keep it finite there.
+    #[test]
+    fn auto_covariance_stays_finite_at_the_pole() {
+        let covariance = IMUQuality::Navigation
+            .auto_covariance(AWKWARD_UNCERTAINTY, 90.0, 0.0)
+            .expect("the pole is a valid latitude");
+        assert!(covariance.iter().all(|variance| variance.is_finite()));
+    }
+
+    /// Better grades must not produce a wider P0 on any inertial state.
+    #[test]
+    fn auto_covariance_is_monotonic_in_imu_grade() {
+        let covariances: Vec<[f64; ERROR_STATE_DIMENSION]> = ALL_IMU_GRADES
+            .iter()
+            .map(|quality| {
+                quality
+                    .auto_covariance(
+                        AWKWARD_UNCERTAINTY,
+                        AWKWARD_LATITUDE_DEGREES,
+                        AWKWARD_ALTITUDE_M,
+                    )
+                    .expect("a well formed uncertainty and position must produce a covariance")
+            })
+            .collect();
+
+        for pair in covariances.windows(2) {
+            for (state, (coarser, finer)) in pair[0].iter().zip(pair[1].iter()).enumerate().skip(3)
+            {
+                assert!(
+                    finer <= coarser,
+                    "state {state} must not widen as the IMU grade improves: {coarser} then {finer}"
+                );
+            }
+            // Position depends only on the fix, not the IMU, so it is identical throughout.
+            for (coarser, finer) in pair[0].iter().zip(pair[1].iter()).take(3) {
+                assert_approx_eq!(*coarser, *finer, 1e-18);
+            }
+        }
+    }
+
+    #[test]
+    fn auto_covariance_rejects_uncertainties_that_would_make_p0_singular() {
+        for bad in [
+            InitialUncertainty::new(0.0, 5.0, 0.5),
+            InitialUncertainty::new(5.0, -1.0, 0.5),
+            InitialUncertainty::new(5.0, 5.0, f64::NAN),
+            InitialUncertainty::new(f64::INFINITY, 5.0, 0.5),
+        ] {
+            let result = IMUQuality::Consumer.auto_covariance(bad, 0.0, 0.0);
+            assert!(
+                matches!(result, Err(StrapdownError::InvalidConfiguration { .. })),
+                "{bad:?} must be rejected as a configuration error, got {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn auto_covariance_rejects_positions_outside_the_mechanization() {
+        for (latitude, altitude) in [(91.0, 0.0), (-90.5, 0.0), (f64::NAN, 0.0), (0.0, 40_000.0)] {
+            let result =
+                IMUQuality::Consumer.auto_covariance(AWKWARD_UNCERTAINTY, latitude, altitude);
+            assert!(
+                matches!(result, Err(StrapdownError::OutOfRange { .. })),
+                "latitude {latitude}, altitude {altitude} must be rejected, got {result:?}"
+            );
+        }
+    }
+
+    /// The default fix quality is the one the synthetic GNSS model in `sim` generates.
+    #[test]
+    fn initial_uncertainty_default_is_a_plain_gnss_fix() {
+        let default = InitialUncertainty::default();
+        assert_approx_eq!(default.horizontal_position_m, 2.5, 1e-12);
+        assert_approx_eq!(default.vertical_position_m, 5.0, 1e-12);
+        assert_approx_eq!(default.velocity_mps, 0.5, 1e-12);
+        assert!(
+            IMUQuality::default()
+                .auto_covariance(default, 40.0, 0.0)
+                .is_ok()
+        );
+    }
     #[test]
     fn test_wrap_to_180() {
         assert_eq!(super::wrap_to_180(190.0), -170.0);
