@@ -14,30 +14,73 @@ A linear **spine** carries the breaking changes, each PR based on the one before
 work runs on **parallel** branches off `main` and merges laterally. Every branch has its own
 git worktree.
 
+**Status as of 2026-09-14. The queue is finished.** Spine 0-9 and parallel 100-103 are all
+merged; 104 was closed rather than implemented. `StrapdownError`, `ImuSample`, the 15-state
+ESKF, NIS gating, ZUPT/ZARU, `InsEngine`, the validation suite, the examples and the release
+automation are all on `main`.
+
+One acceptance criterion in the whole queue is outstanding, and it is blocked rather than
+unstarted: the crates.io publish dry run (see spine 9 below). Everything else that remains for
+v1.0 lives in the issue tracker, not here.
+
+That makes every *ordering* constraint this document used to carry historical. The parallel
+branches' old merge points ("before PR 1", "rebase onto PR 2") were satisfied by `main` itself
+once spine 2 landed, so 101-103 were rebased onto plain `main` and worked concurrently rather
+than stacked. The tables below record what happened; they are no longer an instruction to
+sequence anything.
+
 ## Spine
 
-| # | Branch | Base | Issues | Summary |
+| # | Branch | Issues | Summary | Status |
 |---|---|---|---|---|
-| 0 | [`v1/00-test-speed`](queue/00-test-speed.md) | `main` | -- | Test-suite runtime |
-| 1 | [`v1/01-eskf-fix`](queue/01-eskf-fix.md) | `v1/00-test-speed` | #266 | ESKF vertical-channel divergence |
-| 2 | [`v1/02-filter-api`](queue/02-filter-api.md) | `v1/01-eskf-fix` | #254, #255 | StrapdownError + ImuSample (breaking API) |
-| 3 | [`v1/03-ned-default`](queue/03-ned-default.md) | `v1/02-filter-api` | #255 | Default frame to NED |
-| 4 | [`v1/04-eskf-primary`](queue/04-eskf-primary.md) | `v1/03-ned-default` | #258 | 15-state ESKF as the default filter |
-| 5 | [`v1/05-filters`](queue/05-filters.md) | `v1/04-eskf-primary` | #259 | EKF, UKF, PF/RBPF on the new API |
-| 6 | [`v1/06-aiding`](queue/06-aiding.md) | `v1/05-filters` | #260, #261 | NIS gating + ZUPT/ZARU |
-| 7 | [`v1/07-engine`](queue/07-engine.md) | `v1/06-aiding` | #262 | InsEngine builder + lever-arm compensation |
-| 8 | [`v1/08-validation`](queue/08-validation.md) | `v1/07-engine` | #264 | Integration suite + ground-truth validation |
-| 9 | [`v1/09-release`](queue/09-release.md) | `v1/08-validation` | #265, #253 | Docs, examples, release automation + strict-lint deny flip |
+| 0 | [`v1/00-test-speed`](queue/00-test-speed.md) | -- | Test-suite runtime | merged |
+| 1 | [`v1/01-eskf-fix`](queue/01-eskf-fix.md) | #266 | ESKF vertical-channel divergence | merged |
+| 2 | [`v1/02-filter-api`](queue/02-filter-api.md) | #254, #255 | StrapdownError + ImuSample (breaking API) | merged |
+| 3 | [`v1/03-ned-default`](queue/03-ned-default.md) | #255 | Default frame to NED | merged |
+| 4 | [`v1/04-eskf-primary`](queue/04-eskf-primary.md) | #258 | 15-state ESKF as the default filter | merged |
+| 5 | [`v1/05-filters`](queue/05-filters.md) | #259 | EKF, UKF, PF/RBPF on the new API | merged |
+| 6 | [`v1/06-aiding`](queue/06-aiding.md) | #260, #261 | NIS gating + ZUPT/ZARU | merged |
+| 7 | [`v1/07-engine`](queue/07-engine.md) | #262 | InsEngine builder + lever-arm compensation | merged (#276) |
+| 8 | [`v1/08-validation`](queue/08-validation.md) | #264 | Integration suite + ground-truth validation | merged (#277) |
+| 9 | [`v1/09-release`](queue/09-release.md) | #265, #253 | Docs, examples, release automation + strict-lint deny flip | merged (#278), dry run pending |
+
+The `Base` column is gone: every spine branch was rebase-merged into `main`, so no entry has a
+live base any more. Branches `v1/02-filter-api` through `v1/07-engine` still exist on the
+remote but their PRs are merged; they are safe to prune now that no open PR is based on any of
+them.
+
+Spine 9 merged with its release-verification box unticked, deliberately. `publish.yml`
+dry-runs all three crates with `--locked`, but `strapdown-core` is on crates.io at 0.5.0 while
+the workspace is at 1.0.0, and `strapdown-geonav` has never been published -- so the dependent
+crates try to resolve `strapdown-core = 1.0.0` from the registry and cannot. A dependent cannot
+be dry-run before its dependency is published. Only `strapdown-core` itself is verifiable this
+way today; the rest become verifiable the moment 1.0.0 is live.
 
 ## Parallel
 
-| # | Branch | Issues | Summary | Merge point |
+| # | Branch | Issues | Summary | Status |
 |---|---|---|---|---|
-| 100 | [`v1/p-lint-config`](queue/p-lint-config.md) | #253, #263 | Lint config (**enforced**, not warn-level) + feature gating | before everything |
-| 101 | [`v1/p-imu-quality-cov`](queue/p-imu-quality-cov.md) | #257 | auto_covariance from IMUQuality | before PR 1 |
-| 102 | [`v1/p-calibration`](queue/p-calibration.md) | #256 | ImuCalibration | rebase onto PR 2 for the final signature |
-| 103 | [`v1/p-alignment`](queue/p-alignment.md) | #257 | Coarse alignment and initialisation | rebase onto PR 2 |
-| 104 | [`v1/p-release-automation`](queue/p-release-automation.md) | #265 | CI and release workflow | any time |
+| 100 | [`v1/p-lint-config`](queue/p-lint-config.md) | #253, #263 | Lint config (**enforced**, not warn-level) + feature gating | merged |
+| 101 | [`v1/p-imu-quality-cov`](queue/p-imu-quality-cov.md) | #257 | `auto_covariance` from `IMUQuality` | merged (#280) |
+| 102 | [`v1/p-calibration`](queue/p-calibration.md) | #256 | `ImuCalibration` | merged (#281) |
+| 103 | [`v1/p-alignment`](queue/p-alignment.md) | #257 | Coarse alignment and initialisation | merged (#282) |
+| 104 | `v1/p-release-automation` | #265 | CI and release workflow | **closed, won't implement** |
+
+101-103 were worked concurrently off current `main`, not stacked, and all three merged. The
+concurrency cost exactly two conflicts, both in `core/src/lib.rs` and both one line: 102 and
+103 each add a `pub mod` declaration, and 101's `auto_covariance` shares the `impl IMUQuality`
+block with later work. Neither needed a decision -- both sides were kept.
+
+104 was closed because the code it described already existed on `main`. Two of its three
+acceptance criteria are met outright: the CI matrix covers Linux, macOS and Windows, and both
+jobs pin `dtolnay/rust-toolchain@1.91` to match `rust-version` in `Cargo.toml`.
+
+The third -- "crates.io publish workflow verified by dry run" -- is **not** met. The workflow
+exists and threads a `workflow_dispatch` `dry_run` input through all three crates in dependency
+order, but running it end to end is blocked until `strapdown-core` 1.0.0 is published, for the
+reason given under the spine table. That is a release step rather than a code change, and #265
+(closed by spine 9) already carries the explanation, so there was nothing for a separate branch
+to implement.
 
 ## Issues split across two PRs
 
@@ -45,8 +88,8 @@ git worktree.
 |---|---|---|---|
 | #253 | `v1/p-lint-config` (**all but the zero-panic lints**) | `v1/02-filter-api` (`unwrap_used`, `expect_used`, `panic`, `missing_errors_doc`, `missing_panics_doc`, `needless_pass_by_value`) | Superseded plan: the pedantic/nursery backlog was cleared in queue 100 rather than deferred to 9, so the strict gate is live for PRs 2-9 instead of arriving after them. The lints that remain off are the ones that need `StrapdownError` to be satisfiable at all, so they switch on in queue 2 alongside it -- not in queue 9. |
 | #255 | `v1/02-filter-api` (Delta-v/Delta-theta) | `v1/03-ned-default` (frame) | Two orthogonal risks. Separating them means an integration-metric shift is attributable to one change. |
-| #257 | `v1/p-imu-quality-cov` (`auto_covariance`) | `v1/p-alignment` (rest) | `auto_covariance` is needed to retune ESKF covariance during the #266 fix, so it lands before PR 1. |
-| #265 | `v1/p-release-automation` (CI) | `v1/09-release` (docs) | The CI half depends on nothing and can land at any time. |
+| #257 | `v1/p-imu-quality-cov` (`auto_covariance`) | `v1/p-alignment` (rest) | Both halves are merged and #257 is closed. The split held, the ordering did not: #266 was fixed in spine 1 before `auto_covariance` existed, so the "lands before PR 1" constraint expired unused. `auto_covariance` shipped as **opt-in** -- `engine::DEFAULT_INITIAL_COVARIANCE` and `sim::initialize_eskf` are unchanged, so no existing integration metric moved. Retuning the default remains #266's call. |
+| #265 | ~~`v1/p-release-automation` (CI)~~ | `v1/09-release` (docs + the publish dry run) | The split is void: the CI half was already done on `main`, so 104 was closed rather than implemented, and spine 9 closed #265 outright. The dry run is the one criterion still open, blocked on publishing 1.0.0 rather than on any code. |
 
 ## Working the queue
 
