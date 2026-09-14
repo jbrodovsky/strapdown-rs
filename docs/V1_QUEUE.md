@@ -14,10 +14,14 @@ A linear **spine** carries the breaking changes, each PR based on the one before
 work runs on **parallel** branches off `main` and merges laterally. Every branch has its own
 git worktree.
 
-**Status as of 2026-09-14.** Spine 0-7 are merged; `StrapdownError`, `ImuSample`, the 15-state
-ESKF, NIS gating, ZUPT/ZARU and `InsEngine` are all on `main`. Spine 8 and 9 are not started --
-no branch exists for either. Parallel 100-103 are all merged and 104 was closed as
-already-satisfied, so the parallel track is complete.
+**Status as of 2026-09-14. The queue is finished.** Spine 0-9 and parallel 100-103 are all
+merged; 104 was closed rather than implemented. `StrapdownError`, `ImuSample`, the 15-state
+ESKF, NIS gating, ZUPT/ZARU, `InsEngine`, the validation suite, the examples and the release
+automation are all on `main`.
+
+One acceptance criterion in the whole queue is outstanding, and it is blocked rather than
+unstarted: the crates.io publish dry run (see spine 9 below). Everything else that remains for
+v1.0 lives in the issue tracker, not here.
 
 That makes every *ordering* constraint this document used to carry historical. The parallel
 branches' old merge points ("before PR 1", "rebase onto PR 2") were satisfied by `main` itself
@@ -37,13 +41,20 @@ sequence anything.
 | 5 | [`v1/05-filters`](queue/05-filters.md) | #259 | EKF, UKF, PF/RBPF on the new API | merged |
 | 6 | [`v1/06-aiding`](queue/06-aiding.md) | #260, #261 | NIS gating + ZUPT/ZARU | merged |
 | 7 | [`v1/07-engine`](queue/07-engine.md) | #262 | InsEngine builder + lever-arm compensation | merged (#276) |
-| 8 | [`v1/08-validation`](queue/08-validation.md) | #264 | Integration suite + ground-truth validation | **not started** |
-| 9 | [`v1/09-release`](queue/09-release.md) | #265, #253 | Docs, examples, release automation + strict-lint deny flip | **not started** |
+| 8 | [`v1/08-validation`](queue/08-validation.md) | #264 | Integration suite + ground-truth validation | merged (#277) |
+| 9 | [`v1/09-release`](queue/09-release.md) | #265, #253 | Docs, examples, release automation + strict-lint deny flip | merged (#278), dry run pending |
 
-The `Base` column is gone: every merged spine branch was rebase-merged into `main`, and the two
-outstanding items have no branch yet. Branches `v1/02-filter-api` through `v1/07-engine` still
-exist on the remote but their PRs are merged; they are safe to prune now that no open PR is
-based on any of them.
+The `Base` column is gone: every spine branch was rebase-merged into `main`, so no entry has a
+live base any more. Branches `v1/02-filter-api` through `v1/07-engine` still exist on the
+remote but their PRs are merged; they are safe to prune now that no open PR is based on any of
+them.
+
+Spine 9 merged with its release-verification box unticked, deliberately. `publish.yml`
+dry-runs all three crates with `--locked`, but `strapdown-core` is on crates.io at 0.5.0 while
+the workspace is at 1.0.0, and `strapdown-geonav` has never been published -- so the dependent
+crates try to resolve `strapdown-core = 1.0.0` from the registry and cannot. A dependent cannot
+be dry-run before its dependency is published. Only `strapdown-core` itself is verifiable this
+way today; the rest become verifiable the moment 1.0.0 is live.
 
 ## Parallel
 
@@ -60,12 +71,16 @@ concurrency cost exactly two conflicts, both in `core/src/lib.rs` and both one l
 103 each add a `pub mod` declaration, and 101's `auto_covariance` shares the `impl IMUQuality`
 block with later work. Neither needed a decision -- both sides were kept.
 
-104 was closed because `main` already satisfied all three of its acceptance criteria: the CI
-matrix covers Linux, macOS and Windows, both jobs pin `dtolnay/rust-toolchain@1.91` to match
-`rust-version` in `Cargo.toml`, and `.github/workflows/publish.yml` threads a `workflow_dispatch`
-`dry_run` input through all three crates in dependency order. The only outstanding part is
-*running* the dry run, which is a workflow dispatch rather than a code change, so it is tracked
-under #265 instead.
+104 was closed because the code it described already existed on `main`. Two of its three
+acceptance criteria are met outright: the CI matrix covers Linux, macOS and Windows, and both
+jobs pin `dtolnay/rust-toolchain@1.91` to match `rust-version` in `Cargo.toml`.
+
+The third -- "crates.io publish workflow verified by dry run" -- is **not** met. The workflow
+exists and threads a `workflow_dispatch` `dry_run` input through all three crates in dependency
+order, but running it end to end is blocked until `strapdown-core` 1.0.0 is published, for the
+reason given under the spine table. That is a release step rather than a code change, and #265
+(closed by spine 9) already carries the explanation, so there was nothing for a separate branch
+to implement.
 
 ## Issues split across two PRs
 
@@ -74,7 +89,7 @@ under #265 instead.
 | #253 | `v1/p-lint-config` (**all but the zero-panic lints**) | `v1/02-filter-api` (`unwrap_used`, `expect_used`, `panic`, `missing_errors_doc`, `missing_panics_doc`, `needless_pass_by_value`) | Superseded plan: the pedantic/nursery backlog was cleared in queue 100 rather than deferred to 9, so the strict gate is live for PRs 2-9 instead of arriving after them. The lints that remain off are the ones that need `StrapdownError` to be satisfiable at all, so they switch on in queue 2 alongside it -- not in queue 9. |
 | #255 | `v1/02-filter-api` (Delta-v/Delta-theta) | `v1/03-ned-default` (frame) | Two orthogonal risks. Separating them means an integration-metric shift is attributable to one change. |
 | #257 | `v1/p-imu-quality-cov` (`auto_covariance`) | `v1/p-alignment` (rest) | Both halves are merged and #257 is closed. The split held, the ordering did not: #266 was fixed in spine 1 before `auto_covariance` existed, so the "lands before PR 1" constraint expired unused. `auto_covariance` shipped as **opt-in** -- `engine::DEFAULT_INITIAL_COVARIANCE` and `sim::initialize_eskf` are unchanged, so no existing integration metric moved. Retuning the default remains #266's call. |
-| #265 | ~~`v1/p-release-automation` (CI)~~ | `v1/09-release` (docs + the publish dry run) | The split is void: the CI half turned out to be already done on `main`, so 104 was closed rather than implemented. All of #265 now sits in spine 9. |
+| #265 | ~~`v1/p-release-automation` (CI)~~ | `v1/09-release` (docs + the publish dry run) | The split is void: the CI half was already done on `main`, so 104 was closed rather than implemented, and spine 9 closed #265 outright. The dry run is the one criterion still open, blocked on publishing 1.0.0 rather than on any code. |
 
 ## Working the queue
 
