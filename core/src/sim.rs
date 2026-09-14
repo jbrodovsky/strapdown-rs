@@ -4337,7 +4337,12 @@ pub fn generate_synthetic(
         Vector3::new(rng.sample(dist), rng.sample(dist), rng.sample(dist))
     };
     let gyro_bias = {
-        let sigma = config.imu_quality.gyro_bias_instability_dph();
+        // `gyro_bias_instability_dph` is radians per *hour* despite its name, and this bias is
+        // added straight to `perfect_imu.gyro`, which is radians per second. Without the
+        // conversion a consumer-grade run injects ~1.745 rad/s -- 100 deg/s -- of constant
+        // gyro bias. The accelerometer block above needs no equivalent conversion because
+        // `accel_bias_instability_mps2` is already in the units its sample is added to.
+        let sigma = config.imu_quality.gyro_bias_instability_dph() / crate::SECONDS_PER_HOUR;
         let dist = Normal::new(0.0_f64, sigma).unwrap_or_else(|_| {
             log::warn!(
                 "gyro bias instability {sigma} is not a usable standard deviation; using 1e-9"
@@ -4349,9 +4354,9 @@ pub fn generate_synthetic(
 
     // Per-sample noise standard deviations (ARW/VRW scaled to sample rate)
     let accel_noise_sigma = config.imu_quality.accel_velocity_random_walk()
-        * (config.sample_rate_hz / 3600.0_f64).sqrt();
-    let gyro_noise_sigma =
-        config.imu_quality.gyro_angle_random_walk() * (config.sample_rate_hz / 3600.0_f64).sqrt();
+        * (config.sample_rate_hz / crate::SECONDS_PER_HOUR).sqrt();
+    let gyro_noise_sigma = config.imu_quality.gyro_angle_random_walk()
+        * (config.sample_rate_hz / crate::SECONDS_PER_HOUR).sqrt();
 
     let accel_noise_dist =
         Normal::new(0.0_f64, accel_noise_sigma).unwrap_or_else(|_| crate::normal_with_std(1e-6));
@@ -4520,6 +4525,63 @@ pub fn generate_synthetic(
 
 #[cfg(test)]
 mod tests {
+
+    /// The synthetic gyro bias is drawn in the accessor's own units, which are radians per
+    /// *hour* despite the `_dph` name, and then added to a rad/s gyro reading. Without the
+    /// conversion a stationary consumer-grade run carries ~1.745 rad/s -- 100 deg/s -- of
+    /// constant bias, which is not a consumer IMU, it is a spinning one.
+    ///
+    /// Bounded against the grade's own figure rather than a fitted number: a stationary
+    /// platform senses Earth rate (~7.3e-5 rad/s) plus a bias whose sigma is the grade's bias
+    /// instability in rad/s, so a few sigma either side is the whole budget.
+    #[test]
+    fn synthetic_gyro_bias_is_per_second_not_per_hour() {
+        use rand::SeedableRng;
+
+        let quality = crate::IMUQuality::Consumer;
+        let config = SyntheticConfig {
+            output: String::new(),
+            initial_state: SyntheticInitialState::default(),
+            duration_s: 10.0,
+            sample_rate_hz: 10.0,
+            imu_quality: quality,
+            seed: 7,
+            // Must be false: `no_noise` emits `perfect_imu` directly and never reaches the
+            // bias at all, so a test with it set cannot see this bug.
+            no_noise: false,
+            gnss_horizontal_noise_m: 1.0,
+            gnss_vertical_noise_m: 1.0,
+            baro_noise_std_pa: 1.0,
+        };
+
+        let mut rng = rand::rngs::StdRng::seed_from_u64(7);
+        let (_, records) = generate_synthetic(&config, &mut rng).expect("generation");
+
+        // Both error terms are in play, so both are in the budget: a constant bias whose sigma
+        // is the grade's bias instability in rad/s, and per-sample angle random walk scaled to
+        // the sample rate. With the bug the bias alone is ~1.745 rad/s, which overruns this by
+        // more than two orders of magnitude.
+        let bias_sigma_rps = quality.gyro_bias_instability_dph() / crate::SECONDS_PER_HOUR;
+        let arw_sigma_rps = quality.gyro_angle_random_walk()
+            * (config.sample_rate_hz / crate::SECONDS_PER_HOUR).sqrt();
+        let earth_rate_rps = 7.292_115e-5;
+        let budget = earth_rate_rps + 6.0 * (bias_sigma_rps + arw_sigma_rps);
+
+        for record in &records {
+            for (axis, rate) in [
+                ("x", record.gyro_x),
+                ("y", record.gyro_y),
+                ("z", record.gyro_z),
+            ] {
+                assert!(
+                    rate.abs() < budget,
+                    "stationary gyro_{axis} = {rate} rad/s exceeds the {budget} rad/s budget \
+                     for {quality:?}; a per-hour bias added to a per-second reading is 3600x \
+                     too large"
+                );
+            }
+        }
+    }
 
     /// A NED synthetic descent must actually lose altitude.
     ///
