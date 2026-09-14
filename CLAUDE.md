@@ -232,11 +232,29 @@ Input CSV must contain timestamped sensor measurements:
 - Coverage reports generated with `cargo tarpaulin`
 
 ### Environment Setup
-Project uses Pixi for dependency management (Python + Rust):
+Project uses Pixi for toolchain and system-library management:
 - Environment variables set in `pixi.toml` activation section
 - HDF5 required for NetCDF support (geonav experimental features)
-- Python ≥3.12, Rust ≥1.91
+- Rust ≥1.91. The repository is **Rust-only** -- the Python `analysis/` package was untracked
+  in `c5f72c6` when the repo was scoped to the v1.0 crate set, and `pixi.toml` declares no
+  Python dependency
 - Release binaries automatically added to PATH via pixi activation
+
+### Lint Policy
+Lints are **enforced at `deny`**, workspace-wide, not warn-level. `pixi run lint` and the
+blocking CI job both run `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
+- `clippy::pedantic`, `clippy::nursery`, `missing_docs`, `missing_debug_implementations`,
+  `unreachable_pub`, `rust_2018_idioms`
+- Zero-panic policy in library code: `unwrap_used`, `expect_used`, `panic` are denied. Return a
+  `StrapdownError` (`core/src/error.rs`). Tests are exempt via `clippy.toml`
+- Every `pub` item -- including struct fields and enum variants -- needs a doc comment, and a
+  fallible function needs an `# Errors` section
+- Relax a lint **once in `[workspace.lints.clippy]` with a reason**, never with a scattered
+  call-site `#[allow]`
+- CI pins `dtolnay/rust-toolchain@1.91` to match `rust-version`, the pixi `rust` pin and
+  `clippy.toml`'s `msrv`, because `pedantic`/`nursery` gain lints every release
+
+See `AGENTS.md` for the full policy and the reasoning behind each existing exception.
 
 ## Extensibility for Professional Versions
 

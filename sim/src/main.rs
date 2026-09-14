@@ -179,7 +179,7 @@ struct SyntheticArgs {
     #[arg(long, value_enum, default_value_t = strapdown::IMUQuality::Consumer)]
     imu_grade: strapdown::IMUQuality,
 
-    /// Output 9-state kinematic truth (NavigationResult format) instead of noisy sensor data
+    /// Output 9-state kinematic truth (`NavigationResult` format) instead of noisy sensor data
     #[arg(long)]
     no_noise: bool,
 
@@ -258,7 +258,7 @@ struct SimArgs {
 
     /// Output CSV file path, or a directory to write results into
     /// A path ending in .csv is treated as a file: a single input writes straight to it,
-    /// and multiple inputs write {output_stem}_{input_stem}.csv beside it.
+    /// and multiple inputs write {`output_stem`}_{`input_stem}.csv` beside it.
     /// Any other path is treated as a directory, and each input writes to its own file
     /// name inside it. Writing results over an input file is refused.
     #[arg(short, long, value_parser)]
@@ -1188,7 +1188,7 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
 // Geophysical Navigation Functions (feature-gated)
 // ============================================================================
 
-/// Convert GeoResolution to GravityResolution
+/// Convert `GeoResolution` to `GravityResolution`
 #[cfg(feature = "geonav")]
 const fn convert_resolution_gravity(resolution: GeoResolution) -> GravityResolution {
     match resolution {
@@ -1206,7 +1206,7 @@ const fn convert_resolution_gravity(resolution: GeoResolution) -> GravityResolut
     }
 }
 
-/// Convert GeoResolution to MagneticResolution
+/// Convert `GeoResolution` to `MagneticResolution`
 #[cfg(feature = "geonav")]
 const fn convert_resolution_magnetic(resolution: GeoResolution) -> MagneticResolution {
     match resolution {
@@ -2076,7 +2076,7 @@ type GeoMeasurementConfig = (
     Option<String>,
 );
 
-/// Prompt for GeoResolution with validation
+/// Prompt for `GeoResolution` with validation
 fn prompt_geo_resolution(measurement_type: &str) -> strapdown::sim::GeoResolution {
     use std::io::{self, Write};
     use strapdown::sim::GeoResolution;
@@ -2273,7 +2273,7 @@ fn prompt_geo_measurement_frequency() -> Option<f64> {
 }
 
 /// Interactive configuration file creation wizard that creates a custom
-/// [SimulationConfig] and writes it to file.
+/// [`SimulationConfig`] and writes it to file.
 fn create_config_file() -> Result<(), Box<dyn Error>> {
     println!("\n=== Strapdown Simulation Configuration Wizard ===\n");
 

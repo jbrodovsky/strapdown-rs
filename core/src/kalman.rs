@@ -51,20 +51,49 @@ use nalgebra::{DMatrix, DVector, Rotation3, UnitQuaternion, Vector3};
 /// ```
 #[derive(Clone, Debug, Default)]
 pub struct InitialState {
+    /// Geodetic latitude, in degrees when `in_degrees` is set and in radians otherwise.
+    ///
+    /// [`InitialState::new`] passes this through unwrapped; only longitude is wrapped there.
     pub latitude: f64,
+    /// Geodetic longitude, in degrees when `in_degrees` is set and in radians otherwise.
+    ///
+    /// [`InitialState::new`] wraps it to the range -180 to 180 degrees, or $-\pi$ to $\pi$
+    /// radians, to match.
     pub longitude: f64,
+    /// Height above the WGS84 ellipsoid in meters, positive up in both NED and ENU.
     pub altitude: f64,
+    /// Northward velocity in m/s, resolved in the local-level frame.
     pub northward_velocity: f64,
+    /// Eastward velocity in m/s, resolved in the local-level frame.
     pub eastward_velocity: f64,
+    /// Vertical velocity in m/s: positive *down* in NED (the default), positive *up* in ENU.
     pub vertical_velocity: f64,
+    /// Roll, the first angle of the XYZ Euler sequence that gives the body-to-navigation
+    /// rotation, in degrees when `in_degrees` is set and in radians otherwise.
+    ///
+    /// [`InitialState::new`] wraps it to the range 0 to 360 degrees, or 0 to $2\pi$ radians,
+    /// which leaves the rotation it represents unchanged.
     pub roll: f64,
+    /// Pitch, the second angle of the XYZ Euler sequence, in degrees when `in_degrees` is set
+    /// and in radians otherwise; wrapped by [`InitialState::new`] like `roll`.
     pub pitch: f64,
+    /// Yaw, the third angle of the XYZ Euler sequence, in degrees when `in_degrees` is set and
+    /// in radians otherwise; wrapped by [`InitialState::new`] like `roll`.
     pub yaw: f64,
+    /// Unit tag for every angular field: `true` if latitude, longitude, roll, pitch and yaw are
+    /// stored in degrees, `false` if they are already radians.
+    ///
+    /// The filter constructors convert those five fields to radians exactly when this is set,
+    /// so the flag must travel with the values rather than being reset independently.
     pub in_degrees: bool,
+    /// Local-level frame convention: `true` for ENU, `false` for NED (the crate default).
+    ///
+    /// Copied straight into the filter it seeds, where it selects the mechanization's vertical
+    /// sign conventions; see the crate-level "Frame convention" section.
     pub is_enu: bool,
 }
 impl InitialState {
-    /// Create a new `InitialState`, normalizing/convertng angles as required.
+    /// Create a new `InitialState`, wrapping angles into range without changing their units.
     ///
     /// The constructor accepts latitude/longitude and Euler angles either in
     /// degrees (when `in_degrees==true`) or already in radians. It wraps each
@@ -75,14 +104,12 @@ impl InitialState {
     /// parameter selects the local-frame convention (defaults to NED when
     /// omitted).
     ///
-    /// # Known inconsistency (attitude)
-    ///
-    /// The Euler angles do not yet follow that contract: on the degrees path
-    /// this constructor converts `roll`/`pitch`/`yaw` to radians while leaving
-    /// `in_degrees == true`, so a filter constructor converts them a second
-    /// time -- 45 degrees is stored as 0.785 and reaches the filter as 0.0137
-    /// rad. Only zero attitude survives the round trip. Until that is fixed,
-    /// prefer a struct literal when seeding a non-zero attitude in degrees.
+    /// The Euler angles follow the same contract as longitude: `roll`, `pitch` and
+    /// `yaw` are wrapped -- to 0..360 on the degrees path, 0..$2\pi$ on the radian
+    /// path -- and stored in the unit `in_degrees` names, never converted here.
+    /// Latitude is stored exactly as supplied. So every angular field leaves this
+    /// constructor in the unit the flag advertises, which is the unit the filter
+    /// constructors read it back in.
     ///
     /// # Arguments
     ///
@@ -100,9 +127,10 @@ impl InitialState {
     ///
     /// # Returns
     ///
-    /// An `InitialState` whose latitude and longitude are wrapped into range and stored
-    /// in the units they were supplied in, alongside the `in_degrees` flag, so that the
-    /// filter constructors -- which convert only when the flag is set -- read them back
+    /// An `InitialState` whose longitude and Euler angles are wrapped into range, whose
+    /// latitude is stored as given, and whose angular fields are all held in the units
+    /// they were supplied in, alongside the `in_degrees` flag, so that the filter
+    /// constructors -- which convert only when the flag is set -- read them back
     /// consistently.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -809,14 +837,14 @@ impl ExtendedKalmanFilter {
     /// # Arguments
     ///
     /// * `initial_state` - Initial navigation state (position, velocity, attitude)
-    /// * `imu_biases` - Initial IMU bias estimates [b_ax, b_ay, b_az, b_gx, b_gy, b_gz]
+    /// * `imu_biases` - Initial IMU bias estimates [`b_ax`, `b_ay`, `b_az`, `b_gx`, `b_gy`, `b_gz`]
     /// * `covariance_diagonal` - Initial state uncertainty (diagonal covariance elements)
     /// * `process_noise` - Process noise covariance matrix Q
     /// * `use_biases` - If true, uses 15-state (with biases), otherwise 9-state
     ///
     /// # Returns
     ///
-    /// A new ExtendedKalmanFilter instance
+    /// A new `ExtendedKalmanFilter` instance
     ///
     /// # Example
     ///
@@ -1055,7 +1083,7 @@ impl NavigationFilter for ExtendedKalmanFilter {
     ///
     /// # Arguments
     ///
-    /// * `measurement` - Measurement model implementing the MeasurementModel trait
+    /// * `measurement` - Measurement model implementing the `MeasurementModel` trait
     ///
     /// # Supported Measurements
     ///
@@ -1162,8 +1190,8 @@ impl NavigationFilter for ExtendedKalmanFilter {
     ///
     /// # Returns
     ///
-    /// State vector: [lat (rad), lon (rad), alt (m), v_n (m/s), v_e (m/s), v_d (m/s),
-    ///                roll (rad), pitch (rad), yaw (rad), b_ax, b_ay, b_az, b_gx, b_gy, b_gz]
+    /// State vector: [lat (rad), lon (rad), alt (m), `v_n` (m/s), `v_e` (m/s), `v_d` (m/s),
+    ///                roll (rad), pitch (rad), yaw (rad), `b_ax`, `b_ay`, `b_az`, `b_gx`, `b_gy`, `b_gz`]
     fn get_estimate(&self) -> DVector<f64> {
         self.mean_state.clone()
     }
@@ -1247,7 +1275,7 @@ impl NavigationFilter for ExtendedKalmanFilter {
 ///
 /// ## Nominal State (9 components, stored as specific types):
 /// - **Position**: Geodetic coordinates (lat, lon, alt)
-/// - **Velocity**: NED/ENU frame (v_n, v_e, v_d)  
+/// - **Velocity**: NED/ENU frame (`v_n`, `v_e`, `v_d`)  
 /// - **Attitude**: Unit quaternion q or DCM
 ///
 /// ## Error State (15 components, always small):
@@ -1260,8 +1288,8 @@ impl NavigationFilter for ExtendedKalmanFilter {
 /// ```
 ///
 /// ## IMU Biases (6 components, part of nominal state):
-/// - Accelerometer biases: b_a ∈ ℝ³ (m/s²)
-/// - Gyroscope biases: b_g ∈ ℝ³ (rad/s)
+/// - Accelerometer biases: `b_a` ∈ ℝ³ (m/s²)
+/// - Gyroscope biases: `b_g` ∈ ℝ³ (rad/s)
 /// - Modeled as random walk: $\dot{b} = w_b$ where $w_b ~ N(0, Q_b)$
 ///
 /// # Error Injection (Reset)
@@ -1351,7 +1379,7 @@ pub struct ErrorStateKalmanFilter {
     nominal_accel_bias: Vector3<f64>, // m/s²
     nominal_gyro_bias: Vector3<f64>, // rad/s
 
-    /// Error state vector (15 elements: 3 pos + 3 vel + 3 att + 3 acc_bias + 3 gyro_bias)
+    /// Error state vector (15 elements: 3 pos + 3 vel + 3 att + 3 `acc_bias` + 3 `gyro_bias`)
     /// Initialized to zero and reset to zero after each update
     error_state: DVector<f64>,
 
@@ -1449,13 +1477,13 @@ impl ErrorStateKalmanFilter {
     /// # Arguments
     ///
     /// * `initial_state` - Initial navigation state (position, velocity, attitude)
-    /// * `imu_biases` - Initial IMU bias estimates [b_ax, b_ay, b_az, b_gx, b_gy, b_gz]
+    /// * `imu_biases` - Initial IMU bias estimates [`b_ax`, `b_ay`, `b_az`, `b_gx`, `b_gy`, `b_gz`]
     /// * `error_covariance_diagonal` - Initial error state uncertainty (15 diagonal elements)
     /// * `process_noise` - Process noise covariance matrix Q (15x15)
     ///
     /// # Returns
     ///
-    /// A new ErrorStateKalmanFilter instance with error state initialized to zero
+    /// A new `ErrorStateKalmanFilter` instance with error state initialized to zero
     ///
     /// # Example
     ///
@@ -1864,7 +1892,7 @@ impl NavigationFilter for ErrorStateKalmanFilter {
     ///
     /// # Arguments
     ///
-    /// * `measurement` - Measurement model implementing the MeasurementModel trait
+    /// * `measurement` - Measurement model implementing the `MeasurementModel` trait
     ///
     /// # Mathematical Details
     ///
@@ -2001,7 +2029,7 @@ impl NavigationFilter for ErrorStateKalmanFilter {
     /// Get the current nominal state estimate
     ///
     /// Returns the nominal state vector in the same format as EKF/UKF for compatibility:
-    /// [lat (rad), lon (rad), alt (m), v_n, v_e, v_d, roll, pitch, yaw, b_ax, b_ay, b_az, b_gx, b_gy, b_gz]
+    /// [lat (rad), lon (rad), alt (m), `v_n`, `v_e`, `v_d`, roll, pitch, yaw, `b_ax`, `b_ay`, `b_az`, `b_gx`, `b_gy`, `b_gz`]
     ///
     /// Note: The internal representation uses quaternions, but this converts to Euler angles
     fn get_estimate(&self) -> DVector<f64> {

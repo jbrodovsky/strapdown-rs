@@ -115,8 +115,10 @@ fn process_noise_matrix() -> DMatrix<f64> {
 
 /// The seed state in the form the Kalman-family constructors take.
 ///
-/// Built as a struct literal rather than through [`InitialState::new`], matching every
-/// other caller in the workspace -- see the note in `filter_comparison.rs`.
+/// Built as a struct literal rather than through [`InitialState::new`], matching the other
+/// test seeds in `filter_comparison.rs` and `integration_tests.rs`. The constructor is
+/// equally correct -- `engine.rs` and the `core/examples` binaries use it -- and this is
+/// only a convention among the test fixtures.
 fn initial_state(state: &StrapdownState) -> InitialState {
     let (roll, pitch, yaw) = state.attitude.euler_angles();
     InitialState {

@@ -73,8 +73,20 @@ use health::HealthMonitor;
 pub use execution::{ExecutionLimits, ExecutionMonitor};
 pub use health::HealthLimits;
 
+/// Default process noise covariance diagonal used when a caller supplies none.
+///
+/// The filters in this crate build $Q$ with `DMatrix::from_diagonal` from this array and add
+/// it to the propagated covariance once per step, so each entry is a per-step variance and not
+/// a spectral density scaled by $\Delta t$. Ordering matches the 15-state vector
+/// \[lat, lon, alt, v_n, v_e, v_d, roll, pitch, yaw, accel bias x/y/z, gyro bias x/y/z\], with
+/// the states in the crate's native units (angles in radians, altitude in metres, velocities in
+/// m/s). Nine-state filters take only the leading nine entries.
+///
+/// These are hand-picked tuning values rather than values derived from any particular sensor.
+/// Callers in this crate have also reused the array verbatim as an initial error covariance
+/// $P_0$; [`crate::IMUQuality::auto_covariance`] derives that fifteen-element diagonal from an
+/// IMU grade and an initial fix accuracy instead.
 pub const DEFAULT_PROCESS_NOISE: [f64; 15] = [
-    // Default process noise if not provided
     1e-6, // position noise 1e-6
     1e-6, // position noise 1e-6
     1e-4, // altitude noise
@@ -92,8 +104,14 @@ pub const DEFAULT_PROCESS_NOISE: [f64; 15] = [
     1e-8, // gyro bias z noise
 ];
 
+/// Default [`ExecutionLimits::max_wall_clock_ratio`]: a run may burn at most a quarter of a
+/// second of wall-clock time per second of trajectory it simulates.
 pub const DEFAULT_MAX_WALL_CLOCK_RATIO: f64 = 0.25;
+/// Default [`ExecutionLimits::max_wall_clock_s`]: hard ceiling of 1200 wall-clock seconds per
+/// trajectory, whichever of it and the ratio budget is smaller.
 pub const DEFAULT_MAX_WALL_CLOCK_S: f64 = 1200.0;
+/// Default [`ExecutionLimits::max_no_progress_s`]: 600 wall-clock seconds without a call to
+/// [`ExecutionMonitor::mark_progress`] before the run is treated as hung.
 pub const DEFAULT_MAX_NO_PROGRESS_S: f64 = 600.0;
 
 fn de_f64_nan<'de, D>(deserializer: D) -> Result<f64, D::Error>
@@ -300,10 +318,10 @@ impl TestDataRecord {
         }
         Ok(records)
     }
-    /// Writes a vector of TestDataRecord structs to a CSV file.
+    /// Writes a vector of `TestDataRecord` structs to a CSV file.
     ///
     /// # Arguments
-    /// * `records` - Vector of TestDataRecord structs to write
+    /// * `records` - Vector of `TestDataRecord` structs to write
     /// * `path` - Path where the CSV file will be saved
     ///
     /// # Returns
@@ -366,10 +384,10 @@ impl TestDataRecord {
         Ok(())
     }
 
-    /// Writes a vector of TestDataRecord structs to an HDF5 file.
+    /// Writes a vector of `TestDataRecord` structs to an HDF5 file.
     ///
     /// # Arguments
-    /// * `records` - Vector of TestDataRecord structs to write
+    /// * `records` - Vector of `TestDataRecord` structs to write
     /// * `path` - Path where the HDF5 file will be saved
     ///
     /// # Returns
@@ -462,14 +480,14 @@ impl TestDataRecord {
         write_f64_field!("grav_x", grav_x);
         Ok(())
     }
-    /// Writes a vector of TestDataRecord structs to an MCAP file.
+    /// Writes a vector of `TestDataRecord` structs to an MCAP file.
     ///
-    /// **Note**: This method uses MessagePack encoding. Due to CSV-specific field deserializers\
-    /// in TestDataRecord, direct MCAP deserialization may have limitations. For production use,
-    /// consider converting to NavigationResult or using CSV format for TestDataRecord.
+    /// **Note**: This method uses `MessagePack` encoding. Due to CSV-specific field deserializers\
+    /// in `TestDataRecord`, direct MCAP deserialization may have limitations. For production use,
+    /// consider converting to `NavigationResult` or using CSV format for `TestDataRecord`.
     ///
     /// # Arguments
-    /// * `records` - Vector of TestDataRecord structs to write
+    /// * `records` - Vector of `TestDataRecord` structs to write
     /// * `path` - Path where the MCAP file will be saved
     ///
     /// # Returns
@@ -529,7 +547,7 @@ impl TestDataRecord {
         Ok(())
     }
 
-    /// Reads an HDF5 file and returns a vector of TestDataRecord structs.
+    /// Reads an HDF5 file and returns a vector of `TestDataRecord` structs.
     ///
     /// # Arguments
     /// * `path` - Path to the HDF5 file to read.
@@ -654,10 +672,10 @@ impl TestDataRecord {
         }
     }
 
-    /// Writes a vector of TestDataRecord structs to a netCDF file.
+    /// Writes a vector of `TestDataRecord` structs to a netCDF file.
     ///
     /// # Arguments
-    /// * `records` - Vector of TestDataRecord structs to write
+    /// * `records` - Vector of `TestDataRecord` structs to write
     /// * `path` - Path where the netCDF file will be saved
     ///
     /// # Returns
@@ -665,7 +683,7 @@ impl TestDataRecord {
     #[cfg(feature = "netcdf")]
     /// # Errors
     /// If the file cannot be created or written, or the records cannot be
-    /// serialised as NetCDF.
+    /// serialised as `NetCDF`.
     pub fn to_netcdf<P: AsRef<Path>>(records: &[Self], path: P) -> Result<()> {
         if records.is_empty() {
             bail!("Cannot write empty records to netCDF");
@@ -764,7 +782,7 @@ impl TestDataRecord {
     /// * `Err` if the file cannot be read or parsed.
     #[cfg(feature = "netcdf")]
     /// # Errors
-    /// If the file cannot be read, or its contents are not valid NetCDF.
+    /// If the file cannot be read, or its contents are not valid `NetCDF`.
     pub fn from_netcdf<P: AsRef<Path>>(path: P) -> Result<Vec<Self>> {
         let file = netcdf::open(path)?;
 
@@ -863,11 +881,11 @@ impl TestDataRecord {
         Ok(records)
     }
 
-    /// Reads an MCAP file and returns a vector of TestDataRecord structs.
+    /// Reads an MCAP file and returns a vector of `TestDataRecord` structs.
     ///
-    /// **Note**: Due to CSV-specific field deserializers in TestDataRecord, MCAP deserialization\
-    /// may fail. For production use, consider using CSV format for TestDataRecord or convert\
-    /// to NavigationResult which fully supports MCAP.
+    /// **Note**: Due to CSV-specific field deserializers in `TestDataRecord`, MCAP deserialization\
+    /// may fail. For production use, consider using CSV format for `TestDataRecord` or convert\
+    /// to `NavigationResult` which fully supports MCAP.
     ///
     /// # Arguments
     /// * `path` - Path to the MCAP file to read.
@@ -908,20 +926,35 @@ impl Display for TestDataRecord {
 /// Struct representing the covariance diagonal of a navigation solution in NED coordinates.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct NEDCovariance {
+    /// Variance of the latitude estimate.
     pub latitude_cov: f64,
+    /// Variance of the longitude estimate.
     pub longitude_cov: f64,
+    /// Variance of the altitude estimate.
     pub altitude_cov: f64,
+    /// Variance of the north velocity estimate.
     pub velocity_n_cov: f64,
+    /// Variance of the east velocity estimate.
     pub velocity_e_cov: f64,
+    /// Variance of the vertical velocity estimate.
     pub velocity_v_cov: f64,
+    /// Variance of the roll estimate.
     pub roll_cov: f64,
+    /// Variance of the pitch estimate.
     pub pitch_cov: f64,
+    /// Variance of the yaw estimate.
     pub yaw_cov: f64,
+    /// Variance of the accelerometer x-axis bias estimate.
     pub acc_bias_x_cov: f64,
+    /// Variance of the accelerometer y-axis bias estimate.
     pub acc_bias_y_cov: f64,
+    /// Variance of the accelerometer z-axis bias estimate.
     pub acc_bias_z_cov: f64,
+    /// Variance of the gyroscope x-axis bias estimate.
     pub gyro_bias_x_cov: f64,
+    /// Variance of the gyroscope y-axis bias estimate.
     pub gyro_bias_y_cov: f64,
+    /// Variance of the gyroscope z-axis bias estimate.
     pub gyro_bias_z_cov: f64,
 }
 /// Generic result struct for navigation simulations.
@@ -1041,15 +1074,15 @@ impl Default for NavigationResult {
     }
 }
 impl NavigationResult {
-    /// Creates a new NavigationResult with default values.
+    /// Creates a new `NavigationResult` with default values.
     pub fn new() -> Self {
         Self::default() // add in validation
     }
 
-    /// Writes the NavigationResult to a CSV file.
+    /// Writes the `NavigationResult` to a CSV file.
     ///
     /// # Arguments
-    /// * `records` - Vector of NavigationResult structs to write
+    /// * `records` - Vector of `NavigationResult` structs to write
     /// * `path` - Path where the CSV file will be saved
     ///
     /// # Returns
@@ -1065,7 +1098,7 @@ impl NavigationResult {
         writer.flush()?;
         Ok(())
     }
-    /// Reads a CSV file and returns a vector of NavigationResult structs.
+    /// Reads a CSV file and returns a vector of `NavigationResult` structs.
     ///
     /// # Arguments
     /// * `path` - Path to the CSV file to read.
@@ -1087,10 +1120,10 @@ impl NavigationResult {
         Ok(records)
     }
 
-    /// Writes a vector of NavigationResult structs to an HDF5 file.
+    /// Writes a vector of `NavigationResult` structs to an HDF5 file.
     ///
     /// # Arguments
-    /// * `records` - Vector of NavigationResult structs to write
+    /// * `records` - Vector of `NavigationResult` structs to write
     /// * `path` - Path where the HDF5 file will be saved
     ///    
     ///
@@ -1184,7 +1217,7 @@ impl NavigationResult {
 
         Ok(())
     }
-    /// Reads an HDF5 file and returns a vector of NavigationResult structs.
+    /// Reads an HDF5 file and returns a vector of `NavigationResult` structs.
     ///
     /// # Arguments
     /// * `path` - Path to the HDF5 file to read.
@@ -1312,10 +1345,10 @@ impl NavigationResult {
         }
     }
 
-    /// Writes a vector of NavigationResult structs to a netCDF file.
+    /// Writes a vector of `NavigationResult` structs to a netCDF file.
     ///
     /// # Arguments
-    /// * `records` - Vector of NavigationResult structs to write
+    /// * `records` - Vector of `NavigationResult` structs to write
     /// * `path` - Path where the netCDF file will be saved
     ///
     /// # Returns
@@ -1323,7 +1356,7 @@ impl NavigationResult {
     #[cfg(feature = "netcdf")]
     /// # Errors
     /// If the file cannot be created or written, or the records cannot be
-    /// serialised as NetCDF.
+    /// serialised as `NetCDF`.
     pub fn to_netcdf<P: AsRef<Path>>(records: &[Self], path: P) -> Result<()> {
         if records.is_empty() {
             bail!("Cannot write empty records to netCDF");
@@ -1425,7 +1458,7 @@ impl NavigationResult {
     /// * `Err` if the file cannot be read or parsed.
     #[cfg(feature = "netcdf")]
     /// # Errors
-    /// If the file cannot be read, or its contents are not valid NetCDF.
+    /// If the file cannot be read, or its contents are not valid `NetCDF`.
     pub fn from_netcdf<P: AsRef<Path>>(path: P) -> Result<Vec<Self>> {
         let file = netcdf::open(path)?;
 
@@ -1523,10 +1556,10 @@ impl NavigationResult {
 
         Ok(records)
     }
-    /// Writes a vector of NavigationResult structs to an MCAP file.
+    /// Writes a vector of `NavigationResult` structs to an MCAP file.
     ///
     /// # Arguments
-    /// * `records` - Vector of NavigationResult structs to write
+    /// * `records` - Vector of `NavigationResult` structs to write
     /// * `path` - Path where the MCAP file will be saved
     ///
     /// # Returns
@@ -1600,7 +1633,7 @@ impl NavigationResult {
         Ok(())
     }
 
-    /// Reads an MCAP file and returns a vector of NavigationResult structs.
+    /// Reads an MCAP file and returns a vector of `NavigationResult` structs.
     ///
     /// # Example
     /// ```no_run
@@ -1634,23 +1667,23 @@ impl NavigationResult {
         Ok(records)
     }
 }
-/// Convert DVectors containing the navigation state mean and covariance into a NavigationResult
+/// Convert `DVectors` containing the navigation state mean and covariance into a `NavigationResult`
 /// struct.
 ///
 /// This implementation is useful for converting the output of a Kalman filter or UKF into a
-/// NavigationResult, which can then be used for further processing or analysis.
+/// `NavigationResult`, which can then be used for further processing or analysis.
 ///
 /// # Arguments
 /// - `timestamp`: The timestamp of the navigation solution.
-/// - `state`: A DVector containing the navigation state mean.
-/// - `covariance`: A DMatrix containing the covariance of the state.
-/// - `imu_data`: An IMUData struct containing the IMU measurements.
+/// - `state`: A `DVector` containing the navigation state mean.
+/// - `covariance`: A `DMatrix` containing the covariance of the state.
+/// - `imu_data`: An `IMUData` struct containing the IMU measurements.
 /// - `mag_x`, `mag_y`, `mag_z`: Magnetic field strength in micro teslas.
 /// - `pressure`: Pressure in millibars.
 /// - `freeair`: Free-air gravity anomaly in mGal.
 ///
 /// # Returns
-/// A NavigationResult struct containing the navigation solution.
+/// A `NavigationResult` struct containing the navigation solution.
 impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>)> for NavigationResult {
     /// # Panics
     /// If the state is not 15 elements or the covariance is not 15x15.
@@ -1720,20 +1753,20 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>)> for NavigationResult {
         }
     }
 }
-/// Convert NED UKF to NavigationResult.
+/// Convert NED UKF to `NavigationResult`.
 ///
 /// This implementation is useful for converting the output of a UKF into a
-/// NavigationResult, which can then be used for further processing or analysis.
+/// `NavigationResult`, which can then be used for further processing or analysis.
 ///
 /// # Arguments
 /// - `timestamp`: The timestamp of the navigation solution.
 /// - `ukf`: A reference to the UKF instance containing the navigation state mean and covariance.
-/// - `imu_data`: An IMUData struct containing the IMU measurements.
+/// - `imu_data`: An `IMUData` struct containing the IMU measurements.
 /// - `magnetic_vector`: Magnetic field strength measurement in micro teslas (body frame x, y, z).
 /// - `pressure`: Pressure in millibars.
 ///
 /// # Returns
-/// A NavigationResult struct containing the navigation solution.
+/// A `NavigationResult` struct containing the navigation solution.
 impl From<(&DateTime<Utc>, &UnscentedKalmanFilter)> for NavigationResult {
     fn from((timestamp, ukf): (&DateTime<Utc>, &UnscentedKalmanFilter)) -> Self {
         let state = &ukf.get_estimate();
@@ -1838,17 +1871,17 @@ impl From<(&DateTime<Utc>, &crate::kalman::ExtendedKalmanFilter)> for Navigation
     }
 }
 
-/// Convert StrapdownState to NavigationResult.
+/// Convert `StrapdownState` to `NavigationResult`.
 ///
-/// This implementation is useful for converting the output of a StrapdownState into a
-/// NavigationResult, which can then be used for further processing or analysis.
+/// This implementation is useful for converting the output of a `StrapdownState` into a
+/// `NavigationResult`, which can then be used for further processing or analysis.
 ///
 /// # Arguments
 /// - `timestamp`: The timestamp of the navigation solution.
-/// - `state`: A reference to the StrapdownState instance containing the navigation state.
+/// - `state`: A reference to the `StrapdownState` instance containing the navigation state.
 ///
 /// # Returns
-/// A NavigationResult struct containing the navigation solution.
+/// A `NavigationResult` struct containing the navigation solution.
 impl From<(&DateTime<Utc>, &StrapdownState)> for NavigationResult {
     fn from((timestamp, state): (&DateTime<Utc>, &StrapdownState)) -> Self {
         //let wmm_date: Date = Date::from_calendar_date(
@@ -1900,7 +1933,7 @@ impl From<(&DateTime<Utc>, &StrapdownState)> for NavigationResult {
 }
 
 impl NavigationResult {
-    /// Create NavigationResult from particle filter state
+    /// Create `NavigationResult` from particle filter state
     ///
     /// Creates a navigation result from a 9-element state vector (position, velocity, attitude)
     /// and covariance matrix produced by particle filter averaging. Since particle filters don't
@@ -1963,9 +1996,9 @@ impl NavigationResult {
 
 /// Run dead reckoning or "open-loop" simulation using test data.
 ///
-/// This function processes a sequence of sensor records through a StrapdownState, using
+/// This function processes a sequence of sensor records through a `StrapdownState`, using
 /// the "forward" method to propagate the state based on IMU measurements. It initializes
-/// the StrapdownState with position, velocity, and attitude from the first record, and
+/// the `StrapdownState` with position, velocity, and attitude from the first record, and
 /// then applies the IMU measurements from subsequent records. It does not record the
 /// errors or confidence values, as this is a simple dead reckoning simulation and in testing
 /// these values would be used as a baseline for comparison. Keep in mind that this toolbox
@@ -1980,7 +2013,7 @@ impl NavigationResult {
 /// * `records` - Vector of test data records containing IMU measurements and other sensor data
 ///
 /// # Returns
-/// * `Vec<NavigationResult>` containing the sequence of StrapdownState instances over time,
+/// * `Vec<NavigationResult>` containing the sequence of `StrapdownState` instances over time,
 ///   along with timestamps and time differences.
 /// # Errors
 /// Propagated from [`crate::mechanize`] -- chiefly a non-positive `dt`, which duplicate or
@@ -2040,7 +2073,7 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Result<Vec<NavigationResult
 /// two. At typical 1 Hz aiding it is roughly 100 s without a usable fix.
 const MAX_CONSECUTIVE_REJECTIONS: usize = 100;
 
-/// Generic closed-loop simulation runner for any NavigationFilter
+/// Generic closed-loop simulation runner for any `NavigationFilter`
 ///
 /// This function implements the core simulation loop for navigation filter architectures.
 /// It iterates through the event stream, performs prediction and update steps, checks health limits,
@@ -2059,7 +2092,7 @@ const MAX_CONSECUTIVE_REJECTIONS: usize = 100;
 /// consecutive-exceedance limit instead of silently degrading to dead reckoning.
 ///
 /// # Arguments
-/// * `filter` - Mutable reference to a type implementing NavigationFilter
+/// * `filter` - Mutable reference to a type implementing `NavigationFilter`
 /// * `stream` - Event stream containing IMU and measurement events
 /// * `health_limits` - Optional health limits for monitoring
 /// * `execution_limits` - Optional wall-clock and no-progress limits
@@ -2657,7 +2690,7 @@ pub fn initialize_ekf(
 ///
 /// * `initial_pose` - A `TestDataRecord` containing the initial pose information.
 /// * `attitude_covariance` - Optional initial attitude covariance (for error state).
-/// * `imu_biases` - Optional initial IMU biases [b_ax, b_ay, b_az, b_gx, b_gy, b_gz].
+/// * `imu_biases` - Optional initial IMU biases [`b_ax`, `b_ay`, `b_az`, `b_gx`, `b_gy`, `b_gz`].
 /// * `imu_biases_covariance` - Optional IMU bias covariance (for error state).
 /// * `process_noise_diagonal` - Optional process noise diagonal (15 elements for error state).
 ///
@@ -2815,6 +2848,16 @@ pub fn initialize_eskf(
 
 // ==== Simulation Helper functions ====
 
+/// Logs a one-line summary of a filter's current position estimate and its uncertainty.
+///
+/// Reads the filter's mean state and covariance, converts latitude and longitude from radians
+/// to degrees, and emits latitude, longitude, altitude (metres), the three position standard
+/// deviations $\sqrt{P_{ii}}$ (degrees, degrees, metres) and their root-sum-square at `debug`
+/// level -- despite the name, nothing is written to stdout, so the message appears only when
+/// the logger is configured for [`LogLevel::Debug`] or finer.
+///
+/// The filter must expose at least the three position states; any 9- or 15-state filter in this
+/// crate does.
 pub fn print_sim_status<F: NavigationFilter>(filter: &F) {
     let mean = filter.get_estimate();
     let cov = filter.get_certainty();
@@ -2837,6 +2880,13 @@ pub fn print_sim_status<F: NavigationFilter>(filter: &F) {
     );
 }
 
+/// Wall-clock guards that stop a simulation which is running too long or has stopped
+/// progressing.
+///
+/// A diverging filter can take arbitrarily long per step without ever failing an arithmetic
+/// check, so the simulation drivers pair the numerical guards in [`health`] with a time budget:
+/// [`ExecutionLimits`] states the budget and [`ExecutionMonitor`] enforces it, failing the run
+/// with a message naming the context it was checked from.
 pub mod execution {
     use super::{
         DEFAULT_MAX_NO_PROGRESS_S, DEFAULT_MAX_WALL_CLOCK_RATIO, DEFAULT_MAX_WALL_CLOCK_S, Debug,
@@ -3050,19 +3100,60 @@ pub mod execution {
     }
 }
 
+/// Divergence detection for a running filter.
+///
+/// [`HealthMonitor::check`] is called after every predict and update with the current mean and
+/// covariance, and aborts the run as soon as the estimate stops being physically or numerically
+/// meaningful -- a non-finite state or covariance, a position outside the bounds in
+/// [`HealthLimits`], a negative or absurdly large variance on the covariance diagonal, or a run
+/// of consecutive measurement updates whose normalised innovation squared (NIS) exceeds its
+/// gate. That NIS streak is not GNSS-specific: the monitor is called once per
+/// [`crate::messages::Event`] measurement, so barometric altitude, magnetometer-yaw and
+/// geophysical updates increment the same counter that GNSS fixes do.
+/// This is the circuit breaker behind the per-update gating in [`crate::gating`]: gating rejects
+/// individual measurements, the monitor gives up on the whole trajectory.
 pub mod health {
     use super::{Debug, Result, bail, f64};
 
+    /// Bounds a filter estimate must stay inside for [`HealthMonitor`] to consider it healthy.
+    ///
+    /// [`Default`] is deliberately permissive -- in particular the altitude band is opened to
+    /// +/-1e8 m so that vertical-channel instability shows up as a covariance or NIS failure
+    /// rather than as an altitude bound trip.
     #[derive(Clone, Debug)]
     pub struct HealthLimits {
-        pub lat_rad: (f64, f64),        // [-90°, +90°]
-        pub lon_rad: (f64, f64),        // [-180°, +180°]
-        pub alt_m: (f64, f64),          // e.g., [-500, 15000]
-        pub speed_mps_max: f64,         // e.g., 500 m/s (road/low-altitude aircraft)
-        pub cov_diag_max: f64,          // e.g., 1e15
-        pub cond_max: f64,              // e.g., 1e12 (optional)
-        pub nis_pos_max: f64,           // e.g., 100 (huge outlier)
-        pub nis_pos_consec_fail: usize, // e.g., 20
+        /// Inclusive (min, max) latitude band in radians; defaults to the full +/-90 degrees.
+        pub lat_rad: (f64, f64),
+        /// Inclusive (min, max) longitude band in radians; defaults to the full +/-180 degrees.
+        pub lon_rad: (f64, f64),
+        /// Inclusive (min, max) altitude band in metres above the ellipsoid. Defaults to
+        /// +/-1e8 -- deliberately far wider than the [-11,000 m, 30,000 m] over which the
+        /// mechanization is documented to be valid, so that a diverging vertical channel is
+        /// caught by the finiteness and covariance checks rather than by this band. Narrow
+        /// it to the scenario's real altitude range to make it an effective gate.
+        pub alt_m: (f64, f64),
+        /// Maximum ground speed in m/s (default 500, i.e. road or low-altitude aircraft).
+        /// Currently inert -- the speed test in [`HealthMonitor::check`] is commented out, so
+        /// setting this field has no effect on a run. Issue #332 tracks resolving that.
+        pub speed_mps_max: f64,
+        /// Largest variance allowed on the covariance diagonal before the run is failed
+        /// (default 1e15).
+        pub cov_diag_max: f64,
+        /// Maximum covariance condition number (default 1e12). Currently inert -- the condition
+        /// estimate in [`HealthMonitor::check`] is commented out as too expensive, so setting
+        /// this field has no effect on a run. Issue #332 tracks resolving that.
+        pub cond_max: f64,
+        /// NIS above which a measurement update counts as an outlier (default 100).
+        ///
+        /// Despite the name, the gate applies to **every** measurement update in the event
+        /// stream, whatever the sensor: `run_closed_loop` calls [`HealthMonitor::check`] from
+        /// the single measurement arm of the event loop, so GNSS position/velocity fixes,
+        /// `RelativeAltitudeMeasurement`, magnetometer-yaw and geophysical updates are all
+        /// tested against this one threshold. The `_pos` in the field name is historical.
+        pub nis_pos_max: f64,
+        /// Number of consecutive NIS exceedances that fails the run (default 20). A single
+        /// update whose NIS is within [`Self::nis_pos_max`] resets the streak.
+        pub nis_pos_consec_fail: usize,
     }
 
     impl Default for HealthLimits {
@@ -3080,6 +3171,12 @@ pub mod health {
         }
     }
 
+    /// Stateful divergence detector for one simulation run.
+    ///
+    /// Holds the [`HealthLimits`] to test against plus the only piece of history the tests need:
+    /// how many measurement updates in a row have failed the NIS gate, counted across every
+    /// sensor rather than GNSS alone. Construct one per trajectory and call
+    /// [`check`](Self::check) after every predict and update.
     #[derive(Default, Clone, Debug)]
     pub struct HealthMonitor {
         limits: HealthLimits,
@@ -3087,6 +3184,7 @@ pub mod health {
     }
 
     impl HealthMonitor {
+        /// Creates a monitor that enforces `limits`, with an empty NIS-failure streak.
         pub const fn new(limits: HealthLimits) -> Self {
             Self {
                 limits,
@@ -3094,7 +3192,8 @@ pub mod health {
             }
         }
 
-        /// Call after **every event** (predict or update). Provide optional NIS when you have a GNSS update.
+        /// Call after **every event** (predict or update). Provide the optional NIS whenever the
+        /// event was a measurement update -- of any sensor, not only GNSS.
         ///
         /// # Errors
         /// If the state has left the configured physical bounds, the covariance diagonal has
@@ -3181,8 +3280,11 @@ pub mod health {
 #[derive(Copy, Clone, Debug)]
 #[cfg_attr(feature = "clap", derive(ValueEnum))]
 pub enum SchedKind {
+    /// Deliver every GNSS fix unchanged ([`GnssScheduler::PassThrough`]).
     Passthrough,
+    /// Deliver a fix every `interval_s` seconds ([`GnssScheduler::FixedInterval`]).
     Fixed,
+    /// Alternate `on_s`/`off_s` availability windows ([`GnssScheduler::DutyCycle`]).
     Duty,
 }
 
@@ -3214,9 +3316,15 @@ pub struct SchedulerArgs {
 #[derive(Copy, Clone, Debug)]
 #[cfg_attr(feature = "clap", derive(ValueEnum))]
 pub enum FaultKind {
+    /// No corruption; fixes reach the filter unchanged ([`GnssFaultModel::None`]).
     None,
+    /// AR(1)-correlated position and velocity error plus an inflated measurement covariance
+    /// ([`GnssFaultModel::Degraded`]).
     Degraded,
+    /// Slowly drifting north/east offset, a soft spoof ([`GnssFaultModel::SlowBias`]).
     Slowbias,
+    /// Constant north/east offset applied over a fixed window, a hard spoof
+    /// ([`GnssFaultModel::Hijack`]).
     Hijack,
 }
 
@@ -3227,33 +3335,53 @@ pub struct FaultArgs {
     /// Fault kind: none | degraded | slowbias | hijack
     #[cfg_attr(feature = "clap", arg(long, value_enum, default_value_t = FaultKind::None))]
     pub fault: FaultKind,
-    /// Degraded (AR(1))
+    /// Degraded: AR(1) correlation coefficient for the position error (0 to 1)
     #[cfg_attr(feature = "clap", arg(long, default_value_t = 0.99))]
     pub rho_pos: f64,
+    /// Degraded: AR(1) innovation standard deviation for the position error, in meters
     #[cfg_attr(feature = "clap", arg(long, default_value_t = 3.0))]
     pub sigma_pos_m: f64,
+    /// Degraded: AR(1) correlation coefficient for the velocity error (0 to 1)
     #[cfg_attr(feature = "clap", arg(long, default_value_t = 0.95))]
     pub rho_vel: f64,
+    /// Degraded: AR(1) innovation standard deviation for the velocity error, in m/s
     #[cfg_attr(feature = "clap", arg(long, default_value_t = 0.3))]
     pub sigma_vel_mps: f64,
+    /// Degraded: factor applied to the advertised 1-sigma measurement standard deviations
+    /// (horizontal position in metres and velocity in m/s), NOT to the covariance.
+    ///
+    /// The scaled standard deviations reach the filter as
+    /// `GPSPositionAndVelocityMeasurement::horizontal_noise_std` and `velocity_noise_std`, and
+    /// the measurement model squares them to build R. **R is therefore inflated by `r_scale`
+    /// squared**: the default 5.0 multiplies R by 25, not by 5.
     #[cfg_attr(feature = "clap", arg(long, default_value_t = 5.0))]
     pub r_scale: f64,
-    /// Slow bias
+    /// Slow bias: northward drift rate of the injected offset, in m/s
     #[cfg_attr(feature = "clap", arg(long, default_value_t = 0.02))]
     pub drift_n_mps: f64,
+    /// Slow bias: eastward drift rate of the injected offset, in m/s
     #[cfg_attr(feature = "clap", arg(long, default_value_t = 0.0))]
     pub drift_e_mps: f64,
+    /// Slow bias: random-walk PSD of the drifting offset, in m^2/s.
+    ///
+    /// The offset itself is in metres and the driving noise adds variance `q_bias * dt` to it on
+    /// every step, so the PSD carries units of metres squared per second -- not m^2/s^3, which
+    /// would be the PSD of a random walk driving a velocity.
     #[cfg_attr(feature = "clap", arg(long, default_value_t = 1e-6))]
     pub q_bias: f64,
+    /// Slow bias: rate at which the drift direction rotates, in rad/s (0 keeps it fixed)
     #[cfg_attr(feature = "clap", arg(long, default_value_t = 0.0))]
     pub rotate_omega_rps: f64,
-    /// Hijack
+    /// Hijack: constant northward offset applied during the window, in meters
     #[cfg_attr(feature = "clap", arg(long, default_value_t = 50.0))]
     pub hijack_offset_n_m: f64,
+    /// Hijack: constant eastward offset applied during the window, in meters
     #[cfg_attr(feature = "clap", arg(long, default_value_t = 0.0))]
     pub hijack_offset_e_m: f64,
+    /// Hijack: start of the spoofing window, in seconds from the start of the run
     #[cfg_attr(feature = "clap", arg(long, default_value_t = 120.0))]
     pub hijack_start_s: f64,
+    /// Hijack: length of the spoofing window, in seconds
     #[cfg_attr(feature = "clap", arg(long, default_value_t = 60.0))]
     pub hijack_duration_s: f64,
 }
@@ -3415,7 +3543,7 @@ pub struct ParticleFilterConfig {
     /// Number of particles in the filter.
     #[serde(default = "default_num_particles")]
     pub num_particles: usize,
-    /// Initial position standard deviation [lat_m, lon_m, alt_m].
+    /// Initial position standard deviation [`lat_m`, `lon_m`, `alt_m`].
     #[serde(default = "default_position_init_std_m")]
     pub position_init_std_m: Vec<f64>,
     /// Initial velocity standard deviation (m/s).
@@ -3424,7 +3552,7 @@ pub struct ParticleFilterConfig {
     /// Initial attitude standard deviation (rad).
     #[serde(default = "default_attitude_init_std_rad")]
     pub attitude_init_std_rad: f64,
-    /// Position process noise standard deviation [lat_m, lon_m, alt_m].
+    /// Position process noise standard deviation [`lat_m`, `lon_m`, `alt_m`].
     #[serde(default = "default_position_process_noise_std_m")]
     pub position_process_noise_std_m: Vec<f64>,
     /// Velocity process noise standard deviation (m/s).
@@ -3528,16 +3656,22 @@ impl Default for ParticleFilterConfig {
 #[serde(rename_all = "lowercase")]
 #[cfg_attr(feature = "clap", derive(ValueEnum))]
 pub enum LogLevel {
+    /// Emit nothing at all (`"off"`).
     Off,
+    /// Errors only (`"error"`).
     Error,
+    /// Errors and warnings (`"warn"`).
     Warn,
+    /// Progress and configuration messages and above (`"info"`); the default.
     Info,
+    /// Per-step filter detail and above (`"debug"`).
     Debug,
+    /// Everything, including the noisiest tracing (`"trace"`).
     Trace,
 }
 
 impl LogLevel {
-    /// Convert LogLevel to string representation
+    /// Convert `LogLevel` to string representation
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Off => "off",
@@ -3600,10 +3734,10 @@ pub struct SimulationConfig {
     /// Logging configuration
     #[serde(default)]
     pub logging: LoggingConfig,
-    /// Closed-loop specific settings (only used if mode is ClosedLoop)
+    /// Closed-loop specific settings (only used if mode is `ClosedLoop`)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closed_loop: Option<ClosedLoopConfig>,
-    /// Particle filter settings (only used if mode is ParticleFilter)
+    /// Particle filter settings (only used if mode is `ParticleFilter`)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub particle_filter: Option<ParticleFilterConfig>,
     /// Geophysical measurement configuration (optional, requires --features geonav)
@@ -4125,8 +4259,8 @@ pub struct SyntheticConfig {
     /// Random number generator seed for reproducibility
     #[serde(default = "default_seed")]
     pub seed: u64,
-    /// If true, output 9-state kinematic truth (NavigationResult format).
-    /// If false (default), output noisy sensor measurements (TestDataRecord format).
+    /// If true, output 9-state kinematic truth (`NavigationResult` format).
+    /// If false (default), output noisy sensor measurements (`TestDataRecord` format).
     #[serde(default)]
     pub no_noise: bool,
     /// GNSS horizontal position noise standard deviation in meters
@@ -4973,7 +5107,7 @@ mod tests {
         let result = TestDataRecord::from_csv(path);
         assert!(result.is_err(), "Should error on missing file");
     }
-    /// Test writing TestDataRecord to CSV and reading it back
+    /// Test writing `TestDataRecord` to CSV and reading it back
     #[test]
     fn test_data_record_to_and_from_csv() {
         // Read original records

@@ -11,7 +11,7 @@
 //! processing configuration that must be implemented in the closed loop configuration.
 //!
 //! For example: gravity anomaly calculation requires knowledge of the vehicle velocity, to make the Eötvös correction.
-//! The measurement event stream can be constructed to include the gravity vector measurements from TestDataRecord (`grav_x``,
+//! The measurement event stream can be constructed to include the gravity vector measurements from `TestDataRecord` (`grav_x`,
 //! `grav_y`, `grav_z`), but these values are not the specific anomaly. The scalar gravity must be calculated and corrected
 //! using the vehicle velocity (Eötvös correction) and the reference gravity at the current position (from a gravity map) to
 //! calculate the free air anomaly.
@@ -60,20 +60,35 @@ const WMM_MAX_ALTITUDE_M: f64 = 850000.0;
 /// Resolution values for bathymetric or terrain relief maps
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReliefResolution {
+    /// One-degree grid spacing; formats as `01d`.
     OneDegree,
+    /// Thirty arc-minute grid spacing; formats as `30m`.
     ThirtyMinutes,
+    /// Twenty arc-minute grid spacing; formats as `20m`.
     TwentyMinutes,
+    /// Fifteen arc-minute grid spacing; formats as `15m`.
     FifteenMinutes,
+    /// Ten arc-minute grid spacing; formats as `10m`.
     TenMinutes,
+    /// Six arc-minute grid spacing; formats as `06m`.
     SixMinutes,
+    /// Five arc-minute grid spacing; formats as `05m`.
     FiveMinutes,
+    /// Four arc-minute grid spacing; formats as `04m`.
     FourMinutes,
+    /// Three arc-minute grid spacing; formats as `03m`.
     ThreeMinutes,
+    /// Two arc-minute grid spacing; formats as `02m`.
     TwoMinutes,
+    /// One arc-minute grid spacing; formats as `01m`.
     OneMinute,
+    /// Thirty arc-second grid spacing; formats as `30s`.
     ThirtySeconds,
+    /// Fifteen arc-second grid spacing; formats as `15s`.
     FifteenSeconds,
+    /// Three arc-second grid spacing; formats as `03s`.
     ThreeSeconds,
+    /// One arc-second grid spacing; formats as `01s`. The finest relief grid offered.
     OneSecond,
 }
 impl Display for ReliefResolution {
@@ -101,16 +116,27 @@ impl Display for ReliefResolution {
 /// Resolution values for gravity maps
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GravityResolution {
+    /// One-degree grid spacing; formats as `01d`.
     OneDegree,
+    /// Thirty arc-minute grid spacing; formats as `30m`.
     ThirtyMinutes,
+    /// Twenty arc-minute grid spacing; formats as `20m`.
     TwentyMinutes,
+    /// Fifteen arc-minute grid spacing; formats as `15m`.
     FifteenMinutes,
+    /// Ten arc-minute grid spacing; formats as `10m`.
     TenMinutes,
+    /// Six arc-minute grid spacing; formats as `06m`.
     SixMinutes,
+    /// Five arc-minute grid spacing; formats as `05m`.
     FiveMinutes,
+    /// Four arc-minute grid spacing; formats as `04m`.
     FourMinutes,
+    /// Three arc-minute grid spacing; formats as `03m`.
     ThreeMinutes,
+    /// Two arc-minute grid spacing; formats as `02m`.
     TwoMinutes,
+    /// One arc-minute grid spacing; formats as `01m`. The finest gravity grid offered.
     OneMinute,
 }
 impl Display for GravityResolution {
@@ -135,15 +161,25 @@ impl Display for GravityResolution {
 /// Resolution values for magnetic maps
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MagneticResolution {
+    /// One-degree grid spacing; formats as `01d`.
     OneDegree,
+    /// Thirty arc-minute grid spacing; formats as `30m`.
     ThirtyMinutes,
+    /// Twenty arc-minute grid spacing; formats as `20m`.
     TwentyMinutes,
+    /// Fifteen arc-minute grid spacing; formats as `15m`.
     FifteenMinutes,
+    /// Ten arc-minute grid spacing; formats as `10m`.
     TenMinutes,
+    /// Six arc-minute grid spacing; formats as `06m`.
     SixMinutes,
+    /// Five arc-minute grid spacing; formats as `05m`.
     FiveMinutes,
+    /// Four arc-minute grid spacing; formats as `04m`.
     FourMinutes,
+    /// Three arc-minute grid spacing; formats as `03m`.
     ThreeMinutes,
+    /// Two arc-minute grid spacing; formats as `02m`. The finest magnetic grid offered.
     TwoMinutes,
 }
 impl Display for MagneticResolution {
@@ -164,11 +200,14 @@ impl Display for MagneticResolution {
         write!(f, "{res}")
     }
 }
-/// Enum for the different types of maps. A GeoMap is defined by its measurement type and resolution.
+/// Enum for the different types of maps. A `GeoMap` is defined by its measurement type and resolution.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GeophysicalMeasurementType {
+    /// Bathymetric or terrain relief map at the given [`ReliefResolution`]; displays as `Relief <res>`.
     Relief(ReliefResolution),
+    /// Gravity anomaly map at the given [`GravityResolution`]; displays as `Gravity <res>`.
     Gravity(GravityResolution),
+    /// Magnetic anomaly map at the given [`MagneticResolution`]; displays as `Magnetic <res>`.
     Magnetic(MagneticResolution),
 }
 impl Display for GeophysicalMeasurementType {
@@ -180,7 +219,7 @@ impl Display for GeophysicalMeasurementType {
         }
     }
 }
-/// Struct for the GeoMap object.
+/// Struct for the `GeoMap` object.
 ///
 /// This struct contains the latitude and longitude vectors, the data matrix, and the type of map
 /// The data matrix is a 2D matrix of data values, where the rows are the latitudes and the columns
@@ -221,7 +260,7 @@ impl Display for GeoMap {
     }
 }
 impl GeoMap {
-    /// Create a new GeoMap object from the supplied latitudes, longitudes, data matrix, and map type
+    /// Create a new `GeoMap` object from the supplied latitudes, longitudes, data matrix, and map type
     ///
     /// # Arguments
     /// - `lats` - A vector of latitudes
@@ -230,7 +269,7 @@ impl GeoMap {
     /// - `map_type` - The type of map (Relief, Gravity, Magnetic)
     ///
     /// # Returns
-    /// - A new GeoMap object
+    /// - A new `GeoMap` object
     ///
     /// # Example
     /// ```rust
@@ -255,15 +294,15 @@ impl GeoMap {
             map_type,
         }
     }
-    /// Load a GeoMap from a netcdf file. GMT processing does not encode the map type in the file, so this
+    /// Load a `GeoMap` from a netcdf file. GMT processing does not encode the map type in the file, so this
     /// function requires the user to specify the type of map along with the filename.
     ///
     /// # Arguments
-    /// - `filename` - The PathBuf of the netcdf file
+    /// - `filename` - The `PathBuf` of the netcdf file
     /// - `map_type` - The type of map (Relief, Gravity, Magnetic)
     ///
     /// # Returns
-    /// - A Result containing a reference to the GeoMap object or an error message
+    /// - A Result containing a reference to the `GeoMap` object or an error message
     ///
     /// # Example
     /// ```ignore
@@ -488,7 +527,7 @@ impl GeoMap {
         // `position` searches and makes the `- 1` below provably safe.
         self.bilinear_interpolation(*lat, *lon, lat_index, lon_index)
     }
-    /// Bilinear interpolation helper method for get_point
+    /// Bilinear interpolation helper method for `get_point`
     ///
     /// `lat2_index` / `lon2_index` are the upper bracketing indices already located by
     /// [`Self::get_point`]. They are parameters rather than recomputed here because the
@@ -637,9 +676,30 @@ pub trait GeophysicalAnomalyMeasurementModel: MeasurementModel {
     /// gracefully on exactly this condition; geonav used to panic on it, on the per-particle
     /// path, so a single outlier particle ended the run.
     fn get_anomaly(&self) -> Result<f64, StrapdownError>;
+    /// Cache the vehicle state that [`Self::get_anomaly`] needs.
+    ///
+    /// The event stream is built before any navigation estimate exists, so each implementor
+    /// copies out only the fields its anomaly depends on: [`GravityMeasurement`] takes
+    /// latitude, altitude and the north/east velocities (the Eötvös correction needs the
+    /// velocity), [`MagneticAnomalyMeasurement`] takes the position the World Magnetic Model
+    /// is evaluated at, and [`CombinedGeophysicalMeasurement`] delegates to both. `state`
+    /// stores latitude and longitude in radians; an implementor whose underlying model takes
+    /// degrees must convert — see the known issue on [`GravityMeasurement`], which does not.
     fn set_state(&mut self, state: &StrapdownState);
 }
 /// Gravity measurement model
+///
+/// # Known issue
+///
+/// Both of this type's anomaly paths currently hand [`gravity_anomaly`] a latitude in
+/// **radians**, while that function's contract is degrees:
+/// [`GeophysicalAnomalyMeasurementModel::set_state`] copies `state.latitude` straight out of
+/// the radian-valued [`StrapdownState`], and [`MeasurementModel::get_measurement`]'s
+/// per-particle path takes `state[0]` from the raw state vector without converting.
+/// [`MagneticAnomalyMeasurement`] converts on both of the equivalent paths; this type does
+/// not, so its computed anomaly is wrong away from the equator. The map lookup in
+/// [`MeasurementModel::get_expected_measurement`] is unaffected — it converts. Tracked as
+/// issue #330, to be fixed with its own regression test.
 #[derive(Clone, Debug)]
 pub struct GravityMeasurement {
     /// Source map
@@ -648,7 +708,9 @@ pub struct GravityMeasurement {
     pub noise_std: f64,
     /// Observed gravity magnitude (m/s^2)
     pub gravity_observed: f64,
-    /// Current latitude
+    /// Current latitude, in **radians** as copied from [`StrapdownState`] — note that this
+    /// is the unit mismatch described in the type's known issue, since the
+    /// [`gravity_anomaly`] call it feeds expects degrees.
     latitude: f64,
     /// Current altitude (m)
     altitude: f64,
@@ -747,7 +809,7 @@ impl GravityMeasurement {
     ///
     /// # Arguments
     ///
-    /// * `state` - Current navigation state vector [lat, lon, alt, v_n, v_e, v_d, roll, pitch, yaw]
+    /// * `state` - Current navigation state vector [lat, lon, alt, `v_n`, `v_e`, `v_d`, roll, pitch, yaw]
     ///
     /// # Returns
     ///
@@ -920,7 +982,7 @@ impl MagneticAnomalyMeasurement {
     ///
     /// # Arguments
     ///
-    /// * `state` - Current navigation state vector [lat, lon, alt, v_n, v_e, v_d, roll, pitch, yaw]
+    /// * `state` - Current navigation state vector [lat, lon, alt, `v_n`, `v_e`, `v_d`, roll, pitch, yaw]
     ///
     /// # Returns
     ///
@@ -1033,9 +1095,9 @@ impl MeasurementModel for CombinedGeophysicalMeasurement {
 /// * `records` - Vector of test data records
 /// * `cfg` - GNSS degradation configuration
 /// * `gravity_map` - Optional gravity map for measurements
-/// * `gravity_noise_std` - Standard deviation for gravity measurement noise (if gravity_map is Some)
+/// * `gravity_noise_std` - Standard deviation for gravity measurement noise (if `gravity_map` is Some)
 /// * `magnetic_map` - Optional magnetic map for measurements
-/// * `magnetic_noise_std` - Standard deviation for magnetic measurement noise (if magnetic_map is Some)
+/// * `magnetic_noise_std` - Standard deviation for magnetic measurement noise (if `magnetic_map` is Some)
 /// * `geo_frequency_s` - Frequency in seconds for geophysical measurements (None for every available measurement)
 #[allow(
     clippy::needless_pass_by_value,

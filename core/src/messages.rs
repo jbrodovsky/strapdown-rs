@@ -101,8 +101,9 @@ pub enum GnssScheduler {
 /// ## Variants
 ///
 /// - `None`: deliver the fix unchanged.
-/// - `Degraded`: add AR(1)-correlated noise to position and velocity, and
-///   inflate the advertised covariance. Simulates low-SNR or multi-path conditions.
+/// - `Degraded`: add AR(1)-correlated noise to position and velocity, and inflate the
+///   advertised 1-sigma accuracies (so `R` moves by the square of `r_scale`). Simulates
+///   low-SNR or multi-path conditions.
 /// - `SlowBias`: apply a slowly drifting offset in N/E position and velocity.
 ///   Simulates soft spoofing where the trajectory is nudged gradually away
 ///   from truth.
@@ -120,7 +121,7 @@ pub enum GnssScheduler {
 /// // No corruption (baseline)
 /// let fault = GnssFaultModel::None;
 ///
-/// // Degraded accuracy: ~3 m wander, ~0.3 m/s vel wander, 5x inflated R
+/// // Degraded accuracy: ~3 m wander, ~0.3 m/s vel wander, sigmas x5 (so R x25)
 /// let fault = GnssFaultModel::Degraded {
 ///     rho_pos: 0.99,
 ///     sigma_pos_m: 3.0,
@@ -159,7 +160,7 @@ pub enum GnssFaultModel {
     None,
 
     /// (2) Degraded accuracy: AR(1)-correlated noise on position and velocity,
-    /// plus inflated advertised covariance. Models low-SNR or multi-path cases.
+    /// plus inflated advertised accuracies. Models low-SNR or multi-path cases.
     Degraded {
         /// AR(1) correlation coefficient for position error (close to 1.0).
         rho_pos: f64,
@@ -169,7 +170,13 @@ pub enum GnssFaultModel {
         rho_vel: f64,
         /// AR(1) innovation standard deviation for velocity error (m/s).
         sigma_vel_mps: f64,
-        /// Scale factor for inflating the advertised measurement noise covariance.
+        /// Multiplies the advertised 1-sigma accuracies -- *not* the covariance.
+        ///
+        /// `apply_fault` returns `horizontal_accuracy * r_scale` and
+        /// `speed_accuracy * r_scale`, and the measurement models square those to build
+        /// `R` ([`crate::measurements::GPSPositionAndVelocityMeasurement`]), so the noise
+        /// covariance is inflated by `r_scale` **squared**: the common value 5.0 gives a
+        /// 25x `R`, not a 5x one.
         r_scale: f64,
     },
 
@@ -182,7 +189,11 @@ pub enum GnssFaultModel {
         drift_n_mps: f64,
         /// Eastward drift rate (m/s).
         drift_e_mps: f64,
-        /// Random walk PSD (m²/s³) for adding a small stochastic component to the bias.
+        /// Random-walk rate (m²/s, equivalently (m/√s)²) at which the metre-valued bias
+        /// accumulates variance: each step perturbs the bias by a zero-mean draw with
+        /// standard deviation `sqrt(q_bias * dt)`, so its variance grows by `q_bias * dt`.
+        /// Set to zero to disable the stochastic component and leave a purely
+        /// deterministic drift.
         q_bias: f64,
         /// Optional slow rotation of drift direction (rad/s).
         rotate_omega_rps: f64,
@@ -207,6 +218,11 @@ pub enum GnssFaultModel {
     /// The output of one model is fed as the input to the next. This allows
     /// combining e.g. `SlowBias` with a `Hijack` to simulate multi-stage spoofing.
     Combo(Vec<Self>),
+}
+
+/// Default seed value for reproducible simulations
+const fn default_seed() -> u64 {
+    42
 }
 
 /// Configuration container for GNSS degradation in simulation.
@@ -245,11 +261,6 @@ pub enum GnssFaultModel {
 ///     ..Default::default()
 /// };
 /// ```
-/// Default seed value for reproducible simulations
-const fn default_seed() -> u64 {
-    42
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GnssDegradationConfig {
     /// Scheduler that determines when GNSS measurements are emitted
@@ -385,21 +396,19 @@ impl GnssDegradationConfig {
 ///
 /// ## Variants
 ///
-/// - `Imu`: An inertial measurement unit (IMU) step, including the time delta
-///   since the previous step. Drives the prediction step.
-/// - `Gnss`: A GNSS position/velocity fix (possibly degraded or spoofed).
-/// - `Altitude`: A relative altitude or barometric measurement, constraining
-///   vertical drift.
-/// - `GravityAnomaly`: A gravity anomaly measurement, derived from accelerometer
-///   or dedicated gravimeter data and matched against a gravity anomaly map.
-/// - `MagneticAnomaly`: A magnetic anomaly measurement, derived from
-///   magnetometer data (magnitude or components) and matched against a magnetic
-///   anomaly map.
+/// - `Imu`: An inertial measurement unit (IMU) step, carrying the interval between
+///   this source record and the one before it -- not the time since the previously
+///   emitted event. Drives the prediction step.
+/// - `Measurement`: Any boxed [`MeasurementModel`], driving the update step. In a
+///   stream from [`build_event_stream`] this is a GNSS position/velocity fix
+///   (possibly degraded or spoofed), a relative altitude measurement, or a
+///   magnetometer yaw measurement; `strapdown-geonav` additionally puts gravity and
+///   magnetic anomaly measurements into the same variant.
 ///
 /// ## Extensibility
 ///
-/// You can add further variants (e.g., `Pressure`, `SonarDepth`, `StarTracker`)
-/// in the same style if more sensors are to be fused.
+/// A new sensor is added by implementing [`MeasurementModel`] for it, not by adding a
+/// variant here -- `Measurement` already carries any implementor.
 ///
 /// ## Example
 ///
@@ -432,17 +441,31 @@ impl GnssDegradationConfig {
 pub enum Event {
     /// IMU prediction step.
     ///
-    /// - `dt_s`: Time delta since the previous event (seconds).
+    /// - `dt_s`: Integration interval for this step (seconds): the gap between this
+    ///   record's timestamp and the previous record's, *not* the time since the previously
+    ///   emitted event.
     /// - `imu`: Inertial data record (accelerometer, gyroscope, etc.).
     /// - `elapsed_s`: Elapsed simulation time at this event (seconds).
     Imu {
+        /// Integration interval for this step (seconds): the gap between this record's
+        /// timestamp and the previous record's.
         dt_s: f64,
+        /// Body-frame specific force (m/s^2) and angular rate (rad/s) for this step,
+        /// taken from the record unmodified -- gravity is still present in `accel` and is
+        /// removed by the strapdown mechanization during propagation.
         imu: IMUData,
+        /// Elapsed simulation time at this event (seconds since
+        /// [`EventStream::start_time`]).
         elapsed_s: f64,
     },
-    /// Any measurement that implements the MeasurementModel trait.
+    /// Any measurement that implements the `MeasurementModel` trait.
     Measurement {
-        meas: Box<dyn MeasurementModel>, // trait object
+        /// The measurement to run the filter's update step against, held as a trait
+        /// object so one stream can carry GNSS, barometric, magnetometer and
+        /// geophysical updates without the filter loop knowing their concrete types.
+        meas: Box<dyn MeasurementModel>,
+        /// Elapsed simulation time at this event (seconds since
+        /// [`EventStream::start_time`]).
         elapsed_s: f64,
     },
 }
@@ -472,9 +495,22 @@ impl std::fmt::Debug for Event {
         }
     }
 }
+/// A time-ordered sequence of [`Event`]s together with the absolute time its clock runs from.
+///
+/// Produced by [`build_event_stream`] from a slice of [`TestDataRecord`], and consumed by the
+/// event-driven filter loops in `strapdown-sim`. Every event carries an `elapsed_s` measured
+/// from `start_time`, so a consumer recovers the absolute timestamp of an event as
+/// `start_time + elapsed_s` -- which is how each navigation solution gets stamped.
+///
+/// Events are ordered by non-decreasing `elapsed_s`, and a single source record may contribute
+/// several events at the same instant: an [`Event::Imu`] step followed by whichever
+/// measurements that epoch carries.
 #[derive(Debug)]
 pub struct EventStream {
+    /// UTC timestamp of the first source record; the origin every event's `elapsed_s` is
+    /// measured from.
     pub start_time: DateTime<Utc>,
+    /// The events themselves, ordered by elapsed time.
     pub events: Vec<Event>,
 }
 // -------- internal state for AR(1) and bias integration --------
@@ -485,7 +521,7 @@ pub struct EventStream {
 ///
 /// - **Degraded (AR(1))**: maintains correlated error states for position and
 ///   velocity, updated each epoch with an autoregressive process.
-/// - **SlowBias**: integrates a slow, possibly rotating bias in N/E position,
+/// - **`SlowBias`**: integrates a slow, possibly rotating bias in N/E position,
 ///   with optional random walk.
 /// - **Hijack**: does not need state, but still shares the RNG.
 ///
@@ -823,6 +859,40 @@ pub fn apply_fault(
     }
 }
 // --------------------------- public API ---------------------------
+/// Tolerance for comparing a sample's elapsed time against a scheduler boundary.
+///
+/// Elapsed times are reconstructed from millisecond timestamps, so a sample that should land
+/// exactly on a boundary can arrive a few ULP short of it. Without the slack a 1 Hz stream
+/// against a whole-second window drops or gains a fix depending on rounding.
+const DUTY_CYCLE_EPSILON_S: f64 = 1e-9;
+
+/// Whether a [`GnssScheduler::DutyCycle`] is inside an ON window at `elapsed_s`.
+///
+/// The timeline is `start_phase_s` of initial ON, then `off_s` OFF and `on_s` ON repeating,
+/// which is what "initial phase offset before the first ON/OFF toggle" describes: the first
+/// toggle takes the scheduler out of its initial ON state.
+///
+/// Computed from `elapsed_s` directly rather than by stepping a toggle once per sample. The
+/// stepping version emitted a fix only on the sample where the state flipped *into* ON and
+/// returned `false` for every other sample in the window, so `on_s: 1800.0, off_s: 600.0`
+/// delivered two fixes across an 89-minute recording instead of roughly four thousand
+/// (#312). Deriving the state from the clock also means a window shorter than the sample
+/// interval cannot leave the scheduler a boundary behind for the rest of the run.
+fn duty_cycle_is_on(elapsed_s: f64, on_s: f64, off_s: f64, start_phase_s: f64) -> bool {
+    if elapsed_s + DUTY_CYCLE_EPSILON_S < start_phase_s {
+        return true;
+    }
+    let cycle_s = on_s + off_s;
+    if cycle_s <= 0.0 || !cycle_s.is_finite() {
+        // A non-positive or non-finite cycle cannot describe an outage. Deliver every fix
+        // rather than withholding all of them: silently suppressing GNSS is the failure mode
+        // #312 was, and it is much harder to notice than an outage that does not happen.
+        return true;
+    }
+    let into_cycle = (elapsed_s - start_phase_s).rem_euclid(cycle_s);
+    into_cycle + DUTY_CYCLE_EPSILON_S >= off_s
+}
+
 /// Build a time-ordered event stream from recorded data and a GNSS degradation
 /// configuration.
 ///
@@ -830,12 +900,22 @@ pub fn apply_fault(
 /// for an event-driven filter loop. It:
 ///
 /// 1. Normalizes the record timestamps to **elapsed seconds** from the first sample.
-/// 2. Emits an [`Event::Imu`] at each step with `dt_s = t[i] - t[i-1]`.
+/// 2. Emits an [`Event::Imu`] at each step with `dt_s = t[i] - t[i-1]`, provided the
+///    record carries all six accelerometer and gyroscope components. If any of them is
+///    `NaN`, only the [`Event::Imu`] is skipped: the relative-altitude and magnetometer
+///    events for that same record are still emitted, and the GNSS event is too if it
+///    would otherwise have been (it is independently gated by the scheduler and by its
+///    own `NaN` check over the fix columns). The next IMU event's `dt_s` still spans only
+///    one record interval rather than absorbing the skipped one.
 /// 3. Uses the provided [`GnssDegradationConfig`] to decide *when* to emit GNSS
 ///    (via the [`GnssScheduler`]) and *how* to corrupt that GNSS fix
 ///    (via the [`GnssFaultModel`], applied by [`apply_fault`]).
-/// 4. Appends each emitted GNSS fix as an [`Event::Gnss`] with the same `elapsed_s`
-///    as the IMU step.
+/// 4. Appends each emitted GNSS fix as an [`Event::Measurement`] carrying a
+///    [`GPSPositionAndVelocityMeasurement`], with the same `elapsed_s` as the IMU step.
+/// 5. Appends a [`RelativeAltitudeMeasurement`] and a [`MagnetometerYawMeasurement`]
+///    whenever the record carries them. These are **not** scheduled or faulted: the
+///    scheduler and fault model govern GNSS only, so baro and magnetometer updates
+///    continue through a GNSS outage.
 ///
 /// The resulting event stream cleanly separates simulation policy (scheduling
 /// and corruption) from the filter loop, enabling reproducible scenario testing.
@@ -878,10 +958,19 @@ pub fn apply_fault(
 /// - Altitude (m), velocities (m/s), standard deviations are **1σ** (not variances).
 ///
 /// # Preconditions & caveats
-/// - `records.len() >= 2` and timestamps are monotonically increasing.
-/// - If your `horizontal_accuracy`/`vertical_accuracy` fields are *variances*,
-///   adjust the `.sqrt()` usage accordingly.
+/// - `records.len() >= 2` and timestamps are monotonically increasing. A single record
+///   produces an empty event list, since events are built from adjacent pairs.
+/// - The accuracy columns (`horizontal_accuracy`, `vertical_accuracy`, `speed_accuracy`)
+///   are read as 1σ standard deviations, not variances; no square root is taken. A `NaN`
+///   falls back to a conservative default -- 15.0 m horizontal, 1000.0 m vertical,
+///   100.0 m/s velocity -- and a finite value is floored before use, at 1e-3 m for both
+///   position accuracies and at 0.1 m/s for speed, so a logged 0.0 cannot produce a
+///   zero-variance `R`.
 /// - The event vector capacity is sized roughly to `2 * records.len()` (IMU + GNSS).
+///
+/// # Panics
+/// If `records` is empty: the first record supplies both the stream's `start_time` and the
+/// reference altitude for relative-altitude measurements.
 ///
 /// # Example
 /// ```
@@ -901,40 +990,6 @@ pub fn apply_fault(
 /// let events = build_event_stream(&records, &cfg);
 /// // feed into your event-driven filter loop
 /// ```
-/// Tolerance for comparing a sample's elapsed time against a scheduler boundary.
-///
-/// Elapsed times are reconstructed from millisecond timestamps, so a sample that should land
-/// exactly on a boundary can arrive a few ULP short of it. Without the slack a 1 Hz stream
-/// against a whole-second window drops or gains a fix depending on rounding.
-const DUTY_CYCLE_EPSILON_S: f64 = 1e-9;
-
-/// Whether a [`GnssScheduler::DutyCycle`] is inside an ON window at `elapsed_s`.
-///
-/// The timeline is `start_phase_s` of initial ON, then `off_s` OFF and `on_s` ON repeating,
-/// which is what "initial phase offset before the first ON/OFF toggle" describes: the first
-/// toggle takes the scheduler out of its initial ON state.
-///
-/// Computed from `elapsed_s` directly rather than by stepping a toggle once per sample. The
-/// stepping version emitted a fix only on the sample where the state flipped *into* ON and
-/// returned `false` for every other sample in the window, so `on_s: 1800.0, off_s: 600.0`
-/// delivered two fixes across an 89-minute recording instead of roughly four thousand
-/// (#312). Deriving the state from the clock also means a window shorter than the sample
-/// interval cannot leave the scheduler a boundary behind for the rest of the run.
-fn duty_cycle_is_on(elapsed_s: f64, on_s: f64, off_s: f64, start_phase_s: f64) -> bool {
-    if elapsed_s + DUTY_CYCLE_EPSILON_S < start_phase_s {
-        return true;
-    }
-    let cycle_s = on_s + off_s;
-    if cycle_s <= 0.0 || !cycle_s.is_finite() {
-        // A non-positive or non-finite cycle cannot describe an outage. Deliver every fix
-        // rather than withholding all of them: silently suppressing GNSS is the failure mode
-        // #312 was, and it is much harder to notice than an outage that does not happen.
-        return true;
-    }
-    let into_cycle = (elapsed_s - start_phase_s).rem_euclid(cycle_s);
-    into_cycle + DUTY_CYCLE_EPSILON_S >= off_s
-}
-
 pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfig) -> EventStream {
     let start_time = records[0].time;
     let records_with_elapsed: Vec<(f64, &TestDataRecord)> = records
@@ -1007,7 +1062,9 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
                 let vn = r1.speed * bearing_rad.cos();
                 let ve = r1.speed * bearing_rad.sin();
 
-                // Use your provided accuracies (adjust if these are variances vs std).
+                // The record's accuracy columns are 1-sigma standard deviations, floored
+                // so a logged zero cannot produce a singular R. See the caveats on
+                // `build_event_stream`.
                 // If an accuracy is missing (NaN), substitute a conservative default
                 // to avoid propagating NaN into the measurement noise.
                 let horiz_std = if r1.horizontal_accuracy.is_nan() {

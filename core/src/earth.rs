@@ -125,7 +125,7 @@ pub fn relative_barometric_altitude(
 /// Calculates the expected barometric pressure at a given altitude
 ///
 /// This function calculates the expected atmospheric pressure at a given altitude using the barometric formula,
-/// given a reference sea level pressure. This is the inverse of the relative_barometric_altitude function.
+/// given a reference sea level pressure. This is the inverse of the `relative_barometric_altitude` function.
 ///
 /// # Arguments
 /// - `altitude` - The altitude above sea level in meters
@@ -408,9 +408,9 @@ pub fn haversine_distance(lat1_rad: f64, lon1_rad: f64, lat2_rad: f64, lon2_rad:
 /// - `altitude` - The WGS84 altitude in meters
 ///
 /// # Returns
-/// A tuple of the principal radii of curvature (r_n, r_e, r_p) in meters where r_n is the radius
-/// of curvature in the prime vertical (alternatively as _N_ or R_N), r_e is the radius of curvature
-/// in the meridian (alternatively _M_ or R_M), and r_p is the radius of curvature in the local
+/// A tuple of the principal radii of curvature (`r_n`, `r_e`, `r_p`) in meters where `r_n` is the radius
+/// of curvature in the prime vertical (alternatively as _N_ or `R_N`), `r_e` is the radius of curvature
+/// in the meridian (alternatively _M_ or `R_M`), and `r_p` is the radius of curvature in the local
 /// normal direction.
 ///
 /// # Example
@@ -714,7 +714,7 @@ pub fn calculate_latitudinal_magnetic_field(colatitude: f64, radius: f64) -> f64
 /// - `longitude` - The WGS84 longitude in degrees
 ///
 /// # Returns
-/// A tuple containing (magnetic_colatitude, magnetic_longitude) in degrees. Colatitude
+/// A tuple containing (`magnetic_colatitude`, `magnetic_longitude`) in degrees. Colatitude
 /// is the angle from the magnetic north pole [0, 180], and longitude is the angle from the
 /// magnetic meridian.
 ///

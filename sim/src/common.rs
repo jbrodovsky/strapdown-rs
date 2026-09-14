@@ -86,7 +86,7 @@ pub(crate) fn validate_input_path(input: &Path) -> Result<(), Box<dyn Error>> {
 /// * `input` - Path to a CSV file or directory containing CSV files
 ///
 /// # Returns
-/// A sorted vector of PathBuf for each CSV file found.
+/// A sorted vector of `PathBuf` for each CSV file found.
 ///
 /// # Errors
 /// Returns an error if:

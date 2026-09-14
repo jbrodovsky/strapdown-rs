@@ -236,10 +236,12 @@ fn build_scenario(seed_offset_m: f64) -> Scenario {
 /// The seed state in the form the Kalman-family constructors take.
 ///
 /// Built as a struct literal rather than through [`InitialState::new`], matching
-/// `integration_tests.rs` and `sim::initialize_eskf` -- no caller in the workspace uses the
-/// constructor. Its radian path (`in_degrees: false`) converts latitude to degrees while
-/// leaving longitude alone, and the filter constructors then read the result back as
-/// radians, so a seed built that way starts 40 radians north.
+/// `integration_tests.rs` and `sim::initialize_eskf`. That is a stylistic match, not a
+/// workaround: the constructor's old radian path -- which stored latitude in degrees while
+/// leaving `in_degrees == false`, so a 40 deg seed was read back as 40 radians -- has been
+/// fixed, and `engine.rs`, both `core/examples` and `engine_lever_arm.rs` all call it
+/// today. Either form is correct here; the literal just keeps the seed adjacent to the
+/// scenario it is built from.
 fn initial_state(scenario: &Scenario) -> InitialState {
     let (roll, pitch, yaw) = scenario.initial.attitude.euler_angles();
     InitialState {

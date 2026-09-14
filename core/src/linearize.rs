@@ -467,7 +467,7 @@ fn gravity_latitude_gradient(latitude_rad: f64) -> f64 {
 /// \delta x_{k+1} \approx (I + F_{\delta x} \cdot dt) \delta x_k
 /// $$
 ///
-/// # Block Structure of F_δx (15×15)
+/// # Block Structure of `F_δx` (15×15)
 ///
 /// ```text
 /// F = | F_pp  F_pv  F_pθ   0     0   |  (position)
@@ -477,7 +477,7 @@ fn gravity_latitude_gradient(latitude_rad: f64) -> f64 {
 ///     |  0     0     0     0    F_bb |  (gyro bias)
 /// ```
 ///
-/// where most blocks are sparse and bias dynamics are random walk (F_bb = 0).
+/// where most blocks are sparse and bias dynamics are random walk (`F_bb` = 0).
 ///
 /// # Arguments
 ///
@@ -488,7 +488,7 @@ fn gravity_latitude_gradient(latitude_rad: f64) -> f64 {
 ///
 /// # Returns
 ///
-/// 15×15 error-state transition Jacobian matrix F_δx
+/// 15×15 error-state transition Jacobian matrix `F_δx`
 ///
 /// # References
 ///
@@ -667,9 +667,9 @@ pub fn error_state_transition_jacobian(
 /// # Mathematical Background
 ///
 /// The continuous-time process model includes noise: dx/dt = f(x,u) + G*w
-/// where w ~ N(0, Q_c) is white noise representing IMU errors.
+/// where w ~ N(0, `Q_c`) is white noise representing IMU errors.
 ///
-/// The process noise covariance in discrete time is: Q_d = G * Q_c * G^T * dt
+/// The process noise covariance in discrete time is: `Q_d` = G * `Q_c` * G^T * dt
 ///
 /// # Arguments
 ///
@@ -678,7 +678,7 @@ pub fn error_state_transition_jacobian(
 ///
 /// # Returns
 ///
-/// 9×6 process noise Jacobian matrix G, mapping [accel_noise; gyro_noise] to state
+/// 9×6 process noise Jacobian matrix G, mapping [`accel_noise`; `gyro_noise`] to state
 ///
 /// # References
 ///
@@ -1139,7 +1139,7 @@ pub fn zaru_jacobian(_state: &StrapdownState) -> DMatrix<f64> {
     h
 }
 
-/// Apply an error-state correction to a StrapdownState
+/// Apply an error-state correction to a `StrapdownState`
 ///
 /// This function implements the ESKF correction step, applying a computed error-state
 /// vector to correct the nominal navigation state. The correction is additive for
@@ -1268,8 +1268,8 @@ pub fn apply_eskf_correction(
 ///
 /// # Returns
 ///
-/// Optional tuple of (accel_bias_correction, gyro_bias_correction) if delta_x has 15 elements.
-/// Returns `None` if delta_x has only 9 elements.
+/// Optional tuple of (`accel_bias_correction`, `gyro_bias_correction`) if `delta_x` has 15 elements.
+/// Returns `None` if `delta_x` has only 9 elements.
 ///
 /// # Example
 ///
@@ -1324,7 +1324,7 @@ pub fn apply_eskf_correction_with_biases(
 /// # Arguments
 ///
 /// * `position_error` - Position error [δlat, δlon, δalt] in (rad, rad, m)
-/// * `conditional_mean` - 12-element conditional EKF mean [δv, δθ, δb_g, δb_a]
+/// * `conditional_mean` - 12-element conditional EKF mean [δv, δθ, `δb_g`, `δb_a`]
 ///
 /// # Returns
 ///
@@ -1566,7 +1566,7 @@ mod tests {
     /// attitude-error convention throughout.
     ///
     /// The error state uses the LOCAL (body-frame) convention:
-    ///     C_b^n(true) = C_b^n(nominal) · (I + [δθ]_×)
+    ///     `C_b^n(true)` = `C_b^n(nominal)` · (I + [δθ]_×)
     /// so perturbing the nominal attitude on the right by a small rotation δθ and
     /// propagating must reproduce the velocity change that F's δv/δθ block predicts.
     ///

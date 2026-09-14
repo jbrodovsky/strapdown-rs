@@ -376,7 +376,7 @@ struct ErrorStats {
 }
 
 impl ErrorStats {
-    /// Create a new ErrorStats with all zeros
+    /// Create a new `ErrorStats` with all zeros
     const fn new() -> Self {
         Self {
             mean_horizontal_error: 0.0,
@@ -416,7 +416,7 @@ impl ErrorStats {
 /// - `records` - Test data records containing GNSS measurements (truth)
 ///
 /// # Returns
-/// ErrorStats containing mean, max, and RMS errors for various quantities
+/// `ErrorStats` containing mean, max, and RMS errors for various quantities
 fn compute_error_metrics(results: &[NavigationResult], records: &[TestDataRecord]) -> ErrorStats {
     let mut horizontal_errors = Vec::new();
     let mut altitude_errors = Vec::new();
@@ -569,7 +569,7 @@ fn compute_error_metrics(results: &[NavigationResult], records: &[TestDataRecord
 /// - `path` - Path to the CSV file containing test data
 ///
 /// # Returns
-/// Vector of TestDataRecord instances
+/// Vector of `TestDataRecord` instances
 fn load_test_data(path: &Path) -> Vec<TestDataRecord> {
     TestDataRecord::from_csv(path)
         .unwrap_or_else(|_| panic!("Failed to load test data from CSV: {}", path.display()))
@@ -581,7 +581,7 @@ fn load_test_data(path: &Path) -> Vec<TestDataRecord> {
 /// - `first_record` - The first test data record
 ///
 /// # Returns
-/// InitialState for filter initialization
+/// `InitialState` for filter initialization
 fn create_initial_state(first_record: &TestDataRecord) -> InitialState {
     // NOTE: Test data from Sensor Logger has latitude/longitude in degrees and roll/pitch/yaw
     // in a different Euler convention than nalgebra's XYZ, so `reference_attitude` reads the
@@ -607,7 +607,7 @@ fn create_initial_state(first_record: &TestDataRecord) -> InitialState {
     }
 }
 
-/// Create a nominal StrapdownState from the first test data record
+/// Create a nominal `StrapdownState` from the first test data record
 fn create_nominal_state(first_record: &TestDataRecord) -> StrapdownState {
     let (roll, pitch, yaw) = reference_attitude(first_record);
 

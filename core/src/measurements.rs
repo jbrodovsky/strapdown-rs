@@ -19,7 +19,18 @@ use world_magnetic_model::uom::si::angle::degree;
 use world_magnetic_model::uom::si::f32::{Angle, Length};
 use world_magnetic_model::uom::si::length::meter;
 
-pub const MAG_YAW_NOISE: f64 = 0.2; // radians
+/// One-sigma noise, radians, that [`crate::messages::build_event_stream`] assigns to every
+/// magnetometer-derived yaw measurement it builds.
+///
+/// A `TestDataRecord`'s `mag_x`/`mag_y`/`mag_z` carry no accuracy field, so `build_event_stream`
+/// hardcodes this value into the [`MagnetometerYawMeasurement`] it constructs; no configuration
+/// overrides it. 0.2 rad is roughly 11.5 degrees -- deliberately conservative for an
+/// uncalibrated magnetometer.
+///
+/// This is *not* the value produced by [`MagnetometerYawMeasurement`]'s [`Default`] impl, which
+/// uses the tighter 0.05 rad (~3 degrees). Construct the measurement yourself, or set
+/// [`MagnetometerYawMeasurement::noise_std`] directly, to use anything other than 0.2 rad.
+pub const MAG_YAW_NOISE: f64 = 0.2;
 
 /// Date substituted when a record carries an unusable year/day-of-year pair.
 ///
@@ -146,11 +157,11 @@ pub trait MeasurementModel: Any {
     ///
     /// # Arguments
     ///
-    /// * `state` - Current state estimate vector [lat, lon, alt, v_n, v_e, v_d, roll, pitch, yaw]
+    /// * `state` - Current state estimate vector [lat, lon, alt, `v_n`, `v_e`, `v_d`, roll, pitch, yaw]
     ///
     /// # Returns
     ///
-    /// Jacobian matrix H (measurement_dim × state_dim) for EKF updates
+    /// Jacobian matrix H (`measurement_dim` × `state_dim`) for EKF updates
     ///
     /// # Example
     ///
@@ -193,10 +204,18 @@ pub trait MeasurementModel: Any {
 /// GPS position measurement model
 #[derive(Clone, Debug, Default)]
 pub struct GPSPositionMeasurement {
+    /// Latitude, degrees; converted to radians to form the measurement vector.
     pub latitude: f64,
+    /// Longitude, degrees; converted to radians to form the measurement vector.
     pub longitude: f64,
+    /// Altitude, metres, positive up, on the same datum as the rest of the crate's altitudes
+    /// (height above the WGS84 ellipsoid by convention); in practice it is whatever datum the
+    /// source CSV's altitude column uses.
     pub altitude: f64,
+    /// One-sigma horizontal position accuracy, metres; converted to radians of arc and applied
+    /// to both the latitude and longitude channels of the noise matrix.
     pub horizontal_noise_std: f64,
+    /// One-sigma vertical position accuracy, metres.
     pub vertical_noise_std: f64,
 }
 impl Display for GPSPositionMeasurement {
@@ -251,10 +270,16 @@ impl MeasurementModel for GPSPositionMeasurement {
 /// GPS Velocity measurement model
 #[derive(Clone, Debug, Default)]
 pub struct GPSVelocityMeasurement {
+    /// North velocity, m/s.
     pub northward_velocity: f64,
+    /// East velocity, m/s.
     pub eastward_velocity: f64,
+    /// Vertical velocity, m/s: positive down in NED, positive up in ENU, matching the state's
+    /// vertical velocity channel.
     pub vertical_velocity: f64,
+    /// One-sigma horizontal velocity accuracy, m/s; applied to both the north and east channels.
     pub horizontal_noise_std: f64,
+    /// One-sigma vertical velocity accuracy, m/s.
     pub vertical_noise_std: f64,
 }
 impl Display for GPSVelocityMeasurement {
@@ -305,15 +330,31 @@ impl MeasurementModel for GPSVelocityMeasurement {
     }
 }
 /// GPS Position and Velocity measurement model
+///
+/// The measurement is five-dimensional --
+/// $z = [\text{lat}, \text{lon}, \text{alt}, v_n, v_e]$ -- and carries no vertical velocity,
+/// so the vertical velocity state is left unaided by this model. Use
+/// [`GPSVelocityMeasurement`] when a vertical rate is available.
 #[derive(Clone, Debug, Default)]
 pub struct GPSPositionAndVelocityMeasurement {
+    /// Latitude, degrees; converted to radians to form the measurement vector.
     pub latitude: f64,
+    /// Longitude, degrees; converted to radians to form the measurement vector.
     pub longitude: f64,
+    /// Altitude, metres, positive up, on the same datum as the rest of the crate's altitudes
+    /// (height above the WGS84 ellipsoid by convention); in practice it is whatever datum the
+    /// source CSV's altitude column uses.
     pub altitude: f64,
+    /// North velocity, m/s.
     pub northward_velocity: f64,
+    /// East velocity, m/s.
     pub eastward_velocity: f64,
+    /// One-sigma horizontal position accuracy, metres; converted to radians of arc and applied
+    /// to both the latitude and longitude channels of the noise matrix.
     pub horizontal_noise_std: f64,
+    /// One-sigma vertical position accuracy, metres.
     pub vertical_noise_std: f64,
+    /// One-sigma horizontal velocity accuracy, m/s; applied to both the north and east channels.
     pub velocity_noise_std: f64,
 }
 impl MeasurementModel for GPSPositionAndVelocityMeasurement {
@@ -373,7 +414,14 @@ impl MeasurementModel for GPSPositionAndVelocityMeasurement {
 /// Relative altitude measurement (barometric)
 #[derive(Clone, Debug, Default)]
 pub struct RelativeAltitudeMeasurement {
+    /// Barometric height change since the reference epoch, metres, positive up.
     pub relative_altitude: f64,
+    /// Absolute altitude of the reference epoch, metres, on the same datum as the rest of the
+    /// crate's altitudes (height above the WGS84 ellipsoid by convention); in practice it is
+    /// whatever datum the source CSV's altitude column uses.
+    ///
+    /// The measurement handed to the filter is `relative_altitude + reference_altitude`, so this
+    /// is what puts a relative barometer reading on the same datum as the state's altitude.
     pub reference_altitude: f64,
 }
 impl Display for RelativeAltitudeMeasurement {

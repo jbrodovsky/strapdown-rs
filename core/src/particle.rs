@@ -41,7 +41,7 @@ use rand::prelude::*;
 /// Trait defining the interface for particle state representation
 ///
 /// Users must implement this trait for their custom particle types to use with
-/// the generic ParticleFilter. The trait provides methods for particle initialization,
+/// the generic `ParticleFilter`. The trait provides methods for particle initialization,
 /// state extraction, and weight management.
 pub trait Particle: Any {
     /// Downcast helper method to allow for type-safe downcasting
@@ -79,8 +79,8 @@ pub trait Particle: Any {
 ///
 /// Different averaging strategies can be used depending on the application:
 /// - Mean: Simple arithmetic mean of particle states
-/// - WeightedMean: Weighted average using particle weights
-/// - HighestWeight: State of the particle with highest weight
+/// - `WeightedMean`: Weighted average using particle weights
+/// - `HighestWeight`: State of the particle with highest weight
 #[derive(Clone, Copy, Debug, Default)]
 pub enum ParticleAveragingStrategy {
     /// Arithmetic mean of all particle states (ignores weights)
@@ -346,7 +346,7 @@ pub trait ParticleFilter {
     ///
     /// This method should implement resampling logic to combat particle degeneracy.
     /// Implementations should use the generic resampling functions provided by this
-    /// module (systematic_resample, multinomial_resample, etc.) as appropriate.
+    /// module (`systematic_resample`, `multinomial_resample`, etc.) as appropriate.
     ///
     /// Note: Weights should be normalized before resampling so that they
     /// sum to 1.0. Call weight normalization first if needed.

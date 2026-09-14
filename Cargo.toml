@@ -87,6 +87,14 @@ unknown_lints = "allow"
 rust_2018_idioms = { level = "deny", priority = -1 }
 unreachable_pub = "deny"
 missing_debug_implementations = "deny"
+# Named by #253. Deferred past queue 100 with the rest of the documentation lints
+# because `StrapdownError` did not exist yet and `missing_errors_doc` could not be
+# satisfied; that landed in queue 2, and the remaining 157 undocumented public items
+# (56 in `sim`, 40 in `geonav`, 21 in `measurements`, ...) are documented now.
+#
+# This is the lint with the most direct user-facing payoff of the set: every item it
+# names is a `pub` item that renders on docs.rs as a bare signature with no prose.
+missing_docs = "deny"
 
 [workspace.lints.clippy]
 pedantic = { level = "deny", priority = -1 }
@@ -111,11 +119,28 @@ missing_panics_doc = "deny"
 # Renaming them to satisfy the lint would make them harder to check against
 # the reference, which is the opposite of what CLAUDE.md asks for.
 similar_names = "allow"
-# `doc_markdown` (197 hits) and `must_use_candidate` (88) are pure formatting
-# and signature noise with no defect signal; at warn they bury the ~470
-# warnings that do carry meaning.
-doc_markdown = "allow"
+# `must_use_candidate` (88 hits) is pure signature noise with no defect signal.
+#
+# `doc_markdown` is named explicitly by #253 and was re-examined for it. The 356
+# genuine hits -- `TestDataRecord`, `StrapdownState`, `NavSolution` and friends
+# written without backticks -- **have been fixed**; that part of #253 is done. The
+# lint itself stays allowed because the remaining 142 hits are all false positives
+# of one kind, and there is no way to silence them that is worth the cost:
+#
+# These docs render maths with KaTeX (`katex-header.html`, wired up through
+# `RUSTDOCFLAGS` in `pixi.toml` and `package.metadata.docs.rs`), so they are full
+# of `$...$` and `$$...$$`. `doc_markdown` cannot tell LaTeX from Rust, and reads
+# every subscripted symbol -- `p_n`, `v_e`, `C_b^n`, `\Delta t`, `F_k` -- as an
+# un-backticked item. Backticking them breaks the maths: KaTeX renders the literal
+# source, so Groves Eq. 5.56 comes out as `\frac{v_n(-)}{R_n` instead of a fraction.
+# `cargo clippy --fix` did exactly that before the maths lines were restored by hand.
+#
+# Nor can the false positives be localised. Over half sit in module-level `//!`
+# docs (`lib.rs`, `calibration.rs`, `engine.rs`), where the only allow with the
+# right scope is an inner attribute at the crate root -- which disables the lint
+# for all of `strapdown-core` anyway, while pretending otherwise. Tracked in #329.
 must_use_candidate = "allow"
+doc_markdown = "allow"
 # The crate is named for its domain; `strapdown::StrapdownState` is intentional.
 module_name_repetitions = "allow"
 # `suboptimal_flops` (81 hits) rewrites `a - b * c` into `b.mul_add(-c, a)`.

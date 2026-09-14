@@ -11,7 +11,7 @@
 //! $$
 //!
 //! where \\(\tilde{f}\\) is what the sensor reports, \\(f\\) is the true specific force,
-//! \\(b_a\\) is the bias, and \\(M_a\\) is the scale factor and cross-coupling matrix whose
+//! \\(`b_a`\\) is the bias, and \\(`M_a`\\) is the scale factor and cross-coupling matrix whose
 //! diagonal holds the per-axis scale factor errors and whose off-diagonal elements hold the
 //! misalignment coefficients. The gyroscope model is identical in form, with angular rate in
 //! place of specific force. The random noise \\(w\\) is not something a deterministic
