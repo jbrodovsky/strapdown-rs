@@ -1363,7 +1363,7 @@ pub fn assemble_error_state(
 mod tests {
     use super::*;
     use assert_approx_eq::assert_approx_eq;
-    use nalgebra::Rotation3;
+    use nalgebra::{Rotation3, UnitQuaternion};
 
     /// Every diagonal entry of the error-state transition Jacobian must be ~1.
     ///
@@ -1463,7 +1463,16 @@ mod tests {
                 gyro: gyro - Vector3::new(dx[12], dx[13], dx[14]),
             };
             crate::mechanize(&mut s, &crate::ImuSample::from_rates(&imu, DT)).unwrap();
-            let dtheta = (base_out.attitude.transpose() * s.attitude).scaled_axis();
+            // Via the quaternion, not `Rotation3::scaled_axis`. That method is unusable as a
+            // finite-difference oracle at this scale: it collapses rotations below its
+            // internal epsilon to exactly zero, and on a matrix whose trace rounds a whisker
+            // above 3 -- which a product of two independently orthonormalised attitudes
+            // routinely does -- it returns NaN from `acos` of a value just over 1. The
+            // quaternion path takes the angle from `atan2` and has neither failure mode. It
+            // resolves a genuine 1e-11 rotation that `scaled_axis` reports as 0.
+            let dtheta =
+                UnitQuaternion::from_rotation_matrix(&(base_out.attitude.transpose() * s.attitude))
+                    .scaled_axis();
             DVector::from_vec(vec![
                 s.latitude - base_out.latitude,
                 s.longitude - base_out.longitude,

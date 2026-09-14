@@ -956,14 +956,17 @@ mod tests {
     // Update from #297: correcting `transport_rate` to Groves 5.44 brought this
     // to 5.19 m, inside the original 15 m bound. #319 then moved it back out to
     // 23.52 m while improving both moving scenarios -- so the 5.19 m was a
-    // cancellation between two bugs, not convergence.
+    // cancellation between two bugs, not convergence. #321 brought it to 16.66 m,
+    // which is still outside the bound.
     //
     // #319 also established what the number actually measures: the truth here is
     // exactly stationary (altitude 1000.0000 m, all three velocities identically
     // zero, at every step), so the whole error is the filter's own altitude
     // climbing away from a fixed truth while it is fed 5 Hz GNSS altitude fixes.
     // That is a filter defect, not a mechanization one, and it is what #295 has
-    // to explain before this test means anything.
+    // to explain before this test means anything. Three mechanization fixes have
+    // now moved the number without closing the gap, which is the evidence for
+    // that reading.
     #[ignore = "RBPF vertical channel was tuned against the pre-#292 radii bug -- see #295"]
     fn rbpf_runs_on_scenario_stationary() {
         let lat_deg: f64 = 40.0;
@@ -1059,22 +1062,24 @@ mod tests {
         // Expect northward motion; RBPF estimate should reflect it.
         assert!(mean[0] > initial_state.latitude);
         // Horizontal and velocity bounds are accuracy bounds and hold with three
-        // orders of magnitude to spare (0.0015 m, 0.003 m/s observed). The altitude
+        // orders of magnitude to spare (0.003 m, 0.003 m/s observed). The altitude
         // bound is not: it is an anti-divergence guard on the vertical channel
         // #295 has already flagged as untrustworthy. Final altitude error across
         // the three scenarios, as the mechanization was corrected:
         //
-        //     scenario     pre-#297   post-#297   post-#319
-        //     stationary     28.71 m      5.19 m     23.52 m   (quarantined)
-        //     v north        21.58 m     25.89 m     18.00 m
-        //     v east         13.74 m     10.36 m      5.74 m
+        //     scenario     pre-#297   post-#297   post-#319   post-#321
+        //     stationary     28.71 m      5.19 m     23.52 m     16.66 m  (quarantined)
+        //     v north        21.58 m     25.89 m     18.00 m     18.02 m
+        //     v east         13.74 m     10.36 m      5.74 m      0.51 m
         //
-        // Both moving scenarios improved twice over, but the channel still swings
-        // by more than its own magnitude on inputs of order 1e-6 rad/s, so the
-        // bound stays a guard rather than an accuracy claim. 50 m is ~2x the worst
-        // of the three, matching the horizontal guard beside it: a genuine
-        // divergence (1e8 m scale, cf. #266) still trips it, codegen jitter
-        // cannot. Do not tighten to the observed value without fixing #295.
+        // #321 barely moves this scenario and transforms the eastward one, which is
+        // what its own diagnosis predicts: the sign error was in `(w x v)_up`, and
+        // this scenario runs with `v_east = 0`, so that term is zero here and
+        // dominant there. The channel still holds 18 m against a truth it is being
+        // fed at 5 Hz, so the bound stays a guard rather than an accuracy claim.
+        // 50 m is ~2x the worst of the three, matching the horizontal guard beside
+        // it: a genuine divergence (1e8 m scale, cf. #266) still trips it, codegen
+        // jitter cannot. Do not tighten to the observed value without fixing #295.
         assert_solution_close_to_truth(&mean, truth, 50.0, 50.0, 1.0);
     }
 
