@@ -226,6 +226,22 @@ fn transition_jacobian(
     let _g = earth::gravity(&lat.to_degrees(), &alt); // Reserved for future use
     let omega_ie = earth::earth_rate_lla(&lat.to_degrees());
     let omega_en = earth::transport_rate(&lat.to_degrees(), &alt, &vel);
+    // Both are NED, and the blocks below multiply them against *this state's* velocity and
+    // attitude errors. Reflect them into the caller's convention first -- as pseudovectors,
+    // see `flip_vertical_rate` -- or the Coriolis and attitude blocks describe a different
+    // frame from the mechanization they are supposed to linearise. `mechanize` canonicalises
+    // to NED as of #321; without this the covariance stopped tracking it for ENU states.
+    //
+    // `transport_rate` reads only the horizontal components of `vel`, and those are the same
+    // in both conventions, so it needs no conversion on the way in.
+    let (omega_ie, omega_en) = if state.is_enu {
+        (
+            crate::flip_vertical_rate(&omega_ie),
+            crate::flip_vertical_rate(&omega_en),
+        )
+    } else {
+        (omega_ie, omega_en)
+    };
 
     let omega_ie_skew = vector_to_skew_symmetric(&omega_ie);
     let omega_en_skew = vector_to_skew_symmetric(&omega_en);
@@ -368,12 +384,25 @@ fn transition_jacobian(
     }
 
     // ∂(attitude(+))/∂(v): through transport rate
-    // Ω_en depends on velocity, so changes in velocity affect attitude dynamics
-    // From transport rate: ω_en = [v_e/(R_e+h), -v_n/(R_n+h), -v_e*tan(lat)/(R_e+h)]
-    // These couple into attitude through the integration
-    f[(6, 4)] += 1.0 / (r_e + alt) * dt; // ∂(ε_x)/∂(v_e)
-    f[(7, 3)] += -1.0 / (r_n + alt) * dt; // ∂(ε_y)/∂(v_n)
-    f[(8, 4)] += -lat.tan() / (r_e + alt) * dt; // ∂(ε_z)/∂(v_e)
+    //
+    // Ω_en depends on velocity, so changes in velocity affect attitude dynamics. From the
+    // transport rate, ω_en = [v_e/(R_e+h), -v_n/(R_n+h), -v_e*tan(lat)/(R_e+h)].
+    //
+    // The block is **minus** dω_en/dv dt, and used to be plus. 5.46 propagates
+    // `C+ = C + C[ω_ib x]dt - [ω_in x]C dt`, so perturbing the transport rate gives
+    // `δC+ = -[δω_en x] C dt`; against this parametrisation's nav-frame perturbation
+    // `C~ = (I + [δθ x])C` that reads `δθ+ = -δω_en dt`. Finite-differencing `mechanize`
+    // returns exactly the negation of the old entries, at every dt and in both frames --
+    // see `transition_jacobian_velocity_columns_match_finite_differences_in_both_frames`.
+    //
+    // Written from the NED formula, so the two horizontal rows follow the same pseudovector
+    // reflection applied to `omega_en` above: `dω_en/dv` picks up `-F` on the left, and the
+    // columns it reads -- north and east velocity -- are identical in both conventions, so
+    // only rows 6 and 7 change sign. Row 8 is the vertical component, which `-F` leaves alone.
+    let transport_coupling_sign = if state.is_enu { 1.0 } else { -1.0 };
+    f[(6, 4)] += transport_coupling_sign / (r_e + alt) * dt; // ∂(ε_x)/∂(v_e)
+    f[(7, 3)] += -transport_coupling_sign / (r_n + alt) * dt; // ∂(ε_y)/∂(v_n)
+    f[(8, 4)] += lat.tan() / (r_e + alt) * dt; // ∂(ε_z)/∂(v_e)
 
     f
 }
@@ -1666,6 +1695,189 @@ mod tests {
         );
         // Altitude stays in metres.
         assert_approx_eq!(f[(2, 5)], dt, 1e-15);
+    }
+
+    /// A non-degenerate state for the frame checks below: both hemispheres' worth of
+    /// latitude structure, all three velocity channels turning, and a tilted attitude.
+    fn frame_check_state() -> StrapdownState {
+        StrapdownState {
+            latitude: 51.5_f64.to_radians(),
+            longitude: (-0.12_f64).to_radians(),
+            altitude: 2400.0,
+            velocity_north: 120.0,
+            velocity_east: -45.0,
+            velocity_vertical: 6.0, // descending, NED
+            attitude: Rotation3::from_euler_angles(0.18, -0.27, 2.4),
+            is_enu: false,
+        }
+    }
+
+    /// The reflection carrying a NED 9-state error vector to the ENU convention.
+    ///
+    /// Position is untouched, the vertical velocity flips, and the attitude error is a
+    /// nav-frame rotation *vector* -- a pseudovector, so it reflects as `-F`, not `F`.
+    fn error_state_reflection() -> DMatrix<f64> {
+        DMatrix::from_diagonal(&DVector::from_vec(vec![
+            1.0, 1.0, 1.0, // latitude, longitude, altitude
+            1.0, 1.0, -1.0, // north, east, vertical velocity
+            -1.0, -1.0, 1.0, // nav-frame rotation vector
+        ]))
+    }
+
+    /// The transition Jacobian has to describe the same dynamics in either convention.
+    ///
+    /// `mechanize` canonicalises to NED (#321), so the Jacobian that linearises it must too.
+    /// Before this, `transition_jacobian` built `omega_ie` and `omega_en` from NED vectors and
+    /// applied them to ENU velocity and attitude errors, leaving the RBPF's and EKF's
+    /// covariance propagating dynamics the mechanization no longer had.
+    ///
+    /// The check is exact rather than approximate: the two conventions are related by a
+    /// signature matrix `T`, so `F_enu = T F_ned T` entry for entry.
+    #[test]
+    fn transition_jacobian_agrees_across_vertical_conventions() {
+        let ned = frame_check_state();
+        let enu = ned.to_enu();
+        // Body-frame IMU: specific force is an ordinary vector, angular rate is not.
+        let accel_ned = Vector3::new(0.42, -0.31, -9.72);
+        let gyro_ned = Vector3::new(0.011, -0.007, 0.023);
+        let accel_enu = Vector3::new(0.42, -0.31, 9.72);
+        let gyro_enu = Vector3::new(-0.011, 0.007, 0.023);
+        let dt = 0.02;
+
+        let f_ned = state_transition_jacobian(&ned, &accel_ned, &gyro_ned, dt);
+        let f_enu = state_transition_jacobian(&enu, &accel_enu, &gyro_enu, dt);
+        let t = error_state_reflection();
+        let expected = &t * &f_ned * &t;
+
+        let max_error = (&f_enu - &expected).abs().max();
+        assert!(
+            max_error < 1e-18,
+            "ENU and NED Jacobians disagree by {max_error:e}; they describe the same dynamics \
+             and are related by a signature matrix"
+        );
+        // Non-degenerate: the entries the reflection actually acts on have to be present, or
+        // the agreement above is an agreement about zeros.
+        assert!(f_ned[(3, 4)].abs() > 1e-7, "Coriolis block is empty");
+        assert!(f_ned[(6, 4)].abs() > 1e-11, "transport coupling is empty");
+        assert!(f_ned[(5, 0)].abs() > 1e-5, "gravity latitude term is empty");
+    }
+
+    /// Finite-difference the velocity columns in both conventions, at a `dt` where the
+    /// Coriolis and transport terms are actually resolvable.
+    ///
+    /// The existing `test_state_transition_jacobian_*` checks run at `dt = 1e-4`, where every
+    /// term touched here is ~1e-9 -- three orders below their 1e-6 tolerance. They would pass
+    /// with the Coriolis block deleted outright, in either frame.
+    ///
+    /// Only the velocity columns are differenced, so no attitude parametrisation is involved
+    /// on the input side; the attitude rows come back out as a nav-frame rotation vector,
+    /// which is what `AttitudeParametrization::RotationVector` means.
+    ///
+    /// # What this deliberately does not check
+    ///
+    /// Five of the nine velocity-row entries are excluded. The Coriolis term is *quadratic*
+    /// in velocity -- `ω_en(v) × v` -- and the Jacobian differentiates only the second
+    /// factor, omitting `(∂ω_en/∂v_j) × v`. The omission is first-order, not O(dt²): it
+    /// scales with `dt` exactly as the terms that are kept, so no choice of `dt` separates
+    /// them. Measured at `dt = 0.01` on this state, analytic against finite difference:
+    ///
+    /// ```text
+    ///     entry     analytic        numeric         shortfall
+    ///     (3,3)      1.000000e0      1.000000e0      9.3e-9
+    ///     (5,3)     -1.881761e-7    -3.763275e-7     1.9e-7   (a factor of two)
+    ///     (3,4)     -1.052891e-6    -9.644178e-7     8.8e-8
+    ///     (4,4)      1.000000e0      1.000000e0      2.5e-7
+    ///     (5,4)     -8.375075e-7    -7.671326e-7     7.0e-8
+    /// ```
+    ///
+    /// That is a separate defect from the frame handling this test exists for, in the same
+    /// family as #317, and it is filed rather than fixed here so its covariance shift stays
+    /// attributable. The four entries that survive include a Coriolis off-diagonal, so a sign
+    /// or frame error in that block still trips this test; the block's *frame* behaviour is
+    /// pinned exactly by `transition_jacobian_agrees_across_vertical_conventions`.
+    #[test]
+    fn transition_jacobian_velocity_columns_match_finite_differences_in_both_frames() {
+        // Entries the omitted `(∂ω_en/∂v) × v` term contaminates, as tabulated above.
+        const OMITTED: [(usize, usize); 5] = [(3, 3), (5, 3), (3, 4), (4, 4), (5, 4)];
+        let dt = 0.01;
+        let step = 1.0; // m/s
+        for base in [frame_check_state(), frame_check_state().to_enu()] {
+            let (accel, gyro) = if base.is_enu {
+                (
+                    Vector3::new(0.42, -0.31, 9.72),
+                    Vector3::new(-0.011, 0.007, 0.023),
+                )
+            } else {
+                (
+                    Vector3::new(0.42, -0.31, -9.72),
+                    Vector3::new(0.011, -0.007, 0.023),
+                )
+            };
+            let analytic = state_transition_jacobian(&base, &accel, &gyro, dt);
+
+            let propagate = |offset: Vector3<f64>| {
+                let mut s = base;
+                s.velocity_north += offset[0];
+                s.velocity_east += offset[1];
+                s.velocity_vertical += offset[2];
+                crate::mechanize(
+                    &mut s,
+                    &crate::ImuSample::from_rates(&crate::IMUData { accel, gyro }, dt),
+                )
+                .unwrap();
+                s
+            };
+            let nominal = propagate(Vector3::zeros());
+
+            for column in 0..3 {
+                let mut offset = Vector3::zeros();
+                offset[column] = step;
+                let plus = propagate(offset);
+                let minus = propagate(-offset);
+
+                // Velocity rows.
+                let numeric = [
+                    (plus.velocity_north - minus.velocity_north) / (2.0 * step),
+                    (plus.velocity_east - minus.velocity_east) / (2.0 * step),
+                    (plus.velocity_vertical - minus.velocity_vertical) / (2.0 * step),
+                ];
+                for (row, value) in numeric.iter().enumerate() {
+                    if OMITTED.contains(&(3 + row, 3 + column)) {
+                        continue;
+                    }
+                    assert_approx_eq!(analytic[(3 + row, 3 + column)], *value, 1e-14);
+                }
+
+                // Attitude rows, as a nav-frame rotation vector: the left perturbation
+                // `C_pert = (I + [dtheta x]) C_nom`. Via the quaternion, for the reasons
+                // given in `test_error_state_jacobian_matches_nonlinear_propagation`.
+                let delta = |propagated: &StrapdownState| {
+                    UnitQuaternion::from_rotation_matrix(
+                        &(propagated.attitude * nominal.attitude.transpose()),
+                    )
+                    .scaled_axis()
+                };
+                let numeric_attitude = (delta(&plus) - delta(&minus)) / (2.0 * step);
+                for row in 0..3 {
+                    assert_approx_eq!(
+                        analytic[(6 + row, 3 + column)],
+                        numeric_attitude[row],
+                        1e-12
+                    );
+                }
+            }
+
+            // Non-degenerate: the entries actually checked are orders of magnitude above the
+            // tolerances they are checked against.
+            assert!(
+                analytic[(4, 3)].abs() > 1e-7,
+                "Coriolis off-diagonal is empty"
+            );
+            assert!(
+                analytic[(6, 4)].abs() > 1e-10,
+                "transport coupling is empty"
+            );
+        }
     }
 
     /// Compute numerical Jacobian using finite differences for state transition
