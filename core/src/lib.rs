@@ -719,7 +719,7 @@ impl StrapdownState {
     ///
     /// `altitude` is untouched: it is height above the ellipsoid, positive up, in both frames.
     fn flip_vertical(&self) -> Self {
-        let f = Matrix3::new(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, -1.0);
+        let f = vertical_flip();
         Self {
             velocity_vertical: -self.velocity_vertical,
             attitude: Rotation3::from_matrix_unchecked(f * self.attitude.matrix() * f),
@@ -999,6 +999,20 @@ impl ImuSample {
             gyro: self.delta_theta / self.dt,
         })
     }
+
+    /// Reinterpret this sample in the opposite vertical convention.
+    ///
+    /// [`StrapdownState::flip_vertical`] reflects the *body* frame's third axis alongside the
+    /// navigation frame's, so a sample resolved in one convention's body axes has to be
+    /// reflected to match. The specific-force increment reflects as an ordinary vector; the
+    /// angular increment is a pseudovector and does not -- see [`flip_vertical_rate`].
+    fn flip_vertical(&self) -> Self {
+        Self {
+            delta_v: flip_vertical(&self.delta_v),
+            delta_theta: flip_vertical_rate(&self.delta_theta),
+            dt: self.dt,
+        }
+    }
 }
 
 impl InputModel for ImuSample {
@@ -1023,6 +1037,30 @@ impl InputModel for ImuSample {
     }
 }
 
+/// The reflection relating this crate's two vertical conventions.
+///
+/// `diag(1, 1, -1)`. The navigation frame here is ordered (north, east, vertical), so NED and
+/// ENU differ by a single reflection of the third axis; see [`StrapdownState::flip_vertical`]
+/// for why the body frame is reflected alongside it.
+const fn vertical_flip() -> Matrix3<f64> {
+    Matrix3::new(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, -1.0)
+}
+/// Reflect a velocity, specific force or other ordinary vector through the vertical axis.
+fn flip_vertical(vector: &Vector3<f64>) -> Vector3<f64> {
+    Vector3::new(vector[0], vector[1], -vector[2])
+}
+/// Reflect an angular rate -- or an integrated angular increment -- through the vertical axis.
+///
+/// Angular rates are pseudovectors, so this is *not* the reflection that applies to velocities.
+/// The attitude update needs `skew(w') = F skew(w) F`, and conjugating the skew matrix by
+/// `F = diag(1, 1, -1)` negates the (0,2) and (1,2) entries while leaving (0,1) alone, which
+/// solves to `w' = -F w = (-w_x, -w_y, w_z)`. Using `F w` instead would flip the yaw increment
+/// and leave roll and pitch inverted -- the two differ by an overall sign, so the error is
+/// invisible in any test that only exercises rotation about one axis.
+fn flip_vertical_rate(rate: &Vector3<f64>) -> Vector3<f64> {
+    Vector3::new(-rate[0], -rate[1], rate[2])
+}
+
 /// Propagate a [`StrapdownState`] through one inertial sample.
 ///
 /// Local-level-frame mechanization, Groves section 5.4. This is the primitive; [`forward`]
@@ -1043,32 +1081,45 @@ pub fn mechanize(state: &mut StrapdownState, sample: &ImuSample) -> Result<(), S
             max: f64::INFINITY,
         });
     }
+    // Groves 5.4 is written for NED throughout: `earth_rate_lla` and `transport_rate` return
+    // NED vectors and 5.54's gravity term is down-positive. Convert once here rather than
+    // branching on `is_enu` inside each equation -- which is what went wrong in #321, where
+    // the gravity term consulted the frame and the Coriolis term beside it did not.
+    let caller_is_enu = state.is_enu;
+    let mut work: StrapdownState = state.to_ned();
+    let work_sample: ImuSample = if caller_is_enu {
+        sample.flip_vertical()
+    } else {
+        *sample
+    };
     // Extract the attitude matrix from the current state
-    let c_0: Rotation3<f64> = state.attitude;
+    let c_0: Rotation3<f64> = work.attitude;
     // Attitude update; Equation 5.46
-    let c_1: Matrix3<f64> = attitude_update(state, sample.delta_theta, sample.dt);
+    let c_1: Matrix3<f64> = attitude_update_ned(&work, work_sample.delta_theta, work_sample.dt);
     // Specific force transformation; Equation 5.47. Averaging the attitude across the
     // interval is the mechanization's one second-order term.
-    let delta_v_nav: Vector3<f64> = 0.5 * (c_0.matrix() + c_1) * sample.delta_v;
+    let delta_v_nav: Vector3<f64> = 0.5 * (c_0.matrix() + c_1) * work_sample.delta_v;
     // Velocity update; Equation 5.54
-    let velocity = velocity_update(state, delta_v_nav, sample.dt);
+    let velocity = velocity_update_ned(&work, delta_v_nav, work_sample.dt);
     // Position update; Equation 5.56
-    let (lat_1, lon_1, alt_1) = position_update(state, velocity, sample.dt);
+    let (lat_1, lon_1, alt_1) = position_update(&work, velocity, work_sample.dt);
     if !c_1.iter().all(|v| v.is_finite()) {
         return Err(StrapdownError::NonFinite {
             what: "propagated attitude matrix",
         });
     }
     // Save updated attitude as rotation matrix
-    state.attitude = Rotation3::from_matrix(&c_1);
+    work.attitude = Rotation3::from_matrix(&c_1);
     // Save update velocity
-    state.velocity_north = velocity[0];
-    state.velocity_east = velocity[1];
-    state.velocity_vertical = velocity[2];
+    work.velocity_north = velocity[0];
+    work.velocity_east = velocity[1];
+    work.velocity_vertical = velocity[2];
     // Save updated position
-    state.latitude = lat_1;
-    state.longitude = lon_1;
-    state.altitude = alt_1;
+    work.latitude = lat_1;
+    work.longitude = lon_1;
+    work.altitude = alt_1;
+    // Hand the result back in the convention the caller supplied.
+    *state = if caller_is_enu { work.to_enu() } else { work };
     Ok(())
 }
 
@@ -1100,8 +1151,21 @@ pub fn forward(
 ///   increment.
 ///
 /// # Returns
-/// * A Matrix3 representing the updated attitude matrix in the NED frame.
+/// * A Matrix3 representing the updated attitude matrix, in whichever vertical convention
+///   `state` carries.
 pub fn attitude_update(state: &StrapdownState, delta_theta: Vector3<f64>, dt: f64) -> Matrix3<f64> {
+    if state.is_enu {
+        // `earth_rate_lla` and `transport_rate` are NED. Do the update there and reflect the
+        // result back, rather than subtracting a down-positive rate from an up-positive
+        // attitude (#321).
+        let c_1 = attitude_update_ned(&state.to_ned(), flip_vertical_rate(&delta_theta), dt);
+        let f = vertical_flip();
+        return f * c_1 * f;
+    }
+    attitude_update_ned(state, delta_theta, dt)
+}
+/// The NED half of [`attitude_update`]; Groves equation 5.46 with no frame branch in it.
+fn attitude_update_ned(state: &StrapdownState, delta_theta: Vector3<f64>, dt: f64) -> Matrix3<f64> {
     let transport_rate: Matrix3<f64> = earth::vector_to_skew_symmetric(&earth::transport_rate(
         &state.latitude.to_degrees(),
         &state.altitude,
@@ -1133,8 +1197,27 @@ pub fn attitude_update(state: &StrapdownState, delta_theta: Vector3<f64>, dt: f6
 ///   needed alongside it.
 ///
 /// # Returns
-/// * A Vector3 representing the updated velocity vector in the NED frame.
+/// * A Vector3 representing the updated velocity vector, in whichever vertical convention
+///   `state` carries.
+///
+/// [`mechanize`] reflects the whole state once and then calls [`velocity_update_ned`]
+/// directly, so this frame-aware entry point exists only for the tests that address 5.54 on
+/// its own. `attitude_update` and `position_update` are the public members of the trio; this
+/// one has never been exported and is not exported here.
+#[cfg(test)]
 fn velocity_update(state: &StrapdownState, delta_v_nav: Vector3<f64>, dt: f64) -> Vector3<f64> {
+    if state.is_enu {
+        // Same reasoning as `attitude_update`: 5.54 is a NED equation throughout, so reflect
+        // the increment in, solve there, and reflect the answer back. Before #321 only the
+        // gravity term in the NED core consulted `is_enu`; the Coriolis term next to it did
+        // not, so every contribution touching the vertical channel had the wrong sign.
+        let velocity = velocity_update_ned(&state.to_ned(), flip_vertical(&delta_v_nav), dt);
+        return flip_vertical(&velocity);
+    }
+    velocity_update_ned(state, delta_v_nav, dt)
+}
+/// The NED half of [`velocity_update`]; Groves equation 5.54 with no frame branch in it.
+fn velocity_update_ned(state: &StrapdownState, delta_v_nav: Vector3<f64>, dt: f64) -> Vector3<f64> {
     let transport_rate: Matrix3<f64> = earth::vector_to_skew_symmetric(&earth::transport_rate(
         &state.latitude.to_degrees(),
         &state.altitude,
@@ -1146,7 +1229,6 @@ fn velocity_update(state: &StrapdownState, delta_v_nav: Vector3<f64>, dt: f64) -
     ));
     let rotation_rate: Matrix3<f64> =
         earth::vector_to_skew_symmetric(&earth::earth_rate_lla(&state.latitude.to_degrees()));
-    let r = earth::ecef_to_lla(&state.latitude.to_degrees(), &state.longitude.to_degrees());
     let velocity: Vector3<f64> = Vector3::new(
         state.velocity_north,
         state.velocity_east,
@@ -1160,14 +1242,17 @@ fn velocity_update(state: &StrapdownState, delta_v_nav: Vector3<f64>, dt: f64) -
     // This is the tricky bit. Remember: FORCES! A body at rest on the surface of the Earth experiences
     // a specific force equal and opposite to gravity. Thus, in free-fall (no relative acceleration),
     // the specific force measured by the IMU is zero, and the velocity should increase downward due to gravity.
-    // The primary concern is the sign convention for gravity in the coordinate frame. In NED, gravity is positive
-    // in the down direction, while in ENU, gravity is negative in the up direction. Thus we need to adjust the
-    //  sign of gravity based on the coordinate frame being used.
-    let gravity = if state.is_enu { -gravity } else { gravity };
+    // Gravity is down-positive here because this is the NED core; the ENU sign is the caller's
+    // reflection, not a branch inside the equation (#321).
     // The sensed increment is added directly; only the gravity and Coriolis terms are scaled
     // by dt. This is the one place the increment form is not bit-identical to the old rate
     // form, which grouped the sensed term inside the same `* dt`.
-    velocity + delta_v_nav + (gravity - r * (transport_rate + 2.0 * rotation_rate) * velocity) * dt
+    //
+    // The Coriolis and transport terms carry no frame transform: `transport_rate`,
+    // `earth_rate_lla` and `velocity` are all already resolved in the local-level frame, so
+    // 5.54 forms the cross product directly. Until #319 this line multiplied them by
+    // `earth::ecef_to_lla`, which belongs to neither the equation nor the frame.
+    velocity + delta_v_nav + (gravity - (transport_rate + 2.0 * rotation_rate) * velocity) * dt
 }
 /// Position update in NED
 ///
@@ -1384,6 +1469,24 @@ pub(crate) fn calculate_constant_velocity_acceleration(
     state: &StrapdownState,
     target_velocity: Vector3<f64>,
 ) -> Vector3<f64> {
+    if state.is_enu {
+        // This has to reflect exactly where `velocity_update` reflects, or the commanded
+        // force stops being that function's inverse and the "constant velocity" scenario
+        // quietly accelerates (#321).
+        let force = calculate_constant_velocity_acceleration_ned(
+            &state.to_ned(),
+            flip_vertical(&target_velocity),
+        );
+        return flip_vertical(&force);
+    }
+    calculate_constant_velocity_acceleration_ned(state, target_velocity)
+}
+/// The NED half of [`calculate_constant_velocity_acceleration`].
+#[cfg(test)]
+fn calculate_constant_velocity_acceleration_ned(
+    state: &StrapdownState,
+    target_velocity: Vector3<f64>,
+) -> Vector3<f64> {
     // Get transport rate (rotation of local-level frame due to motion over curved Earth)
     let transport_rate = earth::vector_to_skew_symmetric(&earth::transport_rate(
         &state.latitude.to_degrees(),
@@ -1395,21 +1498,20 @@ pub(crate) fn calculate_constant_velocity_acceleration(
     let rotation_rate =
         earth::vector_to_skew_symmetric(&earth::earth_rate_lla(&state.latitude.to_degrees()));
 
-    // Get geocentric radius factor
-    let r = earth::ecef_to_lla(&state.latitude.to_degrees(), &state.longitude.to_degrees());
-
-    // Get gravity in local-level frame
-    let mut gravity = Vector3::new(
+    // Get gravity in local-level frame; down-positive, since this is the NED half.
+    let gravity = Vector3::new(
         0.0,
         0.0,
         earth::gravity(&state.latitude.to_degrees(), &state.altitude),
     );
-    gravity = if state.is_enu { -gravity } else { gravity };
 
-    // For constant velocity: specific_force + gravity - r*(transport_rate + 2*rotation_rate)*velocity = 0
-    // Therefore: specific_force = r*(transport_rate + 2*rotation_rate)*velocity - gravity
-
-    r * (transport_rate + 2.0 * rotation_rate) * target_velocity - gravity
+    // For constant velocity: specific_force + gravity - (transport_rate + 2*rotation_rate)*velocity = 0
+    // Therefore: specific_force = (transport_rate + 2*rotation_rate)*velocity - gravity
+    //
+    // This has to stay the exact inverse of `velocity_update`, or the generated scenario
+    // will not hold the commanded velocity. Both dropped the spurious `ecef_to_lla`
+    // rotation in #319.
+    (transport_rate + 2.0 * rotation_rate) * target_velocity - gravity
 }
 
 /// Helper function to generate IMU data and GPS measurements for a given scenario
@@ -1498,6 +1600,15 @@ pub fn generate_scenario_data(
         let gyro_total = if geosynchronous {
             // earth_rate_lla expects latitude in degrees
             let earth_rate = earth::earth_rate_lla(&current_state.latitude.to_degrees());
+            // `earth_rate_lla` is NED. `attitude` resolves the state's own convention, and
+            // the gyro sample that comes out of this loop is read back in that convention
+            // too, so the rate has to be reflected first when the state is ENU -- as a
+            // pseudovector, not as an ordinary one (#321).
+            let earth_rate = if current_state.is_enu {
+                flip_vertical_rate(&earth_rate)
+            } else {
+                earth_rate
+            };
             // Transform Earth rate from nav frame to body frame using current attitude
             let earth_rate_body = current_state.attitude.inverse() * earth_rate;
             gyro_body + earth_rate_body
@@ -1764,6 +1875,49 @@ mod tests {
         assert!((v_new[0] - 2.0).abs() < 1e-6);
         assert!((v_new[1]).abs() < 1e-6);
         assert!((v_new[2]).abs() < 1e-6);
+    }
+    #[test]
+    fn velocity_update_coriolis_term_is_a_bare_cross_product() {
+        // Groves 5.54 subtracts `(Omega_en^n + 2 Omega_ie^n) v` with no frame transform on
+        // it. Until #319 this carried a spurious `earth::ecef_to_lla` factor, which the
+        // tests above could not see: they sit at 0 N, 0 E, where that matrix is a
+        // permutation whose effect is under their 1e-3 tolerance. Build the expectation
+        // here with an explicit cross product -- no skew matrices, no rotations -- at a
+        // latitude and longitude where a stray transform cannot hide.
+        let latitude: f64 = 45.0;
+        let longitude: f64 = 10.0;
+        let altitude: f64 = 1000.0;
+        let state = StrapdownState {
+            latitude: latitude.to_radians(),
+            longitude: longitude.to_radians(),
+            altitude,
+            velocity_north: 100.0,
+            velocity_east: 50.0,
+            velocity_vertical: -4.0,
+            attitude: Rotation3::identity(),
+            is_enu: false,
+        };
+        let velocity: Vector3<f64> = Vector3::new(100.0, 50.0, -4.0);
+        let omega_en: Vector3<f64> = earth::transport_rate(&latitude, &altitude, &velocity);
+        let omega_ie: Vector3<f64> = earth::earth_rate_lla(&latitude);
+        let coriolis: Vector3<f64> = (omega_en + 2.0 * omega_ie).cross(&velocity);
+        let gravity: Vector3<f64> = Vector3::new(0.0, 0.0, earth::gravity(&latitude, &altitude));
+
+        let dt: f64 = 10.0;
+        let delta_v_nav: Vector3<f64> = Vector3::new(0.3, -0.2, 0.1);
+        let expected: Vector3<f64> = velocity + delta_v_nav + (gravity - coriolis) * dt;
+        let actual: Vector3<f64> = velocity_update(&state, delta_v_nav, dt);
+
+        for axis in 0..3 {
+            assert_approx_eq!(actual[axis], expected[axis], 1e-12);
+        }
+        // The comparison is only meaningful if the term it pins is larger than the
+        // tolerance by a wide margin. At these speeds it is ~0.16 m/s over the interval.
+        assert!(
+            (coriolis * dt).norm() > 0.1,
+            "Coriolis term too small for this test to be sensitive: {} m/s",
+            (coriolis * dt).norm()
+        );
     }
     #[test]
     fn test_velocity_update_initial_velocity() {
@@ -2085,6 +2239,13 @@ mod tests {
             v_enu[2] != v_ned[2],
             "ENU and NED should handle gravity differently"
         );
+        // And specifically: `+g` along the vertical axis is the at-rest specific force in the
+        // ENU convention, so the ENU state stays put, while the NED state reads it as a
+        // downward push on top of gravity and accelerates at 2 g. Asserting the values rather
+        // than just their inequality -- `!=` passed before #321 too, on wrong numbers.
+        let g = earth::gravity(&0.0, &0.0);
+        assert_approx_eq!(v_enu[2], 0.0, 1e-9);
+        assert_approx_eq!(v_ned[2], 2.0 * g, 1e-9);
     }
 
     /// Test synthetic trajectory generation for straight, level, constant velocity flight in ENU frame
@@ -2535,6 +2696,120 @@ mod tests {
     }
 
     /// `to_enu`/`to_ned` flip the convention, are no-ops in their own frame, and round-trip.
+    #[test]
+    fn flipping_an_angular_rate_conjugates_its_skew_matrix() {
+        // The defining property of `flip_vertical_rate`, and the reason it is not
+        // `flip_vertical`: the attitude update needs `skew(w') = F skew(w) F`.
+        let rate: Vector3<f64> = Vector3::new(0.3, -0.2, 0.5);
+        let f = vertical_flip();
+        let expected: Matrix3<f64> = f * earth::vector_to_skew_symmetric(&rate) * f;
+        let actual: Matrix3<f64> = earth::vector_to_skew_symmetric(&flip_vertical_rate(&rate));
+        assert_eq!(expected, actual);
+        // The ordinary-vector reflection does not satisfy it -- the two differ by a sign.
+        let wrong: Matrix3<f64> = earth::vector_to_skew_symmetric(&flip_vertical(&rate));
+        assert_eq!(wrong, -expected);
+        // Both reflections are involutions.
+        assert_eq!(flip_vertical_rate(&flip_vertical_rate(&rate)), rate);
+        assert_eq!(flip_vertical(&flip_vertical(&rate)), rate);
+    }
+    #[test]
+    fn flipping_an_imu_sample_matches_the_state_conversion() {
+        // `ImuSample::flip_vertical` has to undo exactly what `StrapdownState::flip_vertical`
+        // does to the body frame. Both halves of the mechanization that consume the sample
+        // are checked here: the specific-force increment resolved into the navigation frame
+        // must reflect as an ordinary vector, and the attitude increment must conjugate.
+        let attitude = Rotation3::from_euler_angles(0.18, -0.27, 2.4);
+        let ned = StrapdownState {
+            attitude,
+            ..Default::default()
+        };
+        let enu = ned.to_enu();
+        let sample_ned = ImuSample::new(
+            Vector3::new(0.42, -0.31, -9.72) * 0.01,
+            Vector3::new(0.011, -0.007, 0.023) * 0.01,
+            0.01,
+        )
+        .unwrap();
+        let sample_enu = sample_ned.flip_vertical();
+        let f = vertical_flip();
+
+        // Equation 5.47's specific-force transformation.
+        let delta_v_nav_ned: Vector3<f64> = ned.attitude * sample_ned.delta_v;
+        let delta_v_nav_enu: Vector3<f64> = enu.attitude * sample_enu.delta_v;
+        let delta = delta_v_nav_enu - flip_vertical(&delta_v_nav_ned);
+        assert_approx_eq!(delta.abs().max(), 0.0, 1e-15);
+
+        // Equation 5.46's sensed rotation increment.
+        let increment_ned: Matrix3<f64> = ned.attitude.matrix()
+            * (Matrix3::identity() + earth::vector_to_skew_symmetric(&sample_ned.delta_theta));
+        let increment_enu: Matrix3<f64> = enu.attitude.matrix()
+            * (Matrix3::identity() + earth::vector_to_skew_symmetric(&sample_enu.delta_theta));
+        let delta = increment_enu - f * increment_ned * f;
+        assert_approx_eq!(delta.abs().max(), 0.0, 1e-15);
+
+        // Round trip.
+        assert_eq!(sample_enu.flip_vertical(), sample_ned);
+    }
+    #[test]
+    fn mechanize_agrees_across_vertical_conventions() {
+        // The test #321 asked for: the same physical trajectory, mechanised in both
+        // conventions, has to come out the same after conversion. Before #321 it did not --
+        // only the gravity term in `velocity_update` consulted `is_enu`, so every Coriolis
+        // and transport contribution touching the vertical channel had the wrong sign, and
+        // `attitude_update` subtracted NED rate vectors from an ENU attitude outright.
+        //
+        // Everything here is deliberately non-degenerate: all three gyro axes turning, a
+        // non-zero vertical velocity, a tilted attitude, and a latitude where the Earth rate
+        // has both a north and a down component.
+        let mut ned = StrapdownState {
+            latitude: 51.5_f64.to_radians(),
+            longitude: (-0.12_f64).to_radians(),
+            altitude: 2400.0,
+            velocity_north: 120.0,
+            velocity_east: -45.0,
+            velocity_vertical: 6.0, // descending, NED
+            attitude: Rotation3::from_euler_angles(0.18, -0.27, 2.4),
+            is_enu: false,
+        };
+        let mut enu = ned.to_enu();
+
+        let sample_ned = ImuSample::new(
+            Vector3::new(0.42, -0.31, -9.72) * 0.01,
+            Vector3::new(0.011, -0.007, 0.023) * 0.01,
+            0.01,
+        )
+        .unwrap();
+        // Written out rather than taken from `ImuSample::flip_vertical`: routing both sides
+        // through the same helper that `mechanize` uses to undo it would make this test
+        // pass for any involution, the pseudovector reflection included or not.
+        let sample_enu = ImuSample::new(
+            Vector3::new(0.42, -0.31, 9.72) * 0.01,
+            Vector3::new(-0.011, 0.007, 0.023) * 0.01,
+            0.01,
+        )
+        .unwrap();
+
+        for _ in 0..500 {
+            mechanize(&mut ned, &sample_ned).unwrap();
+            mechanize(&mut enu, &sample_enu).unwrap();
+        }
+        assert!(enu.is_enu);
+        assert!(!ned.is_enu);
+
+        let converted = enu.to_ned();
+        assert_approx_eq!(converted.latitude, ned.latitude, 1e-15);
+        assert_approx_eq!(converted.longitude, ned.longitude, 1e-15);
+        assert_approx_eq!(converted.altitude, ned.altitude, 1e-9);
+        assert_approx_eq!(converted.velocity_north, ned.velocity_north, 1e-9);
+        assert_approx_eq!(converted.velocity_east, ned.velocity_east, 1e-9);
+        assert_approx_eq!(converted.velocity_vertical, ned.velocity_vertical, 1e-9);
+        let attitude_delta = converted.attitude.matrix() - ned.attitude.matrix();
+        assert_approx_eq!(attitude_delta.abs().max(), 0.0, 1e-12);
+
+        // And the run has to have gone somewhere, or the agreement above is vacuous.
+        assert!((ned.altitude - 2400.0).abs() > 10.0);
+        assert!((ned.velocity_north - 120.0).abs() > 1e-3);
+    }
     #[test]
     fn frame_conversions_round_trip() {
         let ned = StrapdownState {

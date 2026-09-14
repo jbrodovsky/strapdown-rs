@@ -4216,6 +4216,27 @@ fn compute_perfect_imu(
     state: &crate::StrapdownState,
     angular_velocity_body_rps: Vector3<f64>,
 ) -> crate::IMUData {
+    if state.is_enu {
+        // Same defect and same remedy as `velocity_update` (#321): the Earth-rate and
+        // Coriolis terms below are NED, and only gravity used to consult the frame. Reflect
+        // the commanded body rate in, solve in NED, reflect the sample back -- `mechanize`
+        // reads it in the state's own convention.
+        let ned = compute_perfect_imu_ned(
+            &state.to_ned(),
+            crate::flip_vertical_rate(&angular_velocity_body_rps),
+        );
+        return crate::IMUData {
+            accel: crate::flip_vertical(&ned.accel),
+            gyro: crate::flip_vertical_rate(&ned.gyro),
+        };
+    }
+    compute_perfect_imu_ned(state, angular_velocity_body_rps)
+}
+/// The NED half of [`compute_perfect_imu`], with no frame branch in it.
+fn compute_perfect_imu_ned(
+    state: &crate::StrapdownState,
+    angular_velocity_body_rps: Vector3<f64>,
+) -> crate::IMUData {
     use crate::earth;
 
     let lat_deg = state.latitude.to_degrees();
@@ -4241,12 +4262,9 @@ fn compute_perfect_imu(
     let omega_ie_skew = earth::vector_to_skew_symmetric(&omega_ie_nav);
     let coriolis = (omega_en_skew + 2.0 * omega_ie_skew) * velocity;
 
-    let g = earth::gravity(&lat_deg, &state.altitude);
-    let g_nav = if state.is_enu {
-        Vector3::new(0.0, 0.0, -g)
-    } else {
-        Vector3::new(0.0, 0.0, g)
-    };
+    // Down-positive: this is the NED half, and the ENU sign is the caller's reflection
+    // rather than a branch beside a Coriolis term that has none (#321).
+    let g_nav = Vector3::new(0.0, 0.0, earth::gravity(&lat_deg, &state.altitude));
 
     let f_nav = coriolis - g_nav;
     let accel = c_nb.transpose() * f_nav;
@@ -4682,6 +4700,69 @@ mod tests {
             "vertical specific force should be ~+g (ENU up), got {}",
             f_nav[2]
         );
+    }
+
+    /// The inverse mechanization has to hold the commanded velocity in either convention.
+    ///
+    /// `compute_perfect_imu` solves `v_dot = 0`, so feeding its output straight back into
+    /// `mechanize` must leave the velocity where it started. Before #321 only its gravity
+    /// term consulted `is_enu` while the Coriolis term and the Earth-rate gyro beside it did
+    /// not, so the ENU branch commanded a force that did not cancel anything.
+    #[test]
+    fn perfect_imu_holds_velocity_in_both_conventions() {
+        use crate::{ImuSample, StrapdownState, mechanize};
+        use nalgebra::Rotation3;
+
+        let initial = StrapdownState {
+            latitude: 51.5_f64.to_radians(),
+            longitude: (-0.12_f64).to_radians(),
+            altitude: 2400.0,
+            velocity_north: 120.0,
+            velocity_east: -45.0,
+            velocity_vertical: 0.0,
+            attitude: Rotation3::from_euler_angles(0.0, 0.0, 2.4),
+            is_enu: false,
+        };
+        let dt = 0.01;
+        let steps = 2000;
+
+        let run = |mut state: StrapdownState| {
+            for _ in 0..steps {
+                let imu = super::compute_perfect_imu(&state, Vector3::zeros());
+                mechanize(&mut state, &ImuSample::from_rates(&imu, dt)).unwrap();
+            }
+            state
+        };
+
+        let ned = run(initial);
+        let enu = run(initial.to_enu());
+        assert!(enu.is_enu);
+
+        // Velocity held, in both.
+        for held in [ned, enu.to_ned()] {
+            assert!(
+                (held.velocity_north - 120.0).abs() < 1e-3,
+                "north velocity drifted to {}",
+                held.velocity_north
+            );
+            assert!(
+                (held.velocity_east + 45.0).abs() < 1e-3,
+                "east velocity drifted to {}",
+                held.velocity_east
+            );
+            assert!(
+                held.velocity_vertical.abs() < 1e-3,
+                "vertical velocity drifted to {}",
+                held.velocity_vertical
+            );
+        }
+        // And the two conventions agree on where the vehicle ended up.
+        let converted = enu.to_ned();
+        assert!((converted.latitude - ned.latitude).abs() < 1e-12);
+        assert!((converted.longitude - ned.longitude).abs() < 1e-12);
+        assert!((converted.altitude - ned.altitude).abs() < 1e-6);
+        // Non-vacuous: 20 s at 128 m/s has to have moved the vehicle.
+        assert!((ned.latitude - initial.latitude).abs() > 1e-7);
     }
 
     #[test]

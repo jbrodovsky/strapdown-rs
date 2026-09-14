@@ -260,12 +260,15 @@ pub fn ecef_to_eci(time: f64) -> Matrix3<f64> {
 /// position. The local-level frame is defined by the tangent to the ellipsoidal surface at the sensor's
 /// position. The local level frame is defined by the WGS84 latitude and longitude.
 ///
+/// This is `C_e^n`, Groves equation 2.150; its rows are the North, East and Down axes
+/// resolved in ECEF, so the result is NED regardless of any caller's `is_enu` flag.
+///
 /// # Arguments
 /// - `latitude` - The WGS84 latitude in degrees
 /// - `longitude` - The WGS84 longitude in degrees
 ///
 /// # Returns
-/// A 3x3 rotation matrix that converts from the ECEF frame to the local-level frame
+/// A 3x3 rotation matrix that converts from the ECEF frame to the local-level (NED) frame
 ///
 /// # Example
 /// ```rust
@@ -280,8 +283,8 @@ pub fn ecef_to_lla(latitude: &f64, longitude: &f64) -> Matrix3<f64> {
     let lon: f64 = (*longitude).to_radians();
 
     let mut rot: Matrix3<f64> = Matrix3::zeros();
-    rot[(0, 0)] = -lon.sin() * lat.cos();
-    rot[(0, 1)] = -lon.sin() * lat.sin();
+    rot[(0, 0)] = -lat.sin() * lon.cos();
+    rot[(0, 1)] = -lat.sin() * lon.sin();
     rot[(0, 2)] = lat.cos();
     rot[(1, 0)] = -lon.sin();
     rot[(1, 1)] = lon.cos();
@@ -579,13 +582,27 @@ pub fn earth_rate_lla(latitude: &f64) -> Vector3<f64> {
 /// with respect to the ECEF frame since the origin point of the local-level frame is
 /// always tangential to the WGS84 ellipsoid and thus constantly moving in the ECEF frame.
 ///
+/// This is Groves equation 5.44, resolved in NED:
+///
+/// ```text
+/// omega_en_n = [  v_east / (r_e + h),
+///                -v_north / (r_n + h),
+///                -v_east * tan(latitude) / (r_e + h) ]
+/// ```
+///
+/// Each axis is driven by the velocity *perpendicular* to it: travelling east rotates the
+/// frame about the north axis, carrying the *transverse* radius `r_e`, and travelling
+/// north rotates it about the east axis, carrying the *meridian* radius `r_n`. Only the
+/// horizontal velocity contributes -- the vertical component of `velocities` is unused --
+/// so the result is the same whether the caller's vertical channel is NED or ENU.
+///
 /// # Arguments
 /// - `latitude` - The WGS84 latitude in degrees
 /// - `altitude` - The WGS84 altitude in meters
 /// - `velocities` - The velocity vector in the local-level frame (northward, eastward, downward)
 ///
 /// # Returns
-/// The transport rate vector in m/s^2 in the local-level frame
+/// The transport rate vector in rad/s in the local-level (NED) frame
 ///
 /// # Example
 /// ```rust
@@ -599,10 +616,12 @@ pub fn earth_rate_lla(latitude: &f64) -> Vector3<f64> {
 pub fn transport_rate(latitude: &f64, altitude: &f64, velocities: &Vector3<f64>) -> Vector3<f64> {
     let (r_n, r_e, _) = principal_radii(latitude, altitude);
     let lat_rad = latitude.to_radians();
+    let north_velocity = velocities[0];
+    let east_velocity = velocities[1];
     let omega_en_n: Vector3<f64> = Vector3::new(
-        -velocities[1] / (r_n + *altitude),
-        velocities[0] / (r_e + *altitude),
-        velocities[0] * lat_rad.tan() / (r_n + *altitude),
+        east_velocity / (r_e + *altitude),
+        -north_velocity / (r_n + *altitude),
+        -east_velocity * lat_rad.tan() / (r_e + *altitude),
     );
     omega_en_n
 }
@@ -858,6 +877,30 @@ mod tests {
         assert_approx_eq!(grav[2], GP, 1e-2);
     }
     #[test]
+    fn gravitation_centrifugal_term_deflects_north() {
+        // `gravitation` is the only caller of `ecef_to_lla` left after #319, and the two
+        // cases above sit at the equator and the pole, where row 0 of `C_e^n` cannot be
+        // told apart from the pre-#319 version. Away from those, the centrifugal vector
+        // -w^2 (x, y, 0) picks up a North component through row 0:
+        //
+        //     north = w^2 (r_e + h) sin(L) cos(L),  east = 0  (exactly, at any longitude)
+        //
+        // This is the plumb-line deflection, ~0.017 m/s^2 at 45 degrees. The pre-#319
+        // matrix put a longitude-dependent number here instead.
+        for longitude in [0.0_f64, 45.0, -122.0, 179.0] {
+            let latitude: f64 = 45.0;
+            let altitude: f64 = 1000.0;
+            let (_, r_e, _) = principal_radii(&latitude, &altitude);
+            let grav: Vector3<f64> = super::gravitation(&latitude, &longitude, &altitude);
+            let expected_north: f64 = RATE.powi(2)
+                * (r_e + altitude)
+                * latitude.to_radians().sin()
+                * latitude.to_radians().cos();
+            assert_approx_eq!(grav[0], expected_north, 1e-9);
+            assert_approx_eq!(grav[1], 0.0, 1e-12);
+        }
+    }
+    #[test]
     fn magnetic_radial_field() {
         // Using magnetic co-latitude [0, 180]
         let lat: f64 = 0.0;
@@ -894,34 +937,57 @@ mod tests {
         assert_approx_eq!(rot_t[(2, 2)], 1.0, 1e-7);
     }
     #[test]
-    fn ecef_to_lla() {
-        let latitude: f64 = 45.0;
-        let longitude: f64 = 90.0;
+    fn ecef_to_lla_is_a_rotation() {
+        // The pre-#319 implementation restated its own expression here and so never
+        // noticed that the matrix was not orthonormal: with the latitude and longitude
+        // trig swapped in row 0, `C C^T` was visibly not the identity and `det C` was
+        // 0.60 at 45 N, 10 E. Assert the defining property instead.
+        for (latitude, longitude) in [
+            (45.0_f64, 10.0_f64),
+            (0.0, 0.0),
+            (-33.9, 151.2),
+            (89.9, -179.9),
+            (71.0, -156.0),
+        ] {
+            let rot: Matrix3<f64> = super::ecef_to_lla(&latitude, &longitude);
+            let identity: Matrix3<f64> = rot * rot.transpose();
+            for row in 0..3 {
+                for col in 0..3 {
+                    let expected = if row == col { 1.0 } else { 0.0 };
+                    assert_approx_eq!(identity[(row, col)], expected, 1e-12);
+                }
+            }
+            assert_approx_eq!(rot.determinant(), 1.0, 1e-12);
+        }
+    }
+    #[test]
+    fn ecef_to_lla_maps_the_axes_where_they_belong() {
+        // On the equator at the prime meridian the ECEF axes line up with NED exactly:
+        // x_ecef points up (so -x is Down), y_ecef points East, z_ecef points North.
+        let rot: Matrix3<f64> = super::ecef_to_lla(&0.0, &0.0);
+        let north: Vector3<f64> = rot * Vector3::new(0.0, 0.0, 1.0);
+        let east: Vector3<f64> = rot * Vector3::new(0.0, 1.0, 0.0);
+        let down: Vector3<f64> = rot * Vector3::new(-1.0, 0.0, 0.0);
+        assert_approx_eq!(north[0], 1.0, 1e-12);
+        assert_approx_eq!(east[1], 1.0, 1e-12);
+        assert_approx_eq!(down[2], 1.0, 1e-12);
+        // At the north pole the ECEF z axis is straight up, i.e. Down is -z.
+        let polar: Matrix3<f64> = super::ecef_to_lla(&90.0, &0.0);
+        let up: Vector3<f64> = polar * Vector3::new(0.0, 0.0, 1.0);
+        assert_approx_eq!(up[2], -1.0, 1e-12);
+        // Row 2 of `C_e^n` is the Down axis in ECEF: the inward radial direction.
+        let latitude: f64 = 37.0;
+        let longitude: f64 = -122.0;
         let rot: Matrix3<f64> = super::ecef_to_lla(&latitude, &longitude);
-        assert_approx_eq!(
-            rot[(0, 0)],
-            -longitude.to_radians().sin() * latitude.to_radians().cos(),
-            1e-7
+        let radial_outward: Vector3<f64> = Vector3::new(
+            latitude.to_radians().cos() * longitude.to_radians().cos(),
+            latitude.to_radians().cos() * longitude.to_radians().sin(),
+            latitude.to_radians().sin(),
         );
-        assert_approx_eq!(
-            rot[(0, 1)],
-            -longitude.to_radians().sin() * latitude.to_radians().sin(),
-            1e-7
-        );
-        assert_approx_eq!(rot[(0, 2)], latitude.to_radians().cos(), 1e-7);
-        assert_approx_eq!(rot[(1, 0)], -longitude.to_radians().sin(), 1e-7);
-        assert_approx_eq!(rot[(1, 1)], longitude.to_radians().cos(), 1e-7);
-        assert_approx_eq!(
-            rot[(2, 0)],
-            -latitude.to_radians().cos() * longitude.to_radians().cos(),
-            1e-7
-        );
-        assert_approx_eq!(
-            rot[(2, 1)],
-            -latitude.to_radians().cos() * longitude.to_radians().sin(),
-            1e-7
-        );
-        assert_approx_eq!(rot[(2, 2)], -latitude.to_radians().sin(), 1e-7);
+        let down: Vector3<f64> = rot * radial_outward;
+        assert_approx_eq!(down[0], 0.0, 1e-12);
+        assert_approx_eq!(down[1], 0.0, 1e-12);
+        assert_approx_eq!(down[2], -1.0, 1e-12);
     }
     #[test]
     fn lla_to_ecef() {
@@ -1257,5 +1323,117 @@ mod tests {
             correction_north.abs() > 0.0,
             "North velocity should produce correction"
         );
+    }
+    /// Build the NED-to-ECEF direction cosine matrix `C_n^e` from first principles.
+    ///
+    /// Deliberately not `super::lla_to_ecef`: the transport-rate check below is only
+    /// meaningful if its reference is built independently of the module under test.
+    /// This is the transpose of `C_e^n`, Groves equation 2.150.
+    fn ned_to_ecef_dcm(latitude: f64, longitude: f64) -> Matrix3<f64> {
+        let lat: f64 = latitude.to_radians();
+        let lon: f64 = longitude.to_radians();
+        let c_e_n: Matrix3<f64> = Matrix3::new(
+            -lat.sin() * lon.cos(),
+            -lat.sin() * lon.sin(),
+            lat.cos(),
+            -lon.sin(),
+            lon.cos(),
+            0.0,
+            -lat.cos() * lon.cos(),
+            -lat.cos() * lon.sin(),
+            -lat.sin(),
+        );
+        c_e_n.transpose()
+    }
+    /// Advance a geodetic position by `dt` seconds at constant NED velocity.
+    ///
+    /// Groves equation 5.56 in continuous form; `dt` may be negative.
+    fn advance_position(
+        latitude: f64,
+        longitude: f64,
+        altitude: f64,
+        velocities: &Vector3<f64>,
+        dt: f64,
+    ) -> (f64, f64, f64) {
+        let (r_n, r_e, _) = principal_radii(&latitude, &altitude);
+        let latitude_rate: f64 = velocities[0] / (r_n + altitude);
+        let longitude_rate: f64 = velocities[1] / ((r_e + altitude) * latitude.to_radians().cos());
+        (
+            latitude + (latitude_rate * dt).to_degrees(),
+            longitude + (longitude_rate * dt).to_degrees(),
+            altitude - velocities[2] * dt,
+        )
+    }
+    /// Numerically differentiate `C_n^e` along the trajectory and recover the transport
+    /// rate from `[omega_en_n x] = (C_n^e)^T d/dt C_n^e`.
+    fn numeric_transport_rate(
+        latitude: f64,
+        longitude: f64,
+        altitude: f64,
+        velocities: &Vector3<f64>,
+    ) -> Vector3<f64> {
+        let dt: f64 = 1.0;
+        let (lat_back, lon_back, _) =
+            advance_position(latitude, longitude, altitude, velocities, -0.5 * dt);
+        let (lat_fwd, lon_fwd, _) =
+            advance_position(latitude, longitude, altitude, velocities, 0.5 * dt);
+        let c_dot: Matrix3<f64> =
+            (ned_to_ecef_dcm(lat_fwd, lon_fwd) - ned_to_ecef_dcm(lat_back, lon_back)) / dt;
+        let omega_skew: Matrix3<f64> = ned_to_ecef_dcm(latitude, longitude).transpose() * c_dot;
+        // Symmetrise away the second-order residue the central difference leaves behind.
+        super::skew_symmetric_to_vector(&(0.5 * (omega_skew - omega_skew.transpose())))
+    }
+    #[test]
+    fn transport_rate_matches_numerically_differentiated_dcm() {
+        // Latitude, longitude, altitude, NED velocity. Both hemispheres, both signs of
+        // each horizontal component, and a non-zero vertical channel.
+        let cases: [(f64, f64, f64, Vector3<f64>); 5] = [
+            (45.0, 10.0, 1000.0, Vector3::new(10.0, 5.0, 0.0)),
+            (45.0, 10.0, 1000.0, Vector3::new(-120.0, 250.0, -8.0)),
+            (-33.9, 151.2, 50.0, Vector3::new(60.0, -40.0, 3.0)),
+            (0.0, 0.0, 0.0, Vector3::new(200.0, 200.0, 0.0)),
+            (71.0, -156.0, 12000.0, Vector3::new(0.0, 230.0, 0.0)),
+        ];
+        for (latitude, longitude, altitude, velocities) in cases {
+            let numeric: Vector3<f64> =
+                numeric_transport_rate(latitude, longitude, altitude, &velocities);
+            let analytic: Vector3<f64> = transport_rate(&latitude, &altitude, &velocities);
+            for axis in 0..3 {
+                assert_approx_eq!(analytic[axis], numeric[axis], 1e-13);
+            }
+        }
+    }
+    #[test]
+    fn transport_rate_ignores_the_vertical_channel() {
+        // Only the horizontal velocity appears in Groves 5.44, so a caller carrying an ENU
+        // vertical channel gets the same answer as one carrying NED.
+        let latitude: f64 = 45.0;
+        let altitude: f64 = 1000.0;
+        let down: Vector3<f64> = Vector3::new(10.0, 5.0, 3.0);
+        let up: Vector3<f64> = Vector3::new(10.0, 5.0, -3.0);
+        let omega_down: Vector3<f64> = transport_rate(&latitude, &altitude, &down);
+        let omega_up: Vector3<f64> = transport_rate(&latitude, &altitude, &up);
+        assert_eq!(omega_down, omega_up);
+    }
+    #[test]
+    fn transport_rate_signs_and_radii() {
+        // Spot-check each term against Groves 5.44 independently of the numeric check.
+        let latitude: f64 = 45.0;
+        let altitude: f64 = 1000.0;
+        let (r_n, r_e, _) = principal_radii(&latitude, &altitude);
+        let velocities: Vector3<f64> = Vector3::new(10.0, 5.0, 0.0);
+        let omega: Vector3<f64> = transport_rate(&latitude, &altitude, &velocities);
+        assert_approx_eq!(omega[0], 5.0 / (r_e + altitude), 1e-18);
+        assert_approx_eq!(omega[1], -10.0 / (r_n + altitude), 1e-18);
+        assert_approx_eq!(
+            omega[2],
+            -5.0 * latitude.to_radians().tan() / (r_e + altitude),
+            1e-18
+        );
+        // On the equator the vertical component vanishes and stays odd in latitude.
+        let equator: Vector3<f64> = transport_rate(&0.0, &altitude, &velocities);
+        assert_approx_eq!(equator[2], 0.0, 1e-18);
+        let south: Vector3<f64> = transport_rate(&-latitude, &altitude, &velocities);
+        assert_approx_eq!(south[2], -omega[2], 1e-18);
     }
 }
