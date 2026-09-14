@@ -487,7 +487,7 @@ const fn execution_limits_from_args(args: &SimArgs) -> ExecutionLimits {
 fn process_file(
     input_file: &Path,
     output: &Path,
-    is_multiple: bool,
+    all_inputs: &[PathBuf],
     config: &SimulationConfig,
 ) -> Result<(), Box<dyn Error>> {
     info!("Processing file: {}", input_file.display());
@@ -507,7 +507,7 @@ fn process_file(
             let results = dead_reckoning(&records)?;
             info!("Generated {} navigation results", results.len());
 
-            let output_file = resolve_output_path(output, input_file, is_multiple)?;
+            let output_file = resolve_output_path(output, input_file, all_inputs)?;
             NavigationResult::to_csv(&results, &output_file)?;
             info!("Results written to {}", output_file.display());
             Ok(())
@@ -548,7 +548,7 @@ fn process_file(
                 }
             };
 
-            let output_file = resolve_output_path(output, input_file, is_multiple)?;
+            let output_file = resolve_output_path(output, input_file, all_inputs)?;
             match results {
                 Ok(ref nav_results) => {
                     NavigationResult::to_csv(nav_results, &output_file)?;
@@ -726,7 +726,7 @@ fn process_file(
             // Geophysical measurements ride the same event stream as every other
             // measurement type, so there is no separate geo path here.
             let results = run_rbpf_event_loop(&mut rbpf, event_stream, &config.execution_limits)?;
-            let output_file = resolve_output_path(output, input_file, is_multiple)?;
+            let output_file = resolve_output_path(output, input_file, all_inputs)?;
             NavigationResult::to_csv(&results, &output_file)?;
             info!("Results written to {}", output_file.display());
 
@@ -845,7 +845,7 @@ fn run_from_config(
         let errors = Mutex::new(Vec::new());
 
         csv_files.par_iter().for_each(|input_file| {
-            match process_file(input_file, output, is_multiple, &config) {
+            match process_file(input_file, output, &csv_files, &config) {
                 Ok(()) => {}
                 Err(e) => {
                     error!("Error processing {}: {}", input_file.display(), e);
@@ -875,7 +875,7 @@ fn run_from_config(
         // Sequential processing
         let mut failures = 0usize;
         for input_file in &csv_files {
-            if let Err(e) = process_file(input_file, output, is_multiple, &config) {
+            if let Err(e) = process_file(input_file, output, &csv_files, &config) {
                 if !is_multiple {
                     return Err(e);
                 }
@@ -1052,7 +1052,7 @@ fn run_dead_reckoning(args: &SimArgs) -> Result<(), Box<dyn Error>> {
         info!("Generated {} navigation results", results.len());
 
         // Write results to CSV
-        let output_file = resolve_output_path(&args.output, input_file, is_multiple)?;
+        let output_file = resolve_output_path(&args.output, input_file, &csv_files)?;
         NavigationResult::to_csv(&results, &output_file)?;
         info!("Results written to {}", output_file.display());
     }
@@ -1145,7 +1145,7 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
         };
 
         info!("Using GNSS degradation config: {gnss_degradation:?}");
-        let output_file = resolve_output_path(&args.sim.output, input_file, is_multiple)?;
+        let output_file = resolve_output_path(&args.sim.output, input_file, &csv_files)?;
 
         // Run simulation using the common helper function
         match run_single_closed_loop_simulation(
@@ -1488,7 +1488,7 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
         };
 
         // Write results
-        let output_file = resolve_output_path(&args.sim.output, input_file, is_multiple)?;
+        let output_file = resolve_output_path(&args.sim.output, input_file, &csv_files)?;
 
         match results {
             Ok(ref nav_results) => {
@@ -1729,7 +1729,7 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
             }
         };
 
-        let output_file = resolve_output_path(&args.sim.output, input_file, is_multiple)?;
+        let output_file = resolve_output_path(&args.sim.output, input_file, &csv_files)?;
 
         NavigationResult::to_csv(&results, &output_file)?;
         info!("Results written to {}", output_file.display());

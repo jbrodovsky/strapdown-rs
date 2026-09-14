@@ -129,7 +129,11 @@ pub(crate) fn get_csv_files(input: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>
 /// `--output` is overloaded: the shipped example configs use both `output = "output.csv"`
 /// (a file) and `output = "data/output"` (a directory to write per-input results into),
 /// so the extension is what distinguishes them.
-const OUTPUT_FILE_EXTENSIONS: [&str; 2] = ["csv", "parquet"];
+///
+/// Only CSV is listed because `NavigationResult::to_csv` is the only writer there is.
+/// Accepting `.parquet` here would name a file Parquet and fill it with CSV; the
+/// extension belongs in this list only once a Parquet writer exists to back it.
+const OUTPUT_FILE_EXTENSIONS: [&str; 1] = ["csv"];
 
 /// Whether `output` names a single result file rather than a directory to write into.
 ///
@@ -188,13 +192,18 @@ pub(crate) fn validate_output_path(output: &Path) -> Result<(), Box<dyn Error>> 
 /// - `output` names a **directory** (`-o results/`): each input writes to its own file
 ///   name inside that directory.
 ///
+/// `all_inputs` is the full set of files this run will read. The resolved destination is
+/// checked against every one of them, not just `input_file`: with `a.csv` and
+/// `results_a.csv` in one input directory, `-o results.csv` resolves `a.csv` to
+/// `results_a.csv`, which would destroy a file this run has not read yet.
+///
 /// # Errors
 /// Returns an error if `input_file` has no file name, or if the resolved output path is
-/// the input file itself.
+/// one of the run's input files.
 pub(crate) fn resolve_output_path(
     output: &Path,
     input_file: &Path,
-    is_multiple: bool,
+    all_inputs: &[PathBuf],
 ) -> Result<PathBuf, Box<dyn Error>> {
     let input_name = input_file.file_name().ok_or_else(|| {
         io::Error::new(
@@ -204,7 +213,7 @@ pub(crate) fn resolve_output_path(
     })?;
 
     let resolved = if output_names_a_file(output) {
-        if is_multiple {
+        if all_inputs.len() > 1 {
             let output_stem = output
                 .file_stem()
                 .unwrap_or_else(|| std::ffi::OsStr::new("output"));
@@ -235,10 +244,17 @@ pub(crate) fn resolve_output_path(
         output.join(input_name)
     };
 
-    if paths_point_to_same_file(&resolved, input_file) {
+    for candidate in all_inputs {
+        if !paths_point_to_same_file(&resolved, candidate) {
+            continue;
+        }
+        let which = if paths_point_to_same_file(candidate, input_file) {
+            "that is the input file"
+        } else {
+            "that is another input file this run reads"
+        };
         return Err(format!(
-            "Refusing to write results to '{}': that is the input file. \
-             Pass a different --output path.",
+            "Refusing to write results to '{}': {which}. Pass a different --output path.",
             resolved.display()
         )
         .into());
@@ -249,9 +265,8 @@ pub(crate) fn resolve_output_path(
 
 /// Whether two paths name the same file on disk.
 ///
-/// The output path usually does not exist yet, so this canonicalises what it can -- the
-/// parent directory -- and compares that against the canonicalised input. Symlinks, `..`
-/// segments and a relative-vs-absolute spelling of the same file all compare equal.
+/// Symlinks, `..` segments and a relative-vs-absolute spelling of the same file all
+/// compare equal.
 fn paths_point_to_same_file(left: &Path, right: &Path) -> bool {
     match (
         canonical_parent_and_name(left),
@@ -263,10 +278,20 @@ fn paths_point_to_same_file(left: &Path, right: &Path) -> bool {
     }
 }
 
-/// Canonicalise `path` by canonicalising its parent and re-attaching its file name.
+/// Canonicalise `path` as far as the filesystem allows.
 ///
-/// Returns `None` when the parent does not exist or the path has no file name.
+/// An existing path is canonicalised whole, which is what resolves a symlink in the
+/// *final* component: `results.csv -> input.csv` must compare equal to `input.csv`, or
+/// the writer follows the link and truncates the input the guard is meant to protect.
+/// Only when the path does not exist yet does this fall back to canonicalising the
+/// parent and re-attaching the file name.
+///
+/// Returns `None` when neither the path nor its parent exists, or it has no file name.
 fn canonical_parent_and_name(path: &Path) -> Option<PathBuf> {
+    if let Ok(canonical) = path.canonicalize() {
+        return Some(canonical);
+    }
+
     let file_name = path.file_name()?;
     let parent = path.parent().unwrap_or_else(|| Path::new(""));
     let parent = if parent.as_os_str().is_empty() {
@@ -534,7 +559,7 @@ mod tests {
         File::create(&input).unwrap();
         let output = dir.path().join("results.csv");
 
-        let resolved = resolve_output_path(&output, &input, false).unwrap();
+        let resolved = resolve_output_path(&output, &input, std::slice::from_ref(&input)).unwrap();
 
         assert_eq!(resolved, output);
     }
@@ -547,7 +572,8 @@ mod tests {
         let output_dir = dir.path().join("out");
         std::fs::create_dir_all(&output_dir).unwrap();
 
-        let resolved = resolve_output_path(&output_dir, &input, false).unwrap();
+        let resolved =
+            resolve_output_path(&output_dir, &input, std::slice::from_ref(&input)).unwrap();
 
         assert_eq!(resolved, output_dir.join("traj.csv"));
     }
@@ -567,7 +593,8 @@ mod tests {
         let output_dir = dir.path().join("out");
         std::fs::create_dir_all(&output_dir).unwrap();
 
-        let resolved = resolve_output_path(&output_dir, &input, false).unwrap();
+        let resolved =
+            resolve_output_path(&output_dir, &input, std::slice::from_ref(&input)).unwrap();
 
         assert_eq!(resolved, output_dir.join("traj.csv"));
         assert_ne!(resolved, input);
@@ -581,7 +608,12 @@ mod tests {
         File::create(&input).unwrap();
         let output = dir.path().join("results.csv");
 
-        let resolved = resolve_output_path(&output, &input, true).unwrap();
+        let resolved = resolve_output_path(
+            &output,
+            &input,
+            &[input.clone(), dir.path().join("drive_b.csv")],
+        )
+        .unwrap();
 
         assert_eq!(resolved, dir.path().join("results_drive_a.csv"));
     }
@@ -592,7 +624,7 @@ mod tests {
         let input = dir.path().join("traj.csv");
         File::create(&input).unwrap();
 
-        let error = resolve_output_path(&input, &input, false)
+        let error = resolve_output_path(&input, &input, std::slice::from_ref(&input))
             .expect_err("writing results over the input must be refused");
 
         assert!(
@@ -609,13 +641,85 @@ mod tests {
         File::create(&input).unwrap();
         let disguised = dir.path().join(".").join("traj.csv");
 
-        let error = resolve_output_path(&disguised, &input, false)
+        let error = resolve_output_path(&disguised, &input, std::slice::from_ref(&input))
             .expect_err("writing results over the input must be refused");
 
         assert!(
             error.to_string().contains("that is the input file"),
             "unexpected error: {error}"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // Regression tests for the review findings on #322
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_resolve_output_path_refuses_a_symlink_pointing_at_the_input() {
+        // Canonicalising only the parent left a symlink in the *final* component
+        // unresolved, so `result.csv -> input.csv` compared unequal and the CSV writer
+        // then followed the link and truncated the input.
+        let dir = tempdir().unwrap();
+        let input = dir.path().join("input.csv");
+        File::create(&input).unwrap();
+        let link = dir.path().join("result.csv");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&input, &link).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&input, &link).unwrap();
+
+        let error = resolve_output_path(&link, &input, std::slice::from_ref(&input))
+            .expect_err("a symlink to the input must be refused");
+
+        assert!(
+            error.to_string().contains("that is the input file"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_output_path_refuses_colliding_with_another_input() {
+        // `a.csv` + `results_a.csv` in one directory with `-o results.csv`: processing
+        // `a.csv` resolves to `results_a.csv`, an input this run has not read yet.
+        let dir = tempdir().unwrap();
+        let input = dir.path().join("a.csv");
+        let other_input = dir.path().join("results_a.csv");
+        File::create(&input).unwrap();
+        File::create(&other_input).unwrap();
+        let output = dir.path().join("results.csv");
+
+        let error = resolve_output_path(&output, &input, &[input.clone(), other_input])
+            .expect_err("overwriting another input must be refused");
+
+        assert!(
+            error.to_string().contains("another input file"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_output_path_allows_a_destination_that_hits_no_input() {
+        // The collision guard must not reject the ordinary multi-input case.
+        let dir = tempdir().unwrap();
+        let first = dir.path().join("a.csv");
+        let second = dir.path().join("b.csv");
+        File::create(&first).unwrap();
+        File::create(&second).unwrap();
+        let output = dir.path().join("out").join("results.csv");
+        std::fs::create_dir_all(dir.path().join("out")).unwrap();
+
+        let resolved = resolve_output_path(&output, &first, &[first.clone(), second]).unwrap();
+
+        assert_eq!(resolved, dir.path().join("out").join("results_a.csv"));
+    }
+
+    #[test]
+    fn test_output_names_a_file_rejects_parquet_until_a_writer_exists() {
+        // Every result is written by `NavigationResult::to_csv`, so treating `.parquet`
+        // as a file output produced CSV bytes under a Parquet name.
+        let dir = tempdir().unwrap();
+        assert!(!output_names_a_file(&dir.path().join("results.parquet")));
+        assert!(output_names_a_file(&dir.path().join("results.csv")));
     }
 
     #[test]
