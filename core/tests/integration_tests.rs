@@ -84,7 +84,9 @@ use strapdown::sim::{
     NavigationResult, TestDataRecord, dead_reckoning, initialize_eskf, run_closed_loop,
 };
 use strapdown::stationary::{StationaryConfig, StationaryDetector};
-use strapdown::{IMUData, ImuSample, NavigationFilter, StrapdownState};
+use strapdown::{
+    IMUData, IMUQuality, ImuSample, InitialUncertainty, NavigationFilter, StrapdownState,
+};
 
 use nalgebra::{DMatrix, DVector, Rotation3, Vector3};
 
@@ -3247,4 +3249,126 @@ fn test_eskf_recovers_from_gnss_outage() {
             recovered_stats.rms
         );
     }
+}
+
+/// The opt-in `IMUQuality::auto_covariance` initialisation on the same recording (#257).
+///
+/// `auto_covariance` derives P0 from the IMU grade and the fix that positioned the vehicle
+/// instead of the hand-picked constant `initialize_eskf` uses, so it deserves the same
+/// end-to-end coverage as the default path in
+/// `test_eskf_default_initialization_on_real_data`. `test_data.csv` is a phone recording, so
+/// `IMUQuality::Consumer` is the honest grade and the receiver's own reported accuracy is the
+/// honest position uncertainty.
+///
+/// Measured against the default constant, holding process noise and everything else fixed:
+/// horizontal rms and peak are identical to two decimal places (23.53 m / 37.88 m), altitude
+/// rms moves 3.02 m -> 3.05 m, the vertical settling transient that #266 and #286 were about
+/// halves (42.56 m -> 21.43 m), and the settled altitude peak after that transient moves
+/// 12.30 m -> 14.58 m. The derived P0 is not the default -- changing that is a separate
+/// decision with its own blast radius -- but these are the numbers the #266 retune starts
+/// from.
+#[test]
+fn test_eskf_auto_covariance_initialization_on_real_data() {
+    /// Samples the vertical channel is allowed to settle over: 30 s at this recording's 1 Hz.
+    const SETTLING_SAMPLES: usize = 30;
+
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let test_data_path = Path::new(manifest_dir).join("tests/test_data.csv");
+    let records = load_test_data(&test_data_path);
+    assert!(!records.is_empty(), "test data should not be empty");
+
+    let first = &records[0];
+    // Exactly the state `initialize_eskf` builds, so P0 is the only thing that differs.
+    let initial_state = InitialState {
+        latitude: first.latitude,
+        longitude: first.longitude,
+        altitude: first.altitude,
+        northward_velocity: first.speed * first.bearing.to_radians().cos(),
+        eastward_velocity: first.speed * first.bearing.to_radians().sin(),
+        vertical_velocity: 0.0,
+        roll: if first.roll.is_nan() { 0.0 } else { first.roll },
+        pitch: if first.pitch.is_nan() {
+            0.0
+        } else {
+            first.pitch
+        },
+        yaw: if first.yaw.is_nan() { 0.0 } else { first.yaw },
+        in_degrees: true,
+        is_enu: true,
+    };
+
+    // The receiver's own reported horizontal accuracy across this recording, with the usual
+    // vertical-is-twice-horizontal ratio and a half-metre-per-second velocity accuracy.
+    let uncertainty = InitialUncertainty::new(
+        GNSS_REPORTED_HORIZONTAL_ACCURACY_M,
+        2.0 * GNSS_REPORTED_HORIZONTAL_ACCURACY_M,
+        0.5,
+    );
+    let initial_covariance = IMUQuality::Consumer
+        .auto_covariance(uncertainty, first.latitude, first.altitude)
+        .expect("a phone-grade IMU and a reported GNSS accuracy must yield a covariance");
+
+    let mut eskf = ErrorStateKalmanFilter::new(
+        &initial_state,
+        &[0.0; 6],
+        initial_covariance.to_vec(),
+        DMatrix::from_diagonal(&DVector::from_vec(
+            strapdown::sim::DEFAULT_PROCESS_NOISE.to_vec(),
+        )),
+    );
+
+    let cfg = GnssDegradationConfig {
+        scheduler: GnssScheduler::PassThrough,
+        fault: GnssFaultModel::None,
+        ..Default::default()
+    };
+    let results = run_closed_loop(&mut eskf, build_event_stream(&records, &cfg), None, None)
+        .expect("the auto-covariance ESKF must complete the full run");
+    assert_eq!(results.len(), records.len());
+
+    let stats = compute_error_metrics(&results, &records);
+    println!("\n=== ESKF auto_covariance Initialization ===");
+    println!(
+        "Horizontal Error: rms={:.2}m, max={:.2}m",
+        stats.rms_horizontal_error, stats.max_horizontal_error
+    );
+    println!(
+        "Altitude Error: rms={:.2}m, max={:.2}m",
+        stats.rms_altitude_error, stats.max_altitude_error
+    );
+
+    // Held to exactly the bounds the default initialisation is held to. A principled P0 that
+    // navigates worse than the constant it replaces would not be an improvement.
+    assert!(
+        stats.rms_horizontal_error < 40.0,
+        "auto-covariance ESKF RMS horizontal error should be under 40m, got {:.2}m",
+        stats.rms_horizontal_error
+    );
+    assert!(
+        stats.max_horizontal_error < 60.0,
+        "auto-covariance ESKF max horizontal error should be under 60m, got {:.2}m",
+        stats.max_horizontal_error
+    );
+    assert!(
+        stats.rms_altitude_error < 10.0,
+        "auto-covariance ESKF RMS altitude error should be under 10m, got {:.2}m",
+        stats.rms_altitude_error
+    );
+    assert!(
+        stats.max_altitude_error < 100.0,
+        "auto-covariance ESKF altitude settling transient should be under 100m, got {:.2}m",
+        stats.max_altitude_error
+    );
+
+    let settled_max_altitude_error = results
+        .iter()
+        .zip(records.iter())
+        .skip(SETTLING_SAMPLES)
+        .map(|(result, record)| (result.altitude - record.altitude).abs())
+        .fold(0.0_f64, f64::max);
+    println!("Altitude Error after settling: max={settled_max_altitude_error:.2}m");
+    assert!(
+        settled_max_altitude_error < 40.0,
+        "auto-covariance ESKF settled altitude error should be under 40m, got          {settled_max_altitude_error:.2}m"
+    );
 }
