@@ -61,7 +61,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use clap::{Args, ValueEnum};
 
 use crate::NavigationFilter;
-use crate::earth::{METERS_TO_DEGREES, METERS_TO_RADIANS};
+use crate::earth::{METERS_TO_DEGREES, METERS_TO_RADIANS, principal_radii};
 use crate::gating::InnovationGate;
 use crate::kalman::{InitialState, UnscentedKalmanFilter};
 use crate::messages::{Event, EventStream, GnssFaultModel, GnssScheduler};
@@ -3219,13 +3219,44 @@ pub fn initialize_eskf(
 
 // ==== Simulation Helper functions ====
 
+/// Root-sum-square of a position uncertainty, in metres.
+///
+/// The latitude and longitude standard deviations arrive in radians (the state's native unit);
+/// this converts each to metres via [`principal_radii`] -- $(R_N + h) \sigma_{lat}$ north-south,
+/// $(R_E + h) \cos(lat) \sigma_{lon}$ east-west -- before combining them with the (already
+/// metric) altitude standard deviation, so the three terms being root-sum-squared are the same
+/// unit. Combining a radian sigma with a metre sigma directly would make the result dominated by
+/// whichever term happens to have the larger *number*, regardless of the physical uncertainty it
+/// represents.
+///
+/// # Arguments
+/// - `lat_deg` - latitude in degrees, used to evaluate the local radii of curvature
+/// - `alt_m` - altitude in metres
+/// - `pos_std_lat_rad` - latitude standard deviation in radians
+/// - `pos_std_lon_rad` - longitude standard deviation in radians
+/// - `pos_std_alt_m` - altitude standard deviation in metres
+fn position_rms_meters(
+    lat_deg: f64,
+    alt_m: f64,
+    pos_std_lat_rad: f64,
+    pos_std_lon_rad: f64,
+    pos_std_alt_m: f64,
+) -> f64 {
+    let (r_n, r_e, _) = principal_radii(&lat_deg, &alt_m);
+    let pos_std_lat_m = pos_std_lat_rad * (r_n + alt_m);
+    let pos_std_lon_m = pos_std_lon_rad * (r_e + alt_m) * lat_deg.to_radians().cos();
+    (pos_std_lat_m.powi(2) + pos_std_lon_m.powi(2) + pos_std_alt_m.powi(2)).sqrt()
+}
+
 /// Logs a one-line summary of a filter's current position estimate and its uncertainty.
 ///
 /// Reads the filter's mean state and covariance, converts latitude and longitude from radians
-/// to degrees, and emits latitude, longitude, altitude (metres), the three position standard
-/// deviations $\sqrt{P_{ii}}$ (degrees, degrees, metres) and their root-sum-square at `debug`
-/// level -- despite the name, nothing is written to stdout, so the message appears only when
-/// the logger is configured for [`LogLevel::Debug`] or finer.
+/// to degrees, and emits latitude, longitude, altitude (metres) and the three position standard
+/// deviations $\sqrt{P_{ii}}$ (degrees, degrees, metres) at `debug` level -- despite the name,
+/// nothing is written to stdout, so the message appears only when the logger is configured for
+/// [`LogLevel::Debug`] or finer. The horizontal sigmas are also converted to metres (see
+/// [`position_rms_meters`]) so they can be root-sum-squared with the (already-metric) altitude
+/// sigma into a single, dimensionally meaningful RMS distance.
 ///
 /// The filter must expose at least the three position states; any 9- or 15-state filter in this
 /// crate does.
@@ -3238,16 +3269,18 @@ pub fn print_sim_status<F: NavigationFilter>(filter: &F) {
     let lon = mean[1].to_degrees();
     let alt = mean[2];
 
-    // Get position uncertainty (diagonal elements)
-    let pos_std_lat = cov[(0, 0)].sqrt().to_degrees();
-    let pos_std_lon = cov[(1, 1)].sqrt().to_degrees();
+    // Get position uncertainty (diagonal elements), in the state's native units (radians for
+    // lat/lon, metres for altitude)
+    let pos_std_lat_rad = cov[(0, 0)].sqrt();
+    let pos_std_lon_rad = cov[(1, 1)].sqrt();
     let pos_std_alt = cov[(2, 2)].sqrt();
 
-    // Compute RMS of position covariance
-    let pos_rms = (pos_std_lat.powi(2) + pos_std_lon.powi(2) + pos_std_alt.powi(2)).sqrt();
+    let pos_rms = position_rms_meters(lat, alt, pos_std_lat_rad, pos_std_lon_rad, pos_std_alt);
 
+    let pos_std_lat_deg = pos_std_lat_rad.to_degrees();
+    let pos_std_lon_deg = pos_std_lon_rad.to_degrees();
     debug!(
-        "\rPos: ({lat:.6}°, {lon:.6}°, {alt:.1}m) | σ: ({pos_std_lat:.2e}°, {pos_std_lon:.2e}°, {pos_std_alt:.2}m) | RMS: {pos_rms:.2e}"
+        "Pos: ({lat:.6}°, {lon:.6}°, {alt:.1}m) | σ: ({pos_std_lat_deg:.2e}°, {pos_std_lon_deg:.2e}°, {pos_std_alt:.2}m) | RMS: {pos_rms:.2e}m"
     );
 }
 
@@ -7596,5 +7629,50 @@ mod tests {
 
         // Cleanup
         let _ = std::fs::remove_file(&temp_file);
+    }
+
+    /// #334: `position_rms_meters` must convert the latitude/longitude sigmas (radians) to
+    /// metres before combining them with the altitude sigma (already metres) -- summing
+    /// radians-squared and metres-squared as though they were the same unit made the printed
+    /// RMS meaningless, in practice just the altitude sigma with noise on it.
+    #[test]
+    fn position_rms_converts_horizontal_sigma_to_meters() {
+        let lat_deg: f64 = 30.0;
+        let alt_m: f64 = 500.0;
+        let pos_std_lat_rad: f64 = 2e-6;
+        let pos_std_lon_rad: f64 = 3e-6;
+        let pos_std_alt_m: f64 = 4.0;
+
+        let (r_n, r_e, _) = crate::earth::principal_radii(&lat_deg, &alt_m);
+        let expected_lat_m = pos_std_lat_rad * (r_n + alt_m);
+        let expected_lon_m = pos_std_lon_rad * (r_e + alt_m) * lat_deg.to_radians().cos();
+        let expected_rms =
+            (expected_lat_m.powi(2) + expected_lon_m.powi(2) + pos_std_alt_m.powi(2)).sqrt();
+
+        let rms = position_rms_meters(
+            lat_deg,
+            alt_m,
+            pos_std_lat_rad,
+            pos_std_lon_rad,
+            pos_std_alt_m,
+        );
+        assert_approx_eq!(rms, expected_rms, 1e-9);
+
+        // Pre-fix, the horizontal terms were squared *radians* (~1e-12) added to squared
+        // metres, so the result was indistinguishable from the altitude sigma alone. Once
+        // correctly scaled by the local radii of curvature, a few-microradian uncertainty is
+        // several metres and should dominate.
+        assert!(
+            rms > pos_std_alt_m,
+            "expected the converted horizontal uncertainty to dominate the altitude sigma, got {rms}"
+        );
+    }
+
+    /// With zero horizontal uncertainty the RMS collapses to the (already metric) altitude
+    /// sigma, regardless of latitude or altitude.
+    #[test]
+    fn position_rms_is_altitude_sigma_when_horizontal_uncertainty_is_zero() {
+        let rms = position_rms_meters(45.0, 1000.0, 0.0, 0.0, 7.5);
+        assert_approx_eq!(rms, 7.5, 1e-12);
     }
 }
