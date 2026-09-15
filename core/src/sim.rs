@@ -3504,16 +3504,14 @@ pub mod health {
         /// it to the scenario's real altitude range to make it an effective gate.
         pub alt_m: (f64, f64),
         /// Maximum ground speed in m/s (default 500, i.e. road or low-altitude aircraft).
-        /// Currently inert -- the speed test in [`HealthMonitor::check`] is commented out, so
-        /// setting this field has no effect on a run. Issue #332 tracks resolving that.
+        /// Checked against the NED velocity indices (3..=5), which are correct for every
+        /// filter in this crate. Narrow this to the scenario's real speed range to make it
+        /// an effective gate; unaided `dead_reckoning` never calls [`HealthMonitor`], so a
+        /// run that deliberately drifts past this bound (see #299) is unaffected.
         pub speed_mps_max: f64,
         /// Largest variance allowed on the covariance diagonal before the run is failed
         /// (default 1e15).
         pub cov_diag_max: f64,
-        /// Maximum covariance condition number (default 1e12). Currently inert -- the condition
-        /// estimate in [`HealthMonitor::check`] is commented out as too expensive, so setting
-        /// this field has no effect on a run. Issue #332 tracks resolving that.
-        pub cond_max: f64,
         /// NIS above which a measurement update counts as an outlier (default 100).
         ///
         /// Despite the name, the gate applies to **every** measurement update in the event
@@ -3535,7 +3533,6 @@ pub mod health {
                 alt_m: (-100000000.0, 100000000.0), // Very tolerant for vertical channel instability
                 speed_mps_max: 500.0,
                 cov_diag_max: 1e15,
-                cond_max: 1e12,
                 nis_pos_max: 100.0,
                 nis_pos_consec_fail: 20,
             }
@@ -3598,13 +3595,22 @@ pub mod health {
                 bail!("Altitude out of range: {alt} m");
             }
 
-            // 3) Speed sanity (assumes NED velocities at indices 3..=5)
-            // let v2 = x[3] * x[3] + x[4] * x[4] + x[5] * x[5];
-            // if v2.is_finite() && v2.sqrt() > self.limits.speed_mps_max {
-            //     bail!("Speed exceeded: {:.2} m/s", v2.sqrt());
-            // }
+            // 3) Speed sanity (assumes NED velocities at indices 3..=5, true for every
+            // filter in this crate)
+            let v2 = x[3] * x[3] + x[4] * x[4] + x[5] * x[5];
+            if v2.is_finite() && v2.sqrt() > self.limits.speed_mps_max {
+                bail!("Speed exceeded: {:.2} m/s", v2.sqrt());
+            }
 
-            // 4) Covariance sanity: diagonals and simple SPD probe
+            // 4) Covariance sanity: diagonals only. A condition-number check was considered
+            // (see #332) but dropped: this state vector mixes units -- position is carried
+            // in radians^2 while velocity and altitude are in (m/s)^2 and m^2 -- so even the
+            // cheapest proxy, the ratio of the largest to the smallest diagonal entry, is
+            // dominated by that unit mismatch rather than by divergence. It fires on a
+            // perfectly healthy default P0: lat/lon variance is ~1e-13 rad^2 against a ~4 m^2
+            // altitude variance, a ratio in the 1e12-1e13 range before a single sample has
+            // been processed. A true condition number needs a matrix inverse, which this
+            // function cannot afford to run on every predict/update.
             for i in 0..p.nrows().min(p.ncols()) {
                 if p[(i, i)].is_sign_negative() {
                     bail!("Negative variance on diagonal: idx={i}, val={}", p[(i, i)]);
@@ -3613,12 +3619,6 @@ pub mod health {
                     bail!("Variance too large on diagonal idx={i}: {}", p[(i, i)]);
                 }
             }
-            // (Optional) rough condition estimate via Frobenius norm and inverse
-            // Skip if too expensive; enable only for debugging.
-            // if let Some(inv) = p.clone().try_inverse() {
-            //     let cond = p.norm_fro() * inv.norm_fro();
-            //     if !cond.is_finite() || cond > self.limits.cond_max { bail!("Covariance condition number too large: {cond:e}"); }
-            // }
 
             // 5) GNSS gating streak (if a NIS was computed at update time)
             if let Some(nis_pos) = maybe_nis_pos {
@@ -6658,6 +6658,43 @@ mod tests {
 
         let result = monitor.check(&state, &cov, None);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_health_monitor_check_speed_within_limit() {
+        let limits = HealthLimits {
+            speed_mps_max: 50.0,
+            ..Default::default()
+        };
+        let mut monitor = HealthMonitor::new(limits);
+
+        // vn=10, ve=5, vd=0 -> speed ~11.18 m/s, under the 50 m/s limit.
+        let state = vec![
+            0.5, 0.5, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ];
+        let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
+
+        let result = monitor.check(&state, &cov, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_health_monitor_check_speed_exceeded() {
+        let limits = HealthLimits {
+            speed_mps_max: 50.0,
+            ..Default::default()
+        };
+        let mut monitor = HealthMonitor::new(limits);
+
+        // vn=100, ve=0, vd=0 -> 100 m/s, over the 50 m/s limit.
+        let state = vec![
+            0.5, 0.5, 100.0, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ];
+        let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
+
+        let result = monitor.check(&state, &cov, None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Speed exceeded"));
     }
 
     #[test]
