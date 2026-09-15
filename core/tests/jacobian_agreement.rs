@@ -25,6 +25,14 @@
 //!    Euler-rate matrix, and the difference is the same size as the terms themselves -- on the
 //!    state below a roll perturbation moves north velocity by 7.7e-2 where the
 //!    rotation-vector form says exactly zero.
+//! 3. **Whole blocks can be missing without any filter noticing.** The velocity rows carried
+//!    no position dependence beyond gravity (#317) and differentiated only one factor of a
+//!    quadratic Coriolis term (#325). Each was ~1e-5 to 3e-5 against an analytic zero, well
+//!    inside the 1e-4 this file used to allow. Filling them in is what let the tolerance move
+//!    to a *derived* 6e-5 -- see `MAX_DISAGREEMENT` -- where every contribution is named and
+//!    computed rather than being an unexamined budget: one second-order averaging term, one
+//!    deliberately-omitted half-step (#338), and one genuine first-order gap two orders
+//!    further down (#339).
 
 use nalgebra::{Rotation3, Vector3};
 use strapdown::linearize::{
@@ -41,7 +49,14 @@ const LABELS: [&str; 9] = [
 /// Latitude and longitude are radians, so a metre-scale step would be enormous; attitude
 /// needs a step small enough to stay linear but large enough to clear the `1e-16` floor of
 /// the mechanization's own arithmetic.
-const STEPS: [f64; 9] = [1e-9, 1e-9, 1e-3, 1e-4, 1e-4, 1e-4, 1e-7, 1e-7, 1e-7];
+///
+/// These are three to four orders larger than they were, and the reason is the switch to
+/// increment-domain differencing below: with the large constant gone, truncation is the only
+/// thing left to trade against, so the steps move to where the *analytic* terms are best
+/// resolved rather than to where the cancellation is least bad. Verified by sweeping each
+/// column an order either side -- the latitude column converges to 2e-8 here, against 3e-8 at
+/// the old 1e-9.
+const STEPS: [f64; 9] = [1e-6, 1e-6, 1e-1, 1e-2, 1e-2, 1e-2, 1e-5, 1e-5, 1e-5];
 
 /// A state with nothing zero or symmetric, so no block can agree by accident.
 fn sample_state(is_enu: bool) -> StrapdownState {
@@ -66,9 +81,24 @@ const fn sample_imu(is_enu: bool) -> IMUData {
     }
 }
 
-fn propagate(mut state: StrapdownState, imu: &IMUData, dt: f64) -> Vec<f64> {
-    mechanize(&mut state, &ImuSample::from_rates(imu, dt)).expect("mechanize should succeed");
-    Vec::<f64>::from(&state)
+/// One step of the mechanization, as the *increment* it applies rather than the state it
+/// lands on.
+///
+/// Differencing `mechanize(x) - x` instead of `mechanize(x)` is what makes the position rows
+/// measurable. Altitude here is 150 m, so `ulp(150)` is 2.8e-14 and a central difference over
+/// a 1e-9 rad latitude step cannot resolve anything below 2.8e-14 / 2e-9 = 1.4e-5 -- which is
+/// exactly the residual this sweep used to report on the altitude row, and which #317 read as
+/// a longitude artefact. Subtracting the unperturbed value before the cancellation removes
+/// the constant that sets that floor; the two forms are identical in exact arithmetic.
+fn propagate(state: StrapdownState, imu: &IMUData, dt: f64) -> Vec<f64> {
+    let before = Vec::<f64>::from(&state);
+    let mut after = state;
+    mechanize(&mut after, &ImuSample::from_rates(imu, dt)).expect("mechanize should succeed");
+    Vec::<f64>::from(&after)
+        .iter()
+        .zip(&before)
+        .map(|(a, b)| a - b)
+        .collect()
 }
 
 fn perturbed(base: &StrapdownState, index: usize, delta: f64) -> StrapdownState {
@@ -80,6 +110,9 @@ fn perturbed(base: &StrapdownState, index: usize, delta: f64) -> StrapdownState 
 }
 
 /// Largest absolute disagreement between an analytic Jacobian and the finite-difference one.
+///
+/// `propagate` returns the increment, so the finite difference is `∂(f(x) - x)/∂x` and the
+/// analytic side has to shed its identity to match: hence the `- 1` on the diagonal.
 fn worst_disagreement(analytic: &nalgebra::DMatrix<f64>, state: &StrapdownState) -> (f64, String) {
     let dt = 0.01;
     let imu = sample_imu(state.is_enu);
@@ -93,14 +126,15 @@ fn worst_disagreement(analytic: &nalgebra::DMatrix<f64>, state: &StrapdownState)
 
         for row in 0..9 {
             let numeric = (plus[row] - minus[row]) / (2.0 * step);
-            let difference = (analytic[(row, column)] - numeric).abs();
+            let identity = if row == column { 1.0 } else { 0.0 };
+            let difference = (analytic[(row, column)] - identity - numeric).abs();
             if difference > worst {
                 worst = difference;
                 where_ = format!(
-                    "d({})/d({}): analytic {:.6e}, numeric {:.6e}",
+                    "d({})/d({}): analytic {:.6e}, numeric {:.6e} (both less the identity)",
                     LABELS[row],
                     LABELS[column],
-                    analytic[(row, column)],
+                    analytic[(row, column)] - identity,
                     numeric
                 );
             }
@@ -111,16 +145,46 @@ fn worst_disagreement(analytic: &nalgebra::DMatrix<f64>, state: &StrapdownState)
 
 /// Tolerance on the absolute disagreement, in mixed units.
 ///
-/// The residual is dominated by two things that are not modelling errors: the central
-/// difference's own truncation, and the second-order attitude averaging in `mechanize` that a
-/// first-order Jacobian does not carry. Both leave entries around 3e-5 here. The defects this
-/// test exists to catch were 2e-2 (the altitude sign, a full `dt`) and 7.7e-2 (the attitude
-/// columns), so this threshold separates them by three orders of magnitude.
+/// Derived from the one second-order term `mechanize` carries and a first-order Jacobian does
+/// not. Equation 5.47 rotates the sensed increment with the interval-averaged attitude,
+/// `0.5 * (C0 + C1) Δv`, where the Jacobian uses `C0` alone. The gap between them is
+/// `0.5 (C1 - C0) Δv ≈ 0.5 C0 [δθ×] Δv` with `|δθ| = |ω_ib| dt` and `|Δv| = |f^b| dt`, so the
+/// residual it leaves in any column is bounded by
 ///
-/// It is deliberately *not* tightened to the observed residual: doing that would make the
-/// test fail on an unrelated change to the mechanization's integration order, which is not
-/// what it is for.
-const MAX_DISAGREEMENT: f64 = 1e-4;
+/// ```text
+///     0.5 * |ω_ib| * |f^b| * dt^2 = 0.5 * 0.03742 * 9.816 * 1e-4 = 1.84e-5
+/// ```
+///
+/// for the sample IMU below.
+///
+/// **Second contribution: the position rows' half-step, deliberately omitted (#338).**
+/// `position_update` integrates each position row trapezoidally over the *propagated*
+/// velocity, so the true `f[(row, c)]` contains `0.5 * dt * f[(3 + row, c)]` which a
+/// first-order Jacobian does not carry. That is computable from the analytic matrix's own
+/// row 5 rather than measured from the residual:
+///
+/// ```text
+///     max_c 0.5 * dt * |f[(5, c)]| = 0.5 * 0.01 * 6.897e-3 = 3.45e-5
+/// ```
+///
+/// the maximum being the roll column in ENU. Summing the two, since the worst entry may take
+/// either: `1.84e-5 + 3.45e-5 = 5.3e-5`, and 6e-5 clears it.
+///
+/// This is a *derived* bound and not the observed residual rounded up (#288): both terms come
+/// from the sample IMU and from the Jacobian's own entries, and the half-step prediction is
+/// exact -- 2.970e-5 predicted against 2.975e-5 measured for `∂alt/∂pitch` in NED, and
+/// -3.449e-5 against -3.451e-5 for `∂alt/∂roll` in ENU. It was 1e-4, loose enough to have
+/// accepted the missing Coriolis position terms (3.0e-5) indefinitely. If the mechanization's
+/// integration order changes, or #338 lands, recompute from the expressions above rather than
+/// fitting the number to whatever comes out.
+///
+/// **Not covered by either expression, and known:** the attitude rows' position columns are
+/// still exactly zero and carry a genuine *first-order* term of ~5.4e-7 -- the same latitude
+/// dependence this change added to the velocity rows, applied to Groves 5.46 instead of 5.54
+/// (#339). It is two orders below the bound, so it does not set it, but it means the residual
+/// here is not purely second-order and the bound cannot be driven to zero by fixing #338
+/// alone.
+const MAX_DISAGREEMENT: f64 = 6e-5;
 
 #[test]
 fn euler_jacobian_matches_the_mechanization_in_both_frames() {

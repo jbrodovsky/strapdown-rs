@@ -16,6 +16,12 @@ msrv = "1.91"
 # Filter and mechanization constructors legitimately take a full set of
 # independent physical parameters (initial state, covariance, process noise,
 # lever arm, frame flags). The default threshold of 7 flags them without
-# pointing at anything that would be clearer as a struct today; #262's
-# `InsEngine` builder is the actual fix, so this stays relaxed until then.
-too-many-arguments-threshold = 10
+# pointing at anything that would be clearer as a struct today.
+#
+# Lowered from 10 to 8 by #296, which is the second half of the fix the old
+# comment was waiting on: #262 landed the `InsEngine` builder, and #296 folded
+# `initialize_ekf`'s and `initialize_eskf`'s positional `Option` lists into
+# `EkfConfig`/`EskfConfig`. Nothing in the workspace needs more than 8 now
+# except one test helper in `core/tests/engine_lever_arm.rs`, which is why this
+# is 8 rather than the default 7.
+too-many-arguments-threshold = 8

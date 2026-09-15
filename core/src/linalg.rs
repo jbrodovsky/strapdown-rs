@@ -1,13 +1,13 @@
 //! Linear algebra helpers for robust covariance square roots.
 //!
 //! Public API:
-//!     pub fn matrix_square_root(matrix: &`DMatrix<f64>`) -> Result<`DMatrix<f64>`, StrapdownError>
+//!     pub fn `matrix_square_root(matrix`: &`DMatrix<f64>`) -> Result<`DMatrix<f64>`, `StrapdownError`>
 //!
 //! Internal pipeline (each step isolated for testing):
-//!     - symmetrize()
-//!     - chol_sqrt()
-//!     - chol_sqrt_with_jitter()
-//!     - evd_symmetric_sqrt_with_floor()
+//!     - `symmetrize()`
+//!     - `chol_sqrt()`
+//!     - `chol_sqrt_with_jitter()`
+//!     - `evd_symmetric_sqrt_with_floor()`
 //!
 //! Strategy:
 //! 1) Symmetrize P ← 0.5 (P + Pᵀ)
@@ -145,11 +145,22 @@ fn evd_symmetric_sqrt_with_floor(p: &DMatrix<f64>, floor: f64) -> DMatrix<f64> {
     &u * sigma_half * u.transpose()
 }
 
+/// Bounds on the jittered Cholesky retry ramp used by [`chol_solve_spd`].
+///
+/// A covariance that has drifted slightly indefinite through round-off fails a plain
+/// Cholesky factorization. Rather than give up, [`chol_solve_spd`] adds a small positive
+/// amount to every diagonal entry and refactors, multiplying that amount by ten on each
+/// subsequent attempt. These fields bound that ramp. The [`Default`] values --
+/// `1e-12`, `1e-6` and 6 attempts -- are the ones [`robust_spd_solve`] uses and match the
+/// guards hard-coded in [`matrix_square_root`].
 #[derive(Debug, Clone, Copy)]
 pub struct SolveOptions {
-    pub initial_jitter: f64, // e.g., 1e-12
-    pub max_jitter: f64,     // e.g., 1e-6
-    pub max_tries: usize,    // e.g., 6
+    /// Amount added to each diagonal entry on the first retry; defaults to `1e-12`.
+    pub initial_jitter: f64,
+    /// Ceiling on the ramp: retries stop once the next jitter would exceed it. Defaults to `1e-6`.
+    pub max_jitter: f64,
+    /// Maximum number of jittered factorization attempts; defaults to 6.
+    pub max_tries: usize,
 }
 
 impl Default for SolveOptions {

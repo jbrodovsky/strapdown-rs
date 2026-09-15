@@ -43,8 +43,10 @@ strapdown-geonav = { path = "../geonav" }
 Use in your code:
 
 ```rust
+use std::rc::Rc;
+use strapdown::sim::run_closed_loop;
 use geonav::{GeoMap, GeophysicalMeasurementType, GravityResolution};
-use geonav::{build_event_stream, geo_closed_loop_ukf};
+use geonav::build_event_stream;
 
 // Load a gravity map
 let measurement_type = GeophysicalMeasurementType::Gravity(GravityResolution::OneMinute);
@@ -59,10 +61,11 @@ let events = build_event_stream(
     None,         // no magnetic map
     None,
     None,
-);
+)?;
 
-// Run simulation
-let results = geo_closed_loop_ukf(&mut ukf, events)?;
+// Run simulation. The geonav-specific `geo_closed_loop_*` drivers were removed in favour
+// of the one driver in `strapdown-core`, which takes any `NavigationFilter`.
+let results = run_closed_loop(&mut ukf, events, None, None)?;
 ```
 
 ## Command Line Options
@@ -123,7 +126,9 @@ See the Rust API documentation for detailed information on:
 - `GravityMeasurement` - Gravity anomaly measurement model
 - `MagneticAnomalyMeasurement` - Magnetic anomaly measurement model
 - `build_event_stream` - Event stream construction with geophysical measurements
-- `geo_closed_loop_ukf` / `geo_closed_loop_ekf` - Simulation functions
+- `strapdown::sim::run_closed_loop` - the simulation driver, which takes any
+  `NavigationFilter`. The geonav-specific `geo_closed_loop_ukf` / `geo_closed_loop_ekf` /
+  `geo_closed_loop_rbpf` wrappers no longer exist
 
 ## Performance Notes
 

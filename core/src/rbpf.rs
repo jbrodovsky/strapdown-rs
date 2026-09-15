@@ -31,11 +31,32 @@ const LINEAR_STATE_DIM_BASE: usize = 6;
 /// RBPF configuration parameters.
 #[derive(Clone, Debug)]
 pub struct RbpfConfig {
+    /// Number of particles in the cloud; fixed for the life of the filter.
     pub num_particles: usize,
+    /// Strategy used to resample the cloud once the effective sample size drops below
+    /// the trigger described by [`RbpfConfig::effective_sample_threshold`].
     pub resampling_strategy: ParticleResamplingStrategy,
+    /// Resampling trigger as a fraction of `num_particles`: the cloud is resampled
+    /// when the effective sample size drops below this fraction of the particle count.
     pub effective_sample_threshold: f64,
+    /// Initial position-error standard deviation in metres, as (latitude, longitude,
+    /// altitude). Both horizontal entries are scaled at construction by the same
+    /// latitude conversion factor ([`crate::earth::METERS_TO_DEGREES`], taken in
+    /// radians). That is correct for latitude but not for longitude, where a metre of
+    /// easting subtends `1 / ((R_e + h) cos(latitude))` radians -- so the `cos(latitude)`
+    /// is missing from the denominator and the radian sigma comes out *too small* by
+    /// that factor. The east extent the cloud actually receives is therefore the
+    /// requested value **multiplied** by cos(latitude): a requested 10 m spreads about
+    /// 7.7 m at 40 degrees, 5.0 m at 60 degrees and 1.7 m at 80 degrees. The cloud is
+    /// under-spread east-west, increasingly so towards the poles. Issue #331 tracks the
+    /// fix, here and in `position_process_noise_std_m`. The altitude entry is used in
+    /// metres directly.
     pub position_init_std_m: Vector3<f64>,
+    /// Initial standard deviation of each of the three velocity error states, in m/s
+    /// (applied uniformly to north, east and vertical).
     pub velocity_init_std_mps: f64,
+    /// Initial standard deviation of each of the three attitude error states, in
+    /// radians (applied uniformly to roll, pitch and yaw).
     pub attitude_init_std_rad: f64,
     /// Position proposal scale (m per second of sample period). The predict
     /// step scales it by the IMU sample interval (`pos_noise = std * dt`), so
@@ -46,7 +67,13 @@ pub struct RbpfConfig {
     /// explicitly in that configuration. Kept at 1 m here because a wider
     /// default proposal measurably degrades clean stationary tracking.
     pub position_process_noise_std_m: Vector3<f64>,
+    /// Velocity random-walk scale (m/s per second of sample period), applied
+    /// uniformly to the three velocity error states. Like the position term, the
+    /// predict step scales it by the IMU sample interval (`vel_noise = std * dt`).
     pub velocity_process_noise_std_mps: f64,
+    /// Attitude random-walk scale (rad per second of sample period), applied
+    /// uniformly to the three attitude error states and likewise scaled by the IMU
+    /// sample interval in the predict step.
     pub attitude_process_noise_std_rad: f64,
     /// Additional linear states appended after velocity/attitude (e.g., map bias states).
     pub extra_state_dim: usize,
@@ -54,7 +81,22 @@ pub struct RbpfConfig {
     pub extra_state_init_std: f64,
     /// Process noise standard deviation for extra states (random walk, applied uniformly).
     pub extra_state_process_noise_std: f64,
+    /// Seed for the filter's random number generator, which draws the initial
+    /// particle spread, the per-step process noise and the resampling indices. Runs
+    /// with the same seed and the same inputs are reproducible.
     pub seed: u64,
+    /// Recentre the error states on the nominal state after each weight update: the
+    /// weighted-mean error is subtracted from every particle's position error and from
+    /// its six base linear error states (velocity and attitude), so those states stay
+    /// zero-mean. Any [`RbpfConfig::extra_state_dim`] states appended after them are
+    /// left untouched, so an extra state such as a geophysical map bias keeps its
+    /// absolute value across recentrings rather than being folded into the nominal
+    /// state; issue #333 tracks that gap. The mean position error is always applied to
+    /// the nominal state; the mean velocity/attitude error is applied only when a linear
+    /// (Kalman) update has run since the previous recentring. Note that the subtraction
+    /// from the particles is unconditional, so in the other case that mean is **discarded**
+    /// rather than deferred -- it is removed from the cloud without ever reaching the
+    /// nominal state.
     pub recenter_after_update: bool,
     /// Apply a pseudo-measurement that vertical velocity is zero.
     pub zero_vertical_velocity: bool,
@@ -88,9 +130,18 @@ impl Default for RbpfConfig {
 /// RBPF particle state (position error + linear state).
 #[derive(Clone, Debug)]
 pub struct RbpfParticle {
+    /// Position error relative to the nominal state, added to it to form this
+    /// particle's position: latitude and longitude errors in radians, altitude error
+    /// in metres (positive up, as with [`StrapdownState::altitude`]).
     pub position_error: Vector3<f64>,
+    /// Linear error state carried by this particle's Kalman filter, added to the
+    /// nominal state: three velocity errors in m/s (north, east, vertical -- vertical
+    /// following the frame of the nominal state), three attitude errors in radians
+    /// (roll, pitch, yaw), then [`RbpfConfig::extra_state_dim`] extra states.
     pub linear_state: DVector<f64>,
+    /// Covariance of `linear_state`, square and in the same state ordering.
     pub linear_cov: DMatrix<f64>,
+    /// Normalized importance weight; the weights of the cloud sum to one.
     pub weight: f64,
 }
 
@@ -959,6 +1010,30 @@ mod tests {
     // cancellation between two bugs, not convergence. #321 brought it to 16.66 m
     // and the Jacobian corrections from its review to 31.51 m, all outside it.
     //
+    // #325 and #317 -- the missing velocity and position columns of the Coriolis
+    // and transport block -- brought it to **13.98 m**, inside the 15 m bound for
+    // the first time since #292. Isolated by building the library with only the
+    // altitude-row half-step disabled and re-running this test twice per
+    // configuration:
+    //
+    //     pre-#325 library                    31.51 m   FAIL
+    //     + #325 velocity + #317 position     13.98 m   PASS
+    //     + the altitude-row half-step        35.92 m   FAIL
+    //
+    // The third line is what made this look like a regression on first reading.
+    // That half-step is a real term but it is not what either issue asks for, it
+    // is inconsistent on its own (rows 0 and 1 carry the same term and would be
+    // left first-order), and it costs 22 m here -- so it is deferred to #338
+    // rather than shipped. Recorded because a future reader will otherwise
+    // rediscover only the 35.92 m.
+    //
+    // This test is still `#[ignore]`d. It passes, but against a bound #295 itself
+    // calls fitted -- 15 m was chosen for 1.2x margin over a 12.49 m baseline that
+    // was the product of two cancelling bugs -- and 13.98 m clears it by 7%.
+    // Re-enabling on that number would be #288's mistake twice over. #295's
+    // acceptance criterion is a *derived* bound; this measurement is a large step
+    // toward it, not a substitute for it.
+    //
     // #319 also established what the number actually measures: the truth here is
     // exactly stationary (altitude 1000.0000 m, all three velocities identically
     // zero, at every step), so the whole error is the filter's own altitude
@@ -1198,6 +1273,7 @@ mod tests {
             apply_declination: false,
             year: 2025,
             day_of_year: 1,
+            is_enu: false, // NED fixture
         };
         for _ in 0..50 {
             rbpf.predict(&imu, 0.1).unwrap();

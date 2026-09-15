@@ -457,7 +457,7 @@ fn test_rbpf_closed_loop_on_real_data() {
         scheduler: GnssScheduler::PassThrough,
         fault_model: GnssFaultModel::None,
     };
-    let stream = build_event_stream(&records, &cfg);
+    let stream = build_event_stream(&records, &cfg).expect("records must not be empty");
 
     // Run closed-loop
     let results = run_closed_loop(&mut rbpf, stream, None, None)

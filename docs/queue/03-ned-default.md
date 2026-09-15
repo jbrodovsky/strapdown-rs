@@ -62,23 +62,27 @@ flip cannot move it and any future movement is attributable to something else.
 
 ## Known gaps, deliberately left
 
-- **`sim::dead_reckoning` and `sim::initialize_{ukf,ekf,eskf}` still hardcode ENU.**
-  `TestDataRecord` carries no frame tag, so Sensor Logger data (ENU) and `generate_synthetic`
-  output (NED) are indistinguishable once loaded. Honouring the NED default there would break
-  every ENU recording with no way to opt back in; the frame has to become a caller-supplied
-  option first, which is a signature change across those four functions and the CLI --
-  queue 7's `InsEngine` builder (#262). Symptom until then: `strapdown-sim syn` emits NED,
-  so dead-reckoning its output through those ENU entry points double-counts gravity and
-  falls at 2 g. Tracked in #296.
+- ~~**`sim::dead_reckoning` and `sim::initialize_{ukf,ekf,eskf}` still hardcode ENU.**~~
+  Closed by #296. The frame is now a caller-supplied option on all four entry points --
+  `dead_reckoning` takes it as an argument, the three initialisers take it on
+  `UkfConfig`/`EkfConfig`/`EskfConfig` -- defaulting to NED, with `--enu` on the CLI and
+  `is_enu` in the config file. `TestDataRecord` still carries no frame tag, so the half of the
+  objection the flag does not answer is handled by `sim::check_declared_frame`: it rotates the
+  leading records' specific force into the navigation frame and rejects a declaration the data
+  contradicts (+9.7 m/s^2 for Sensor Logger, -9.8 for `syn`) with an
+  `InvalidConfiguration` naming the flag to pass. It rejects; it does not guess. The symptom
+  is gone: `syn -> dr` on 60 s of stationary navigation-grade truth held altitude to 0.03 m,
+  against the 35 km it reached before.
 - **`earth::transport_rate` disagrees with Groves 5.44 in both frames** -- sign-flipped on all
   three components, `R_N`/`R_E` swapped, and the third component built from `v_N` where Groves
   uses `v_E`. Verified against a numerical differentiation of `C_n^e` along the trajectory.
   Wrong independently of the frame default, so fixing it here would have moved every
   integration number for an unrelated reason. Tracked in #297.
-- **ENU support is only skin-deep.** Inside `velocity_update` only the gravity term consults
-  `is_enu`; the Earth-rate and transport-rate terms keep their NED formulation in both frames.
-  So the two views of one state drift apart by the Coriolis asymmetry (~2e-5 m of altitude
-  over a 0.1 s step at 20 m/s). Part of why NED is the default now rather than the alternative.
+- ~~**ENU support is only skin-deep.**~~ Closed by #321: `velocity_update` now converts to NED
+  once, propagates there and reflects the result back, so an ENU run is exact rather than
+  approximate. (The original gap: only the gravity term consulted `is_enu`, so the two views of
+  one state drifted apart by the Coriolis asymmetry, ~2e-5 m of altitude over a 0.1 s step at
+  20 m/s.) Part of why NED is the default now rather than the alternative.
 
 Also filed while working this queue position, unrelated to the frame: #298, where
 `strapdown-sim` creates its `-o` path as a directory and overwrites the input CSV with the
