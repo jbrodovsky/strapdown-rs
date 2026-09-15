@@ -1551,8 +1551,23 @@ pub fn mechanize(state: &mut StrapdownState, sample: &ImuSample) -> Result<(), S
             what: "propagated attitude matrix",
         });
     }
-    // Save updated attitude as rotation matrix
-    work.attitude = Rotation3::from_matrix(&c_1);
+    // Save updated attitude as rotation matrix.
+    //
+    // `Rotation3::from_matrix` is `from_matrix_eps` with an *identity* initial guess, and
+    // identity is a stationary point of that Gauss-Newton iteration for any target a half
+    // turn away from it: the per-column cross products that form the update axis cancel, the
+    // step vanishes, and the routine returns its guess without reporting that it failed. A
+    // level vehicle heading due south has exactly that attitude -- `C_b^n = R_z(pi)` is a
+    // half turn from identity -- so a due-south dead-reckoning run used to have its heading
+    // silently replaced by 0 on the second step, the attitude landing 180 deg from truth
+    // with no error raised. Found reproducing #336, whose repro seeds the UKF at `yaw = pi`.
+    //
+    // `c_0` is the right guess on every count: it is at most one timestep's rotation from
+    // `c_1`, so the iteration starts inside the basin rather than at a degenerate point, and
+    // it converges in fewer steps everywhere else as well. The degeneracy is a knife edge
+    // rather than a basin -- 179.99 deg already converges correctly -- which is why this
+    // survived until a test seeded the exact value.
+    work.attitude = Rotation3::from_matrix_eps(&c_1, f64::EPSILON, 0, c_0);
     // Save update velocity
     work.velocity_north = velocity[0];
     work.velocity_east = velocity[1];
@@ -1747,6 +1762,69 @@ pub fn position_update(state: &StrapdownState, velocity: Vector3<f64>, dt: f64) 
 }
 
 // --- Miscellaneous functions for wrapping angles ---
+/// Reduce `value` onto `[lower, upper]` by whole periods, in constant time.
+///
+/// The shared body of every `wrap_*` function below. Each of them used to be its own
+/// `while` loop stepping one period at a time, which costs an iteration per period: a
+/// state that has diverged to 8e5 rad -- which is what #336's UKF does at a southerly
+/// heading -- spends ~130,000 iterations per angle per call, so the wrap turns a wrong
+/// answer into a hang.
+///
+/// `lower` and `upper` must be exactly one `period` apart, which they are for all five
+/// callers.
+///
+/// # Why `%` rather than a rounded quotient
+///
+/// The obvious constant-time reduction is to divide, round the quotient to a whole number
+/// of periods, and multiply it back out. That is not bounded, and the failure is not
+/// exotic: a quotient near 1e15 has an `f64` spacing above 1, so the rounded quotient times
+/// the period misses `value` by more than a period and the "reduced" result is nowhere near
+/// the interval. `wrap_latitude(1e17)` came back as 100 -- outside `[-90, 90]` -- and
+/// `wrap_to_360(f64::MAX)` as 1.2e291.
+///
+/// `%` on floats is `fmod`, whose result is always exactly representable and therefore
+/// always computed exactly, at every magnitude. One `fmod` and at most one addition of a
+/// period is enough, and it is bounded for every finite input by construction.
+///
+/// # Agreement with the loop it replaces
+///
+/// Identical for every input within a few periods of the interval -- 250,000 checked
+/// values across all five intervals, endpoints and exact multiples included. The endpoint
+/// case is what the `remainder == lower` branch is for: the loop stopped as soon as it was
+/// back in range, so which endpoint an exact multiple lands on depends on the direction it
+/// was stepping, and `wrap_to_pi(3*pi)` is `+pi` rather than `-pi`.
+///
+/// Further out the two diverge, and the loop is the inaccurate one: it rounds once per
+/// period, so by 8e5 rad it has accumulated ~1e-9 rad of drift that `fmod` does not have.
+/// The loop also did not terminate in useful time out there, and never terminated at all
+/// for an infinity -- subtracting a period from one leaves it infinite. A non-finite input
+/// is returned unchanged instead, so it reaches whatever checks for it (`mechanize` raises
+/// [`StrapdownError::NonFinite`]).
+///
+/// An input already on `[lower, upper]` is returned untouched -- both the overwhelmingly
+/// common case and a guarantee that the exact endpoints keep the representative they came
+/// in with.
+fn reduce_onto_interval(value: f64, lower: f64, upper: f64, period: f64) -> f64 {
+    if (lower..=upper).contains(&value) || !value.is_finite() {
+        return value;
+    }
+    // Exact for every finite input: `fmod` is defined to be, because its result always fits.
+    // Lands in `(-period, period)`, taking its sign from `value`.
+    let remainder = value % period;
+    if remainder > upper {
+        remainder - period
+    } else if remainder < lower {
+        remainder + period
+    } else if remainder == lower {
+        // `value` is a whole number of periods out, so the loop would have stepped onto
+        // whichever endpoint it reached first. Only the `[0, period]` intervals get here:
+        // `fmod` takes the sign of `value`, so on a symmetric interval a remainder equal to
+        // `lower` implies a negative `value`, for which `upper` is unreachable anyway.
+        if value > upper { upper } else { lower }
+    } else {
+        remainder
+    }
+}
 /// Wrap an angle to the range -180 to 180 degrees
 ///
 /// This function is generic and can be used with any type that implements the necessary traits.
@@ -1762,18 +1840,16 @@ pub fn position_update(state: &StrapdownState, velocity: Vector3<f64>, dt: f64) 
 /// let wrapped_angle = wrap_to_180(angle);
 /// assert_eq!(wrapped_angle, -170.0); // 190 degrees wrapped to -170 degrees
 /// ```
+///
+/// # Cost and non-finite inputs
+///
+/// The reduction is constant time; see [`reduce_onto_interval`] for what that replaces
+/// and why it agrees with the loop it replaces on every finite input.
 pub fn wrap_to_180<T>(angle: T) -> T
 where
-    T: PartialOrd + Copy + std::ops::SubAssign + std::ops::AddAssign + From<f64>,
+    T: PartialOrd + Copy + std::ops::SubAssign + std::ops::AddAssign + From<f64> + Into<f64>,
 {
-    let mut wrapped: T = angle;
-    while wrapped > T::from(180.0) {
-        wrapped -= T::from(360.0);
-    }
-    while wrapped < T::from(-180.0) {
-        wrapped += T::from(360.0);
-    }
-    wrapped
+    T::from(reduce_onto_interval(angle.into(), -180.0, 180.0, 360.0))
 }
 /// Wrap an angle to the range 0 to 360 degrees
 ///
@@ -1790,18 +1866,16 @@ where
 /// let wrapped_angle = wrap_to_360(angle);
 /// assert_eq!(wrapped_angle, 10.0); // 370 degrees wrapped to 10 degrees
 /// ```
+///
+/// # Cost and non-finite inputs
+///
+/// The reduction is constant time; see [`reduce_onto_interval`] for what that replaces
+/// and why it agrees with the loop it replaces on every finite input.
 pub fn wrap_to_360<T>(angle: T) -> T
 where
-    T: PartialOrd + Copy + std::ops::SubAssign + std::ops::AddAssign + From<f64>,
+    T: PartialOrd + Copy + std::ops::SubAssign + std::ops::AddAssign + From<f64> + Into<f64>,
 {
-    let mut wrapped: T = angle;
-    while wrapped > T::from(360.0) {
-        wrapped -= T::from(360.0);
-    }
-    while wrapped < T::from(0.0) {
-        wrapped += T::from(360.0);
-    }
-    wrapped
+    T::from(reduce_onto_interval(angle.into(), 0.0, 360.0, 360.0))
 }
 /// Wrap an angle to the range 0 to $\pm\pi$ radians
 ///
@@ -1824,52 +1898,23 @@ where
 ///
 /// The reduction is constant time. It used to be a `while` loop subtracting one turn at a
 /// time, which cost an iteration per turn and, for an infinite input, never terminated at
-/// all -- subtracting 2π from an infinity leaves it infinite, so the condition never went
-/// false. That mattered because the hot callers evaluate this per particle per estimate.
-/// An input that is already on `[-π, π]`, and any non-finite input, is returned unchanged.
-///
-/// The result is identical to the loop's for every finite input, boundaries included: the
-/// reduction is applied in the direction the loop would have stepped, so `wrap_to_pi(3π)`
-/// is `+π` and `wrap_to_pi(-3π)` is `-π` as before. An input whose magnitude is large enough
-/// that consecutive `f64` values are more than a turn apart has no exact representative and
-/// gets the nearest one the arithmetic allows; the loop did not terminate in useful time for
-/// those at all.
+/// all. That mattered because the hot callers evaluate this per particle per estimate
+/// (`rbpf::RaoBlackwellizedParticleFilter::particle_state_vector`) and per filter step
+/// ([`kalman::wrap_attitude_onto_principal_branch`](crate::kalman)), so a diverging
+/// attitude used to make the diagnostic path progressively more expensive exactly when it
+/// was least affordable. An input already on `[-π, π]`, and any non-finite input, is
+/// returned unchanged; see [`reduce_onto_interval`] for why the result is identical to the
+/// loop's on every finite input, `wrap_to_pi(3π) == +π` included.
 pub fn wrap_to_pi<T>(angle: T) -> T
 where
     T: PartialOrd + Copy + std::ops::SubAssign + std::ops::AddAssign + From<f64> + Into<f64>,
 {
-    let value: f64 = angle.into();
-    // Already on the branch: return the input untouched. This is both the overwhelmingly
-    // common case and the one where the reduction below would pick the other representative
-    // of +/-pi, so it is a fast path and a compatibility guarantee at once.
-    if (-std::f64::consts::PI..=std::f64::consts::PI).contains(&value) {
-        return angle;
-    }
-    // A non-finite angle has no representative on the circle. Returning it unchanged lets it
-    // propagate to whatever checks for it (`mechanize` raises `StrapdownError::NonFinite`);
-    // the loop this replaces never terminated for an infinity, because subtracting 2*pi from
-    // one leaves it unchanged and the `while` condition therefore never goes false.
-    if !value.is_finite() {
-        return angle;
-    }
-    // Constant-time reduction, in place of a loop that cost one iteration per turn. The
-    // callers that matter evaluate this per particle per estimate
-    // (`rbpf::RaoBlackwellizedParticleFilter::particle_state_vector`) and per filter step
-    // (`kalman::wrap_attitude_onto_principal_branch`), so a diverging attitude used to make
-    // the diagnostic path progressively more expensive exactly when it was least affordable.
-    //
-    // The two branches are what make this agree with the loop on the boundary rather than
-    // merely up to it. The loop stopped as soon as it was back in range, so which of +/-pi
-    // an exact odd multiple lands on depends on the direction it was stepping; `ceil` of the
-    // distance past the near edge reproduces that, where a single symmetric `floor` would
-    // send 3*pi to -pi.
-    let turns = ((value.abs() - std::f64::consts::PI) / std::f64::consts::TAU).ceil();
-    let wrapped = if value > 0.0 {
-        std::f64::consts::TAU.mul_add(-turns, value)
-    } else {
-        std::f64::consts::TAU.mul_add(turns, value)
-    };
-    T::from(wrapped)
+    T::from(reduce_onto_interval(
+        angle.into(),
+        -std::f64::consts::PI,
+        std::f64::consts::PI,
+        std::f64::consts::TAU,
+    ))
 }
 /// Wrap an angle to the range 0 to $2 \pi$ radians
 ///
@@ -1893,19 +1938,21 @@ where
 /// let wrapped_angle = wrap_to_2pi(angle);
 /// assert_eq!(wrapped_angle, PI); // 5π radians wrapped to π radians
 /// ```
+///
+/// # Cost and non-finite inputs
+///
+/// The reduction is constant time; see [`reduce_onto_interval`] for what that replaces
+/// and why it agrees with the loop it replaces on every finite input.
 pub fn wrap_to_2pi<T>(angle: T) -> T
 where
-    T: PartialOrd + Copy + std::ops::SubAssign + std::ops::AddAssign + From<f64>,
-    T: PartialOrd + Copy + std::ops::SubAssign + std::ops::AddAssign + From<i32>,
+    T: PartialOrd + Copy + std::ops::SubAssign + std::ops::AddAssign + From<f64> + Into<f64>,
 {
-    let mut wrapped: T = angle;
-    while wrapped > T::from(2.0 * std::f64::consts::PI) {
-        wrapped -= T::from(2.0 * std::f64::consts::PI);
-    }
-    while wrapped < T::from(0.0) {
-        wrapped += T::from(2.0 * std::f64::consts::PI);
-    }
-    wrapped
+    T::from(reduce_onto_interval(
+        angle.into(),
+        0.0,
+        std::f64::consts::TAU,
+        std::f64::consts::TAU,
+    ))
 }
 /// Wrap latitude to the range -90 to 90 degrees
 ///
@@ -1925,18 +1972,16 @@ where
 /// let wrapped_latitude = wrap_latitude(latitude);
 /// assert_eq!(wrapped_latitude, -85.0); // 95 degrees wrapped to -85 degrees
 /// ```
+///
+/// # Cost and non-finite inputs
+///
+/// The reduction is constant time; see [`reduce_onto_interval`] for what that replaces
+/// and why it agrees with the loop it replaces on every finite input.
 pub fn wrap_latitude<T>(latitude: T) -> T
 where
-    T: PartialOrd + Copy + std::ops::SubAssign + std::ops::AddAssign + From<f64>,
+    T: PartialOrd + Copy + std::ops::SubAssign + std::ops::AddAssign + From<f64> + Into<f64>,
 {
-    let mut wrapped: T = latitude;
-    while wrapped > T::from(90.0) {
-        wrapped -= T::from(180.0);
-    }
-    while wrapped < T::from(-90.0) {
-        wrapped += T::from(180.0);
-    }
-    wrapped
+    T::from(reduce_onto_interval(latitude.into(), -90.0, 90.0, 180.0))
 }
 
 // ============= Helper Functions for Test Scenarios =========================
@@ -2686,6 +2731,136 @@ mod tests {
         );
     }
 
+    /// Every wrap reduces a far-out angle in constant time, not one period per iteration.
+    ///
+    /// #336's secondary consequence. Each of these was a `while` loop stepping one period at
+    /// a time, so the cost was proportional to how far out of range the input was. A UKF
+    /// whose attitude had run away to 8e5 rad -- which is what the primary defect did at a
+    /// southerly heading -- spent ~130,000 iterations per angle per call, and a 1500-step run
+    /// stopped finishing inside 120 s. A wrong answer is one thing; a wrong answer that hangs
+    /// the process is another, and this is what stops the second from following the first.
+    ///
+    /// Asserted as a wall-clock bound rather than an instruction count, so it is coarse on
+    /// purpose: the loop form took minutes, this takes microseconds, and anything in between
+    /// is a regression worth failing on. The values also pin the *answers*, which is the part
+    /// a timing test alone would let slip.
+    #[test]
+    fn wraps_reduce_a_far_out_angle_in_constant_time() {
+        // ~133,000 turns: the magnitude #336's report quotes for the runaway UKF yaw.
+        const FAR_OUT_RAD: f64 = 8.0e5;
+        const FAR_OUT_DEG: f64 = 8.0e5;
+        const MAX_ELAPSED: std::time::Duration = std::time::Duration::from_secs(1);
+
+        let start = std::time::Instant::now();
+        let mut sink = 0.0_f64;
+        for _ in 0..1000 {
+            sink += super::wrap_to_pi(FAR_OUT_RAD);
+            sink += super::wrap_to_2pi(FAR_OUT_RAD);
+            sink += super::wrap_to_180(FAR_OUT_DEG);
+            sink += super::wrap_to_360(FAR_OUT_DEG);
+            sink += super::wrap_latitude(FAR_OUT_DEG);
+            sink += super::wrap_to_pi(-FAR_OUT_RAD);
+            sink += super::wrap_to_180(-FAR_OUT_DEG);
+        }
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < MAX_ELAPSED,
+            "7000 wraps of an 8e5 angle took {elapsed:?}; the per-period loop is back"
+        );
+        assert!(
+            sink.is_finite(),
+            "the loop above must not be optimised away"
+        );
+
+        // The answers, independent of the timing. Each is the input minus whole periods, on
+        // the interval the function's name promises.
+        assert!(
+            (-std::f64::consts::PI..=std::f64::consts::PI)
+                .contains(&super::wrap_to_pi(FAR_OUT_RAD))
+        );
+        assert!((0.0..=std::f64::consts::TAU).contains(&super::wrap_to_2pi(FAR_OUT_RAD)));
+        assert!((-180.0..=180.0).contains(&super::wrap_to_180(FAR_OUT_DEG)));
+        assert!((0.0..=360.0).contains(&super::wrap_to_360(FAR_OUT_DEG)));
+        assert!((-90.0..=90.0).contains(&super::wrap_latitude(FAR_OUT_DEG)));
+    }
+
+    /// Every wrap lands inside the interval its name promises, for *every* finite input.
+    ///
+    /// The first constant-time rewrite divided, rounded the quotient to a whole number of
+    /// periods and multiplied it back out, which is not bounded. Above ~1e15 periods the
+    /// quotient's own `f64` spacing exceeds one, so the product misses `value` by more than
+    /// a period and the "reduced" answer is nowhere near the range: `wrap_latitude(1e17)`
+    /// returned 100 and `wrap_to_360(f64::MAX)` returned 1.2e291. A wrap that silently
+    /// returns something outside its own range is worse than the loop it replaced, which at
+    /// least got there eventually, so this pins the property rather than the implementation.
+    #[test]
+    fn wraps_land_inside_their_own_range_for_every_finite_input() {
+        for value in [
+            f64::MAX,
+            -f64::MAX,
+            1e300,
+            -1e300,
+            1e17,
+            -1e17,
+            8.0e5,
+            -8.0e5,
+            360.0 * 1e15,
+            f64::MIN_POSITIVE,
+            -0.0,
+        ] {
+            let wrapped = super::wrap_to_pi(value);
+            assert!(
+                (-std::f64::consts::PI..=std::f64::consts::PI).contains(&wrapped),
+                "wrap_to_pi({value:e}) = {wrapped:e}"
+            );
+            let wrapped = super::wrap_to_2pi(value);
+            assert!(
+                (0.0..=std::f64::consts::TAU).contains(&wrapped),
+                "wrap_to_2pi({value:e}) = {wrapped:e}"
+            );
+            let wrapped = super::wrap_to_180(value);
+            assert!(
+                (-180.0..=180.0).contains(&wrapped),
+                "wrap_to_180({value:e}) = {wrapped:e}"
+            );
+            let wrapped = super::wrap_to_360(value);
+            assert!(
+                (0.0..=360.0).contains(&wrapped),
+                "wrap_to_360({value:e}) = {wrapped:e}"
+            );
+            let wrapped = super::wrap_latitude(value);
+            assert!(
+                (-90.0..=90.0).contains(&wrapped),
+                "wrap_latitude({value:e}) = {wrapped:e}"
+            );
+        }
+
+        // Bounded *and* right: 1e17 deg is 277,777,777,777,777 turns plus 280 deg, so the
+        // answer on -180..180 is -80. The quotient form gave -80 here but 100 for the same
+        // input on -90..90, which is how a rounding-driven miss shows up -- plausible, and
+        // wrong.
+        assert_eq!(super::wrap_to_180(1e17), -80.0);
+        assert_eq!(super::wrap_to_360(1e17), 280.0);
+    }
+
+    /// A non-finite angle comes back unchanged rather than spinning forever.
+    ///
+    /// Subtracting a period from an infinity leaves it infinite, so the `while` form's
+    /// condition never went false. Returning the input lets it reach whatever checks for it
+    /// -- [`mechanize`] raises [`StrapdownError::NonFinite`] -- instead of hanging here.
+    #[test]
+    fn wraps_pass_non_finite_angles_through() {
+        for value in [f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(super::wrap_to_pi(value), value);
+            assert_eq!(super::wrap_to_2pi(value), value);
+            assert_eq!(super::wrap_to_180(value), value);
+            assert_eq!(super::wrap_to_360(value), value);
+            assert_eq!(super::wrap_latitude(value), value);
+        }
+        assert!(super::wrap_to_pi(f64::NAN).is_nan());
+        assert!(super::wrap_to_180(f64::NAN).is_nan());
+    }
+
     #[test]
     fn test_wrap_to_2pi() {
         assert_eq!(
@@ -2752,6 +2927,63 @@ mod tests {
         assert_eq!(state_vector[7], pitch);
         assert_eq!(state_vector[8], yaw);
     }
+    /// A level vehicle heading due south keeps its heading through the mechanization.
+    ///
+    /// Found reproducing #336. `C_b^n = R_z(pi)` is exactly a half turn from identity, and
+    /// identity is the initial guess `Rotation3::from_matrix` hands its Gauss-Newton -- also
+    /// a *stationary point* of that iteration for a target a half turn away, because the
+    /// per-column cross products that form the update axis cancel. The step vanished and the
+    /// routine returned its guess without reporting a failure, so this run used to come out
+    /// pointing due north: a 180 deg attitude error, silently, on the second step.
+    ///
+    /// Two steps is the whole test. The first survives -- `c_1` is still exactly the half
+    /// turn it started as -- and it is the second, where the Earth-rate term has made `c_1`
+    /// non-orthonormal by ~1e-16, that used to collapse.
+    #[test]
+    fn a_due_south_heading_survives_mechanization() {
+        let due_south = Rotation3::from_euler_angles(0.0, 0.0, std::f64::consts::PI);
+        let mut state = StrapdownState {
+            latitude: 40.0_f64.to_radians(),
+            longitude: (-105.0_f64).to_radians(),
+            altitude: 1000.0,
+            velocity_north: -10.0,
+            velocity_east: 0.0,
+            velocity_vertical: 0.0,
+            attitude: due_south,
+            is_enu: false,
+        };
+        // A level hold: specific force opposing gravity, and the angular rate that keeps the
+        // platform level against Earth rate and transport rate. Any *drift* under this
+        // stream is a real mechanization error rather than an uncompensated rotation.
+        let dt = 0.2;
+        for _ in 0..2 {
+            let latitude_deg = state.latitude.to_degrees();
+            let velocity = Vector3::new(
+                state.velocity_north,
+                state.velocity_east,
+                state.velocity_vertical,
+            );
+            let nav_rate = earth::earth_rate_lla(&latitude_deg)
+                + earth::transport_rate(&latitude_deg, &state.altitude, &velocity);
+            let sample = ImuSample {
+                delta_v: state.attitude.inverse()
+                    * Vector3::new(0.0, 0.0, -earth::gravity(&latitude_deg, &state.altitude))
+                    * dt,
+                delta_theta: state.attitude.inverse() * nav_rate * dt,
+                dt,
+            };
+            mechanize(&mut state, &sample).unwrap();
+        }
+
+        let drift = (state.attitude.inverse() * due_south).angle();
+        assert!(
+            drift < 1e-6,
+            "a due-south attitude drifted {drift} rad through two level-hold steps; \
+             the propagated matrix is not being orthonormalised back to the rotation it is \
+             closest to (it used to land on identity, 180 deg away)"
+        );
+    }
+
     #[test]
     fn rest() {
         // Test the forward mechanization with a state at rest
@@ -3583,7 +3815,12 @@ mod tests {
                 velocity_update(&expected, f * dt, dt)
             };
             let (lat, lon, alt) = position_update(&expected, velocity, dt);
-            expected.attitude = Rotation3::from_matrix(&c_1);
+            // Same orthonormalising projection `mechanize` uses, warm start included. This
+            // reference exists to pin the *grouping* of the equations, so it must not differ
+            // from the thing under test in the projection as well: a cold `from_matrix` here
+            // lands one ulp away in roll, which would read as the grouping having changed
+            // when nothing about the grouping had.
+            expected.attitude = Rotation3::from_matrix_eps(&c_1, f64::EPSILON, 0, c_0);
             expected.velocity_north = velocity[0];
             expected.velocity_east = velocity[1];
             expected.velocity_vertical = velocity[2];

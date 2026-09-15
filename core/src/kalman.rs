@@ -252,8 +252,64 @@ pub(crate) fn expand_measurement_jacobian(
 /// the first `predict`, and clamping would change the rotation rather than rename it; the
 /// next `predict` re-derives the triple through `euler_angles` and canonicalises it.
 fn wrap_attitude_onto_principal_branch(state: &mut DVector<f64>) {
-    for index in 6..9 {
+    for index in ATTITUDE_STATE_INDICES {
         state[index] = wrap_to_pi(state[index]);
+    }
+}
+
+/// Indices of the three Euler angles within a filter state vector.
+///
+/// These are the channels that live on the circle rather than the line: the ones
+/// [`wrap_attitude_onto_principal_branch`] wraps and
+/// [`unwrap_attitude_onto_reference_branch`] re-expresses. Every other channel is an
+/// ordinary linear quantity. Named for the same reason
+/// [`rbpf::ATTITUDE_STATE_INDICES`](crate::rbpf) is: a bare `6..9` beside a position
+/// block and a velocity block says nothing about why those three are special.
+const ATTITUDE_STATE_INDICES: std::ops::Range<usize> = 6..9;
+
+/// Re-express a state's Euler angles on the same branch as `reference`, in place.
+///
+/// [`Rotation3::euler_angles`] derives roll and yaw with `atan2`, so it hands every
+/// rotation back on `[-pi, pi]` with a branch cut at `+/-pi`. That is the right thing for
+/// *reporting* an attitude and the wrong thing for combining several: two attitudes 2 deg
+/// apart either side of the cut come back as `+179` and `-179` deg, and any linear
+/// combination of those two numbers describes neither.
+///
+/// This puts `state` on whatever branch `reference` is on, by adding whole turns, so the
+/// numbers can be combined arithmetically again. It is exact as long as the two attitudes
+/// are less than a half turn apart in each angle, which for a sigma-point spread is the
+/// same condition the linearisation already needs.
+///
+/// It is deliberately *not* a circular mean. The UKF's sigma-point weights are not convex
+/// -- with `alpha = 1e-3` and `n = 15`, `w_0` is about -1e6 against `w_i` of about +3e4 --
+/// and `atan2(sum w sin, sum w cos)` is not meaningful for weights that can be large and
+/// negative. Unwrapping onto a reference and then taking the ordinary weighted sum keeps
+/// the unscented transform's own arithmetic intact; the RBPF, whose weights *are* convex,
+/// uses [`rbpf::circular_mean`](crate::rbpf) instead.
+///
+/// # Why this adds whole turns rather than rebuilding the angle
+///
+/// The obvious spelling is `state = reference + wrap_to_pi(state - reference)`, and it is
+/// wrong in a way that only shows up over a long run: when no wrap is needed that round trip
+/// through a subtraction and an addition still costs an ulp or two, and the UKF's mean is not
+/// a place where ulps stay small. `mu_bar` is `w_0 * x_0 + sum w_i * x_i` with `w_0` about
+/// -1e6, so a 1-ulp nudge to a sigma point moves the mean by ~1e-10 -- which then seeds the
+/// next sigma set, and compounds. Rewriting every angle that way moved this suite's *northbound*
+/// UKF yaw, where nothing straddles the cut and the fix should do nothing at all, by 0.09 rad
+/// over 1500 steps.
+///
+/// Adding the whole turns instead makes the no-wrap case exactly identity --
+/// [`wrap_to_pi`] returns an in-range input untouched, so `turns` is a literal `0.0` and the
+/// element is never written -- and leaves every baseline that does not straddle the cut
+/// bit-for-bit where it was. Only the case this exists to fix changes.
+fn unwrap_attitude_onto_reference_branch(state: &mut DVector<f64>, reference: &[f64; 3]) {
+    for (index, reference_angle) in ATTITUDE_STATE_INDICES.zip(reference) {
+        let offset = state[index] - reference_angle;
+        // Whole turns, or exactly zero when the angle is already on the reference's branch.
+        let turns = wrap_to_pi(offset) - offset;
+        if turns != 0.0 {
+            state[index] += turns;
+        }
     }
 }
 
@@ -514,6 +570,16 @@ impl NavigationFilter for UnscentedKalmanFilter {
     /// \Delta\theta^b &= \Delta\theta^b_{\text{measured}} - b_g \Delta t
     /// \end{aligned}
     /// $$
+    ///
+    /// # Attitude is averaged on one branch
+    ///
+    /// The sigma points enter [`mechanize`] on a common branch -- they are the mean plus and
+    /// minus the columns of a matrix square root -- and leave it canonicalised onto
+    /// `[-pi, pi]` *per point*, because that is what `Rotation3::euler_angles` returns. At a
+    /// southerly heading the set straddles the cut, so a linear mean of the numbers is not
+    /// the mean attitude. They are put back on sigma point 0's branch by
+    /// [`unwrap_attitude_onto_reference_branch`] before the weighted sum, which is both
+    /// where the mean and the covariance become meaningful again (#336).
     fn predict(
         &mut self,
         control_input: &dyn crate::InputModel,
@@ -522,6 +588,10 @@ impl NavigationFilter for UnscentedKalmanFilter {
         let sample = imu_sample_from_input(control_input, "UnscentedKalmanFilter", dt)?;
 
         let mut sigma_points = self.get_sigma_points()?;
+        // Branch the propagated attitudes are re-expressed on before they are averaged; set
+        // from sigma point 0, which is the propagated mean and therefore the most
+        // representative member of the set. See `unwrap_attitude_onto_reference_branch`.
+        let mut attitude_branch_reference = [0.0_f64; 3];
         for i in 0..sigma_points.ncols() {
             let mut sigma_point_vec = sigma_points.column(i).clone_owned();
             let mut state = StrapdownState {
@@ -565,9 +635,23 @@ impl NavigationFilter for UnscentedKalmanFilter {
             sigma_point_vec[3] = state.velocity_north;
             sigma_point_vec[4] = state.velocity_east;
             sigma_point_vec[5] = state.velocity_vertical;
-            sigma_point_vec[6] = state.attitude.euler_angles().0;
-            sigma_point_vec[7] = state.attitude.euler_angles().1;
-            sigma_point_vec[8] = state.attitude.euler_angles().2;
+            let (roll, pitch, yaw) = state.attitude.euler_angles();
+            sigma_point_vec[6] = roll;
+            sigma_point_vec[7] = pitch;
+            sigma_point_vec[8] = yaw;
+            // The sigma points went into `mechanize` on a common branch -- they are the mean
+            // plus and minus the columns of a matrix square root -- but come back out of
+            // `euler_angles` each canonicalised onto `[-pi, pi]` independently, which is
+            // what breaks that. Put them back on one branch before anything averages them.
+            if i == 0 {
+                attitude_branch_reference =
+                    [sigma_point_vec[6], sigma_point_vec[7], sigma_point_vec[8]];
+            } else {
+                unwrap_attitude_onto_reference_branch(
+                    &mut sigma_point_vec,
+                    &attitude_branch_reference,
+                );
+            }
             sigma_points.set_column(i, &sigma_point_vec);
         }
         let mut mu_bar = DVector::<f64>::zeros(self.state_size);
@@ -576,10 +660,19 @@ impl NavigationFilter for UnscentedKalmanFilter {
         }
         let mut p_bar = DMatrix::<f64>::zeros(self.state_size, self.state_size);
         for (i, sigma_point) in sigma_points.column_iter().enumerate() {
+            // No angular wrap here: the loop above already put every sigma point on the
+            // reference's branch, and `mu_bar` is a weighted combination of those, so the
+            // attitude residuals are already the small differences they are meant to be.
+            // Wrapping them would instead *cap* a genuinely large spread at half a turn.
             let diff = sigma_point - &mu_bar;
             p_bar += self.weights_cov[i] * &diff * &diff.transpose();
         }
         p_bar += &self.process_noise;
+        // Report attitude on the same branch `update` writes (#314). The reference branch is
+        // whichever one sigma point 0 landed on, so without this a state that sat near the
+        // cut would drift a turn away from the principal branch over successive steps.
+        // Applied after `p_bar` for the reason the comment above gives.
+        wrap_attitude_onto_principal_branch(&mut mu_bar);
         self.mean_state = mu_bar;
         self.covariance = symmetrize(&p_bar);
         Ok(())
@@ -677,22 +770,21 @@ impl NavigationFilter for UnscentedKalmanFilter {
     /// Return the current mean state estimate.
     ///
     /// Roll, pitch and yaw come back on `[-pi, pi]` -- the branch `Rotation3::euler_angles`
-    /// returns -- **after an [`Self::update`]**, which is where
-    /// `wrap_attitude_onto_principal_branch` runs.
+    /// returns -- after both [`Self::predict`] and [`Self::update`], each of which ends by
+    /// calling `wrap_attitude_onto_principal_branch`.
     ///
-    /// After a bare [`Self::predict`] with no update, that is not guaranteed, and the
-    /// caveat is not academic. `predict` stores the *linear* weighted mean of the sigma
-    /// points' Euler angles, and the UKF's mean weights are non-convex (with `alpha = 1e-3`
-    /// and `n = 15`, `w_0` is about -1e6 against `w_i` of about +3e4). Sigma points that
-    /// straddle the `atan2` cut at `+/-pi` -- which happens at a southerly heading -- are
-    /// then averaged across it, and the result is not an attitude at all: seeded due south,
-    /// this filter reaches a reported pitch of 5.7 rad and a yaw of 8e5 rad within three
-    /// samples. Wrapping afterwards renames that value; it does not rescue it.
+    /// `predict` did not always do so, and the value it left was worse than off-branch. It
+    /// took the *linear* weighted mean of the sigma points' Euler angles, which
+    /// `euler_angles` had each canonicalised onto `[-pi, pi]` independently; sigma points
+    /// straddling the cut at `+/-pi` -- which is what a southerly heading gives -- were
+    /// therefore averaged across it. With the UKF's non-convex mean weights (`alpha = 1e-3`,
+    /// `n = 15`, so `w_0` is about -1e6 against `w_i` of about +3e4) that average does not
+    /// merely land between the points, it extrapolates away from them: seeded due south,
+    /// this filter reached a reported pitch of 5.7 rad and a yaw of 8e5 rad within three
+    /// samples, and wrapping afterwards would only have renamed it (#336).
     ///
-    /// That is a pre-existing property of the sigma-point mean rather than of this branch
-    /// choice -- the cut has always been at `+/-pi` inside `predict`, whatever `update`
-    /// subsequently wrapped the mean to -- and it is tracked separately as #336. Read a
-    /// UKF attitude after an update, not between one.
+    /// `predict` now puts every propagated sigma point back on one branch before averaging,
+    /// so the mean is an attitude again and the wrap is the presentation step it looks like.
     fn get_estimate(&self) -> DVector<f64> {
         self.mean_state.clone()
     }
@@ -3622,6 +3714,126 @@ mod tests {
                 "{name} was seeded at -3.0 rad and should still be negative, got {angle}"
             );
         }
+    }
+
+    /// #336: sigma points either side of the `+/-pi` cut are put back on one branch.
+    ///
+    /// The unit-level statement of the defect. `euler_angles` canonicalises each propagated
+    /// sigma point onto `[-pi, pi]` independently, so a set spread across a southerly
+    /// heading comes back as a mix of `+179` and `-179` deg; averaging those numbers
+    /// linearly gives ~0 deg -- due *north* -- and with the UKF's non-convex weights it does
+    /// not even stay between them.
+    #[test]
+    fn unwrap_attitude_puts_sigma_points_back_on_one_branch() {
+        let reference = [0.0, 0.0, std::f64::consts::PI - 0.01];
+        let mut straddling = DVector::<f64>::zeros(9);
+        // The same attitude a hundredth of a radian the *other* side of the cut, as
+        // `euler_angles` would report it.
+        straddling[8] = -std::f64::consts::PI + 0.01;
+
+        unwrap_attitude_onto_reference_branch(&mut straddling, &reference);
+
+        // 0.02 rad from the reference, not the 6.26 rad the raw values differ by.
+        assert_approx_eq!(straddling[8] - reference[2], 0.02, 1e-12);
+        // And still the same rotation it was handed.
+        assert_approx_eq!(
+            wrap_to_pi(straddling[8]),
+            -std::f64::consts::PI + 0.01,
+            1e-12
+        );
+    }
+
+    /// An angle already on the reference's branch is left *bit-for-bit* alone.
+    ///
+    /// Not a nicety. The UKF mean weights run to about -1e6, so an ulp of drift per sigma
+    /// point per step becomes a visible change in the estimate over a long run: the first
+    /// spelling of this helper, which rebuilt every angle as `reference + wrap_to_pi(angle -
+    /// reference)`, moved `filter_comparison`'s *northbound* UKF yaw by 0.09 rad, on a
+    /// heading where nothing straddles the cut and the fix is supposed to do nothing.
+    #[test]
+    fn unwrap_attitude_is_exactly_identity_away_from_the_cut() {
+        let reference = [0.1, -0.2, 0.3];
+        let original = DVector::from_vec(vec![
+            1.0,
+            2.0,
+            3.0,
+            4.0,
+            5.0,
+            6.0,
+            0.100_000_1,
+            -0.199_999_9,
+            0.300_000_2,
+        ]);
+        let mut unwrapped = original.clone();
+
+        unwrap_attitude_onto_reference_branch(&mut unwrapped, &reference);
+
+        assert_eq!(
+            unwrapped, original,
+            "an angle on the reference's own branch must survive untouched, not merely \
+             approximately"
+        );
+    }
+
+    /// #336: a UKF seeded due south holds its heading instead of running away.
+    ///
+    /// The filter-level statement. Before the fix this reached a reported pitch of 5.7 rad
+    /// and a yaw of 8e5 rad within three samples -- values that are not attitudes at all,
+    /// since `euler_angles` cannot produce a pitch outside `[-pi/2, pi/2]` and 8e5 rad is
+    /// 133,000 turns. Three `predict`s is enough because the mean re-seeds the next sigma
+    /// set, so the error compounds immediately rather than accumulating slowly.
+    #[test]
+    fn ukf_holds_a_southerly_heading_across_predicts() {
+        // 1e-3 rad rather than something tighter because a zero gyro does not hold the
+        // platform level: with nothing cancelling Earth rate it tilts at ~7.3e-5 rad/s, so
+        // 0.6 s of the stream below legitimately moves roll by 4.4e-5 rad. That is physics,
+        // not the defect, and the defect is eight orders of magnitude the other side of this
+        // bound -- the pre-fix run reached 5.7 rad of pitch and 8e5 rad of yaw.
+        const MAX_ATTITUDE_DRIFT_RAD: f64 = 1e-3;
+
+        let due_south = InitialState {
+            yaw: std::f64::consts::PI,
+            ..UKF_PARAMS
+        };
+        let mut ukf = UnscentedKalmanFilter::new(
+            &due_south,
+            &IMU_BIASES,
+            None,
+            COVARIANCE_DIAGONAL.to_vec(),
+            DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
+            1e-3,
+            2.0,
+            0.0,
+        );
+
+        // A still, level vehicle: no sensed rotation, and specific force opposing gravity.
+        // Whatever this stream does to the attitude, it is the same thing at every heading.
+        let sample = ImuSample {
+            delta_v: Vector3::new(0.0, 0.0, -9.81 * 0.2),
+            delta_theta: Vector3::zeros(),
+            dt: 0.2,
+        };
+        for _ in 0..3 {
+            ukf.predict(&sample, 0.2).unwrap();
+        }
+
+        let estimate = ukf.get_estimate();
+        for (name, index) in [("roll", 6), ("pitch", 7), ("yaw", 8)] {
+            assert!(
+                (-std::f64::consts::PI..=std::f64::consts::PI).contains(&estimate[index]),
+                "{name} = {} rad is off the -pi..pi branch `predict` reports on",
+                estimate[index]
+            );
+        }
+        // Differenced with `wrap_to_pi` so that a yaw reported as `-pi` counts as holding a
+        // `+pi` seed rather than as a full turn of error.
+        assert_approx_eq!(
+            wrap_to_pi(estimate[8] - std::f64::consts::PI).abs(),
+            0.0,
+            MAX_ATTITUDE_DRIFT_RAD
+        );
+        assert_approx_eq!(estimate[6], 0.0, MAX_ATTITUDE_DRIFT_RAD);
+        assert_approx_eq!(estimate[7], 0.0, MAX_ATTITUDE_DRIFT_RAD);
     }
 
     // ==================== Error-State Kalman Filter Tests ====================

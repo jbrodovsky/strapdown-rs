@@ -59,18 +59,18 @@ use strapdown::kalman::ExtendedKalmanFilter;
 use strapdown::sim::HealthLimits;
 use strapdown::sim::health::HealthMonitor;
 #[cfg(feature = "geonav")]
+use strapdown::sim::run_closed_loop_with_geo;
+#[cfg(feature = "geonav")]
 use strapdown::sim::{
     DEFAULT_INITIAL_POSITION_UNCERTAINTY_M, DEFAULT_PROCESS_NOISE, GeoResolution,
 };
 use strapdown::sim::{
     EkfConfig, EskfConfig, ExecutionLimits, ExecutionMonitor, FaultArgs, FilterType,
-    NavigationResult, ParticleFilterType, SchedulerArgs, SimulationConfig, SimulationMode,
-    SyntheticConfig, TestDataRecord, UkfConfig, build_fault, build_scheduler, check_declared_frame,
-    dead_reckoning, generate_synthetic, initialize_ekf, initialize_eskf, initialize_ukf,
-    run_closed_loop,
+    GeoStateLayout, NavigationResult, ParticleFilterType, SchedulerArgs, SimulationConfig,
+    SimulationMode, SyntheticConfig, TestDataRecord, UkfConfig, build_fault, build_scheduler,
+    check_declared_frame, dead_reckoning, generate_synthetic, initialize_ekf, initialize_eskf,
+    initialize_ukf, run_closed_loop,
 };
-#[cfg(feature = "geonav")]
-use strapdown::sim::{GeoStateLayout, run_closed_loop_with_geo};
 
 const LONG_ABOUT: &str =
     "STRAPDOWN SIM: A simulation and analysis tool for strapdown inertial navigation systems.
@@ -780,6 +780,23 @@ fn process_file(
             let geo_bias_dim = geo_bias_layout.map_or(0, |layout| layout.bias_count());
             #[cfg(not(feature = "geonav"))]
             let geo_bias_dim = 0usize;
+
+            // The same placement, restated for `NavigationResult`, which lives in `core` and
+            // so cannot name `GeoBiasLayout`. Derived from that layout rather than rebuilt
+            // from the map flags, exactly as `run_geo_closed_loop_cli` derives the Kalman one,
+            // so where the biases live is decided once. The unaided case is
+            // `PARTICLE_NONE` and not `NONE`: this filter's estimate is nine states, not the
+            // Kalman filters' fifteen.
+            #[cfg(feature = "geonav")]
+            let geo_layout = geo_bias_layout.map_or(GeoStateLayout::PARTICLE_NONE, |layout| {
+                GeoStateLayout::new(
+                    layout.state_dim(),
+                    layout.gravity_bias().map(|bias| bias.index),
+                    layout.magnetic_bias().map(|bias| bias.index),
+                )
+            });
+            #[cfg(not(feature = "geonav"))]
+            let geo_layout = GeoStateLayout::PARTICLE_NONE;
             let mut rbpf = RaoBlackwellizedParticleFilter::new(
                 nominal,
                 RbpfConfig {
@@ -810,7 +827,12 @@ fn process_file(
 
             // Geophysical measurements ride the same event stream as every other
             // measurement type, so there is no separate geo path here.
-            let results = run_rbpf_event_loop(&mut rbpf, event_stream, &config.execution_limits)?;
+            let results = run_rbpf_event_loop(
+                &mut rbpf,
+                event_stream,
+                &config.execution_limits,
+                geo_layout,
+            )?;
             let output_file = resolve_output_path(output, input_file, all_inputs)?;
             NavigationResult::to_csv(&results, &output_file)?;
             info!("Results written to {}", output_file.display());
@@ -1746,10 +1768,19 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
 /// Handles every measurement type carried by the event stream, geophysical
 /// anomalies included -- the measurement models read the state the filter
 /// passes them, so no separate geophysical loop is required.
+///
+/// `geo_layout` says which geophysical bias states the filter was configured to carry, and
+/// must agree with the `extra_state_dim` its `RbpfConfig` was built with -- the caller derives
+/// both from the same pair of loaded maps. The cloud is summarised with
+/// `estimate_with_extra_states` rather than `estimate` so those biases and their variances
+/// reach the solution: summarising a geophysically aided run as nine states drops the one
+/// quantity the aiding exists to produce, and the rows then look complete with their
+/// geophysical columns blank.
 fn run_rbpf_event_loop(
     rbpf: &mut RaoBlackwellizedParticleFilter,
     event_stream: EventStream,
     execution_limits: &ExecutionLimits,
+    geo_layout: GeoStateLayout,
 ) -> Result<Vec<NavigationResult>, Box<dyn Error>> {
     let start_time = event_stream.start_time;
     let mut results = Vec::with_capacity(event_stream.events.len());
@@ -1759,11 +1790,12 @@ fn run_rbpf_event_loop(
     });
     let mut execution_monitor = ExecutionMonitor::new(&execution_limits.clone(), sim_duration_s);
 
-    let (mean, cov) = rbpf.estimate();
-    results.push(NavigationResult::from_particle_filter(
+    let (mean, cov) = rbpf.estimate_with_extra_states();
+    results.push(NavigationResult::from_particle_filter_with_geo(
         &start_time,
         &mean,
         &cov,
+        geo_layout,
     ));
     let mut last_ts = start_time;
 
@@ -1782,7 +1814,11 @@ fn run_rbpf_event_loop(
             }
         }
 
-        let (mean, cov) = rbpf.estimate();
+        // The health monitor sees the geophysical states too: it reads position and velocity
+        // by index from the front and then sweeps the covariance diagonal, so a diverging bias
+        // variance is caught here the same way it already is on the Kalman paths, which hand
+        // `run_closed_loop` the full augmented state.
+        let (mean, cov) = rbpf.estimate_with_extra_states();
         if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
             return Err(e.into());
         }
@@ -1790,7 +1826,9 @@ fn run_rbpf_event_loop(
         execution_monitor.mark_progress();
 
         if ts != last_ts {
-            results.push(NavigationResult::from_particle_filter(&ts, &mean, &cov));
+            results.push(NavigationResult::from_particle_filter_with_geo(
+                &ts, &mean, &cov, geo_layout,
+            ));
             last_ts = ts;
         }
     }
@@ -1908,6 +1946,23 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
         #[cfg(not(feature = "geonav"))]
         let geo_bias_dim = 0usize;
 
+        // The same placement, restated for `NavigationResult`, which lives in `core` and
+        // so cannot name `GeoBiasLayout`. Derived from that layout rather than rebuilt
+        // from the map flags, exactly as `run_geo_closed_loop_cli` derives the Kalman one,
+        // so where the biases live is decided once. The unaided case is
+        // `PARTICLE_NONE` and not `NONE`: this filter's estimate is nine states, not the
+        // Kalman filters' fifteen.
+        #[cfg(feature = "geonav")]
+        let geo_layout = geo_bias_layout.map_or(GeoStateLayout::PARTICLE_NONE, |layout| {
+            GeoStateLayout::new(
+                layout.state_dim(),
+                layout.gravity_bias().map(|bias| bias.index),
+                layout.magnetic_bias().map(|bias| bias.index),
+            )
+        });
+        #[cfg(not(feature = "geonav"))]
+        let geo_layout = GeoStateLayout::PARTICLE_NONE;
+
         check_declared_frame(&records, args.sim.enu)?;
         let first = &records[0];
         // Quaternion, not Euler angles: `TestDataRecord`'s roll/pitch/yaw are a different
@@ -1970,7 +2025,7 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
         let results = match args.filter_type {
             ParticleFilterType::RaoBlackwellized => {
                 let mut rbpf = RaoBlackwellizedParticleFilter::new(nominal, config)?;
-                run_rbpf_event_loop(&mut rbpf, event_stream, &execution_limits)?
+                run_rbpf_event_loop(&mut rbpf, event_stream, &execution_limits, geo_layout)?
             }
         };
 

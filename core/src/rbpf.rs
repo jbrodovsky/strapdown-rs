@@ -30,6 +30,18 @@ use rand_distr::Normal;
 const POSITION_STATE_DIM: usize = 3;
 const LINEAR_STATE_DIM_BASE: usize = 6;
 
+/// Width of the navigation estimate the filter reports: position, velocity and attitude.
+///
+/// The public spelling of the same number is
+/// [`crate::sim::PARTICLE_FILTER_STATES`](crate::sim::PARTICLE_FILTER_STATES), which is where
+/// the geophysical bias states are indexed from.
+const NAVIGATION_STATE_DIM: usize = POSITION_STATE_DIM + LINEAR_STATE_DIM_BASE;
+
+/// The two spellings of nine must stay the same nine: `sim` indexes this filter's geophysical
+/// bias states from its own copy, so a change here that did not reach there would silently
+/// read a navigation state as a map bias. A compile error is the cheapest place to catch that.
+const _: () = assert!(NAVIGATION_STATE_DIM == crate::sim::PARTICLE_FILTER_STATES);
+
 /// Index of the yaw error within a particle's linear state.
 ///
 /// The linear state is `[dv_n, dv_e, dv_d, droll, dpitch, dyaw, ..extra]`, so this is the
@@ -617,22 +629,40 @@ impl RaoBlackwellizedParticleFilter {
             .iter()
             .map(|particle| self.particle_state_vector(particle))
             .collect();
-        self.weighted_moments(&states)
+        self.weighted_moments(&states, NAVIGATION_STATE_DIM)
     }
 
-    /// [`Self::estimate`] over the state vector a measurement model actually sees: the nine
-    /// navigation states with the [`RbpfConfig::extra_state_dim`] extra states appended.
+    /// [`Self::estimate`] over the whole state the filter carries: the nine navigation states
+    /// with the [`RbpfConfig::extra_state_dim`] extra states appended, and the covariance of
+    /// all of them.
     ///
     /// Identical to [`Self::estimate`] when there are no extra states, which is every
     /// configuration but geophysical aiding.
     ///
     /// This exists because summarising the cloud as a 9-vector is not a harmless truncation
-    /// for a model that reads a state by index *from the end*: a geophysical map bias
-    /// declared as "one from the end" resolves to the yaw angle in a 9-vector, so the gate
-    /// scored every geophysical fix with an attitude angle substituted for the bias while
-    /// the weight update -- which goes through [`Self::particle_state_vector_full`] -- used
-    /// the real one.
-    fn estimate_with_extra_states(&self) -> (DVector<f64>, DMatrix<f64>) {
+    /// once extra states are configured, and it has cost the two consumers below in the two
+    /// different ways a dropped state can cost you.
+    ///
+    /// **Scoring a measurement.** A model that reads a state by index *from the end* gets the
+    /// wrong entry rather than none: a geophysical map bias declared as "one from the end"
+    /// resolves to the yaw angle in a 9-vector, so [`Self::evaluate_ensemble_gate`] scored
+    /// every geophysical fix with an attitude angle substituted for the bias, while the weight
+    /// update -- which goes through [`Self::particle_state_vector_full`] -- used the real one.
+    ///
+    /// **Reporting the estimate.** The dropped states are the ones geophysical aiding exists
+    /// to produce. A gravity-aided run really does estimate a map bias and it really does
+    /// move, but a nine-element summary has nowhere to put it, so
+    /// [`crate::sim::NavigationResult::from_particle_filter`] wrote rows whose geophysical
+    /// columns were empty for a run that had estimated them. Pair this with
+    /// [`crate::sim::NavigationResult::from_particle_filter_with_geo`], which is told by a
+    /// [`GeoStateLayout`](crate::sim::GeoStateLayout) which extra state is which; the vector
+    /// itself cannot say, since a ten-element estimate is gravity-only or magnetic-only
+    /// depending on the run's flags.
+    ///
+    /// [`Self::estimate`] is kept as the nine-state accessor rather than widened because the
+    /// navigation solution is what nearly every caller wants, and its width should not depend
+    /// on how the filter happens to be configured.
+    pub fn estimate_with_extra_states(&self) -> (DVector<f64>, DMatrix<f64>) {
         if self.config.extra_state_dim == 0 {
             return self.estimate();
         }
@@ -641,7 +671,7 @@ impl RaoBlackwellizedParticleFilter {
             .iter()
             .map(|particle| self.particle_state_vector_full(particle))
             .collect();
-        self.weighted_moments(&states)
+        self.weighted_moments(&states, NAVIGATION_STATE_DIM + self.config.extra_state_dim)
     }
 
     /// Weighted mean and covariance of an assembled cloud, attitude handled on the circle.
@@ -649,9 +679,16 @@ impl RaoBlackwellizedParticleFilter {
     /// Shared by [`Self::estimate`] and [`Self::estimate_with_extra_states`], which differ
     /// only in how wide the assembled states are. [`ATTITUDE_STATE_INDICES`] addresses the
     /// same three channels in both, because the extra states are appended after them.
-    fn weighted_moments(&self, states: &[DVector<f64>]) -> (DVector<f64>, DMatrix<f64>) {
-        let dim = states.first().map_or(9, DVector::len);
-
+    ///
+    /// `dim` is the caller's own width rather than `states[0].len()` so that a cloud with no
+    /// particles still reports the shape its caller promised: the two accessors have
+    /// different contracts, and inferring the width would collapse them both to whatever the
+    /// fallback happened to be.
+    fn weighted_moments(
+        &self,
+        states: &[DVector<f64>],
+        dim: usize,
+    ) -> (DVector<f64>, DMatrix<f64>) {
         let mut mean = DVector::<f64>::zeros(dim);
         for (state, particle) in states.iter().zip(&self.particles) {
             mean += state * particle.weight;
@@ -1621,6 +1658,120 @@ mod tests {
             after.to_degrees(),
             truth_yaw.to_degrees()
         );
+    }
+
+    /// The extra linear states, and their variances, come back through
+    /// [`RaoBlackwellizedParticleFilter::estimate_with_extra_states`].
+    ///
+    /// The regression: `estimate` is a nine-state summary, so with extra states configured it
+    /// silently drops exactly the quantity geophysical aiding exists to produce. Asserted
+    /// against moments computed straight off the cloud, so the estimator has to agree with
+    /// the particles rather than merely with itself.
+    #[test]
+    fn rbpf_estimate_with_extra_states_reports_the_extra_states_and_their_variance() {
+        const EXTRA_INIT_STD: f64 = 3.0;
+
+        let nominal = StrapdownState {
+            latitude: 0.7,
+            longitude: -1.3,
+            altitude: 100.0,
+            ..StrapdownState::default()
+        };
+        let mut rbpf = RaoBlackwellizedParticleFilter::new(
+            nominal,
+            RbpfConfig {
+                num_particles: 400,
+                extra_state_dim: 2,
+                extra_state_init_std: EXTRA_INIT_STD,
+                seed: 7,
+                ..RbpfConfig::default()
+            },
+        )
+        .unwrap();
+        // Skew the weights so a weighted mean is not the same number as a plain one; an
+        // unweighted implementation would otherwise pass this by coincidence.
+        let count = rbpf.particles.len();
+        let mut total = 0.0;
+        for (i, particle) in rbpf.particles.iter_mut().enumerate() {
+            particle.weight = 1.0 + (i % 5) as f64;
+            total += particle.weight;
+        }
+        for particle in &mut rbpf.particles {
+            particle.weight /= total;
+        }
+
+        let (nav_mean, nav_cov) = rbpf.estimate();
+        let (full_mean, full_cov) = rbpf.estimate_with_extra_states();
+
+        assert_eq!(
+            nav_mean.len(),
+            9,
+            "`estimate` keeps its nine-state contract"
+        );
+        assert_eq!(nav_cov.shape(), (9, 9));
+        assert_eq!(
+            full_mean.len(),
+            11,
+            "the two extra states must be appended after the nine navigation states"
+        );
+        assert_eq!(full_cov.shape(), (11, 11));
+
+        // The extra states are appended, so the navigation block must be the same answer.
+        for i in 0..9 {
+            assert_approx_eq!(full_mean[i], nav_mean[i], 1e-12);
+            assert_approx_eq!(full_cov[(i, i)], nav_cov[(i, i)], 1e-12);
+        }
+
+        // Moments of the cloud, computed here rather than by the code under test.
+        for extra in 0..2 {
+            let row = LINEAR_STATE_DIM_BASE + extra;
+            let expected_mean: f64 = rbpf
+                .particles
+                .iter()
+                .map(|p| p.weight * p.linear_state[row])
+                .sum();
+            let expected_var: f64 = rbpf
+                .particles
+                .iter()
+                .map(|p| p.weight * (p.linear_state[row] - expected_mean).powi(2))
+                .sum();
+
+            assert_approx_eq!(full_mean[9 + extra], expected_mean, 1e-12);
+            assert_approx_eq!(full_cov[(9 + extra, 9 + extra)], expected_var, 1e-12);
+            // A bias reported without an uncertainty is not usable, and a variance that came
+            // out as zero would mean the draw never happened.
+            assert!(
+                full_cov[(9 + extra, 9 + extra)] > 0.0,
+                "extra state {extra} reported a zero variance over {count} particles drawn \
+                 with sigma {EXTRA_INIT_STD}"
+            );
+        }
+    }
+
+    /// With no extra states configured, the two accessors are the same estimate.
+    ///
+    /// Which is every configuration but geophysical aiding, so this is the case that must not
+    /// change shape underneath existing callers.
+    #[test]
+    fn rbpf_estimate_with_extra_states_matches_estimate_when_there_are_none() {
+        let rbpf = RaoBlackwellizedParticleFilter::new(
+            StrapdownState::default(),
+            RbpfConfig {
+                num_particles: 50,
+                seed: 11,
+                ..RbpfConfig::default()
+            },
+        )
+        .unwrap();
+
+        let (mean, cov) = rbpf.estimate();
+        let (full_mean, full_cov) = rbpf.estimate_with_extra_states();
+        assert_eq!(full_mean.len(), 9);
+        assert_eq!(full_cov.shape(), (9, 9));
+        for i in 0..9 {
+            assert_approx_eq!(full_mean[i], mean[i], 1e-15);
+            assert_approx_eq!(full_cov[(i, i)], cov[(i, i)], 1e-15);
+        }
     }
 
     /// The reported attitude is a mean on the circle, on the principal branch (#341, #314).
