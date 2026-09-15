@@ -115,4 +115,38 @@ branch, and the ESKF was already consuming `ImuSample` from queue 4. Quarantined
 tuned around, per the precedent set by #295. Full characterisation and a suggested starting
 point are in #303.
 
+> **Update, 2026-09-15.** The convergence failure recorded above is fixed and
+> `all_filters_converge_from_a_displaced_seed` is no longer `#[ignore]`d --
+> `core/tests/filter_comparison.rs` has no ignored tests left.
+>
+> The localisation above was right. Both halves were an analytic Jacobian written in a
+> different convention from the state it linearises, which is exactly why the UKF was
+> untouched, but they were in different functions: the EKF's was `state_transition_jacobian`
+> expressing attitude as a rotation vector when the state holds Euler angles (#307), and the
+> ESKF's was `error_state_transition_jacobian` mixing body-frame and navigation-frame
+> attitude errors, plus an altitude/vertical-velocity sign that ignored the frame in both.
+>
+> Every magnitude #303 tabulated now converges, for every filter. Final error after the run,
+> from `every_filter_converges_from_a_seed_error_in_any_channel`, which was added to carry
+> that table as a test rather than as prose:
+>
+> | seed error | ESKF | EKF | UKF | RBPF |
+> |---|---|---|---|---|
+> | 1 m altitude | 0.000 m | 0.000 m | 0.018 m | 0.192 m |
+> | 0.05 m/s vertical velocity | 0.000 m | 0.000 m | 0.026 m | 0.161 m |
+> | 0.05 m/s north velocity | 0.000 m | 0.000 m | 0.003 m | 0.045 m |
+> | 0.001 rad pitch | 0.000 m | 0.000 m | 0.011 m | 0.106 m |
+>
+> Horizontal error; the altitude column is 0.000 m for the ESKF and EKF on all four, which is
+> the specific claim above -- that each of these "run the vertical channel away within 2-5
+> minutes" -- refuted directly. The 20 m displaced seed of the original test lands at 0.000 m
+> (ESKF and EKF), 0.002 m (UKF) and 0.076 m (RBPF).
+>
+> **#303 is not fully closed.** What is fixed is convergence, which is what this section
+> recorded. The covariance-consistency half is still open: the EKF and UKF report horizontal
+> position sigmas of roughly 450 m and 201 m on runs whose actual error is metres, so a filter
+> that has converged still cannot gate on its own uncertainty.
+> `aiding.rs::the_shipped_default_process_noise_lets_every_filter_filter` stays `#[ignore]`d
+> for that, and queue 6 records what it costs #260.
+
 Part of the [v1.0 work queue](../V1_QUEUE.md) / [project board](https://github.com/users/jbrodovsky/projects/7).
