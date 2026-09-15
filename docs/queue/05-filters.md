@@ -126,9 +126,7 @@ point are in #303.
 > ESKF's was `error_state_transition_jacobian` mixing body-frame and navigation-frame
 > attitude errors, plus an altitude/vertical-velocity sign that ignored the frame in both.
 >
-> Every magnitude #303 tabulated now converges, for every filter. Final error after the run,
-> from `every_filter_converges_from_a_seed_error_in_any_channel`, which was added to carry
-> that table as a test rather than as prose:
+> The 20 m position seed and the four channel magnitudes exercised below now converge for every filter. Final horizontal error after the run,
 >
 > | seed error | ESKF | EKF | UKF | RBPF |
 > |---|---|---|---|---|
