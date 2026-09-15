@@ -2183,6 +2183,20 @@ mod tests {
         }
     }
 
+    fn magnetic_measurement_with_bias(bias: Option<BiasState>) -> MagneticAnomalyMeasurement {
+        MagneticAnomalyMeasurement {
+            map: Rc::new(create_test_magnetic_map()),
+            noise_std: 1.0,
+            mag_obs: 48000.0,
+            latitude: 40.5,
+            longitude: -73.5,
+            altitude: 100.0,
+            year: 2023,
+            day: 216,
+            bias,
+        }
+    }
+
     /// A state vector positioned inside the test map whose tail beyond the nine navigation
     /// states is `extras`.
     fn state_with_extras(extras: &[f64]) -> DVector<f64> {
@@ -2468,6 +2482,63 @@ mod tests {
         let dropped = gravity_measurement_with_bias(bias)
             .get_expected_measurement(&state_with_extras(&[]))[0];
         assert_approx_eq!(dropped, unbiased, 1e-9);
+    }
+
+    /// The magnetic model owes its declared bias the same unit column the gravity model does.
+    ///
+    /// `MagneticAnomalyMeasurement` has its own copy of the resolve-and-fill logic, so the
+    /// gravity assertions above say nothing about it: a regression in this column would leave
+    /// every other geophysical test green while magnetic-only and combined runs silently stopped
+    /// estimating their bias, which is the same defect the gravity column already had.
+    #[test]
+    fn test_magnetic_jacobian_carries_a_column_for_the_declared_bias() {
+        let bias = GeoBiasLayout::appended(NAVIGATION_STATE_DIM, false, true)
+            .unwrap()
+            .unwrap()
+            .magnetic_bias();
+        let h = magnetic_measurement_with_bias(bias)
+            .get_jacobian(&state_with_extras(&[7.0]))
+            .unwrap();
+        assert_eq!(h.nrows(), 1);
+        assert_eq!(h.ncols(), 10, "the Jacobian must match the caller's width");
+        assert_approx_eq!(h[(0, 9)], 1.0, 1e-12);
+        for column in 2..9 {
+            assert_approx_eq!(h[(0, column)], 0.0, 1e-12);
+        }
+
+        // No bias declared: nine columns, as before, and no unit entry anywhere.
+        let h = magnetic_measurement_with_bias(None)
+            .get_jacobian(&state_with_extras(&[]))
+            .unwrap();
+        assert_eq!(h.ncols(), 9);
+        for column in 2..9 {
+            assert_approx_eq!(h[(0, column)], 0.0, 1e-12);
+        }
+    }
+
+    /// And the column has to be the slope the predicted measurement actually has.
+    ///
+    /// Asserting the entry is 1.0 on its own only says the two halves were written to the same
+    /// number; this pins them to each other, which is the invariant that broke.
+    #[test]
+    fn test_magnetic_expected_measurement_reads_the_declared_bias() {
+        let bias = GeoBiasLayout::appended(NAVIGATION_STATE_DIM, false, true)
+            .unwrap()
+            .unwrap()
+            .magnetic_bias();
+        let measurement = magnetic_measurement_with_bias(bias);
+        let unbiased = magnetic_measurement_with_bias(None)
+            .get_expected_measurement(&state_with_extras(&[]))[0];
+
+        // yaw is 0.9 and the bias is 7.0, so reading the wrong element is visible.
+        let biased = measurement.get_expected_measurement(&state_with_extras(&[7.0]))[0];
+        assert_approx_eq!(biased, unbiased + 7.0, 1e-9);
+
+        let slope = measurement.get_expected_measurement(&state_with_extras(&[8.0]))[0] - biased;
+        let h = measurement
+            .get_jacobian(&state_with_extras(&[7.0]))
+            .unwrap();
+        assert_approx_eq!(h[(0, 9)], slope, 1e-12);
     }
 
     /// A stream built for a filter with no map-bias states must not declare one.
