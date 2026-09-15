@@ -8,7 +8,7 @@
 use crate::StrapdownError;
 use crate::gating::{InnovationGate, UpdateOutcome, normalized_innovation_squared};
 use crate::horizontal_meters_to_radians;
-use crate::kalman::imu_sample_from_input;
+use crate::kalman::{expand_measurement_jacobian, imu_sample_from_input};
 use crate::linalg::{matrix_square_root, symmetrize};
 use crate::linearize::state_transition_jacobian;
 use crate::measurements::{
@@ -149,6 +149,11 @@ pub struct RbpfConfig {
     /// sample interval in the predict step.
     pub attitude_process_noise_std_rad: f64,
     /// Additional linear states appended after velocity/attitude (e.g., map bias states).
+    ///
+    /// Like every other state in this filter they are carried as an error relative to a
+    /// nominal, here [`RaoBlackwellizedParticleFilter::nominal_extra_state`]: a particle's
+    /// entry is its deviation from that nominal, not the absolute bias. Read the absolute
+    /// estimate back with [`RaoBlackwellizedParticleFilter::extra_state_estimate`].
     pub extra_state_dim: usize,
     /// Initial standard deviation for extra states (applied uniformly).
     pub extra_state_init_std: f64,
@@ -160,16 +165,22 @@ pub struct RbpfConfig {
     pub seed: u64,
     /// Recentre the error states on the nominal state after each weight update: the
     /// weighted-mean error is subtracted from every particle's position error and from
-    /// its six base linear error states (velocity and attitude), so those states stay
-    /// zero-mean. Any [`RbpfConfig::extra_state_dim`] states appended after them are
-    /// left untouched, so an extra state such as a geophysical map bias keeps its
-    /// absolute value across recentrings rather than being folded into the nominal
-    /// state; issue #333 tracks that gap. The mean position error is always applied to
-    /// the nominal state; the mean velocity/attitude error is applied only when a linear
-    /// (Kalman) update has run since the previous recentring. Note that the subtraction
-    /// from the particles is unconditional, so in the other case that mean is **discarded**
-    /// rather than deferred -- it is removed from the cloud without ever reaching the
-    /// nominal state.
+    /// every one of its linear error states, so the cloud stays zero-mean in all of them.
+    ///
+    /// The mean position error is always applied to the nominal state; the mean
+    /// velocity/attitude error is applied only when a linear (Kalman) update has run since
+    /// the previous recentring. Note that the subtraction from the particles is
+    /// unconditional, so in the other case that mean is **discarded** rather than deferred
+    /// -- it is removed from the cloud without ever reaching the nominal state.
+    ///
+    /// The [`RbpfConfig::extra_state_dim`] states appended after velocity and attitude are
+    /// recentred on the same terms, and their mean is never discarded. They have no home in
+    /// the nine navigation states [`crate::linearize::apply_eskf_correction`] knows how to
+    /// write to, which is why they used to be skipped here (#333), so they carry a nominal
+    /// of their own -- [`RaoBlackwellizedParticleFilter::nominal_extra_state`] -- and the
+    /// mean is moved into it. A geophysical map bias therefore keeps its absolute value,
+    /// readable via [`RaoBlackwellizedParticleFilter::extra_state_estimate`], while the
+    /// particles carry only its spread.
     pub recenter_after_update: bool,
     /// Apply a pseudo-measurement that vertical velocity is zero.
     pub zero_vertical_velocity: bool,
@@ -210,7 +221,10 @@ pub struct RbpfParticle {
     /// Linear error state carried by this particle's Kalman filter, added to the
     /// nominal state: three velocity errors in m/s (north, east, vertical -- vertical
     /// following the frame of the nominal state), three attitude errors in radians
-    /// (roll, pitch, yaw), then [`RbpfConfig::extra_state_dim`] extra states.
+    /// (roll, pitch, yaw), then [`RbpfConfig::extra_state_dim`] extra states. The extra
+    /// entries are errors relative to
+    /// [`RaoBlackwellizedParticleFilter::nominal_extra_state`], not absolute values, in the
+    /// same way the six before them are errors relative to the nominal trajectory.
     pub linear_state: DVector<f64>,
     /// Covariance of `linear_state`, square and in the same state ordering.
     pub linear_cov: DMatrix<f64>,
@@ -224,6 +238,14 @@ pub struct RaoBlackwellizedParticleFilter {
     config: RbpfConfig,
     particles: Vec<RbpfParticle>,
     nominal: StrapdownState,
+    /// Nominal value of the [`RbpfConfig::extra_state_dim`] extra states, which the
+    /// particles' extra entries are errors against. Empty when there are none.
+    ///
+    /// The navigation nominal is a [`StrapdownState`], which has nowhere to put a map bias,
+    /// so the extra states get this second nominal rather than no nominal at all. Without
+    /// it [`Self::recenter_errors`] could only leave them un-recentred or subtract their
+    /// mean and lose it (#333).
+    nominal_extra: DVector<f64>,
     rng: StdRng,
     linear_update_applied: bool,
     /// Innovation gate applied by `update`; `None` accepts every measurement.
@@ -300,10 +322,13 @@ impl RaoBlackwellizedParticleFilter {
             });
         }
 
+        let nominal_extra = DVector::zeros(config.extra_state_dim);
+
         Ok(Self {
             config,
             particles,
             nominal,
+            nominal_extra,
             rng,
             linear_update_applied: false,
             innovation_gate: None,
@@ -313,6 +338,31 @@ impl RaoBlackwellizedParticleFilter {
     /// Access the nominal INS state.
     pub const fn nominal_state(&self) -> &StrapdownState {
         &self.nominal
+    }
+
+    /// Access the nominal value of the extra states; empty when `extra_state_dim` is zero.
+    ///
+    /// This is the half of an extra state that recentring accumulates, not the estimate:
+    /// the particles hold the rest. [`Self::extra_state_estimate`] adds the two.
+    pub const fn nominal_extra_state(&self) -> &DVector<f64> {
+        &self.nominal_extra
+    }
+
+    /// Weighted-mean estimate of the extra states -- their nominal plus the cloud's mean
+    /// error. Empty when [`RbpfConfig::extra_state_dim`] is zero.
+    ///
+    /// With [`RbpfConfig::recenter_after_update`] on, the mean error term is ~0 immediately
+    /// after an update and the estimate is essentially the nominal; with it off, the
+    /// nominal stays at zero and the estimate is essentially the cloud mean. Both are the
+    /// same quantity, which is the point of splitting it.
+    pub fn extra_state_estimate(&self) -> DVector<f64> {
+        let mut estimate = self.nominal_extra.clone();
+        for particle in &self.particles {
+            for i in 0..self.config.extra_state_dim {
+                estimate[i] += particle.weight * particle.linear_state[LINEAR_STATE_DIM_BASE + i];
+            }
+        }
+        estimate
     }
 
     /// Propagate the particle cloud through one inertial sample.
@@ -564,8 +614,42 @@ impl RaoBlackwellizedParticleFilter {
             .iter()
             .map(|particle| self.particle_state_vector(particle))
             .collect();
+        self.weighted_moments(&states)
+    }
 
-        let mut mean = DVector::<f64>::zeros(9);
+    /// [`Self::estimate`] over the state vector a measurement model actually sees: the nine
+    /// navigation states with the [`RbpfConfig::extra_state_dim`] extra states appended.
+    ///
+    /// Identical to [`Self::estimate`] when there are no extra states, which is every
+    /// configuration but geophysical aiding.
+    ///
+    /// This exists because summarising the cloud as a 9-vector is not a harmless truncation
+    /// for a model that reads a state by index *from the end*: a geophysical map bias
+    /// declared as "one from the end" resolves to the yaw angle in a 9-vector, so the gate
+    /// scored every geophysical fix with an attitude angle substituted for the bias while
+    /// the weight update -- which goes through [`Self::particle_state_vector_full`] -- used
+    /// the real one.
+    fn estimate_with_extra_states(&self) -> (DVector<f64>, DMatrix<f64>) {
+        if self.config.extra_state_dim == 0 {
+            return self.estimate();
+        }
+        let states: Vec<DVector<f64>> = self
+            .particles
+            .iter()
+            .map(|particle| self.particle_state_vector_full(particle))
+            .collect();
+        self.weighted_moments(&states)
+    }
+
+    /// Weighted mean and covariance of an assembled cloud, attitude handled on the circle.
+    ///
+    /// Shared by [`Self::estimate`] and [`Self::estimate_with_extra_states`], which differ
+    /// only in how wide the assembled states are. [`ATTITUDE_STATE_INDICES`] addresses the
+    /// same three channels in both, because the extra states are appended after them.
+    fn weighted_moments(&self, states: &[DVector<f64>]) -> (DVector<f64>, DMatrix<f64>) {
+        let dim = states.first().map_or(9, DVector::len);
+
+        let mut mean = DVector::<f64>::zeros(dim);
         for (state, particle) in states.iter().zip(&self.particles) {
             mean += state * particle.weight;
         }
@@ -578,7 +662,7 @@ impl RaoBlackwellizedParticleFilter {
             );
         }
 
-        let mut cov = DMatrix::<f64>::zeros(9, 9);
+        let mut cov = DMatrix::<f64>::zeros(dim, dim);
         for (state, particle) in states.iter().zip(&self.particles) {
             let mut diff = state - &mean;
             for index in ATTITUDE_STATE_INDICES {
@@ -595,8 +679,13 @@ impl RaoBlackwellizedParticleFilter {
     /// Always computes the NIS, gate or no gate, because
     /// [`sim::health::HealthMonitor`](crate::sim::health::HealthMonitor) consumes it
     /// to catch a filter that has diverged rather than merely been handed one bad
-    /// fix. The `estimate()` call this costs is the same one `run_closed_loop` makes
+    /// fix. The summary this costs is the same one `run_closed_loop` computes
     /// immediately afterwards for logging.
+    ///
+    /// The cloud is summarised with [`Self::estimate_with_extra_states`] rather than
+    /// [`Self::estimate`], so the measurement sees the same state layout here as it does in
+    /// the weight update. A geophysical model reads its map bias by index from the end of
+    /// the vector, and a 9-vector has no bias to read.
     ///
     /// # Errors
     /// Whatever the measurement model returns when evaluated at the ensemble mean, or
@@ -606,13 +695,24 @@ impl RaoBlackwellizedParticleFilter {
         &self,
         measurement: &M,
     ) -> Result<UpdateOutcome, StrapdownError> {
-        let (mean, covariance) = self.estimate();
+        let (mean, covariance) = self.estimate_with_extra_states();
         // Jacobian first: a geophysical model off the edge of its map reports that
-        // here, whereas `get_expected_measurement` would quietly return NaN.
+        // here -- and so does one handed a state vector with no room for the bias it
+        // was told to read -- whereas `get_expected_measurement` would quietly return
+        // NaN or silently drop the bias.
         let h = measurement.get_jacobian(&mean)?;
         let z_hat = measurement.get_expected_measurement(&mean);
         let mut innovation = measurement.get_measurement(&mean)? - z_hat;
         measurement.wrap_residual(&mut innovation);
+
+        // Pad to the summary's width before multiplying. The navigation models return a
+        // fixed nine columns -- `gps_position_jacobian` is 3x9 whatever it is handed -- so
+        // against an augmented covariance this product was a 3x9 by an 11x11, which nalgebra
+        // panics on. GNSS and geophysical fixes ride the same event stream, so that is every
+        // aided run rather than a corner case. The Kalman filters have always widened here;
+        // this is the same helper, and it rejects a Jacobian *wider* than the state rather
+        // than truncating one.
+        let h = expand_measurement_jacobian(h, covariance.ncols())?;
 
         let s = &h * &covariance * h.transpose() + measurement.get_noise();
         let dof = innovation.len();
@@ -936,19 +1036,35 @@ impl RaoBlackwellizedParticleFilter {
         state
     }
 
+    /// The 9-state solution with the extra states appended, as a measurement model sees it.
+    ///
+    /// The appended entries are absolute: a particle's error plus [`Self::nominal_extra_state`].
+    /// A consumer such as a geophysical bias reads them by index from the end of the vector
+    /// and adds them to its predicted measurement, so it must see the whole bias and not
+    /// just the part of it the cloud still carries.
     fn particle_state_vector_full(&self, particle: &RbpfParticle) -> DVector<f64> {
         let mut state = self.particle_state_vector(particle).as_slice().to_vec();
-        if self.config.extra_state_dim > 0 {
-            state.extend_from_slice(
-                particle
-                    .linear_state
-                    .rows(LINEAR_STATE_DIM_BASE, self.config.extra_state_dim)
-                    .as_slice(),
-            );
+        for i in 0..self.config.extra_state_dim {
+            state.push(self.nominal_extra[i] + particle.linear_state[LINEAR_STATE_DIM_BASE + i]);
         }
         DVector::from_vec(state)
     }
 
+    /// Move the cloud's weighted-mean error onto the nominal states, leaving it zero-mean.
+    ///
+    /// Every error state is subtracted from every particle. Where that mean goes differs by
+    /// block, because the two nominals accept it on different terms:
+    ///
+    /// * **Position** -- always folded into the navigation nominal.
+    /// * **Velocity and attitude** -- folded in only when a linear (Kalman) update has run
+    ///   since the last recentring, and otherwise discarded. See
+    ///   [`RbpfConfig::recenter_after_update`].
+    /// * **Extra states** -- always folded into [`Self::nominal_extra_state`]. They have no
+    ///   row in the nine-state correction [`crate::linearize::apply_eskf_correction`]
+    ///   applies, which is why recentring used to skip them outright (#333); a separate
+    ///   nominal is what lets their mean be moved rather than either kept in the cloud or
+    ///   lost.
+    ///
     /// # Errors
     /// Propagated from [`crate::linearize::apply_eskf_correction`].
     fn recenter_errors(&mut self) -> Result<(), StrapdownError> {
@@ -988,10 +1104,18 @@ impl RaoBlackwellizedParticleFilter {
         };
         crate::linearize::apply_eskf_correction(&mut self.nominal, &delta_x)?;
 
+        for i in 0..self.config.extra_state_dim {
+            self.nominal_extra[i] += mean_lin[LINEAR_STATE_DIM_BASE + i];
+        }
+
+        // Every row of `mean_lin` is consumed: the base six by `delta_x` above, the rest by
+        // `nominal_extra`. Subtracting the whole vector is what makes the cloud zero-mean in
+        // the extra states as well as the navigation ones.
+        let linear_dim = self.linear_state_dim();
         for particle in &mut self.particles {
             particle.position_error -= mean_pos;
-            for i in 0..LINEAR_STATE_DIM_BASE {
-                particle.linear_state[i] -= mean_lin_base[i];
+            for i in 0..linear_dim {
+                particle.linear_state[i] -= mean_lin[i];
             }
         }
 
@@ -1466,6 +1590,356 @@ mod tests {
             mean.is_finite(),
             "circular mean should stay finite, got {mean}"
         );
+    }
+
+    /// A measurement that reads a bias state off the end of the full state vector, the way
+    /// the `geonav` map models do. Nothing in `strapdown-core` carries an extra state, so
+    /// without this the [`RbpfConfig::extra_state_dim`] path has no exercise here.
+    ///
+    /// `bias_from_end` counts back from the end of whatever vector it is handed, exactly as
+    /// `GravityMeasurement::bias_from_end` does -- `geonav` depends on this crate, not the
+    /// other way round, so the contract is mirrored here rather than imported. That
+    /// counting-from-the-end is why the state vector's *width* matters and not just its
+    /// leading nine entries.
+    #[derive(Debug)]
+    struct BiasedAltitudeMeasurement {
+        observed: f64,
+        noise_std: f64,
+        bias_from_end: Option<usize>,
+        /// Widths this model has been handed, for asserting what a caller passed it.
+        seen_state_len: std::cell::RefCell<Vec<usize>>,
+    }
+
+    impl BiasedAltitudeMeasurement {
+        fn new(observed: f64, bias_from_end: Option<usize>) -> Self {
+            Self {
+                observed,
+                noise_std: 1.0,
+                bias_from_end,
+                seen_state_len: std::cell::RefCell::new(Vec::new()),
+            }
+        }
+
+        /// The bias entry, or `None` when the vector is too narrow to carry one.
+        ///
+        /// The index must land *after* the nine navigation states; a resolved index inside
+        /// them means the caller passed a vector with no bias in it, which is the failure
+        /// this guards (see `geonav`'s `resolve_bias_index`).
+        fn bias(&self, state: &DVector<f64>) -> Option<f64> {
+            let offset = self.bias_from_end?;
+            let index = state.len().checked_sub(offset)?;
+            (offset > 0 && index >= 9).then(|| state[index])
+        }
+    }
+
+    impl MeasurementModel for BiasedAltitudeMeasurement {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+        fn get_dimension(&self) -> usize {
+            1
+        }
+        fn get_measurement(&self, _state: &DVector<f64>) -> Result<DVector<f64>, StrapdownError> {
+            Ok(DVector::from_vec(vec![self.observed]))
+        }
+        fn get_noise(&self) -> DMatrix<f64> {
+            DMatrix::from_element(1, 1, self.noise_std.powi(2))
+        }
+        fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
+            self.seen_state_len.borrow_mut().push(state.len());
+            DVector::from_vec(vec![state[2] + self.bias(state).unwrap_or(0.0)])
+        }
+        fn get_jacobian(&self, state: &DVector<f64>) -> Result<DMatrix<f64>, StrapdownError> {
+            let mut h = DMatrix::<f64>::zeros(1, state.len());
+            h[(0, 2)] = 1.0;
+            if let Some(offset) = self.bias_from_end {
+                let index = state.len().checked_sub(offset).filter(|i| *i >= 9).ok_or(
+                    StrapdownError::DimensionMismatch {
+                        what: "geophysical bias state",
+                        expected: 9 + offset,
+                        got: state.len(),
+                    },
+                )?;
+                h[(0, index)] = 1.0;
+            }
+            Ok(h)
+        }
+    }
+
+    fn rbpf_with_extra_states(extra_state_dim: usize, seed: u64) -> RaoBlackwellizedParticleFilter {
+        RaoBlackwellizedParticleFilter::new(
+            StrapdownState {
+                latitude: 0.7,
+                longitude: -1.3,
+                altitude: 100.0,
+                is_enu: false,
+                ..StrapdownState::default()
+            },
+            RbpfConfig {
+                num_particles: 256,
+                extra_state_dim,
+                extra_state_init_std: 0.5,
+                seed,
+                // Off: the vertical-velocity pseudo-measurement is a linear update and would
+                // only add noise to what these tests are watching.
+                zero_vertical_velocity: false,
+                ..RbpfConfig::default()
+            },
+        )
+        .unwrap()
+    }
+
+    /// The weighted mean of a particle's extra states must end up on their nominal (#333).
+    ///
+    /// `recenter_after_update` promises a zero-mean cloud; it used to deliver that for six of
+    /// `6 + extra_state_dim` linear states, skipping exactly the geophysical bias states --
+    /// the ones most likely to carry a persistent non-zero mean, since absorbing a map bias
+    /// is what they are for. The fix is not to subtract the mean and lose it but to give the
+    /// extra states a nominal of their own, so this asserts both halves: the cloud comes out
+    /// zero-mean, *and* every particle's absolute bias -- the quantity a measurement model
+    /// reads -- is untouched.
+    #[test]
+    fn rbpf_recentring_moves_the_extra_state_mean_onto_its_own_nominal() {
+        let mut rbpf = rbpf_with_extra_states(2, 7);
+
+        // A large common offset on top of the initial spread: this is the map bias.
+        for particle in &mut rbpf.particles {
+            particle.linear_state[LINEAR_STATE_DIM_BASE] += 25.0;
+            particle.linear_state[LINEAR_STATE_DIM_BASE + 1] -= 4.0;
+        }
+        let estimate_before = rbpf.extra_state_estimate();
+        let full_before: Vec<DVector<f64>> = rbpf
+            .particles
+            .iter()
+            .map(|p| rbpf.particle_state_vector_full(p))
+            .collect();
+        assert_eq!(full_before[0].len(), 11, "9 nav states plus two extras");
+        assert_approx_eq!(rbpf.nominal_extra_state()[0], 0.0, 1e-12);
+
+        rbpf.recenter_errors().unwrap();
+
+        for i in 0..2 {
+            let cloud_mean: f64 = rbpf
+                .particles
+                .iter()
+                .map(|p| p.weight * p.linear_state[LINEAR_STATE_DIM_BASE + i])
+                .sum();
+            assert_approx_eq!(cloud_mean, 0.0, 1e-12);
+            // The mean went somewhere rather than being dropped.
+            assert_approx_eq!(rbpf.nominal_extra_state()[i], estimate_before[i], 1e-12);
+            assert_approx_eq!(rbpf.extra_state_estimate()[i], estimate_before[i], 1e-12);
+        }
+        assert!(
+            rbpf.nominal_extra_state()[0] > 20.0 && rbpf.nominal_extra_state()[1] < -1.0,
+            "the nominal should have absorbed the +25 / -4 offsets, got {:?}",
+            rbpf.nominal_extra_state()
+        );
+
+        // What a measurement model sees is the sum of the two, so it must not have moved.
+        for (particle, before) in rbpf.particles.iter().zip(&full_before) {
+            let after = rbpf.particle_state_vector_full(particle);
+            for i in 9..11 {
+                assert_approx_eq!(after[i], before[i], 1e-12);
+            }
+        }
+    }
+
+    /// The same, reached through the public update path rather than by calling the private
+    /// recentring directly -- the geophysical aiding in `strapdown-sim` gets here via
+    /// `update_weights_generic`, and this is the configuration that made #333 reachable.
+    #[test]
+    fn rbpf_extra_states_are_recentred_through_a_measurement_update() {
+        let mut rbpf = rbpf_with_extra_states(1, 11);
+        for particle in &mut rbpf.particles {
+            particle.linear_state[LINEAR_STATE_DIM_BASE] += 12.0;
+        }
+
+        // Consistent with the cloud: nominal altitude plus the bias the states carry.
+        let measurement = BiasedAltitudeMeasurement::new(100.0 + 12.0, Some(1));
+        assert!(rbpf.update(&measurement).unwrap().accepted);
+
+        let cloud_mean: f64 = rbpf
+            .particles
+            .iter()
+            .map(|p| p.weight * p.linear_state[LINEAR_STATE_DIM_BASE])
+            .sum();
+        // Not exactly zero: resampling runs after recentring and redraws the cloud, which
+        // reintroduces a sampling mean of order `extra_state_init_std / sqrt(N)` ~ 0.03.
+        // The bound is generous against that and still two orders below the 12.0 the
+        // un-recentred cloud used to carry.
+        assert!(
+            cloud_mean.abs() < 0.25,
+            "the extra-state cloud should be left ~zero-mean, got {cloud_mean}"
+        );
+        assert!(
+            (rbpf.extra_state_estimate()[0] - 12.0).abs() < 1.0,
+            "the bias estimate should survive recentring near its 12.0 truth, got {}",
+            rbpf.extra_state_estimate()[0]
+        );
+    }
+
+    /// With recentring off, the extra nominal stays at zero and the cloud keeps the bias.
+    ///
+    /// Both halves are the same estimate; this pins the other end of the split so a future
+    /// change cannot start writing the nominal when the config says not to.
+    #[test]
+    fn rbpf_extra_state_nominal_is_untouched_when_recentring_is_off() {
+        let mut rbpf = RaoBlackwellizedParticleFilter::new(
+            StrapdownState::default(),
+            RbpfConfig {
+                num_particles: 64,
+                extra_state_dim: 1,
+                extra_state_init_std: 0.5,
+                recenter_after_update: false,
+                zero_vertical_velocity: false,
+                seed: 3,
+                ..RbpfConfig::default()
+            },
+        )
+        .unwrap();
+        for particle in &mut rbpf.particles {
+            particle.linear_state[LINEAR_STATE_DIM_BASE] += 6.0;
+        }
+
+        let measurement = BiasedAltitudeMeasurement::new(6.0, Some(1));
+        rbpf.update(&measurement).unwrap();
+
+        assert_approx_eq!(rbpf.nominal_extra_state()[0], 0.0, 1e-12);
+        assert!(
+            (rbpf.extra_state_estimate()[0] - 6.0).abs() < 1.0,
+            "the cloud should still carry the whole bias, got {}",
+            rbpf.extra_state_estimate()[0]
+        );
+    }
+
+    /// The innovation gate must score a measurement against the states it declares.
+    ///
+    /// `evaluate_ensemble_gate` summarised the cloud with `estimate()`, which returns the
+    /// nine navigation states and nothing else. A geophysical model reads its map bias by
+    /// index from the *end* of the vector, so in a 9-vector `bias_from_end: Some(1)`
+    /// resolved to `state[8]` -- the yaw angle -- and every geophysical fix was gated on an
+    /// attitude angle standing in for the bias. The weight update was unaffected, since it
+    /// goes through `particle_state_vector_full`, so the two halves of one update disagreed
+    /// about what the state vector meant, and the NIS the health monitor reads came from
+    /// the wrong one.
+    ///
+    /// The setup separates the two readings by construction: yaw is 0.9 rad and the bias is
+    /// 12.0, and the measurement is consistent with the bias. A gate reading the bias sees
+    /// an innovation near zero; a gate reading yaw sees one of about 11.1.
+    #[test]
+    fn rbpf_gate_scores_the_extra_state_and_not_the_yaw_angle() {
+        let mut rbpf = RaoBlackwellizedParticleFilter::new(
+            StrapdownState {
+                latitude: 0.7,
+                longitude: -1.3,
+                altitude: 100.0,
+                attitude: Rotation3::from_euler_angles(0.0, 0.0, 0.9),
+                is_enu: false,
+                ..StrapdownState::default()
+            },
+            RbpfConfig {
+                num_particles: 128,
+                extra_state_dim: 1,
+                extra_state_init_std: 0.0,
+                // A tight cloud, so the innovation below is the bias and not the spread.
+                position_init_std_m: Vector3::new(0.01, 0.01, 0.01),
+                attitude_init_std_rad: 0.0,
+                velocity_init_std_mps: 0.0,
+                zero_vertical_velocity: false,
+                seed: 5,
+                ..RbpfConfig::default()
+            },
+        )
+        .unwrap();
+        for particle in &mut rbpf.particles {
+            particle.linear_state[LINEAR_STATE_DIM_BASE] = 12.0;
+        }
+        assert_approx_eq!(rbpf.estimate().0[8], 0.9, 1e-9);
+
+        let measurement = BiasedAltitudeMeasurement::new(100.0 + 12.0, Some(1));
+        let outcome = rbpf.evaluate_ensemble_gate(&measurement).unwrap();
+
+        assert_eq!(
+            rbpf.estimate_with_extra_states().0.len(),
+            10,
+            "the gate's summary must carry the extra state"
+        );
+        assert_eq!(
+            measurement.seen_state_len.borrow().as_slice(),
+            &[10],
+            "the gate handed the model a {:?}-wide state; a 9-wide one has no bias to read \
+             and resolves `bias_from_end: Some(1)` to the yaw angle",
+            measurement.seen_state_len.borrow()
+        );
+        // Reading yaw instead of the bias would put the innovation at 100.9 - 112 = -11.1
+        // and the NIS at ~123 against a noise variance of 1.
+        assert!(
+            outcome.nis < 1e-6,
+            "a measurement consistent with the bias should gate at ~zero NIS, got {}",
+            outcome.nis
+        );
+        assert!(outcome.accepted);
+    }
+
+    /// The augmented summary must agree with the plain one on the states they share, and
+    /// must be the plain one exactly when there are no extra states -- which is every
+    /// configuration but geophysical aiding, so this is the path that must not move.
+    #[test]
+    fn rbpf_augmented_estimate_matches_the_nine_state_estimate() {
+        let mut rbpf = rbpf_with_extra_states(2, 19);
+        for particle in &mut rbpf.particles {
+            particle.linear_state[LINEAR_STATE_DIM_BASE] += 3.0;
+        }
+        let (mean, cov) = rbpf.estimate();
+        let (full_mean, full_cov) = rbpf.estimate_with_extra_states();
+        assert_eq!(full_mean.len(), 11);
+        for i in 0..9 {
+            assert_approx_eq!(full_mean[i], mean[i], 1e-12);
+            for j in 0..9 {
+                assert_approx_eq!(full_cov[(i, j)], cov[(i, j)], 1e-12);
+            }
+        }
+        assert_approx_eq!(full_mean[9], rbpf.extra_state_estimate()[0], 1e-12);
+        assert_approx_eq!(full_mean[10], rbpf.extra_state_estimate()[1], 1e-12);
+
+        let plain = rbpf_with_extra_states(0, 19);
+        let (a, _) = plain.estimate();
+        let (b, _) = plain.estimate_with_extra_states();
+        assert_eq!(a, b);
+    }
+
+    /// An ordinary GNSS fix must survive a filter that carries extra states.
+    ///
+    /// The gate summarises the cloud at the augmented width, but the navigation models
+    /// return a fixed nine-column Jacobian -- `gps_position_jacobian` is 3x9 -- so
+    /// `h * covariance` was a 3x9 against an 11x11 and nalgebra panicked before the update
+    /// ran. GNSS fixes and geophysical fixes ride the same event stream, so this is every
+    /// geophysically-aided run rather than a corner case.
+    #[test]
+    fn rbpf_gps_update_survives_a_filter_carrying_extra_states() {
+        let mut rbpf = rbpf_with_extra_states(2, 23);
+        let gps = GPSPositionMeasurement {
+            latitude: 0.7_f64.to_degrees(),
+            longitude: (-1.3_f64).to_degrees(),
+            altitude: 100.0,
+            horizontal_noise_std: 5.0,
+            vertical_noise_std: 10.0,
+        };
+        let outcome = rbpf.update(&gps).unwrap();
+        assert!(
+            outcome.accepted,
+            "a fix at the nominal position should pass the gate, NIS was {}",
+            outcome.nis
+        );
+        // The barometer is the other fixed-width model on this path.
+        let baro = RelativeAltitudeMeasurement {
+            relative_altitude: 0.0,
+            reference_altitude: 100.0,
+        };
+        assert!(rbpf.update(&baro).unwrap().accepted);
     }
 
     fn run_rbpf_on_scenario(

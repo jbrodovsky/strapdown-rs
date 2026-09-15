@@ -22,7 +22,10 @@
 use std::rc::Rc;
 
 use chrono::{TimeZone, Utc};
-use geonav::{GeoMap, GeophysicalMeasurementType, GravityResolution, build_event_stream};
+use geonav::{
+    GeoBiasLayout, GeoMap, GeophysicalMeasurementType, GravityResolution,
+    NAVIGATION_AND_IMU_BIAS_STATE_DIM, build_event_stream,
+};
 use nalgebra::{DMatrix, DVector};
 use strapdown::kalman::ExtendedKalmanFilter;
 use strapdown::messages::{GnssDegradationConfig, GnssFaultModel, GnssScheduler};
@@ -118,6 +121,24 @@ fn aided_ukf(first: &TestDataRecord) -> strapdown::kalman::UnscentedKalmanFilter
     .expect("a geophysically aided UKF must initialise")
 }
 
+/// The bias layout for a gravity-only run, in both the forms a geophysical run needs.
+///
+/// `GeoBiasLayout` tells the measurement models where the bias lives; `GeoStateLayout` tells
+/// `NavigationResult` the same thing on the `core` side of the dependency edge. Derived from
+/// the first rather than declared twice, exactly as `run_geo_closed_loop_cli` does it, so the
+/// placement has one source of truth.
+fn gravity_only_layouts() -> (GeoBiasLayout, GeoStateLayout) {
+    let bias = GeoBiasLayout::appended(NAVIGATION_AND_IMU_BIAS_STATE_DIM, true, false)
+        .expect("a gravity-only layout over the 15-state Kalman vector must be valid")
+        .expect("asking for a gravity bias must yield a layout");
+    let state = GeoStateLayout::new(
+        bias.state_dim(),
+        bias.gravity_bias().map(|b| b.index),
+        bias.magnetic_bias().map(|b| b.index),
+    );
+    (bias, state)
+}
+
 /// A gravity-aided run completes and carries its bias state into the solution.
 ///
 /// This is the regression: before the layout reached the conversion, this run panicked on
@@ -138,6 +159,11 @@ fn gravity_aided_closed_loop_completes_and_labels_its_bias_state() {
     );
 
     let records = synthetic_track(60);
+    // One extra state for the one map, exactly as `run_geo_closed_loop_cli` builds it.
+    let (bias_layout, layout) = gravity_only_layouts();
+    assert_eq!(layout.len(), 1);
+    assert_eq!(layout.state_dim(), 16);
+
     let events = build_event_stream(
         &records,
         &passthrough_config(),
@@ -146,15 +172,9 @@ fn gravity_aided_closed_loop_completes_and_labels_its_bias_state() {
         None,
         None,
         Some(1.0),
+        Some(bias_layout),
     )
     .expect("the geophysical event stream must build");
-
-    // One extra state for the one map, exactly as `run_geo_closed_loop_cli` builds it.
-    let layout = GeoStateLayout {
-        gravity: true,
-        magnetic: false,
-    };
-    assert_eq!(layout.len(), 1);
 
     let mut ukf = aided_ukf(&records[0]);
 
@@ -244,6 +264,7 @@ fn ekf_branch_completes_and_labels_its_bias_state() {
     );
 
     let records = synthetic_track(60);
+    let (bias_layout, layout) = gravity_only_layouts();
     let events = build_event_stream(
         &records,
         &passthrough_config(),
@@ -252,13 +273,9 @@ fn ekf_branch_completes_and_labels_its_bias_state() {
         None,
         None,
         Some(1.0),
+        Some(bias_layout),
     )
     .expect("the geophysical event stream must build");
-
-    let layout = GeoStateLayout {
-        gravity: true,
-        magnetic: false,
-    };
 
     // The covariance and process noise the CLI's EKF arm builds, extended by one geophysical
     // state, on the 15-state navigation block.

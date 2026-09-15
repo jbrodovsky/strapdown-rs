@@ -1128,64 +1128,90 @@ pub struct NEDCovariance {
     /// Variance of the gyroscope z-axis bias estimate.
     pub gyro_bias_z_cov: f64,
 }
-/// Which geophysical bias states a filter carries after its nine navigation states and six
-/// IMU biases.
+/// Where a filter carries its geophysical map-bias states, for labelling the solution.
 ///
-/// The geophysical paths append one bias state per active map -- gravity first, then
-/// magnetic, matching the order `run_geo_closed_loop_cli` builds them in. A state vector
-/// cannot describe that on its own: a 16-element state is gravity-only or magnetic-only
-/// depending on which flags the run was given, and reading the wrong label off it would put
-/// a milligal figure in a nanotesla column. So the layout travels with the run rather than
-/// being inferred from a length.
+/// A state vector cannot describe this on its own: a 16-element state is gravity-only or
+/// magnetic-only depending on which maps the run was given, and reading the wrong label off it
+/// would put a milligal figure in a nanotesla column. So the layout travels with the run rather
+/// than being inferred from a length.
+///
+/// Indices rather than flags, and a declared `state_dim` rather than an assumed one, because a
+/// filter need not append its map biases at the end -- `strapdown-geonav`'s `GeoBiasLayout` is
+/// the authority on where they actually live, and this is its counterpart on the `core` side of
+/// the dependency edge, which cannot name that type. `strapdown-sim` builds one from the other
+/// so there is a single source of truth for the placement.
 ///
 /// [`GeoStateLayout::NONE`] is the ordinary, non-geophysical case and is what
 /// [`run_closed_loop`] uses.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GeoStateLayout {
-    /// The run carried a gravity-anomaly map, so a gravity bias state follows the IMU biases.
-    pub gravity: bool,
-    /// The run carried a magnetic-anomaly map, so a magnetic bias state follows the gravity
-    /// one if present, and the IMU biases otherwise.
-    pub magnetic: bool,
+    state_dim: usize,
+    gravity_index: Option<usize>,
+    magnetic_index: Option<usize>,
+}
+
+impl Default for GeoStateLayout {
+    fn default() -> Self {
+        Self::NONE
+    }
 }
 
 impl GeoStateLayout {
-    /// No geophysical states: the fifteen-element navigation state every other path produces.
+    /// No geophysical states: the fifteen-element solution every other path produces.
     pub const NONE: Self = Self {
-        gravity: false,
-        magnetic: false,
+        state_dim: NAVIGATION_STATES,
+        gravity_index: None,
+        magnetic_index: None,
     };
 
-    /// How many states this layout adds beyond [`NAVIGATION_STATES`].
+    /// A layout over a state of `state_dim` entries, with the biases at the given indices.
+    ///
+    /// The indices are taken on trust: the caller that knows the filter has already validated
+    /// them -- `GeoBiasLayout::new` rejects an index inside the navigation states or past the
+    /// end -- and duplicating that here would be a second, drifting copy of the same rule. What
+    /// is checked, at the point it matters, is that the state handed over is `state_dim` wide;
+    /// see the conversion into [`NavigationResult`].
     #[must_use]
-    pub const fn len(self) -> usize {
-        self.gravity as usize + self.magnetic as usize
+    pub const fn new(
+        state_dim: usize,
+        gravity_index: Option<usize>,
+        magnetic_index: Option<usize>,
+    ) -> Self {
+        Self {
+            state_dim,
+            gravity_index,
+            magnetic_index,
+        }
     }
 
-    /// Whether the layout adds no states at all.
+    /// Width of the state vector this layout describes.
+    #[must_use]
+    pub const fn state_dim(self) -> usize {
+        self.state_dim
+    }
+
+    /// How many map-bias states the filter carries.
+    #[must_use]
+    pub const fn len(self) -> usize {
+        self.gravity_index.is_some() as usize + self.magnetic_index.is_some() as usize
+    }
+
+    /// Whether the layout carries no map biases at all.
     #[must_use]
     pub const fn is_empty(self) -> bool {
         self.len() == 0
     }
 
-    /// Index of the gravity bias in the full state vector, if the run carried a gravity map.
+    /// Index of the gravity bias in the state vector, if the filter carries one.
     #[must_use]
     pub const fn gravity_index(self) -> Option<usize> {
-        if self.gravity {
-            Some(NAVIGATION_STATES)
-        } else {
-            None
-        }
+        self.gravity_index
     }
 
-    /// Index of the magnetic bias in the full state vector, if the run carried a magnetic map.
+    /// Index of the magnetic bias in the state vector, if the filter carries one.
     #[must_use]
     pub const fn magnetic_index(self) -> Option<usize> {
-        if self.magnetic {
-            Some(NAVIGATION_STATES + self.gravity as usize)
-        } else {
-            None
-        }
+        self.magnetic_index
     }
 }
 
@@ -2078,10 +2104,10 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>)> for NavigationResult {
 /// [`GeoStateLayout`].
 impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>, GeoStateLayout)> for NavigationResult {
     /// # Panics
-    /// If the state length or covariance shape disagrees with `layout` -- that is, if they are
-    /// not `NAVIGATION_STATES + layout.len()`. Same reasoning as the three-tuple form: this is
-    /// fed by `filter.get_estimate()` / `get_certainty()`, so a mismatch is a crate invariant
-    /// violation rather than user input.
+    /// If the state length or covariance shape disagrees with `layout.state_dim()`, or if a
+    /// declared bias index falls outside the state. Same reasoning as the three-tuple form:
+    /// this is fed by `filter.get_estimate()` / `get_certainty()`, so a mismatch is a crate
+    /// invariant violation rather than user input.
     fn from(
         (timestamp, state, covariance, layout): (
             &DateTime<Utc>,
@@ -2090,7 +2116,7 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>, GeoStateLayout)> for Na
             GeoStateLayout,
         ),
     ) -> Self {
-        let expected = NAVIGATION_STATES + layout.len();
+        let expected = layout.state_dim();
         assert!(
             state.len() == expected,
             "State vector must have {expected} elements; got {}",
@@ -2104,8 +2130,20 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>, GeoStateLayout)> for Na
         // `layout` says which of the states past `NAVIGATION_STATES` is which; an absent map
         // leaves its column `None` rather than zero, so a reader can tell "no gravity map" from
         // "gravity bias estimated at zero".
-        let geo_state = |index: Option<usize>| index.map(|i| state[i]);
-        let geo_cov = |index: Option<usize>| index.map(|i| covariance[i]);
+        // Indices are checked here rather than at construction: this is the point where a
+        // wrong one would silently read a navigation state as a map bias.
+        let checked = |index: Option<usize>| {
+            if let Some(i) = index {
+                assert!(
+                    i >= NAVIGATION_STATES && i < expected,
+                    "a map bias lives after the {NAVIGATION_STATES} navigation states and \
+                     inside the {expected}-element state; got index {i}"
+                );
+            }
+            index
+        };
+        let geo_state = |index: Option<usize>| checked(index).map(|i| state[i]);
+        let geo_cov = |index: Option<usize>| checked(index).map(|i| covariance[i]);
         let gravity_bias = geo_state(layout.gravity_index());
         let gravity_bias_cov = geo_cov(layout.gravity_index());
         let magnetic_bias = geo_state(layout.magnetic_index());

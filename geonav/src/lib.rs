@@ -51,6 +51,214 @@ use strapdown::{IMUData, StrapdownState};
 /// Conversion factor from radians to degrees (180/π)
 const RAD_TO_DEG: f64 = 180.0 / std::f64::consts::PI;
 
+/// Navigation states every filter state vector starts with: position, velocity, attitude.
+///
+/// Anything a filter carries beyond these -- IMU biases, map biases -- is appended after
+/// them, so this is the base a [`GeoBiasLayout`] is measured from for a filter that carries
+/// no IMU bias states, such as the RBPF.
+pub const NAVIGATION_STATE_DIM: usize = 9;
+
+/// The nine navigation states plus the six IMU bias states.
+///
+/// The base a [`GeoBiasLayout`] is measured from for the UKF and EKF, whose state is
+/// `[9 navigation, 3 accelerometer bias, 3 gyroscope bias, ..map biases]`.
+pub const NAVIGATION_AND_IMU_BIAS_STATE_DIM: usize = 15;
+
+/// Where a consuming filter carries one geophysical map-bias state.
+///
+/// A measurement model cannot discover this from the state vector it is handed. A filter's
+/// state is a bare `DVector` with no labels, so index 14 of a 15-state EKF is the z gyro
+/// bias while index 14 of a UKF carrying map biases is a map bias, and nothing in the vector
+/// distinguishes them.
+///
+/// This type replaces a bare "count back N entries from the end", which assumed the state
+/// ended with exactly the map biases the loaded maps implied -- a promise nothing checked.
+/// Carrying `state_dim` next to the index turns it into one: [`resolve_bias_index`] rejects
+/// a state vector of any other width, so a measurement built for one filter and handed to
+/// another fails loudly instead of reading an IMU bias as a map bias.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BiasState {
+    /// Width of the state vector the consuming filter hands the measurement models.
+    pub state_dim: usize,
+    /// Index of this bias within that vector; at or after [`NAVIGATION_STATE_DIM`].
+    pub index: usize,
+}
+
+/// Where a consuming filter carries its geophysical map-bias states, if it carries any.
+///
+/// Built by whoever knows the filter -- `strapdown-sim` configures an RBPF whose
+/// `extra_state_dim` is exactly these biases, and a UKF whose `other_states` are -- and
+/// handed to [`build_event_stream`], which stamps it onto every geophysical measurement it
+/// emits. Passing `None` there says the consuming filter carries no map-bias states, and
+/// the measurements then declare none rather than inferring them from which maps happened
+/// to be loaded.
+///
+/// Construct it with [`GeoBiasLayout::appended`] unless the filter puts its map biases
+/// somewhere other than the end of its state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GeoBiasLayout {
+    state_dim: usize,
+    gravity_index: Option<usize>,
+    magnetic_index: Option<usize>,
+}
+
+impl GeoBiasLayout {
+    /// A layout with explicit indices into a state vector of `state_dim` entries.
+    ///
+    /// # Errors
+    /// [`StrapdownError::InvalidConfiguration`] if `state_dim` cannot hold the nine
+    /// navigation states, if an index falls inside them or at or past `state_dim`, or if the
+    /// two biases name the same entry.
+    pub fn new(
+        state_dim: usize,
+        gravity_index: Option<usize>,
+        magnetic_index: Option<usize>,
+    ) -> Result<Self, StrapdownError> {
+        if state_dim < NAVIGATION_STATE_DIM {
+            return Err(StrapdownError::InvalidConfiguration {
+                field: "GeoBiasLayout::state_dim",
+                reason: format!(
+                    "a filter state is at least the {NAVIGATION_STATE_DIM} navigation states, \
+                     got {state_dim}"
+                ),
+            });
+        }
+        for (index, field) in [
+            (gravity_index, "GeoBiasLayout::gravity_index"),
+            (magnetic_index, "GeoBiasLayout::magnetic_index"),
+        ] {
+            let Some(index) = index else { continue };
+            if index < NAVIGATION_STATE_DIM || index >= state_dim {
+                return Err(StrapdownError::InvalidConfiguration {
+                    field,
+                    reason: format!(
+                        "a map bias lives after the {NAVIGATION_STATE_DIM} navigation states \
+                         and inside the {state_dim}-state vector, so it cannot be at {index}"
+                    ),
+                });
+            }
+        }
+        if gravity_index.is_some() && gravity_index == magnetic_index {
+            return Err(StrapdownError::InvalidConfiguration {
+                field: "GeoBiasLayout::magnetic_index",
+                reason: "the gravity and magnetic biases are separate states and cannot share \
+                         an index"
+                    .to_owned(),
+            });
+        }
+        Ok(Self {
+            state_dim,
+            gravity_index,
+            magnetic_index,
+        })
+    }
+
+    /// The layout of map biases appended after a filter's `base_state_dim` own states,
+    /// gravity first -- the convention every filter in this workspace follows.
+    ///
+    /// `base_state_dim` is the width of the filter's state *before* the map biases:
+    /// [`NAVIGATION_STATE_DIM`] for the RBPF, whose extra states are the map biases and
+    /// which carries no IMU biases, and [`NAVIGATION_AND_IMU_BIAS_STATE_DIM`] for the UKF
+    /// and EKF, whose map biases follow their IMU biases.
+    ///
+    /// Returns `Ok(None)` when neither map contributes a bias state, which is the "carries
+    /// no map biases" case [`build_event_stream`] takes.
+    ///
+    /// # Errors
+    /// [`StrapdownError::InvalidConfiguration`] if `base_state_dim` is smaller than the nine
+    /// navigation states.
+    pub fn appended(
+        base_state_dim: usize,
+        gravity: bool,
+        magnetic: bool,
+    ) -> Result<Option<Self>, StrapdownError> {
+        if !gravity && !magnetic {
+            return Ok(None);
+        }
+        let gravity_index = gravity.then_some(base_state_dim);
+        let magnetic_index = magnetic.then(|| base_state_dim + usize::from(gravity));
+        let state_dim = base_state_dim + usize::from(gravity) + usize::from(magnetic);
+        Self::new(state_dim, gravity_index, magnetic_index).map(Some)
+    }
+
+    /// Width of the state vector this layout describes.
+    #[must_use]
+    pub const fn state_dim(&self) -> usize {
+        self.state_dim
+    }
+
+    /// How many map-bias states the filter carries.
+    #[must_use]
+    pub const fn bias_count(&self) -> usize {
+        self.gravity_index.is_some() as usize + self.magnetic_index.is_some() as usize
+    }
+
+    /// The gravity map bias, if the filter carries one.
+    #[must_use]
+    pub const fn gravity_bias(&self) -> Option<BiasState> {
+        match self.gravity_index {
+            Some(index) => Some(BiasState {
+                state_dim: self.state_dim,
+                index,
+            }),
+            None => None,
+        }
+    }
+
+    /// The magnetic map bias, if the filter carries one.
+    #[must_use]
+    pub const fn magnetic_bias(&self) -> Option<BiasState> {
+        match self.magnetic_index {
+            Some(index) => Some(BiasState {
+                state_dim: self.state_dim,
+                index,
+            }),
+            None => None,
+        }
+    }
+}
+
+/// Resolve a declared [`BiasState`] against the state vector a filter actually handed over.
+///
+/// `None` means this model has no bias state and the map value is used as-is.
+///
+/// The width check is the point. A map bias used to be addressed by counting back from the
+/// end of whatever vector arrived, which silently accepted any vector: a 9-vector with
+/// "one from the end" resolved to `state[8]`, the yaw angle, and a 15-state EKF carrying no
+/// map biases resolved to `state[14]`, the z gyro bias. Both were then added to the map
+/// value as though they were a map bias. Requiring the width the layout was built for makes
+/// a measurement built for one filter and handed to another an error rather than a
+/// plausible-looking number.
+///
+/// # Errors
+/// [`StrapdownError::DimensionMismatch`] when `state_len` is not the width the bias was
+/// declared against, or when the declared index does not lie after the nine navigation
+/// states and inside the vector -- unreachable through [`GeoBiasLayout`], which validates
+/// that at construction, but [`BiasState`]'s fields are public.
+pub const fn resolve_bias_index(
+    state_len: usize,
+    bias: Option<BiasState>,
+) -> Result<Option<usize>, StrapdownError> {
+    let Some(bias) = bias else {
+        return Ok(None);
+    };
+    if state_len != bias.state_dim {
+        return Err(StrapdownError::DimensionMismatch {
+            what: "geophysical bias state: filter state width",
+            expected: bias.state_dim,
+            got: state_len,
+        });
+    }
+    if bias.index < NAVIGATION_STATE_DIM || bias.index >= state_len {
+        return Err(StrapdownError::DimensionMismatch {
+            what: "geophysical bias state: index within the filter state",
+            expected: state_len,
+            got: bias.index,
+        });
+    }
+    Ok(Some(bias.index))
+}
+
 /// World Magnetic Model valid altitude range (meters)
 /// The WMM is typically valid from -1km below sea level to ~850km above
 const WMM_MIN_ALTITUDE_M: f64 = -1000.0;
@@ -718,8 +926,14 @@ pub struct GravityMeasurement {
     north_velocity: f64,
     /// Current east velocity (m/s)
     east_velocity: f64,
-    /// Optional bias state index from the end of the state vector.
-    pub bias_from_end: Option<usize>,
+    /// Where the consuming filter carries this model's map bias, if it carries one.
+    ///
+    /// `None` means no bias state, and the map value is used as-is. A [`BiasState`] names
+    /// both the index of the bias within the filter's state vector *and* the width of that
+    /// vector, so handing this model to a filter of a different width is an error rather
+    /// than a plausible-looking number -- see [`resolve_bias_index`]. Build one with
+    /// [`GeoBiasLayout`] rather than by hand, which validates the placement up front.
+    pub bias: Option<BiasState>,
 }
 /// Geophysical anomaly measurement model implementation for gravity. This trait provides a method to compute
 /// the gravity anomaly given the current state. Free air anomaly correction needs knowledge of the vehicle
@@ -758,6 +972,13 @@ impl MeasurementModel for GravityMeasurement {
         1 // Single measurement: map value at current position
     }
     fn get_measurement(&self, state: &DVector<f64>) -> Result<DVector<f64>, StrapdownError> {
+        // Validate the declared bias against the state actually handed over, and do it on
+        // this method because it is the one method every filter calls. The EKF and the RBPF
+        // also reach `get_jacobian`, which checks the same thing, but the UKF maps sigma
+        // points through `get_expected_measurement` and asks for no Jacobian at all -- so
+        // without this a UKF whose state does not carry the declared bias would silently
+        // drop it and run an inconsistent model.
+        resolve_bias_index(state.len(), self.bias)?;
         // Return the observed gravity anomaly as the measurement vector.
         // Use provided state if available (for per-particle updates), otherwise fallback to stored state.
         let anomaly = if let Some((lat, alt, v_n, v_e)) = Self::extract_state_inputs(state) {
@@ -780,14 +1001,16 @@ impl MeasurementModel for GravityMeasurement {
             .map
             .get_point(&lat.to_degrees(), &lon.to_degrees())
             .unwrap_or(f64::NAN);
-        let bias = self.bias_from_end.and_then(|offset| {
-            if offset == 0 || state.len() < offset {
-                None
-            } else {
-                Some(state[state.len() - offset])
-            }
-        });
-        DVector::from_vec(vec![map_value + bias.unwrap_or(0.0)])
+        // Infallible by trait signature, so a state vector of the wrong width drops the
+        // bias here rather than reporting it. The loud report is `get_measurement`, which
+        // every filter calls and which validates the same thing: the EKF and RBPF also
+        // reach it through `get_jacobian`, but the UKF maps sigma points and asks for no
+        // Jacobian at all, so the Jacobian alone would leave that path silent.
+        let bias = resolve_bias_index(state.len(), self.bias)
+            .ok()
+            .flatten()
+            .map_or(0.0, |index| state[index]);
+        DVector::from_vec(vec![map_value + bias])
     }
 
     fn get_jacobian(&self, state: &DVector<f64>) -> Result<DMatrix<f64>, StrapdownError> {
@@ -815,25 +1038,39 @@ impl GravityMeasurement {
     }
     /// Compute measurement Jacobian for EKF
     ///
-    /// Returns 1×9 Jacobian matrix where only the first two columns (∂z/∂lat, ∂z/∂lon)
-    /// are non-zero, representing how the map value changes with position.
+    /// The first two columns (∂z/∂lat, ∂z/∂lon) carry the map gradient; when
+    /// [`Self::bias`] is set, the column it addresses carries the 1.0 with which
+    /// the bias enters the predicted measurement, and every other column is zero.
+    ///
+    /// # Width
+    ///
+    /// `1 × state.len()`, with the nine navigation states as a floor. A filter whose state
+    /// is wider than the vector returned here zero-pads it -- see
+    /// `strapdown::linearize::expand_measurement_jacobian` -- so returning the caller's own
+    /// width is both correct and compatible. It has to be the caller's width rather than a
+    /// fixed nine, because a declared bias column may lie outside the first nine.
     ///
     /// # Arguments
     ///
-    /// * `state` - Current navigation state vector [lat, lon, alt, `v_n`, `v_e`, `v_d`, roll, pitch, yaw]
-    ///
-    /// # Returns
-    ///
-    /// 1×9 Jacobian matrix H for gravity anomaly measurement
+    /// * `state` - Current navigation state vector [lat, lon, alt, `v_n`, `v_e`, `v_d`, roll,
+    ///   pitch, yaw], followed by whatever else the consuming filter carries. When
+    ///   [`Self::bias`] is set, it names the index of the map bias within this vector and
+    ///   the width this vector must have; both are checked rather than assumed.
     ///
     /// # Errors
     /// Propagates [`StrapdownError::OutOfMapBounds`] when the estimate has left the loaded
     /// tile. That is recoverable: the caller should skip this measurement, not abort.
+    /// Returns [`StrapdownError::DimensionMismatch`] from `resolve_bias_index` when
+    /// `state` is too narrow to carry the declared bias -- which is not recoverable, since
+    /// it means the measurement and the filter disagree about the state layout.
     pub fn get_jacobian_internal(
         &self,
         state: &DVector<f64>,
     ) -> Result<DMatrix<f64>, StrapdownError> {
-        let mut h = DMatrix::<f64>::zeros(1, 9);
+        // Resolve before touching the map: a layout disagreement is a wiring error and
+        // should be reported whether or not the estimate also happens to be off-map.
+        let bias_index = resolve_bias_index(state.len(), self.bias)?;
+        let mut h = DMatrix::<f64>::zeros(1, state.len().max(NAVIGATION_STATE_DIM));
 
         let lat = state[0];
         let lon = state[1];
@@ -846,6 +1083,9 @@ impl GravityMeasurement {
         // Convert gradient from per-degree to per-radian
         h[(0, 0)] = dlat_deg * RAD_TO_DEG;
         h[(0, 1)] = dlon_deg * RAD_TO_DEG;
+        if let Some(index) = bias_index {
+            h[(0, index)] = 1.0;
+        }
 
         Ok(h)
     }
@@ -869,8 +1109,14 @@ pub struct MagneticAnomalyMeasurement {
     pub longitude: f64,
     /// Altitude (meters)
     pub altitude: f64,
-    /// Optional bias state index from the end of the state vector.
-    pub bias_from_end: Option<usize>,
+    /// Where the consuming filter carries this model's map bias, if it carries one.
+    ///
+    /// `None` means no bias state, and the map value is used as-is. A [`BiasState`] names
+    /// both the index of the bias within the filter's state vector *and* the width of that
+    /// vector, so handing this model to a filter of a different width is an error rather
+    /// than a plausible-looking number -- see [`resolve_bias_index`]. Build one with
+    /// [`GeoBiasLayout`] rather than by hand, which validates the placement up front.
+    pub bias: Option<BiasState>,
 }
 impl GeophysicalAnomalyMeasurementModel for MagneticAnomalyMeasurement {
     fn get_anomaly(&self) -> Result<f64, StrapdownError> {
@@ -915,6 +1161,13 @@ impl MeasurementModel for MagneticAnomalyMeasurement {
         1 // Single measurement: map value at current position
     }
     fn get_measurement(&self, state: &DVector<f64>) -> Result<DVector<f64>, StrapdownError> {
+        // Validate the declared bias against the state actually handed over, and do it on
+        // this method because it is the one method every filter calls. The EKF and the RBPF
+        // also reach `get_jacobian`, which checks the same thing, but the UKF maps sigma
+        // points through `get_expected_measurement` and asks for no Jacobian at all -- so
+        // without this a UKF whose state does not carry the declared bias would silently
+        // drop it and run an inconsistent model.
+        resolve_bias_index(state.len(), self.bias)?;
         // Return the observed magnetic anomaly as the measurement vector.
         // Use provided state if available (for per-particle updates), otherwise fallback to stored state.
         let anomaly = if let Some((lat_deg, lon_deg, alt)) = Self::extract_state_inputs(state) {
@@ -962,14 +1215,16 @@ impl MeasurementModel for MagneticAnomalyMeasurement {
             .map
             .get_point(&lat.to_degrees(), &lon.to_degrees())
             .unwrap_or(f64::NAN);
-        let bias = self.bias_from_end.and_then(|offset| {
-            if offset == 0 || state.len() < offset {
-                None
-            } else {
-                Some(state[state.len() - offset])
-            }
-        });
-        DVector::from_vec(vec![map_value + bias.unwrap_or(0.0)])
+        // Infallible by trait signature, so a state vector of the wrong width drops the
+        // bias here rather than reporting it. The loud report is `get_measurement`, which
+        // every filter calls and which validates the same thing: the EKF and RBPF also
+        // reach it through `get_jacobian`, but the UKF maps sigma points and asks for no
+        // Jacobian at all, so the Jacobian alone would leave that path silent.
+        let bias = resolve_bias_index(state.len(), self.bias)
+            .ok()
+            .flatten()
+            .map_or(0.0, |index| state[index]);
+        DVector::from_vec(vec![map_value + bias])
     }
 
     fn get_jacobian(&self, state: &DVector<f64>) -> Result<DMatrix<f64>, StrapdownError> {
@@ -988,25 +1243,39 @@ impl MagneticAnomalyMeasurement {
     }
     /// Compute measurement Jacobian for EKF
     ///
-    /// Returns 1×9 Jacobian matrix where only the first two columns (∂z/∂lat, ∂z/∂lon)
-    /// are non-zero, representing how the map value changes with position.
+    /// The first two columns (∂z/∂lat, ∂z/∂lon) carry the map gradient; when
+    /// [`Self::bias`] is set, the column it addresses carries the 1.0 with which
+    /// the bias enters the predicted measurement, and every other column is zero.
+    ///
+    /// # Width
+    ///
+    /// `1 × state.len()`, with the nine navigation states as a floor. A filter whose state
+    /// is wider than the vector returned here zero-pads it -- see
+    /// `strapdown::linearize::expand_measurement_jacobian` -- so returning the caller's own
+    /// width is both correct and compatible. It has to be the caller's width rather than a
+    /// fixed nine, because a declared bias column may lie outside the first nine.
     ///
     /// # Arguments
     ///
-    /// * `state` - Current navigation state vector [lat, lon, alt, `v_n`, `v_e`, `v_d`, roll, pitch, yaw]
-    ///
-    /// # Returns
-    ///
-    /// 1×9 Jacobian matrix H for magnetic anomaly measurement
+    /// * `state` - Current navigation state vector [lat, lon, alt, `v_n`, `v_e`, `v_d`, roll,
+    ///   pitch, yaw], followed by whatever else the consuming filter carries. When
+    ///   [`Self::bias`] is set, it names the index of the map bias within this vector and
+    ///   the width this vector must have; both are checked rather than assumed.
     ///
     /// # Errors
     /// Propagates [`StrapdownError::OutOfMapBounds`] when the estimate has left the loaded
     /// tile. That is recoverable: the caller should skip this measurement, not abort.
+    /// Returns [`StrapdownError::DimensionMismatch`] from `resolve_bias_index` when
+    /// `state` is too narrow to carry the declared bias -- which is not recoverable, since
+    /// it means the measurement and the filter disagree about the state layout.
     pub fn get_jacobian_internal(
         &self,
         state: &DVector<f64>,
     ) -> Result<DMatrix<f64>, StrapdownError> {
-        let mut h = DMatrix::<f64>::zeros(1, 9);
+        // Resolve before touching the map: a layout disagreement is a wiring error and
+        // should be reported whether or not the estimate also happens to be off-map.
+        let bias_index = resolve_bias_index(state.len(), self.bias)?;
+        let mut h = DMatrix::<f64>::zeros(1, state.len().max(NAVIGATION_STATE_DIM));
 
         let lat = state[0];
         let lon = state[1];
@@ -1019,6 +1288,9 @@ impl MagneticAnomalyMeasurement {
         // Convert gradient from per-degree to per-radian
         h[(0, 0)] = dlat_deg * RAD_TO_DEG;
         h[(0, 1)] = dlon_deg * RAD_TO_DEG;
+        if let Some(index) = bias_index {
+            h[(0, index)] = 1.0;
+        }
 
         Ok(h)
     }
@@ -1110,6 +1382,12 @@ impl MeasurementModel for CombinedGeophysicalMeasurement {
 /// * `magnetic_map` - Optional magnetic map for measurements
 /// * `magnetic_noise_std` - Standard deviation for magnetic measurement noise (if `magnetic_map` is Some)
 /// * `geo_frequency_s` - Frequency in seconds for geophysical measurements (None for every available measurement)
+/// * `bias_layout` - Where the filter that will consume this stream carries its map-bias
+///   states, or `None` when it carries none. This is not inferable from the maps: loading a
+///   gravity map says a gravity *measurement* is available, not that the filter estimating
+///   from it has a state to absorb that map's bias. Getting it from the caller, who knows
+///   the filter, is what keeps a stream built for one filter from being read against
+///   another's states -- see [`GeoBiasLayout`] and [`resolve_bias_index`].
 ///
 /// # Errors
 /// [`StrapdownError::InvalidConfiguration`] if `records` is empty. The first record supplies
@@ -1132,6 +1410,7 @@ pub fn build_event_stream(
     magnetic_map: Option<Rc<GeoMap>>,
     magnetic_noise_std: Option<f64>,
     geo_frequency_s: Option<f64>,
+    bias_layout: Option<GeoBiasLayout>,
 ) -> Result<EventStream, StrapdownError> {
     // The first record fixes both the epoch the elapsed clock counts from and the datum the
     // relative-altitude measurements are referenced to, so an empty slice is rejected here
@@ -1145,7 +1424,11 @@ pub fn build_event_stream(
                 .to_owned(),
         })?;
     let start_time = first.time;
-    let bias_count = usize::from(gravity_map.is_some()) + usize::from(magnetic_map.is_some());
+    // Whether a bias is *declared* comes from the layout the caller passed, not from which
+    // maps were loaded. The two used to be the same expression, which is how a stream could
+    // promise bias states a filter did not carry.
+    let gravity_bias = bias_layout.and_then(|layout| layout.gravity_bias());
+    let magnetic_bias = bias_layout.and_then(|layout| layout.magnetic_bias());
     let records_with_elapsed: Vec<(f64, &TestDataRecord)> = records
         .iter()
         .map(|r| ((r.time - start_time).num_milliseconds() as f64 / 1000.0, r))
@@ -1315,7 +1598,7 @@ pub fn build_event_stream(
                         altitude: f64::NAN,
                         north_velocity: f64::NAN,
                         east_velocity: f64::NAN,
-                        bias_from_end: Some(bias_count), // bias_count == 2 when both maps present
+                        bias: gravity_bias,
                     },
                     magnetic: MagneticAnomalyMeasurement {
                         map: m_map.clone(),
@@ -1326,7 +1609,7 @@ pub fn build_event_stream(
                         altitude: f64::NAN,
                         year: datetime.year(),
                         day: datetime.ordinal() as u16,
-                        bias_from_end: Some(1),
+                        bias: magnetic_bias,
                     },
                 };
                 events.push(Event::Measurement {
@@ -1345,11 +1628,7 @@ pub fn build_event_stream(
                     altitude: f64::NAN,
                     north_velocity: f64::NAN,
                     east_velocity: f64::NAN,
-                    bias_from_end: if bias_count > 0 {
-                        Some(bias_count)
-                    } else {
-                        None
-                    },
+                    bias: gravity_bias,
                 };
                 events.push(Event::Measurement {
                     meas: Box::new(meas),
@@ -1369,7 +1648,7 @@ pub fn build_event_stream(
                     altitude: f64::NAN,
                     year: datetime.year(),
                     day: datetime.ordinal() as u16,
-                    bias_from_end: if bias_count > 0 { Some(1) } else { None },
+                    bias: magnetic_bias,
                 };
                 events.push(Event::Measurement {
                     meas: Box::new(meas),
@@ -1520,7 +1799,7 @@ mod tests {
             altitude: f64::NAN,
             north_velocity: f64::NAN,
             east_velocity: f64::NAN,
-            bias_from_end: None,
+            bias: None,
         };
 
         let state = StrapdownState::new(
@@ -1582,7 +1861,7 @@ mod tests {
             altitude: 0.0,
             north_velocity: 3.5, // cos(45°) * 5 m/s
             east_velocity: 3.5,  // sin(45°) * 5 m/s
-            bias_from_end: None,
+            bias: None,
         };
 
         assert_eq!(measurement.get_dimension(), 1);
@@ -1615,7 +1894,7 @@ mod tests {
             altitude: 100.0,
             year: 2023,
             day: 216, // August 4th
-            bias_from_end: None,
+            bias: None,
         };
 
         assert_eq!(measurement.get_dimension(), 1);
@@ -1648,7 +1927,7 @@ mod tests {
             altitude: f64::NAN,
             north_velocity: 3.5,
             east_velocity: 3.5,
-            bias_from_end: None,
+            bias: None,
         };
 
         // Create mock sigma points (position states in radians and meters)
@@ -1711,7 +1990,7 @@ mod tests {
         };
         let geomap = Rc::new(create_test_gravity_map());
 
-        let err = build_event_stream(&[], &config, Some(geomap), None, None, None, None)
+        let err = build_event_stream(&[], &config, Some(geomap), None, None, None, None, None)
             .expect_err("an empty record slice cannot produce a stream");
         assert!(
             matches!(
@@ -1735,9 +2014,17 @@ mod tests {
         };
         let geomap = Rc::new(create_test_gravity_map());
 
-        let event_stream =
-            build_event_stream(&records[..1], &config, Some(geomap), None, None, None, None)
-                .unwrap();
+        let event_stream = build_event_stream(
+            &records[..1],
+            &config,
+            Some(geomap),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(event_stream.start_time, records[0].time);
         assert!(
@@ -1756,8 +2043,17 @@ mod tests {
         };
         let geomap = Rc::new(create_test_gravity_map());
 
-        let event_stream =
-            build_event_stream(&records, &config, Some(geomap), None, None, None, None).unwrap();
+        let event_stream = build_event_stream(
+            &records,
+            &config,
+            Some(geomap),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(event_stream.start_time, records[0].time);
         assert!(!event_stream.events.is_empty());
@@ -1789,8 +2085,17 @@ mod tests {
         };
         let geomap = Rc::new(create_test_magnetic_map());
 
-        let event_stream =
-            build_event_stream(&records, &config, None, None, Some(geomap), None, None).unwrap();
+        let event_stream = build_event_stream(
+            &records,
+            &config,
+            None,
+            None,
+            Some(geomap),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(event_stream.start_time, records[0].time);
         assert!(!event_stream.events.is_empty());
@@ -1865,6 +2170,374 @@ mod tests {
         assert!(got.unwrap_err().is_recoverable());
     }
 
+    fn gravity_measurement_with_bias(bias: Option<BiasState>) -> GravityMeasurement {
+        GravityMeasurement {
+            map: Rc::new(create_test_gravity_map()),
+            noise_std: 1.0,
+            gravity_observed: 9.8,
+            latitude: 40.5,
+            altitude: 100.0,
+            north_velocity: 0.0,
+            east_velocity: 0.0,
+            bias,
+        }
+    }
+
+    /// A state vector positioned inside the test map whose tail beyond the nine navigation
+    /// states is `extras`.
+    fn state_with_extras(extras: &[f64]) -> DVector<f64> {
+        let mut v = vec![
+            40.5_f64.to_radians(),
+            (-73.5_f64).to_radians(),
+            100.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.9, // yaw, distinct from any bias below
+        ];
+        v.extend_from_slice(extras);
+        DVector::from_vec(v)
+    }
+
+    /// The layout places the map biases after the filter's own states, gravity first.
+    ///
+    /// The indices here are the ones the old "count back from the end" arithmetic produced
+    /// for the RBPF, so this pins the translation: it must describe the same states, only
+    /// now saying which filter width it describes them for.
+    #[test]
+    fn test_geo_bias_layout_appends_biases_after_the_filter_states() {
+        // Neither map contributes a bias: the filter carries none, and there is no layout.
+        assert_eq!(
+            GeoBiasLayout::appended(NAVIGATION_STATE_DIM, false, false).unwrap(),
+            None
+        );
+
+        // RBPF: no IMU bias states, so the map biases follow the nine navigation states.
+        let both = GeoBiasLayout::appended(NAVIGATION_STATE_DIM, true, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(both.state_dim(), 11);
+        assert_eq!(both.bias_count(), 2);
+        assert_eq!(
+            both.gravity_bias(),
+            Some(BiasState {
+                state_dim: 11,
+                index: 9
+            })
+        );
+        assert_eq!(
+            both.magnetic_bias(),
+            Some(BiasState {
+                state_dim: 11,
+                index: 10
+            })
+        );
+
+        // Magnetic only: it takes the first appended slot, not the second.
+        let magnetic_only = GeoBiasLayout::appended(NAVIGATION_STATE_DIM, false, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(magnetic_only.gravity_bias(), None);
+        assert_eq!(
+            magnetic_only.magnetic_bias(),
+            Some(BiasState {
+                state_dim: 10,
+                index: 9
+            })
+        );
+
+        // UKF/EKF: the map biases follow the six IMU bias states.
+        let ukf = GeoBiasLayout::appended(NAVIGATION_AND_IMU_BIAS_STATE_DIM, true, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(ukf.state_dim(), 17);
+        assert_eq!(
+            ukf.gravity_bias(),
+            Some(BiasState {
+                state_dim: 17,
+                index: 15
+            })
+        );
+        assert_eq!(
+            ukf.magnetic_bias(),
+            Some(BiasState {
+                state_dim: 17,
+                index: 16
+            })
+        );
+    }
+
+    /// A layout that does not describe a real state vector is rejected at construction.
+    #[test]
+    fn test_geo_bias_layout_rejects_impossible_placements() {
+        // Inside the navigation states.
+        assert!(matches!(
+            GeoBiasLayout::new(11, Some(8), None),
+            Err(StrapdownError::InvalidConfiguration { .. })
+        ));
+        // Past the end of the vector it claims to describe.
+        assert!(matches!(
+            GeoBiasLayout::new(11, Some(11), None),
+            Err(StrapdownError::InvalidConfiguration { .. })
+        ));
+        // Two biases cannot be the same state.
+        assert!(matches!(
+            GeoBiasLayout::new(11, Some(9), Some(9)),
+            Err(StrapdownError::InvalidConfiguration { .. })
+        ));
+        // A state vector too short to be a filter state at all.
+        assert!(matches!(
+            GeoBiasLayout::appended(4, true, false),
+            Err(StrapdownError::InvalidConfiguration { .. })
+        ));
+    }
+
+    /// A bias declared against one filter width must not be read against another's states.
+    ///
+    /// This is the failure the layout exists to prevent. A bias was addressed by counting
+    /// back from the end of whatever vector arrived, so any width was accepted: nine states
+    /// resolved "one from the end" to `state[8]`, the yaw angle, and a 15-state EKF carrying
+    /// no map biases resolved it to `state[14]`, the z gyro bias. Both were added to the map
+    /// value as though they were a map bias, and nothing said so.
+    #[test]
+    fn test_resolve_bias_index_requires_the_width_it_was_declared_for() {
+        let rbpf = GeoBiasLayout::appended(NAVIGATION_STATE_DIM, true, false)
+            .unwrap()
+            .unwrap();
+        let gravity = rbpf.gravity_bias();
+        assert_eq!(resolve_bias_index(10, gravity).unwrap(), Some(9));
+
+        // The nine-state summary that used to resolve to yaw.
+        assert!(matches!(
+            resolve_bias_index(9, gravity),
+            Err(StrapdownError::DimensionMismatch {
+                expected: 10,
+                got: 9,
+                ..
+            })
+        ));
+        // A 15-state EKF, whose last entry is the z gyro bias.
+        assert!(matches!(
+            resolve_bias_index(15, gravity),
+            Err(StrapdownError::DimensionMismatch {
+                expected: 10,
+                got: 15,
+                ..
+            })
+        ));
+        // Not recoverable: a caller cannot sensibly skip the fix and carry on, the wiring is
+        // wrong.
+        assert!(
+            !resolve_bias_index(15, gravity)
+                .unwrap_err()
+                .is_recoverable()
+        );
+
+        // No bias declared: nothing to resolve, any width accepted.
+        assert_eq!(resolve_bias_index(9, None).unwrap(), None);
+        assert_eq!(resolve_bias_index(15, None).unwrap(), None);
+    }
+
+    /// The UKF never asks for a Jacobian, so `get_measurement` has to carry the check.
+    ///
+    /// `UnscentedKalmanFilter::update` maps sigma points through `get_expected_measurement`
+    /// and takes its innovation from `get_measurement`; it calls `get_jacobian` nowhere. A
+    /// contract enforced only on the Jacobian would therefore leave every UKF silently
+    /// dropping a bias its state could not carry, which is the one thing the loud error is
+    /// meant to prevent.
+    #[test]
+    fn test_gravity_get_measurement_reports_a_missing_bias_state() {
+        let bias = GeoBiasLayout::appended(NAVIGATION_STATE_DIM, true, false)
+            .unwrap()
+            .unwrap()
+            .gravity_bias();
+        let measurement = gravity_measurement_with_bias(bias);
+        let err = measurement
+            .get_measurement(&state_with_extras(&[]))
+            .unwrap_err();
+        assert!(matches!(err, StrapdownError::DimensionMismatch { .. }));
+        assert!(!err.is_recoverable());
+
+        // Carried: no error, and the anomaly still comes back.
+        assert!(
+            measurement
+                .get_measurement(&state_with_extras(&[7.0]))
+                .is_ok()
+        );
+        // Not declared: any width is fine.
+        assert!(
+            gravity_measurement_with_bias(None)
+                .get_measurement(&state_with_extras(&[]))
+                .is_ok()
+        );
+    }
+
+    /// A hand-built `BiasState` of the right width but a nonsense index is still rejected.
+    ///
+    /// [`GeoBiasLayout`] cannot produce one -- it validates at construction -- but
+    /// `BiasState`'s fields are public, so the resolution has to stand on its own rather
+    /// than trusting that every caller came through the layout.
+    #[test]
+    fn test_resolve_bias_index_rejects_an_index_outside_the_state() {
+        // Inside the navigation states, at the width it claims.
+        assert!(matches!(
+            resolve_bias_index(
+                11,
+                Some(BiasState {
+                    state_dim: 11,
+                    index: 8
+                })
+            ),
+            Err(StrapdownError::DimensionMismatch { .. })
+        ));
+        // Past the end of the vector it claims to describe.
+        assert!(matches!(
+            resolve_bias_index(
+                11,
+                Some(BiasState {
+                    state_dim: 11,
+                    index: 11
+                })
+            ),
+            Err(StrapdownError::DimensionMismatch { .. })
+        ));
+    }
+
+    /// The Jacobian is where a layout disagreement surfaces, because every filter in the
+    /// workspace evaluates it before the expected measurement.
+    #[test]
+    fn test_gravity_jacobian_reports_a_missing_bias_state() {
+        let bias = GeoBiasLayout::appended(NAVIGATION_STATE_DIM, true, false)
+            .unwrap()
+            .unwrap()
+            .gravity_bias();
+        let measurement = gravity_measurement_with_bias(bias);
+        let err = measurement
+            .get_jacobian(&state_with_extras(&[]))
+            .unwrap_err();
+        assert!(matches!(err, StrapdownError::DimensionMismatch { .. }));
+        assert!(!err.is_recoverable());
+    }
+
+    /// A carried bias gets a unit column, because it enters the prediction additively.
+    #[test]
+    fn test_gravity_jacobian_carries_a_column_for_the_declared_bias() {
+        let bias = GeoBiasLayout::appended(NAVIGATION_STATE_DIM, true, false)
+            .unwrap()
+            .unwrap()
+            .gravity_bias();
+        let h = gravity_measurement_with_bias(bias)
+            .get_jacobian(&state_with_extras(&[7.0]))
+            .unwrap();
+        assert_eq!(h.nrows(), 1);
+        assert_eq!(h.ncols(), 10, "the Jacobian must match the caller's width");
+        assert_approx_eq!(h[(0, 9)], 1.0, 1e-12);
+        for column in 2..9 {
+            assert_approx_eq!(h[(0, column)], 0.0, 1e-12);
+        }
+
+        // No bias declared: nine columns, as before, and no unit entry anywhere.
+        let h = gravity_measurement_with_bias(None)
+            .get_jacobian(&state_with_extras(&[]))
+            .unwrap();
+        assert_eq!(h.ncols(), 9);
+        for column in 2..9 {
+            assert_approx_eq!(h[(0, column)], 0.0, 1e-12);
+        }
+    }
+
+    /// The predicted measurement reads the bias state, not a navigation state.
+    #[test]
+    fn test_gravity_expected_measurement_reads_the_declared_bias() {
+        let bias = GeoBiasLayout::appended(NAVIGATION_STATE_DIM, true, false)
+            .unwrap()
+            .unwrap()
+            .gravity_bias();
+        let unbiased = gravity_measurement_with_bias(None)
+            .get_expected_measurement(&state_with_extras(&[]))[0];
+
+        // yaw is 0.9 and the bias is 7.0, so the two readings are far apart.
+        let biased = gravity_measurement_with_bias(bias)
+            .get_expected_measurement(&state_with_extras(&[7.0]))[0];
+        assert_approx_eq!(biased, unbiased + 7.0, 1e-9);
+
+        // A state of the wrong width drops the bias rather than reading yaw. The loud report
+        // is `get_jacobian`; this path only has to not invent a bias of 0.9.
+        let dropped = gravity_measurement_with_bias(bias)
+            .get_expected_measurement(&state_with_extras(&[]))[0];
+        assert_approx_eq!(dropped, unbiased, 1e-9);
+    }
+
+    /// A stream built for a filter with no map-bias states must not declare one.
+    ///
+    /// The measurements used to take their bias declaration from which maps were loaded, so
+    /// every geophysical stream promised bias states whether or not the filter consuming it
+    /// had any. Passing `None` is how a caller says its filter carries none, and this is the
+    /// assertion that the promise now follows the caller rather than the maps.
+    #[test]
+    fn test_event_stream_without_a_layout_declares_no_bias() {
+        let records = create_test_records();
+        let config = GnssDegradationConfig::default();
+        let gravity = Rc::new(create_test_gravity_map());
+        let magnetic = Rc::new(create_test_magnetic_map());
+
+        let no_bias = build_event_stream(
+            &records,
+            &config,
+            Some(Rc::clone(&gravity)),
+            None,
+            Some(Rc::clone(&magnetic)),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let mut combined_seen = 0;
+        for event in &no_bias.events {
+            if let Event::Measurement { meas, .. } = event
+                && let Some(combined) = meas
+                    .as_any()
+                    .downcast_ref::<CombinedGeophysicalMeasurement>()
+            {
+                combined_seen += 1;
+                assert_eq!(combined.gravity.bias, None);
+                assert_eq!(combined.magnetic.bias, None);
+            }
+        }
+        assert!(
+            combined_seen > 0,
+            "the stream should carry geophysical measurements to check"
+        );
+
+        // The same stream built for a filter that does carry them declares exactly those.
+        let layout = GeoBiasLayout::appended(NAVIGATION_STATE_DIM, true, true)
+            .unwrap()
+            .unwrap();
+        let with_bias = build_event_stream(
+            &records,
+            &config,
+            Some(gravity),
+            None,
+            Some(magnetic),
+            None,
+            None,
+            Some(layout),
+        )
+        .unwrap();
+        for event in &with_bias.events {
+            if let Event::Measurement { meas, .. } = event
+                && let Some(combined) = meas
+                    .as_any()
+                    .downcast_ref::<CombinedGeophysicalMeasurement>()
+            {
+                assert_eq!(combined.gravity.bias, layout.gravity_bias());
+                assert_eq!(combined.magnetic.bias, layout.magnetic_bias());
+            }
+        }
+    }
+
     /// `NaN` used to reach the index search and panic on `unwrap`: every comparison
     /// against `NaN` is false, so it passed straight through the bounds guards. The
     /// geophysical measurement models are built with `NaN` position placeholders, so this
@@ -1911,7 +2584,7 @@ mod tests {
             altitude: f64::NAN,
             north_velocity: 3.5,
             east_velocity: 3.5,
-            bias_from_end: None,
+            bias: None,
         };
 
         let measurement2 = GravityMeasurement {
@@ -1922,7 +2595,7 @@ mod tests {
             altitude: f64::NAN,
             north_velocity: 3.5,
             east_velocity: 3.5,
-            bias_from_end: None,
+            bias: None,
         };
 
         let noise1 = measurement1.get_noise();
@@ -1949,6 +2622,7 @@ mod tests {
             &config,
             Some(geomap),
             Some(25.0),
+            None,
             None,
             None,
             None,
@@ -1993,6 +2667,7 @@ mod tests {
             None,
             None,
             Some(2.0),
+            None,
         )
         .unwrap();
 
@@ -2015,6 +2690,7 @@ mod tests {
             &config,
             Some(geomap),
             Some(25.0),
+            None,
             None,
             None,
             None,
@@ -2069,7 +2745,7 @@ mod tests {
             altitude: 100.0,
             north_velocity: 0.0,
             east_velocity: 0.0,
-            bias_from_end: None,
+            bias: None,
         };
 
         // Create a state vector for Jacobian computation
@@ -2110,7 +2786,7 @@ mod tests {
             altitude: 100.0,
             year: 2023,
             day: 216,
-            bias_from_end: None,
+            bias: None,
         };
 
         // Create a state vector for Jacobian computation
@@ -2152,7 +2828,7 @@ mod tests {
                 altitude: 100.0,
                 north_velocity: 0.0,
                 east_velocity: 0.0,
-                bias_from_end: None,
+                bias: None,
             });
 
         let state = DVector::from_vec(vec![
@@ -2187,7 +2863,7 @@ mod tests {
                 altitude: 100.0,
                 year: 2023,
                 day: 216,
-                bias_from_end: None,
+                bias: None,
             });
 
         let state = DVector::from_vec(vec![

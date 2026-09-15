@@ -212,7 +212,7 @@ impl InitialState {
 /// [`StrapdownError::DimensionMismatch`] if the Jacobian is *wider* than the state.
 /// That is a measurement built for a bigger filter than the one running it -- ZARU
 /// against a 9-state EKF, say -- and padding cannot rescue it.
-fn expand_measurement_jacobian(
+pub(crate) fn expand_measurement_jacobian(
     jacobian: DMatrix<f64>,
     state_size: usize,
 ) -> Result<DMatrix<f64>, StrapdownError> {

@@ -40,7 +40,8 @@ use strapdown::rbpf::{RaoBlackwellizedParticleFilter, RbpfConfig};
 // Geophysical navigation imports (feature-gated)
 #[cfg(feature = "geonav")]
 use geonav::{
-    GeoMap, GeophysicalMeasurementType, GravityResolution, MagneticResolution,
+    GeoBiasLayout, GeoMap, GeophysicalMeasurementType, GravityResolution, MagneticResolution,
+    NAVIGATION_AND_IMU_BIAS_STATE_DIM, NAVIGATION_STATE_DIM,
     build_event_stream as geo_build_event_stream,
 };
 use rand::SeedableRng;
@@ -680,6 +681,16 @@ fn process_file(
                 return Err("Geophysical configuration requires the geonav feature".into());
             }
 
+            // One layout, used both to declare the biases on the measurements and to size
+            // the filter's extra states below, so the two cannot drift apart. The RBPF
+            // carries no IMU bias states, so its map biases follow the navigation states.
+            #[cfg(feature = "geonav")]
+            let geo_bias_layout = GeoBiasLayout::appended(
+                NAVIGATION_STATE_DIM,
+                gravity_map.is_some(),
+                magnetic_map.is_some(),
+            )?;
+
             #[cfg(feature = "geonav")]
             let event_stream = if gravity_map.is_some() || magnetic_map.is_some() {
                 geo_build_event_stream(
@@ -690,6 +701,7 @@ fn process_file(
                     magnetic_map.clone(),
                     magnetic_map.as_ref().map(|_| magnetic_noise_std),
                     geo_frequency_s,
+                    geo_bias_layout,
                 )?
             } else {
                 build_event_stream(&records, &config.gnss_degradation, config.is_enu)?
@@ -742,8 +754,7 @@ fn process_file(
                 rbpf_defaults.position_process_noise_std_m
             };
             #[cfg(feature = "geonav")]
-            let geo_bias_dim =
-                usize::from(gravity_map.is_some()) + usize::from(magnetic_map.is_some());
+            let geo_bias_dim = geo_bias_layout.map_or(0, |layout| layout.bias_count());
             #[cfg(not(feature = "geonav"))]
             let geo_bias_dim = 0usize;
             let mut rbpf = RaoBlackwellizedParticleFilter::new(
@@ -1457,6 +1468,16 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
             seed: args.seed,
         };
 
+        // This path runs a UKF or an EKF, whose states are the nine navigation states, the
+        // six IMU biases, and then the map biases -- the UKF via `other_states`, the EKF via
+        // a covariance diagonal longer than its mean, which its constructor zero-pads to
+        // match. So the base here is 15, not the RBPF's 9.
+        let geo_bias_layout = GeoBiasLayout::appended(
+            NAVIGATION_AND_IMU_BIAS_STATE_DIM,
+            gravity_map.is_some(),
+            magnetic_map.is_some(),
+        )?;
+
         // Build event stream with geophysical measurements
         let events = geo_build_event_stream(
             &records,
@@ -1474,17 +1495,24 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                 None
             },
             args.geo.geo_frequency_s,
+            geo_bias_layout,
         )?;
         info!("Built event stream with {} events", events.events.len());
 
-        // Which geophysical bias states the filter will carry, and in what order. This travels
-        // with the run into `NavigationResult`, which cannot work it out from the state vector:
-        // a 16-element state is gravity-only or magnetic-only depending on these same flags.
-        let geo_layout = GeoStateLayout {
-            gravity: gravity_map.is_some(),
-            magnetic: magnetic_map.is_some(),
-        };
-        let num_geo_states = geo_layout.len();
+        // Determine number of geophysical states
+        let num_geo_states = geo_bias_layout.map_or(0, |layout| layout.bias_count());
+
+        // The same placement, restated for `NavigationResult`, which lives in `core` and so
+        // cannot name `GeoBiasLayout`. Derived from that layout rather than rebuilt from the
+        // map flags, so where the biases live is decided once: a filter that put them
+        // somewhere other than the end would move both together.
+        let geo_layout = geo_bias_layout.map_or(GeoStateLayout::NONE, |layout| {
+            GeoStateLayout::new(
+                layout.state_dim(),
+                layout.gravity_bias().map(|bias| bias.index),
+                layout.magnetic_bias().map(|bias| bias.index),
+            )
+        });
 
         // Run simulation based on filter type
         let results = match args.filter {
@@ -1788,6 +1816,15 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
         #[cfg(not(feature = "geonav"))]
         let event_stream = build_event_stream(&records, &gnss_degradation, args.sim.enu)?;
 
+        // As above: one layout drives both the measurements' declaration and the filter's
+        // extra states. This path also builds an RBPF, so the base is the navigation states.
+        #[cfg(feature = "geonav")]
+        let geo_bias_layout = GeoBiasLayout::appended(
+            NAVIGATION_STATE_DIM,
+            gravity_map.is_some(),
+            magnetic_map.is_some(),
+        )?;
+
         #[cfg(feature = "geonav")]
         let event_stream = if args.geo.geo {
             geo_build_event_stream(
@@ -1798,13 +1835,14 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
                 magnetic_map.clone(),
                 magnetic_map.as_ref().map(|_| args.geo.magnetic_noise_std),
                 args.geo.geo_frequency_s,
+                geo_bias_layout,
             )?
         } else {
             build_event_stream(&records, &gnss_degradation, args.sim.enu)?
         };
 
         #[cfg(feature = "geonav")]
-        let geo_bias_dim = usize::from(gravity_map.is_some()) + usize::from(magnetic_map.is_some());
+        let geo_bias_dim = geo_bias_layout.map_or(0, |layout| layout.bias_count());
         #[cfg(not(feature = "geonav"))]
         let geo_bias_dim = 0usize;
 
