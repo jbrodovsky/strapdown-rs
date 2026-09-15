@@ -2020,7 +2020,17 @@ pub fn generate_scenario_data(
             latitude: current_state.latitude.to_degrees(),
             longitude: current_state.longitude.to_degrees(),
             altitude: current_state.altitude,
-            horizontal_noise_std: 5.0 * earth::METERS_TO_DEGREES,
+            // Metres, both. `get_noise` does the metres-to-radians conversion on the
+            // horizontal channel itself, so pre-converting here squares the factor and
+            // hands the filters a 45 um GPS -- the defect `filter_comparison.rs` names
+            // in its own fix builder, and which lived here until #295. For a Kalman
+            // filter that is merely an over-confident diagonal R, but a particle weight
+            // is one scalar over all three channels: a horizontal term that tight
+            // decides the resampling outright, the cloud collapses onto whichever
+            // particle fits horizontally regardless of its altitude, and the vertical
+            // channel receives no information at all. See
+            // `rbpf_runs_on_scenario_stationary`.
+            horizontal_noise_std: 5.0,
             vertical_noise_std: 2.0,
         };
         gps_measurements.push(gps_meas.clone());
@@ -3277,6 +3287,48 @@ mod tests {
             lon_change_approx,
             (final_state.longitude - initial_state.longitude).to_degrees()
         );
+    }
+
+    /// The generated fixes must declare their accuracy in metres (#295).
+    ///
+    /// [`GPSPositionMeasurement::horizontal_noise_std`] is metres and `get_noise` does the
+    /// metres-to-radians conversion itself, so a caller that pre-converts squares the factor.
+    /// This generator did, which left every fix it produced claiming a horizontal accuracy of
+    /// 45 micrometres. That is survivable for a Kalman filter -- an over-confident diagonal
+    /// entry -- and fatal for the RBPF, whose particle weight is one scalar over all three
+    /// channels: the cloud resampled on the horizontal residual alone and the altitude
+    /// channel went unaided for the whole run.
+    ///
+    /// Asserted through `get_noise` rather than on the field, because the field's value is
+    /// only wrong relative to what that conversion does to it.
+    #[test]
+    fn generated_gps_fixes_declare_their_accuracy_in_meters() {
+        let state = StrapdownState {
+            latitude: 40.0_f64.to_radians(),
+            longitude: (-105.0_f64).to_radians(),
+            altitude: 1000.0,
+            attitude: Rotation3::identity(),
+            is_enu: true,
+            ..StrapdownState::default()
+        };
+        let g = earth::gravity(&40.0, &1000.0);
+        let (_imu, gps, _truth) = generate_scenario_data(
+            state,
+            1,
+            1,
+            Vector3::new(0.0, 0.0, g),
+            Vector3::zeros(),
+            true,
+            true,
+            false,
+        );
+
+        let noise = gps[0].get_noise();
+        // Back out of radians of arc, the units `get_noise` leaves the horizontal channel in.
+        let horizontal_std_m = noise[(0, 0)].sqrt() / earth::METERS_TO_RADIANS;
+        let vertical_std_m = noise[(2, 2)].sqrt();
+        assert_approx_eq!(horizontal_std_m, 5.0, 1e-9);
+        assert_approx_eq!(vertical_std_m, 2.0, 1e-12);
     }
 
     /// Test synthetic trajectory generation for stationary vehicle at rest in ENU frame

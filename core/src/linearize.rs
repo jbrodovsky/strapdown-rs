@@ -476,14 +476,21 @@ fn transition_jacobian(
     // ~3e-5 for altitude-vs-attitude on the `jacobian_agreement` state, against an analytic
     // zero.
     //
-    // It is deliberately NOT applied, for two measured reasons. Adding it to the altitude row
-    // alone -- which is where it is largest, and all #317 asks for -- takes
-    // `rbpf::tests::rbpf_runs_on_scenario_stationary` from 13.98 m of stationary altitude
-    // error back to 35.92 m, undoing what the Coriolis terms above fix. And doing only that
-    // row is the same inconsistency this file declines in `error_state_transition_jacobian`
-    // below: rows 0 and 1 carry the identical term (measured ~9.2e-11 at
-    // `frame_check_state`, 3.7% of the largest non-identity entry in those rows) and would
-    // be left first-order while row 2 became second-order.
+    // It is deliberately NOT applied, because doing only the altitude row -- which is where
+    // it is largest, and all #317 asks for -- is the same inconsistency this file declines in
+    // `error_state_transition_jacobian` below: rows 0 and 1 carry the identical term
+    // (measured ~9.2e-11 at `frame_check_state`, 3.7% of the largest non-identity entry in
+    // those rows) and would be left first-order while row 2 became second-order.
+    //
+    // That used to be the *second* reason. The first was a measurement -- adding the
+    // altitude row alone took `rbpf::tests::rbpf_runs_on_scenario_stationary` from 13.98 m
+    // of stationary altitude error to 35.92 m -- and it is void. Both numbers came from a
+    // filter whose vertical channel was receiving no aiding at all, because
+    // `generate_scenario_data` handed it a 45 um GPS fix and the particle weights collapsed
+    // on the horizontal channel alone; see that test for the whole of #295. Re-measured with
+    // the fix units corrected, the half-step costs 0.0106 m against 0.0061 m without it,
+    // both two orders inside the test's derived 1.85 m bound. It is a real term, it is cheap, and
+    // nothing here argues against it any more except consistency across the three rows.
     //
     // Tracked in #338, with the measurements, as one change across all three rows.
 
