@@ -27,12 +27,12 @@
 //!    rotation-vector form says exactly zero.
 //! 3. **Whole blocks can be missing without any filter noticing.** The velocity rows carried
 //!    no position dependence beyond gravity (#317) and differentiated only one factor of a
-//!    quadratic Coriolis term (#325). Each was ~1e-5 to 3e-5 against an analytic zero, well
-//!    inside the 1e-4 this file used to allow. Filling them in is what let the tolerance move
-//!    to a *derived* 6e-5 -- see `MAX_DISAGREEMENT` -- where every contribution is named and
-//!    computed rather than being an unexamined budget: one second-order averaging term, one
-//!    deliberately-omitted half-step (#338), and one genuine first-order gap two orders
-//!    further down (#339).
+//!    quadratic Coriolis term (#325); the attitude rows then had the same latitude dependence
+//!    missing from Groves 5.46 that #317 had filled in for 5.54 (#339). Each was ~5e-7 to
+//!    3e-5 against an analytic zero, well inside the 1e-4 this file used to allow. Filling
+//!    them in is what let the tolerance move to a *derived* 6e-5 -- see `MAX_DISAGREEMENT` --
+//!    where every contribution is named and computed rather than being an unexamined budget:
+//!    one second-order averaging term and one deliberately-omitted half-step (#338).
 
 use nalgebra::{Rotation3, Vector3};
 use strapdown::linearize::{
@@ -178,12 +178,18 @@ fn worst_disagreement(analytic: &nalgebra::DMatrix<f64>, state: &StrapdownState)
 /// integration order changes, or #338 lands, recompute from the expressions above rather than
 /// fitting the number to whatever comes out.
 ///
-/// **Not covered by either expression, and known:** the attitude rows' position columns are
-/// still exactly zero and carry a genuine *first-order* term of ~5.4e-7 -- the same latitude
-/// dependence this change added to the velocity rows, applied to Groves 5.46 instead of 5.54
-/// (#339). It is two orders below the bound, so it does not set it, but it means the residual
-/// here is not purely second-order and the bound cannot be driven to zero by fixing #338
-/// alone.
+/// **Both contributions are now second order, and #339 is why that is worth stating.** The
+/// attitude rows' position columns used to be exactly zero against a genuine *first-order*
+/// term of ~5.4e-7 -- the same latitude dependence #317 gave the velocity rows out of Groves
+/// 5.54, applied to 5.46. Two orders below the bound, so it never set it, but it scaled with
+/// `dt` where everything else here scales with `dt^2`, and fixing #338 alone would have
+/// driven the residual down toward something the formula above does not predict. It is fixed,
+/// and the two expressions are now the whole budget: the worst entry is `∂alt/∂roll` in ENU
+/// at 3.45e-5, exactly the half-step, and the attitude rows' position columns agree to 8.7e-11
+/// in this sweep -- see `linearize`'s
+/// `transition_jacobian_attitude_rows_position_columns_match_finite_differences_in_both_frames`
+/// and `euler_jacobian_converts_the_attitude_rows_non_attitude_columns`, which pin them at
+/// their own derived bounds rather than against this file's much looser one.
 const MAX_DISAGREEMENT: f64 = 6e-5;
 
 #[test]
@@ -239,39 +245,66 @@ fn altitude_row_follows_the_frame() {
     }
 }
 
-/// The two parametrisations must actually differ, and only in the attitude columns.
+/// The two parametrisations must actually differ, and in every block that touches attitude.
 ///
 /// If a refactor ever collapses them back into one matrix, the EKF silently regresses to the
 /// #307 behaviour. This asserts the distinction is real rather than decorative.
+///
+/// "Every block that touches attitude" is two things, and #339 is why the distinction has to
+/// be drawn: the attitude *columns* are an input-side perturbation, so they differ in the
+/// rows that read attitude (velocity and attitude), while the attitude *rows* are an
+/// output-side one and differ in **every** column. This test used to claim the two agreed
+/// outside the attitude columns, which was true only because the attitude rows' position
+/// columns were zero in both forms and their velocity columns were written straight into `f`
+/// without the conversion -- the two halves of #339. What is genuinely parametrisation-free
+/// is the position and velocity rows' position and velocity columns, and that is what is
+/// asserted below.
 #[test]
-fn the_two_parametrisations_differ_only_in_the_attitude_columns() {
+fn the_two_parametrisations_differ_in_every_block_that_touches_attitude() {
     let dt = 0.01;
     let state = sample_state(false);
     let imu = sample_imu(false);
     let euler = euler_state_transition_jacobian(&state, &imu.accel, &imu.gyro, dt);
     let rotation_vector = state_transition_jacobian(&state, &imu.accel, &imu.gyro, dt);
 
-    for row in 0..9 {
+    for row in 0..6 {
         for column in 0..6 {
             let difference = (euler[(row, column)] - rotation_vector[(row, column)]).abs();
             assert!(
                 difference < 1e-12,
-                "the parametrisations should agree outside the attitude columns, but \
-                 d({})/d({}) differs by {difference:.3e}",
+                "neither the position nor the velocity rows read or produce an attitude \
+                 perturbation in their position and velocity columns, so the parametrisations \
+                 should agree there -- but d({})/d({}) differs by {difference:.3e}",
                 LABELS[row],
                 LABELS[column]
             );
         }
     }
 
-    let attitude_difference: f64 = (3..9)
+    // The attitude columns, in the rows that read them.
+    let attitude_column_difference: f64 = (3..9)
         .flat_map(|row| (6..9).map(move |column| (row, column)))
         .map(|(row, column)| (euler[(row, column)] - rotation_vector[(row, column)]).abs())
         .fold(0.0, f64::max);
     assert!(
-        attitude_difference > 1e-3,
+        attitude_column_difference > 1e-3,
         "the Euler and rotation-vector forms should differ substantially in the attitude \
-         columns, but the largest difference is {attitude_difference:.3e}. If these have \
-         become the same matrix, the EKF has regressed to #307"
+         columns, but the largest difference is {attitude_column_difference:.3e}. If these \
+         have become the same matrix, the EKF has regressed to #307"
+    );
+
+    // The attitude rows, in the columns that are *not* attitude -- position and velocity.
+    // Far smaller, because `ω_in` is small, but the conversion is the same one: on this state
+    // the largest of them is ~1.8e-7, against entries of ~5e-7.
+    let attitude_row_difference: f64 = (6..9)
+        .flat_map(|row| (0..6).map(move |column| (row, column)))
+        .map(|(row, column)| (euler[(row, column)] - rotation_vector[(row, column)]).abs())
+        .fold(0.0, f64::max);
+    assert!(
+        attitude_row_difference > 1e-9,
+        "the attitude rows are an output-side perturbation, so they need `E(Φ⁺)⁻¹` in their \
+         position and velocity columns too -- but the largest difference there is \
+         {attitude_row_difference:.3e}. If the conversion has been dropped, those columns \
+         have regressed to #339"
     );
 }
