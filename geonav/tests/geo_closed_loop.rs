@@ -31,7 +31,8 @@ use std::rc::Rc;
 use chrono::{TimeZone, Utc};
 use geonav::{
     GeoBiasLayout, GeoMap, GeophysicalMeasurementType, GravityMeasurement, GravityResolution,
-    NAVIGATION_AND_IMU_BIAS_STATE_DIM, NAVIGATION_STATE_DIM, build_event_stream,
+    MagneticResolution, NAVIGATION_AND_IMU_BIAS_STATE_DIM, NAVIGATION_STATE_DIM,
+    build_event_stream,
 };
 use nalgebra::{DMatrix, DVector};
 use strapdown::kalman::ExtendedKalmanFilter;
@@ -51,12 +52,28 @@ use strapdown::{NavigationFilter, StrapdownState};
 /// a constant map is one the filter can learn nothing from, which would let the bias assertion
 /// below pass for the wrong reason.
 fn write_gravity_map(path: &std::path::Path) {
+    write_anomaly_map(path, 0.0);
+}
+
+/// The same grid as a magnetic-anomaly map, offset so the track's constant observed anomaly
+/// sits inside its range rather than far outside it.
+///
+/// `MagneticAnomalyMeasurement` differences the observed field against the World Magnetic
+/// Model, so the map this is matched against has to be in the same units and neighbourhood as
+/// that difference; `magnetometer_reading` below is what puts it there.
+fn write_magnetic_map(path: &std::path::Path) {
+    write_anomaly_map(path, MAGNETIC_MAP_OFFSET_NT);
+}
+
+fn write_anomaly_map(path: &std::path::Path, offset: f64) {
     let lats: Vec<f64> = (0..=40).map(|i| 40.0 + f64::from(i) * 0.005).collect();
     let lons: Vec<f64> = (0..=40).map(|i| -76.0 + f64::from(i) * 0.005).collect();
     let mut z = Vec::with_capacity(lats.len() * lons.len());
     for lat in &lats {
         for lon in &lons {
-            z.push(25.0 * ((lat - 40.0) * 600.0).sin() + 15.0 * ((lon + 76.0) * 400.0).cos());
+            z.push(
+                offset + 25.0 * ((lat - 40.0) * 600.0).sin() + 15.0 * ((lon + 76.0) * 400.0).cos(),
+            );
         }
     }
 
@@ -105,6 +122,26 @@ fn synthetic_track(samples: usize) -> Vec<TestDataRecord> {
         .collect()
 }
 
+/// Where the magnetic map's anomalies sit, and what the track's magnetometer reads.
+///
+/// Both in the units `MagneticAnomalyMeasurement` works in. The map is the same field as the
+/// gravity one shifted here, and the observed reading is a constant inside that band, so the
+/// innovation is the map's own variation along the track plus whatever the bias is carrying --
+/// small enough to be a well-posed update, varying enough that the bias is actually observable.
+const MAGNETIC_MAP_OFFSET_NT: f64 = 300.0;
+const MAGNETOMETER_READING_NT: f64 = 300.0;
+
+/// The same track with a magnetometer that reads a constant total field.
+fn with_magnetometer(records: Vec<TestDataRecord>) -> Vec<TestDataRecord> {
+    records
+        .into_iter()
+        .map(|record| TestDataRecord {
+            mag_z: MAGNETOMETER_READING_NT,
+            ..record
+        })
+        .collect()
+}
+
 fn passthrough_config() -> GnssDegradationConfig {
     GnssDegradationConfig {
         scheduler: GnssScheduler::PassThrough,
@@ -130,6 +167,63 @@ fn aided_ukf(first: &TestDataRecord) -> strapdown::kalman::UnscentedKalmanFilter
     .expect("a geophysically aided UKF must initialise")
 }
 
+/// A geophysically aided EKF carrying one bias state, tuned as the CLI's `FilterType::Ekf` arm
+/// tunes it.
+///
+/// The CLI builds this by hand -- `initialize_ekf` has no `other_states`, so the geophysical
+/// covariance and process noise are extended at the call site -- which is why it is worth
+/// mirroring here rather than reaching for a constructor.
+fn aided_ekf(first: &TestDataRecord) -> ExtendedKalmanFilter {
+    let mut covariance_diagonal = vec![
+        1e-10, 1e-10, 1.0, // position
+        0.1, 0.1, 0.1, // velocity
+        1e-4, 1e-4, 1e-4, // attitude
+        1e-6, 1e-6, 1e-6, // accel bias
+        1e-8, 1e-8, 1e-8, // gyro bias
+    ];
+    covariance_diagonal.push(1.0);
+    let mut process_noise_vec = vec![
+        1e-12, 1e-12, 1e-6, // position
+        1e-6, 1e-6, 1e-6, // velocity
+        1e-9, 1e-9, 1e-9, // attitude
+        1e-9, 1e-9, 1e-9, // accel bias
+        1e-9, 1e-9, 1e-9, // gyro bias
+    ];
+    process_noise_vec.push(1e-9);
+
+    ExtendedKalmanFilter::new(
+        &first.initial_state(true),
+        &[0.0; 6],
+        covariance_diagonal,
+        DMatrix::from_diagonal(&DVector::from_vec(process_noise_vec)),
+        true,
+    )
+}
+
+/// The two assertions that separate an estimated bias from a carried-along constant.
+///
+/// The movement check alone is not enough: a bias row that only ever accumulates process noise
+/// is the signature of the frozen state, and it would pass as soon as anything at all nudged the
+/// bias. Requiring the variance to fall below its seed is what says the measurements are
+/// actually informing it.
+fn assert_bias_is_estimated(biases: &[f64], covariances: &[f64], name: &str) {
+    assert!(
+        biases.iter().all(|b| b.is_finite()),
+        "every estimated {name} bias must be finite"
+    );
+    assert!(
+        biases.iter().any(|b| (b - biases[0]).abs() > 1e-9),
+        "the {name} bias never moved from its seed, so the aiding is not reaching the state"
+    );
+
+    let seed = covariances[0];
+    assert!(
+        covariances.iter().any(|c| *c < seed),
+        "the {name} bias variance never fell below its seed of {seed}, so the measurements are \
+         not informing it"
+    );
+}
+
 /// The bias layout for a gravity-only run, in both the forms a geophysical run needs.
 ///
 /// `GeoBiasLayout` tells the measurement models where the bias lives; `GeoStateLayout` tells
@@ -140,6 +234,19 @@ fn gravity_only_layouts() -> (GeoBiasLayout, GeoStateLayout) {
     let bias = GeoBiasLayout::appended(NAVIGATION_AND_IMU_BIAS_STATE_DIM, true, false)
         .expect("a gravity-only layout over the 15-state Kalman vector must be valid")
         .expect("asking for a gravity bias must yield a layout");
+    let state = GeoStateLayout::new(
+        bias.state_dim(),
+        bias.gravity_bias().map(|b| b.index),
+        bias.magnetic_bias().map(|b| b.index),
+    );
+    (bias, state)
+}
+
+/// The same pair for a magnetic-only run.
+fn magnetic_only_layouts() -> (GeoBiasLayout, GeoStateLayout) {
+    let bias = GeoBiasLayout::appended(NAVIGATION_AND_IMU_BIAS_STATE_DIM, false, true)
+        .expect("a magnetic-only layout over the 15-state Kalman vector must be valid")
+        .expect("asking for a magnetic bias must yield a layout");
     let state = GeoStateLayout::new(
         bias.state_dim(),
         bias.gravity_bias().map(|b| b.index),
@@ -243,20 +350,24 @@ fn plain_closed_loop_still_rejects_a_geophysical_filter() {
     let _ = run_closed_loop(&mut ukf, events, None, None);
 }
 
-/// The EKF branch of the geophysical CLI carries its bias state too.
+/// The EKF branch of the geophysical CLI carries its bias state too, and estimates it.
 ///
 /// The CLI builds the EKF by hand -- `initialize_ekf` has no `other_states`, so the geophysical
 /// covariance and process noise are extended at the call site -- which makes it a different
 /// construction path from the UKF above and worth covering separately. This mirrors what
 /// `run_geo_closed_loop_cli`'s `FilterType::Ekf` arm assembles.
 ///
-/// Note what this does *not* assert: that the bias moves. On this path it does not. Same run and
-/// same map, the UKF drives its gravity bias from 0 to roughly 26 mGal with the covariance
-/// converging from 100 to under 2, while the EKF's stays at exactly its seed with the covariance
-/// only growing -- the aiding reaches the state on one path and not the other. That is a
-/// separate defect from the state-shape one fixed here, and asserting movement would make this
-/// test fail for a reason it is not about. What it does assert is the fix: the run completes and
-/// the bias column is labelled rather than dropped.
+/// The movement assertion at the end is a second regression on this path, and the reason the
+/// comment that used to stand here -- saying the bias does not move on this path and that
+/// asserting it would fail -- is gone. The EKF's bias used to sit at exactly its seed for a whole
+/// run while its variance grew on process noise alone, because the anomaly models' Jacobian was
+/// a fixed 1x9: the expected measurement added the bias but the linearization claimed no
+/// dependence on it, so the gain's bias row was zero, and because the Joseph update leaves
+/// `P[bias, :]` untouched when that row is zero, no cross-covariance with position ever
+/// developed to make it non-zero either. The UKF never showed this -- its sigma points propagate
+/// the augmented state whether or not anything declares a derivative for it, and it never calls
+/// `get_jacobian` at all -- which is why the two filters disagreed on the same run and same map.
+/// Giving the Jacobian its bias column is what closed the gap; this pins it shut.
 #[test]
 fn ekf_branch_completes_and_labels_its_bias_state() {
     let dir = std::env::temp_dir().join(format!("geonav-ekf-{}", std::process::id()));
@@ -286,32 +397,7 @@ fn ekf_branch_completes_and_labels_its_bias_state() {
     )
     .expect("the geophysical event stream must build");
 
-    // The covariance and process noise the CLI's EKF arm builds, extended by one geophysical
-    // state, on the 15-state navigation block.
-    let mut covariance_diagonal = vec![
-        1e-10, 1e-10, 1.0, // position
-        0.1, 0.1, 0.1, // velocity
-        1e-4, 1e-4, 1e-4, // attitude
-        1e-6, 1e-6, 1e-6, // accel bias
-        1e-8, 1e-8, 1e-8, // gyro bias
-    ];
-    covariance_diagonal.push(1.0);
-    let mut process_noise_vec = vec![
-        1e-12, 1e-12, 1e-6, // position
-        1e-6, 1e-6, 1e-6, // velocity
-        1e-9, 1e-9, 1e-9, // attitude
-        1e-9, 1e-9, 1e-9, // accel bias
-        1e-9, 1e-9, 1e-9, // gyro bias
-    ];
-    process_noise_vec.push(1e-9);
-
-    let mut ekf = ExtendedKalmanFilter::new(
-        &records[0].initial_state(true),
-        &[0.0; 6],
-        covariance_diagonal,
-        DMatrix::from_diagonal(&DVector::from_vec(process_noise_vec)),
-        true,
-    );
+    let mut ekf = aided_ekf(&records[0]);
 
     let results = run_closed_loop_with_geo(&mut ekf, events, None, None, layout)
         .expect("the geophysical EKF must complete a run");
@@ -328,6 +414,76 @@ fn ekf_branch_completes_and_labels_its_bias_state() {
             "row {i} carried no magnetic map, so its magnetic bias must be absent"
         );
     }
+
+    // The same assertion the UKF above makes: the bias is a state the filter estimates, not a
+    // constant it carries along.
+    let biases: Vec<f64> = results.iter().filter_map(|r| r.gravity_bias).collect();
+    let covariances: Vec<f64> = results.iter().filter_map(|r| r.gravity_bias_cov).collect();
+    assert_bias_is_estimated(&biases, &covariances, "gravity");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The magnetic half of the same path: a magnetic-only EKF estimates its bias too.
+///
+/// `MagneticAnomalyMeasurement` carries its own copy of the resolve-and-fill logic that the
+/// gravity test above covers, and the CLI reaches it for magnetic-only and combined-map runs, so
+/// a regression in that column would leave every gravity assertion green while magnetic runs
+/// quietly went back to carrying a frozen bias. This is the end-to-end half of that cover;
+/// `test_magnetic_jacobian_carries_a_column_for_the_declared_bias` in the crate's own tests is
+/// the direct one.
+#[test]
+fn magnetic_only_ekf_estimates_its_bias_state() {
+    let dir = std::env::temp_dir().join(format!("geonav-ekf-mag-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let map_path = dir.join("magnetic.nc");
+    write_magnetic_map(&map_path);
+
+    let map = Rc::new(
+        GeoMap::load_geomap(
+            &map_path,
+            GeophysicalMeasurementType::Magnetic(MagneticResolution::TwoMinutes),
+        )
+        .expect("the generated map must load"),
+    );
+
+    let records = with_magnetometer(synthetic_track(60));
+    let (bias_layout, layout) = magnetic_only_layouts();
+    let events = build_event_stream(
+        &records,
+        &passthrough_config(),
+        None,
+        None,
+        Some(Rc::clone(&map)),
+        Some(10.0),
+        Some(1.0),
+        Some(bias_layout),
+    )
+    .expect("the geophysical event stream must build");
+
+    let mut ekf = aided_ekf(&records[0]);
+    let results = run_closed_loop_with_geo(&mut ekf, events, None, None, layout)
+        .expect("the magnetic-only EKF must complete a run");
+
+    assert!(!results.is_empty());
+    for (i, result) in results.iter().enumerate() {
+        assert!(
+            result.magnetic_bias.is_some(),
+            "row {i} carried a magnetic map, so its magnetic bias must be populated"
+        );
+        assert!(result.magnetic_bias_cov.is_some());
+        // The mirror of the gravity run's check: no gravity map means no gravity column, which
+        // is not the same as a gravity bias estimated at zero.
+        assert!(
+            result.gravity_bias.is_none(),
+            "row {i} carried no gravity map, so its gravity bias must be absent, not zero"
+        );
+        assert!(result.gravity_bias_cov.is_none());
+    }
+
+    let biases: Vec<f64> = results.iter().filter_map(|r| r.magnetic_bias).collect();
+    let covariances: Vec<f64> = results.iter().filter_map(|r| r.magnetic_bias_cov).collect();
+    assert_bias_is_estimated(&biases, &covariances, "magnetic");
 
     std::fs::remove_dir_all(&dir).ok();
 }
