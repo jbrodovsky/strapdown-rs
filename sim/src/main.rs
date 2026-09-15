@@ -52,7 +52,7 @@ use std::rc::Rc;
 use strapdown::NavigationFilter;
 use strapdown::gating::InnovationGate;
 #[cfg(feature = "geonav")]
-use strapdown::kalman::{ExtendedKalmanFilter, InitialState};
+use strapdown::kalman::ExtendedKalmanFilter;
 use strapdown::sim::HealthLimits;
 use strapdown::sim::health::HealthMonitor;
 #[cfg(feature = "geonav")]
@@ -1524,22 +1524,14 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                 info!("Initializing EKF...");
 
                 check_declared_frame(&records, args.sim.enu)?;
-                let initial_state = InitialState {
-                    latitude: records[0].latitude,
-                    longitude: records[0].longitude,
-                    altitude: records[0].altitude,
-                    northward_velocity: records[0].speed * records[0].bearing.to_radians().cos(),
-                    eastward_velocity: records[0].speed * records[0].bearing.to_radians().sin(),
-                    vertical_velocity: 0.0,
-                    roll: 0.0,
-                    pitch: 0.0,
-                    yaw: records[0].bearing.to_radians(),
-                    in_degrees: true,
-                    // The declared frame, as everywhere else. This path builds its own
-                    // `InitialState` rather than going through `initialize_ekf`, so the guard
-                    // is run explicitly above (#296).
-                    is_enu: args.sim.enu,
-                };
+                // The same seed every other path builds. It was a struct literal here, and
+                // carried the double conversion that gave this block its share of #337:
+                // `yaw: bearing.to_radians()` beside `in_degrees: true`, converted once here
+                // and a second time by the constructor, so a 270 deg bearing reached the
+                // filter as 0.0822 rad (4.7 deg). It also threw away roll and pitch. The
+                // guard is still run explicitly above because this path does not go through
+                // `initialize_ekf` (#296).
+                let initial_state = records[0].initial_state(args.sim.enu);
 
                 let imu_biases = vec![0.0; 6];
 
