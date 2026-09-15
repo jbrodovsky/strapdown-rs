@@ -1128,6 +1128,81 @@ pub struct NEDCovariance {
     /// Variance of the gyroscope z-axis bias estimate.
     pub gyro_bias_z_cov: f64,
 }
+/// Which geophysical bias states a filter carries after its nine navigation states and six
+/// IMU biases.
+///
+/// The geophysical paths append one bias state per active map -- gravity first, then
+/// magnetic, matching the order `run_geo_closed_loop_cli` builds them in. A state vector
+/// cannot describe that on its own: a 16-element state is gravity-only or magnetic-only
+/// depending on which flags the run was given, and reading the wrong label off it would put
+/// a milligal figure in a nanotesla column. So the layout travels with the run rather than
+/// being inferred from a length (#338).
+///
+/// [`GeoStateLayout::NONE`] is the ordinary, non-geophysical case and is what
+/// [`run_closed_loop`] uses.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GeoStateLayout {
+    /// The run carried a gravity-anomaly map, so a gravity bias state follows the IMU biases.
+    pub gravity: bool,
+    /// The run carried a magnetic-anomaly map, so a magnetic bias state follows the gravity
+    /// one if present, and the IMU biases otherwise.
+    pub magnetic: bool,
+}
+
+impl GeoStateLayout {
+    /// No geophysical states: the fifteen-element navigation state every other path produces.
+    pub const NONE: Self = Self {
+        gravity: false,
+        magnetic: false,
+    };
+
+    /// How many states this layout adds beyond [`NAVIGATION_STATES`].
+    #[must_use]
+    pub const fn len(self) -> usize {
+        self.gravity as usize + self.magnetic as usize
+    }
+
+    /// Whether the layout adds no states at all.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.len() == 0
+    }
+
+    /// Index of the gravity bias in the full state vector, if the run carried a gravity map.
+    #[must_use]
+    pub const fn gravity_index(self) -> Option<usize> {
+        if self.gravity {
+            Some(NAVIGATION_STATES)
+        } else {
+            None
+        }
+    }
+
+    /// Index of the magnetic bias in the full state vector, if the run carried a magnetic map.
+    #[must_use]
+    pub const fn magnetic_index(self) -> Option<usize> {
+        if self.magnetic {
+            Some(NAVIGATION_STATES + self.gravity as usize)
+        } else {
+            None
+        }
+    }
+}
+
+/// Length of the navigation state every filter in this crate carries: nine navigation states
+/// plus three accelerometer and three gyroscope biases.
+pub const NAVIGATION_STATES: usize = 15;
+
+/// Read an on-disk geophysical column back into an `Option`.
+///
+/// `to_hdf5` and `to_netcdf` write NaN where the run carried no such map, because neither
+/// format has an option type and both write flat f64 tables. NaN is not a value the filter
+/// can produce for a bias it is actually estimating -- a NaN there would have failed the
+/// health monitor long before the writer -- so it round-trips unambiguously.
+const fn none_if_nan(value: f64) -> Option<f64> {
+    if value.is_nan() { None } else { Some(value) }
+}
+
 /// Generic result struct for navigation simulations.
 ///
 /// This structure contains a single row of position, velocity, and attitude vectors
@@ -1213,6 +1288,21 @@ pub struct NavigationResult {
     pub gyro_bias_y_cov: f64,
     /// Gyroscope z-axis bias covariance
     pub gyro_bias_z_cov: f64,
+    // ---- Geophysical bias states ----
+    //
+    // `Option` rather than a sentinel because "this run carried no gravity map" and "this run
+    // estimated a bias of exactly zero" are different facts, and a reader has to be able to
+    // tell them apart. Serde writes `None` as an empty CSV cell and keeps the column, so the
+    // schema is the same width for every run and a non-geophysical solution simply leaves the
+    // last four cells blank.
+    /// Estimated gravity-anomaly measurement bias in mGal, when the run carried a gravity map.
+    pub gravity_bias: Option<f64>,
+    /// Covariance of [`NavigationResult::gravity_bias`].
+    pub gravity_bias_cov: Option<f64>,
+    /// Estimated magnetic-anomaly measurement bias in nT, when the run carried a magnetic map.
+    pub magnetic_bias: Option<f64>,
+    /// Covariance of [`NavigationResult::magnetic_bias`].
+    pub magnetic_bias_cov: Option<f64>,
 }
 impl Default for NavigationResult {
     fn default() -> Self {
@@ -1248,6 +1338,10 @@ impl Default for NavigationResult {
             gyro_bias_x_cov: 1e-6,
             gyro_bias_y_cov: 1e-6,
             gyro_bias_z_cov: 1e-6,
+            gravity_bias: None,
+            gravity_bias_cov: None,
+            magnetic_bias: None,
+            magnetic_bias_cov: None,
         }
     }
 }
@@ -1358,6 +1452,17 @@ impl NavigationResult {
                 ds.write(&data)?;
             }};
         }
+        // The same, for a column that is absent on runs that carried no such map.
+        macro_rules! write_optional_f64_field {
+            ($field_name:literal, $field:ident) => {{
+                let data: Vec<f64> = records
+                    .iter()
+                    .map(|r| r.$field.unwrap_or(f64::NAN))
+                    .collect();
+                let ds = group.new_dataset::<f64>().shape([n]).create($field_name)?;
+                ds.write(&data)?;
+            }};
+        }
 
         // Navigation solution states
         write_f64_field!("latitude", latitude);
@@ -1392,6 +1497,14 @@ impl NavigationResult {
         write_f64_field!("gyro_bias_x_cov", gyro_bias_x_cov);
         write_f64_field!("gyro_bias_y_cov", gyro_bias_y_cov);
         write_f64_field!("gyro_bias_z_cov", gyro_bias_z_cov);
+        // The geophysical columns are `Option` in memory but plain f64 on disk, with NaN for
+        // "this run carried no such map". HDF5 has no native option type and the rest of this
+        // writer is a flat f64 table; NaN is what the other absent-value paths in this module
+        // already use, and `from_hdf5` maps it back to `None`.
+        write_optional_f64_field!("gravity_bias", gravity_bias);
+        write_optional_f64_field!("gravity_bias_cov", gravity_bias_cov);
+        write_optional_f64_field!("magnetic_bias", magnetic_bias);
+        write_optional_f64_field!("magnetic_bias_cov", magnetic_bias_cov);
 
         Ok(())
     }
@@ -1474,6 +1587,10 @@ impl NavigationResult {
             let gyro_bias_x_cov = read_f64_field!("gyro_bias_x_cov");
             let gyro_bias_y_cov = read_f64_field!("gyro_bias_y_cov");
             let gyro_bias_z_cov = read_f64_field!("gyro_bias_z_cov");
+            let gravity_bias = read_f64_field!("gravity_bias");
+            let gravity_bias_cov = read_f64_field!("gravity_bias_cov");
+            let magnetic_bias = read_f64_field!("magnetic_bias");
+            let magnetic_bias_cov = read_f64_field!("magnetic_bias_cov");
 
             let mut records = Vec::with_capacity(n);
             for i in 0..n {
@@ -1513,6 +1630,10 @@ impl NavigationResult {
                     gyro_bias_x_cov: gyro_bias_x_cov[i],
                     gyro_bias_y_cov: gyro_bias_y_cov[i],
                     gyro_bias_z_cov: gyro_bias_z_cov[i],
+                    gravity_bias: none_if_nan(gravity_bias[i]),
+                    gravity_bias_cov: none_if_nan(gravity_bias_cov[i]),
+                    magnetic_bias: none_if_nan(magnetic_bias[i]),
+                    magnetic_bias_cov: none_if_nan(magnetic_bias_cov[i]),
                 });
             }
 
@@ -1589,6 +1710,23 @@ impl NavigationResult {
         let gyro_bias_x_cov: Vec<f64> = records.iter().map(|r| r.gyro_bias_x_cov).collect();
         let gyro_bias_y_cov: Vec<f64> = records.iter().map(|r| r.gyro_bias_y_cov).collect();
         let gyro_bias_z_cov: Vec<f64> = records.iter().map(|r| r.gyro_bias_z_cov).collect();
+        // NaN on disk for an absent geophysical column; see the note in `to_hdf5`.
+        let gravity_bias: Vec<f64> = records
+            .iter()
+            .map(|r| r.gravity_bias.unwrap_or(f64::NAN))
+            .collect();
+        let gravity_bias_cov: Vec<f64> = records
+            .iter()
+            .map(|r| r.gravity_bias_cov.unwrap_or(f64::NAN))
+            .collect();
+        let magnetic_bias: Vec<f64> = records
+            .iter()
+            .map(|r| r.magnetic_bias.unwrap_or(f64::NAN))
+            .collect();
+        let magnetic_bias_cov: Vec<f64> = records
+            .iter()
+            .map(|r| r.magnetic_bias_cov.unwrap_or(f64::NAN))
+            .collect();
 
         // Add variables and write data
         add_and_write!(file, "timestamp", timestamps);
@@ -1622,6 +1760,10 @@ impl NavigationResult {
         add_and_write!(file, "gyro_bias_x_cov", gyro_bias_x_cov);
         add_and_write!(file, "gyro_bias_y_cov", gyro_bias_y_cov);
         add_and_write!(file, "gyro_bias_z_cov", gyro_bias_z_cov);
+        add_and_write!(file, "gravity_bias", gravity_bias);
+        add_and_write!(file, "gravity_bias_cov", gravity_bias_cov);
+        add_and_write!(file, "magnetic_bias", magnetic_bias);
+        add_and_write!(file, "magnetic_bias_cov", magnetic_bias_cov);
 
         Ok(())
     }
@@ -1689,6 +1831,10 @@ impl NavigationResult {
         let gyro_bias_x_cov = read_var!(file, "gyro_bias_x_cov");
         let gyro_bias_y_cov = read_var!(file, "gyro_bias_y_cov");
         let gyro_bias_z_cov = read_var!(file, "gyro_bias_z_cov");
+        let gravity_bias = read_var!(file, "gravity_bias");
+        let gravity_bias_cov = read_var!(file, "gravity_bias_cov");
+        let magnetic_bias = read_var!(file, "magnetic_bias");
+        let magnetic_bias_cov = read_var!(file, "magnetic_bias_cov");
 
         // Build records
         let mut records = Vec::with_capacity(n);
@@ -1729,6 +1875,10 @@ impl NavigationResult {
                 gyro_bias_x_cov: gyro_bias_x_cov[i],
                 gyro_bias_y_cov: gyro_bias_y_cov[i],
                 gyro_bias_z_cov: gyro_bias_z_cov[i],
+                gravity_bias: none_if_nan(gravity_bias[i]),
+                gravity_bias_cov: none_if_nan(gravity_bias_cov[i]),
+                magnetic_bias: none_if_nan(magnetic_bias[i]),
+                magnetic_bias_cov: none_if_nan(magnetic_bias_cov[i]),
             });
         }
 
@@ -1871,19 +2021,58 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>)> for NavigationResult {
     /// `get_certainty()`, so a wrong shape is a crate invariant violation rather than bad
     /// user input. Converting it to `TryFrom` would push `?` into `run_closed_loop`'s result
     /// assembly and the integration tests for no reachable failure.
+    ///
+    /// A filter carrying geophysical bias states is longer than 15 and must go through the
+    /// [`GeoStateLayout`] form below, which knows what those extra states are; this one would
+    /// otherwise reject it. That was #338: the geophysical closed loop built a 16-state filter
+    /// and died here on its first result, for every filter and every map.
     fn from(
         (timestamp, state, covariance): (&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>),
     ) -> Self {
+        Self::from((timestamp, state, covariance, GeoStateLayout::NONE))
+    }
+}
+
+/// The same conversion for a filter that carries geophysical bias states after its
+/// navigation states.
+///
+/// The layout has to be supplied because the state vector cannot describe itself: a
+/// 16-element state is gravity-only or magnetic-only depending on the run's flags. See
+/// [`GeoStateLayout`].
+impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>, GeoStateLayout)> for NavigationResult {
+    /// # Panics
+    /// If the state length or covariance shape disagrees with `layout` -- that is, if they are
+    /// not `NAVIGATION_STATES + layout.len()`. Same reasoning as the three-tuple form: this is
+    /// fed by `filter.get_estimate()` / `get_certainty()`, so a mismatch is a crate invariant
+    /// violation rather than user input.
+    fn from(
+        (timestamp, state, covariance, layout): (
+            &DateTime<Utc>,
+            &DVector<f64>,
+            &DMatrix<f64>,
+            GeoStateLayout,
+        ),
+    ) -> Self {
+        let expected = NAVIGATION_STATES + layout.len();
         assert!(
-            state.len() == 15,
-            "State vector must have 15 elements; got {}",
+            state.len() == expected,
+            "State vector must have {expected} elements; got {}",
             state.len()
         );
         assert!(
-            covariance.nrows() == 15 && covariance.ncols() == 15,
-            "Covariance matrix must be 15x15"
+            covariance.nrows() == expected && covariance.ncols() == expected,
+            "Covariance matrix must be {expected}x{expected}"
         );
         let covariance = DVector::from_vec(covariance.diagonal().iter().copied().collect());
+        // `layout` says which of the states past `NAVIGATION_STATES` is which; an absent map
+        // leaves its column `None` rather than zero, so a reader can tell "no gravity map" from
+        // "gravity bias estimated at zero".
+        let geo_state = |index: Option<usize>| index.map(|i| state[i]);
+        let geo_cov = |index: Option<usize>| index.map(|i| covariance[i]);
+        let gravity_bias = geo_state(layout.gravity_index());
+        let gravity_bias_cov = geo_cov(layout.gravity_index());
+        let magnetic_bias = geo_state(layout.magnetic_index());
+        let magnetic_bias_cov = geo_cov(layout.magnetic_index());
         // let wmm_date: Date = Date::from_calendar_date(
         //     timestamp.year(),
         //     Month::try_from(timestamp.month() as u8).unwrap(),
@@ -1928,6 +2117,10 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>)> for NavigationResult {
             gyro_bias_x_cov: covariance[12],
             gyro_bias_y_cov: covariance[13],
             gyro_bias_z_cov: covariance[14],
+            gravity_bias,
+            gravity_bias_cov,
+            magnetic_bias,
+            magnetic_bias_cov,
         }
     }
 }
@@ -1981,6 +2174,10 @@ impl From<(&DateTime<Utc>, &UnscentedKalmanFilter)> for NavigationResult {
             gyro_bias_x_cov: covariance[(12, 12)],
             gyro_bias_y_cov: covariance[(13, 13)],
             gyro_bias_z_cov: covariance[(14, 14)],
+            gravity_bias: None,
+            gravity_bias_cov: None,
+            magnetic_bias: None,
+            magnetic_bias_cov: None,
         }
     }
 }
@@ -2045,6 +2242,10 @@ impl From<(&DateTime<Utc>, &crate::kalman::ExtendedKalmanFilter)> for Navigation
             } else {
                 0.0
             },
+            gravity_bias: None,
+            gravity_bias_cov: None,
+            magnetic_bias: None,
+            magnetic_bias_cov: None,
         }
     }
 }
@@ -2106,6 +2307,10 @@ impl From<(&DateTime<Utc>, &StrapdownState)> for NavigationResult {
             gyro_bias_x_cov: f64::NAN,
             gyro_bias_y_cov: f64::NAN,
             gyro_bias_z_cov: f64::NAN,
+            gravity_bias: None,
+            gravity_bias_cov: None,
+            magnetic_bias: None,
+            magnetic_bias_cov: None,
         }
     }
 }
@@ -2168,6 +2373,10 @@ impl NavigationResult {
             gyro_bias_x_cov: f64::NAN,
             gyro_bias_y_cov: f64::NAN,
             gyro_bias_z_cov: f64::NAN,
+            gravity_bias: None,
+            gravity_bias_cov: None,
+            magnetic_bias: None,
+            magnetic_bias_cov: None,
         }
     }
 }
@@ -2410,6 +2619,43 @@ pub fn run_closed_loop<F: NavigationFilter>(
     health_limits: Option<HealthLimits>,
     execution_limits: Option<ExecutionLimits>,
 ) -> anyhow::Result<Vec<NavigationResult>> {
+    run_closed_loop_with_geo(
+        filter,
+        stream,
+        health_limits,
+        execution_limits,
+        GeoStateLayout::NONE,
+    )
+}
+
+/// [`run_closed_loop`] for a filter carrying geophysical bias states.
+///
+/// Identical in every respect except that the extra states are labelled on the way into
+/// [`NavigationResult`], using `layout` -- which the state vector cannot supply itself, since
+/// a 16-element state is gravity-only or magnetic-only depending on the run's flags.
+///
+/// This exists as a separate entry point rather than a fifth parameter on `run_closed_loop`
+/// because only the geophysical paths need it and thirty call sites do not (#338).
+///
+/// # Arguments
+/// * `filter` - Mutable reference to a type implementing `NavigationFilter`
+/// * `stream` - Event stream containing IMU and measurement events
+/// * `health_limits` - Optional health limits for monitoring
+/// * `execution_limits` - Optional wall-clock and no-progress limits
+/// * `layout` - Which geophysical bias states the filter carries past its navigation states
+///
+/// # Returns
+/// * `Vec<NavigationResult>` - A vector of navigation results
+///
+/// # Errors
+/// As [`run_closed_loop`].
+pub fn run_closed_loop_with_geo<F: NavigationFilter>(
+    filter: &mut F,
+    stream: EventStream,
+    health_limits: Option<HealthLimits>,
+    execution_limits: Option<ExecutionLimits>,
+    layout: GeoStateLayout,
+) -> anyhow::Result<Vec<NavigationResult>> {
     let start_time = stream.start_time;
     let mut results: Vec<NavigationResult> = Vec::with_capacity(stream.events.len());
     let total = stream.events.len();
@@ -2428,7 +2674,7 @@ pub fn run_closed_loop<F: NavigationFilter>(
     // Store the initial state (before processing any events)
     let mean = filter.get_estimate();
     let cov = filter.get_certainty();
-    results.push(NavigationResult::from((&start_time, &mean, &cov)));
+    results.push(NavigationResult::from((&start_time, &mean, &cov, layout)));
     debug!("Initial filter state at {start_time}: {mean:?}");
     let mut last_ts = Some(start_time);
 
@@ -2551,7 +2797,7 @@ pub fn run_closed_loop<F: NavigationFilter>(
                 if prev_ts != start_time {
                     let mean = filter.get_estimate();
                     let cov = filter.get_certainty();
-                    results.push(NavigationResult::from((&prev_ts, &mean, &cov)));
+                    results.push(NavigationResult::from((&prev_ts, &mean, &cov, layout)));
                     debug!("Filter state at {ts}: {mean:?}");
                 }
             }
@@ -2562,7 +2808,7 @@ pub fn run_closed_loop<F: NavigationFilter>(
         if i == total - 1 {
             let mean = filter.get_estimate();
             let cov = filter.get_certainty();
-            results.push(NavigationResult::from((&ts, &mean, &cov)));
+            results.push(NavigationResult::from((&ts, &mean, &cov, layout)));
             debug!("Filter state at {ts}: {mean:?}");
             last_ts = Some(ts);
         }
@@ -4943,6 +5189,10 @@ pub fn generate_synthetic(
             gyro_bias_x_cov: 0.0,
             gyro_bias_y_cov: 0.0,
             gyro_bias_z_cov: 0.0,
+            gravity_bias: None,
+            gravity_bias_cov: None,
+            magnetic_bias: None,
+            magnetic_bias_cov: None,
         };
         truth_records.push(truth);
 
