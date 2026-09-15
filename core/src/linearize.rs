@@ -327,6 +327,43 @@ fn transition_jacobian(
         }
     }
 
+    // ...and the *other* half of the same derivative, because ω_en is itself a function of v.
+    //
+    // 5.54's Coriolis and transport term is quadratic in velocity -- 5.44 makes ω_en linear
+    // in v -- so
+    //
+    //     ∂/∂v_j [ -(2ω_ie + ω_en(v)) × v ] = -(2ω_ie + ω_en) × e_j - (∂ω_en/∂v_j) × v
+    //
+    // and the skew matrix above is only the first half: column j of `coriolis_transport` is
+    // exactly -(2ω_ie + ω_en) × e_j. This is not an O(dt²) truncation that a shorter step
+    // would shrink relative to what is kept -- it scales with dt exactly as the kept half
+    // does, so no choice of dt separates them. At the 120 m/s state in this file's tests the
+    // two halves are the same order, which left f[(5,3)] -- vertical-velocity response to
+    // north-velocity error -- wrong by a factor of two. See #325.
+    //
+    // Frame handling is the pseudovector reflection `omega_en` itself receives above, applied
+    // to each column. With F = diag(1, 1, -1) the stored-ENU block is F B F, and since
+    // F(a × b) = -(Fa) × (Fb) while `flip_vertical_rate(w) = -F w`, column j reduces to
+    // -flip_vertical_rate(∂ω_en/∂v_j) × v_stored: the naive substitution, for the same reason
+    // the transport-coupling comment further down says the gradient "picks up -F on the left".
+    // The columns it reads -- north and east velocity -- are identical in both conventions.
+    // `transition_jacobian_agrees_across_vertical_conventions` pins this to 1e-18 and is the
+    // oracle for it; skipping the reflection, or using `flip_vertical`, fails there first.
+    for (column, gradient) in transport_rate_velocity_gradients(lat, alt)
+        .iter()
+        .enumerate()
+    {
+        let gradient = if state.is_enu {
+            crate::flip_vertical_rate(gradient)
+        } else {
+            *gradient
+        };
+        let contribution = -gradient.cross(&vel) * dt;
+        for (row, value) in contribution.iter().enumerate() {
+            f[(3 + row, 3 + column)] += *value;
+        }
+    }
+
     // ∂(v(+))/∂(lat): gravity varies with latitude
     // For ENU: g = [0, 0, -g], for NED: g = [0, 0, g]
     if state.is_enu {
@@ -341,6 +378,32 @@ fn transition_jacobian(
         f[(5, 2)] += -dgravity_dalt * dt;
     } else {
         f[(5, 2)] += dgravity_dalt * dt;
+    }
+
+    // ∂(v(+))/∂(position) through the Coriolis and transport rates as well.
+    //
+    // Gravity is not the only position dependence the velocity rows have: 5.54 applies
+    // -(2ω_ie + ω_en) × v, ω_ie = Ω[cos φ, 0, -sin φ] is a function of latitude outright, and
+    // ω_en carries latitude through tan φ and the principal radii and altitude weakly through
+    // the radii. Both were modelled as exactly zero, so f[(3,0)] and f[(4,0)] were never
+    // assigned and the Coriolis share of f[(5,0)] -- 0.7 % of the gravity term there, and of
+    // the opposite sign -- was missing too. See #317.
+    //
+    // Small: ~1e-5 per radian at 12 m/s, an order more at 120 m/s, against blocks of ~1e-1
+    // this file already gets right. They are carried anyway for the reason #286, #303 and
+    // #307 each settled the same way -- a term the nominal propagation actually applies
+    // belongs in F, or the covariance stops describing the real error dynamics -- and because
+    // leaving them out is what kept `core/tests/jacobian_agreement.rs` a smoke test.
+    //
+    // Longitude is genuinely absent rather than omitted, and so is ∂v/∂alt for the horizontal
+    // rows in practice: WGS84 gravity and the principal radii are axisymmetric, and the
+    // altitude column comes out at ~1e-14 against velocities of 12 m/s. It falls out of the
+    // same cross product for free, so it is written rather than special-cased, but it does
+    // nothing.
+    let (d_velocity_dlat, d_velocity_dalt) = velocity_position_coupling(state, dt);
+    for row in 0..3 {
+        f[(3 + row, 0)] += d_velocity_dlat[row];
+        f[(3 + row, 2)] += d_velocity_dalt[row];
     }
 
     // ∂(v(+))/∂(attitude): transformation of specific force.
@@ -404,6 +467,26 @@ fn transition_jacobian(
     f[(7, 3)] += -transport_coupling_sign / (r_n + alt) * dt; // ∂(ε_y)/∂(v_n)
     f[(8, 4)] += lat.tan() / (r_e + alt) * dt; // ∂(ε_z)/∂(v_e)
 
+    // --- Not done here: the position rows' half-step over the *updated* velocity ---
+    //
+    // `position_update` integrates all three position rows trapezoidally over the propagated
+    // velocity (Groves 5.56), so each inherits every dependence that velocity has at half a
+    // step -- `f[(row, c)] += <rate> * 0.5 * dt * f[(3 + row, c)]`. That is an identity
+    // rather than a model choice, and it is the largest remaining disagreement in the matrix:
+    // ~3e-5 for altitude-vs-attitude on the `jacobian_agreement` state, against an analytic
+    // zero.
+    //
+    // It is deliberately NOT applied, for two measured reasons. Adding it to the altitude row
+    // alone -- which is where it is largest, and all #317 asks for -- takes
+    // `rbpf::tests::rbpf_runs_on_scenario_stationary` from 13.98 m of stationary altitude
+    // error back to 35.92 m, undoing what the Coriolis terms above fix. And doing only that
+    // row is the same inconsistency this file declines in `error_state_transition_jacobian`
+    // below: rows 0 and 1 carry the identical term (measured ~9.2e-11 at
+    // `frame_check_state`, 3.7% of the largest non-identity entry in those rows) and would
+    // be left first-order while row 2 became second-order.
+    //
+    // Tracked in #338, with the measurements, as one change across all three rows.
+
     f
 }
 
@@ -412,6 +495,142 @@ fn transition_jacobian(
 /// Matches the linear altitude term in [`earth::gravity`], which is
 /// `g0(lat) - 3.08e-6 * altitude`.
 const GRAVITY_ALTITUDE_GRADIENT: f64 = 3.08e-6;
+
+/// Velocity derivatives of the transport rate, resolved in NED.
+///
+/// Groves 5.44 resolves the transport rate as
+///
+/// $$ \omega_{en}^n = \left[ \frac{v_E}{R_E + h}, \; \frac{-v_N}{R_N + h}, \;
+/// \frac{-v_E \tan\varphi}{R_E + h} \right]^T $$
+///
+/// which makes 5.54's Coriolis and transport acceleration $-(2\omega_{ie} + \omega_{en})
+/// \times v$ *quadratic* in velocity. Its velocity derivative therefore has two halves,
+///
+/// $$ \frac{\partial}{\partial v_j} \left[ -(2\omega_{ie} + \omega_{en}(v)) \times v \right]
+/// = -(2\omega_{ie} + \omega_{en}) \times e_j \; - \; \frac{\partial \omega_{en}}{\partial
+/// v_j} \times v $$
+///
+/// and this function supplies the gradient in the second, one [`Vector3`] per column $j$ of
+/// the velocity block. The vertical column is identically zero -- [`earth::transport_rate`]
+/// reads only the horizontal velocity -- and is returned anyway so callers can index all
+/// three uniformly.
+///
+/// Resolved in NED, like [`earth::transport_rate`] itself. Callers reflect each column with
+/// `flip_vertical_rate` for an ENU state, exactly as they reflect the rate.
+fn transport_rate_velocity_gradients(latitude_rad: f64, altitude: f64) -> [Vector3<f64>; 3] {
+    let (meridian_radius, transverse_radius, _) =
+        earth::principal_radii(&latitude_rad.to_degrees(), &altitude);
+    let north_radius = meridian_radius + altitude;
+    let east_radius = transverse_radius + altitude;
+    [
+        // ∂ω_en/∂v_N: only the second component carries v_N.
+        Vector3::new(0.0, -1.0 / north_radius, 0.0),
+        // ∂ω_en/∂v_E: the first and third.
+        Vector3::new(1.0 / east_radius, 0.0, -latitude_rad.tan() / east_radius),
+        // ∂ω_en/∂v_D: the transport rate does not see the vertical channel at all.
+        Vector3::zeros(),
+    ]
+}
+
+/// Position derivatives of the Earth and transport rates, resolved in NED.
+///
+/// Groves 5.54 applies $-(2\omega_{ie} + \omega_{en}) \times v$ and 5.46 applies
+/// $-(\omega_{ie} + \omega_{en}) \times C$. Both rates depend on latitude -- $\omega_{ie}$
+/// directly through
+///
+/// $$ \omega_{ie}^n = \Omega_E \left[ \cos\varphi, \; 0, \; -\sin\varphi \right]^T $$
+///
+/// and $\omega_{en}$ through $\tan\varphi$ and the principal radii -- and $\omega_{en}$ weakly
+/// on altitude, through those same radii. Gravity is therefore not the only position
+/// dependence the velocity rows have, which is what #317 records.
+///
+/// Returns $(\partial \omega_{ie} / \partial \varphi, \; \partial \omega_{en} / \partial
+/// \varphi, \; \partial \omega_{en} / \partial h)$, all NED and all per radian or per metre.
+/// Callers reflect them with `flip_vertical_rate` for an ENU state, exactly as they reflect
+/// the rates themselves: latitude and altitude are frame-independent scalars, so the
+/// derivative of a pseudovector reflects the way the pseudovector does.
+///
+/// The radius derivatives come from $R_E = a D^{-1/2}$ and $R_N = a(1 - e^2) D^{-3/2}$ with
+/// $D = 1 - e^2 \sin^2\varphi$, so both are the radius itself times $e^2 \sin\varphi
+/// \cos\varphi / D$, and $R_N$ carries a factor of three from the steeper exponent.
+fn rate_position_gradients(
+    latitude_rad: f64,
+    altitude: f64,
+    velocity_north: f64,
+    velocity_east: f64,
+) -> (Vector3<f64>, Vector3<f64>, Vector3<f64>) {
+    let sin_lat = latitude_rad.sin();
+    // The latitude derivative of the vertical transport component carries sec²φ, so it
+    // diverges faster at the pole than the tan φ already in the attitude block. Guarded the
+    // same way `transition_jacobian` and `position_update` guard theirs: a large number in
+    // the covariance rather than an infinity.
+    let cos_lat = latitude_rad.cos().max(1e-6);
+    let (meridian_radius, transverse_radius, _) =
+        earth::principal_radii(&latitude_rad.to_degrees(), &altitude);
+    let denominator = 1.0 - earth::ECCENTRICITY_SQUARED * sin_lat * sin_lat;
+    let radius_scale = earth::ECCENTRICITY_SQUARED * sin_lat * cos_lat / denominator;
+    let transverse_gradient = transverse_radius * radius_scale;
+    let meridian_gradient = 3.0 * meridian_radius * radius_scale;
+    let north_radius = meridian_radius + altitude;
+    let east_radius = transverse_radius + altitude;
+    // Every entry below differentiates a `1/(R + h)`, so every entry carries `(R + h)^-2`.
+    // Named rather than written inline because `clippy::suspicious_operation_groupings`
+    // reads `a * b / (c * c)` as a likely typo for `a * c / (b * c)`.
+    let north_radius_squared = north_radius * north_radius;
+    let east_radius_squared = east_radius * east_radius;
+    let tan_lat = sin_lat / cos_lat;
+
+    let earth_rate_latitude = Vector3::new(-earth::RATE * sin_lat, 0.0, -earth::RATE * cos_lat);
+    let transport_latitude = Vector3::new(
+        -velocity_east * transverse_gradient / east_radius_squared,
+        velocity_north * meridian_gradient / north_radius_squared,
+        -velocity_east / (cos_lat * cos_lat * east_radius)
+            + velocity_east * tan_lat * transverse_gradient / east_radius_squared,
+    );
+    let transport_altitude = Vector3::new(
+        -velocity_east / east_radius_squared,
+        velocity_north / north_radius_squared,
+        velocity_east * tan_lat / east_radius_squared,
+    );
+    (earth_rate_latitude, transport_latitude, transport_altitude)
+}
+
+/// The Coriolis and transport contribution to the velocity rows' position columns.
+///
+/// Shared by [`transition_jacobian`] and [`error_state_transition_jacobian`] so the two
+/// cannot drift apart: both linearise the same line of Groves 5.54, and both hold position as
+/// (latitude, longitude, altitude) in radians and metres, so the latitude derivative goes into
+/// column 0 unscaled in either. Longitude is exactly absent -- WGS84 gravity and the principal
+/// radii are axisymmetric, so nothing in the mechanization depends on it.
+///
+/// Returns `(∂v/∂latitude, ∂v/∂altitude)` for one step of length `dt`, already reflected into
+/// `state`'s vertical convention.
+fn velocity_position_coupling(state: &StrapdownState, dt: f64) -> (Vector3<f64>, Vector3<f64>) {
+    let velocity = Vector3::new(
+        state.velocity_north,
+        state.velocity_east,
+        state.velocity_vertical,
+    );
+    let (earth_rate_latitude, transport_latitude, transport_altitude) = rate_position_gradients(
+        state.latitude,
+        state.altitude,
+        state.velocity_north,
+        state.velocity_east,
+    );
+    let rate_latitude = 2.0 * earth_rate_latitude + transport_latitude;
+    let (rate_latitude, rate_altitude) = if state.is_enu {
+        (
+            crate::flip_vertical_rate(&rate_latitude),
+            crate::flip_vertical_rate(&transport_altitude),
+        )
+    } else {
+        (rate_latitude, transport_altitude)
+    };
+    (
+        -rate_latitude.cross(&velocity) * dt,
+        -rate_altitude.cross(&velocity) * dt,
+    )
+}
 
 /// Derivative of Somigliana normal gravity with respect to latitude, in m/s² per radian.
 ///
@@ -559,7 +778,16 @@ pub fn error_state_transition_jacobian(
     // default frame since queue 3.
     f[(2, 5)] = if state.is_enu { dt } else { -dt };
 
-    // Note: Position error doesn't directly depend on attitude error or biases
+    // Note: Position error doesn't directly depend on attitude error or biases.
+    //
+    // The full-state `transition_jacobian` does carry ∂alt/∂(everything row 5 depends on),
+    // because `position_update` integrates the *updated* vertical velocity trapezoidally and
+    // that half-step is an identity, not a model choice. It is deliberately not ported here.
+    // These rows are the first-order rate form -- f[(0,3)] = dt/R_N, with no trapezoid
+    // either, pinned to 1e-15 by `test_error_state_jacobian_position_rows_are_radians` --
+    // so adding the half-step to row 2 alone would make one of the three position rows
+    // second-order and leave the other two first-order. Both omissions are the same O(dt²),
+    // and correcting them is one change to make together or not at all.
 
     // ===== Velocity Error Block (rows 3-5) =====
 
@@ -586,9 +814,85 @@ pub fn error_state_transition_jacobian(
     f[(5, 2)] = vertical_sign * GRAVITY_ALTITUDE_GRADIENT * dt;
     f[(5, 0)] = -vertical_sign * gravity_latitude_gradient(lat) * dt;
 
-    // ∂(δv̇)/∂(δv): Velocity error damping due to Coriolis and centrifugal effects
-    // These coupling terms are small for low dynamics and often approximated as zero
-    // The main effect is self-coupling which is captured by identity matrix
+    // ...and the rest of ∂(δv̇)/∂(δp), through the two rates rather than through gravity.
+    //
+    // Same terms the full-state Jacobian carries; shared with it so the two linearisations of
+    // 5.54 cannot drift apart. The position error here is (δlatitude, δlongitude, δaltitude)
+    // in radians and metres -- see `ErrorStateKalmanFilter::inject_error_state` and
+    // `test_error_state_jacobian_position_rows_are_radians` -- so the latitude derivative goes
+    // into column 0 unscaled, exactly as it does there. Note the `+=`: the two gravity entries
+    // above are assignments and this adds the Coriolis share on top of f[(5,0)] and f[(5,2)].
+    let (d_velocity_dlat, d_velocity_dalt) = velocity_position_coupling(state, dt);
+    for row in 0..3 {
+        f[(3 + row, 0)] += d_velocity_dlat[row];
+        f[(3 + row, 2)] += d_velocity_dalt[row];
+    }
+
+    // ∂(δv̇)/∂(δv): the Coriolis and transport block, both halves of it.
+    //
+    // This block used to be absent, with the note that the coupling is "small for low
+    // dynamics and often approximated as zero". The decision #325 asks for is to carry it,
+    // for three reasons:
+    //
+    // 1. It is in the reference model. Groves section 14.2.4 -- already cited by this
+    //    function's doc comment -- carries -(Ω_en + 2Ω_ie) as the velocity/velocity block of
+    //    the local-navigation-frame error dynamics, beside the velocity/position and
+    //    velocity/attitude blocks this function already has. There is no reading under which
+    //    the rule that kept the gravity gradient (#286) drops the Coriolis term sitting in
+    //    the same line of 5.54.
+    // 2. It is not a small-dynamics approximation so much as a small-*duration* one. The
+    //    entries are ~1.5e-6 at dt = 0.01, but they are systematic rather than noise: this is
+    //    the Schuler and Foucault coupling, and over a thousand steps it rotates the velocity
+    //    error covariance by ~1.5e-3 rad in a direction the ESKF otherwise never models.
+    // 3. Leaving it out made the ESKF and the EKF disagree about the same physics, which is
+    //    the condition #266, #286 and #307 each arose from.
+    //
+    // Both halves are included, for the reason spelled out at the corresponding block of
+    // `transition_jacobian`: ω_en is a function of v, so 5.54's term is quadratic in it and
+    // the skew matrix alone is only ∂/∂v_j of the second factor.
+    //
+    // Cost: the ESKF's covariance moves, by ~1.5e-6 per step on the velocity block. Measured
+    // end to end on `core/tests/test_data.csv` by `test_rmse_benchmark_across_filters`, the
+    // ESKF's horizontal RMSE is unchanged at 23.49 m and its vertical at 2.40 m; pitch moves
+    // by 0.001 deg and yaw by 0.001 deg. `core/tests/filter_comparison.rs` and
+    // `core/tests/aiding.rs` pass unchanged. The payoff is not accuracy -- it is that F now
+    // describes the dynamics `mechanize` actually applies.
+    let velocity = Vector3::new(
+        state.velocity_north,
+        state.velocity_east,
+        state.velocity_vertical,
+    );
+    let omega_ie = earth::earth_rate_lla(&lat_deg);
+    let omega_en = earth::transport_rate(&lat_deg, &h, &velocity);
+    // Both rates come out of `earth` in NED and are applied here against *this* state's
+    // velocity error, so they are reflected for an ENU state exactly as `transition_jacobian`
+    // reflects them -- as pseudovectors, see `flip_vertical_rate` (#321).
+    let (omega_ie, omega_en) = if state.is_enu {
+        (
+            crate::flip_vertical_rate(&omega_ie),
+            crate::flip_vertical_rate(&omega_en),
+        )
+    } else {
+        (omega_ie, omega_en)
+    };
+    let coriolis_transport =
+        -(2.0 * vector_to_skew_symmetric(&omega_ie) + vector_to_skew_symmetric(&omega_en));
+    for i in 0..3 {
+        for j in 0..3 {
+            f[(3 + i, 3 + j)] += coriolis_transport[(i, j)] * dt;
+        }
+    }
+    for (column, gradient) in transport_rate_velocity_gradients(lat, h).iter().enumerate() {
+        let gradient = if state.is_enu {
+            crate::flip_vertical_rate(gradient)
+        } else {
+            *gradient
+        };
+        let contribution = -gradient.cross(&velocity) * dt;
+        for (row, value) in contribution.iter().enumerate() {
+            f[(3 + row, 3 + column)] += *value;
+        }
+    }
 
     // ∂(δv̇)/∂(δθ): Velocity error depends on attitude error (most important coupling!)
     //
@@ -1773,13 +2077,13 @@ mod tests {
     /// on the input side; the attitude rows come back out as a nav-frame rotation vector,
     /// which is what `AttitudeParametrization::RotationVector` means.
     ///
-    /// # What this deliberately does not check
+    /// # Why every entry is now checked, and why not all of them at 1e-14
     ///
-    /// Five of the nine velocity-row entries are excluded. The Coriolis term is *quadratic*
-    /// in velocity -- `ω_en(v) × v` -- and the Jacobian differentiates only the second
-    /// factor, omitting `(∂ω_en/∂v_j) × v`. The omission is first-order, not O(dt²): it
-    /// scales with `dt` exactly as the terms that are kept, so no choice of `dt` separates
-    /// them. Measured at `dt = 0.01` on this state, analytic against finite difference:
+    /// Five of the nine velocity-row entries used to be excluded outright. 5.54's Coriolis
+    /// term is *quadratic* in velocity -- `ω_en(v) × v` -- and the Jacobian differentiated
+    /// only the second factor, omitting `(∂ω_en/∂v_j) × v`. That omission was first-order,
+    /// not O(dt²): it scaled with `dt` exactly as the terms that were kept, so no choice of
+    /// `dt` separated them. Measured at `dt = 0.01` on this state before #325:
     ///
     /// ```text
     ///     entry     analytic        numeric         shortfall
@@ -1790,29 +2094,44 @@ mod tests {
     ///     (5,4)     -8.375075e-7    -7.671326e-7     7.0e-8
     /// ```
     ///
-    /// That is a separate defect from the frame handling this test exists for, in the same
-    /// family as #317, and it is filed rather than fixed here so its covariance shift stays
-    /// attributable. The four entries that survive include a Coriolis off-diagonal, so a sign
-    /// or frame error in that block still trips this test; the block's *frame* behaviour is
-    /// pinned exactly by `transition_jacobian_agrees_across_vertical_conventions`.
+    /// The exclusion list is gone: all nine entries are checked. #325 asked for a flat 1e-14
+    /// as well, and that is not attainable -- not because anything is still missing from the
+    /// first-order Jacobian, but because the mechanization has a second-order term these five
+    /// entries alone are exposed to. 5.47 rotates the sensed increment with the *averaged*
+    /// attitude `0.5 (C0 + C1) Δv`, and `C1` carries velocity through 5.46's transport rate,
+    /// so the true derivative contains
+    ///
+    /// ```text
+    ///     0.5 (∂C1/∂v_j) Δv = -0.5 dt^2 (∂ω_en/∂v_j) × f^n
+    /// ```
+    ///
+    /// which a first-order `I + A dt` Jacobian does not carry and should not. Hence the
+    /// per-column bound below, `0.5 dt² |∂ω_en/∂v_j| |f^n|`, floored at the 1e-14 rounding
+    /// limit. It reproduces the old split exactly and explains it: the four entries that met
+    /// 1e-14 are precisely the ones where that cross product vanishes -- all of column 2,
+    /// where `∂ω_en/∂v_D` is identically zero, plus `(4,3)`, where `∂ω_en/∂v_N` is parallel
+    /// to the axis being read. The five that did not are the five the term reaches, and they
+    /// now agree to 7.6e-11 where they used to be out by up to 2.5e-7: a factor of 3000, at a
+    /// bound that shrinks as `dt²` rather than staying put.
+    ///
+    /// **This bound is structurally near-saturated, by design, and that is worth knowing
+    /// before diagnosing a failure.** `|a × b| <= |a| |b|` is tight exactly when the two are
+    /// perpendicular, and `∂ω_en/∂v_j` is close to perpendicular to `f^n` for any near-level
+    /// attitude -- so `(3,3)` consumes 94% of its bound and `(4,4)` 84%. The slack is the
+    /// cosine of that angle and nothing else. A failure here is therefore as likely to mean
+    /// "the sample attitude or IMU moved" as "the Jacobian is wrong"; check
+    /// `frame_check_state` and `frame_check_imu` first. Using `|(∂ω_en/∂v_j) × f^n|` itself
+    /// rather than the norm product would remove the saturation, at the cost of duplicating
+    /// the very expression under test inside its own oracle.
     #[test]
     fn transition_jacobian_velocity_columns_match_finite_differences_in_both_frames() {
-        // Entries the omitted `(∂ω_en/∂v) × v` term contaminates, as tabulated above.
-        const OMITTED: [(usize, usize); 5] = [(3, 3), (5, 3), (3, 4), (4, 4), (5, 4)];
+        // Floating-point floor on the numeric side: the difference of two propagated
+        // velocities of ~120 m/s over a 1 m/s step, so ~eps * |v| / step ~ 1e-14.
+        const ROUNDING_FLOOR: f64 = 1e-14;
         let dt = 0.01;
         let step = 1.0; // m/s
         for base in [frame_check_state(), frame_check_state().to_enu()] {
-            let (accel, gyro) = if base.is_enu {
-                (
-                    Vector3::new(0.42, -0.31, 9.72),
-                    Vector3::new(-0.011, 0.007, 0.023),
-                )
-            } else {
-                (
-                    Vector3::new(0.42, -0.31, -9.72),
-                    Vector3::new(0.011, -0.007, 0.023),
-                )
-            };
+            let (accel, gyro) = frame_check_imu(base.is_enu);
             let analytic = state_transition_jacobian(&base, &accel, &gyro, dt);
 
             let propagate = |offset: Vector3<f64>| {
@@ -1829,11 +2148,20 @@ mod tests {
             };
             let nominal = propagate(Vector3::zeros());
 
+            // The second-order term derived above, per column: `0.5 dt² |∂ω_en/∂v_j| |f^n|`.
+            // `|a × b| <= |a||b|`, so this is an upper bound rather than a fit, and the
+            // reflection an ENU state applies to the gradient preserves its norm.
+            let gradients = transport_rate_velocity_gradients(base.latitude, base.altitude);
+            let specific_force_norm = (base.attitude.matrix() * accel).norm();
+
             for column in 0..3 {
                 let mut offset = Vector3::zeros();
                 offset[column] = step;
                 let plus = propagate(offset);
                 let minus = propagate(-offset);
+                let averaging_bound =
+                    0.5 * dt * dt * gradients[column].norm() * specific_force_norm;
+                let tolerance = averaging_bound.max(ROUNDING_FLOOR);
 
                 // Velocity rows.
                 let numeric = [
@@ -1842,10 +2170,7 @@ mod tests {
                     (plus.velocity_vertical - minus.velocity_vertical) / (2.0 * step),
                 ];
                 for (row, value) in numeric.iter().enumerate() {
-                    if OMITTED.contains(&(3 + row, 3 + column)) {
-                        continue;
-                    }
-                    assert_approx_eq!(analytic[(3 + row, 3 + column)], *value, 1e-14);
+                    assert_approx_eq!(analytic[(3 + row, 3 + column)], *value, tolerance);
                 }
 
                 // Attitude rows, as a nav-frame rotation vector: the left perturbation
@@ -1876,6 +2201,199 @@ mod tests {
             assert!(
                 analytic[(6, 4)].abs() > 1e-10,
                 "transport coupling is empty"
+            );
+        }
+    }
+
+    /// The IMU for [`frame_check_state`], reflected into whichever convention it carries.
+    ///
+    /// Specific force is an ordinary vector and angular rate is a pseudovector, so the two
+    /// reflect differently -- the same distinction `flip_vertical` and `flip_vertical_rate`
+    /// draw. Handing both frames the *same* body triple would compare two different physical
+    /// motions and make any frame check meaningless.
+    fn frame_check_imu(is_enu: bool) -> (Vector3<f64>, Vector3<f64>) {
+        if is_enu {
+            (
+                Vector3::new(0.42, -0.31, 9.72),
+                Vector3::new(-0.011, 0.007, 0.023),
+            )
+        } else {
+            (
+                Vector3::new(0.42, -0.31, -9.72),
+                Vector3::new(0.011, -0.007, 0.023),
+            )
+        }
+    }
+
+    /// Central-difference one column of the Jacobian in the *increment* domain.
+    ///
+    /// Differences `mechanize(x) - x` rather than `mechanize(x)`, which is what makes a
+    /// latitude column measurable at all. Latitude here is ~0.9 rad and the propagated
+    /// velocity ~120 m/s; differencing the absolute velocity across a 1e-6 rad step leaves
+    /// the answer sitting on `ulp(120) / 2e-6` ~ 7e-9 of quantisation noise, against terms of
+    /// 3e-5. Subtracting the unperturbed value first removes the large constant before the
+    /// cancellation happens, and since the perturbation touches only one element the two
+    /// forms are identical in exact arithmetic.
+    ///
+    /// Returns `∂(mechanize(x) - x)/∂x_column`, i.e. the analytic Jacobian *minus the
+    /// identity*, as a nine-element state vector.
+    fn increment_derivative(base: &StrapdownState, column: usize, step: f64, dt: f64) -> Vec<f64> {
+        let (accel, gyro) = frame_check_imu(base.is_enu);
+        let increment = |delta: f64| -> Vec<f64> {
+            let mut vector = Vec::<f64>::from(base);
+            vector[column] += delta;
+            let mut state = StrapdownState::try_from(vector.as_slice()).unwrap();
+            state.is_enu = base.is_enu;
+            let before = Vec::<f64>::from(&state);
+            crate::mechanize(
+                &mut state,
+                &crate::ImuSample::from_rates(&crate::IMUData { accel, gyro }, dt),
+            )
+            .unwrap();
+            let after = Vec::<f64>::from(&state);
+            after.iter().zip(&before).map(|(a, b)| a - b).collect()
+        };
+        let plus = increment(step);
+        let minus = increment(-step);
+        plus.iter()
+            .zip(&minus)
+            .map(|(a, b)| (a - b) / (2.0 * step))
+            .collect()
+    }
+
+    /// The velocity rows' *position* columns, finite-differenced in both conventions.
+    ///
+    /// Companion to the velocity-column test above: 5.54 applies `-(2ω_ie + ω_en) × v` and
+    /// both rates are functions of latitude, so these entries are not zero. Before #317 and
+    /// #325 they were: `f[(3,0)]` and `f[(4,0)]` were never assigned, and `f[(5,0)]` carried
+    /// only the gravity gradient, overshooting the true value by the missing Coriolis share.
+    /// On the state below, analytic against finite difference, before:
+    ///
+    /// ```text
+    ///     entry     analytic        numeric         shortfall
+    ///     (3,0)      0.0             3.268497e-5     3.3e-5
+    ///     (4,0)      0.0             8.035883e-5     8.0e-5
+    ///     (5,0)      5.058048e-4     4.546776e-4     5.1e-5
+    /// ```
+    ///
+    /// The altitude column is checked too. It is analytically non-zero and numerically inert
+    /// -- ~1e-12 against velocities of 120 m/s, because the principal radii change by a part
+    /// in 1e6 per kilometre -- so it is here to pin the sign of a term that falls out of the
+    /// same cross product for free, not because it does anything.
+    #[test]
+    fn transition_jacobian_position_columns_match_finite_differences_in_both_frames() {
+        // Derived, not fitted. The only thing the analytic form omits here is the
+        // mechanization's interval-averaged attitude: 5.47 rotates specific force with
+        // 0.5*(C0 + C1) where the Jacobian uses C0, and C1 carries latitude through 5.46's
+        // -[ω_in×] C dt. The shortfall is therefore bounded by
+        //
+        //     0.5 * dt^2 * |∂ω_in/∂φ| * |f^n|
+        //
+        // and with |∂ω_in/∂φ| <= Ω + |v_E| sec^2(φ) / R_E ~ 9e-5 rad/s per radian here and
+        // |f^n| <= 10 m/s^2, that is 0.5 * 1e-4 * 9e-5 * 10 = 4.5e-8 at dt = 0.01. The
+        // tolerance clears it by a factor of two and still sits ~300x under the smallest
+        // entry being checked. Measured worst is 2.3e-8.
+        const TOLERANCE: f64 = 1e-7;
+        // The altitude column is three orders below the latitude column, so it needs its own
+        // tolerance -- but it has to stay *below* the entries it checks or it pins nothing.
+        // Measured here: f[(3,2)] = 4.46e-13, f[(4,2)] = 1.73e-12, f[(5,2)] = -3.08e-8,
+        // against residuals of 1.9e-14, 1.4e-14 and 2.2e-15. 1e-13 is five times the worst
+        // residual and below the smallest entry, so an analytic zero or a sign flip in any of
+        // the three fails. At the 1e-12 this first carried, f[(3,2)] was less than half the
+        // tolerance and the assertion was vacuous for that entry.
+        const ALTITUDE_TOLERANCE: f64 = 1e-13;
+        let dt = 0.01;
+
+        for base in [frame_check_state(), frame_check_state().to_enu()] {
+            let frame = if base.is_enu { "ENU" } else { "NED" };
+            let (accel, gyro) = frame_check_imu(base.is_enu);
+            let analytic = state_transition_jacobian(&base, &accel, &gyro, dt);
+
+            // Latitude, in radians: 1e-6 rad is ~6 m, small enough that the second
+            // derivative of gravity is invisible and large enough to clear the floor.
+            let latitude = increment_derivative(&base, 0, 1e-6, dt);
+            for row in 3..6 {
+                assert_approx_eq!(analytic[(row, 0)], latitude[row], TOLERANCE);
+            }
+            // Longitude is not merely omitted, it is genuinely absent: WGS84 gravity and the
+            // principal radii are axisymmetric, so perturbing longitude moves nothing but
+            // longitude, bit for bit.
+            let longitude = increment_derivative(&base, 1, 1e-6, dt);
+            for row in 3..6 {
+                assert_approx_eq!(analytic[(row, 1)], longitude[row], 1e-18);
+            }
+            // Altitude, in metres.
+            let altitude = increment_derivative(&base, 2, 0.1, dt);
+            for row in 3..6 {
+                assert_approx_eq!(analytic[(row, 2)], altitude[row], ALTITUDE_TOLERANCE);
+            }
+
+            // Non-degenerate: the two entries that were exactly zero before #317 must now
+            // carry something far above the tolerance they are checked against, or the
+            // agreement above is an agreement about nothing.
+            assert!(
+                analytic[(3, 0)].abs() > 1e-5 && analytic[(4, 0)].abs() > 1e-5,
+                "in {frame} the Coriolis latitude terms are empty: f[(3,0)] = {:e}, \
+                 f[(4,0)] = {:e}",
+                analytic[(3, 0)],
+                analytic[(4, 0)]
+            );
+        }
+    }
+
+    /// The ESKF must linearise the same Coriolis and transport terms the full-state
+    /// Jacobian does.
+    ///
+    /// Before #325 `error_state_transition_jacobian` had no velocity block at all -- the
+    /// comment read that the coupling is "small for low dynamics and often approximated as
+    /// zero" -- and no Coriolis contribution to its position columns either, so the two
+    /// linearisations of Groves 5.54 disagreed about the same physics. That divergence
+    /// between the EKF's and the ESKF's idea of the dynamics is the condition #266, #286 and
+    /// #307 each arose from.
+    ///
+    /// The comparison is against the full-state Jacobian rather than a fresh finite
+    /// difference on purpose: those blocks are already pinned to the mechanization by
+    /// `transition_jacobian_velocity_columns_match_finite_differences_in_both_frames` and
+    /// `transition_jacobian_position_columns_match_finite_differences_in_both_frames`, and
+    /// what needs guarding here is that the two functions cannot drift apart again.
+    #[test]
+    fn error_state_jacobian_carries_the_same_coriolis_terms_as_the_full_state_form() {
+        let dt = 0.01;
+
+        for base in [frame_check_state(), frame_check_state().to_enu()] {
+            let frame = if base.is_enu { "ENU" } else { "NED" };
+            let (accel, gyro) = frame_check_imu(base.is_enu);
+            let full = state_transition_jacobian(&base, &accel, &gyro, dt);
+            let error = error_state_transition_jacobian(&base, &accel, &gyro, dt);
+
+            // The velocity block is built from the same helpers in both, so it agrees to the
+            // last bit; 1e-18 says so rather than leaving room for a near-miss.
+            for row in 3..6 {
+                for column in 3..6 {
+                    assert_approx_eq!(full[(row, column)], error[(row, column)], 1e-18);
+                }
+            }
+            // The position columns agree to rounding rather than exactly: both carry the same
+            // Coriolis contribution, but the gravity gradient beside it is computed from the
+            // Somigliana formula in one and from `gravity_latitude_gradient`'s algebraically
+            // equivalent rearrangement in the other. That duplication is real and is left for
+            // a separate change; 1e-12 is far under the ~5e-4 entries and far over the
+            // difference between two spellings of the same quotient rule.
+            for row in 3..6 {
+                assert_approx_eq!(full[(row, 0)], error[(row, 0)], 1e-12);
+                assert_approx_eq!(full[(row, 2)], error[(row, 2)], 1e-12);
+            }
+
+            // Non-degenerate: the off-diagonal Coriolis entries and the latitude column have
+            // to actually be there. At 120 m/s the quadratic half is the same order as the
+            // linear half, which is the whole of #325.
+            assert!(
+                error[(4, 3)].abs() > 1e-7,
+                "in {frame} the ESKF Coriolis block is empty"
+            );
+            assert!(
+                error[(3, 0)].abs() > 1e-5,
+                "in {frame} the ESKF Coriolis latitude column is empty"
             );
         }
     }

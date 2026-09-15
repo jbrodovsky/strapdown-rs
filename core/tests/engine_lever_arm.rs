@@ -400,8 +400,11 @@ fn real_data_antenna_offset_is_removed() {
     // all 5,365 GNSS epochs of `test_data.csv`, that estimate sits 60.6 deg from the
     // device's own recorded attitude on average and 156.6 deg away at worst. Rotating a 3 m
     // offset by a heading that wrong points the correction in the wrong direction, so
-    // applying it is worse than ignoring it -- 3.460 m of drift against the baseline versus
-    // 3.152 m uncompensated. That is arithmetic, not a lever-arm defect.
+    // applying it is worse than ignoring it -- 3.445 m of drift against the baseline versus
+    // 3.152 m uncompensated. That is arithmetic, not a lever-arm defect. (The figure was
+    // 3.460 m when it was first written and 3.450 m before #325 and #317 completed the
+    // Coriolis block; the uncompensated number does not move, because it does not depend on
+    // the attitude estimate.)
     //
     // Adding magnetometer yaw aiding makes it worse still (75.9 deg mean, 180 deg worst),
     // so this is not simply weak yaw observability under GNSS-only aiding.

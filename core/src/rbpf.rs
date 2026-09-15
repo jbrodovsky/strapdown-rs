@@ -1010,6 +1010,30 @@ mod tests {
     // cancellation between two bugs, not convergence. #321 brought it to 16.66 m
     // and the Jacobian corrections from its review to 31.51 m, all outside it.
     //
+    // #325 and #317 -- the missing velocity and position columns of the Coriolis
+    // and transport block -- brought it to **13.98 m**, inside the 15 m bound for
+    // the first time since #292. Isolated by building the library with only the
+    // altitude-row half-step disabled and re-running this test twice per
+    // configuration:
+    //
+    //     pre-#325 library                    31.51 m   FAIL
+    //     + #325 velocity + #317 position     13.98 m   PASS
+    //     + the altitude-row half-step        35.92 m   FAIL
+    //
+    // The third line is what made this look like a regression on first reading.
+    // That half-step is a real term but it is not what either issue asks for, it
+    // is inconsistent on its own (rows 0 and 1 carry the same term and would be
+    // left first-order), and it costs 22 m here -- so it is deferred to #338
+    // rather than shipped. Recorded because a future reader will otherwise
+    // rediscover only the 35.92 m.
+    //
+    // This test is still `#[ignore]`d. It passes, but against a bound #295 itself
+    // calls fitted -- 15 m was chosen for 1.2x margin over a 12.49 m baseline that
+    // was the product of two cancelling bugs -- and 13.98 m clears it by 7%.
+    // Re-enabling on that number would be #288's mistake twice over. #295's
+    // acceptance criterion is a *derived* bound; this measurement is a large step
+    // toward it, not a substitute for it.
+    //
     // #319 also established what the number actually measures: the truth here is
     // exactly stationary (altitude 1000.0000 m, all three velocities identically
     // zero, at every step), so the whole error is the filter's own altitude
