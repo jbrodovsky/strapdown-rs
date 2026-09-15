@@ -272,12 +272,27 @@ fn all_filters(
     scenario: &Scenario,
     biases: &[f64; 6],
 ) -> Vec<(&'static str, Box<dyn NavigationFilter>)> {
-    let init = initial_state(scenario);
+    all_filters_from(&initial_state(scenario), scenario.initial, biases)
+}
+
+/// `all_filters`, but from explicit seeds rather than the scenario's own.
+///
+/// The Kalman family is seeded from an [`InitialState`] and the RBPF from a
+/// [`StrapdownState`] nominal, so both have to be supplied together or the filters start
+/// from different attitudes. Exists so a test can seed an attitude the scenario does not
+/// carry -- see `every_filter_reports_attitude_on_the_principal_branch`, which needs a
+/// deliberately *negative* seed because a level one cannot tell the two wrapping
+/// conventions apart.
+fn all_filters_from(
+    init: &InitialState,
+    nominal: StrapdownState,
+    biases: &[f64; 6],
+) -> Vec<(&'static str, Box<dyn NavigationFilter>)> {
     vec![
         (
             "ESKF",
             Box::new(ErrorStateKalmanFilter::new(
-                &init,
+                init,
                 biases,
                 INITIAL_COVARIANCE.to_vec(),
                 process_noise_matrix(),
@@ -286,7 +301,7 @@ fn all_filters(
         (
             "EKF",
             Box::new(ExtendedKalmanFilter::new(
-                &init,
+                init,
                 biases,
                 INITIAL_COVARIANCE.to_vec(),
                 process_noise_matrix(),
@@ -296,7 +311,7 @@ fn all_filters(
         (
             "UKF",
             Box::new(UnscentedKalmanFilter::new(
-                &init,
+                init,
                 biases,
                 None,
                 INITIAL_COVARIANCE.to_vec(),
@@ -310,7 +325,7 @@ fn all_filters(
             "RBPF",
             Box::new(
                 RaoBlackwellizedParticleFilter::new(
-                    scenario.initial,
+                    nominal,
                     RbpfConfig {
                         num_particles: RBPF_PARTICLES,
                         position_init_std_m: Vector3::new(10.0, 10.0, 5.0),
@@ -484,6 +499,83 @@ fn rate_and_increment_inputs_are_equivalent() {
                 (lhs - rhs).abs() <= 1e-12 * lhs.abs().max(rhs.abs()).max(1.0),
                 "{name} state {j} differs between rate and increment inputs: {lhs} vs {rhs}"
             );
+        }
+    }
+}
+
+/// Every filter reports roll/pitch/yaw on one branch, and the same one, at every step.
+///
+/// #314: the EKF and UKF wrapped the attitude block onto 0..2*pi in `update` while their own
+/// `predict` wrote `Rotation3::euler_angles`'s -pi..pi straight back into it, and the ESKF
+/// wrapped its quaternion decomposition the same way in `get_estimate`. A level vehicle --
+/// which this scenario is -- therefore reported roll as -0.002 rad after a predict and 6.281
+/// rad one update later: the same rotation, named two ways, one timestep apart, with the
+/// branch cut sitting exactly on the attitude the vehicle actually holds.
+///
+/// This file is the right home because it already drives all four filters through
+/// `&mut dyn NavigationFilter`, so a filter that reintroduces its own convention fails here
+/// rather than in whichever suite happens to read its attitude.
+#[test]
+fn every_filter_reports_attitude_on_the_principal_branch() {
+    // Near-level: the scenario's truth attitude is the identity and every filter is seeded a
+    // hundredth of a radian off it, so the *only* thing separating a passing report from a
+    // failing one is which branch the filter names the answer on. The bound is two orders of
+    // magnitude below a full turn and one above the seed, so it catches the convention
+    // without being a tuning knob.
+    const MAX_LEVEL_ATTITUDE_RAD: f64 = 0.1;
+    // Seeded deliberately NEGATIVE, and that is the whole point of the test.
+    //
+    // A level seed cannot distinguish the two conventions: the angles come out as +/-0.0 or
+    // a rounding residue of ~1e-11, and `wrap_to_2pi`'s `wrapped < 0.0` guard is false for
+    // negative zero, so under the pre-#314 code two of the three filters would report 0.0
+    // and pass. The only thing that tripped the old code on a level scenario was the *sign*
+    // of a 1e-11 residue in one filter -- a recompile away from detecting nothing.
+    //
+    // At -0.02 rad the old `wrap_to_2pi` reports 6.263 rad for every filter, which fails
+    // both assertions below by a wide margin, on every platform.
+    const SEED_ATTITUDE_RAD: f64 = -0.02;
+
+    let scenario = build_scenario(0.0);
+
+    let mut init = initial_state(&scenario);
+    init.roll = SEED_ATTITUDE_RAD;
+    init.pitch = SEED_ATTITUDE_RAD;
+    init.yaw = SEED_ATTITUDE_RAD;
+    let mut nominal = scenario.initial;
+    nominal.attitude = nalgebra::Rotation3::from_euler_angles(
+        SEED_ATTITUDE_RAD,
+        SEED_ATTITUDE_RAD,
+        SEED_ATTITUDE_RAD,
+    );
+
+    for (name, mut filter) in all_filters_from(&init, nominal, &[0.0; 6]) {
+        let dt = 1.0 / SCENARIO_SAMPLE_RATE_HZ as f64;
+
+        for stage in ["predict", "update"] {
+            if stage == "predict" {
+                filter.predict(&scenario.samples[0], dt).unwrap();
+            } else {
+                filter.update(&scenario.gps[0]).unwrap();
+            }
+
+            let estimate = filter.get_estimate();
+            for (axis, angle) in [
+                ("roll", estimate[6]),
+                ("pitch", estimate[7]),
+                ("yaw", estimate[8]),
+            ] {
+                assert!(
+                    (-std::f64::consts::PI..=std::f64::consts::PI).contains(&angle),
+                    "{name} reported {axis} = {angle} rad after {stage}, outside the -pi..pi \
+                     branch `Rotation3::euler_angles` returns"
+                );
+                assert!(
+                    angle.abs() <= MAX_LEVEL_ATTITUDE_RAD,
+                    "{name} reported {axis} = {angle} rad after {stage} for a near-level \
+                     vehicle; a value near a full turn here means the 0..2*pi convention \
+                     is back"
+                );
+            }
         }
     }
 }

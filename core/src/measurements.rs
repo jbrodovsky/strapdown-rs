@@ -662,8 +662,13 @@ impl MeasurementModel for MagnetometerYawMeasurement {
             let declination = self.get_declination(lat_deg, lon_deg, alt_m);
             heading += declination;
 
-            // Re-wrap to [0, 2π) after adding declination
-            heading = heading.rem_euclid(2.0 * std::f64::consts::PI);
+            // Re-wrap onto the same branch `atan2` produced above, and the same branch the
+            // state's yaw is on (#314). This used to land on [0, 2π), so with declination
+            // enabled -- which `build_event_stream` does for the whole sim path -- a state
+            // yaw of -0.01 rad met a measurement of 6.27 rad and the raw innovation was a
+            // full turn out. `wrap_residual` below absorbs that, but an innovation that is
+            // only correct after wrapping is a trap for whoever reads or gates it.
+            heading = crate::wrap_to_pi(heading);
         }
 
         Ok(DVector::from_vec(vec![heading]))
@@ -1089,6 +1094,76 @@ mod tests {
         for yaw in [0.0, 1.0, 2.5, 5.0, -1.2] {
             assert_approx_eq!(z_at(yaw), z0, 1e-12);
         }
+    }
+
+    /// #314: the declination path lands on the same branch as the raw `atan2`.
+    ///
+    /// `get_expected_measurement` returns the state's yaw, which every filter carries on
+    /// -pi..pi. The declination branch used to re-wrap onto 0..2*pi, so with declination
+    /// enabled -- which `build_event_stream` does for the whole sim path -- a heading a hair
+    /// west of north met a state yaw a hair west of north and the raw innovation was a full
+    /// turn out. `wrap_residual` absorbed it; nothing else would have.
+    #[test]
+    fn mag_yaw_measurement_declination_keeps_one_branch() {
+        // Magnetic vector along body x with the sensor level, so the raw heading is exactly
+        // zero and the reported value *is* the declination: the branch is the only thing
+        // under test.
+        let base = MagnetometerYawMeasurement {
+            mag_x: 20.0,
+            mag_y: 0.0,
+            mag_z: -45.0,
+            noise_std: 0.2,
+            apply_declination: false,
+            year: 2025,
+            day_of_year: 1,
+        };
+        let with_declination = MagnetometerYawMeasurement {
+            apply_declination: true,
+            ..base
+        };
+        // Philadelphia, where the WMM declination is several degrees *west* -- negative, and
+        // therefore on the far side of the old branch cut from a near-zero heading.
+        let latitude_deg: f64 = 39.95;
+        let longitude_deg: f64 = -75.16;
+        let altitude_m: f64 = 12.0;
+        let state = DVector::from_vec(vec![
+            latitude_deg.to_radians(),
+            longitude_deg.to_radians(),
+            altitude_m,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        ]);
+
+        let declination = with_declination.get_declination(latitude_deg, longitude_deg, altitude_m);
+        assert!(
+            declination < 0.0,
+            "expected a westerly declination at Philadelphia, got {declination}"
+        );
+
+        let raw = base.get_measurement(&state).unwrap()[0];
+        let corrected = with_declination.get_measurement(&state).unwrap()[0];
+
+        assert_approx_eq!(raw, 0.0, 1e-12);
+        assert_approx_eq!(corrected, crate::wrap_to_pi(raw + declination), 1e-12);
+        for (label, value) in [("raw", raw), ("declination-corrected", corrected)] {
+            assert!(
+                (-std::f64::consts::PI..=std::f64::consts::PI).contains(&value),
+                "the {label} heading should be on the same branch as the state's yaw, got \
+                 {value}"
+            );
+        }
+
+        // The regression itself: against a state yaw of zero the raw innovation is the
+        // declination, not the declination plus a full turn.
+        let innovation = corrected - with_declination.get_expected_measurement(&state)[0];
+        assert!(
+            innovation.abs() < std::f64::consts::PI,
+            "innovation {innovation} exceeds half a turn before `wrap_residual` is applied"
+        );
     }
 
     /// #286: angular residuals wrap onto the circle.

@@ -986,11 +986,18 @@ pub struct NavigationResult {
     pub velocity_east: f64,
     /// Vertical velocity in m/s
     pub velocity_vertical: f64,
-    /// Roll angle in radians
+    /// Roll angle in radians, on -pi..pi.
+    ///
+    /// All three angles are written on the branch `Rotation3::euler_angles` returns, whether
+    /// the row came from a filter's `get_estimate` or from the dead-reckoning writer; before
+    /// #314 the closed-loop rows used 0..2*pi and the open-loop rows did not, so one CSV
+    /// schema carried two conventions.
     pub roll: f64,
-    /// Pitch angle in radians
+    /// Pitch angle in radians. On -pi/2..pi/2 whenever the row came from a rotation -- that
+    /// is the range the Euler decomposition produces -- and on -pi..pi in general, since the
+    /// EKF and UKF carry pitch as a plain state element that an update can move.
     pub pitch: f64,
-    /// Yaw angle in radians
+    /// Yaw angle in radians, on -pi..pi; negative is west of north.
     pub yaw: f64,
     /// IMU accelerometer x-axis bias in m/s^2
     pub acc_bias_x: f64,

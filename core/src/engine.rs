@@ -667,11 +667,13 @@ pub struct NavSolution {
     pub velocity_east: f64,
     /// Vertical velocity, m/s: positive down in NED, positive up in ENU.
     pub velocity_vertical: f64,
-    /// Roll, degrees.
+    /// Roll, degrees, on -180..180.
     pub roll: f64,
-    /// Pitch, degrees.
+    /// Pitch, degrees. On -90..90 whenever the estimate has been through the mechanization
+    /// -- that is the range the Euler decomposition produces -- and on -180..180 in general.
     pub pitch: f64,
-    /// Yaw, degrees.
+    /// Yaw, degrees, on -180..180; negative is west of north. For a 0..360 compass heading
+    /// see [`NavSolution::heading_deg`].
     pub yaw: f64,
     /// Estimated accelerometer bias, m/s^2, body frame. Zero when the filter carries no
     /// bias states.
@@ -718,6 +720,22 @@ impl NavSolution {
             self.pitch.to_radians(),
             self.yaw.to_radians(),
         )
+    }
+
+    /// Yaw as a compass heading, degrees on `[0, 360)`.
+    ///
+    /// The stored convention is `[-180, 180]`. This is the display form and is deliberately
+    /// not what the state carries: on `[0, 360)` the branch cut sits at due north, so
+    /// differencing two headings either side of it comes out a full turn wrong -- which is
+    /// exactly what the filters used to report (#314).
+    #[must_use]
+    pub fn heading_deg(&self) -> f64 {
+        // `rem_euclid` alone is not enough. For a yaw a hair west of north it adds the
+        // modulus and the sum rounds back up: `(-1e-15_f64).rem_euclid(360.0)` is *exactly*
+        // 360.0, so the display form would reproduce the very symptom #314 is named for --
+        // a level, north-pointing vehicle reading 360. Fold the upper endpoint down.
+        let heading = self.yaw.rem_euclid(360.0);
+        if heading >= 360.0 { 0.0 } else { heading }
     }
 }
 
@@ -1678,6 +1696,86 @@ mod tests {
             end_error < start_error / 10.0,
             "expected the estimate to converge on the fix: {start_error} -> {end_error}"
         );
+    }
+
+    /// #314: a level vehicle reports roll near zero, not near 360 degrees.
+    ///
+    /// The issue's reproducer (`core/examples/basic_ins.rs`) reduced to its assertion: seed
+    /// level, propagate, read the solution. Roll drifts a hair either side of zero -- with a
+    /// zero gyro the mechanization holds the platform fixed in inertial space, so it tips
+    /// away from local level at Earth rate -- and reporting that on 0..360 put the branch cut
+    /// exactly where the answer lives, turning -0.19 degrees into 359.81.
+    #[test]
+    fn a_level_vehicle_reports_roll_near_zero_not_near_360() {
+        let mut engine = InsEngine::builder()
+            .with_initial_state(test_initial_state(None))
+            .build()
+            .unwrap();
+        let dt = 0.01;
+        let steps = 6_000; // 60 s, the same run length the example prints
+        let sample = ImuSample::from_rates(
+            &IMUData {
+                // At rest in NED the accelerometer senses specific force of +g upward,
+                // i.e. -g along the down axis.
+                accel: Vector3::new(0.0, 0.0, -crate::earth::G0),
+                gyro: Vector3::zeros(),
+            },
+            dt,
+        );
+        for _ in 0..steps {
+            engine.predict(&sample).unwrap();
+        }
+
+        let solution = engine.nav_solution();
+        // Derived, not fitted. The gyro reads zero and the vehicle is stationary, so the only
+        // rotation of body relative to navigation frame over this run is the nav frame's own
+        // turn: Earth rate, plus a transport rate that is zero at zero horizontal velocity.
+        // The total rotation angle is therefore at most `RATE * steps * dt`, and each Euler
+        // angle of a rotation that small is bounded by that angle. Doubled for headroom
+        // against the second-order terms this small-angle argument drops.
+        let bound_deg = 2.0 * (crate::earth::RATE * f64::from(steps) * dt).to_degrees();
+        for (name, angle) in [
+            ("roll", solution.roll),
+            ("pitch", solution.pitch),
+            ("yaw", solution.yaw),
+        ] {
+            assert!(
+                angle.abs() <= bound_deg,
+                "a level vehicle's {name} should stay within {bound_deg:.4} deg of zero, got \
+                 {angle}"
+            );
+        }
+        // Stated the way the issue states it, so the regression is recognisable from the
+        // failure message alone. The bound above already excludes 360, but only because it
+        // is a bound on the magnitude; this says why it matters.
+        assert!(
+            (solution.roll - 360.0).abs() > 1.0,
+            "roll was reported near a full turn for a level vehicle: {}",
+            solution.roll
+        );
+        // The 0..360 convention is still available, deliberately as a display accessor.
+        // Asserted against independently-derived values rather than against `heading_deg`'s
+        // own one-line body, which would hold for any implementation of it.
+        for (yaw, expected) in [
+            (0.0_f64, 0.0_f64),
+            (90.0, 90.0),
+            (179.5, 179.5),
+            (180.0, 180.0),
+            (-90.0, 270.0),
+            (-179.5, 180.5),
+            // A hair west of north. `rem_euclid` alone returns exactly 360.0 here, which is
+            // the #314 symptom itself; `heading_deg` has to fold that to 0.
+            (-1e-15, 0.0),
+        ] {
+            let mut probe = solution;
+            probe.yaw = yaw;
+            let heading = probe.heading_deg();
+            assert!(
+                (0.0..360.0).contains(&heading),
+                "heading_deg({yaw}) = {heading} is outside [0, 360)"
+            );
+            assert_approx_eq!(heading, expected, 1e-9);
+        }
     }
 
     #[test]

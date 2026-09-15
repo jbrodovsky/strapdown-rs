@@ -9,8 +9,7 @@ use crate::gating::{InnovationGate, UpdateOutcome, normalized_innovation_squared
 use crate::linalg::{matrix_square_root, robust_spd_solve, symmetrize};
 use crate::measurements::MeasurementModel;
 use crate::{
-    IMUData, ImuSample, NavigationFilter, StrapdownState, mechanize, wrap_to_2pi, wrap_to_180,
-    wrap_to_360, wrap_to_pi,
+    IMUData, ImuSample, NavigationFilter, StrapdownState, mechanize, wrap_to_180, wrap_to_pi,
 };
 
 use std::fmt::{self, Debug, Display};
@@ -71,8 +70,11 @@ pub struct InitialState {
     /// Roll, the first angle of the XYZ Euler sequence that gives the body-to-navigation
     /// rotation, in degrees when `in_degrees` is set and in radians otherwise.
     ///
-    /// [`InitialState::new`] wraps it to the range 0 to 360 degrees, or 0 to $2\pi$ radians,
-    /// which leaves the rotation it represents unchanged.
+    /// [`InitialState::new`] wraps it to the range -180 to 180 degrees, or $-\pi$ to $\pi$
+    /// radians -- the branch [`Rotation3::euler_angles`] returns -- which leaves the rotation
+    /// it represents unchanged.
+    ///
+    /// [`Rotation3::euler_angles`]: nalgebra::Rotation3::euler_angles
     pub roll: f64,
     /// Pitch, the second angle of the XYZ Euler sequence, in degrees when `in_degrees` is set
     /// and in radians otherwise; wrapped by [`InitialState::new`] like `roll`.
@@ -105,7 +107,7 @@ impl InitialState {
     /// omitted).
     ///
     /// The Euler angles follow the same contract as longitude: `roll`, `pitch` and
-    /// `yaw` are wrapped -- to 0..360 on the degrees path, 0..$2\pi$ on the radian
+    /// `yaw` are wrapped -- to -180..180 on the degrees path, $-\pi$..$\pi$ on the radian
     /// path -- and stored in the unit `in_degrees` names, never converted here.
     /// Latitude is stored exactly as supplied. So every angular field leaves this
     /// constructor in the unit the flag advertises, which is the unit the filter
@@ -168,13 +170,18 @@ impl InitialState {
             // the one caller that used this constructor with a non-zero heading was #262's
             // `InsEngine`, whose lever-arm compensation rotates by the estimate and so was
             // quietly resolving the antenna offset along the wrong axis.
-            roll = wrap_to_360(roll);
-            pitch = wrap_to_360(pitch);
-            yaw = wrap_to_360(yaw);
+            //
+            // Wrapped symmetrically about zero rather than onto 0..360, so that the seed a
+            // filter reports back before its first `predict` is on the same branch as the
+            // one every `predict` afterwards writes; a -5 degree roll seed stays -5 instead
+            // of becoming 355 (#314).
+            roll = wrap_to_180(roll);
+            pitch = wrap_to_180(pitch);
+            yaw = wrap_to_180(yaw);
         } else {
-            roll = wrap_to_2pi(roll);
-            pitch = wrap_to_2pi(pitch);
-            yaw = wrap_to_2pi(yaw);
+            roll = wrap_to_pi(roll);
+            pitch = wrap_to_pi(pitch);
+            yaw = wrap_to_pi(yaw);
         }
         Self {
             latitude,
@@ -223,6 +230,31 @@ fn expand_measurement_jacobian(
     let mut expanded = DMatrix::<f64>::zeros(rows, state_size);
     expanded.view_mut((0, 0), (rows, cols)).copy_from(&jacobian);
     Ok(expanded)
+}
+
+/// Wrap the Euler-angle block of a filter state onto -pi..pi, in place.
+///
+/// The EKF and UKF carry roll/pitch/yaw as plain state elements, so a correction can push
+/// them off the principal branch. Which branch they are put back on is a presentation
+/// choice -- every consumer rebuilds the rotation with `Rotation3::from_euler_angles`,
+/// which is 2*pi-periodic -- so the only thing it decides is what a reader of
+/// `get_estimate` sees.
+///
+/// -pi..pi is the branch `Rotation3::euler_angles` returns, which is what both filters'
+/// `predict` already writes straight back into the state, what the RBPF and the
+/// dead-reckoning CSV writer already report, and the convention `wrap_to_180` gives
+/// longitude. Wrapping onto 0..2*pi instead put the branch cut at zero roll and zero
+/// pitch -- the attitude of a level vehicle -- so a hair of negative roll was reported as
+/// 359.99 degrees and `estimate - truth` came out a full turn wrong (#314).
+///
+/// Pitch is deliberately *not* clamped to -pi/2..pi/2. That is the range the Euler
+/// decomposition produces, but these two filters can hold a larger pitch between a seed and
+/// the first `predict`, and clamping would change the rotation rather than rename it; the
+/// next `predict` re-derives the triple through `euler_angles` and canonicalises it.
+fn wrap_attitude_onto_principal_branch(state: &mut DVector<f64>) {
+    for index in 6..9 {
+        state[index] = wrap_to_pi(state[index]);
+    }
 }
 
 /// Score an innovation against the filter's gate and report the decision.
@@ -627,9 +659,8 @@ impl NavigationFilter for UnscentedKalmanFilter {
         }
         let k = Self::robust_kalman_gain(&cross_covariance, &s)?;
         self.mean_state += &k * innovation;
-        self.mean_state[6] = wrap_to_2pi(self.mean_state[6]);
-        self.mean_state[7] = wrap_to_2pi(self.mean_state[7]);
-        self.mean_state[8] = wrap_to_2pi(self.mean_state[8]);
+        // Report attitude on the same branch `predict` writes (#314).
+        wrap_attitude_onto_principal_branch(&mut self.mean_state);
         self.covariance -= &k * &s * &k.transpose();
         // Ensure covariance remains positive semi-definite with gentle regularization
         self.covariance = symmetrize(&self.covariance);
@@ -646,6 +677,24 @@ impl NavigationFilter for UnscentedKalmanFilter {
         true
     }
     /// Return the current mean state estimate.
+    ///
+    /// Roll, pitch and yaw come back on `[-pi, pi]` -- the branch `Rotation3::euler_angles`
+    /// returns -- **after an [`Self::update`]**, which is where
+    /// `wrap_attitude_onto_principal_branch` runs.
+    ///
+    /// After a bare [`Self::predict`] with no update, that is not guaranteed, and the
+    /// caveat is not academic. `predict` stores the *linear* weighted mean of the sigma
+    /// points' Euler angles, and the UKF's mean weights are non-convex (with `alpha = 1e-3`
+    /// and `n = 15`, `w_0` is about -1e6 against `w_i` of about +3e4). Sigma points that
+    /// straddle the `atan2` cut at `+/-pi` -- which happens at a southerly heading -- are
+    /// then averaged across it, and the result is not an attitude at all: seeded due south,
+    /// this filter reaches a reported pitch of 5.7 rad and a yaw of 8e5 rad within three
+    /// samples. Wrapping afterwards renames that value; it does not rescue it.
+    ///
+    /// That is a pre-existing property of the sigma-point mean rather than of this branch
+    /// choice -- the cut has always been at `+/-pi` inside `predict`, whatever `update`
+    /// subsequently wrapped the mean to -- and it is tracked separately as #336. Read a
+    /// UKF attitude after an update, not between one.
     fn get_estimate(&self) -> DVector<f64> {
         self.mean_state.clone()
     }
@@ -1156,10 +1205,8 @@ impl NavigationFilter for ExtendedKalmanFilter {
         // State update: x = x + K * nu
         self.mean_state += &k * innovation;
 
-        // Wrap angles to [0, 2*pi)
-        self.mean_state[6] = wrap_to_2pi(self.mean_state[6]);
-        self.mean_state[7] = wrap_to_2pi(self.mean_state[7]);
-        self.mean_state[8] = wrap_to_2pi(self.mean_state[8]);
+        // Report attitude on the same branch `predict` writes (#314).
+        wrap_attitude_onto_principal_branch(&mut self.mean_state);
 
         // Covariance update (Joseph form for numerical stability):
         // P = (I - K*H)*P*(I - K*H)^T + K*R*K^T
@@ -1192,6 +1239,10 @@ impl NavigationFilter for ExtendedKalmanFilter {
     ///
     /// State vector: [lat (rad), lon (rad), alt (m), `v_n` (m/s), `v_e` (m/s), `v_d` (m/s),
     ///                roll (rad), pitch (rad), yaw (rad), `b_ax`, `b_ay`, `b_az`, `b_gx`, `b_gy`, `b_gz`]
+    ///
+    /// The three Euler angles come back on -pi..pi, the branch `Rotation3::euler_angles`
+    /// returns; pitch is additionally inside -pi/2..pi/2 once the estimate has been through
+    /// a `predict`, since that is where the triple is re-derived from the rotation.
     fn get_estimate(&self) -> DVector<f64> {
         self.mean_state.clone()
     }
@@ -2032,6 +2083,8 @@ impl NavigationFilter for ErrorStateKalmanFilter {
     /// [lat (rad), lon (rad), alt (m), `v_n`, `v_e`, `v_d`, roll, pitch, yaw, `b_ax`, `b_ay`, `b_az`, `b_gx`, `b_gy`, `b_gz`]
     ///
     /// Note: The internal representation uses quaternions, but this converts to Euler angles
+    /// on `Rotation3::euler_angles`'s principal branch: roll and yaw on -pi..pi, pitch on
+    /// -pi/2..pi/2.
     fn get_estimate(&self) -> DVector<f64> {
         let mut state = DVector::zeros(15);
 
@@ -2052,10 +2105,15 @@ impl NavigationFilter for ErrorStateKalmanFilter {
             self.nominal_quaternion[2],
             self.nominal_quaternion[3],
         ));
+        // `euler_angles` already returns the principal branch -- roll and yaw from `atan2`
+        // on -pi..pi, pitch from `asin` on -pi/2..pi/2 -- so there is nothing to wrap. The
+        // `wrap_to_2pi` that used to sit here only moved a correct answer onto 0..2*pi,
+        // reporting a level vehicle's roll as 359.99 degrees (#314), and disagreed with the
+        // deliberately unwrapped linearization point this same filter builds in `update`.
         let euler = quat.euler_angles();
-        state[6] = wrap_to_2pi(euler.0); // roll
-        state[7] = wrap_to_2pi(euler.1); // pitch
-        state[8] = wrap_to_2pi(euler.2); // yaw
+        state[6] = euler.0; // roll
+        state[7] = euler.1; // pitch
+        state[8] = euler.2; // yaw
 
         // Biases
         state[9] = self.nominal_accel_bias[0];
@@ -3483,9 +3541,14 @@ mod tests {
             northward_velocity: 0.0,
             eastward_velocity: 0.0,
             vertical_velocity: 0.0,
-            roll: 3.0, // Close to pi
-            pitch: 3.0,
-            yaw: 3.0,
+            // Negative, and close to -pi, deliberately. A *positive* 3.0 would make this
+            // test degenerate: the measurement below has zero innovation, so the state is
+            // unchanged, and `wrap_to_2pi(3.0)` and `wrap_to_pi(3.0)` are both 3.0 -- the
+            // assertion would hold against the pre-#314 code and against no wrap at all.
+            // At -3.0 the old `wrap_to_2pi` reported 3.283, outside `[-pi, pi]`.
+            roll: -3.0,
+            pitch: -3.0,
+            yaw: -3.0,
             in_degrees: false,
             is_enu: true,
         };
@@ -3508,10 +3571,27 @@ mod tests {
         };
         ekf.update(&measurement).unwrap();
 
-        // Angles should be wrapped to [0, 2*pi] range
-        assert!(ekf.mean_state[6] >= 0.0 && ekf.mean_state[6] <= 2.0 * std::f64::consts::PI);
-        assert!(ekf.mean_state[7] >= 0.0 && ekf.mean_state[7] <= 2.0 * std::f64::consts::PI);
-        assert!(ekf.mean_state[8] >= 0.0 && ekf.mean_state[8] <= 2.0 * std::f64::consts::PI);
+        // Angles should land on `Rotation3::euler_angles`'s principal branch, `[-pi, pi]`.
+        // Note this test never calls `predict`, so pitch is still ~-3.0 rad -- inside
+        // `[-pi, pi]` but outside `[-pi/2, pi/2]`. That is why
+        // `wrap_attitude_onto_principal_branch` must not clamp pitch to the half range:
+        // doing so here would change the rotation the filter holds rather than rename it.
+        for (name, angle) in [
+            ("roll", ekf.mean_state[6]),
+            ("pitch", ekf.mean_state[7]),
+            ("yaw", ekf.mean_state[8]),
+        ] {
+            assert!(
+                (-std::f64::consts::PI..=std::f64::consts::PI).contains(&angle),
+                "{name} should lie on [-pi, pi] after an update, got {angle}"
+            );
+            // The range check alone would pass for a filter that had silently flipped the
+            // sign; pin that the seed's own sign survives, which a 0..2*pi wrap destroys.
+            assert!(
+                angle < 0.0,
+                "{name} was seeded at -3.0 rad and should still be negative, got {angle}"
+            );
+        }
     }
 
     // ==================== Error-State Kalman Filter Tests ====================
@@ -4085,13 +4165,24 @@ mod tests {
         };
         eskf.update(&measurement).unwrap();
 
-        // Get state (which wraps angles)
+        // Get state (which decomposes the nominal quaternion into Euler angles)
         let state = eskf.get_estimate();
 
-        // Angles should be wrapped to [0, 2*pi] range
-        assert!(state[6] >= 0.0 && state[6] <= 2.0 * std::f64::consts::PI);
-        assert!(state[7] >= 0.0 && state[7] <= 2.0 * std::f64::consts::PI);
-        assert!(state[8] >= 0.0 && state[8] <= 2.0 * std::f64::consts::PI);
+        // The ESKF's triple always comes back through `UnitQuaternion::euler_angles`, so
+        // unlike the EKF the tighter pitch bound is a derived fact here rather than a
+        // convention: roll and yaw from `atan2` on -pi..pi, pitch from `asin` on
+        // -pi/2..pi/2. The 3/3/3 rad seed canonicalises through the quaternion to roughly
+        // (-0.14, 0.14, -0.14), so it is well inside both.
+        for (name, angle, bound) in [
+            ("roll", state[6], std::f64::consts::PI),
+            ("pitch", state[7], std::f64::consts::FRAC_PI_2),
+            ("yaw", state[8], std::f64::consts::PI),
+        ] {
+            assert!(
+                (-bound..=bound).contains(&angle),
+                "{name} should lie on the principal branch, got {angle}"
+            );
+        }
     }
 
     #[test]

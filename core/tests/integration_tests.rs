@@ -1918,11 +1918,11 @@ fn test_eskf_outperforms_dead_reckoning() {
 /// Accuracy and bias plausibility for this same run are asserted in
 /// `test_eskf_closed_loop_on_real_data`; what is unique here is the attitude channel, which
 /// no other test in this suite looks at. `get_estimate` builds roll/pitch/yaw by converting
-/// the nominal quaternion to a rotation and wrapping the Euler angles, so a nominal
-/// quaternion that stopped being unit-length -- the invariant `ErrorStateKalmanFilter`'s
-/// documentation leads with -- surfaces here as a non-finite angle before it is large
-/// enough to move the position error. `wrap_to_2pi` is the source of the `[0, 2*pi]` bound;
-/// it passes NaN through unchanged, which is why finiteness is asserted separately.
+/// the nominal quaternion to a rotation and decomposing it, so a nominal quaternion that
+/// stopped being unit-length -- the invariant `ErrorStateKalmanFilter`'s documentation leads
+/// with -- surfaces here as a non-finite angle before it is large enough to move the
+/// position error. The bounds are `euler_angles`'s own codomain; `asin` and `atan2` pass NaN
+/// through unchanged, which is why finiteness is asserted separately.
 ///
 /// ## This test used to claim it exercised high dynamics. It never did.
 ///
@@ -2049,15 +2049,16 @@ fn test_eskf_output_stays_valid_across_full_run() {
             result.velocity_vertical
         );
 
-        // Attitude channel. `get_estimate` reads roll/pitch/yaw off the nominal quaternion
-        // and passes them through `wrap_to_2pi`, so a nominal quaternion that stopped being
-        // unit-length lands here as NaN -- `wrap_to_2pi` neither rejects nor normalises it,
-        // both of its loop conditions being false for NaN -- rather than as an out-of-range
-        // angle. Hence: finite first, then inside the wrap's `[0, 2*pi]` codomain.
-        for (name, angle) in [
-            ("roll", result.roll),
-            ("pitch", result.pitch),
-            ("yaw", result.yaw),
+        // Attitude channel. `get_estimate` reads roll/pitch/yaw straight off the nominal
+        // quaternion's `euler_angles`, so a nominal quaternion that stopped being
+        // unit-length lands here as NaN -- `asin` and `atan2` neither reject nor normalise
+        // it -- rather than as an out-of-range angle. Hence: finite first, then inside the
+        // decomposition's own codomain, which is `atan2`'s [-pi, pi] for roll and yaw and
+        // `asin`'s [-pi/2, pi/2] for pitch (#314).
+        for (name, angle, bound) in [
+            ("roll", result.roll, std::f64::consts::PI),
+            ("pitch", result.pitch, std::f64::consts::FRAC_PI_2),
+            ("yaw", result.yaw, std::f64::consts::PI),
         ] {
             assert!(
                 angle.is_finite(),
@@ -2065,8 +2066,9 @@ fn test_eskf_output_stays_valid_across_full_run() {
                  means the nominal quaternion lost unit length)"
             );
             assert!(
-                (0.0..=std::f64::consts::TAU).contains(&angle),
-                "{name} should lie in wrap_to_2pi's [0, 2pi] codomain at step {i}, got {angle}"
+                (-bound..=bound).contains(&angle),
+                "{name} should lie in `euler_angles`'s principal branch at step {i}, got \
+                 {angle}"
             );
         }
     }
@@ -2140,8 +2142,13 @@ fn test_eskf_default_initialization_on_real_data() {
         fault: GnssFaultModel::None,
         ..Default::default()
     };
-    let results = run_closed_loop(&mut eskf, build_event_stream(&records, &cfg), None, None)
-        .expect("the default ESKF must complete the full run");
+    let results = run_closed_loop(
+        &mut eskf,
+        build_event_stream(&records, &cfg),
+        None,
+        None,
+    )
+    .expect("the default ESKF must complete the full run");
     assert_eq!(
         results.len(),
         records.len(),
@@ -3322,8 +3329,13 @@ fn test_eskf_auto_covariance_initialization_on_real_data() {
         fault: GnssFaultModel::None,
         ..Default::default()
     };
-    let results = run_closed_loop(&mut eskf, build_event_stream(&records, &cfg), None, None)
-        .expect("the auto-covariance ESKF must complete the full run");
+    let results = run_closed_loop(
+        &mut eskf,
+        build_event_stream(&records, &cfg),
+        None,
+        None,
+    )
+    .expect("the auto-covariance ESKF must complete the full run");
     assert_eq!(results.len(), records.len());
 
     let stats = compute_error_metrics(&results, &records);

@@ -1798,7 +1798,13 @@ where
 /// # Arguments
 /// * `angle` - The angle to be wrapped, which can be of any type that implements the necessary traits.
 /// # Returns
-/// * The wrapped angle, which will be in the range -π to π radians.
+/// * The wrapped angle, in the range 0 to $2 \pi$ radians -- as the name says. This
+///   previously read "-π to π", contradicting both the name and the example below.
+///
+/// Since #314 no filter reports attitude on this branch: [`wrap_to_pi`] is what the UKF, EKF
+/// and ESKF use, because a cut at 0 puts it at the attitude of a level vehicle. This and
+/// [`wrap_to_360`] remain for callers who want a compass-style range, the way
+/// [`crate::engine::NavSolution::heading_deg`] does for display.
 /// # Example
 /// ```rust
 /// use strapdown::wrap_to_2pi;
