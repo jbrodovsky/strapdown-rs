@@ -51,6 +51,51 @@ use strapdown::{IMUData, StrapdownState};
 /// Conversion factor from radians to degrees (180/π)
 const RAD_TO_DEG: f64 = 180.0 / std::f64::consts::PI;
 
+/// Navigation states every filter state vector starts with: position, velocity, attitude.
+///
+/// Anything a filter carries beyond these -- IMU biases, map biases -- is appended after
+/// them, which is what makes "count back from the end" a meaningful way to address a bias
+/// state and an index *inside* this prefix a detectable mistake.
+const NAVIGATION_STATE_DIM: usize = 9;
+
+/// Resolve a `bias_from_end` offset into an index into a state vector of `state_len`.
+///
+/// `Some(1)` is the last entry, `Some(2)` the one before it; `None` and `Some(0)` both mean
+/// this model has no bias state and the map value is used as-is.
+///
+/// A resolved index inside the nine navigation states means the caller passed a vector that
+/// does not carry the bias this model was configured to read, and that used to be silent: a
+/// 9-vector with `Some(1)` resolved to `state[8]`, the yaw angle, which was then added to
+/// the map value as though it were a map bias. The RBPF's innovation gate did exactly that,
+/// summarising its cloud as the nine navigation states while its weight update used the
+/// wider vector, so the two halves of one update disagreed about what the state meant.
+///
+/// The check catches only the unambiguous case. A filter whose state ends in IMU bias
+/// states resolves to a legitimate-looking index and nothing here can tell the two apart:
+/// `bias_from_end` is a promise by whoever built the measurement that the filter's state
+/// really does end with these map biases.
+///
+/// # Errors
+/// [`StrapdownError::DimensionMismatch`] when the offset does not land after the nine
+/// navigation states, naming the width the state vector would need.
+fn resolve_bias_index(
+    state_len: usize,
+    bias_from_end: Option<usize>,
+) -> Result<Option<usize>, StrapdownError> {
+    let Some(offset) = bias_from_end.filter(|offset| *offset > 0) else {
+        return Ok(None);
+    };
+    let index = state_len
+        .checked_sub(offset)
+        .filter(|index| *index >= NAVIGATION_STATE_DIM)
+        .ok_or(StrapdownError::DimensionMismatch {
+            what: "geophysical bias state",
+            expected: NAVIGATION_STATE_DIM + offset,
+            got: state_len,
+        })?;
+    Ok(Some(index))
+}
+
 /// World Magnetic Model valid altitude range (meters)
 /// The WMM is typically valid from -1km below sea level to ~850km above
 const WMM_MIN_ALTITUDE_M: f64 = -1000.0;
@@ -718,7 +763,11 @@ pub struct GravityMeasurement {
     north_velocity: f64,
     /// Current east velocity (m/s)
     east_velocity: f64,
-    /// Optional bias state index from the end of the state vector.
+    /// Optional bias state index, counted back from the end of the state vector.
+    ///
+    /// `Some(1)` addresses the last entry, `Some(2)` the one before it; `None` means this
+    /// model carries no bias state. See [`resolve_bias_index`] for the contract, including
+    /// what it can and cannot detect when the filter's state does not carry the bias.
     pub bias_from_end: Option<usize>,
 }
 /// Geophysical anomaly measurement model implementation for gravity. This trait provides a method to compute
@@ -780,14 +829,15 @@ impl MeasurementModel for GravityMeasurement {
             .map
             .get_point(&lat.to_degrees(), &lon.to_degrees())
             .unwrap_or(f64::NAN);
-        let bias = self.bias_from_end.and_then(|offset| {
-            if offset == 0 || state.len() < offset {
-                None
-            } else {
-                Some(state[state.len() - offset])
-            }
-        });
-        DVector::from_vec(vec![map_value + bias.unwrap_or(0.0)])
+        // Infallible by trait signature, so a state vector too narrow to carry the bias
+        // drops it here rather than reporting it. `get_jacobian` is where that is reported,
+        // and every filter in the workspace evaluates the Jacobian first -- deliberately,
+        // and documented as such at the EKF, UKF and RBPF call sites.
+        let bias = resolve_bias_index(state.len(), self.bias_from_end)
+            .ok()
+            .flatten()
+            .map_or(0.0, |index| state[index]);
+        DVector::from_vec(vec![map_value + bias])
     }
 
     fn get_jacobian(&self, state: &DVector<f64>) -> Result<DMatrix<f64>, StrapdownError> {
@@ -815,25 +865,38 @@ impl GravityMeasurement {
     }
     /// Compute measurement Jacobian for EKF
     ///
-    /// Returns 1×9 Jacobian matrix where only the first two columns (∂z/∂lat, ∂z/∂lon)
-    /// are non-zero, representing how the map value changes with position.
+    /// The first two columns (∂z/∂lat, ∂z/∂lon) carry the map gradient; when
+    /// [`Self::bias_from_end`] is set, the column it addresses carries the 1.0 with which
+    /// the bias enters the predicted measurement, and every other column is zero.
+    ///
+    /// # Width
+    ///
+    /// `1 × state.len()`, with the nine navigation states as a floor. A filter whose state
+    /// is wider than the vector returned here zero-pads it -- see
+    /// `strapdown::linearize::expand_measurement_jacobian` -- so returning the caller's own
+    /// width is both correct and compatible. It has to be the caller's width rather than a
+    /// fixed nine, because a declared bias column may lie outside the first nine.
     ///
     /// # Arguments
     ///
-    /// * `state` - Current navigation state vector [lat, lon, alt, `v_n`, `v_e`, `v_d`, roll, pitch, yaw]
-    ///
-    /// # Returns
-    ///
-    /// 1×9 Jacobian matrix H for gravity anomaly measurement
+    /// * `state` - Current navigation state vector [lat, lon, alt, `v_n`, `v_e`, `v_d`, roll,
+    ///   pitch, yaw], optionally followed by the bias states [`Self::bias_from_end`] counts
+    ///   back from
     ///
     /// # Errors
     /// Propagates [`StrapdownError::OutOfMapBounds`] when the estimate has left the loaded
     /// tile. That is recoverable: the caller should skip this measurement, not abort.
+    /// Returns [`StrapdownError::DimensionMismatch`] from [`resolve_bias_index`] when
+    /// `state` is too narrow to carry the declared bias -- which is not recoverable, since
+    /// it means the measurement and the filter disagree about the state layout.
     pub fn get_jacobian_internal(
         &self,
         state: &DVector<f64>,
     ) -> Result<DMatrix<f64>, StrapdownError> {
-        let mut h = DMatrix::<f64>::zeros(1, 9);
+        // Resolve before touching the map: a layout disagreement is a wiring error and
+        // should be reported whether or not the estimate also happens to be off-map.
+        let bias_index = resolve_bias_index(state.len(), self.bias_from_end)?;
+        let mut h = DMatrix::<f64>::zeros(1, state.len().max(NAVIGATION_STATE_DIM));
 
         let lat = state[0];
         let lon = state[1];
@@ -846,6 +909,9 @@ impl GravityMeasurement {
         // Convert gradient from per-degree to per-radian
         h[(0, 0)] = dlat_deg * RAD_TO_DEG;
         h[(0, 1)] = dlon_deg * RAD_TO_DEG;
+        if let Some(index) = bias_index {
+            h[(0, index)] = 1.0;
+        }
 
         Ok(h)
     }
@@ -869,7 +935,11 @@ pub struct MagneticAnomalyMeasurement {
     pub longitude: f64,
     /// Altitude (meters)
     pub altitude: f64,
-    /// Optional bias state index from the end of the state vector.
+    /// Optional bias state index, counted back from the end of the state vector.
+    ///
+    /// `Some(1)` addresses the last entry, `Some(2)` the one before it; `None` means this
+    /// model carries no bias state. See [`resolve_bias_index`] for the contract, including
+    /// what it can and cannot detect when the filter's state does not carry the bias.
     pub bias_from_end: Option<usize>,
 }
 impl GeophysicalAnomalyMeasurementModel for MagneticAnomalyMeasurement {
@@ -962,14 +1032,15 @@ impl MeasurementModel for MagneticAnomalyMeasurement {
             .map
             .get_point(&lat.to_degrees(), &lon.to_degrees())
             .unwrap_or(f64::NAN);
-        let bias = self.bias_from_end.and_then(|offset| {
-            if offset == 0 || state.len() < offset {
-                None
-            } else {
-                Some(state[state.len() - offset])
-            }
-        });
-        DVector::from_vec(vec![map_value + bias.unwrap_or(0.0)])
+        // Infallible by trait signature, so a state vector too narrow to carry the bias
+        // drops it here rather than reporting it. `get_jacobian` is where that is reported,
+        // and every filter in the workspace evaluates the Jacobian first -- deliberately,
+        // and documented as such at the EKF, UKF and RBPF call sites.
+        let bias = resolve_bias_index(state.len(), self.bias_from_end)
+            .ok()
+            .flatten()
+            .map_or(0.0, |index| state[index]);
+        DVector::from_vec(vec![map_value + bias])
     }
 
     fn get_jacobian(&self, state: &DVector<f64>) -> Result<DMatrix<f64>, StrapdownError> {
@@ -988,25 +1059,38 @@ impl MagneticAnomalyMeasurement {
     }
     /// Compute measurement Jacobian for EKF
     ///
-    /// Returns 1×9 Jacobian matrix where only the first two columns (∂z/∂lat, ∂z/∂lon)
-    /// are non-zero, representing how the map value changes with position.
+    /// The first two columns (∂z/∂lat, ∂z/∂lon) carry the map gradient; when
+    /// [`Self::bias_from_end`] is set, the column it addresses carries the 1.0 with which
+    /// the bias enters the predicted measurement, and every other column is zero.
+    ///
+    /// # Width
+    ///
+    /// `1 × state.len()`, with the nine navigation states as a floor. A filter whose state
+    /// is wider than the vector returned here zero-pads it -- see
+    /// `strapdown::linearize::expand_measurement_jacobian` -- so returning the caller's own
+    /// width is both correct and compatible. It has to be the caller's width rather than a
+    /// fixed nine, because a declared bias column may lie outside the first nine.
     ///
     /// # Arguments
     ///
-    /// * `state` - Current navigation state vector [lat, lon, alt, `v_n`, `v_e`, `v_d`, roll, pitch, yaw]
-    ///
-    /// # Returns
-    ///
-    /// 1×9 Jacobian matrix H for magnetic anomaly measurement
+    /// * `state` - Current navigation state vector [lat, lon, alt, `v_n`, `v_e`, `v_d`, roll,
+    ///   pitch, yaw], optionally followed by the bias states [`Self::bias_from_end`] counts
+    ///   back from
     ///
     /// # Errors
     /// Propagates [`StrapdownError::OutOfMapBounds`] when the estimate has left the loaded
     /// tile. That is recoverable: the caller should skip this measurement, not abort.
+    /// Returns [`StrapdownError::DimensionMismatch`] from [`resolve_bias_index`] when
+    /// `state` is too narrow to carry the declared bias -- which is not recoverable, since
+    /// it means the measurement and the filter disagree about the state layout.
     pub fn get_jacobian_internal(
         &self,
         state: &DVector<f64>,
     ) -> Result<DMatrix<f64>, StrapdownError> {
-        let mut h = DMatrix::<f64>::zeros(1, 9);
+        // Resolve before touching the map: a layout disagreement is a wiring error and
+        // should be reported whether or not the estimate also happens to be off-map.
+        let bias_index = resolve_bias_index(state.len(), self.bias_from_end)?;
+        let mut h = DMatrix::<f64>::zeros(1, state.len().max(NAVIGATION_STATE_DIM));
 
         let lat = state[0];
         let lon = state[1];
@@ -1019,6 +1103,9 @@ impl MagneticAnomalyMeasurement {
         // Convert gradient from per-degree to per-radian
         h[(0, 0)] = dlat_deg * RAD_TO_DEG;
         h[(0, 1)] = dlon_deg * RAD_TO_DEG;
+        if let Some(index) = bias_index {
+            h[(0, index)] = 1.0;
+        }
 
         Ok(h)
     }
@@ -1863,6 +1950,133 @@ mod tests {
             "expected OutOfMapBounds on latitude, got {got:?}"
         );
         assert!(got.unwrap_err().is_recoverable());
+    }
+
+    fn gravity_measurement_with_bias(bias_from_end: Option<usize>) -> GravityMeasurement {
+        GravityMeasurement {
+            map: Rc::new(create_test_gravity_map()),
+            noise_std: 1.0,
+            gravity_observed: 9.8,
+            latitude: 40.5,
+            altitude: 100.0,
+            north_velocity: 0.0,
+            east_velocity: 0.0,
+            bias_from_end,
+        }
+    }
+
+    /// A state vector of exactly `len` entries, positioned inside the test map, whose tail
+    /// beyond the nine navigation states is `extras`.
+    fn state_with_extras(extras: &[f64]) -> DVector<f64> {
+        let mut v = vec![
+            40.5_f64.to_radians(),
+            (-73.5_f64).to_radians(),
+            100.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.9, // yaw, distinct from any bias below
+        ];
+        v.extend_from_slice(extras);
+        DVector::from_vec(v)
+    }
+
+    /// A declared bias the state vector cannot carry must be reported, not read from yaw.
+    ///
+    /// `bias_from_end` counts back from the end of the vector, so `Some(1)` against the nine
+    /// navigation states resolves to `state[8]` -- the yaw angle. The old guard only checked
+    /// `state.len() < offset`, which 9 < 1 does not trip, so the yaw angle was added to the
+    /// map value as though it were a map bias and nothing said so. That is how the RBPF's
+    /// innovation gate came to score every geophysical fix against an attitude angle: it
+    /// summarised its particle cloud as nine states while its weight update used the wider
+    /// vector.
+    #[test]
+    fn test_bias_from_end_rejects_a_state_vector_with_no_bias_in_it() {
+        assert!(matches!(
+            resolve_bias_index(9, Some(1)),
+            Err(StrapdownError::DimensionMismatch {
+                what: "geophysical bias state",
+                expected: 10,
+                got: 9,
+            })
+        ));
+        // Two maps, nine states: `Some(2)` would have resolved to pitch.
+        assert!(matches!(
+            resolve_bias_index(9, Some(2)),
+            Err(StrapdownError::DimensionMismatch { .. })
+        ));
+        // No bias declared, or a zero offset: nothing to resolve and nothing to report.
+        assert_eq!(resolve_bias_index(9, None).unwrap(), None);
+        assert_eq!(resolve_bias_index(9, Some(0)).unwrap(), None);
+        // Declared and carried.
+        assert_eq!(resolve_bias_index(10, Some(1)).unwrap(), Some(9));
+        assert_eq!(resolve_bias_index(11, Some(2)).unwrap(), Some(9));
+        assert_eq!(resolve_bias_index(11, Some(1)).unwrap(), Some(10));
+    }
+
+    /// The Jacobian is where the layout disagreement surfaces, because every filter in the
+    /// workspace evaluates it before the expected measurement.
+    #[test]
+    fn test_gravity_jacobian_reports_a_missing_bias_state() {
+        let measurement = gravity_measurement_with_bias(Some(1));
+        assert!(matches!(
+            measurement.get_jacobian(&state_with_extras(&[])),
+            Err(StrapdownError::DimensionMismatch { .. })
+        ));
+        // Not recoverable: unlike an off-map estimate, a caller cannot sensibly skip this
+        // measurement and carry on -- the wiring is wrong.
+        let err = measurement
+            .get_jacobian(&state_with_extras(&[]))
+            .unwrap_err();
+        assert!(!err.is_recoverable());
+    }
+
+    /// A carried bias gets a unit column, because it enters the prediction additively.
+    ///
+    /// Without it the Jacobian was nine columns wide whatever the state, so a filter that
+    /// did carry a map bias had no row entry for it: the gate's innovation covariance
+    /// omitted the bias uncertainty entirely.
+    #[test]
+    fn test_gravity_jacobian_carries_a_column_for_the_declared_bias() {
+        let state = state_with_extras(&[7.0]);
+        let h = gravity_measurement_with_bias(Some(1))
+            .get_jacobian(&state)
+            .unwrap();
+        assert_eq!(h.nrows(), 1);
+        assert_eq!(h.ncols(), 10, "the Jacobian must match the caller's width");
+        assert_approx_eq!(h[(0, 9)], 1.0, 1e-12);
+        for column in 2..9 {
+            assert_approx_eq!(h[(0, column)], 0.0, 1e-12);
+        }
+
+        // No bias declared: nine columns, as before, and no unit entry anywhere.
+        let h = gravity_measurement_with_bias(None)
+            .get_jacobian(&state_with_extras(&[]))
+            .unwrap();
+        assert_eq!(h.ncols(), 9);
+        for column in 2..9 {
+            assert_approx_eq!(h[(0, column)], 0.0, 1e-12);
+        }
+    }
+
+    /// The predicted measurement reads the bias state, not a navigation state.
+    #[test]
+    fn test_gravity_expected_measurement_reads_the_declared_bias() {
+        let unbiased = gravity_measurement_with_bias(None)
+            .get_expected_measurement(&state_with_extras(&[]))[0];
+
+        // yaw is 0.9 and the bias is 7.0, so the two readings are far apart.
+        let biased = gravity_measurement_with_bias(Some(1))
+            .get_expected_measurement(&state_with_extras(&[7.0]))[0];
+        assert_approx_eq!(biased, unbiased + 7.0, 1e-9);
+
+        // A state with no room for the declared bias drops it rather than reading yaw. The
+        // loud report is `get_jacobian`; this path only has to not invent a bias of 0.9.
+        let dropped = gravity_measurement_with_bias(Some(1))
+            .get_expected_measurement(&state_with_extras(&[]))[0];
+        assert_approx_eq!(dropped, unbiased, 1e-9);
     }
 
     /// `NaN` used to reach the index search and panic on `unwrap`: every comparison
