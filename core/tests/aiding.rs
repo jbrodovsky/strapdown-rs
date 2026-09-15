@@ -159,6 +159,11 @@ fn level_imu(state: &StrapdownState) -> IMUData {
     }
 }
 
+/// Inverse of [`meters_to_radians`], for reading a covariance entry back in meters.
+fn radians_to_meters(radians: f64) -> f64 {
+    radians.to_degrees() / strapdown::earth::METERS_TO_DEGREES
+}
+
 /// Horizontal great-circle distance between an estimate and a truth state, meters.
 fn horizontal_error_m(estimate: &DVector<f64>, truth: &StrapdownState) -> f64 {
     haversine_distance(estimate[0], estimate[1], truth.latitude, truth.longitude)
@@ -211,6 +216,25 @@ const GPS_VELOCITY_NOISE_MPS: f64 = 0.2;
 /// particular seed. Spans +/-1.2 sigma, which is where honest fixes live.
 const NOISE_PATTERN: [f64; 7] = [0.4, -1.1, 0.7, -0.3, 1.2, -0.8, 0.1];
 
+/// Length of [`NOISE_PATTERN`], as the width [`fix_noise_rms_m`] averages over.
+const NOISE_PATTERN_LEN: u8 = 7;
+
+/// Fix-noise amplitudes [`a_note_on_filter_consistency`] sweeps, as multiples of
+/// [`NOISE_PATTERN`].
+///
+/// Three decades, because the point of the sweep is the *shape* of the response rather than
+/// any single row. A vertical leak that is second-order in the disturbance is a
+/// linearisation dropping curvature; one that is independent of the disturbance is an
+/// unstable mode being excited. Those two are indistinguishable at a single amplitude, which
+/// is the whole reason #303 was hard to characterise.
+const NOISE_SCALES: [f64; 5] = [0.0, 0.1, 1.0, 10.0, 100.0];
+
+/// Index in [`NOISE_SCALES`] of the scenario every other test in this file runs.
+///
+/// The bound is asserted at this amplitude and below. The two rows above it are diagnostics:
+/// 38 m and 380 m rms are not GNSS, they are there to expose the scaling law.
+const NOMINAL_NOISE_SCALE: usize = 2;
+
 /// A northbound run with realistically noisy GNSS fixes and no outliers.
 struct GatingScenario {
     samples: Vec<ImuSample>,
@@ -227,6 +251,14 @@ struct GatingScenario {
 /// displacement in metres would test the tuning rather than the gate. Fix noise comes from
 /// [`NOISE_PATTERN`].
 fn build_gating_scenario() -> GatingScenario {
+    build_gating_scenario_scaled(1.0)
+}
+
+/// [`build_gating_scenario`], with [`NOISE_PATTERN`] scaled by `noise_scale`.
+///
+/// Split out for [`a_note_on_filter_consistency`], which is a statement about how the
+/// filters respond to the *amplitude* of the fix noise and so cannot use a single fixed one.
+fn build_gating_scenario_scaled(noise_scale: f64) -> GatingScenario {
     let truth_initial = StrapdownState {
         latitude: LATITUDE_DEG.to_radians(),
         longitude: LONGITUDE_DEG.to_radians(),
@@ -255,7 +287,7 @@ fn build_gating_scenario() -> GatingScenario {
         // Recorded *after* the propagation, so `gps[i]` describes the state a filter holds
         // once it has consumed `samples[i]` -- see the note in `filter_comparison.rs` on
         // why a one-sample-stale fix diverges the vertical channel.
-        let jitter = NOISE_PATTERN[index % NOISE_PATTERN.len()];
+        let jitter = NOISE_PATTERN[index % NOISE_PATTERN.len()] * noise_scale;
         let mut latitude_deg = current.latitude.to_degrees();
         let meters_to_degrees = strapdown::earth::METERS_TO_DEGREES;
         latitude_deg += jitter * GPS_HORIZONTAL_NOISE_M * meters_to_degrees;
@@ -533,6 +565,62 @@ fn gating_keeps_a_rejected_outlier_out_of_the_solution() {
     }
 }
 
+/// Root-mean-square of the fix perturbation [`build_gating_scenario_scaled`] applies, meters.
+fn fix_noise_rms_m(noise_scale: f64) -> f64 {
+    let mean_square =
+        NOISE_PATTERN.iter().map(|v| v * v).sum::<f64>() / f64::from(NOISE_PATTERN_LEN);
+    mean_square.sqrt() * GPS_HORIZONTAL_NOISE_M * noise_scale
+}
+
+/// |altitude error| after the step just taken, checked finite before it is returned.
+///
+/// The check is explicit rather than left to the comparison in [`peak_altitude_error_m`]:
+/// `f64::max` returns its *finite* operand when the other is NaN, so a filter that had
+/// diverged all the way to a non-finite state would leave the running peak untouched and
+/// sail through the bound. A NaN is exactly what the divergence this test guards against
+/// ends in, so the one state that must never pass would have been the one that always did.
+fn checked_altitude_error_m(
+    name: &str,
+    filter: &dyn NavigationFilter,
+    scenario: &GatingScenario,
+    index: usize,
+    stage: &str,
+) -> f64 {
+    let altitude = filter.get_estimate()[2];
+    assert!(
+        altitude.is_finite(),
+        "{name} altitude is {altitude} after the {stage} at sample {index}"
+    );
+    (altitude - scenario.truth[index + 1].altitude).abs()
+}
+
+/// Largest |altitude error| over a whole run, sampled after every step the filter takes.
+///
+/// After each `predict` as well as each `update`. Sampling only on fix epochs would see one
+/// step in [`GPS_DECIMATION`], and a channel that ran away between fixes and was hauled back
+/// by each one would never appear in the peak at all.
+fn peak_altitude_error_m(
+    name: &str,
+    filter: &mut dyn NavigationFilter,
+    scenario: &GatingScenario,
+) -> f64 {
+    filter.set_innovation_gate(None);
+    let mut peak_m: f64 = 0.0;
+    for (index, sample) in scenario.samples.iter().enumerate() {
+        filter.predict(sample, sample.dt).unwrap();
+        peak_m = peak_m.max(checked_altitude_error_m(
+            name, &*filter, scenario, index, "predict",
+        ));
+        if index % GPS_DECIMATION == 0 {
+            filter.update(&scenario.gps[index]).unwrap();
+            peak_m = peak_m.max(checked_altitude_error_m(
+                name, &*filter, scenario, index, "update",
+            ));
+        }
+    }
+    peak_m
+}
+
 #[test]
 fn a_note_on_filter_consistency() {
     // Not a test of anything in this PR. It is the reason the gating tests above size their
@@ -550,15 +638,16 @@ fn a_note_on_filter_consistency() {
     //
     // That leakage is now bounded, and -- more to the point -- it scales the way a correct
     // linearisation says it must. Peak |altitude error| against the amplitude of the
-    // horizontal disturbance driving it, measured over this run by scaling `NOISE_PATTERN`:
+    // horizontal disturbance driving it, over `NOISE_SCALES`. This test runs that sweep and
+    // prints the table, so these rows are output rather than recollection:
     //
-    //     fix noise (rms) | ESKF      | EKF       | UKF
-    //     ----------------|-----------|-----------|--------
-    //     0 m             | 2.3e-13 m | 0.0 m     | 0.175 m
-    //     0.38 m          | 1.0e-7 m  | 9.8e-9 m  | 0.175 m
-    //     3.80 m (this)   | 1.0e-5 m  | 9.8e-8 m  | 0.175 m
-    //     38.0 m          | 1.0e-3 m  | 9.8e-7 m  | 0.175 m
-    //     380 m           | 1.0e-1 m  | 9.8e-6 m  | 0.175 m
+    //     fix noise (rms) | ESKF      | EKF      | UKF
+    //     ----------------|-----------|----------|--------
+    //     0 m             | 2.3e-13 m | 0.0 m    | 0.279 m
+    //     0.38 m          | 1.7e-7 m  | 1.4e-8 m | 0.279 m
+    //     3.80 m (this)   | 1.5e-5 m  | 1.4e-7 m | 0.279 m
+    //     38.0 m          | 1.5e-3 m  | 1.4e-6 m | 0.279 m
+    //     380 m           | 1.5e-1 m  | 1.4e-5 m | 0.279 m
     //
     // The ESKF's leak is *quadratic* in the disturbance -- ten times the excitation for a
     // hundred times the error -- which is the signature of a first-order term that cancels
@@ -569,28 +658,36 @@ fn a_note_on_filter_consistency() {
     // `INITIAL_POSITION_STD_M`, and it is there in full with noise-free fixes.
     //
     // None of that is the "unstable mode being excited" #303 describes, and the issue is not
-    // reproducible anywhere on this branch's history: this test passes at every commit since
-    // the file landed in `546675d`, including each later commit that touched `linearize.rs`.
-    // The `#[ignore]` it used to carry, and the 9.8e7 m / 2.0e4 m divergences recorded with
-    // it, described a pre-merge state of the aiding branch.
+    // reproducible anywhere in this history. This test passes at every commit since the file
+    // landed in `546675d`: at each one that touched `linearize.rs` (`d5af42d`, `ce15e71`,
+    // `ffc0a1d`), and at each of the ten merged by #342 -- including `bdffed9`, the
+    // Coriolis/transport differentiation of #325/#317 that was the obvious candidate for
+    // having fixed it, which it cannot have been, because the test is green at its parent
+    // too. The `#[ignore]` it used to carry, and the 9.8e7 m / 2.0e4 m divergences recorded
+    // with it, describe a state of the aiding branch that predates anything reachable from
+    // here.
     //
     // # The horizontal channel, which is still inconsistent
     //
     // The vertical half being healthy does not make the filters consistent, and the reason
     // `gating_rejects_a_fix_inconsistent_with_the_filters_own_uncertainty` sizes its outlier
     // in sigmas survives intact. Reported horizontal position sigma against the error
-    // actually achieved, same run:
+    // actually achieved, printed by this test alongside the sweep above:
     //
     //     filter | reported lat sigma | peak horizontal error
     //     -------|--------------------|----------------------
     //     ESKF   | 1.24 m             | 2.14 m
     //     EKF    | 450.22 m           | 6.00 m
-    //     UKF    | 201.40 m           | 6.00 m
+    //     UKF    | 201.40 m           | 6.04 m
+    //
+    // Measured with this file's `process_noise()`; the `#[ignore]`d companion
+    // `the_shipped_default_process_noise_lets_every_filter_filter` quotes ~493 m for the EKF
+    // because it drives `DEFAULT_PROCESS_NOISE` instead. Both say the same thing.
     //
     // The EKF and UKF believe their horizontal position is uncertain to hundreds of metres
-    // while sitting within six of truth -- and a peak error of 6.00 m is exactly the largest
-    // perturbation in `NOISE_PATTERN` (1.2 * `GPS_HORIZONTAL_NOISE_M`), so both are landing
-    // on each fix rather than averaging across them. A filter whose reported uncertainty
+    // while sitting within six of truth -- and that 6 m is exactly the largest perturbation
+    // in `NOISE_PATTERN` (1.2 * `GPS_HORIZONTAL_NOISE_M`), so both are landing on each fix
+    // rather than averaging across them. A filter whose reported uncertainty
     // exceeds its actual error by two orders of magnitude cannot gate: a genuine 200 m
     // multipath fix is well *within* what it believes possible and is correctly accepted.
     // Sizing the outlier in sigmas tests the gate; sizing it in metres would test the tuning.
@@ -598,10 +695,10 @@ fn a_note_on_filter_consistency() {
     //
     // # The bound
     //
-    // Set by the UKF at 0.175 m, four orders of magnitude above the ESKF's peak and seven
+    // Set by the UKF at 0.279 m, four orders of magnitude above the ESKF's peak and six
     // above the EKF's. It is a seed transient rather than a response to the fixes, so it
     // moves if `INITIAL_POSITION_STD_M` or the `UKF_*` tuning is changed and will not move
-    // if the Jacobians regress. Half a metre gives that 2.9x, and sits under
+    // if the Jacobians regress. Half a metre gives that 1.8x, and sits under
     // both independent ceilings that carry meaning here -- the 1.12-1.19 m settled altitude
     // sigma all three filters report, and `GPS_VERTICAL_NOISE_M`, the accuracy a single fix
     // is declared to have. A run that exceeds it has put the vertical error outside the
@@ -609,22 +706,44 @@ fn a_note_on_filter_consistency() {
     // `NOISE_PATTERN`, no RNG), so the margin is headroom for retuning, not for variance.
     const MAX_ALTITUDE_ERROR_M: f64 = 0.5;
 
+    // The vertical table: peak |altitude error| against the amplitude driving it.
+    for (scale_index, noise_scale) in NOISE_SCALES.into_iter().enumerate() {
+        let scenario = build_gating_scenario_scaled(noise_scale);
+        let fix_rms_m = fix_noise_rms_m(noise_scale);
+        for (name, mut filter) in gating_filters(&scenario.initial) {
+            let peak_m = peak_altitude_error_m(name, filter.as_mut(), &scenario);
+            println!("{name}: {fix_rms_m:.3} m rms fixes -> peak |altitude error| {peak_m:.3e} m");
+            if scale_index <= NOMINAL_NOISE_SCALE {
+                assert!(
+                    peak_m < MAX_ALTITUDE_ERROR_M,
+                    "{name} vertical channel reached {peak_m:.3e} m under {fix_rms_m:.3} m rms \
+                     fix noise"
+                );
+            }
+        }
+    }
+
+    // The horizontal table: what each filter believes about its position against what it
+    // achieved. Reported, not asserted -- this half is the open defect, and an assertion
+    // here would be a test written to fail.
     let scenario = build_gating_scenario();
     for (name, mut filter) in gating_filters(&scenario.initial) {
         filter.set_innovation_gate(None);
-        let mut peak_altitude_error_m: f64 = 0.0;
+        let mut peak_horizontal_m: f64 = 0.0;
         for (index, sample) in scenario.samples.iter().enumerate() {
             filter.predict(sample, sample.dt).unwrap();
             if index % GPS_DECIMATION == 0 {
                 filter.update(&scenario.gps[index]).unwrap();
-                peak_altitude_error_m = peak_altitude_error_m
-                    .max((filter.get_estimate()[2] - scenario.truth[index + 1].altitude).abs());
             }
+            peak_horizontal_m = peak_horizontal_m.max(horizontal_error_m(
+                &filter.get_estimate(),
+                &scenario.truth[index + 1],
+            ));
         }
-        println!("{name}: peak |altitude error| {peak_altitude_error_m:.3e} m under noisy fixes");
-        assert!(
-            peak_altitude_error_m < MAX_ALTITUDE_ERROR_M,
-            "{name} vertical channel reached {peak_altitude_error_m:.3e} m under noisy fixes"
+        println!(
+            "{name}: reports {:.2} m latitude sigma against a {peak_horizontal_m:.2} m peak \
+             horizontal error",
+            radians_to_meters(filter.get_certainty()[(0, 0)].sqrt())
         );
     }
 }
