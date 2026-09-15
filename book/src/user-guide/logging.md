@@ -6,7 +6,7 @@ This project uses the Rust `log` crate with `env_logger` as the backend, providi
 
 ### Command-Line Options
 
-Both `strapdown-sim` and `geonav-sim` executables support the following logging options:
+The `strapdown-sim` executable supports the following logging options:
 
 - `--log-level <LEVEL>`: Set the log level (off, error, warn, info, debug, trace)
   - Default: `info`

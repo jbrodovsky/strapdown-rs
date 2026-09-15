@@ -10,9 +10,10 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # strapdown-core with default features needs no system libraries at all.
-  # Keeping this job dependency-free is what makes the matrix below cheap and
-  # what most crates.io consumers will actually build.
+  # strapdown-core with default features needs no C toolchain at all -- not even cmake.
+  # Keeping this job dependency-free is what makes the matrix below cheap and what most
+  # crates.io consumers will actually build. The vendored C libraries are covered by
+  # `vendored` and `full` instead.
   minimal:
     name: strapdown-core (no default features)
     runs-on: ${{ matrix.os }}
@@ -28,10 +29,12 @@ jobs:
       # `[workspace.lints]` enforces clippy's pedantic and nursery groups with `-D warnings`.
       # Those groups gain lints every Rust release, so against a floating `stable` the gate is
       # not reproducible: unrelated PRs go red six weeks after they were written, and
-      # `pixi run lint` (which uses the pinned 1.91) cannot predict the result. That is not a
-      # hypothetical -- it broke this very PR, on lints that did not exist locally.
+      # a local `cargo clippy` cannot predict the result. That is not a hypothetical -- it
+      # broke this very PR, on lints that did not exist locally. `rust-toolchain.toml` pins
+      # the same version locally, so the two agree by construction.
       #
-      # Keep this in sync with `rust-version` in Cargo.toml and the `rust` pin in pixi.toml.
+      # Keep this in sync with `rust-version` in Cargo.toml, `channel` in
+      # rust-toolchain.toml, and `msrv` in clippy.toml.
       # Trade-off: CI no longer catches breakage introduced by newer toolchains. A scheduled
       # job on `stable`, non-blocking, is the usual way to recover that signal.
       - uses: dtolnay/rust-toolchain@1.91
@@ -49,8 +52,10 @@ jobs:
       - name: Test
         run: cargo test -p strapdown-core --no-default-features --locked
 
-  # Full workspace, all features. Needs libhdf5/libnetcdf and the plotters
-  # font stack, so it runs on Linux only.
+  # Full workspace, all features. Builds libhdf5, libnetcdf, zlib and freetype from source
+  # (see the `static` features in core/ and geonav/), so it needs cmake and a C/C++ compiler
+  # -- both preinstalled on the runner -- and no apt packages at all. Linux only: `vendored`
+  # below covers the other two platforms for the part that is platform-sensitive.
   full:
     name: Workspace (all features)
     runs-on: ubuntu-latest
@@ -62,16 +67,6 @@ jobs:
         with:
           components: clippy, rustfmt
 
-      - name: Install system dependencies
-        run: |
-          sudo apt update
-          sudo apt install -y pkg-config \
-            libhdf5-dev \
-            libnetcdf-dev \
-            zlib1g-dev \
-            libfreetype6-dev \
-            libfontconfig1-dev
-
       - uses: Swatinem/rust-cache@v2
 
       - name: Format check
@@ -82,11 +77,32 @@ jobs:
 
       # #263's literal acceptance criterion. It belongs here rather than in `minimal`,
       # because `strapdown-geonav` depends on netcdf unconditionally, so a workspace build
-      # needs libnetcdf whatever the feature flags say -- the `minimal` job deliberately
-      # installs no system libraries and builds `strapdown-core` alone.
+      # compiles libnetcdf from source whatever the feature flags say -- the `minimal` job
+      # deliberately needs no C toolchain and builds `strapdown-core` alone.
       - name: Build (workspace, no default features)
         run: cargo build --workspace --no-default-features --locked
 
       - name: Test
         run: cargo test --workspace --all-features --locked
 
+  # The vendored C build is the one thing `minimal` cannot see: it builds strapdown-core
+  # alone, with no default features, so it never links netCDF. `full` builds it but only on
+  # Linux. This job is the macOS/Windows canary for `netcdf-src` and `hdf5-metno-src` --
+  # cmake-driven source builds are where platform differences actually show up, and a break
+  # here should be caught by CI rather than by someone running `cargo install`.
+  vendored:
+    name: Vendored netCDF/HDF5 (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.91
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build strapdown-geonav
+        run: cargo build -p strapdown-geonav --locked

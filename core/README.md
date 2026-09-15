@@ -15,17 +15,22 @@ use strapdown::StrapdownState;
 
 ## Cargo Features
 
-`strapdown-core` builds with no features by default and requires **no system
-libraries** -- a Rust toolchain is enough. The binary data formats each pull in a
-system library or a sizeable dependency tree, so they are opt-in:
+`strapdown-core` builds with no features by default and requires **nothing but a Rust
+toolchain**. The binary data formats each pull in a C library or a sizeable dependency tree, so
+they are opt-in. No system library is ever searched for: libhdf5, libnetcdf and zlib are
+compiled from vendored sources, which is why a C/C++ compiler and cmake 3.26+ are what these
+features actually cost.
 
-| Feature   | Enables                                  | Requires        |
-|-----------|------------------------------------------|-----------------|
-| `hdf5`    | `to_hdf5` / `from_hdf5`                  | `libhdf5`       |
-| `netcdf`  | `to_netcdf` / `from_netcdf`              | `libnetcdf`     |
-| `mcap`    | `to_mcap` / `from_mcap`                  | --              |
-| `clap`    | `clap::ValueEnum` derives on config enums | --             |
-| `full`    | all of the above                         | both libraries  |
+| Feature   | Enables                                  | Requires              |
+|-----------|------------------------------------------|-----------------------|
+| `hdf5`    | `to_hdf5` / `from_hdf5`                  | C compiler + cmake    |
+| `netcdf`  | `to_netcdf` / `from_netcdf`              | C compiler + cmake    |
+| `mcap`    | `to_mcap` / `from_mcap`                  | --                    |
+| `clap`    | `clap::ValueEnum` derives on config enums | --                   |
+| `full`    | all of the above                         | C compiler + cmake    |
+
+Leave `HDF5_DIR` unset when building with `hdf5` or `netcdf`: if it is set, the build script
+looks for a system library instead of using the vendored sources.
 
 CSV support is always available and needs no feature flag.
 
@@ -48,7 +53,7 @@ The toolbox is designed for research, teaching, and development purposes and aim
 
 The simulation program provides a simple command line interface for running various configurations of the INS. In can run in open-loop (dead reckoning) mode or closed-loop (full state loosely couple UKF) mode. It can simulate various scenarios such as intermittent GPS, GPS degradation, and more. The simulation is designed to be easy to use and provides a simple API for generating datsets for further navigation processing or research.
 
-Both `strapdown-sim` and `geonav-sim` include built-in logging capabilities using the Rust `log` crate. Library functions use log macros for diagnostic output that can be captured by any logging backend.
+`strapdown-sim` includes built-in logging capabilities using the Rust `log` crate. Library functions use log macros for diagnostic output that can be captured by any logging backend.
 
 ## Data Formats
 

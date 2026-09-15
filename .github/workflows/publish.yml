@@ -20,15 +20,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned, not `stable`. `cargo publish`'s verification step builds the packaged crate
+      # directly rather than as a dependency, so `--cap-lints allow` does not apply and the
+      # `deny`-level pedantic/nursery lints are live here -- exactly the drift that
+      # rust.yml pins against. Keep in sync with rust-toolchain.toml.
+      - uses: dtolnay/rust-toolchain@1.91
         with:
           components: clippy, rustfmt
 
-      - name: Install system dependencies
-        run: |
-          sudo apt update
-          sudo apt install -y pkg-config libhdf5-dev libnetcdf-dev \
-            libfreetype6-dev libfontconfig1-dev
+      # The C dependencies are built from source (#335), so the cache is what keeps a
+      # release from paying a full libhdf5 + libnetcdf build every time.
+      - uses: Swatinem/rust-cache@v2
 
       - name: Format check
         run: cargo fmt --all -- --check
@@ -46,13 +48,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.91
 
-      - name: Install system dependencies
-        run: |
-          sudo apt update
-          sudo apt install -y pkg-config libhdf5-dev libnetcdf-dev \
-            libfreetype6-dev libfontconfig1-dev
+      - uses: Swatinem/rust-cache@v2
 
       # Order matters: strapdown-sim and strapdown-geonav both depend on
       # strapdown-core, so it has to exist on crates.io first. `cargo publish`

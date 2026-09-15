@@ -59,8 +59,7 @@ Command-line tool for running INS simulations with GNSS degradation:
 ### Build & Test
 ```bash
 # Build entire workspace in release mode
-pixi run build
-# Or: cargo build --workspace --release
+cargo build --workspace --release
 
 # Run all tests
 cargo test --workspace
@@ -72,24 +71,24 @@ cargo test --package strapdown-sim
 # Run specific test
 cargo test --package strapdown-core test_name
 
-# Run with code coverage
-pixi run coverage
+# Run with code coverage (needs `cargo install cargo-tarpaulin` first)
+cargo coverage
 # Or: cargo tarpaulin --workspace --timeout 600
 ```
 
 ### Lint & Format
 ```bash
 # Run clippy exactly as CI does (warnings are errors)
-pixi run lint
+cargo lint
 
 # Apply the clippy fixes it can
-pixi run lint-fix
+cargo lint-fix
 
 # Format code
-pixi run fmt
+cargo fmt --all
 
 # Check formatting without writing (CI parity)
-pixi run fmt-check
+cargo fmt-check
 ```
 
 ### Running Simulations
@@ -103,9 +102,10 @@ pixi run fmt-check
   --dropout-start-s 100.0 --dropout-duration-s 50.0 \
   --fault-type bias --fault-magnitude 10.0
 
-# Geophysical navigation
-./target/release/geonav-sim -i data/input/input.csv -o output.csv \
-  --geo-type gravity --geo-resolution one-minute
+# Geophysical navigation (the geonav-sim binary was folded into strapdown-sim;
+# build with `cargo build --release -p strapdown-sim --features geonav`)
+./target/release/strapdown-sim cl -i data/input/input.csv -o output.csv \
+  --geo --gravity-resolution one-minute
 ```
 
 ### Datasets
@@ -238,16 +238,25 @@ Input CSV must contain timestamped sensor measurements:
 - Coverage reports generated with `cargo tarpaulin`
 
 ### Environment Setup
-Project uses Pixi for toolchain and system-library management:
-- Environment variables set in `pixi.toml` activation section
-- HDF5 required for NetCDF support (geonav experimental features)
-- Rust ≥1.91. The repository is **Rust-only** -- the Python `analysis/` package was untracked
-  in `c5f72c6` when the repo was scoped to the v1.0 crate set, and `pixi.toml` declares no
-  Python dependency
-- Release binaries automatically added to PATH via pixi activation
+**Plain cargo, no environment manager.** Pixi was removed in #335; `git clone && cargo build`
+is the whole setup.
+- `rust-toolchain.toml` pins the toolchain (1.91) and fetches it on the first cargo command.
+  `.cargo/config.toml` carries the env vars and the `lint`/`lint-fix`/`fmt-check`/`docs`/
+  `coverage` aliases that `pixi.toml`'s `[tasks]` used to
+- Beyond Rust: a C/C++ compiler and **cmake >= 3.26**, needed only for features that touch a C
+  library. libhdf5, libnetcdf, zlib and freetype are compiled from vendored crates.io sources,
+  so no system library is searched for. Ubuntu 22.04 (cmake 3.22) and Debian 12 (3.25) are too
+  old. `cargo build -p strapdown-core` alone needs no C toolchain at all
+- **`HDF5_DIR` must stay unset** -- `hdf5-metno-sys` prefers a system library whenever it is
+  set, even with `static` on, and the vendored netCDF build then fails against those headers
+- libfontconfig is a *runtime* dependency of `strapdown-sim`'s `plotting` feature (`dlopen`ed),
+  not a build-time one
+- The repository is **Rust-only** -- the Python `analysis/` package was untracked in `c5f72c6`
+  when the repo was scoped to the v1.0 crate set, and the notebooks under `examples/` were
+  untracked in #335 for the same reason
 
 ### Lint Policy
-Lints are **enforced at `deny`**, workspace-wide, not warn-level. `pixi run lint` and the
+Lints are **enforced at `deny`**, workspace-wide, not warn-level. `cargo lint` and the
 blocking CI job both run `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
 - `clippy::pedantic`, `clippy::nursery`, `missing_docs`, `missing_debug_implementations`,
   `unreachable_pub`, `rust_2018_idioms`
@@ -257,8 +266,9 @@ blocking CI job both run `cargo clippy --workspace --all-targets --all-features 
   fallible function needs an `# Errors` section
 - Relax a lint **once in `[workspace.lints.clippy]` with a reason**, never with a scattered
   call-site `#[allow]`
-- CI pins `dtolnay/rust-toolchain@1.91` to match `rust-version`, the pixi `rust` pin and
-  `clippy.toml`'s `msrv`, because `pedantic`/`nursery` gain lints every release
+- The 1.91 pin lives in five places that must agree: `rust-toolchain.toml`, `rust-version` in
+  `Cargo.toml`, `msrv` in `clippy.toml`, and the `dtolnay/rust-toolchain@1.91` pins in
+  `rust.yml` and `publish.yml` -- because `pedantic`/`nursery` gain lints every release
 
 See `AGENTS.md` for the full policy and the reasoning behind each existing exception.
 

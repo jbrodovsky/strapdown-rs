@@ -103,6 +103,56 @@ Maps should contain:
 - `lon` variable: longitude coordinates (degrees)
 - `z` variable: anomaly data (mGal for gravity, nT for magnetic)
 
+Only those three variables are read, and the whole grid is loaded into memory. `lat` and `lon`
+are assumed to be ascending; no CF attributes, scale factors or `_FillValue` handling are
+applied.
+
+### Where to get the grids
+
+No map data is vendored in this repository, and there is no fetcher yet (tracked in
+[#85](https://github.com/jbrodovsky/strapdown-rs/issues/85)). The grids these tools were
+developed against are the GMT remote datasets, most easily retrieved through
+[PyGMT](https://www.pygmt.org/) in a separate Python environment -- PyGMT needs the GMT C
+library, which is why it is not part of this repository's own toolchain:
+
+```python
+from pathlib import Path
+
+import pandas as pd
+import pygmt
+
+# The trajectory strapdown-sim will be run on. The maps have to cover it.
+input_csv = Path("data/input/flight.csv")
+track = pd.read_csv(input_csv)
+
+# PyGMT wants [min_lon, max_lon, min_lat, max_lat]. Pad the trajectory's bounding box so
+# interpolation near the edges still has data on both sides.
+pad = 0.25  # degrees
+region = [
+    track["longitude"].min() - pad,
+    track["longitude"].max() + pad,
+    track["latitude"].min() - pad,
+    track["latitude"].max() + pad,
+]
+
+grav = pygmt.datasets.load_earth_free_air_anomaly("01m", region=region)
+mag = pygmt.datasets.load_earth_magnetic_anomaly("02m", region=region)
+
+# These are the names strapdown-sim looks for next to the input CSV.
+stem = input_csv.with_suffix("")
+grav.to_netcdf(f"{stem}_gravity.nc")
+mag.to_netcdf(f"{stem}_magnetic.nc")
+```
+
+A fixed region works just as well if you already know the area -- for example
+`region = [-76.0, -75.0, 39.5, 40.5]` for the Philadelphia area.
+
+The resolution strings match the `--gravity-resolution` / `--magnetic-resolution` flags (see
+the `Display` impls on `GravityResolution` and `MagneticResolution`, which emit the same GMT
+tokens). Writing the files beside the input CSV under those names is what lets `strapdown-sim`
+find them automatically; otherwise pass `--gravity-map-file` / `--magnetic-map-file`
+explicitly.
+
 ## Example Scenarios
 
 ### GNSS-Denied Navigation with Gravity Aiding

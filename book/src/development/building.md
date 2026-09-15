@@ -2,23 +2,26 @@
 
 ## Building the Project
 
-### System Dependencies
+### Build Dependencies
 
-The project requires the following system libraries:
-- `pkg-config`
-- `libhdf5-dev` and `libhdf5-openmpi-dev` (for HDF5 support)
-- `libnetcdf-dev` (for NetCDF geophysical data)
-- `zlib1g-dev` (for compression support)
+There are no system libraries to install. libhdf5, libnetcdf, zlib and freetype are compiled
+from vendored sources that ship as cargo dependencies, so the only requirement beyond Rust is
+a toolchain to build them with:
+- a C/C++ compiler
+- **cmake 3.26 or newer** (more than Ubuntu 22.04 or Debian 12 ship -- see
+  [System Requirements](../installation/requirements.md))
 
 On Ubuntu/Debian systems:
 ```bash
 sudo apt update
-sudo apt install -y pkg-config libhdf5-dev libhdf5-openmpi-dev libnetcdf-dev zlib1g-dev
+sudo apt install -y build-essential cmake
 ```
 
+Neither is needed for `cargo build -p strapdown-core`, which uses no C library by default.
+
 ### Rust Toolchain
-- Minimum Rust version: 1.70+ (stable channel)
-- Required components: `clippy`, `rustfmt`
+- Pinned to 1.91 by `rust-toolchain.toml`; rustup fetches it on the first cargo command
+- Required components: `clippy`, `rustfmt` (also declared in `rust-toolchain.toml`)
 
 ### Building
 
@@ -46,8 +49,8 @@ Install the simulation binaries to your system:
 # Install strapdown-sim
 cargo install --path sim
 
-# Install geonav-sim
-cargo install --path geonav
+# ...with geophysical navigation. This is what pulls in libnetcdf, so it needs cmake.
+cargo install --path sim --features geonav
 ```
 
 ## Testing

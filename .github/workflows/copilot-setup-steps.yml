@@ -28,15 +28,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      - name: Install system dependencies
-        run: |
-            sudo apt update
-            sudo apt install -y pkg-config \
-                libhdf5-dev \
-                libnetcdf-dev \
-                libfreetype6-dev \
-                libfontconfig-dev
+      # No system libraries to install: every C dependency (libhdf5, libnetcdf, zlib,
+      # freetype) is built from source by cargo, and the runner already has cmake and a
+      # C/C++ compiler. See #335.
       - name: Install rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.91
         with:
           components: clippy, rustfmt

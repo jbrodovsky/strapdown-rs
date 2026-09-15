@@ -1,0 +1,53 @@
+# Replaces `pixi.toml`'s `[activation.env]` and `[tasks]`. The variables that pointed at
+# conda's `lib/` (HDF5_DIR, LIBRARY_PATH, PKG_CONFIG_PATH, and an rpath in RUSTFLAGS) are
+# deliberately gone: since #335 every C dependency is built from source, so there is no
+# external prefix to point at.
+#
+# HDF5_DIR in particular must stay unset. `hdf5-metno-sys`'s build script takes the system
+# search path whenever it is present *even with the `static` feature on*
+# (`build.rs:742`: `if feature_enabled("STATIC") && env::var_os("HDF5_DIR").is_none()`), and
+# `netcdf-src` then hands those system headers to cmake alongside
+# `HDF5_USE_STATIC_LIBRARIES=ON`. A stale `pixi shell` is the likely way to hit it.
+
+[env]
+# Not forced, so `RUST_BACKTRACE=0 cargo test` still works.
+RUST_BACKTRACE = "1"
+
+# Build freetype from `freetype-sys`'s bundled C sources instead of linking a system copy.
+#
+# Without this, which one you get depends on what the machine happens to have:
+# `freetype-sys`'s build script skips the vendored build whenever pkg-config reports a
+# freetype2 of at least 24.3.18, and only then. A GitHub runner has a `freetype2.pc` but no
+# linkable `libfreetype.so` -- the `.pc` comes with the image, the symlink comes with
+# `libfreetype6-dev`, which this workspace no longer installs -- so the build script hands the
+# linker `-lfreetype` for a library that is not there and `cargo test` dies with
+# "unable to find library -lfreetype". A developer machine with the -dev package links fine,
+# which makes it a CI-only failure that reproduces nowhere.
+#
+# Vendoring unconditionally matches what libhdf5, libnetcdf and zlib already do here and
+# removes the machine from the equation. `FREETYPE2_NO_PKG_CONFIG` is the `pkg-config` crate's
+# documented opt-out (pkg-config-0.3.32/src/lib.rs:579 builds it as `{NAME}_NO_PKG_CONFIG`).
+#
+# Note this file is not part of any published .crate, so `cargo install strapdown-sim` still
+# takes a system freetype when one is present. That is the pre-existing behaviour and is fine
+# on a machine whose .pc and .so agree.
+FREETYPE2_NO_PKG_CONFIG = "1"
+
+[build]
+# KaTeX for the Groves equations in the doc comments. The header lives at the workspace root
+# for this, and a per-package copy lives in `core/` for the docs.rs build, which reads
+# `[package.metadata.docs.rs] rustdoc-args` instead and only ever sees the crate tarball.
+# Note this is overridden wholesale, not merged, if RUSTDOCFLAGS is set in the environment.
+rustdocflags = ["--html-in-header", "katex-header.html"]
+
+# The pixi tasks that were not already plain cargo. `build`, `test` and `doc` are omitted on
+# purpose: cargo refuses to let an alias shadow a built-in subcommand and silently ignores it,
+# so `doc` is spelled `docs` here.
+[alias]
+lint = "clippy --workspace --all-targets --all-features -- -D warnings"
+lint-fix = "clippy --workspace --all-targets --all-features --fix --allow-dirty -- -D warnings"
+fmt-check = "fmt --all -- --check"
+docs = "doc --workspace --no-deps"
+# Needs `cargo install cargo-tarpaulin` first; it was never part of the pixi environment
+# either, despite `pixi run coverage` implying otherwise.
+coverage = "tarpaulin --workspace --timeout 600"

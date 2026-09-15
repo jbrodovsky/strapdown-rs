@@ -8256,6 +8256,10 @@ mod tests {
             read[0].magnetic_bias, None,
             "a run with no magnetic map must not gain a magnetic estimate on the round trip"
         );
+        assert_eq!(
+            read[0].magnetic_bias_cov, None,
+            "the covariance column must stay absent too, not just the estimate"
+        );
     }
 
     /// A geophysically aided particle run labels its bias states and their variances.
@@ -8570,6 +8574,117 @@ mod tests {
         // Note: TestDataRecord MCAP roundtrip test is disabled due to CSV-specific deserializers
         // that conflict with binary serialization formats. TestDataRecord is optimized for CSV.
         // For MCAP usage, convert TestDataRecord to NavigationResult.
+    }
+
+    /// The netCDF codecs had no test at all until #335 changed how libnetcdf is built.
+    ///
+    /// `to_netcdf`/`from_netcdf` compile under `--all-features`, which CI runs, so they were
+    /// type-checked but never executed -- nothing would have caught a behavioural difference
+    /// between the system libnetcdf these were written against and the vendored one they now
+    /// link. The hdf5 side has had round-trip, NaN and missing-column tests all along; this
+    /// is the netCDF half of that.
+    ///
+    /// Note the whole-second timestamps. `to_netcdf` stores time as `timestamp()`, an integer
+    /// number of seconds, so sub-second precision does not survive and a test using it would
+    /// fail for a reason that has nothing to do with netCDF.
+    #[cfg(feature = "netcdf")]
+    #[test]
+    fn test_test_data_record_netcdf_roundtrip() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("test_data.nc");
+
+        let record = TestDataRecord {
+            time: DateTime::parse_from_str("2023-01-01 00:00:00+00:00", "%Y-%m-%d %H:%M:%S%z")
+                .unwrap()
+                .with_timezone(&Utc),
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            speed: 1.5,
+            bearing: 90.0,
+            acc_z: 9.81,
+            gyro_x: 0.01,
+            mag_x: -20.0,
+            ..Default::default()
+        };
+
+        TestDataRecord::to_netcdf(std::slice::from_ref(&record), &file_path)
+            .expect("Failed to write netCDF");
+        let read = TestDataRecord::from_netcdf(&file_path).expect("Failed to read netCDF");
+
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].time, record.time);
+        assert_approx_eq!(read[0].latitude, record.latitude, 1e-10);
+        assert_approx_eq!(read[0].longitude, record.longitude, 1e-10);
+        assert_approx_eq!(read[0].altitude, record.altitude, 1e-10);
+        assert_approx_eq!(read[0].speed, record.speed, 1e-10);
+        assert_approx_eq!(read[0].bearing, record.bearing, 1e-10);
+        assert_approx_eq!(read[0].acc_z, record.acc_z, 1e-10);
+        assert_approx_eq!(read[0].gyro_x, record.gyro_x, 1e-10);
+        assert_approx_eq!(read[0].mag_x, record.mag_x, 1e-10);
+    }
+
+    /// The `Option<f64>` geophysical columns survive a netCDF round trip as absent, not zero.
+    ///
+    /// netCDF has no option type, so `none_if_nan` writes `NaN` and maps it back. This is the
+    /// netCDF counterpart of `test_navigation_result_hdf5_roundtrips_geophysical_columns`:
+    /// a run carrying only a gravity map must not come back with a magnetic estimate.
+    #[cfg(feature = "netcdf")]
+    #[test]
+    fn test_navigation_result_netcdf_roundtrips_geophysical_columns() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("geo.nc");
+
+        let mut nav = NavigationResult::new();
+        nav.gravity_bias = Some(12.5);
+        nav.gravity_bias_cov = Some(3.25);
+        NavigationResult::to_netcdf(std::slice::from_ref(&nav), &file_path)
+            .expect("Failed to write netCDF");
+
+        let read = NavigationResult::from_netcdf(&file_path).expect("Failed to read netCDF");
+        assert_eq!(read.len(), 1);
+        assert_approx_eq!(read[0].gravity_bias.unwrap(), 12.5, 1e-9);
+        assert_approx_eq!(read[0].gravity_bias_cov.unwrap(), 3.25, 1e-9);
+        assert_eq!(
+            read[0].magnetic_bias, None,
+            "a run with no magnetic map must not gain a magnetic estimate on the round trip"
+        );
+        assert_eq!(
+            read[0].magnetic_bias_cov, None,
+            "the covariance column must stay absent too, not just the estimate"
+        );
+    }
+
+    /// Writing zero records to netCDF is an error, where the HDF5 writer accepts it.
+    ///
+    /// The asymmetry is deliberate on the writer's side (`to_netcdf` bails on an empty slice,
+    /// `to_hdf5` writes a file with zero-length datasets -- see
+    /// `test_navigation_result_hdf5_empty`), but it was never pinned by a test, so nothing
+    /// said which half was intentional. This says it: netCDF refuses, and a caller that might
+    /// hand it an empty run has to check first.
+    #[cfg(feature = "netcdf")]
+    #[test]
+    fn test_navigation_result_netcdf_rejects_empty() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("nav_results_empty.nc");
+
+        let results: Vec<NavigationResult> = Vec::new();
+        let err = NavigationResult::to_netcdf(&results, &file_path)
+            .expect_err("writing zero records to netCDF must fail rather than produce a file");
+        assert!(
+            err.to_string().contains("empty"),
+            "the error should say what was wrong, got: {err}"
+        );
+        assert!(
+            !file_path.exists(),
+            "a rejected write must not leave a partial file behind"
+        );
     }
     #[cfg(feature = "mcap")]
     #[test]
