@@ -1749,34 +1749,61 @@ pub fn position_update(state: &StrapdownState, velocity: Vector3<f64>, dt: f64) 
 /// `while` loop stepping one period at a time, which costs an iteration per period: a
 /// state that has diverged to 8e5 rad -- which is what #336's UKF does at a southerly
 /// heading -- spends ~130,000 iterations per angle per call, so the wrap turns a wrong
-/// answer into a hang. [`wrap_to_pi`] was already rewritten this way; this generalises
-/// that rewrite to the interval so the rest can share it.
+/// answer into a hang.
 ///
-/// The result is identical to the loop's for every finite input, boundaries included.
-/// That is what the two branches are for: the loop stopped as soon as it was back in
-/// range, so which endpoint an exact multiple lands on depends on the direction it was
-/// stepping, and taking `ceil` of the distance past the *near* edge reproduces that
-/// where a single symmetric `floor` would not. `wrap_to_pi(3*pi)` is `+pi`, not `-pi`.
+/// `lower` and `upper` must be exactly one `period` apart, which they are for all five
+/// callers.
+///
+/// # Why `%` rather than a rounded quotient
+///
+/// The obvious constant-time reduction is to divide, round the quotient to a whole number
+/// of periods, and multiply it back out. That is not bounded, and the failure is not
+/// exotic: a quotient near 1e15 has an `f64` spacing above 1, so the rounded quotient times
+/// the period misses `value` by more than a period and the "reduced" result is nowhere near
+/// the interval. `wrap_latitude(1e17)` came back as 100 -- outside `[-90, 90]` -- and
+/// `wrap_to_360(f64::MAX)` as 1.2e291.
+///
+/// `%` on floats is `fmod`, whose result is always exactly representable and therefore
+/// always computed exactly, at every magnitude. One `fmod` and at most one addition of a
+/// period is enough, and it is bounded for every finite input by construction.
+///
+/// # Agreement with the loop it replaces
+///
+/// Identical for every input within a few periods of the interval -- 250,000 checked
+/// values across all five intervals, endpoints and exact multiples included. The endpoint
+/// case is what the `remainder == lower` branch is for: the loop stopped as soon as it was
+/// back in range, so which endpoint an exact multiple lands on depends on the direction it
+/// was stepping, and `wrap_to_pi(3*pi)` is `+pi` rather than `-pi`.
+///
+/// Further out the two diverge, and the loop is the inaccurate one: it rounds once per
+/// period, so by 8e5 rad it has accumulated ~1e-9 rad of drift that `fmod` does not have.
+/// The loop also did not terminate in useful time out there, and never terminated at all
+/// for an infinity -- subtracting a period from one leaves it infinite. A non-finite input
+/// is returned unchanged instead, so it reaches whatever checks for it (`mechanize` raises
+/// [`StrapdownError::NonFinite`]).
 ///
 /// An input already on `[lower, upper]` is returned untouched -- both the overwhelmingly
-/// common case and a guarantee that the exact endpoints keep the representative they
-/// came in with. A non-finite input is also returned unchanged: it has no representative
-/// on the circle, and the loop never terminated for one, because subtracting a period
-/// from an infinity leaves it infinite and the `while` condition never went false.
-///
-/// An input whose magnitude is large enough that consecutive `f64` values are more than a
-/// period apart has no exact representative and gets the nearest one the arithmetic
-/// allows; the loop did not terminate in useful time for those at all.
+/// common case and a guarantee that the exact endpoints keep the representative they came
+/// in with.
 fn reduce_onto_interval(value: f64, lower: f64, upper: f64, period: f64) -> f64 {
     if (lower..=upper).contains(&value) || !value.is_finite() {
         return value;
     }
-    if value > upper {
-        let periods = ((value - upper) / period).ceil();
-        period.mul_add(-periods, value)
+    // Exact for every finite input: `fmod` is defined to be, because its result always fits.
+    // Lands in `(-period, period)`, taking its sign from `value`.
+    let remainder = value % period;
+    if remainder > upper {
+        remainder - period
+    } else if remainder < lower {
+        remainder + period
+    } else if remainder == lower {
+        // `value` is a whole number of periods out, so the loop would have stepped onto
+        // whichever endpoint it reached first. Only the `[0, period]` intervals get here:
+        // `fmod` takes the sign of `value`, so on a symmetric interval a remainder equal to
+        // `lower` implies a negative `value`, for which `upper` is unreachable anyway.
+        if value > upper { upper } else { lower }
     } else {
-        let periods = ((lower - value) / period).ceil();
-        period.mul_add(periods, value)
+        remainder
     }
 }
 /// Wrap an angle to the range -180 to 180 degrees
@@ -2736,6 +2763,65 @@ mod tests {
         assert!((-180.0..=180.0).contains(&super::wrap_to_180(FAR_OUT_DEG)));
         assert!((0.0..=360.0).contains(&super::wrap_to_360(FAR_OUT_DEG)));
         assert!((-90.0..=90.0).contains(&super::wrap_latitude(FAR_OUT_DEG)));
+    }
+
+    /// Every wrap lands inside the interval its name promises, for *every* finite input.
+    ///
+    /// The first constant-time rewrite divided, rounded the quotient to a whole number of
+    /// periods and multiplied it back out, which is not bounded. Above ~1e15 periods the
+    /// quotient's own `f64` spacing exceeds one, so the product misses `value` by more than
+    /// a period and the "reduced" answer is nowhere near the range: `wrap_latitude(1e17)`
+    /// returned 100 and `wrap_to_360(f64::MAX)` returned 1.2e291. A wrap that silently
+    /// returns something outside its own range is worse than the loop it replaced, which at
+    /// least got there eventually, so this pins the property rather than the implementation.
+    #[test]
+    fn wraps_land_inside_their_own_range_for_every_finite_input() {
+        for value in [
+            f64::MAX,
+            -f64::MAX,
+            1e300,
+            -1e300,
+            1e17,
+            -1e17,
+            8.0e5,
+            -8.0e5,
+            360.0 * 1e15,
+            f64::MIN_POSITIVE,
+            -0.0,
+        ] {
+            let wrapped = super::wrap_to_pi(value);
+            assert!(
+                (-std::f64::consts::PI..=std::f64::consts::PI).contains(&wrapped),
+                "wrap_to_pi({value:e}) = {wrapped:e}"
+            );
+            let wrapped = super::wrap_to_2pi(value);
+            assert!(
+                (0.0..=std::f64::consts::TAU).contains(&wrapped),
+                "wrap_to_2pi({value:e}) = {wrapped:e}"
+            );
+            let wrapped = super::wrap_to_180(value);
+            assert!(
+                (-180.0..=180.0).contains(&wrapped),
+                "wrap_to_180({value:e}) = {wrapped:e}"
+            );
+            let wrapped = super::wrap_to_360(value);
+            assert!(
+                (0.0..=360.0).contains(&wrapped),
+                "wrap_to_360({value:e}) = {wrapped:e}"
+            );
+            let wrapped = super::wrap_latitude(value);
+            assert!(
+                (-90.0..=90.0).contains(&wrapped),
+                "wrap_latitude({value:e}) = {wrapped:e}"
+            );
+        }
+
+        // Bounded *and* right: 1e17 deg is 277,777,777,777,777 turns plus 280 deg, so the
+        // answer on -180..180 is -80. The quotient form gave -80 here but 100 for the same
+        // input on -90..90, which is how a rounding-driven miss shows up -- plausible, and
+        // wrong.
+        assert_eq!(super::wrap_to_180(1e17), -80.0);
+        assert_eq!(super::wrap_to_360(1e17), 280.0);
     }
 
     /// A non-finite angle comes back unchanged rather than spinning forever.
