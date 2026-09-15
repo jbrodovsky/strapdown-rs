@@ -2540,7 +2540,17 @@ pub fn run_closed_loop<F: NavigationFilter>(
     Ok(results)
 }
 /// Print the Unscented Kalman Filter state and covariance for debugging purposes.
+///
+/// The reference each error is measured against is the same quantity
+/// [`initial_state_from_record`] seeds the filter from: the ground track through
+/// [`TestDataRecord::ground_track_velocity`] and the attitude through
+/// [`TestDataRecord::attitude`]. Taking `speed * bearing.cos()` and the raw
+/// `roll`/`pitch`/`yaw` columns instead -- degrees fed to a radian trig call, and Euler
+/// angles in a convention that is not nalgebra's -- made this diagnostic report a large
+/// error for a correctly initialised filter.
 pub fn print_ukf(ukf: &UnscentedKalmanFilter, record: &TestDataRecord) {
+    let (reference_north, reference_east) = record.ground_track_velocity();
+    let (reference_roll, reference_pitch, reference_yaw) = record.attitude().euler_angles();
     debug!(
         "UKF position: ({:.4}, {:.4}, {:.4})  |  Covariance: {:.4e}, {:.4e}, {:.4}  |  Error: {:.4e}, {:.4e}, {:.4}",
         ukf.get_estimate()[0].to_degrees(),
@@ -2561,8 +2571,8 @@ pub fn print_ukf(ukf: &UnscentedKalmanFilter, record: &TestDataRecord) {
         ukf.get_certainty()[(3, 3)],
         ukf.get_certainty()[(4, 4)],
         ukf.get_certainty()[(5, 5)],
-        ukf.get_estimate()[3] - record.speed * record.bearing.cos(),
-        ukf.get_estimate()[4] - record.speed * record.bearing.sin(),
+        ukf.get_estimate()[3] - reference_north,
+        ukf.get_estimate()[4] - reference_east,
         ukf.get_estimate()[5] - 0.0 // Assuming no vertical velocity
     );
     debug!(
@@ -2573,9 +2583,9 @@ pub fn print_ukf(ukf: &UnscentedKalmanFilter, record: &TestDataRecord) {
         ukf.get_certainty()[(6, 6)],
         ukf.get_certainty()[(7, 7)],
         ukf.get_certainty()[(8, 8)],
-        ukf.get_estimate()[6] - record.roll,
-        ukf.get_estimate()[7] - record.pitch,
-        ukf.get_estimate()[8] - record.yaw
+        ukf.get_estimate()[6] - reference_roll,
+        ukf.get_estimate()[7] - reference_pitch,
+        ukf.get_estimate()[8] - reference_yaw
     );
     debug!(
         "UKF accel biases: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4e}, {:.4e}, {:.4e}",
@@ -2646,8 +2656,9 @@ fn require_config(ok: bool, field: &'static str, reason: String) -> Result<(), S
 /// Build the [`InitialState`] that the three filter initialisers seed from a
 /// [`TestDataRecord`].
 ///
-/// Both unit conversions below were got wrong independently in each of the three callers,
-/// which is why they now happen in exactly one place:
+/// Both unit conversions below used to be duplicated across the three callers, which is what
+/// let them drift apart -- the bearing conversion was missing in `initialize_ukf` alone, and
+/// the attitude conversion was wrong in all three. They now happen in exactly one place:
 ///
 /// * **Ground track.** `bearing` is stored in degrees.
 ///   [`TestDataRecord::ground_track_velocity`] converts it and guards the NaN case once;

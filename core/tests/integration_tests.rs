@@ -960,13 +960,17 @@ fn create_initial_state(first_record: &TestDataRecord) -> InitialState {
     // in a different Euler convention than nalgebra's XYZ, so `reference_attitude` reads the
     // quaternion instead -- see its documentation.
     let (roll, pitch, yaw) = reference_attitude(first_record);
+    // Through the record's own accessor rather than re-deriving it: `bearing` is degrees, and
+    // open-coding the conversion here is how this helper could drift away from the production
+    // initialiser it is supposed to mirror.
+    let (northward_velocity, eastward_velocity) = first_record.ground_track_velocity();
 
     InitialState {
         latitude: first_record.latitude.to_radians(),
         longitude: first_record.longitude.to_radians(),
         altitude: first_record.altitude,
-        northward_velocity: first_record.speed * first_record.bearing.to_radians().cos(),
-        eastward_velocity: first_record.speed * first_record.bearing.to_radians().sin(),
+        northward_velocity,
+        eastward_velocity,
         vertical_velocity: 0.0,
         roll,
         pitch,
@@ -981,13 +985,14 @@ fn create_initial_state(first_record: &TestDataRecord) -> InitialState {
 /// Create a nominal `StrapdownState` from the first test data record
 fn create_nominal_state(first_record: &TestDataRecord) -> StrapdownState {
     let (roll, pitch, yaw) = reference_attitude(first_record);
+    let (velocity_north, velocity_east) = first_record.ground_track_velocity();
 
     StrapdownState {
         latitude: first_record.latitude.to_radians(),
         longitude: first_record.longitude.to_radians(),
         altitude: first_record.altitude,
-        velocity_north: first_record.speed * first_record.bearing.to_radians().cos(),
-        velocity_east: first_record.speed * first_record.bearing.to_radians().sin(),
+        velocity_north,
+        velocity_east,
         velocity_vertical: 0.0,
         attitude: Rotation3::from_euler_angles(roll, pitch, yaw),
         // ENU on purpose; see `TEST_DATA_IS_ENU`, which is also what the event stream's
@@ -2663,7 +2668,7 @@ fn test_eskf_default_initialization_on_real_data() {
     println!("Altitude Error after settling: max={settled_max_altitude_error:.2}m");
     assert!(
         stats.max_altitude_error < 40.0,
-        "default-initialised ESKF altitude settling transient should be under 40m, got {:.2}m",
+        "default-initialised ESKF max altitude error over the full run should be under 40m, got {:.2}m",
         stats.max_altitude_error
     );
     // ~3x margin over the 11.97 m observed across the remaining 5,336 samples, and far
@@ -4021,6 +4026,39 @@ fn test_eskf_auto_covariance_initialization_on_real_data() {
         DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec())),
     );
 
+    // The "P0 is the only thing that differs" claim above, made checkable rather than
+    // asserted in prose. `initial_state_from_record` is crate-private, so the two paths are
+    // compared through the state the filters actually start from. Without this, a future
+    // change to the production initialiser would leave this test quietly comparing two
+    // different initial states while still describing itself as a P0 comparison -- which is
+    // exactly what happened when this test hand-copied the initialiser's struct literal and
+    // kept its pi/180 attitude defect alive.
+    let reference = initialize_eskf(first, EskfConfig::default())
+        .expect("the default ESKF initialisation must succeed on real data");
+    let (reference_mean, this_mean) = (reference.get_estimate(), eskf.get_estimate());
+    for (i, label) in [
+        "latitude",
+        "longitude",
+        "altitude",
+        "velocity north",
+        "velocity east",
+        "velocity vertical",
+        "roll",
+        "pitch",
+        "yaw",
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert!(
+            (reference_mean[i] - this_mean[i]).abs() < 1e-12,
+            "this test and `initialize_eskf` disagree on the initial {label} \
+             ({} vs {}), so P0 is no longer the only difference between them",
+            reference_mean[i],
+            this_mean[i]
+        );
+    }
+
     let cfg = GnssDegradationConfig {
         scheduler: GnssScheduler::PassThrough,
         fault: GnssFaultModel::None,
@@ -4065,7 +4103,7 @@ fn test_eskf_auto_covariance_initialization_on_real_data() {
     );
     assert!(
         stats.max_altitude_error < 40.0,
-        "auto-covariance ESKF altitude settling transient should be under 40m, got {:.2}m",
+        "auto-covariance ESKF max altitude error over the full run should be under 40m, got {:.2}m",
         stats.max_altitude_error
     );
 
