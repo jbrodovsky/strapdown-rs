@@ -2021,10 +2021,10 @@ mod tests {
     ///
     ///     seed        stationary        v north          v east
     ///                 pre     post      pre     post     pre     post
-    ///     123        72.67   0.0122    53.50   0.0106   24.73   0.0301
-    ///     7          17.59   0.0014    11.32   0.0013   49.83   0.0100
-    ///     20260915   13.91   0.0073     9.62   0.0136   21.75   0.0134
-    ///     991        28.23   0.0136    10.66   0.0040    5.96   0.0120
+    ///     123        72.67   0.0122    53.50   0.0045   24.73   0.0007
+    ///     7          17.59   0.0014    11.32   0.0188   49.83   0.0046
+    ///     20260915   13.91   0.0073     9.62   0.0016   21.75   0.0045
+    ///     991        28.23   0.0136    10.66   0.0163    5.96   0.0037
     ///
     /// Three orders of magnitude, and the seed scatter is gone with it: the endpoint is no
     /// longer a draw from a wide distribution but the same centimetre answer every time,
@@ -2032,7 +2032,13 @@ mod tests {
     /// produced. The cloud's altitude spread goes from ~1e-10 m to the 0.888-0.909 m its
     /// own noise model calls for.
     ///
-    /// The horizontal error moving the *other* way -- 0.003 m before, 0.016-0.068 m after --
+    /// The two moving columns also carry the fix/truth timestamp alignment described on
+    /// `generate_scenario_data`: its fixes used to be built before the propagation and were
+    /// therefore one sample stale, a 2 m along-track pull at 10 m/s. The stationary column
+    /// is bit-identical with and without that second correction, which is the check that it
+    /// does what it claims -- a stationary platform has no along-track lag to remove.
+    ///
+    /// The horizontal error moving the *other* way -- 0.003 m before, 0.016-0.051 m after --
     /// is the same defect seen from the front: 3 mm against a nominally 5 m fix was the
     /// filter reporting how tight it had actually been told the fix was.
     ///
@@ -2102,7 +2108,7 @@ mod tests {
         // The velocity bound stays a literal. The fixes here are position-only, so nothing
         // aids the horizontal velocity states directly and there is no posterior of theirs
         // in the 9-state covariance worth bounding against; 0.5 m/s is an anti-divergence
-        // guard on a channel that measures 0.005-0.022 m/s across the twelve runs above.
+        // guard on a channel that measures 0.004-0.017 m/s across the twelve runs above.
         assert_solution_consistent_with_posterior(
             &mean,
             &cov,
@@ -2165,7 +2171,7 @@ mod tests {
         // rather than a converged value -- the four-seed table this comment used to carry
         // measured 9.62 m to 53.50 m on this scenario alone, and said not to tighten until
         // #295 was understood. It was the fix units, not the mechanization: the same four
-        // seeds now give 0.0013 m to 0.0136 m here. See
+        // seeds now give 0.0016 m to 0.0188 m here. See
         // `rbpf_runs_on_scenario_stationary` for the full sweep and the root cause.
         assert_solution_consistent_with_posterior(
             &mean,
@@ -2227,7 +2233,7 @@ mod tests {
         // Bounded against the reported posterior, as in the two scenarios above, in place of
         // the 50 m / 150 m guards #295 removed the reason for. Across the four seeds swept
         // in `rbpf_runs_on_scenario_stationary` this scenario went from 5.96-49.83 m of
-        // altitude error to 0.0100-0.0301 m.
+        // altitude error to 0.0007-0.0046 m.
         assert_solution_consistent_with_posterior(
             &mean,
             &cov,
