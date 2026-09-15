@@ -57,9 +57,11 @@ const RAD_TO_DEG: f64 = 180.0 / std::f64::consts::PI;
 /// The crate keeps two magnetic units and they are not interchangeable. Body-frame magnetometer
 /// readings are **microtesla** -- [`TestDataRecord`]'s `mag_x`/`mag_y`/`mag_z` and
 /// [`strapdown::measurements::MagnetometerYawMeasurement`] both document that -- while anomaly
-/// quantities are **nanotesla**: the maps `GeoMap` loads, `NavigationResult::magnetic_bias`, and
-/// the bias and noise in `MagneticConfig`. An anomaly is differenced against a map, so nanotesla
-/// is the unit this model works in and the observation has to be converted on the way in.
+/// quantities are **nanotesla**: the maps [`GeoMap`] loads,
+/// [`strapdown::sim::NavigationResult::magnetic_bias`],
+/// and [`strapdown::sim::GeophysicalConfig`]'s `magnetic_bias` and `magnetic_noise_std`. An
+/// anomaly is differenced against a map, so nanotesla is the unit this model works in and the
+/// observation has to be converted on the way in.
 const MICROTESLA_TO_NANOTESLA: f64 = 1000.0;
 
 /// Navigation states every filter state vector starts with: position, velocity, attitude.
@@ -2563,7 +2565,7 @@ mod tests {
             .unwrap();
 
         // An observation 120 nT above the reference is a 120 nT anomaly, which is the scale the
-        // maps and `MagneticConfig`'s noise default are written in.
+        // maps and `build_event_stream`'s `magnetic_noise_std` default of 150 are written in.
         measurement.mag_obs = reference + 120.0;
         assert_approx_eq!(measurement.get_anomaly().unwrap(), 120.0, 1e-6);
 
