@@ -1688,10 +1688,13 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                 // is a 201 m per-step standard deviation, the same units defect as #308 one
                 // third of a magnitude smaller, so those come from the crate default. The
                 // `1e-6` altitude entry was already m^2 and stays exactly where it was --
-                // taking `DEFAULT_PROCESS_NOISE[0..3]` wholesale would have moved it to 1e-4,
-                // a 100x variance retune of the vertical channel that no test here covers
-                // (`run_geo_closed_loop_cli` has no test at all). The entries below the
-                // position block are deliberately tighter than the crate default.
+                // taking `DEFAULT_PROCESS_NOISE[0..3]` wholesale would move it to 1e-2, a
+                // 10,000x variance retune of the vertical channel that no test here covers
+                // (`run_geo_closed_loop_cli` has no test at all). The crate default's altitude
+                // entry was retuned from 1e-4 to 1e-2 on measured evidence; this path was not
+                // part of that measurement, so it keeps its own value until it has tests that
+                // could see the difference. The entries below the position block are
+                // deliberately tighter than the crate default.
                 let mut process_noise_vec = DEFAULT_PROCESS_NOISE[0..2].to_vec();
                 process_noise_vec.extend([
                     1e-6, // Altitude process noise, m^2 -- unchanged, see above

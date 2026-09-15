@@ -172,22 +172,68 @@ pub(crate) const INITIAL_VERTICAL_POSITION_VARIANCE_M2: f64 =
 
 /// Per-step altitude process noise for [`DEFAULT_PROCESS_NOISE`], m^2.
 ///
-/// **Deliberately its own constant, and deliberately unchanged at its historical value.**
-/// #308 is a units defect in the *horizontal* entries: they were rad^2 written as though they
-/// were m^2. The altitude entry never had that defect -- it was already m^2 and already meant
-/// what it said.
+/// Its own constant because it is the one position entry in metres rather than radians, and
+/// tied to [`POSITION_PROCESS_NOISE_M`] because nothing ever justified it being anything else.
 ///
-/// So it is not tied to [`POSITION_PROCESS_NOISE_M`], even though `0.1 m` squared would be the
-/// tidy-looking thing to write. Doing that would multiply this entry by 100 in variance, and
-/// downstream by 1250 where `core/tests/integration_tests.rs` scales it -- a silent retune of
-/// the vertical channel, folded into a units fix, in the one channel this crate's history says
-/// cannot take one quietly (#266, #286, #295 are all vertical-channel issues).
+/// # Why it is no longer 1e-4
 ///
-/// Whether 1e-4 m^2 -- a 1 cm per-step standard deviation against a 1.38 m reported vertical
-/// fix accuracy -- is the right *tuning* is a fair question and a separate one. The derivation
-/// offered for [`POSITION_PROCESS_NOISE_M`] is horizontal-only: it bounds the steady-state
-/// gain against the 3.81 m horizontal accuracy, and says nothing about the vertical channel.
-const VERTICAL_POSITION_PROCESS_NOISE_M2: f64 = 1e-4;
+/// #308 was a units defect in the *horizontal* entries -- rad^2 written as though they were
+/// m^2 -- and left this one at its historical `1e-4` on the explicit grounds that a units fix
+/// is not the place to retune the vertical channel, the one channel this crate's history says
+/// cannot take a quiet retune (#266, #286, #295). That was right, and it recorded the open
+/// question: whether `1e-4` -- a **1 cm** per-step standard deviation, a tenth of the
+/// horizontal `0.1 m`, an asymmetry no derivation was ever offered for -- is the right tuning.
+///
+/// It is not, and the symptom is consistency rather than accuracy. At `1e-4` the vertical
+/// channel is **over-confident**: three-sigma containment of the altitude error is 0.88 on the
+/// synthetic trajectory, where truth is exact, and 0.44 on `core/tests/test_data.csv`, against
+/// the 0.9973 a correct covariance would give. Better than half the altitude errors on the
+/// reference recording fall outside the uncertainty the filter reports for them. A filter that
+/// claims sub-metre altitude while sitting 2.7 m out is not merely mistuned -- every consumer
+/// of that covariance, innovation gating included, is being told something false.
+///
+/// # Why this knob and not another
+///
+/// Three entries could plausibly be blamed for an over-confident vertical channel. Sweeping
+/// each alone over four decades through `initialize_eskf` on the synthetic cruise, reading
+/// three-sigma altitude containment (ideal 0.9973) and `npes_position` (ideal 3.0):
+///
+/// | entry swept | containment | `npes_position` |
+/// |---|---|---|
+/// | altitude position, this constant | 0.881 -> 0.949, monotone | 5.65 -> 4.50, toward 3 |
+/// | vertical velocity, index 5 | 0.881 -> 0.878, flat | 5.65 -> 5.84, away from 3 |
+/// | accelerometer bias z, index 11 | 0.881 -> 0.870, worse | 5.65 -> 5.96, away from 3 |
+///
+/// Only this one moves the vertical channel toward consistency. The velocity entry buys
+/// nothing and costs a vertical-velocity RMSE that grows from 0.34 to 4.37 m/s across the
+/// sweep; the bias entry is actively harmful, taking the 60 s-outage horizontal RMSE on the
+/// reference recording from 291 m to 443 m.
+///
+/// # Why 1e-2 specifically
+///
+/// It is [`POSITION_PROCESS_NOISE_M`] squared, which makes the position block isotropic in
+/// per-step standard deviation. That is an argument from symmetry rather than from the
+/// vertical sensor -- $Q$ models unmodelled dynamics, not fix quality, so the vertical fix
+/// being *better* than the horizontal one (1.38 m against 3.81 m) is not a reason for a
+/// tighter vertical process model -- and it happens to land on the knee of the measured curve.
+/// Containment gains 0.05 going from `1e-4` to `1e-2` and only 0.016 more for the next decade,
+/// while synthetic vertical RMSE, which is flat from `1e-6` to `1e-3`, starts climbing:
+/// 0.665 m at `1e-4`, 0.836 m at `1e-2`, 1.352 m at `1e-1`.
+///
+/// # What it costs, stated plainly
+///
+/// Vertical RMSE against exact synthetic truth worsens by about a quarter, 0.665 m to 0.836 m.
+/// Against the reference recording it does not: 2.724 m to 2.692 m, slightly better, because
+/// there the filter was over-confident about an error it was not correcting. Horizontal
+/// accuracy is unchanged everywhere to four significant figures except on the 60 s-outage
+/// scenarios, where the ESKF improves sharply -- synthetic 138 m to 20 m -- and the UKF
+/// worsens, 222 m to 267 m. That UKF row should not be read as a cost of this change: its yaw
+/// error over the same sweep runs 105, 98, 21 and 34 degrees, which is #336 coasting through a
+/// GNSS outage on an attitude it has not estimated, and it bounces with any perturbation.
+///
+/// All of these numbers are gated in `core/tests/perf_baseline.json`, so the next change to
+/// them has to be deliberate.
+const VERTICAL_POSITION_PROCESS_NOISE_M2: f64 = POSITION_PROCESS_NOISE_M * POSITION_PROCESS_NOISE_M;
 
 /// Default process noise covariance diagonal used when a caller supplies none.
 ///
@@ -204,10 +250,14 @@ const VERTICAL_POSITION_PROCESS_NOISE_M2: f64 = 1e-4;
 /// picked as though they were, which made the horizontal terms a 6.4 km per-step standard
 /// deviation sitting next to a 1 cm one.
 ///
-/// Only the horizontal pair changed. [`VERTICAL_POSITION_PROCESS_NOISE_M2`] keeps its
-/// historical `1e-4`, because altitude never carried the defect and a units fix is not the
-/// place to retune the vertical channel. The remaining entries are hand-picked tuning values
-/// rather than values derived from any particular sensor.
+/// #308 changed only the horizontal pair, leaving [`VERTICAL_POSITION_PROCESS_NOISE_M2`] at
+/// its historical `1e-4` because altitude never carried the units defect and a units fix is
+/// not the place to retune a channel. That retune is now done, separately and on its own
+/// evidence: the altitude entry is `1e-2`, derived from the same
+/// [`POSITION_PROCESS_NOISE_M`] as the horizontal pair, because `1e-4` left the vertical
+/// channel reporting an uncertainty roughly half its actual error. See that constant for the
+/// measurements. The remaining entries are hand-picked tuning values rather than values
+/// derived from any particular sensor.
 ///
 /// Callers in this crate have also reused the array verbatim as an initial error covariance
 /// $P_0$; [`crate::IMUQuality::auto_covariance`] derives that fifteen-element diagonal from an

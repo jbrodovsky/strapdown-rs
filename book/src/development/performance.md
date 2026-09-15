@@ -36,14 +36,14 @@ The numbers are meaningless without them, and none of them is a defect in the ha
    at 50 Hz specifically so the same offset is about 1 m.
 3. **The synthetic scenarios carry no magnetometer, and the yaw column says which filters need
    one.** Nothing aids heading there but the GNSS velocity fix on a moving trajectory, which
-   turns out to be enough: the EKF holds 0.97 deg and the ESKF 2.17 deg on `syn_cruise_1hz`
-   while the UKF sits at 48.7 deg. That gap is not observability -- all three see the same
+   turns out to be enough: the EKF holds 0.97 deg and the ESKF 2.07 deg on `syn_cruise_1hz`
+   while the UKF sits at 42.7 deg. That gap is not observability -- all three see the same
    measurements -- it is the UKF averaging sigma-point Euler angles linearly. Modelling a
    real field is tracked in
    [#369](https://github.com/jbrodovsky/strapdown-rs/issues/369).
 4. **The consistency columns mean different things on the two sources.** On the synthetic
-   scenarios `npes` lands at 3.4 to 5.7 against an ideal of 3.0, which is a real measurement of
-   whether a filter believes the right thing. On the real-data scenarios it reaches the
+   scenarios `npes` lands between 2.6 and 4.8 against an ideal of 3.0, which is a real
+   measurement of whether a filter believes the right thing. On the real-data scenarios it reaches the
    hundreds, because caveat 2's offset enters the numerator while the covariance in the
    denominator models none of it. Those values are kept as a drift detector, not read as a
    consistency verdict.
@@ -124,19 +124,19 @@ Measured on `ubuntu-latest`, rustc 1.91. Regenerate with `cargo perf`.
 
 | scenario | samples | horiz RMSE (m) | CEP50 (m) | CEP95 (m) | horiz max (m) | vert RMSE (m) | vert bias (m) | horiz vel RMSE (m/s) | vert vel RMSE (m/s) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `real_clean__ukf` | 5,366 | 23.534 | 23.108 | 34.517 | 37.723 | 2.702 | 0.339 | 1.543 | 0.545 |
-| `real_clean__ekf` | 5,366 | 23.553 | 23.193 | 34.472 | 37.804 | 3.663 | -2.379 | 1.576 | 0.839 |
-| `real_clean__eskf` | 5,366 | 23.723 | 22.924 | 35.425 | 41.870 | 2.724 | 0.333 | 1.538 | 0.553 |
-| `real_sparse_5s__ukf` | 5,366 | 25.069 | 24.094 | 36.614 | 125.123 | 5.665 | 0.772 | 3.304 | 0.672 |
-| `real_sparse_5s__eskf` | 5,366 | 25.678 | 23.604 | 37.870 | 150.052 | 5.765 | 0.775 | 3.391 | 0.715 |
-| `real_outage_60s__eskf` | 5,366 | 291.407 | 28.699 | 705.003 | 2,338.920 | 5.009 | 0.313 | 12.266 | 0.670 |
-| `real_degraded__ukf` | 5,366 | 30.675 | 26.083 | 51.159 | 82.186 | 10.864 | 0.585 | 2.811 | 0.808 |
-| `real_degraded__eskf` | 5,366 | 50.601 | 42.348 | 86.844 | 136.795 | 10.873 | 0.563 | 2.796 | 0.818 |
-| `syn_cruise_1hz__ukf` | 15,000 | 4.424 | 3.672 | 7.825 | 10.151 | 0.681 | 0.065 | 0.496 | 0.381 |
-| `syn_cruise_1hz__ekf` | 15,000 | 4.421 | 3.688 | 7.679 | 10.184 | 0.667 | 0.039 | 0.049 | 0.368 |
-| `syn_cruise_1hz__eskf` | 15,000 | 3.411 | 2.832 | 5.966 | 9.262 | 0.665 | 0.068 | 1.173 | 0.322 |
-| `syn_outage_60s__ukf` | 15,000 | 221.670 | 6.335 | 412.956 | 2,337.140 | 0.763 | -0.024 | 13.623 | 0.595 |
-| `syn_outage_60s__eskf` | 15,000 | 137.659 | 1.507 | 268.475 | 1,885.740 | 0.671 | 0.065 | 8.038 | 0.335 |
+| `real_clean__ukf` | 5,366 | 23.534 | 23.111 | 34.519 | 37.719 | 2.671 | 0.341 | 1.543 | 0.541 |
+| `real_clean__ekf` | 5,366 | 23.553 | 23.191 | 34.472 | 37.804 | 3.655 | -2.398 | 1.575 | 0.869 |
+| `real_clean__eskf` | 5,366 | 23.723 | 22.925 | 35.428 | 41.865 | 2.692 | 0.334 | 1.538 | 0.550 |
+| `real_sparse_5s__ukf` | 5,366 | 25.067 | 24.094 | 36.614 | 124.727 | 5.656 | 0.776 | 3.301 | 0.671 |
+| `real_sparse_5s__eskf` | 5,366 | 25.674 | 23.605 | 37.868 | 149.698 | 5.755 | 0.779 | 3.388 | 0.714 |
+| `real_outage_60s__eskf` | 5,366 | 290.644 | 28.708 | 701.329 | 2,349.680 | 4.992 | 0.316 | 12.226 | 0.671 |
+| `real_degraded__ukf` | 5,366 | 30.675 | 26.077 | 51.158 | 82.184 | 10.839 | 0.585 | 2.810 | 0.795 |
+| `real_degraded__eskf` | 5,366 | 50.601 | 42.349 | 86.848 | 136.791 | 10.847 | 0.564 | 2.795 | 0.806 |
+| `syn_cruise_1hz__ukf` | 15,000 | 4.423 | 3.665 | 7.821 | 10.152 | 0.846 | 0.065 | 0.489 | 0.316 |
+| `syn_cruise_1hz__ekf` | 15,000 | 4.421 | 3.688 | 7.673 | 10.183 | 0.835 | 0.040 | 0.050 | 0.302 |
+| `syn_cruise_1hz__eskf` | 15,000 | 3.412 | 2.835 | 5.964 | 9.284 | 0.836 | 0.069 | 1.170 | 0.239 |
+| `syn_outage_60s__ukf` | 15,000 | 266.681 | 5.916 | 762.191 | 2,109.820 | 0.939 | -0.049 | 15.268 | 1.068 |
+| `syn_outage_60s__eskf` | 15,000 | 20.224 | 1.454 | 44.447 | 247.874 | 0.847 | 0.067 | 1.067 | 0.243 |
 | `syn_dead_reckoning` | 6,000 | 316.860 | 110.233 | 715.856 | 835.634 | 86.591 | -64.255 | 9.363 | 1.896 |
 | `real_rbpf_slice__rbpf` | 1,200 | 19.789 | 15.687 | 28.276 | 94.413 | 3.846 | -3.208 | 2.308 | 1.141 |
 
@@ -144,19 +144,19 @@ Measured on `ubuntu-latest`, rustc 1.91. Regenerate with `cargo perf`.
 
 | scenario | samples | roll RMSE (deg) | pitch RMSE (deg) | yaw RMSE (deg) | geodesic RMSE (deg) |
 |---|---:|---:|---:|---:|---:|
-| `real_clean__ukf` | 5,366 | 3.442 | 3.000 | 22.772 | 23.208 |
-| `real_clean__ekf` | 5,366 | 3.134 | 2.553 | 22.611 | 22.945 |
-| `real_clean__eskf` | 5,366 | 3.334 | 2.882 | 26.149 | 26.497 |
-| `real_sparse_5s__ukf` | 5,366 | 3.817 | 3.280 | 18.874 | 19.535 |
-| `real_sparse_5s__eskf` | 5,366 | 3.815 | 3.172 | 19.732 | 20.339 |
-| `real_outage_60s__eskf` | 5,366 | 3.734 | 3.326 | 22.887 | 23.408 |
-| `real_degraded__ukf` | 5,366 | 3.518 | 3.145 | 22.351 | 22.831 |
-| `real_degraded__eskf` | 5,366 | 3.423 | 3.043 | 26.398 | 26.776 |
-| `syn_cruise_1hz__ukf` | 15,000 | 0.977 | 0.512 | 48.735 | 48.751 |
-| `syn_cruise_1hz__ekf` | 15,000 | 0.114 | 0.069 | 0.973 | 0.982 |
-| `syn_cruise_1hz__eskf` | 15,000 | 1.068 | 0.955 | 2.175 | 2.603 |
-| `syn_outage_60s__ukf` | 15,000 | 3.509 | 3.848 | 105.085 | 105.204 |
-| `syn_outage_60s__eskf` | 15,000 | 1.231 | 1.500 | 1.060 | 2.211 |
+| `real_clean__ukf` | 5,366 | 3.448 | 2.999 | 22.773 | 23.210 |
+| `real_clean__ekf` | 5,366 | 3.133 | 2.553 | 22.610 | 22.944 |
+| `real_clean__eskf` | 5,366 | 3.332 | 2.880 | 26.153 | 26.501 |
+| `real_sparse_5s__ukf` | 5,366 | 3.818 | 3.278 | 18.866 | 19.527 |
+| `real_sparse_5s__eskf` | 5,366 | 3.813 | 3.171 | 19.737 | 20.344 |
+| `real_outage_60s__eskf` | 5,366 | 3.727 | 3.326 | 22.880 | 23.399 |
+| `real_degraded__ukf` | 5,366 | 3.525 | 3.143 | 22.347 | 22.829 |
+| `real_degraded__eskf` | 5,366 | 3.421 | 3.042 | 26.406 | 26.784 |
+| `syn_cruise_1hz__ukf` | 15,000 | 0.887 | 0.637 | 42.665 | 42.683 |
+| `syn_cruise_1hz__ekf` | 15,000 | 0.115 | 0.069 | 0.972 | 0.982 |
+| `syn_cruise_1hz__eskf` | 15,000 | 1.064 | 0.946 | 2.067 | 2.509 |
+| `syn_outage_60s__ukf` | 15,000 | 4.341 | 3.853 | 21.461 | 22.228 |
+| `syn_outage_60s__eskf` | 15,000 | 0.242 | 0.205 | 1.181 | 1.223 |
 | `syn_dead_reckoning` | 6,000 | 0.468 | 1.106 | 0.494 | 1.301 |
 | `real_rbpf_slice__rbpf` | 1,200 | 2.825 | 3.169 | 20.730 | 21.156 |
 
@@ -164,19 +164,19 @@ Measured on `ubuntu-latest`, rustc 1.91. Regenerate with `cargo perf`.
 
 | scenario | samples | npes (ideal 3.0) | 3-sigma horiz (ideal 0.9973) | 3-sigma vert (ideal 0.9973) |
 |---|---:|---:|---:|---:|
-| `real_clean__ukf` | 5,366 | 17.318 | 1.000 | 0.451 |
-| `real_clean__ekf` | 5,366 | 35.967 | 1.000 | 0.401 |
-| `real_clean__eskf` | 5,366 | 1,250.370 | 0.161 | 0.441 |
-| `real_sparse_5s__ukf` | 5,366 | 39.208 | 1.000 | 0.209 |
-| `real_sparse_5s__eskf` | 5,366 | 340.081 | 0.252 | 0.186 |
-| `real_outage_60s__eskf` | 5,366 | 812.289 | 0.275 | 0.377 |
-| `real_degraded__ukf` | 5,366 | 291.252 | 1.000 | 0.142 |
-| `real_degraded__eskf` | 5,366 | 5,709.580 | 0.057 | 0.143 |
-| `syn_cruise_1hz__ukf` | 15,000 | 3.565 | 1.000 | 0.880 |
-| `syn_cruise_1hz__ekf` | 15,000 | 3.504 | 1.000 | 0.882 |
-| `syn_cruise_1hz__eskf` | 15,000 | 5.653 | 0.996 | 0.880 |
-| `syn_outage_60s__ukf` | 15,000 | 4.375 | 1.000 | 0.845 |
-| `syn_outage_60s__eskf` | 15,000 | 5.552 | 0.992 | 0.869 |
+| `real_clean__ukf` | 5,366 | 15.896 | 1.000 | 0.466 |
+| `real_clean__ekf` | 5,366 | 33.366 | 1.000 | 0.412 |
+| `real_clean__eskf` | 5,366 | 1,248.920 | 0.161 | 0.460 |
+| `real_sparse_5s__ukf` | 5,366 | 37.562 | 1.000 | 0.211 |
+| `real_sparse_5s__eskf` | 5,366 | 338.329 | 0.252 | 0.190 |
+| `real_outage_60s__eskf` | 5,366 | 810.816 | 0.274 | 0.390 |
+| `real_degraded__ukf` | 5,366 | 272.127 | 1.000 | 0.146 |
+| `real_degraded__eskf` | 5,366 | 5,690.210 | 0.057 | 0.148 |
+| `syn_cruise_1hz__ukf` | 15,000 | 2.690 | 1.000 | 0.932 |
+| `syn_cruise_1hz__ekf` | 15,000 | 2.649 | 1.000 | 0.934 |
+| `syn_cruise_1hz__eskf` | 15,000 | 4.795 | 0.996 | 0.933 |
+| `syn_outage_60s__ukf` | 15,000 | 3.344 | 1.000 | 0.897 |
+| `syn_outage_60s__eskf` | 15,000 | 4.627 | 0.992 | 0.923 |
 | `syn_dead_reckoning` | 6,000 | -- | -- | -- |
 | `real_rbpf_slice__rbpf` | 1,200 | 183.531 | 0.480 | 0.657 |
 
@@ -187,17 +187,57 @@ Measured on `ubuntu-latest`, rustc 1.91. Regenerate with `cargo perf`.
   ranking.
 - **`syn_cruise_1hz` is where the filters actually separate**, and no one of them wins. The
   ESKF leads on position (3.41 m against 4.42 m for both others) and loses on velocity
-  (1.17 m/s against the EKF's 0.049 m/s and the UKF's 0.496 m/s); the UKF trails on attitude
+  (1.17 m/s against the EKF's 0.050 m/s and the UKF's 0.489 m/s); the UKF trails on attitude
   for the reason in caveat 3.
 - **The outage rows are dominated by attitude, not by position.** 60 s of free inertial turns a
-  few degrees of heading error into hundreds of metres, which is why `syn_outage_60s__eskf` at
-  1.06 deg of yaw coasts to 137 m while the UKF at 105 deg reaches 222 m.
+  fraction of a degree of tilt error into hundreds of metres. `syn_outage_60s__eskf` holds
+  0.20 deg of pitch and coasts to 20 m; the UKF, which does not hold its attitude through the
+  coast, reaches 267 m.
 - **The two consistency columns disagree with each other on real data, and that is the
   finding.** The UKF and EKF report a flat 1.000 horizontal containment -- a covariance so
-  conservative it cannot be wrong -- beside a vertical containment of 0.40, where six samples
-  in ten fall outside three sigma. Their `npes` of 17 and 36 is almost entirely that vertical
-  channel. The ESKF is the mirror image: 0.16 horizontal containment, an `npes` of 1,250, and
-  caveat 2 in the numerator.
+  conservative it cannot be wrong -- beside a vertical containment of 0.47 and 0.41, where
+  better than half the altitude errors fall outside three sigma. Their `npes` of 16 and 33 is
+  almost entirely that vertical channel. The ESKF is the mirror image: 0.16 horizontal
+  containment, an `npes` of 1,249, and caveat 2 in the numerator.
 - **Several numbers here therefore record known defects rather than good behaviour**, which is
   what a two-sided gate is for. Each is annotated in the baseline file. When one is fixed the
   improvement side trips and asks for the diff that records it.
+
+## The vertical process-noise retune
+
+These numbers already include one deliberate change the gate was built to catch, and it is
+worth reading as a worked example of the workflow.
+
+`DEFAULT_PROCESS_NOISE`'s altitude entry was `1e-4` m² per step -- a 1 cm standard deviation,
+a tenth of the horizontal channel's 0.1 m, an asymmetry nothing ever justified. Issue #308 had
+fixed the *units* of the horizontal entries and deliberately left this one alone, recording
+that whether `1e-4` was the right *tuning* was a separate question. The consistency columns
+answered it: at `1e-4` three-sigma altitude containment was 0.88 on the synthetic trajectory
+and 0.44 on the recording, against an ideal of 0.9973. More than half the altitude errors on
+real data fell outside the uncertainty the filter reported for them.
+
+Three entries could have been blamed. Sweeping each alone over four decades, only the altitude
+position entry moves containment the right way -- the vertical-velocity entry is flat and costs
+a vertical-velocity RMSE growing from 0.34 to 4.37 m/s, and the accelerometer-bias entry makes
+containment *worse* while taking the real 60 s-outage horizontal RMSE from 291 m to 443 m. The
+entry is now `POSITION_PROCESS_NOISE_M²`, which makes the position block isotropic in per-step
+standard deviation and lands on the knee of the measured curve.
+
+What it bought, and what it cost:
+
+| | before | after |
+|---|---:|---:|
+| `syn_cruise_1hz__eskf` 3-sigma vertical | 0.880 | **0.933** |
+| `syn_cruise_1hz__eskf` `npes` (ideal 3.0) | 5.653 | **4.795** |
+| `syn_outage_60s__eskf` horizontal RMSE | 137.66 m | **20.22 m** |
+| `syn_outage_60s__eskf` pitch RMSE | 1.500 deg | **0.205 deg** |
+| `syn_cruise_1hz__eskf` vertical RMSE | **0.665 m** | 0.836 m |
+| `syn_outage_60s__ukf` horizontal RMSE | **221.67 m** | 266.68 m |
+
+The vertical RMSE cost is the honest price: the old value bought that number by under-reporting
+its own error, and on the reference recording it is not paid at all -- vertical RMSE there
+improved slightly. The `syn_outage_60s__ukf` row is recorded but not endorsed: across the sweep
+its horizontal RMSE runs 222, 174, 267, 344 m while its yaw runs 105, 98, 21, 34 deg, so
+position degrades exactly where attitude improves fivefold. That row is a filter coasting an
+outage on an attitude it has not estimated, and it does not respond monotonically to this or
+any other knob.

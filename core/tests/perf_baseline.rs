@@ -59,14 +59,14 @@
 //! 3. **The synthetic scenarios carry no magnetometer, and the yaw column says which filters
 //!    need one.** `generate_synthetic` models no magnetic field, so the only thing aiding
 //!    heading there is the GNSS velocity fix on a moving trajectory. That turns out to be
-//!    enough: the EKF holds 0.97 deg of yaw and the ESKF 2.17 deg on `syn_cruise_1hz`, while
-//!    the UKF sits at 48.7 deg. The UKF figure is not an observability limit -- both of the
+//!    enough: the EKF holds 0.97 deg of yaw and the ESKF 2.07 deg on `syn_cruise_1hz`, while
+//!    the UKF sits at 42.7 deg. The UKF figure is not an observability limit -- both of the
 //!    other filters see the same measurements -- it is #336, which averages sigma-point Euler
 //!    angles linearly. It is recorded and gated like everything else, so fixing #336 will trip
 //!    the improvement side and ask for a re-bless.
 //! 4. **The consistency metrics mean something different on the two sources.** On the synthetic
-//!    scenarios `npes_position` lands at 3.5 to 5.7 against an ideal of 3.0, which is a real
-//!    measurement of whether the filters believe the right thing. On the real-data scenarios it
+//!    scenarios `npes_position` lands between 2.6 and 4.8 against an ideal of 3.0, which is a
+//!    real measurement of whether the filters believe the right thing. On the real-data scenarios it
 //!    reaches the hundreds, because caveat 2's 21 m offset enters the numerator while the
 //!    covariance in the denominator knows nothing about it. Those values are recorded as a
 //!    drift detector, not read as a consistency verdict.
