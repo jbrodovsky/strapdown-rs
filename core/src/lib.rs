@@ -2002,7 +2002,14 @@ fn calculate_constant_velocity_acceleration_ned(
 /// * `coords_in_degrees` - DEPRECATED: No longer used. GPS output is always in degrees.
 ///
 /// # Returns
-/// * Tuple of (IMU data vector, GPS measurements vector, true states vector)
+/// * Tuple of (IMU data vector, GPS measurements vector, true states vector).
+///
+/// The three are aligned to the order a filter consumes them in -- `predict(imu[i])` then
+/// `update(gps[i])`. `imu[i]` is the sample taken at `true_states[i]`, and `gps[i]` is the
+/// fix describing the state *after* that sample has been applied. `true_states` therefore
+/// has one entry more than the other two: `true_states[i]` is the state sample `i` starts
+/// from, and the last entry is the state a filter should hold once it has consumed
+/// everything, which is what an accuracy assertion should compare against.
 ///
 /// # Panics
 /// If the generated trajectory leaves the range the mechanization is valid over, which means
@@ -2033,19 +2040,9 @@ pub fn generate_scenario_data(
     let mut current_state = initial_state;
 
     for i in 0..num_samples {
-        // Store current true state (lat/lon in radians)
+        // `true_states[i]` is the state sample `i` starts from; the entry pushed after the
+        // loop is the one a filter holds once it has consumed all of them.
         true_states.push(current_state);
-
-        // Generate GPS measurement from current state
-        // GPS measurements are ALWAYS in degrees (per measurement model spec)
-        let gps_meas = GPSPositionMeasurement {
-            latitude: current_state.latitude.to_degrees(),
-            longitude: current_state.longitude.to_degrees(),
-            altitude: current_state.altitude,
-            horizontal_noise_std: 5.0 * earth::METERS_TO_DEGREES,
-            vertical_noise_std: 2.0,
-        };
-        gps_measurements.push(gps_meas.clone());
 
         // Calculate acceleration based on mode
         let accel_nav = if constant_velocity {
@@ -2096,6 +2093,38 @@ pub fn generate_scenario_data(
         // hand-rolled copy of it: duplicating the equations here is what made this helper
         // silently wrong when the mechanization moved to increments.
         mechanize(&mut current_state, &ImuSample::from_rates(&imu, dt)).unwrap();
+
+        // Recorded *after* the propagation, so `gps[i]` describes the state a filter holds
+        // once it has consumed `imu[i]` -- which is the order every runner applies them in:
+        // predict, then update. Built before the propagation instead, as this did until
+        // #295, every fix is one sample stale, which at 10 m/s is a persistent 2 m
+        // along-track pull backwards at every step. It did not show up in the assertions
+        // because `true_states.last()` was stale by the same one sample and the two
+        // cancelled at the comparison point -- but a persistent position bias is what
+        // `filter_comparison.rs` records diverging an INS vertical channel to 1e33 m in 600
+        // samples, which is not something to leave in a harness whose vertical channel is
+        // the thing under test.
+        //
+        // GPS measurements are ALWAYS in degrees (per measurement model spec).
+        let gps_meas = GPSPositionMeasurement {
+            latitude: current_state.latitude.to_degrees(),
+            longitude: current_state.longitude.to_degrees(),
+            altitude: current_state.altitude,
+            // Metres, both. `get_noise` does the metres-to-radians conversion on the
+            // horizontal channel itself, so pre-converting here squares the factor and
+            // hands the filters a 45 um GPS -- the defect `filter_comparison.rs` names
+            // in its own fix builder, and which lived here until #295. For a Kalman
+            // filter that is merely an over-confident diagonal R, but a particle weight
+            // is one scalar over all three channels, and a horizontal sigma that small
+            // dominates the resampling decision outright: the cloud collapses onto
+            // whichever particle fits horizontally, regardless of its altitude, and the
+            // vertical channel receives no information at all. See
+            // `rbpf_runs_on_scenario_stationary`.
+            horizontal_noise_std: 5.0,
+            vertical_noise_std: 2.0,
+        };
+        gps_measurements.push(gps_meas.clone());
+
         let velocity = Vector3::new(
             current_state.velocity_north,
             current_state.velocity_east,
@@ -2121,6 +2150,10 @@ pub fn generate_scenario_data(
             );
         }
     }
+    // One more than there are samples, matching `filter_comparison.rs`: `true_states[i]` is
+    // the state sample `i` starts from, so the state a filter should hold after consuming
+    // all of them is this extra entry.
+    true_states.push(current_state);
 
     (imu_data, gps_measurements, true_states)
 }
@@ -3230,7 +3263,9 @@ mod tests {
         // Verify we generated the expected number of samples
         assert_eq!(imu_data.len(), duration_seconds * sample_rate_hz);
         assert_eq!(gps_measurements.len(), duration_seconds * sample_rate_hz);
-        assert_eq!(true_states.len(), duration_seconds * sample_rate_hz);
+        // One more than there are samples: the extra entry is the state reached after the
+        // last one, which is what a filter holds at the end of the run (#295).
+        assert_eq!(true_states.len(), duration_seconds * sample_rate_hz + 1);
 
         // Check final state
         let final_state = true_states.last().unwrap();
@@ -3299,6 +3334,48 @@ mod tests {
             lon_change_approx,
             (final_state.longitude - initial_state.longitude).to_degrees()
         );
+    }
+
+    /// The generated fixes must declare their accuracy in metres (#295).
+    ///
+    /// [`GPSPositionMeasurement::horizontal_noise_std`] is metres and `get_noise` does the
+    /// metres-to-radians conversion itself, so a caller that pre-converts squares the factor.
+    /// This generator did, which left every fix it produced claiming a horizontal accuracy of
+    /// 45 micrometres. That is survivable for a Kalman filter -- an over-confident diagonal
+    /// entry -- and fatal for the RBPF, whose particle weight is one scalar over all three
+    /// channels: the cloud resampled on the horizontal residual alone and the altitude
+    /// channel went unaided for the whole run.
+    ///
+    /// Asserted through `get_noise` rather than on the field, because the field's value is
+    /// only wrong relative to what that conversion does to it.
+    #[test]
+    fn generated_gps_fixes_declare_their_accuracy_in_meters() {
+        let state = StrapdownState {
+            latitude: 40.0_f64.to_radians(),
+            longitude: (-105.0_f64).to_radians(),
+            altitude: 1000.0,
+            attitude: Rotation3::identity(),
+            is_enu: true,
+            ..StrapdownState::default()
+        };
+        let g = earth::gravity(&40.0, &1000.0);
+        let (_imu, gps, _truth) = generate_scenario_data(
+            state,
+            1,
+            1,
+            Vector3::new(0.0, 0.0, g),
+            Vector3::zeros(),
+            true,
+            true,
+            false,
+        );
+
+        let noise = gps[0].get_noise();
+        // Back out of radians of arc, the units `get_noise` leaves the horizontal channel in.
+        let horizontal_std_m = noise[(0, 0)].sqrt() / earth::METERS_TO_RADIANS;
+        let vertical_std_m = noise[(2, 2)].sqrt();
+        assert_approx_eq!(horizontal_std_m, 5.0, 1e-9);
+        assert_approx_eq!(vertical_std_m, 2.0, 1e-12);
     }
 
     /// Test synthetic trajectory generation for stationary vehicle at rest in ENU frame

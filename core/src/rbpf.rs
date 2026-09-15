@@ -1592,6 +1592,159 @@ mod tests {
         );
     }
 
+    /// The filter configuration every `rbpf_runs_on_scenario_*` test uses.
+    ///
+    /// Hoisted out of the runner because [`assert_solution_consistent_with_posterior`] reads
+    /// the tuning back off it to anchor the reported posterior: an anchor computed from the
+    /// config cannot drift away from the filter it is checking the way a literal can.
+    fn scenario_config() -> RbpfConfig {
+        RbpfConfig {
+            num_particles: 10000,
+            position_init_std_m: Vector3::new(10.0, 10.0, 5.0),
+            seed: 123,
+            zero_vertical_velocity: true,
+            zero_vertical_velocity_std_mps: 0.05,
+            ..RbpfConfig::default()
+        }
+    }
+
+    /// Steady-state posterior standard deviation of the **altitude** channel, in metres.
+    ///
+    /// The altitude channel of this filter is, once it has settled, a scalar random walk of
+    /// per-step standard deviation `position_process_noise_std_m[2] * sqrt(dt)` observed
+    /// every step by a fix of standard deviation `vertical_noise_std`. Its posterior
+    /// variance is the fixed point of the scalar Riccati recursion
+    ///
+    /// $$ P = \frac{(P + Q) R}{P + Q + R}, \qquad Q = \sigma_w^2, \quad R = \sigma_v^2 $$
+    ///
+    /// Writing $x = P + Q$ for the predicted variance, that is $x^2 - Qx - QR = 0$, whose
+    /// positive root is $x = \tfrac{1}{2}(Q + \sqrt{Q^2 + 4QR})$ and so $P = x - Q$.
+    ///
+    /// # Altitude only, and why
+    ///
+    /// This is *not* a general model of the filter's position block, and it is used here
+    /// only as the anchor in [`assert_solution_consistent_with_posterior`] -- never as an
+    /// error bound. [`RaoBlackwellizedParticleFilter::predict_sample`] draws its position
+    /// noise from `f_nl P_l f_nl^T + q_n`, so the velocity and attitude covariance
+    /// contributes to every position innovation and the true per-step process noise exceeds
+    /// `q_n` alone. Whether that matters is a question about magnitudes, and the two
+    /// horizontal channels answer it differently from the vertical one:
+    ///
+    /// * **Altitude.** The coupling enters through `f[(2, 5)] = ±dt` against a vertical
+    ///   velocity variance the zero-vertical-velocity pseudo-measurement holds near
+    ///   1.0e-5 m^2/s^2, so `f_nl P_l f_nl^T` contributes ~4e-7 m^2 against a `q_n` of
+    ///   0.2 m^2 -- two parts in a million. Measured over the twelve runs tabulated on
+    ///   [`rbpf_runs_on_scenario_stationary`], this expression predicts 0.8944 m and the
+    ///   filter reports 0.888-0.909 m: agreement to 1.6%.
+    /// * **Horizontal.** Nothing aids the horizontal velocity states in these scenarios --
+    ///   the fixes are position-only -- so their error variance stays large and the
+    ///   coupling dominates. The same expression predicts 1.4623 m per axis where the
+    ///   filter reports 1.84-1.88 m north and 1.52-1.57 m east, low by ~26%. A bound built
+    ///   on it would be tighter than 3 sigma while claiming to be 3 sigma, and could reject
+    ///   a healthy run. The horizontal channels are therefore bounded by the reported
+    ///   posterior and are not anchored to any closed form.
+    ///
+    /// Deriving the horizontal steady state honestly means solving the coupled
+    /// position/linear recursion, which is reimplementing the filter inside its own test.
+    /// Bounding against the reported posterior instead costs nothing and is exact by
+    /// construction; the altitude anchor below is what stops that being circular.
+    fn steady_state_altitude_std(config: &RbpfConfig, dt: f64, vertical_noise_std_m: f64) -> f64 {
+        let q = (config.position_process_noise_std_m[2] * dt.sqrt()).powi(2);
+        let r = vertical_noise_std_m.powi(2);
+        let predicted = 0.5 * (q + q.mul_add(q, 4.0 * q * r).sqrt());
+        (predicted - q).sqrt()
+    }
+
+    /// The reported position covariance as (north, east, up) standard deviations in ground
+    /// metres.
+    ///
+    /// [`RaoBlackwellizedParticleFilter::estimate`] reports latitude and longitude variance
+    /// in rad^2, which are not comparable to each other or to the great-circle distance
+    /// [`assert_solution_close_to_truth`] measures. Converting with the WGS84 radii of
+    /// curvature at the estimate -- and the `cos(latitude)` a radian of longitude carries --
+    /// puts all three on the metric the assertion uses.
+    fn posterior_position_std_m(mean: &DVector<f64>, cov: &DMatrix<f64>) -> Vector3<f64> {
+        let latitude_rad = mean[0];
+        let altitude_m = mean[2];
+        let (meridian_radius, transverse_radius, _) =
+            earth::principal_radii(&latitude_rad.to_degrees(), &altitude_m);
+        Vector3::new(
+            cov[(0, 0)].sqrt() * (meridian_radius + altitude_m),
+            cov[(1, 1)].sqrt() * (transverse_radius + altitude_m) * latitude_rad.cos(),
+            cov[(2, 2)].sqrt(),
+        )
+    }
+
+    /// How many standard deviations of its own posterior the filter's final error may be.
+    ///
+    /// Three: the ordinary Gaussian consistency threshold. An estimate further than this
+    /// from truth is inconsistent with the uncertainty the filter is reporting, which is the
+    /// defect worth failing on -- not any particular metre count.
+    const CONSISTENCY_SIGMAS: f64 = 3.0;
+
+    /// Factor by which the reported altitude sigma may differ from the derived one.
+    ///
+    /// The two agree to 1.6% across twelve runs, so 1.25 is loose by an order of magnitude
+    /// against the observed scatter. It is deliberately not tightened to that scatter: the
+    /// assertion exists to catch a *regime* change -- a collapsed cloud, or a posterior
+    /// inflated until the consistency bound admits anything -- not to pin a fourth decimal.
+    /// The #295 cloud collapse missed it by a factor of 1e10.
+    const ALTITUDE_POSTERIOR_TOLERANCE: f64 = 1.25;
+
+    /// Assert a scenario run is consistent with the filter's own posterior, and that the
+    /// posterior is itself the one the configuration implies.
+    ///
+    /// Two assertions, because either alone is defeatable:
+    ///
+    /// 1. **The estimate lies within [`CONSISTENCY_SIGMAS`] of the reported posterior.**
+    ///    This is the textbook consistency test and needs no model of the filter -- the
+    ///    reported covariance already carries the position/linear coupling that makes a
+    ///    closed form intractable here. On its own, though, a filter that inflated its
+    ///    covariance would pass it trivially.
+    /// 2. **The reported altitude sigma matches [`steady_state_altitude_std`].** An
+    ///    independent, configuration-derived anchor on the one channel where the scalar
+    ///    model is exact. This is the assertion that fails hardest on #295: with the cloud
+    ///    collapsed the filter reported ~1e-10 m against a derived 0.894 m.
+    ///
+    /// Together they say the filter's uncertainty is the one its tuning implies *and* its
+    /// estimate is consistent with that uncertainty, which is what the fitted metre counts
+    /// these replaced were reaching for.
+    fn assert_solution_consistent_with_posterior(
+        mean: &DVector<f64>,
+        cov: &DMatrix<f64>,
+        truth: &StrapdownState,
+        gps: &GPSPositionMeasurement,
+        sample_rate_hz: usize,
+        max_velocity_error_mps: f64,
+    ) {
+        let dt = 1.0 / sample_rate_hz as f64;
+        let reported = posterior_position_std_m(mean, cov);
+        let derived_altitude_std =
+            steady_state_altitude_std(&scenario_config(), dt, gps.vertical_noise_std);
+
+        let ratio = reported[2] / derived_altitude_std;
+        assert!(
+            (1.0 / ALTITUDE_POSTERIOR_TOLERANCE..=ALTITUDE_POSTERIOR_TOLERANCE).contains(&ratio),
+            "reported altitude sigma {:.4e} m is {ratio:.3}x the {derived_altitude_std:.4} m the \
+             configuration implies. Outside {ALTITUDE_POSTERIOR_TOLERANCE}x the vertical channel \
+             is in a different regime from the one the bound below assumes -- a collapsed cloud \
+             reads far below (this was ~1e-10 m under #295), an inflated one far above",
+            reported[2]
+        );
+
+        // The great-circle distance combines the two horizontal axes, so its bound is three
+        // sigma of their quadrature sum.
+        let max_horizontal_error_m = CONSISTENCY_SIGMAS * reported[0].hypot(reported[1]);
+        let max_altitude_error_m = CONSISTENCY_SIGMAS * reported[2];
+        assert_solution_close_to_truth(
+            mean,
+            truth,
+            max_horizontal_error_m,
+            max_altitude_error_m,
+            max_velocity_error_mps,
+        );
+    }
+
     /// A measurement that reads a bias state off the end of the full state vector, the way
     /// the `geonav` map models do. Nothing in `strapdown-core` carries an extra state, so
     /// without this the [`RbpfConfig::extra_state_dim`] path has no exercise here.
@@ -1951,15 +2104,7 @@ mod tests {
         assert_eq!(imu_data.len(), gps_measurements.len());
         let dt = 1.0 / sample_rate_hz as f64;
 
-        let config = RbpfConfig {
-            num_particles: 10000,
-            position_init_std_m: Vector3::new(10.0, 10.0, 5.0),
-            seed: 123,
-            zero_vertical_velocity: true,
-            zero_vertical_velocity_std_mps: 0.05,
-            ..RbpfConfig::default()
-        };
-        let mut rbpf = RaoBlackwellizedParticleFilter::new(nominal, config).unwrap();
+        let mut rbpf = RaoBlackwellizedParticleFilter::new(nominal, scenario_config()).unwrap();
 
         for (imu, gps) in imu_data.iter().zip(gps_measurements.iter()) {
             rbpf.predict(imu, dt).unwrap();
@@ -2042,62 +2187,89 @@ mod tests {
         assert!(mean[2].is_finite());
     }
 
+    /// The vertical channel must be aided, not merely present (#295).
+    ///
+    /// The truth here is exactly stationary -- altitude 1000.0000 m and all three
+    /// velocities identically zero at every step -- and the filter is handed a noiseless
+    /// 1000 m altitude fix 3000 times, so anything but a centimetre-scale answer means the
+    /// altitude channel is not receiving those fixes at all. For most of this test's life
+    /// it was not, and the run ended tens of metres away.
+    ///
+    /// # What was wrong
+    ///
+    /// `generate_scenario_data` built its fixes with `horizontal_noise_std: 5.0 *
+    /// METERS_TO_DEGREES`, but that field is metres and `GPSPositionMeasurement::get_noise`
+    /// converts it itself. The squared conversion left a horizontal sigma of 7.1e-12 rad --
+    /// 45 micrometres.
+    ///
+    /// A Kalman filter survives that: R is diagonal, so an absurd horizontal entry leaves
+    /// the vertical gain alone. A particle weight does not, because it is a single scalar
+    /// over all three channels. At 45 um the horizontal term dominated the likelihood
+    /// completely, the cloud resampled onto whichever particle fit horizontally without
+    /// regard to its altitude, and after the first update every particle was a copy of one
+    /// survivor: the reported altitude variance was ~1e-20 m^2 and the weighted mean
+    /// altitude error was identically zero, so `recenter_errors` never moved the nominal
+    /// altitude either. The vertical channel then ran open-loop for 600 s, seeded with that
+    /// one survivor's arbitrary N(0, 5 m) initial altitude error.
+    ///
+    /// That is the whole of #295, including the part that made it look like tuning. An
+    /// unaided INS vertical channel is exponentially unstable, so the 600 s endpoint was a
+    /// draw rather than a convergent value, and any perturbation resampled it -- which is
+    /// why a 0.4% change to the ellipsoid radii in #292 moved it by 16 m, and why four
+    /// successive mechanization corrections moved it around without closing the gap.
+    ///
+    /// # The measurement
+    ///
+    /// #331 established the sharpest form of the symptom before the cause was known: a 5x
+    /// increase in the vertical process noise bought ~2.4x the altitude error, so the error
+    /// went as `sqrt(Q)` -- the channel was dominated by its own process noise rather than
+    /// held by the 5 Hz fixes it was being given, and a healthy channel would barely notice
+    /// Q. Re-running that sweep across the same four seeds, before and after the fix units
+    /// are corrected, final altitude error in metres:
+    ///
+    ///     seed        stationary        v north          v east
+    ///                 pre     post      pre     post     pre     post
+    ///     123        72.67   0.0122    53.50   0.0045   24.73   0.0007
+    ///     7          17.59   0.0014    11.32   0.0188   49.83   0.0046
+    ///     20260915   13.91   0.0073     9.62   0.0016   21.75   0.0045
+    ///     991        28.23   0.0136    10.66   0.0163    5.96   0.0037
+    ///
+    /// Three orders of magnitude, and the seed scatter is gone with it: the endpoint is no
+    /// longer a draw from a wide distribution but the same centimetre answer every time,
+    /// which is what "converged" means and what no amount of mechanization work had
+    /// produced. The cloud's altitude spread goes from ~1e-10 m to the 0.888-0.909 m its
+    /// own noise model calls for.
+    ///
+    /// The two moving columns also carry the fix/truth timestamp alignment described on
+    /// `generate_scenario_data`: its fixes used to be built before the propagation and were
+    /// therefore one sample stale, a 2 m along-track pull at 10 m/s. The stationary column
+    /// is bit-identical with and without that second correction, which is the check that it
+    /// does what it claims -- a stationary platform has no along-track lag to remove.
+    ///
+    /// The horizontal error moving the *other* way -- 0.003 m before, 0.016-0.051 m after --
+    /// is the same defect seen from the front: 3 mm against a nominally 5 m fix was the
+    /// filter reporting how tight it had actually been told the fix was.
+    ///
+    /// # Why the EKF/UKF/ESKF were never affected
+    ///
+    /// They never consumed this generator: `generate_scenario_data`'s fixes reach only the
+    /// RBPF tests in this module, and the Kalman filters are compared on
+    /// `core/tests/filter_comparison.rs`, whose builder already passes metres and says why.
+    /// All four filters clear that suite's 3 m altitude bound on a shared scenario. The
+    /// coupling that caused this is structural to the particle weight and has no analogue
+    /// in a Kalman update, so there is no corresponding compensation to remove from the
+    /// vertical channel they share.
+    ///
+    /// # The bound
+    ///
+    /// [`assert_solution_consistent_with_posterior`], not a metre count: the estimate must
+    /// lie within three sigma of the covariance the filter itself reports, and that
+    /// covariance must be the one the configuration implies. The 15 m this replaces was
+    /// fitted -- 1.2x margin over a 12.49 m baseline that was itself the product of
+    /// cancelling bugs -- and is what #295 and #288 asked to be rid of. Both halves catch
+    /// the defect decisively: the collapsed cloud reported ~1e-10 m against a derived
+    /// 0.894 m, and its 13.98 m error was 22 sigma of even the healthy posterior.
     #[test]
-    // Quarantined by #295, not tuned around. Correcting the `principal_radii`
-    // units in #292 moved the stationary altitude error from 12.49 m to
-    // 28.71 m against a 15 m bound that itself had only 1.2x margin over the
-    // buggy baseline. The radii change by 0.4%, so the vertical channel is
-    // compensating for the old units rather than responding to them; raising
-    // the bound to 30 m would hide that. Re-enable when #295 is root-caused.
-    //
-    // Update from #297: correcting `transport_rate` to Groves 5.44 brought this
-    // to 5.19 m, inside the original 15 m bound. #319 then moved it back out to
-    // 23.52 m while improving both moving scenarios -- so the 5.19 m was a
-    // cancellation between two bugs, not convergence. #321 brought it to 16.66 m
-    // and the Jacobian corrections from its review to 31.51 m, all outside it.
-    //
-    // #325 and #317 -- the missing velocity and position columns of the Coriolis
-    // and transport block -- brought it to **13.98 m**, inside the 15 m bound for
-    // the first time since #292. Isolated by building the library with only the
-    // altitude-row half-step disabled and re-running this test twice per
-    // configuration:
-    //
-    //     pre-#325 library                    31.51 m   FAIL
-    //     + #325 velocity + #317 position     13.98 m   PASS
-    //     + the altitude-row half-step        35.92 m   FAIL
-    //
-    // The third line is what made this look like a regression on first reading.
-    // That half-step is a real term but it is not what either issue asks for, it
-    // is inconsistent on its own (rows 0 and 1 carry the same term and would be
-    // left first-order), and it costs 22 m here -- so it is deferred to #338
-    // rather than shipped. Recorded because a future reader will otherwise
-    // rediscover only the 35.92 m.
-    //
-    // This test is still `#[ignore]`d. It passes, but against a bound #295 itself
-    // calls fitted -- 15 m was chosen for 1.2x margin over a 12.49 m baseline that
-    // was the product of two cancelling bugs -- and 13.98 m clears it by 7%.
-    // Re-enabling on that number would be #288's mistake twice over. #295's
-    // acceptance criterion is a *derived* bound; this measurement is a large step
-    // toward it, not a substitute for it.
-    //
-    // #319 also established what the number actually measures: the truth here is
-    // exactly stationary (altitude 1000.0000 m, all three velocities identically
-    // zero, at every step), so the whole error is the filter's own altitude
-    // climbing away from a fixed truth while it is fed 5 Hz GNSS altitude fixes.
-    // That is a filter defect, not a mechanization one, and it is what #295 has
-    // to explain before this test means anything. Four corrections to the
-    // mechanization and its linearisation have now moved the number around
-    // without closing the gap, which is the evidence for that reading.
-    //
-    // #331 -- `sqrt(dt)` rather than `dt` on the position process noise -- multiplies the
-    // vertical entry of Q by 5 in variance at this 5 Hz rate, and moved this to **72.67 m**.
-    // The bound below is left at the fitted 15 m rather than raised to suit: this test is
-    // quarantined, and re-fitting a bound #295 already calls fitted would add nothing. See
-    // `rbpf_runs_on_scenario_constant_velocity_north` for the seed scatter #331 measured,
-    // which is the more useful result: a 5x Q gives ~2.4x the altitude error, so the error
-    // scales as sqrt(Q) -- the vertical channel is dominated by its own process noise
-    // rather than held by its 5 Hz altitude fixes, which is what #295 has to explain.
-    #[ignore = "RBPF vertical channel was tuned against the pre-#292 radii bug -- see #295"]
     fn rbpf_runs_on_scenario_stationary() {
         let lat_deg: f64 = 40.0;
         let lon_deg: f64 = -105.0;
@@ -2137,11 +2309,22 @@ mod tests {
         nominal.latitude += delta_deg.to_radians();
         nominal.longitude -= delta_deg.to_radians();
 
-        let (mean, _cov) =
+        let (mean, cov) =
             run_rbpf_on_scenario(nominal, &imu_data, &gps_measurements, sample_rate_hz);
         let truth = true_states.last().unwrap();
 
-        assert_solution_close_to_truth(&mean, truth, 25.0, 15.0, 0.5);
+        // The velocity bound stays a literal. The fixes here are position-only, so nothing
+        // aids the horizontal velocity states directly and there is no posterior of theirs
+        // in the 9-state covariance worth bounding against; 0.5 m/s is an anti-divergence
+        // guard on a channel that measures 0.004-0.017 m/s across the twelve runs above.
+        assert_solution_consistent_with_posterior(
+            &mean,
+            &cov,
+            truth,
+            &gps_measurements[0],
+            sample_rate_hz,
+            0.5,
+        );
     }
 
     #[test]
@@ -2185,67 +2368,27 @@ mod tests {
         nominal.latitude -= delta_deg.to_radians();
         nominal.longitude += delta_deg.to_radians();
 
-        let (mean, _cov) =
+        let (mean, cov) =
             run_rbpf_on_scenario(nominal, &imu_data, &gps_measurements, sample_rate_hz);
         let truth = true_states.last().unwrap();
 
         // Expect northward motion; RBPF estimate should reflect it.
         assert!(mean[0] > initial_state.latitude);
-        // Horizontal and velocity bounds are accuracy bounds and hold with three
-        // orders of magnitude to spare (0.003 m, 0.003 m/s observed). The altitude
-        // bound is not: it is an anti-divergence guard on the vertical channel
-        // #295 has already flagged as untrustworthy. Final altitude error across
-        // the three scenarios, as the mechanization was corrected:
-        //
-        //     scenario    pre-#297  post-#297  post-#319  post-#321  +Jacobian
-        //     stationary    28.71 m     5.19 m    23.52 m    16.66 m    31.51 m  (quarantined)
-        //     v north       21.58 m    25.89 m    18.00 m    18.02 m    27.15 m
-        //     v east        13.74 m    10.36 m     5.74 m     0.51 m     7.86 m
-        //
-        // The last column is the two `transition_jacobian` corrections that came out
-        // of PR review on #321 -- reflecting the Earth and transport rates into the
-        // caller's frame, and the transport-to-attitude coupling sign. Splitting them
-        // apart gives, for the eastward scenario alone, 0.51 m with neither, 21.39 m
-        // with the frame reflection only, 24.06 m with the sign only and 7.86 m with
-        // both. Four defensible covariance models, four unrelated answers, while the
-        // horizontal and velocity errors never leave 0.003 m and 0.005 m/s. That
-        // scatter is the argument for treating this bound as a guard rather than an
-        // accuracy claim, and it is #295's whole point: the vertical channel is not
-        // converging, so its 600 s endpoint is a sample. Correctness of those two
-        // corrections rests on the finite-difference checks in `linearize.rs`, which
-        // agree to 1e-12, not on the column above.
-        //
-        // 150 m is ~2x the worst observed, matching the horizontal guard beside it: a
-        // genuine divergence (1e8 m scale, cf. #266) still trips it, codegen jitter
-        // cannot. It was 50 m until #331 corrected the position process noise to scale
-        // its standard deviation by `sqrt(dt)` rather than `dt`, which at this 5 Hz rate
-        // multiplies the vertical entry of Q by 5 in variance.
-        //
-        // That correction is also the first measurement that says what the vertical
-        // channel is doing. Running all three scenarios over four seeds, before and
-        // after, final altitude error in metres:
-        //
-        //     seed        stationary      v north        v east
-        //                 pre    post     pre    post    pre    post
-        //     123        13.98  72.67     1.73  53.50   21.80  24.73
-        //     7          16.53  17.59    12.89  11.32   14.12  49.83
-        //     20260915    1.20  13.91     5.12   9.62    8.52  21.75
-        //     991         5.05  28.23     7.21  10.66   15.44   5.96
-        //     mean       ~9.2   ~33.1    ~6.7   ~21.3   ~15.0  ~25.6
-        //
-        // Two things follow. The endpoint is a draw from a wide distribution rather than
-        // a converged value -- no scenario is reliably the worst, and one seed's 1.73 m
-        // is another's 53.50 m -- which is what the paragraph above already suspected and
-        // this makes quantitative. And a 5x increase in the vertical Q buys roughly 2.4x
-        // the altitude error, i.e. the error goes as sqrt(Q): the channel is dominated by
-        // its own process noise rather than held by the 5 Hz altitude fixes it is being
-        // given. A healthy channel fed those fixes would sit near the metre level and
-        // barely notice Q. That is #295's defect, stated as a measurement.
-        //
-        // The horizontal and velocity errors move not at all across the same 24 runs
-        // (0.004-0.010 m, 0.002-0.012 m/s), so this is the vertical channel alone.
-        // Do not tighten to the observed value without fixing #295.
-        assert_solution_close_to_truth(&mean, truth, 50.0, 150.0, 1.0);
+        // Tightened from the 50 m / 150 m guards that stood here until #295. They were
+        // loose because the vertical channel was unaided and its 600 s endpoint was a draw
+        // rather than a converged value -- the four-seed table this comment used to carry
+        // measured 9.62 m to 53.50 m on this scenario alone, and said not to tighten until
+        // #295 was understood. It was the fix units, not the mechanization: the same four
+        // seeds now give 0.0016 m to 0.0188 m here. See
+        // `rbpf_runs_on_scenario_stationary` for the full sweep and the root cause.
+        assert_solution_consistent_with_posterior(
+            &mean,
+            &cov,
+            truth,
+            &gps_measurements[0],
+            sample_rate_hz,
+            1.0,
+        );
     }
 
     #[test]
@@ -2289,16 +2432,24 @@ mod tests {
         nominal.latitude += delta_deg.to_radians();
         nominal.longitude -= delta_deg.to_radians();
 
-        let (mean, _cov) =
+        let (mean, cov) =
             run_rbpf_on_scenario(nominal, &imu_data, &gps_measurements, sample_rate_hz);
         let truth = true_states.last().unwrap();
 
         // Expect eastward motion; RBPF estimate should reflect it.
         assert!(mean[1] > initial_state.longitude);
-        // Altitude is an anti-divergence guard, not an accuracy claim, and it is the same
-        // 150 m as the northward scenario for the same reason -- see the seed scatter
-        // recorded there. It was 25 m until #331.
-        assert_solution_close_to_truth(&mean, truth, 50.0, 150.0, 1.0);
+        // Bounded against the reported posterior, as in the two scenarios above, in place of
+        // the 50 m / 150 m guards #295 removed the reason for. Across the four seeds swept
+        // in `rbpf_runs_on_scenario_stationary` this scenario went from 5.96-49.83 m of
+        // altitude error to 0.0007-0.0046 m.
+        assert_solution_consistent_with_posterior(
+            &mean,
+            &cov,
+            truth,
+            &gps_measurements[0],
+            sample_rate_hz,
+            1.0,
+        );
     }
 
     /// #268: every particle's conditional covariance stays identical.
