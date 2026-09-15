@@ -781,6 +781,29 @@ impl InitialUncertainty {
     }
 }
 
+/// Radians of latitude per metre of northing and radians of longitude per metre of easting.
+///
+/// Uses the WGS84 meridian and transverse radii of curvature (Groves §2.4.4), matching the
+/// radii [`position_update`] integrates against, so a distance expressed through this
+/// carries exactly the units the filter's position states do.
+///
+/// The two factors are *not* interchangeable. A metre of northing subtends
+/// `1 / (R_N + h)` radians; a metre of easting subtends `1 / ((R_E + h) cos(latitude))`,
+/// which is larger, and increasingly so towards the poles. Using the latitude factor for
+/// both -- what [`earth::METERS_TO_DEGREES`] invites, being a latitude conversion --
+/// understates a longitude angle by `cos(latitude)`, so a distance converted that way comes
+/// back on the ground *shrunk* by that factor: 7.7 m of a requested 10 m at 40 degrees,
+/// 1.7 m at 80. That was the RBPF's initial spread and process noise until #331.
+pub(crate) fn horizontal_meters_to_radians(latitude_degrees: f64, altitude_m: f64) -> (f64, f64) {
+    let (meridian_radius_m, transverse_radius_m, _) =
+        earth::principal_radii(&latitude_degrees, &altitude_m);
+    let cosine_latitude = latitude_degrees.to_radians().cos().max(MIN_COSINE_LATITUDE);
+    (
+        1.0 / (meridian_radius_m + altitude_m),
+        1.0 / ((transverse_radius_m + altitude_m) * cosine_latitude),
+    )
+}
+
 /// Convert a horizontal position uncertainty in metres to latitude and longitude variances.
 ///
 /// Uses the WGS84 meridian and transverse radii of curvature (Groves §2.4.4), matching the
@@ -791,13 +814,12 @@ fn horizontal_position_variance(
     latitude_degrees: f64,
     altitude_m: f64,
 ) -> (f64, f64) {
-    let (meridian_radius_m, transverse_radius_m, _) =
-        earth::principal_radii(&latitude_degrees, &altitude_m);
-    let cosine_latitude = latitude_degrees.to_radians().cos().max(MIN_COSINE_LATITUDE);
-    let latitude_variance = (horizontal_position_m / (meridian_radius_m + altitude_m)).powi(2);
-    let longitude_variance =
-        (horizontal_position_m / ((transverse_radius_m + altitude_m) * cosine_latitude)).powi(2);
-    (latitude_variance, longitude_variance)
+    let (latitude_radians_per_meter, longitude_radians_per_meter) =
+        horizontal_meters_to_radians(latitude_degrees, altitude_m);
+    (
+        (horizontal_position_m * latitude_radians_per_meter).powi(2),
+        (horizontal_position_m * longitude_radians_per_meter).powi(2),
+    )
 }
 
 /// Basic structure for holding raw IMU data in the form of sensed acceleration and angular rate vectors.
@@ -2025,10 +2047,10 @@ pub fn generate_scenario_data(
             // hands the filters a 45 um GPS -- the defect `filter_comparison.rs` names
             // in its own fix builder, and which lived here until #295. For a Kalman
             // filter that is merely an over-confident diagonal R, but a particle weight
-            // is one scalar over all three channels: a horizontal term that tight
-            // decides the resampling outright, the cloud collapses onto whichever
-            // particle fits horizontally regardless of its altitude, and the vertical
-            // channel receives no information at all. See
+            // is one scalar over all three channels, and a horizontal sigma that small
+            // dominates the resampling decision outright: the cloud collapses onto
+            // whichever particle fits horizontally, regardless of its altitude, and the
+            // vertical channel receives no information at all. See
             // `rbpf_runs_on_scenario_stationary`.
             horizontal_noise_std: 5.0,
             vertical_noise_std: 2.0,

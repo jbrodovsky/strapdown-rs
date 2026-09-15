@@ -2586,7 +2586,17 @@ pub fn run_closed_loop<F: NavigationFilter>(
     Ok(results)
 }
 /// Print the Unscented Kalman Filter state and covariance for debugging purposes.
+///
+/// The reference each error is measured against is the same quantity
+/// [`TestDataRecord::initial_state`] seeds the filter from: the ground track through
+/// [`TestDataRecord::ground_track_velocity`] and the attitude through
+/// [`TestDataRecord::attitude`]. Taking `speed * bearing.cos()` and the raw
+/// `roll`/`pitch`/`yaw` columns instead -- degrees fed to a radian trig call, and Euler
+/// angles in a convention that is not nalgebra's -- made this diagnostic report a large
+/// error for a correctly initialised filter.
 pub fn print_ukf(ukf: &UnscentedKalmanFilter, record: &TestDataRecord) {
+    let (reference_north, reference_east) = record.ground_track_velocity();
+    let (reference_roll, reference_pitch, reference_yaw) = record.attitude().euler_angles();
     debug!(
         "UKF position: ({:.4}, {:.4}, {:.4})  |  Covariance: {:.4e}, {:.4e}, {:.4}  |  Error: {:.4e}, {:.4e}, {:.4}",
         ukf.get_estimate()[0].to_degrees(),
@@ -2607,8 +2617,8 @@ pub fn print_ukf(ukf: &UnscentedKalmanFilter, record: &TestDataRecord) {
         ukf.get_certainty()[(3, 3)],
         ukf.get_certainty()[(4, 4)],
         ukf.get_certainty()[(5, 5)],
-        ukf.get_estimate()[3] - record.speed * record.bearing.cos(),
-        ukf.get_estimate()[4] - record.speed * record.bearing.sin(),
+        ukf.get_estimate()[3] - reference_north,
+        ukf.get_estimate()[4] - reference_east,
         ukf.get_estimate()[5] - 0.0 // Assuming no vertical velocity
     );
     debug!(
@@ -2619,9 +2629,9 @@ pub fn print_ukf(ukf: &UnscentedKalmanFilter, record: &TestDataRecord) {
         ukf.get_certainty()[(6, 6)],
         ukf.get_certainty()[(7, 7)],
         ukf.get_certainty()[(8, 8)],
-        ukf.get_estimate()[6] - record.roll,
-        ukf.get_estimate()[7] - record.pitch,
-        ukf.get_estimate()[8] - record.yaw
+        ukf.get_estimate()[6] - reference_roll,
+        ukf.get_estimate()[7] - reference_pitch,
+        ukf.get_estimate()[8] - reference_yaw
     );
     debug!(
         "UKF accel biases: ({:.4}, {:.4}, {:.4})  | Covariance: {:.4e}, {:.4e}, {:.4e}",
@@ -3510,17 +3520,16 @@ pub mod health {
         /// caught by the finiteness and covariance checks rather than by this band. Narrow
         /// it to the scenario's real altitude range to make it an effective gate.
         pub alt_m: (f64, f64),
-        /// Maximum ground speed in m/s (default 500, i.e. road or low-altitude aircraft).
-        /// Currently inert -- the speed test in [`HealthMonitor::check`] is commented out, so
-        /// setting this field has no effect on a run. Issue #332 tracks resolving that.
+        /// Maximum velocity vector magnitude in m/s -- north, east, *and* down combined, not
+        /// ground speed alone (default 500, i.e. road or low-altitude aircraft). Checked
+        /// against the NED velocity indices (3..=5), which are correct for every filter in
+        /// this crate. Narrow this to the scenario's real speed range to make it an
+        /// effective gate; unaided `dead_reckoning` never calls [`HealthMonitor`], so a run
+        /// that deliberately drifts past this bound (see #299) is unaffected.
         pub speed_mps_max: f64,
         /// Largest variance allowed on the covariance diagonal before the run is failed
         /// (default 1e15).
         pub cov_diag_max: f64,
-        /// Maximum covariance condition number (default 1e12). Currently inert -- the condition
-        /// estimate in [`HealthMonitor::check`] is commented out as too expensive, so setting
-        /// this field has no effect on a run. Issue #332 tracks resolving that.
-        pub cond_max: f64,
         /// NIS above which a measurement update counts as an outlier (default 100).
         ///
         /// Despite the name, the gate applies to **every** measurement update in the event
@@ -3542,7 +3551,6 @@ pub mod health {
                 alt_m: (-100000000.0, 100000000.0), // Very tolerant for vertical channel instability
                 speed_mps_max: 500.0,
                 cov_diag_max: 1e15,
-                cond_max: 1e12,
                 nis_pos_max: 100.0,
                 nis_pos_consec_fail: 20,
             }
@@ -3605,13 +3613,27 @@ pub mod health {
                 bail!("Altitude out of range: {alt} m");
             }
 
-            // 3) Speed sanity (assumes NED velocities at indices 3..=5)
-            // let v2 = x[3] * x[3] + x[4] * x[4] + x[5] * x[5];
-            // if v2.is_finite() && v2.sqrt() > self.limits.speed_mps_max {
-            //     bail!("Speed exceeded: {:.2} m/s", v2.sqrt());
-            // }
+            // 3) Speed sanity (assumes NED velocities at indices 3..=5, true for every
+            // filter in this crate). `hypot` rather than summing squares directly: x[3..6]
+            // are already known finite from the check above, but a naive sum of squares can
+            // still overflow to infinity for a merely large (not actually non-finite)
+            // component, and `f64::is_finite` on that overflowed value would then read as
+            // "no speed to check" and silently wave the divergence through.
+            let speed = x[3].hypot(x[4]).hypot(x[5]);
+            if speed > self.limits.speed_mps_max {
+                bail!("Speed exceeded: {speed:.2} m/s");
+            }
 
-            // 4) Covariance sanity: diagonals and simple SPD probe
+            // 4) Covariance sanity: diagonals only. A condition-number check was considered
+            // (see #332) but dropped: this covariance's diagonal mixes units -- the position
+            // variances are in radians^2 while the velocity and altitude variances are in
+            // (m/s)^2 and m^2 -- so even the cheapest proxy, the ratio of the largest to the
+            // smallest diagonal entry, is dominated by that unit mismatch rather than by
+            // divergence. It fires on a perfectly healthy default P0: lat/lon variance is
+            // ~1e-13 rad^2 against a ~4 m^2 altitude variance, a ratio in the 1e12-1e13 range
+            // before a single sample has been processed. A true condition number needs a
+            // matrix inverse, which this function cannot afford to run on every
+            // predict/update.
             for i in 0..p.nrows().min(p.ncols()) {
                 if p[(i, i)].is_sign_negative() {
                     bail!("Negative variance on diagonal: idx={i}, val={}", p[(i, i)]);
@@ -3620,12 +3642,6 @@ pub mod health {
                     bail!("Variance too large on diagonal idx={i}: {}", p[(i, i)]);
                 }
             }
-            // (Optional) rough condition estimate via Frobenius norm and inverse
-            // Skip if too expensive; enable only for debugging.
-            // if let Some(inv) = p.clone().try_inverse() {
-            //     let cond = p.norm_fro() * inv.norm_fro();
-            //     if !cond.is_finite() || cond > self.limits.cond_max { bail!("Covariance condition number too large: {cond:e}"); }
-            // }
 
             // 5) GNSS gating streak (if a NIS was computed at update time)
             if let Some(nis_pos) = maybe_nis_pos {
@@ -3921,7 +3937,9 @@ pub struct ParticleFilterConfig {
     /// Number of particles in the filter.
     #[serde(default = "default_num_particles")]
     pub num_particles: usize,
-    /// Initial position standard deviation [`lat_m`, `lon_m`, `alt_m`].
+    /// Initial position standard deviation as a ground extent in metres,
+    /// [`north_m`, `east_m`, `up_m`]. Converted to the filter's radian position units
+    /// at the starting latitude; see [`crate::rbpf::RbpfConfig::position_init_std_m`].
     #[serde(default = "default_position_init_std_m")]
     pub position_init_std_m: Vec<f64>,
     /// Initial velocity standard deviation (m/s).
@@ -3930,7 +3948,10 @@ pub struct ParticleFilterConfig {
     /// Initial attitude standard deviation (rad).
     #[serde(default = "default_attitude_init_std_rad")]
     pub attitude_init_std_rad: f64,
-    /// Position process noise standard deviation [`lat_m`, `lon_m`, `alt_m`].
+    /// Position random-walk rate as [`north`, `east`, `up`] in m/sqrt(s) -- the key name
+    /// keeps its `_m` for compatibility with existing configuration files, and the value
+    /// is unchanged at a 1 s step. The per-step standard deviation is this times
+    /// `sqrt(dt)`; see [`crate::rbpf::RbpfConfig::position_process_noise_std_m`].
     #[serde(default = "default_position_process_noise_std_m")]
     pub position_process_noise_std_m: Vec<f64>,
     /// Velocity process noise standard deviation (m/s).
@@ -6398,6 +6419,108 @@ mod tests {
         // Just ensure it doesn't panic
         print_ukf(&ukf, &rec);
     }
+    /// All three filter initialisers must seed the same ground track from the same record.
+    ///
+    /// `bearing` is degrees. `initialize_ukf` fed it to `cos`/`sin` raw while
+    /// `initialize_ekf` and `initialize_eskf` converted first, so the three disagreed on
+    /// the same input: at bearing 90 the UKF seeded (-4.48, 8.94) m/s north/east where the
+    /// other two seeded (0.00, 10.00). All three now route through
+    /// [`TestDataRecord::ground_track_velocity`], which owns the conversion.
+    #[test]
+    fn test_initializers_agree_on_ground_track() {
+        let rec = TestDataRecord {
+            time: Utc::now(),
+            horizontal_accuracy: 5.0,
+            vertical_accuracy: 2.0,
+            speed_accuracy: 1.0,
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            speed: 10.0,
+            // Chosen because degrees and radians differ most visibly here: due east should
+            // put the entire 10 m/s on the east channel and nothing on the north one.
+            bearing: 90.0,
+            qw: 1.0,
+            ..Default::default()
+        };
+
+        let ukf = initialize_ukf(&rec, UkfConfig::default()).unwrap();
+        let ekf = initialize_ekf(&rec, EkfConfig::default()).unwrap();
+        let eskf = initialize_eskf(&rec, EskfConfig::default()).unwrap();
+
+        for (name, estimate) in [
+            ("UKF", ukf.get_estimate()),
+            ("EKF", ekf.get_estimate()),
+            ("ESKF", eskf.get_estimate()),
+        ] {
+            assert_approx_eq!(estimate[3], 0.0, 1e-12); // northward velocity
+            assert_approx_eq!(estimate[4], 10.0, 1e-12); // eastward velocity
+            assert!(
+                estimate[3].abs() < 1e-12,
+                "{name} seeded {:.3} m/s of northward velocity from a due-east ground track, \
+                 which is the un-converted-degrees signature",
+                estimate[3]
+            );
+        }
+    }
+
+    /// All three filter initialisers must seed the attitude the record's quaternion describes.
+    ///
+    /// Two defects at once: `roll`/`pitch`/`yaw` are radians but were passed with
+    /// `in_degrees: true`, so every filter constructor scaled them by pi/180; and those
+    /// columns are not nalgebra's XYZ sequence in the first place -- see
+    /// [`TestDataRecord::attitude`]. The assertion is the convention-free angle between the
+    /// seeded rotation and the record's own, so it catches either failure. Under the old
+    /// code this angle was 1.21 rad.
+    #[test]
+    fn test_initializers_seed_attitude_from_quaternion() {
+        let quaternion = nalgebra::UnitQuaternion::from_euler_angles(0.4, -0.3, 1.2);
+        let rec = TestDataRecord {
+            time: Utc::now(),
+            horizontal_accuracy: 5.0,
+            vertical_accuracy: 2.0,
+            speed_accuracy: 1.0,
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            speed: 10.0,
+            bearing: 45.0,
+            qw: quaternion.w,
+            qx: quaternion.i,
+            qy: quaternion.j,
+            qz: quaternion.k,
+            // Deliberately disagreeing with the quaternion, the way a real Sensor Logger row
+            // does: these are the first sample of `core/tests/test_data.csv`.
+            roll: 0.163,
+            pitch: -1.340,
+            yaw: 0.179,
+            ..Default::default()
+        };
+
+        let expected = rec.attitude();
+        let ukf = initialize_ukf(&rec, UkfConfig::default()).unwrap();
+        let ekf = initialize_ekf(&rec, EkfConfig::default()).unwrap();
+        let eskf = initialize_eskf(&rec, EskfConfig::default()).unwrap();
+
+        for (name, estimate) in [
+            ("UKF", ukf.get_estimate()),
+            ("EKF", ekf.get_estimate()),
+            ("ESKF", eskf.get_estimate()),
+        ] {
+            // Reconstructing rather than comparing angles elementwise: each elementary
+            // rotation is 2pi-periodic, so the rotation is the quantity the three agree on
+            // whatever branch a filter reports its Euler angles on.
+            let seeded =
+                nalgebra::Rotation3::from_euler_angles(estimate[6], estimate[7], estimate[8]);
+            let error_angle = (seeded.inverse() * expected).angle();
+            assert!(
+                error_angle < 1e-9,
+                "{name} seeded an attitude {error_angle:.6} rad away from the record's \
+                 quaternion"
+            );
+        }
+    }
+
     #[test]
     fn test_initialize_ukf_with_nan_angles() {
         let rec = TestDataRecord {
@@ -6810,6 +6933,78 @@ mod tests {
 
         let result = monitor.check(&state, &cov, None);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_health_monitor_check_speed_within_limit() {
+        let limits = HealthLimits {
+            speed_mps_max: 50.0,
+            ..Default::default()
+        };
+        let mut monitor = HealthMonitor::new(limits);
+
+        // vn=10, ve=5, vd=0 -> speed ~11.18 m/s, under the 50 m/s limit.
+        let state = vec![
+            0.5, 0.5, 100.0, 10.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ];
+        let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
+
+        let result = monitor.check(&state, &cov, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_health_monitor_check_speed_exceeded() {
+        let limits = HealthLimits {
+            speed_mps_max: 50.0,
+            ..Default::default()
+        };
+        let mut monitor = HealthMonitor::new(limits);
+
+        // vn=100, ve=0, vd=0 -> 100 m/s, over the 50 m/s limit.
+        let state = vec![
+            0.5, 0.5, 100.0, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ];
+        let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
+
+        let result = monitor.check(&state, &cov, None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Speed exceeded"));
+    }
+
+    /// A naive `vn*vn + ve*ve + vd*vd` sum of squares overflows to infinity for a merely
+    /// large (but finite) component; `f64::MAX.hypot(0.0)` does not, and the speed check
+    /// must not let an overflowed intermediate wave a divergent-but-finite state through.
+    #[test]
+    fn test_health_monitor_check_speed_overflow_does_not_bypass_limit() {
+        let limits = HealthLimits {
+            speed_mps_max: 50.0,
+            ..Default::default()
+        };
+        let mut monitor = HealthMonitor::new(limits);
+
+        let state = vec![
+            0.5,
+            0.5,
+            100.0,
+            f64::MAX / 2.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        ];
+        let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
+
+        let result = monitor.check(&state, &cov, None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Speed exceeded"));
     }
 
     #[test]
