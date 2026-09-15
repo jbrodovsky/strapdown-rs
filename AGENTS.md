@@ -97,6 +97,13 @@ forward-looking `allow` for a lint the pinned toolchain does not know about is m
   to hit this.
 - libfontconfig is a **runtime** dependency of the `plotting` feature (it is `dlopen`ed), not a
   build-time one: a machine without it builds fine and fails when it first renders text.
+- **`gh` must be 2.71 or newer** -- not a build prerequisite (nothing here needs it to build,
+  test or lint), but the PR and issue workflow does. Older clients request the `projectCards`
+  field GitHub removed with Projects (classic): `gh pr view`/`gh issue view` exit 1 on a
+  deprecation notice, and `gh pr edit` exits 1 while leaving the body **unchanged**. No Debian
+  or Ubuntu package is new enough (Ubuntu 26.04 and Debian trixie ship 2.46, bookworm 2.23), so
+  take it from [cli.github.com](https://github.com/cli/cli/blob/trunk/docs/install_linux.md) or
+  put the release binary on `PATH`. Diagnosed in #365; `gh api` was never affected.
 - The repository is **Rust-only**. The Python post-processing package under `analysis/` was
   untracked in `c5f72c6` when the repo was scoped to the v1.0 crate set, and the two analysis
   notebooks under `examples/` followed in #335 -- they import pygmt, cartopy and filterpy
