@@ -8119,6 +8119,10 @@ mod tests {
             read[0].magnetic_bias, None,
             "a run with no magnetic map must not gain a magnetic estimate on the round trip"
         );
+        assert_eq!(
+            read[0].magnetic_bias_cov, None,
+            "the covariance column must stay absent too, not just the estimate"
+        );
     }
 
     #[cfg(feature = "hdf5")]
@@ -8351,6 +8355,10 @@ mod tests {
         assert_eq!(
             read[0].magnetic_bias, None,
             "a run with no magnetic map must not gain a magnetic estimate on the round trip"
+        );
+        assert_eq!(
+            read[0].magnetic_bias_cov, None,
+            "the covariance column must stay absent too, not just the estimate"
         );
     }
 

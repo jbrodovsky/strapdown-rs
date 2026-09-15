@@ -46,8 +46,8 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ### C Toolchain
 
 There are **no system libraries to install**. libhdf5, libnetcdf, zlib and freetype are all
-compiled from vendored sources shipped as ordinary crates.io dependencies, so nothing is ever
-searched for on your machine. What you do need is a toolchain to compile them with:
+compiled from vendored sources shipped as ordinary crates.io dependencies. What you do need is
+a toolchain to compile them with:
 
 - **A C/C++ compiler**: GCC, Clang, or MSVC.
 - **cmake, version 3.26 or later**: required by the bundled HDF5.
@@ -55,6 +55,13 @@ searched for on your machine. What you do need is a toolchain to compile them wi
 Both are needed only when you build something that touches a C library -- `strapdown-geonav`
 always, `strapdown-core`'s `hdf5`/`netcdf` features, and `strapdown-sim`'s `plotting` feature
 (for freetype). `cargo build -p strapdown-core` on its own needs neither.
+
+One caveat on "nothing is searched for": inside a clone of this repository that is exactly
+true, because `.cargo/config.toml` sets `FREETYPE2_NO_PKG_CONFIG` and the HDF5/netCDF/zlib
+builds are pinned to their vendored sources by cargo features. `freetype-sys` on its own would
+prefer a system FreeType when pkg-config reports one, so `cargo install strapdown-sim` -- which
+does not see this repository's cargo config -- may link the copy on your machine instead. Both
+work; only the repository build is fully hermetic.
 
 > **cmake 3.26 is newer than some distributions ship.** Ubuntu 22.04 LTS has 3.22 and
 > Debian 12 has 3.25; both fail. Install a newer cmake from

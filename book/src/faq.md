@@ -32,7 +32,9 @@ Strapdown-rs is primarily intended for research and development. While the code 
 See the [System Requirements](./installation/requirements.md) page for detailed information. In summary:
 - Rust 1.91 or later
 - A C/C++ compiler and cmake 3.26+, but only for features that use a C library
-- No system libraries at all
+- No system libraries to install at build time
+- libfontconfig at *run* time, if you use `strapdown-sim`'s plotting (a default feature).
+  It is loaded on demand, so a machine without it builds fine and fails at the first plot
 - Supported on Linux, macOS, and Windows
 
 ### Do I need to install HDF5 and NetCDF?
