@@ -1164,6 +1164,19 @@ impl GeoStateLayout {
         magnetic_index: None,
     };
 
+    /// No map biases, on the particle filter's nine-state estimate.
+    ///
+    /// [`Self::NONE`] says the same thing for the Kalman filters and is fifteen wide, because
+    /// that is *their* unaided shape. The particle filter carries no IMU-bias block, so an
+    /// unaided particle estimate is nine, and handing the Kalman constant to
+    /// [`NavigationResult::from_particle_filter_with_geo`] would fail its width assertion on
+    /// the first row of every ordinary particle run.
+    pub const PARTICLE_NONE: Self = Self {
+        state_dim: PARTICLE_FILTER_STATES,
+        gravity_index: None,
+        magnetic_index: None,
+    };
+
     /// A layout over a state of `state_dim` entries, with the biases at the given indices.
     ///
     /// The indices are taken on trust: the caller that knows the filter has already validated
@@ -1222,6 +1235,21 @@ impl GeoStateLayout {
 /// index, not a property of every filter in the crate: the particle filter reports a nine-state
 /// navigation estimate and appends its own extra linear states, with no IMU-bias block.
 pub const NAVIGATION_STATES: usize = 15;
+
+/// Length of the particle filter's navigation estimate: the nine navigation states alone.
+///
+/// The Rao-Blackwellized particle filter carries no IMU-bias block -- its linear state is
+/// velocity, attitude and whatever [`RbpfConfig::extra_state_dim`](crate::rbpf::RbpfConfig)
+/// asks for -- so its estimate is six states shorter than [`NAVIGATION_STATES`] and its map
+/// biases begin here rather than at 15. It is the bound
+/// [`NavigationResult::from_particle_filter_with_geo`] checks a declared bias index against,
+/// where the Kalman conversion checks [`NAVIGATION_STATES`].
+///
+/// The same nine as `geonav`'s `NAVIGATION_STATE_DIM`, which is what `GeoBiasLayout::appended`
+/// is given as the base for an RBPF run. `geonav` depends on this crate rather than the other
+/// way round, so the two are stated separately; `rbpf` holds the const assertion that keeps
+/// this one in step with the width its estimator actually reports.
+pub const PARTICLE_FILTER_STATES: usize = 9;
 
 /// Read an on-disk geophysical column back into an `Option`.
 ///
@@ -2415,6 +2443,10 @@ impl NavigationResult {
     /// and covariance matrix produced by particle filter averaging. Since particle filters don't
     /// estimate IMU biases, those fields are set to zero.
     ///
+    /// A geophysically aided run carries one bias state per active map after those nine, and
+    /// must go through [`Self::from_particle_filter_with_geo`], which knows what they are.
+    /// This one would reject it on the length assertion rather than silently drop them.
+    ///
     /// # Arguments
     /// * `timestamp` - Timestamp for this navigation solution
     /// * `mean` - 9-element state vector [lat, lon, alt, vn, ve, vd, roll, pitch, yaw] in radians/meters
@@ -2427,12 +2459,81 @@ impl NavigationResult {
         mean: &DVector<f64>,
         cov: &DMatrix<f64>,
     ) -> Self {
-        assert_eq!(mean.len(), 9, "Particle filter state must have 9 elements");
+        // Not [`GeoStateLayout::NONE`]: that one is fifteen states wide, because it describes
+        // the Kalman filters' unaided shape. An unaided particle estimate is nine.
+        Self::from_particle_filter_with_geo(timestamp, mean, cov, GeoStateLayout::PARTICLE_NONE)
+    }
+
+    /// [`Self::from_particle_filter`] for a cloud that carries geophysical bias states.
+    ///
+    /// The particle filter appends one extra linear state per active map after its nine
+    /// navigation states -- see
+    /// [`RbpfConfig::extra_state_dim`](crate::rbpf::RbpfConfig::extra_state_dim) -- and
+    /// [`RaoBlackwellizedParticleFilter::estimate_with_extra_states`](crate::rbpf::RaoBlackwellizedParticleFilter::estimate_with_extra_states)
+    /// is the accessor that returns them with their covariance. `layout` says which of those
+    /// extra states is which, exactly as it does for the Kalman paths: a ten-element particle
+    /// estimate is gravity-only or magnetic-only depending on the run's flags, and the vector
+    /// cannot say which.
+    ///
+    /// This is the particle-filter counterpart of the four-tuple `From` impl above, and the
+    /// reason it is a separate constructor rather than a fourth argument on
+    /// `from_particle_filter` is the same reason [`run_closed_loop_with_geo`] is separate from
+    /// [`run_closed_loop`]: the geophysical paths need the layout and the ordinary ones do not.
+    ///
+    /// # Arguments
+    /// * `timestamp` - Timestamp for this navigation solution
+    /// * `mean` - `layout.state_dim()` element state vector
+    /// * `cov` - Covariance of `mean`, square and in the same ordering
+    /// * `layout` - Where the filter carries its map biases, past its nine navigation states
+    ///
+    /// # Panics
+    /// If `mean` or `cov` disagrees with `layout.state_dim()`, or if a declared bias index
+    /// falls outside the nine navigation states and the end of the vector. Same reasoning as
+    /// [`Self::from_particle_filter`]: these come from the filter, not from user input, so a
+    /// mismatch is a crate invariant violation.
+    pub fn from_particle_filter_with_geo(
+        timestamp: &DateTime<Utc>,
+        mean: &DVector<f64>,
+        cov: &DMatrix<f64>,
+        layout: GeoStateLayout,
+    ) -> Self {
+        let expected = layout.state_dim();
+        assert_eq!(
+            mean.len(),
+            expected,
+            "Particle filter state must have {expected} elements"
+        );
         assert_eq!(
             cov.shape(),
-            (9, 9),
-            "Particle filter covariance must be 9x9"
+            (expected, expected),
+            "Particle filter covariance must be {expected}x{expected}"
         );
+        // The same index check the four-tuple `From` makes, against this filter's own base:
+        // the particle filter has no IMU-bias block, so its map biases start at
+        // `PARTICLE_FILTER_STATES` and not at `NAVIGATION_STATES`. Reusing the Kalman bound
+        // here would reject every genuine particle layout; dropping the check would let a
+        // wrong index read a navigation state as a map bias, which is the failure the whole
+        // layout exists to prevent.
+        let checked = |index: Option<usize>| {
+            if let Some(i) = index {
+                assert!(
+                    i >= PARTICLE_FILTER_STATES && i < expected,
+                    "a map bias lives after the {PARTICLE_FILTER_STATES} navigation states \
+                     and inside the {expected}-element state; got index {i}"
+                );
+            }
+            index
+        };
+        // An absent map leaves its column `None` rather than zero, so a reader can tell "this
+        // run carried no gravity map" from "this run estimated a gravity bias of zero". The
+        // covariance travels with the bias: an estimate whose uncertainty was dropped on the
+        // way out is not one anybody can use.
+        let gravity_index = checked(layout.gravity_index());
+        let magnetic_index = checked(layout.magnetic_index());
+        let gravity_bias = gravity_index.map(|i| mean[i]);
+        let gravity_bias_cov = gravity_index.map(|i| cov[(i, i)]);
+        let magnetic_bias = magnetic_index.map(|i| mean[i]);
+        let magnetic_bias_cov = magnetic_index.map(|i| cov[(i, i)]);
 
         Self {
             timestamp: *timestamp,
@@ -2466,10 +2567,10 @@ impl NavigationResult {
             gyro_bias_x_cov: f64::NAN,
             gyro_bias_y_cov: f64::NAN,
             gyro_bias_z_cov: f64::NAN,
-            gravity_bias: None,
-            gravity_bias_cov: None,
-            magnetic_bias: None,
-            magnetic_bias_cov: None,
+            gravity_bias,
+            gravity_bias_cov,
+            magnetic_bias,
+            magnetic_bias_cov,
         }
     }
 }
@@ -8118,6 +8219,166 @@ mod tests {
         assert_eq!(
             read[0].magnetic_bias, None,
             "a run with no magnetic map must not gain a magnetic estimate on the round trip"
+        );
+    }
+
+    /// A geophysically aided particle run labels its bias states and their variances.
+    ///
+    /// This is the regression the layout-aware constructor exists for. The RBPF carries one
+    /// extra linear state per active map after its nine navigation states, but
+    /// [`NavigationResult::from_particle_filter`] is a nine-state conversion: it had nowhere
+    /// to put them, so a gravity-aided run wrote rows whose `gravity_bias` column was empty
+    /// while the filter had estimated one all along.
+    #[test]
+    fn particle_filter_conversion_labels_its_geophysical_states() {
+        let timestamp = Utc::now();
+        // Nine navigation states, then gravity, then magnetic -- the order
+        // `GeoStateLayout` fixes and `geonav`'s `build_event_stream` counts back from.
+        let mean = DVector::from_vec(vec![
+            0.7, -1.3, 100.0, 1.0, 2.0, 3.0, 0.1, 0.2, 0.3, 12.5, -40.0,
+        ]);
+        let mut cov = DMatrix::<f64>::zeros(11, 11);
+        for i in 0..11 {
+            cov[(i, i)] = f64::from(u32::try_from(i).unwrap_or(0)) + 1.0;
+        }
+        // Nine navigation states wide plus the two biases, gravity at 9 and magnetic at 10 --
+        // the placement `GeoBiasLayout::appended` gives an RBPF run.
+        let layout = GeoStateLayout::new(11, Some(9), Some(10));
+
+        let result =
+            NavigationResult::from_particle_filter_with_geo(&timestamp, &mean, &cov, layout);
+
+        assert_approx_eq!(result.latitude, 0.7_f64.to_degrees(), 1e-12);
+        assert_approx_eq!(result.altitude, 100.0, 1e-12);
+        assert_approx_eq!(
+            result.gravity_bias.expect("a gravity map was declared"),
+            12.5,
+            1e-12
+        );
+        assert_approx_eq!(
+            result.magnetic_bias.expect("a magnetic map was declared"),
+            -40.0,
+            1e-12
+        );
+        // The variance has to come out alongside the mean: a bias with no uncertainty on it
+        // is not one a reader can do anything with.
+        assert_approx_eq!(
+            result
+                .gravity_bias_cov
+                .expect("the gravity bias must carry its variance"),
+            10.0,
+            1e-12
+        );
+        assert_approx_eq!(
+            result
+                .magnetic_bias_cov
+                .expect("the magnetic bias must carry its variance"),
+            11.0,
+            1e-12
+        );
+    }
+
+    /// A magnetic-only run puts its single extra state in the magnetic column, not the first
+    /// one.
+    ///
+    /// The whole reason the layout travels with the run: a ten-element particle estimate is
+    /// gravity-only or magnetic-only depending on which maps were loaded, and reading the
+    /// wrong label off it would file a nanotesla figure as milligals.
+    #[test]
+    fn particle_filter_conversion_reads_a_single_extra_state_by_layout() {
+        let timestamp = Utc::now();
+        let mean = DVector::from_vec(vec![0.7, -1.3, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -40.0]);
+        let mut cov = DMatrix::<f64>::identity(10, 10);
+        cov[(9, 9)] = 7.0;
+
+        let magnetic_only = NavigationResult::from_particle_filter_with_geo(
+            &timestamp,
+            &mean,
+            &cov,
+            GeoStateLayout::new(10, None, Some(9)),
+        );
+        assert_eq!(
+            magnetic_only.gravity_bias, None,
+            "no gravity map means no gravity column, which is not the same as a zero bias"
+        );
+        assert_eq!(magnetic_only.gravity_bias_cov, None);
+        assert_approx_eq!(magnetic_only.magnetic_bias.unwrap(), -40.0, 1e-12);
+        assert_approx_eq!(magnetic_only.magnetic_bias_cov.unwrap(), 7.0, 1e-12);
+
+        let gravity_only = NavigationResult::from_particle_filter_with_geo(
+            &timestamp,
+            &mean,
+            &cov,
+            GeoStateLayout::new(10, Some(9), None),
+        );
+        assert_approx_eq!(gravity_only.gravity_bias.unwrap(), -40.0, 1e-12);
+        assert_eq!(gravity_only.magnetic_bias, None);
+    }
+
+    /// The nine-state entry point is unchanged, and still leaves the geophysical columns
+    /// absent.
+    #[test]
+    fn particle_filter_conversion_without_geo_states_leaves_the_columns_absent() {
+        let timestamp = Utc::now();
+        let mean = DVector::from_vec(vec![0.7, -1.3, 100.0, 1.0, 2.0, 3.0, 0.1, 0.2, 0.3]);
+        let cov = DMatrix::<f64>::identity(9, 9);
+
+        let result = NavigationResult::from_particle_filter(&timestamp, &mean, &cov);
+        assert_approx_eq!(result.longitude, (-1.3_f64).to_degrees(), 1e-12);
+        assert_eq!(result.gravity_bias, None);
+        assert_eq!(result.gravity_bias_cov, None);
+        assert_eq!(result.magnetic_bias, None);
+        assert_eq!(result.magnetic_bias_cov, None);
+    }
+
+    /// Declaring no geophysical states still rejects a filter that has them.
+    ///
+    /// The fix told the conversion what the extra states are; it did not loosen the
+    /// invariant. Quietly dropping them is the outcome this whole change exists to remove,
+    /// so the nine-state path must keep refusing a wider estimate rather than truncating it.
+    #[test]
+    #[should_panic(expected = "Particle filter state must have 9 elements")]
+    fn particle_filter_conversion_rejects_extra_states_it_was_not_told_about() {
+        let timestamp = Utc::now();
+        let mean = DVector::from_vec(vec![0.7, -1.3, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+        let cov = DMatrix::<f64>::identity(10, 10);
+        let _ = NavigationResult::from_particle_filter(&timestamp, &mean, &cov);
+    }
+
+    /// The unaided layouts differ by filter, and it is the width that differs.
+    ///
+    /// [`GeoStateLayout::NONE`] describes the Kalman filters' unaided shape and is fifteen
+    /// wide. Handing it to the particle conversion would fail on the first row of every
+    /// ordinary particle run, which is why [`GeoStateLayout::PARTICLE_NONE`] exists.
+    #[test]
+    fn unaided_layouts_carry_each_filter_s_own_width() {
+        assert_eq!(GeoStateLayout::NONE.state_dim(), NAVIGATION_STATES);
+        assert_eq!(
+            GeoStateLayout::PARTICLE_NONE.state_dim(),
+            PARTICLE_FILTER_STATES
+        );
+        assert!(GeoStateLayout::PARTICLE_NONE.is_empty());
+        assert_eq!(GeoStateLayout::PARTICLE_NONE.gravity_index(), None);
+        assert_eq!(GeoStateLayout::PARTICLE_NONE.magnetic_index(), None);
+    }
+
+    /// A bias index inside the navigation states is refused rather than read.
+    ///
+    /// The particle conversion checks against its own base of nine, not the Kalman fifteen --
+    /// the Kalman bound would reject every genuine particle layout. Index 8 is the yaw angle,
+    /// which is exactly the state a from-the-end index resolves to when the vector is too
+    /// narrow, so this is the failure the layout exists to prevent.
+    #[test]
+    #[should_panic(expected = "a map bias lives after the 9 navigation states")]
+    fn particle_filter_conversion_rejects_a_bias_index_inside_the_navigation_states() {
+        let timestamp = Utc::now();
+        let mean = DVector::from_vec(vec![0.7, -1.3, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+        let cov = DMatrix::<f64>::identity(10, 10);
+        let _ = NavigationResult::from_particle_filter_with_geo(
+            &timestamp,
+            &mean,
+            &cov,
+            GeoStateLayout::new(10, Some(8), None),
         );
     }
 
