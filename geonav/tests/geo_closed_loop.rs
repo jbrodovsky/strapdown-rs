@@ -234,20 +234,24 @@ fn plain_closed_loop_still_rejects_a_geophysical_filter() {
     let _ = run_closed_loop(&mut ukf, events, None, None);
 }
 
-/// The EKF branch of the geophysical CLI carries its bias state too.
+/// The EKF branch of the geophysical CLI carries its bias state too, and estimates it.
 ///
 /// The CLI builds the EKF by hand -- `initialize_ekf` has no `other_states`, so the geophysical
 /// covariance and process noise are extended at the call site -- which makes it a different
 /// construction path from the UKF above and worth covering separately. This mirrors what
 /// `run_geo_closed_loop_cli`'s `FilterType::Ekf` arm assembles.
 ///
-/// Note what this does *not* assert: that the bias moves. On this path it does not. Same run and
-/// same map, the UKF drives its gravity bias from 0 to roughly 26 mGal with the covariance
-/// converging from 100 to under 2, while the EKF's stays at exactly its seed with the covariance
-/// only growing -- the aiding reaches the state on one path and not the other. That is a
-/// separate defect from the state-shape one fixed here, and asserting movement would make this
-/// test fail for a reason it is not about. What it does assert is the fix: the run completes and
-/// the bias column is labelled rather than dropped.
+/// The movement assertion at the end is a second regression on this path, and the reason the
+/// comment that used to stand here -- saying the bias does not move on this path and that
+/// asserting it would fail -- is gone. The EKF's bias used to sit at exactly its seed for a whole
+/// run while its variance grew on process noise alone, because the anomaly models' Jacobian was
+/// a fixed 1x9: the expected measurement added the bias but the linearization claimed no
+/// dependence on it, so the gain's bias row was zero, and because the Joseph update leaves
+/// `P[bias, :]` untouched when that row is zero, no cross-covariance with position ever
+/// developed to make it non-zero either. The UKF never showed this -- its sigma points propagate
+/// the augmented state whether or not anything declares a derivative for it, and it never calls
+/// `get_jacobian` at all -- which is why the two filters disagreed on the same run and same map.
+/// Giving the Jacobian its bias column is what closed the gap; this pins it shut.
 #[test]
 fn ekf_branch_completes_and_labels_its_bias_state() {
     let dir = std::env::temp_dir().join(format!("geonav-ekf-{}", std::process::id()));
@@ -319,6 +323,30 @@ fn ekf_branch_completes_and_labels_its_bias_state() {
             "row {i} carried no magnetic map, so its magnetic bias must be absent"
         );
     }
+
+    // The same assertion the UKF above makes: the bias is a state the filter estimates, not a
+    // constant it carries along.
+    let biases: Vec<f64> = results.iter().filter_map(|r| r.gravity_bias).collect();
+    assert!(
+        biases.iter().all(|b| b.is_finite()),
+        "every estimated gravity bias must be finite"
+    );
+    assert!(
+        biases.iter().any(|b| (b - biases[0]).abs() > 1e-9),
+        "the gravity bias never moved from its seed, so the aiding is not reaching the state"
+    );
+
+    // And the variance has to come *down*. A bias row that only ever accumulates process noise
+    // is the exact signature of the frozen state, and it would pass the movement assertion above
+    // as soon as anything at all nudged the bias; requiring the measurements to actually inform
+    // it is what separates an estimated state from a perturbed one.
+    let covariances: Vec<f64> = results.iter().filter_map(|r| r.gravity_bias_cov).collect();
+    let seed = covariances[0];
+    assert!(
+        covariances.iter().any(|c| *c < seed),
+        "the gravity bias variance never fell below its seed of {seed}, so the measurements are \
+         not informing it"
+    );
 
     std::fs::remove_dir_all(&dir).ok();
 }
