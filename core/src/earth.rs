@@ -74,6 +74,20 @@ pub const MAGNETIC_FIELD_STRENGTH: f64 = 3.12e-5; // T, reference mean magnetic 
 pub const METERS_TO_DEGREES: f64 = 1.0 / (60.0 * 1852.0);
 /// Rough conversion factor from degrees to meters for latitude/longitude via nautical miles (1 degree ~ 60 nautical miles; 1 nautical mile ~ 1852 meters)
 pub const DEGREES_TO_METERS: f64 = 60.0 * 1852.0;
+/// Rough conversion factor from meters to *radians* of latitude/longitude.
+///
+/// [`METERS_TO_DEGREES`] composed with the degrees-to-radians factor. It exists because the
+/// filters' latitude and longitude states are held in radians, not degrees, so any horizontal
+/// quantity written in metres -- a position accuracy, a process-noise standard deviation, an
+/// initial uncertainty -- needs *both* conversions before it can go on a covariance diagonal.
+/// Applying only [`METERS_TO_DEGREES`] leaves a value 57.3x too large in standard deviation
+/// (3283x in variance), and applying neither leaves it larger still: `1e-6` read as a variance
+/// in rad^2 is a 6.4 km standard deviation, which is how a process-noise diagonal came to tell
+/// every filter in this crate that its own prediction was worthless (#308).
+///
+/// Written out as a product rather than as `METERS_TO_DEGREES.to_radians()` because
+/// `f64::to_radians` is not a `const fn`, and the call sites that need this want a `const`.
+pub const METERS_TO_RADIANS: f64 = METERS_TO_DEGREES * (std::f64::consts::PI / 180.0);
 /// Atmospheric pressure at sea level in Pascals ($P_0$)
 pub const SEA_LEVEL_PRESSURE: f64 = 101325.0;
 /// Standard temperature at sea level in Kelvin ($T_0$)
@@ -125,7 +139,7 @@ pub fn relative_barometric_altitude(
 /// Calculates the expected barometric pressure at a given altitude
 ///
 /// This function calculates the expected atmospheric pressure at a given altitude using the barometric formula,
-/// given a reference sea level pressure. This is the inverse of the relative_barometric_altitude function.
+/// given a reference sea level pressure. This is the inverse of the `relative_barometric_altitude` function.
 ///
 /// # Arguments
 /// - `altitude` - The altitude above sea level in meters
@@ -408,9 +422,9 @@ pub fn haversine_distance(lat1_rad: f64, lon1_rad: f64, lat2_rad: f64, lon2_rad:
 /// - `altitude` - The WGS84 altitude in meters
 ///
 /// # Returns
-/// A tuple of the principal radii of curvature (r_n, r_e, r_p) in meters where r_n is the radius
-/// of curvature in the prime vertical (alternatively as _N_ or R_N), r_e is the radius of curvature
-/// in the meridian (alternatively _M_ or R_M), and r_p is the radius of curvature in the local
+/// A tuple of the principal radii of curvature (`r_n`, `r_e`, `r_p`) in meters where `r_n` is the radius
+/// of curvature in the prime vertical (alternatively as _N_ or `R_N`), `r_e` is the radius of curvature
+/// in the meridian (alternatively _M_ or `R_M`), and `r_p` is the radius of curvature in the local
 /// normal direction.
 ///
 /// # Example
@@ -714,7 +728,7 @@ pub fn calculate_latitudinal_magnetic_field(colatitude: f64, radius: f64) -> f64
 /// - `longitude` - The WGS84 longitude in degrees
 ///
 /// # Returns
-/// A tuple containing (magnetic_colatitude, magnetic_longitude) in degrees. Colatitude
+/// A tuple containing (`magnetic_colatitude`, `magnetic_longitude`) in degrees. Colatitude
 /// is the angle from the magnetic north pole [0, 180], and longitude is the angle from the
 /// magnetic meridian.
 ///
@@ -1435,5 +1449,78 @@ mod tests {
         assert_approx_eq!(equator[2], 0.0, 1e-18);
         let south: Vector3<f64> = transport_rate(&-latitude, &altitude, &velocities);
         assert_approx_eq!(south[2], -omega[2], 1e-18);
+    }
+
+    /// Latitudes the metres-per-angle constants are checked at, degrees.
+    ///
+    /// The whole range, because what bounds the agreement below is how much the ellipsoid's
+    /// curvature departs from the sphere the nautical mile was defined on, and that
+    /// departure is entirely a function of latitude: it is smallest near 45 deg and largest
+    /// at the equator and the pole. Checking one latitude would report the tightest or the
+    /// loosest case depending on which one, and say nothing about the others.
+    const CURVATURE_CHECK_LATITUDES_DEG: [f64; 7] = [0.0, 15.0, 30.0, 45.0, 60.0, 75.0, 90.0];
+
+    /// Tolerance on the metres-per-angle constants, as a fraction of the reference.
+    ///
+    /// Derived from the ellipsoid, not from what the assertion prints. A nautical mile is one
+    /// arcminute of latitude on a sphere, which makes [`METERS_TO_DEGREES`] and
+    /// [`METERS_TO_RADIANS`] exact for a sphere of radius $10800 \times 1852 / \pi$ =
+    /// 6 366 707 m and approximate for WGS84, whose meridian radius of curvature
+    /// $R_N = a(1 - e^2)(1 - e^2\sin^2\phi)^{-3/2}$ runs from 6 335 439 m at the equator to
+    /// 6 399 594 m at the pole. Those endpoints sit 0.49% below and 0.52% above the sphere,
+    /// which is the entire error budget; 1% is the round figure that covers it at every
+    /// latitude with roughly a factor of two to spare.
+    ///
+    /// It is loose as a *pin* on the constants and that is deliberate: the failure this
+    /// guards against is a missing or doubled unit conversion, which is a factor of 57.3,
+    /// not a factor of 1.005.
+    const CURVATURE_TOLERANCE: f64 = 0.01;
+
+    #[test]
+    fn meters_to_radians_matches_a_wgs84_principal_radius() {
+        // #308's fix rests on `METERS_TO_RADIANS`, and the constant had no test of its own.
+        // The guard in `sim.rs` cannot supply one: it converts the process-noise entries back
+        // to metres through the same constant that built them, so it is satisfied by any
+        // value whatsoever, including one with the degrees-to-radians factor dropped.
+        //
+        // This asserts against something that does not mention the constant at all. Along a
+        // meridian, arc length and angle are related by the radius of curvature alone --
+        // $s = R_N \delta\phi$ -- so one metre subtends $1 / R_N$ radians, and `principal_radii`
+        // computes $R_N$ from `EQUATORIAL_RADIUS` and `ECCENTRICITY_SQUARED` by a route that
+        // shares nothing with the nautical-mile definition.
+        for latitude in CURVATURE_CHECK_LATITUDES_DEG {
+            let (meridian_radius, _, _) = principal_radii(&latitude, &0.0);
+            let radians_per_meter = 1.0 / meridian_radius;
+            let relative_error = (METERS_TO_RADIANS - radians_per_meter).abs() / radians_per_meter;
+            assert!(
+                relative_error < CURVATURE_TOLERANCE,
+                "METERS_TO_RADIANS is {METERS_TO_RADIANS:e} rad/m but one metre subtends \
+                 {radians_per_meter:e} rad at {latitude} deg, where R_N = {meridian_radius:.0} m \
+                 -- {:.3}% apart, which is far more than the ellipsoid's own departure from \
+                 the sphere the nautical mile is defined on",
+                relative_error * 100.0
+            );
+        }
+    }
+
+    #[test]
+    fn meters_to_degrees_matches_a_wgs84_principal_radius() {
+        // The same independent check for the degrees form, which was equally untested, and
+        // the reciprocal relation `DEGREES_TO_METERS` promises. Both matter because callers
+        // pick between the two by name: `measurements.rs` and `rbpf.rs` reach for
+        // `METERS_TO_DEGREES` and convert afterwards, `sim.rs` reaches for
+        // `METERS_TO_RADIANS`, and #308 is what happens when the two are interchanged.
+        for latitude in CURVATURE_CHECK_LATITUDES_DEG {
+            let (meridian_radius, _, _) = principal_radii(&latitude, &0.0);
+            let degrees_per_meter = (1.0_f64 / meridian_radius).to_degrees();
+            let relative_error = (METERS_TO_DEGREES - degrees_per_meter).abs() / degrees_per_meter;
+            assert!(
+                relative_error < CURVATURE_TOLERANCE,
+                "METERS_TO_DEGREES is {METERS_TO_DEGREES:e} deg/m but one metre subtends \
+                 {degrees_per_meter:e} deg at {latitude} deg -- {:.3}% apart",
+                relative_error * 100.0
+            );
+        }
+        assert_approx_eq!(METERS_TO_DEGREES * DEGREES_TO_METERS, 1.0, 1e-15);
     }
 }

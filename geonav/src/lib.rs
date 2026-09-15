@@ -11,7 +11,7 @@
 //! processing configuration that must be implemented in the closed loop configuration.
 //!
 //! For example: gravity anomaly calculation requires knowledge of the vehicle velocity, to make the Eötvös correction.
-//! The measurement event stream can be constructed to include the gravity vector measurements from TestDataRecord (`grav_x``,
+//! The measurement event stream can be constructed to include the gravity vector measurements from `TestDataRecord` (`grav_x`,
 //! `grav_y`, `grav_z`), but these values are not the specific anomaly. The scalar gravity must be calculated and corrected
 //! using the vehicle velocity (Eötvös correction) and the reference gravity at the current position (from a gravity map) to
 //! calculate the free air anomaly.
@@ -60,20 +60,35 @@ const WMM_MAX_ALTITUDE_M: f64 = 850000.0;
 /// Resolution values for bathymetric or terrain relief maps
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReliefResolution {
+    /// One-degree grid spacing; formats as `01d`.
     OneDegree,
+    /// Thirty arc-minute grid spacing; formats as `30m`.
     ThirtyMinutes,
+    /// Twenty arc-minute grid spacing; formats as `20m`.
     TwentyMinutes,
+    /// Fifteen arc-minute grid spacing; formats as `15m`.
     FifteenMinutes,
+    /// Ten arc-minute grid spacing; formats as `10m`.
     TenMinutes,
+    /// Six arc-minute grid spacing; formats as `06m`.
     SixMinutes,
+    /// Five arc-minute grid spacing; formats as `05m`.
     FiveMinutes,
+    /// Four arc-minute grid spacing; formats as `04m`.
     FourMinutes,
+    /// Three arc-minute grid spacing; formats as `03m`.
     ThreeMinutes,
+    /// Two arc-minute grid spacing; formats as `02m`.
     TwoMinutes,
+    /// One arc-minute grid spacing; formats as `01m`.
     OneMinute,
+    /// Thirty arc-second grid spacing; formats as `30s`.
     ThirtySeconds,
+    /// Fifteen arc-second grid spacing; formats as `15s`.
     FifteenSeconds,
+    /// Three arc-second grid spacing; formats as `03s`.
     ThreeSeconds,
+    /// One arc-second grid spacing; formats as `01s`. The finest relief grid offered.
     OneSecond,
 }
 impl Display for ReliefResolution {
@@ -101,16 +116,27 @@ impl Display for ReliefResolution {
 /// Resolution values for gravity maps
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GravityResolution {
+    /// One-degree grid spacing; formats as `01d`.
     OneDegree,
+    /// Thirty arc-minute grid spacing; formats as `30m`.
     ThirtyMinutes,
+    /// Twenty arc-minute grid spacing; formats as `20m`.
     TwentyMinutes,
+    /// Fifteen arc-minute grid spacing; formats as `15m`.
     FifteenMinutes,
+    /// Ten arc-minute grid spacing; formats as `10m`.
     TenMinutes,
+    /// Six arc-minute grid spacing; formats as `06m`.
     SixMinutes,
+    /// Five arc-minute grid spacing; formats as `05m`.
     FiveMinutes,
+    /// Four arc-minute grid spacing; formats as `04m`.
     FourMinutes,
+    /// Three arc-minute grid spacing; formats as `03m`.
     ThreeMinutes,
+    /// Two arc-minute grid spacing; formats as `02m`.
     TwoMinutes,
+    /// One arc-minute grid spacing; formats as `01m`. The finest gravity grid offered.
     OneMinute,
 }
 impl Display for GravityResolution {
@@ -135,15 +161,25 @@ impl Display for GravityResolution {
 /// Resolution values for magnetic maps
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MagneticResolution {
+    /// One-degree grid spacing; formats as `01d`.
     OneDegree,
+    /// Thirty arc-minute grid spacing; formats as `30m`.
     ThirtyMinutes,
+    /// Twenty arc-minute grid spacing; formats as `20m`.
     TwentyMinutes,
+    /// Fifteen arc-minute grid spacing; formats as `15m`.
     FifteenMinutes,
+    /// Ten arc-minute grid spacing; formats as `10m`.
     TenMinutes,
+    /// Six arc-minute grid spacing; formats as `06m`.
     SixMinutes,
+    /// Five arc-minute grid spacing; formats as `05m`.
     FiveMinutes,
+    /// Four arc-minute grid spacing; formats as `04m`.
     FourMinutes,
+    /// Three arc-minute grid spacing; formats as `03m`.
     ThreeMinutes,
+    /// Two arc-minute grid spacing; formats as `02m`. The finest magnetic grid offered.
     TwoMinutes,
 }
 impl Display for MagneticResolution {
@@ -164,11 +200,14 @@ impl Display for MagneticResolution {
         write!(f, "{res}")
     }
 }
-/// Enum for the different types of maps. A GeoMap is defined by its measurement type and resolution.
+/// Enum for the different types of maps. A `GeoMap` is defined by its measurement type and resolution.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GeophysicalMeasurementType {
+    /// Bathymetric or terrain relief map at the given [`ReliefResolution`]; displays as `Relief <res>`.
     Relief(ReliefResolution),
+    /// Gravity anomaly map at the given [`GravityResolution`]; displays as `Gravity <res>`.
     Gravity(GravityResolution),
+    /// Magnetic anomaly map at the given [`MagneticResolution`]; displays as `Magnetic <res>`.
     Magnetic(MagneticResolution),
 }
 impl Display for GeophysicalMeasurementType {
@@ -180,7 +219,7 @@ impl Display for GeophysicalMeasurementType {
         }
     }
 }
-/// Struct for the GeoMap object.
+/// Struct for the `GeoMap` object.
 ///
 /// This struct contains the latitude and longitude vectors, the data matrix, and the type of map
 /// The data matrix is a 2D matrix of data values, where the rows are the latitudes and the columns
@@ -221,7 +260,7 @@ impl Display for GeoMap {
     }
 }
 impl GeoMap {
-    /// Create a new GeoMap object from the supplied latitudes, longitudes, data matrix, and map type
+    /// Create a new `GeoMap` object from the supplied latitudes, longitudes, data matrix, and map type
     ///
     /// # Arguments
     /// - `lats` - A vector of latitudes
@@ -230,7 +269,7 @@ impl GeoMap {
     /// - `map_type` - The type of map (Relief, Gravity, Magnetic)
     ///
     /// # Returns
-    /// - A new GeoMap object
+    /// - A new `GeoMap` object
     ///
     /// # Example
     /// ```rust
@@ -255,15 +294,15 @@ impl GeoMap {
             map_type,
         }
     }
-    /// Load a GeoMap from a netcdf file. GMT processing does not encode the map type in the file, so this
+    /// Load a `GeoMap` from a netcdf file. GMT processing does not encode the map type in the file, so this
     /// function requires the user to specify the type of map along with the filename.
     ///
     /// # Arguments
-    /// - `filename` - The PathBuf of the netcdf file
+    /// - `filename` - The `PathBuf` of the netcdf file
     /// - `map_type` - The type of map (Relief, Gravity, Magnetic)
     ///
     /// # Returns
-    /// - A Result containing a reference to the GeoMap object or an error message
+    /// - A Result containing a reference to the `GeoMap` object or an error message
     ///
     /// # Example
     /// ```ignore
@@ -488,7 +527,7 @@ impl GeoMap {
         // `position` searches and makes the `- 1` below provably safe.
         self.bilinear_interpolation(*lat, *lon, lat_index, lon_index)
     }
-    /// Bilinear interpolation helper method for get_point
+    /// Bilinear interpolation helper method for `get_point`
     ///
     /// `lat2_index` / `lon2_index` are the upper bracketing indices already located by
     /// [`Self::get_point`]. They are parameters rather than recomputed here because the
@@ -637,9 +676,31 @@ pub trait GeophysicalAnomalyMeasurementModel: MeasurementModel {
     /// gracefully on exactly this condition; geonav used to panic on it, on the per-particle
     /// path, so a single outlier particle ended the run.
     fn get_anomaly(&self) -> Result<f64, StrapdownError>;
+    /// Cache the vehicle state that [`Self::get_anomaly`] needs.
+    ///
+    /// The event stream is built before any navigation estimate exists, so each implementor
+    /// copies out only the fields its anomaly depends on: [`GravityMeasurement`] takes
+    /// latitude, altitude and the north/east velocities (the Eötvös correction needs the
+    /// velocity), [`MagneticAnomalyMeasurement`] takes the position the World Magnetic Model
+    /// is evaluated at, and [`CombinedGeophysicalMeasurement`] delegates to both. `state`
+    /// stores latitude and longitude in radians; an implementor whose underlying model takes
+    /// degrees must convert. Both concrete implementors do: the World Magnetic Model and
+    /// [`gravity_anomaly`] are each specified in degrees.
     fn set_state(&mut self, state: &StrapdownState);
 }
 /// Gravity measurement model
+///
+/// Computes the free-air anomaly at the current state by differencing the observed gravity
+/// magnitude against Somigliana normal gravity, with the Eötvös correction for platform
+/// motion ([`gravity_anomaly`]). The expected measurement is read from a [`GeoMap`].
+///
+/// # Latitude units
+///
+/// [`gravity_anomaly`] takes **degrees**, while [`StrapdownState`] stores radians, so both
+/// of this type's anomaly paths convert: [`GeophysicalAnomalyMeasurementModel::set_state`]
+/// and the per-particle path through [`Self::extract_state_inputs`]. Neither did before
+/// #330, which evaluated normal gravity near the equator whatever the true latitude -- a
+/// -2136 mGal error at 40 deg N, against map anomalies of tens of mGal.
 #[derive(Clone, Debug)]
 pub struct GravityMeasurement {
     /// Source map
@@ -648,7 +709,8 @@ pub struct GravityMeasurement {
     pub noise_std: f64,
     /// Observed gravity magnitude (m/s^2)
     pub gravity_observed: f64,
-    /// Current latitude
+    /// Current latitude in **degrees**, converted from the radian-valued
+    /// [`StrapdownState`] on the way in, because [`gravity_anomaly`] takes degrees (#330).
     latitude: f64,
     /// Current altitude (m)
     altitude: f64,
@@ -673,7 +735,13 @@ impl GeophysicalAnomalyMeasurementModel for GravityMeasurement {
         ))
     }
     fn set_state(&mut self, state: &StrapdownState) {
-        self.latitude = state.latitude;
+        // Degrees. `gravity_anomaly` documents and uses degrees -- it forwards to `gravity`
+        // and `eotvos`, both of which call `.to_radians()` internally -- while
+        // `StrapdownState` stores radians. Passing the radian value through evaluated the
+        // Somigliana model near the equator whatever the true latitude, a -2136 mGal error
+        // at 40 deg N against map anomalies of tens of mGal (#330). Same conversion
+        // `MagneticAnomalyMeasurement::set_state` has always done.
+        self.latitude = state.latitude.to_degrees();
         self.altitude = state.altitude;
         self.north_velocity = state.velocity_north;
         self.east_velocity = state.velocity_east;
@@ -728,6 +796,11 @@ impl MeasurementModel for GravityMeasurement {
 }
 
 impl GravityMeasurement {
+    /// Pull the `gravity_anomaly` inputs out of a raw filter state vector.
+    ///
+    /// Returns `(latitude_deg, altitude_m, north_velocity, east_velocity)`. The latitude is
+    /// converted, because `state[0]` is radians and `gravity_anomaly` takes degrees -- the
+    /// per-particle half of #330.
     fn extract_state_inputs(state: &DVector<f64>) -> Option<(f64, f64, f64, f64)> {
         if state.len() >= 5
             && state[0].is_finite()
@@ -735,7 +808,7 @@ impl GravityMeasurement {
             && state[3].is_finite()
             && state[4].is_finite()
         {
-            Some((state[0], state[2], state[3], state[4]))
+            Some((state[0].to_degrees(), state[2], state[3], state[4]))
         } else {
             None
         }
@@ -747,7 +820,7 @@ impl GravityMeasurement {
     ///
     /// # Arguments
     ///
-    /// * `state` - Current navigation state vector [lat, lon, alt, v_n, v_e, v_d, roll, pitch, yaw]
+    /// * `state` - Current navigation state vector [lat, lon, alt, `v_n`, `v_e`, `v_d`, roll, pitch, yaw]
     ///
     /// # Returns
     ///
@@ -920,7 +993,7 @@ impl MagneticAnomalyMeasurement {
     ///
     /// # Arguments
     ///
-    /// * `state` - Current navigation state vector [lat, lon, alt, v_n, v_e, v_d, roll, pitch, yaw]
+    /// * `state` - Current navigation state vector [lat, lon, alt, `v_n`, `v_e`, `v_d`, roll, pitch, yaw]
     ///
     /// # Returns
     ///
@@ -1033,10 +1106,18 @@ impl MeasurementModel for CombinedGeophysicalMeasurement {
 /// * `records` - Vector of test data records
 /// * `cfg` - GNSS degradation configuration
 /// * `gravity_map` - Optional gravity map for measurements
-/// * `gravity_noise_std` - Standard deviation for gravity measurement noise (if gravity_map is Some)
+/// * `gravity_noise_std` - Standard deviation for gravity measurement noise (if `gravity_map` is Some)
 /// * `magnetic_map` - Optional magnetic map for measurements
-/// * `magnetic_noise_std` - Standard deviation for magnetic measurement noise (if magnetic_map is Some)
+/// * `magnetic_noise_std` - Standard deviation for magnetic measurement noise (if `magnetic_map` is Some)
 /// * `geo_frequency_s` - Frequency in seconds for geophysical measurements (None for every available measurement)
+///
+/// # Errors
+/// [`StrapdownError::InvalidConfiguration`] if `records` is empty. The first record supplies
+/// both the stream's `start_time` and the reference altitude for relative-altitude
+/// measurements, and neither has a defensible default. A slice of length one is *accepted*
+/// and yields an empty event list, so the boundary is emptiness, not "fewer than two". This
+/// mirrors [`strapdown::messages::build_event_stream`], which this function shadows with
+/// geophysical measurements added.
 #[allow(
     clippy::needless_pass_by_value,
     reason = "the `Rc<GeoMap>` handles are stored by the measurements this builds; cloning an \
@@ -1051,8 +1132,19 @@ pub fn build_event_stream(
     magnetic_map: Option<Rc<GeoMap>>,
     magnetic_noise_std: Option<f64>,
     geo_frequency_s: Option<f64>,
-) -> EventStream {
-    let start_time = records[0].time;
+) -> Result<EventStream, StrapdownError> {
+    // The first record fixes both the epoch the elapsed clock counts from and the datum the
+    // relative-altitude measurements are referenced to, so an empty slice is rejected here
+    // rather than indexed into. Kept identical to the core copy on purpose (#311).
+    let first = records
+        .first()
+        .ok_or_else(|| StrapdownError::InvalidConfiguration {
+            field: "event stream records",
+            reason: "cannot build an event stream from zero records: the first record supplies \
+                     the stream's start time and the relative-altitude reference"
+                .to_owned(),
+        })?;
+    let start_time = first.time;
     let bias_count = usize::from(gravity_map.is_some()) + usize::from(magnetic_map.is_some());
     let records_with_elapsed: Vec<(f64, &TestDataRecord)> = records
         .iter()
@@ -1073,7 +1165,7 @@ pub fn build_event_stream(
     let mut next_geo_time = 0.0;
     // Through preprocessing we assert that the first record must have a NED position
     // but it may or may not have IMU or other such measurements.
-    let reference_altitude = records[0].altitude;
+    let reference_altitude = first.altitude;
     for w in records_with_elapsed.windows(2) {
         let (t0, _) = (&w[0].0, &w[0].1);
         let (t1, r1) = (&w[1].0, &w[1].1);
@@ -1286,7 +1378,7 @@ pub fn build_event_stream(
             }
         }
     }
-    EventStream { start_time, events }
+    Ok(EventStream { start_time, events })
 }
 // NOTE: `geo_closed_loop_ukf`, `geo_closed_loop_ekf` and `geo_closed_loop_rbpf` were
 // removed in favour of `strapdown::sim::run_closed_loop`.
@@ -1402,6 +1494,81 @@ mod tests {
         let value = map.get_point(&40.5, &-73.5).unwrap();
         // Should be interpolated value between surrounding points
         assert!(value.abs() < 10.0);
+    }
+
+    /// #330: both of `GravityMeasurement`'s anomaly paths must hand `gravity_anomaly` a
+    /// latitude in **degrees**, not the radians `StrapdownState` stores.
+    ///
+    /// Asserted against an independently computed anomaly rather than against whatever the
+    /// code returns, and at 40 deg N rather than the equator -- at 0 deg the bug is
+    /// invisible, because 0 rad and 0 deg are the same number. That is exactly why the
+    /// pre-existing `test_gravity_anomaly_measurement` above, which seeds `latitude: 0.0`,
+    /// passed throughout.
+    #[test]
+    fn gravity_measurement_converts_latitude_to_degrees() {
+        let latitude_deg = 40.0_f64;
+        let altitude = 1000.0_f64;
+        let north_velocity = 12.0_f64;
+        let east_velocity = -4.0_f64;
+        let observed = GP + 3.0e-4;
+
+        let mut measurement = GravityMeasurement {
+            map: Rc::new(create_test_gravity_map()),
+            noise_std: 1.0,
+            gravity_observed: observed,
+            latitude: f64::NAN,
+            altitude: f64::NAN,
+            north_velocity: f64::NAN,
+            east_velocity: f64::NAN,
+            bias_from_end: None,
+        };
+
+        let state = StrapdownState::new(
+            latitude_deg,
+            -73.0,
+            altitude,
+            north_velocity,
+            east_velocity,
+            0.0,
+            nalgebra::Rotation3::identity(),
+            true, // in_degrees: the constructor converts to the radians the state stores
+            Some(false),
+        )
+        .unwrap();
+
+        // The oracle: `gravity_anomaly`'s own documented contract, evaluated in degrees.
+        let expected = gravity_anomaly(
+            &latitude_deg,
+            &altitude,
+            &north_velocity,
+            &east_velocity,
+            &observed,
+        );
+
+        // Path 1: the cached-state path.
+        measurement.set_state(&state);
+        assert_approx_eq!(measurement.get_anomaly().unwrap(), expected, 1e-12);
+
+        // Path 2: the per-particle path, which reads the raw state vector.
+        let state_vector: DVector<f64> = (&state).into();
+        let per_particle = measurement.get_measurement(&state_vector).unwrap();
+        assert_approx_eq!(per_particle[0], expected, 1e-12);
+
+        // Non-degenerate: passing radians instead would be wrong by ~2100 mGal here, four
+        // orders of magnitude above the tolerance above, so this test cannot pass by
+        // accident the way an equatorial one would.
+        let with_radians = gravity_anomaly(
+            &latitude_deg.to_radians(),
+            &altitude,
+            &north_velocity,
+            &east_velocity,
+            &observed,
+        );
+        assert!(
+            (with_radians - expected).abs() > 1e-2,
+            "the radians/degrees confusion should be worth >1e-2 m/s^2 at 40 deg N, got {}",
+            (with_radians - expected).abs()
+        );
     }
 
     #[test]
@@ -1533,6 +1700,52 @@ mod tests {
         }
     }
 
+    /// An empty slice must return the error, not index out of bounds (#311). The geonav copy
+    /// of `build_event_stream` carried the identical defect, so it gets the identical test.
+    #[test]
+    fn empty_records_are_an_error_not_a_panic() {
+        let config = GnssDegradationConfig {
+            scheduler: GnssScheduler::PassThrough,
+            fault: GnssFaultModel::None,
+            seed: 42,
+        };
+        let geomap = Rc::new(create_test_gravity_map());
+
+        let err = build_event_stream(&[], &config, Some(geomap), None, None, None, None)
+            .expect_err("an empty record slice cannot produce a stream");
+        assert!(
+            matches!(
+                err,
+                StrapdownError::InvalidConfiguration { field, .. } if field == "event stream records"
+            ),
+            "an empty record slice must report an invalid configuration, got: {err}"
+        );
+    }
+
+    /// A single record is the boundary the guard must not move: it supplies `start_time` and
+    /// the altitude reference, and the event list is empty because events are built from
+    /// adjacent pairs. A guard written as `len() < 2` would wrongly reject this.
+    #[test]
+    fn single_record_yields_a_stream_with_no_events() {
+        let records = create_test_records();
+        let config = GnssDegradationConfig {
+            scheduler: GnssScheduler::PassThrough,
+            fault: GnssFaultModel::None,
+            seed: 42,
+        };
+        let geomap = Rc::new(create_test_gravity_map());
+
+        let event_stream =
+            build_event_stream(&records[..1], &config, Some(geomap), None, None, None, None)
+                .unwrap();
+
+        assert_eq!(event_stream.start_time, records[0].time);
+        assert!(
+            event_stream.events.is_empty(),
+            "one record spans no interval, so it can produce no events"
+        );
+    }
+
     #[test]
     fn test_build_event_stream() {
         let records = create_test_records();
@@ -1544,7 +1757,7 @@ mod tests {
         let geomap = Rc::new(create_test_gravity_map());
 
         let event_stream =
-            build_event_stream(&records, &config, Some(geomap), None, None, None, None);
+            build_event_stream(&records, &config, Some(geomap), None, None, None, None).unwrap();
 
         assert_eq!(event_stream.start_time, records[0].time);
         assert!(!event_stream.events.is_empty());
@@ -1577,7 +1790,7 @@ mod tests {
         let geomap = Rc::new(create_test_magnetic_map());
 
         let event_stream =
-            build_event_stream(&records, &config, None, None, Some(geomap), None, None);
+            build_event_stream(&records, &config, None, None, Some(geomap), None, None).unwrap();
 
         assert_eq!(event_stream.start_time, records[0].time);
         assert!(!event_stream.events.is_empty());
@@ -1739,7 +1952,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .unwrap();
 
         // Find a gravity measurement event and verify its noise
         let has_gravity_with_custom_noise = event_stream.events.iter().any(|event| {
@@ -1779,7 +1993,8 @@ mod tests {
             None,
             None,
             Some(2.0),
-        );
+        )
+        .unwrap();
 
         // Count gravity measurement events
         let gravity_events = event_stream
@@ -1803,7 +2018,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .unwrap();
 
         let gravity_events_no_limit = event_stream_no_limit
             .events

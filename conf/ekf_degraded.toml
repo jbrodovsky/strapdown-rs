@@ -1,6 +1,11 @@
 input = "data/input"
 output = "data/output/ekf/degraded"
 mode = "closed-loop"
+# These recipes read Sensor Logger exports from `data/input`, which are ENU
+# convention: at rest the device reports +g along its up axis. The library default
+# is NED as of #272, so the frame has to be declared -- `strapdown-sim` checks it
+# against the data and refuses rather than silently double-counting gravity (#296).
+is_enu = true
 seed = 42
 parallel = true
 generate_plot = true
