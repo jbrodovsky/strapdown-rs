@@ -6026,7 +6026,8 @@ mod tests {
         assert_approx_eq!(estimate[1], (-80.0_f64).to_radians(), 1e-12);
         assert_approx_eq!(estimate[2], 100.0, 1e-9);
         // Bearing 90 deg at 5 m/s is due east: no northward component at all. Unconverted
-        // this is (-2.24, +4.47), which is what every one of these used to seed.
+        // it is (-2.24, +4.47), which is what the UKF used to seed; the EKF and ESKF
+        // literals already converted, and this holds all three to that one answer.
         assert_approx_eq!(estimate[3], 0.0, 1e-9);
         assert_approx_eq!(estimate[4], 5.0, 1e-9);
         assert_approx_eq!(estimate[5], 0.0, 1e-12);
