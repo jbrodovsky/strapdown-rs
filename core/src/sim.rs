@@ -1283,9 +1283,15 @@ pub struct NavigationResult {
     /// Timestamp corresponding to the state
     pub timestamp: DateTime<Utc>,
     // ---- Navigation solution states ----
-    /// Latitude in radians
+    /// Latitude in **degrees** (WGS84).
+    ///
+    /// Every constructor converts on the way in -- see the `state[0].to_degrees()` in the
+    /// `From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>, GeoStateLayout)>` impl below --
+    /// while [`Self::latitude_cov`] is the raw filter variance and stays in rad^2. The two
+    /// fields are deliberately in different units; anything scoring a position error against
+    /// its covariance has to convert the error to radians rather than the variance to degrees.
     pub latitude: f64,
-    /// Longitude in radians
+    /// Longitude in **degrees** (WGS84). See [`Self::latitude`] for the units note.
     pub longitude: f64,
     /// Altitude in meters
     pub altitude: f64,
@@ -2130,6 +2136,10 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>)> for NavigationResult {
 /// The layout has to be supplied because the state vector cannot describe itself: a
 /// 16-element state is gravity-only or magnetic-only depending on the run's flags. See
 /// [`GeoStateLayout`].
+///
+/// A layout narrower than [`NAVIGATION_STATES`] is a particle layout and is forwarded to
+/// [`NavigationResult::from_particle_filter_with_geo`], so [`run_closed_loop_with_geo`] works
+/// for a particle filter as well as a Kalman one.
 impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>, GeoStateLayout)> for NavigationResult {
     /// # Panics
     /// If the state length or covariance shape disagrees with `layout.state_dim()`, or if a
@@ -2145,6 +2155,16 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>, GeoStateLayout)> for Na
         ),
     ) -> Self {
         let expected = layout.state_dim();
+        // A layout narrower than the fifteen Kalman states describes a particle estimate,
+        // which carries no IMU-bias block. Without this dispatch the width assertion below
+        // passes for [`GeoStateLayout::PARTICLE_NONE`] -- nine states, nine given -- and the
+        // bias reads at `state[9]..state[14]` then index off the end. That made
+        // `run_closed_loop_with_geo` unusable for the one non-Kalman layout this crate
+        // defines, which is why all three particle event loops in the workspace are
+        // hand-rolled copies of each other.
+        if expected < NAVIGATION_STATES {
+            return Self::from_particle_filter_with_geo(timestamp, state, covariance, layout);
+        }
         assert!(
             state.len() == expected,
             "State vector must have {expected} elements; got {}",
@@ -5529,9 +5549,17 @@ pub fn generate_synthetic(
             gyro_x: out_gyro[0],
             gyro_y: out_gyro[1],
             gyro_z: out_gyro[2],
-            mag_x: 0.0,
-            mag_y: 0.0,
-            mag_z: 0.0,
+            // `NaN`, not zero. `generate_synthetic` does not model a magnetometer, and zero is
+            // not "no reading" -- `build_event_stream` emits a `MagnetometerYawMeasurement` for
+            // any record whose three channels are non-`NaN`, and a zero field tilt-compensates
+            // to zero and then reads `atan2(0.0, 0.0)`, which IEEE defines as `+0.0`. Every
+            // synthetic epoch was therefore aided by a constant fabricated heading of 0 rad at
+            // `MAG_YAW_NOISE`, which is the failure mode #305 was filed for. `NaN` is what the
+            // loaders already use for an absent channel, so no event is emitted and heading is
+            // aided only by the GNSS velocity fix. #369 tracks modelling a real field.
+            mag_x: f64::NAN,
+            mag_y: f64::NAN,
+            mag_z: f64::NAN,
             relative_altitude: out_alt - initial_alt,
             pressure: out_pressure,
             grav_x: grav_body[0],
@@ -8383,6 +8411,37 @@ mod tests {
         let mean = DVector::from_vec(vec![0.7, -1.3, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
         let cov = DMatrix::<f64>::identity(10, 10);
         let _ = NavigationResult::from_particle_filter(&timestamp, &mean, &cov);
+    }
+
+    /// A particle-width layout goes through the particle constructor, not off the end.
+    ///
+    /// The four-tuple `From` asserts the state is `layout.state_dim()` wide -- nine, for
+    /// [`GeoStateLayout::PARTICLE_NONE`], which a particle estimate satisfies -- and then used
+    /// to read `state[9]..state[14]` for the IMU-bias block a particle filter does not have.
+    /// The width assertion passed and the indexing panicked, which is why every particle event
+    /// loop in this workspace is hand-rolled rather than going through
+    /// [`run_closed_loop_with_geo`]. Nothing passed a particle layout to it, so the panic was
+    /// latent; this is the test that keeps it that way.
+    #[test]
+    fn a_particle_width_layout_converts_through_the_particle_constructor() {
+        let timestamp = Utc::now();
+        let mean = DVector::from_vec(vec![0.7, -1.3, 100.0, 1.0, 2.0, 3.0, 0.1, 0.2, 0.3]);
+        let cov = DMatrix::<f64>::identity(PARTICLE_FILTER_STATES, PARTICLE_FILTER_STATES) * 0.25;
+
+        let through_from =
+            NavigationResult::from((&timestamp, &mean, &cov, GeoStateLayout::PARTICLE_NONE));
+        let through_constructor = NavigationResult::from_particle_filter(&timestamp, &mean, &cov);
+
+        assert_eq!(through_from.latitude, through_constructor.latitude);
+        assert_eq!(through_from.altitude, through_constructor.altitude);
+        assert_eq!(through_from.latitude_cov, through_constructor.latitude_cov);
+        // A particle filter estimates no IMU biases, so the bias block is zero and its
+        // covariance is not read from a state that does not carry it.
+        assert_eq!(through_from.acc_bias_x, 0.0);
+        assert_eq!(through_from.gyro_bias_z, 0.0);
+        // The position covariance a metric would score against must be a real number.
+        assert!(through_from.latitude_cov.is_finite());
+        assert!(through_from.altitude_cov.is_finite());
     }
 
     /// The unaided layouts differ by filter, and it is the width that differs.
