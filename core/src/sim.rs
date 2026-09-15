@@ -2188,8 +2188,17 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>)> for NavigationResult {
 /// [`GeoStateLayout`].
 ///
 /// A layout narrower than [`NAVIGATION_STATES`] is a particle layout and is forwarded to
-/// [`NavigationResult::from_particle_filter_with_geo`], so [`run_closed_loop_with_geo`] works
-/// for a particle filter as well as a Kalman one.
+/// [`NavigationResult::from_particle_filter_with_geo`], which is what lets
+/// [`run_closed_loop_with_geo`] drive a particle filter at [`GeoStateLayout::PARTICLE_NONE`].
+///
+/// That is the no-extra-states particle path and only that path. A particle layout carrying
+/// map biases is ten or eleven wide, while the runner reads its estimate through
+/// [`NavigationFilter::get_estimate`](crate::NavigationFilter::get_estimate), which the
+/// Rao-Blackwellized particle filter implements with its nine-state `estimate()` -- the wider
+/// vector lives behind `estimate_with_extra_states`, which the trait has no way to ask for.
+/// Such a layout still reaches the width assertion in the particle constructor and fails it,
+/// by design rather than by running off the end of the vector. Geophysical particle runs
+/// therefore keep their own event loop.
 impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>, GeoStateLayout)> for NavigationResult {
     /// # Panics
     /// If the state length or covariance shape disagrees with `layout.state_dim()`, or if a
@@ -2207,11 +2216,12 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>, GeoStateLayout)> for Na
         let expected = layout.state_dim();
         // A layout narrower than the fifteen Kalman states describes a particle estimate,
         // which carries no IMU-bias block. Without this dispatch the width assertion below
-        // passes for [`GeoStateLayout::PARTICLE_NONE`] -- nine states, nine given -- and the
+        // passes for `GeoStateLayout::PARTICLE_NONE` -- nine states, nine given -- and the
         // bias reads at `state[9]..state[14]` then index off the end. That made
-        // `run_closed_loop_with_geo` unusable for the one non-Kalman layout this crate
-        // defines, which is why all three particle event loops in the workspace are
-        // hand-rolled copies of each other.
+        // `run_closed_loop_with_geo` unusable for the plain particle layout, which is why
+        // every particle event loop in this workspace is a hand-rolled copy of the others.
+        // It does not make the *geophysical* particle layouts usable through the runner; see
+        // the impl documentation above for why that needs an accessor the trait lacks.
         if expected < NAVIGATION_STATES {
             return Self::from_particle_filter_with_geo(timestamp, state, covariance, layout);
         }

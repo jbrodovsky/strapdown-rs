@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "note": "Navigation-accuracy baseline (#328). Regenerate with `UPDATE_PERF_BASELINE=1 cargo test -p strapdown-core --test perf_baseline`, then review the diff: every changed number is a claim about the navigation solution. Values are rounded to 6 significant figures. `null` means the metric is not computable for that scenario -- dead reckoning reports no covariance -- and is not gated. `\"gated\": false` keeps a metric recorded but unasserted. See the module docs in core/tests/perf_baseline.rs for what the numbers do and do not measure.",
   "default_tolerance": {
     "regress_fraction": 0.1,
@@ -9,6 +9,7 @@
     "real_clean__ekf": {
       "description": "test_data.csv, GNSS every epoch, no fault",
       "sample_count": 5366,
+      "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
           "value": 22.9438
@@ -21,7 +22,7 @@
           "value": 0.412411
         },
         "horizontal_cep50_m": {
-          "value": 23.1906
+          "value": 23.1882
         },
         "horizontal_cep95_m": {
           "value": 34.4717
@@ -62,6 +63,7 @@
     "real_clean__eskf": {
       "description": "test_data.csv, GNSS every epoch, no fault",
       "sample_count": 5366,
+      "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
           "value": 26.5007
@@ -73,7 +75,7 @@
           "value": 0.460119
         },
         "horizontal_cep50_m": {
-          "value": 22.925
+          "value": 22.9246
         },
         "horizontal_cep95_m": {
           "value": 35.4276
@@ -114,6 +116,7 @@
     "real_clean__ukf": {
       "description": "test_data.csv, GNSS every epoch, no fault",
       "sample_count": 5366,
+      "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
           "value": 23.2103
@@ -125,7 +128,7 @@
           "value": 0.466455
         },
         "horizontal_cep50_m": {
-          "value": 23.111
+          "value": 23.1055
         },
         "horizontal_cep95_m": {
           "value": 34.5192
@@ -165,6 +168,7 @@
     "real_degraded__eskf": {
       "description": "test_data.csv, GNSS every epoch, AR(1) position and velocity fault",
       "sample_count": 5366,
+      "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
           "value": 26.7841
@@ -176,7 +180,7 @@
           "value": 0.147596
         },
         "horizontal_cep50_m": {
-          "value": 42.3495
+          "value": 42.3445
         },
         "horizontal_cep95_m": {
           "value": 86.8482
@@ -216,6 +220,7 @@
     "real_degraded__ukf": {
       "description": "test_data.csv, GNSS every epoch, AR(1) position and velocity fault",
       "sample_count": 5366,
+      "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
           "value": 22.8288
@@ -227,7 +232,7 @@
           "value": 0.145546
         },
         "horizontal_cep50_m": {
-          "value": 26.0766
+          "value": 26.0759
         },
         "horizontal_cep95_m": {
           "value": 51.1582
@@ -267,6 +272,7 @@
     "real_outage_60s__eskf": {
       "description": "test_data.csv, 120 s of GNSS then a 60 s outage, repeating",
       "sample_count": 5366,
+      "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
           "value": 23.3992
@@ -278,7 +284,7 @@
           "value": 0.390048
         },
         "horizontal_cep50_m": {
-          "value": 28.7081
+          "value": 28.7013
         },
         "horizontal_cep95_m": {
           "value": 701.329
@@ -320,6 +326,7 @@
     "real_rbpf_slice__rbpf": {
       "description": "first 1200 records of test_data.csv, GNSS every epoch, 500 particles",
       "sample_count": 1200,
+      "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
           "value": 21.156
@@ -331,7 +338,7 @@
           "value": 0.6575
         },
         "horizontal_cep50_m": {
-          "value": 15.6865
+          "value": 15.6787
         },
         "horizontal_cep95_m": {
           "value": 28.276
@@ -371,6 +378,7 @@
     "real_sparse_5s__eskf": {
       "description": "test_data.csv, GNSS every 5 s, no fault",
       "sample_count": 5366,
+      "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
           "value": 20.3436
@@ -382,7 +390,7 @@
           "value": 0.190086
         },
         "horizontal_cep50_m": {
-          "value": 23.6055
+          "value": 23.604
         },
         "horizontal_cep95_m": {
           "value": 37.8683
@@ -422,6 +430,7 @@
     "real_sparse_5s__ukf": {
       "description": "test_data.csv, GNSS every 5 s, no fault",
       "sample_count": 5366,
+      "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
           "value": 19.5275
@@ -433,7 +442,7 @@
           "value": 0.211331
         },
         "horizontal_cep50_m": {
-          "value": 24.0944
+          "value": 24.0846
         },
         "horizontal_cep95_m": {
           "value": 36.6143
@@ -473,6 +482,7 @@
     "syn_cruise_1hz__ekf": {
       "description": "synthetic 300 s at 50 Hz, GNSS every 1 s, scored against exact truth",
       "sample_count": 15000,
+      "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
           "value": 0.981729
@@ -484,7 +494,7 @@
           "value": 0.933533
         },
         "horizontal_cep50_m": {
-          "value": 3.6875
+          "value": 3.68749
         },
         "horizontal_cep95_m": {
           "value": 7.6735
@@ -525,6 +535,7 @@
     "syn_cruise_1hz__eskf": {
       "description": "synthetic 300 s at 50 Hz, GNSS every 1 s, scored against exact truth",
       "sample_count": 15000,
+      "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
           "value": 2.50903
@@ -536,7 +547,7 @@
           "value": 0.933067
         },
         "horizontal_cep50_m": {
-          "value": 2.83524
+          "value": 2.83516
         },
         "horizontal_cep95_m": {
           "value": 5.96447
@@ -577,6 +588,7 @@
     "syn_cruise_1hz__ukf": {
       "description": "synthetic 300 s at 50 Hz, GNSS every 1 s, scored against exact truth",
       "sample_count": 15000,
+      "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
           "value": 42.6826
@@ -588,7 +600,7 @@
           "value": 0.9318
         },
         "horizontal_cep50_m": {
-          "value": 3.66483
+          "value": 3.66478
         },
         "horizontal_cep95_m": {
           "value": 7.82068
@@ -624,13 +636,14 @@
         },
         "yaw_rmse_deg": {
           "value": 42.6654,
-          "note": "48.7 deg where the EKF holds 0.97 and the ESKF 2.17 on the same measurements. This is #336 -- the UKF averages sigma-point Euler angles linearly -- not an observability limit. Recorded as measured; fixing #336 trips the improvement side. #369 tracks modelling a real magnetic field here."
+          "note": "42.7 deg where the EKF holds 0.97 and the ESKF 2.07 on the same measurements. This is #336 -- the UKF averages sigma-point Euler angles linearly -- not an observability limit. Recorded as measured; fixing #336 trips the improvement side. #369 tracks modelling a real magnetic field here."
         }
       }
     },
     "syn_dead_reckoning": {
       "description": "synthetic first 120 s, unaided mechanization",
       "sample_count": 6000,
+      "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
           "value": 1.30061
@@ -642,7 +655,7 @@
           "value": null
         },
         "horizontal_cep50_m": {
-          "value": 110.233
+          "value": 110.128
         },
         "horizontal_cep95_m": {
           "value": 715.856
@@ -683,6 +696,7 @@
     "syn_outage_60s__eskf": {
       "description": "synthetic 300 s at 50 Hz, 60 s of GNSS then 60 s of outage",
       "sample_count": 15000,
+      "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
           "value": 1.22282
@@ -694,7 +708,7 @@
           "value": 0.9232
         },
         "horizontal_cep50_m": {
-          "value": 1.45382
+          "value": 1.45356
         },
         "horizontal_cep95_m": {
           "value": 44.4468
@@ -737,6 +751,7 @@
     "syn_outage_60s__ukf": {
       "description": "synthetic 300 s at 50 Hz, 60 s of GNSS then 60 s of outage",
       "sample_count": 15000,
+      "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
           "value": 22.2276
@@ -748,7 +763,7 @@
           "value": 0.897333
         },
         "horizontal_cep50_m": {
-          "value": 5.91631
+          "value": 5.91449
         },
         "horizontal_cep95_m": {
           "value": 762.191,

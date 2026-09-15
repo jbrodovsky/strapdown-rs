@@ -12,6 +12,11 @@ by `core/tests/perf_baseline.rs`. The check fails in **both** directions:
 - a metric more than **25%** better is *also* a failure, and the message asks for the baseline
   to be re-blessed. An improvement nobody records is one the next change can silently undo.
 
+Each scenario also records the number of aligned samples it was scored over and the number of
+channel-samples dropped as non-finite, both compared for exact equality before any metric is.
+The second is zero everywhere and is recorded because dropping a sample does not lower the
+first, but does make the metric it was dropped from look better.
+
 Re-bless with `UPDATE_PERF_BASELINE=1 cargo test -p strapdown-core --test perf_baseline`, then
 commit the diff; `cargo perf` runs the suite and prints the table without writing anything.
 [CONTRIBUTING.md](https://github.com/jbrodovsky/strapdown-rs/blob/main/CONTRIBUTING.md) has the
@@ -53,8 +58,8 @@ The numbers are meaningless without them, and none of them is a defect in the ha
 | metric | unit | definition | ideal |
 |---|---|---|---|
 | `horizontal_rmse_m` | m | RMS great-circle distance from truth | 0 |
-| `horizontal_cep50_m` | m | median radial error -- the empirical, non-parametric CEP, *not* the Rayleigh form | 0 |
-| `horizontal_cep95_m` | m | 95th percentile radial error | 0 |
+| `horizontal_cep50_m` | m | median radial error -- the empirical, non-parametric CEP, *not* the Rayleigh form. Nearest-rank, so it is a value some epoch actually had | 0 |
+| `horizontal_cep95_m` | m | 95th percentile radial error, same convention | 0 |
 | `horizontal_max_m` | m | largest single-sample radial error | 0 |
 | `vertical_rmse_m` | m | RMS altitude error | 0 |
 | `vertical_bias_m` | m | **signed** mean altitude error -- catches a slow one-sided drift while it is still small | 0 |
@@ -124,21 +129,21 @@ Measured on `ubuntu-latest`, rustc 1.91. Regenerate with `cargo perf`.
 
 | scenario | samples | horiz RMSE (m) | CEP50 (m) | CEP95 (m) | horiz max (m) | vert RMSE (m) | vert bias (m) | horiz vel RMSE (m/s) | vert vel RMSE (m/s) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `real_clean__ukf` | 5,366 | 23.534 | 23.111 | 34.519 | 37.719 | 2.671 | 0.341 | 1.543 | 0.541 |
-| `real_clean__ekf` | 5,366 | 23.553 | 23.191 | 34.472 | 37.804 | 3.655 | -2.398 | 1.575 | 0.869 |
+| `real_clean__ukf` | 5,366 | 23.534 | 23.105 | 34.519 | 37.719 | 2.671 | 0.341 | 1.543 | 0.541 |
+| `real_clean__ekf` | 5,366 | 23.553 | 23.188 | 34.472 | 37.804 | 3.655 | -2.398 | 1.575 | 0.869 |
 | `real_clean__eskf` | 5,366 | 23.723 | 22.925 | 35.428 | 41.865 | 2.692 | 0.334 | 1.538 | 0.550 |
-| `real_sparse_5s__ukf` | 5,366 | 25.067 | 24.094 | 36.614 | 124.727 | 5.656 | 0.776 | 3.301 | 0.671 |
-| `real_sparse_5s__eskf` | 5,366 | 25.674 | 23.605 | 37.868 | 149.698 | 5.755 | 0.779 | 3.388 | 0.714 |
-| `real_outage_60s__eskf` | 5,366 | 290.644 | 28.708 | 701.329 | 2,349.680 | 4.992 | 0.316 | 12.226 | 0.671 |
-| `real_degraded__ukf` | 5,366 | 30.675 | 26.077 | 51.158 | 82.184 | 10.839 | 0.585 | 2.810 | 0.795 |
-| `real_degraded__eskf` | 5,366 | 50.601 | 42.349 | 86.848 | 136.791 | 10.847 | 0.564 | 2.795 | 0.806 |
+| `real_sparse_5s__ukf` | 5,366 | 25.067 | 24.085 | 36.614 | 124.727 | 5.656 | 0.776 | 3.301 | 0.671 |
+| `real_sparse_5s__eskf` | 5,366 | 25.674 | 23.604 | 37.868 | 149.698 | 5.755 | 0.779 | 3.388 | 0.714 |
+| `real_outage_60s__eskf` | 5,366 | 290.644 | 28.701 | 701.329 | 2,349.680 | 4.992 | 0.316 | 12.226 | 0.671 |
+| `real_degraded__ukf` | 5,366 | 30.675 | 26.076 | 51.158 | 82.184 | 10.839 | 0.585 | 2.810 | 0.795 |
+| `real_degraded__eskf` | 5,366 | 50.601 | 42.344 | 86.848 | 136.791 | 10.847 | 0.564 | 2.795 | 0.806 |
 | `syn_cruise_1hz__ukf` | 15,000 | 4.423 | 3.665 | 7.821 | 10.152 | 0.846 | 0.065 | 0.489 | 0.316 |
-| `syn_cruise_1hz__ekf` | 15,000 | 4.421 | 3.688 | 7.673 | 10.183 | 0.835 | 0.040 | 0.050 | 0.302 |
+| `syn_cruise_1hz__ekf` | 15,000 | 4.421 | 3.687 | 7.673 | 10.183 | 0.835 | 0.040 | 0.050 | 0.302 |
 | `syn_cruise_1hz__eskf` | 15,000 | 3.412 | 2.835 | 5.964 | 9.284 | 0.836 | 0.069 | 1.170 | 0.239 |
-| `syn_outage_60s__ukf` | 15,000 | 266.681 | 5.916 | 762.191 | 2,109.820 | 0.939 | -0.049 | 15.268 | 1.068 |
+| `syn_outage_60s__ukf` | 15,000 | 266.681 | 5.914 | 762.191 | 2,109.820 | 0.939 | -0.049 | 15.268 | 1.068 |
 | `syn_outage_60s__eskf` | 15,000 | 20.224 | 1.454 | 44.447 | 247.874 | 0.847 | 0.067 | 1.067 | 0.243 |
-| `syn_dead_reckoning` | 6,000 | 316.860 | 110.233 | 715.856 | 835.634 | 86.591 | -64.255 | 9.363 | 1.896 |
-| `real_rbpf_slice__rbpf` | 1,200 | 19.789 | 15.687 | 28.276 | 94.413 | 3.846 | -3.208 | 2.308 | 1.141 |
+| `syn_dead_reckoning` | 6,000 | 316.860 | 110.128 | 715.856 | 835.634 | 86.591 | -64.255 | 9.363 | 1.896 |
+| `real_rbpf_slice__rbpf` | 1,200 | 19.789 | 15.679 | 28.276 | 94.413 | 3.846 | -3.208 | 2.308 | 1.141 |
 
 ### Attitude
 

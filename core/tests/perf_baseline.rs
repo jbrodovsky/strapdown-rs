@@ -93,7 +93,7 @@ use strapdown::{IMUQuality, StrapdownState};
 const UPDATE_ENV: &str = "UPDATE_PERF_BASELINE";
 
 /// Schema version of `perf_baseline.json`. Bump it when the file's shape changes.
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 
 /// Fraction a metric may worsen before it is called a regression.
 const DEFAULT_REGRESS_FRACTION: f64 = 0.10;
@@ -585,6 +585,12 @@ struct BaselineScenario {
     description: String,
     /// Aligned sample count, compared for exact equality before any metric is.
     sample_count: usize,
+    /// Channel-samples dropped as non-finite, compared for exact equality beside the sample
+    /// count. Zero on every scenario here; a non-zero value means some metric above was
+    /// computed over fewer values than the count claims, which makes it look better for a
+    /// reason that has nothing to do with navigating well.
+    #[serde(default)]
+    discarded_channel_samples: usize,
     /// One entry per metric key.
     metrics: BTreeMap<String, BaselineMetric>,
 }
@@ -676,6 +682,7 @@ fn render_baseline(
             BaselineScenario {
                 description: scenario.description.clone(),
                 sample_count: metrics.sample_count,
+                discarded_channel_samples: metrics.discarded_channel_samples,
                 metrics: entries,
             },
         );
@@ -797,6 +804,17 @@ fn compare(measured: &[(Scenario, AccuracyMetrics)], baseline: &BaselineFile) ->
                 "COUNT     `{}`: scored {} aligned samples, baseline records {}. Every metric \
                  beneath a changed sample count is incomparable, so they are not checked.",
                 scenario.id, metrics.sample_count, recorded.sample_count
+            ));
+            continue;
+        }
+
+        if recorded.discarded_channel_samples != metrics.discarded_channel_samples {
+            problems.push(format!(
+                "DISCARD   `{}`: dropped {} channel-samples as non-finite, baseline records \
+                 {}. Dropping a sample does not lower the sample count but does make the \
+                 metric it was dropped from look better, so the metrics below are not \
+                 comparable until this is explained.",
+                scenario.id, metrics.discarded_channel_samples, recorded.discarded_channel_samples
             ));
             continue;
         }

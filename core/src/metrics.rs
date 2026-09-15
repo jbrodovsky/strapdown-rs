@@ -152,6 +152,12 @@ pub fn truth_from_trajectory(truth: &[NavigationResult]) -> Vec<TruthSample> {
 /// [`TestDataRecord::attitude`] -- the quaternion, not the record's `roll`/`pitch`/`yaw`
 /// columns, which are a different Euler convention and disagree by more than a sign.
 ///
+/// A record whose quaternion is unusable gets `None` rather than what
+/// [`TestDataRecord::attitude`] returns for one, which is the identity rotation. That fallback
+/// is right for seeding a filter and wrong for scoring one: carried into a truth series it
+/// would be indistinguishable from a genuine level-and-north-facing reference, and every
+/// estimate would be scored against an attitude the log never recorded.
+///
 /// Records whose position is not finite are dropped. The GNSS fix is also the filters' aiding
 /// source on every log this crate ships, so see the module documentation before reading an
 /// absolute number off these metrics.
@@ -173,10 +179,25 @@ pub fn truth_from_records(records: &[TestDataRecord]) -> Vec<TruthSample> {
                 // level run should be scored against, and it is what the existing integration
                 // tests have always compared to.
                 velocity_vertical_mps: 0.0,
-                attitude: Some(r.attitude()),
+                attitude: usable_attitude(r),
             }
         })
         .collect()
+}
+
+/// The record's attitude, or `None` when its quaternion cannot supply one.
+///
+/// [`TestDataRecord::attitude`] substitutes the identity for a non-finite or zero-norm
+/// quaternion, so the same test has to be made here before the result can be called truth.
+fn usable_attitude(record: &TestDataRecord) -> Option<Rotation3<f64>> {
+    let finite = [record.qw, record.qx, record.qy, record.qz]
+        .iter()
+        .all(|c| c.is_finite());
+    let norm_squared = record.qw * record.qw
+        + record.qx * record.qx
+        + record.qy * record.qy
+        + record.qz * record.qz;
+    (finite && norm_squared > f64::EPSILON * f64::EPSILON).then(|| record.attitude())
 }
 
 /// One gated accuracy metric.
@@ -375,6 +396,18 @@ pub struct MetricOptions {
 pub struct AccuracyMetrics {
     /// Number of aligned estimate/truth pairs the metrics were computed over, after warmup.
     pub sample_count: usize,
+    /// Channel-samples dropped as non-finite while reducing those pairs, summed over metrics.
+    ///
+    /// Zero on any healthy run. It is reported because a dropped sample does not lower
+    /// [`Self::sample_count`] but does leave the metric it was dropped from computed over
+    /// fewer values -- and dropping the worst samples makes an RMSE, a percentile and a
+    /// containment fraction all look better. A gate that recorded only `sample_count` could
+    /// therefore be passed by a change that produced non-finite errors rather than by one
+    /// that was correct, so a caller gating on these metrics should compare this too.
+    ///
+    /// This is separate from an absent covariance, which is not a discard: a `NaN` variance
+    /// makes the three consistency metrics `None` and is counted nowhere.
+    pub discarded_channel_samples: usize,
     /// See [`MetricId::HorizontalRmse`].
     pub horizontal_rmse_m: Option<f64>,
     /// See [`MetricId::HorizontalCep50`].
@@ -597,6 +630,7 @@ fn reduce(pairs: &[Pair<'_>]) -> AccuracyMetrics {
     let mut npes = Vec::new();
     let mut horizontal_containment = Containment::default();
     let mut vertical_containment = Containment::default();
+    let mut discarded = 0usize;
 
     for &(estimate, sample) in pairs {
         let distance = haversine_distance(
@@ -605,25 +639,50 @@ fn reduce(pairs: &[Pair<'_>]) -> AccuracyMetrics {
             sample.latitude_deg.to_radians(),
             sample.longitude_deg.to_radians(),
         );
-        push_finite(&mut horizontal, distance);
-        push_finite(&mut altitude_signed, estimate.altitude - sample.altitude_m);
+        push_or_count(&mut horizontal, distance, &mut discarded);
+        push_or_count(
+            &mut altitude_signed,
+            estimate.altitude - sample.altitude_m,
+            &mut discarded,
+        );
 
         let north = estimate.velocity_north - sample.velocity_north_mps;
         let east = estimate.velocity_east - sample.velocity_east_mps;
-        push_finite(&mut velocity_horizontal_sq, north * north + east * east);
-        push_finite(
+        push_or_count(
+            &mut velocity_horizontal_sq,
+            north * north + east * east,
+            &mut discarded,
+        );
+        push_or_count(
             &mut velocity_vertical,
             estimate.velocity_vertical - sample.velocity_vertical_mps,
+            &mut discarded,
         );
 
         if let Some(reference) = sample.attitude {
             let (reference_roll, reference_pitch, reference_yaw) = reference.euler_angles();
-            push_finite(&mut roll, wrap_to_pi(estimate.roll - reference_roll));
-            push_finite(&mut pitch, wrap_to_pi(estimate.pitch - reference_pitch));
-            push_finite(&mut yaw, wrap_to_pi(estimate.yaw - reference_yaw));
+            push_or_count(
+                &mut roll,
+                wrap_to_pi(estimate.roll - reference_roll),
+                &mut discarded,
+            );
+            push_or_count(
+                &mut pitch,
+                wrap_to_pi(estimate.pitch - reference_pitch),
+                &mut discarded,
+            );
+            push_or_count(
+                &mut yaw,
+                wrap_to_pi(estimate.yaw - reference_yaw),
+                &mut discarded,
+            );
             let estimated =
                 Rotation3::from_euler_angles(estimate.roll, estimate.pitch, estimate.yaw);
-            push_finite(&mut geodesic, (estimated.inverse() * reference).angle());
+            push_or_count(
+                &mut geodesic,
+                (estimated.inverse() * reference).angle(),
+                &mut discarded,
+            );
         }
 
         // Position error in **radians** against a variance in rad^2. The state's latitude is
@@ -643,12 +702,13 @@ fn reduce(pairs: &[Pair<'_>]) -> AccuracyMetrics {
             normalized_square(error_lon_rad, estimate.longitude_cov),
             normalized_square(error_alt_m, estimate.altitude_cov),
         ) {
-            push_finite(&mut npes, lat + lon + alt);
+            push_or_count(&mut npes, lat + lon + alt, &mut discarded);
         }
     }
 
     AccuracyMetrics {
         sample_count: pairs.len(),
+        discarded_channel_samples: discarded,
         horizontal_rmse_m: root_mean_square(&horizontal),
         horizontal_cep50_m: percentile(&horizontal, 0.50),
         horizontal_cep95_m: percentile(&horizontal, 0.95),
@@ -704,11 +764,25 @@ fn normalized_square(error: f64, variance: f64) -> Option<f64> {
     (variance.is_finite() && variance > 0.0 && error.is_finite()).then(|| error * error / variance)
 }
 
+/// [`push_finite`], counting a refusal into `discarded`.
+fn push_or_count(into: &mut Vec<f64>, value: f64, discarded: &mut usize) {
+    if !push_finite(into, value) {
+        *discarded += 1;
+    }
+}
+
 /// Push `value` only when it is finite, so one bad sample cannot `NaN` a whole metric.
-fn push_finite(into: &mut Vec<f64>, value: f64) {
+///
+/// Returns whether it pushed. The caller counts the refusals into
+/// [`AccuracyMetrics::discarded_channel_samples`]: dropping a sample makes the metric it was
+/// dropped from look better, and a gate that could not see that would be one a change could
+/// pass by producing garbage rather than by being correct.
+fn push_finite(into: &mut Vec<f64>, value: f64) -> bool {
     if value.is_finite() {
         into.push(value);
+        return true;
     }
+    false
 }
 
 /// Arithmetic mean, or `None` for an empty slice.
@@ -726,6 +800,16 @@ fn root_mean_square(values: &[f64]) -> Option<f64> {
 
 /// Nearest-rank percentile of `values` for `p` in `[0, 1]`, or `None` for an empty slice.
 ///
+/// The rank is $\lceil p N \rceil$, clamped to $[1, N]$, and the value returned is the one at
+/// that rank in ascending order. This is the standard nearest-rank definition: it always
+/// returns an element that is actually in the sample, never an interpolation between two, so
+/// `horizontal_cep50_m` is a radial error some epoch genuinely had.
+///
+/// It is written out because the obvious-looking alternative is a different statistic and the
+/// difference is not visible from a call site. Rounding $(N-1) p$ -- the index form of the
+/// linear-interpolation convention, and what this used to do -- picks the sixth of ten sorted
+/// values for `p = 0.5` where nearest-rank picks the fifth.
+///
 /// Sorted with [`f64::total_cmp`], which is a total order, so there is no `partial_cmp` to
 /// unwrap and no ordering that depends on where a `NaN` happened to sit. `p = 1.0` is the
 /// maximum and `p = 0.0` the minimum.
@@ -735,9 +819,9 @@ fn percentile(values: &[f64], p: f64) -> Option<f64> {
     }
     let mut sorted = values.to_vec();
     sorted.sort_unstable_by(f64::total_cmp);
-    let last = sorted.len() - 1;
-    let index = (last as f64 * p).round() as usize;
-    sorted.get(index.min(last)).copied()
+    let count = sorted.len();
+    let rank = (p * count as f64).ceil().max(1.0) as usize;
+    sorted.get(rank.min(count) - 1).copied()
 }
 
 /// Metrics keyed by their stable baseline key, for a caller writing a file or a table.
@@ -1010,10 +1094,77 @@ mod tests {
         assert_eq!(percentile(&[3.0, 3.0, 3.0], 0.95), Some(3.0));
         // Out of range is `None` rather than a clamped answer.
         assert_eq!(percentile(&[1.0], 1.5), None);
-        // Nearest-rank on a ten-element slice: p=0.95 lands on the last index.
+    }
+
+    /// The rank is `ceil(p N)` clamped to `[1, N]`, not the rounded `(N - 1) p` of the
+    /// interpolating convention. On ten values those differ by one position at the median,
+    /// which is exactly the sort of silent disagreement a named convention exists to prevent.
+    #[test]
+    fn percentiles_use_the_nearest_rank_convention() {
         let values: Vec<f64> = (0..10).map(f64::from).collect();
-        assert_eq!(percentile(&values, 0.5), Some(5.0));
+        assert_eq!(percentile(&values, 0.0), Some(0.0));
+        assert_eq!(percentile(&values, 0.5), Some(4.0));
         assert_eq!(percentile(&values, 0.95), Some(9.0));
+        assert_eq!(percentile(&values, 1.0), Some(9.0));
+        // Every answer is an element of the sample, never an interpolation between two.
+        for p in [0.0, 0.1, 0.33, 0.5, 0.9, 0.95, 1.0] {
+            let picked = percentile(&values, p).expect("non-empty");
+            assert!(values.contains(&picked), "p={p} produced {picked}");
+        }
+    }
+
+    /// An unusable quaternion is an absent attitude, not a level-and-north-facing one.
+    #[test]
+    fn a_record_without_a_usable_quaternion_supplies_no_truth_attitude() {
+        let base = TestDataRecord {
+            time: epoch(),
+            latitude: 40.0,
+            longitude: -75.0,
+            altitude: 100.0,
+            qw: 1.0,
+            ..TestDataRecord::default()
+        };
+        assert!(
+            truth_from_records(std::slice::from_ref(&base))[0]
+                .attitude
+                .is_some()
+        );
+
+        let all_zero = TestDataRecord {
+            qw: 0.0,
+            qx: 0.0,
+            qy: 0.0,
+            qz: 0.0,
+            ..base
+        };
+        assert_eq!(truth_from_records(&[all_zero])[0].attitude, None);
+
+        let not_finite = TestDataRecord {
+            qw: f64::NAN,
+            ..base
+        };
+        assert_eq!(truth_from_records(&[not_finite])[0].attitude, None);
+    }
+
+    /// A sample dropped as non-finite is counted, because dropping it flatters the metric.
+    #[test]
+    fn non_finite_channel_samples_are_counted_not_hidden() {
+        let clean = evaluate(&[estimate_at(0)], &[truth_at(0)], MetricOptions::default())
+            .expect("one aligned pair");
+        assert_eq!(clean.discarded_channel_samples, 0);
+
+        let mut broken = estimate_at(0);
+        broken.altitude = f64::NAN;
+        let scored = evaluate(&[broken], &[truth_at(0)], MetricOptions::default())
+            .expect("one aligned pair");
+        // The pair still aligned, so the count is unchanged -- which is the whole reason the
+        // discards have to be reported separately.
+        assert_eq!(scored.sample_count, 1);
+        assert!(
+            scored.discarded_channel_samples > 0,
+            "a NaN altitude must be visible somewhere"
+        );
+        assert_eq!(scored.vertical_rmse_m, None);
     }
 
     #[test]
