@@ -13,6 +13,26 @@
 # Not forced, so `RUST_BACKTRACE=0 cargo test` still works.
 RUST_BACKTRACE = "1"
 
+# Build freetype from `freetype-sys`'s bundled C sources instead of linking a system copy.
+#
+# Without this, which one you get depends on what the machine happens to have:
+# `freetype-sys`'s build script skips the vendored build whenever pkg-config reports a
+# freetype2 of at least 24.3.18, and only then. A GitHub runner has a `freetype2.pc` but no
+# linkable `libfreetype.so` -- the `.pc` comes with the image, the symlink comes with
+# `libfreetype6-dev`, which this workspace no longer installs -- so the build script hands the
+# linker `-lfreetype` for a library that is not there and `cargo test` dies with
+# "unable to find library -lfreetype". A developer machine with the -dev package links fine,
+# which makes it a CI-only failure that reproduces nowhere.
+#
+# Vendoring unconditionally matches what libhdf5, libnetcdf and zlib already do here and
+# removes the machine from the equation. `FREETYPE2_NO_PKG_CONFIG` is the `pkg-config` crate's
+# documented opt-out (pkg-config-0.3.32/src/lib.rs:579 builds it as `{NAME}_NO_PKG_CONFIG`).
+#
+# Note this file is not part of any published .crate, so `cargo install strapdown-sim` still
+# takes a system freetype when one is present. That is the pre-existing behaviour and is fine
+# on a machine whose .pc and .so agree.
+FREETYPE2_NO_PKG_CONFIG = "1"
+
 [build]
 # KaTeX for the Groves equations in the doc comments. The header lives at the workspace root
 # for this, and a per-package copy lives in `core/` for the docs.rs build, which reads
