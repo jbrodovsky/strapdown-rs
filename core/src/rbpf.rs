@@ -13,7 +13,7 @@ use crate::linalg::{matrix_square_root, symmetrize};
 use crate::linearize::state_transition_jacobian;
 use crate::measurements::{
     GPSPositionAndVelocityMeasurement, GPSPositionMeasurement, GPSVelocityMeasurement,
-    MeasurementModel, RelativeAltitudeMeasurement,
+    MagnetometerYawMeasurement, MeasurementModel, RelativeAltitudeMeasurement,
 };
 use crate::particle::{
     ParticleResamplingStrategy, multinomial_resample, residual_resample, stratified_resample,
@@ -27,6 +27,46 @@ use rand_distr::Normal;
 
 const POSITION_STATE_DIM: usize = 3;
 const LINEAR_STATE_DIM_BASE: usize = 6;
+
+/// Index of the yaw error within a particle's linear state.
+///
+/// The linear state is `[dv_n, dv_e, dv_d, droll, dpitch, dyaw, ..extra]`, so this is the
+/// third attitude entry. Named because it is the row a heading measurement selects in
+/// [`RaoBlackwellizedParticleFilter::update_yaw_only`], and a bare `5` there is
+/// indistinguishable from the velocity indices above it.
+const YAW_ERROR_STATE_INDEX: usize = 5;
+
+/// Indices of the three attitude angles within the assembled 9-state vector.
+///
+/// These are the channels that live on the circle rather than the line, so they are the
+/// ones [`RaoBlackwellizedParticleFilter::estimate`] averages with [`circular_mean`] and
+/// differences with [`crate::wrap_to_pi`]. Every other channel is an ordinary linear
+/// quantity.
+const ATTITUDE_STATE_INDICES: [usize; 3] = [6, 7, 8];
+
+/// Weighted mean of angles, computed on the circle.
+///
+/// The mean direction of the unit vectors at `angles`, weighted by `weights`:
+/// `atan2(sum w sin(x), sum w cos(x))`. Unlike a linear mean this is invariant to where
+/// each angle is wrapped, so a cloud straddling the +/-pi branch cut averages to the
+/// direction between its members rather than to the far side of the circle, and the
+/// result is always on `[-pi, pi]`.
+///
+/// It agrees with the linear mean to second order in the spread, so a tight cloud is
+/// unaffected -- on `core/tests/test_data.csv` the two differ by at most 2e-4 deg. The
+/// point of using it anyway is that nothing keeps the cloud tight: the spread is set by
+/// [`RbpfConfig::attitude_init_std_rad`] and by how badly the filter is doing.
+///
+/// A cloud with no mean direction -- one spread evenly around the circle, so that the
+/// resultant vector is zero -- returns 0 rather than failing, which is `atan2(0, 0)`.
+/// That is a degenerate input for which no angle is more correct than another, and the
+/// caller sees it in the attitude variance, which is at its maximum there.
+fn circular_mean<'a>(angles: impl Iterator<Item = (&'a f64, f64)>) -> f64 {
+    let (sin_sum, cos_sum) = angles.fold((0.0, 0.0), |(s, c), (angle, weight)| {
+        (s + weight * angle.sin(), c + weight * angle.cos())
+    });
+    sin_sum.atan2(cos_sum)
+}
 
 /// RBPF configuration parameters.
 #[derive(Clone, Debug)]
@@ -379,11 +419,35 @@ impl RaoBlackwellizedParticleFilter {
         Ok(())
     }
 
-    /// Reweight the particle cloud against a measurement.
+    /// Apply a measurement to the particle cloud, the shared Kalman filter, or both.
     ///
     /// The body of [`NavigationFilter::update`]. Generic rather than taking `&dyn
     /// MeasurementModel` because the downcasts below are what select the specialised
-    /// position/velocity paths, and a monomorphised call site keeps them cheap.
+    /// position/velocity/heading paths, and a monomorphised call site keeps them cheap.
+    ///
+    /// # Which branch a measurement belongs in
+    ///
+    /// This filter is Rao-Blackwellized: position error is carried by the particles,
+    /// velocity and attitude error by a Kalman filter shared across them. A measurement
+    /// has to be applied to whichever of the two actually carries the states it observes,
+    /// and the answer is read off its Jacobian:
+    ///
+    /// * **Supported on position** (GNSS position, barometric altitude) -- reweight the
+    ///   cloud. The particles differ in position, so their likelihoods differ, and the
+    ///   weights are where the information lands.
+    /// * **Supported on velocity or attitude** (GNSS velocity, magnetometer heading) --
+    ///   run a Kalman update on the linear states. Reweighting cannot work here, and the
+    ///   reason is structural rather than a matter of degree: every particle shares the
+    ///   nominal attitude and carries a near-identical error state, so every particle
+    ///   predicts a near-identical measurement and earns a near-identical weight. The
+    ///   cloud has no spread along the axis the measurement constrains.
+    /// * **Both** (GNSS position and velocity) -- do both, each on its own block.
+    ///
+    /// Sending a linear-state measurement to [`Self::update_weights_generic`] is
+    /// therefore not an approximation but a silent no-op, and it is what #341 was: the
+    /// magnetometer fell through to the generic path, 5,365 heading fixes moved the
+    /// effective sample size from 500 to a median of 492.6, and the filter's yaw drifted
+    /// unaided to 65.9 deg RMSE while the aid it was being handed was good to 17.1 deg.
     ///
     /// # Errors
     /// Propagates measurement failures — chiefly a geophysical model whose particle has
@@ -417,6 +481,12 @@ impl RaoBlackwellizedParticleFilter {
         {
             return self.update_position_only(alt);
         }
+        if let Some(mag) = measurement
+            .as_any()
+            .downcast_ref::<MagnetometerYawMeasurement>()
+        {
+            return self.update_yaw_only(mag);
+        }
 
         self.update_weights_generic(measurement)?;
 
@@ -427,17 +497,53 @@ impl RaoBlackwellizedParticleFilter {
     }
 
     /// Return weighted mean and covariance of the full 9-state estimate.
+    ///
+    /// # Attitude is averaged on the circle
+    ///
+    /// Position and velocity are ordinary linear quantities and take the plain weighted
+    /// mean. The three attitude angles do not: they live on the circle, where a linear
+    /// mean is not merely inaccurate but wrong in kind. Two particles at +179 deg and
+    /// -179 deg are 2 deg apart and average to 180 deg, but their linear mean is 0 deg --
+    /// the opposite heading -- and the unwrapped sum can leave `[-pi, pi]` entirely, which
+    /// the reported solution must not do (#314): [`crate::sim::NavigationResult`] copies
+    /// these three straight through without wrapping them. So the attitude channels take
+    /// the mean *direction* of the cloud, which is invariant to wrapping and always lands
+    /// on the principal branch, and the covariance differences the attitude residuals with
+    /// [`crate::wrap_to_pi`] so a cloud near the cut reports its actual spread rather than
+    /// a phantom variance of order `pi^2`.
+    ///
+    /// This is a correctness property of the estimator, not a tuning: on
+    /// `core/tests/test_data.csv` the circular and linear means differ by at most 2e-4 deg,
+    /// because the cloud there is tight (0.6 deg median spread, 5.2 deg at its widest).
+    /// Nothing enforces that tightness in general -- it is set by
+    /// [`RbpfConfig::attitude_init_std_rad`] and by how well the filter is tracking -- and
+    /// the failure, when it comes, is silent.
     pub fn estimate(&self) -> (DVector<f64>, DMatrix<f64>) {
+        let states: Vec<DVector<f64>> = self
+            .particles
+            .iter()
+            .map(|particle| self.particle_state_vector(particle))
+            .collect();
+
         let mut mean = DVector::<f64>::zeros(9);
-        for particle in &self.particles {
-            let state = self.particle_state_vector(particle);
+        for (state, particle) in states.iter().zip(&self.particles) {
             mean += state * particle.weight;
+        }
+        for index in ATTITUDE_STATE_INDICES {
+            mean[index] = circular_mean(
+                states
+                    .iter()
+                    .zip(&self.particles)
+                    .map(|(state, particle)| (&state[index], particle.weight)),
+            );
         }
 
         let mut cov = DMatrix::<f64>::zeros(9, 9);
-        for particle in &self.particles {
-            let state = self.particle_state_vector(particle);
-            let diff = &state - &mean;
+        for (state, particle) in states.iter().zip(&self.particles) {
+            let mut diff = state - &mean;
+            for index in ATTITUDE_STATE_INDICES {
+                diff[index] = crate::wrap_to_pi(diff[index]);
+            }
             cov += particle.weight * (&diff * diff.transpose());
         }
         cov = symmetrize(&cov);
@@ -523,6 +629,53 @@ impl RaoBlackwellizedParticleFilter {
         for i in 0..3 {
             h[(i, i)] = 1.0;
         }
+        self.update_linear_state(&residual, &h, &measurement.get_noise());
+
+        if self.config.zero_vertical_velocity {
+            self.update_vertical_velocity_constraint();
+        }
+        Ok(())
+    }
+
+    /// Apply a magnetometer heading to the shared attitude states.
+    ///
+    /// Yaw is a linear state in this filter, so the heading goes through the Kalman branch
+    /// exactly as GNSS velocity does -- see [`Self::update_with`] for why reweighting the
+    /// cloud on it does nothing. The Jacobian is
+    /// [`crate::linearize::magnetometer_yaw_jacobian`] restricted to the linear block: the
+    /// expected measurement is the state yaw, so the only non-zero partial is the one
+    /// selected here.
+    ///
+    /// That row's gain on the yaw error is exact at any tilt, not merely to first order:
+    /// the correction is injected as `Rz(dyaw) Ry(dpitch) Rx(droll)` times the nominal, and
+    /// `Rz` is outermost, so a pure-yaw error composes with the nominal yaw exactly. What
+    /// the row omits is the cross-coupling -- at a tilted nominal the extracted Euler yaw
+    /// also depends on the roll and pitch error states, by up to 0.24 per radian on this
+    /// dataset. That omission is shared with the EKF, ESKF and UKF, which use the same
+    /// Jacobian, and with [`Self::evaluate_ensemble_gate`], which forms this filter's own
+    /// innovation covariance from it; correcting it here alone would put the update and the
+    /// gate in different coordinates. Tracked crate-wide as #349.
+    ///
+    /// The residual is formed at the nominal state rather than at a zero state the way
+    /// [`Self::update_velocity_only`] can, because a magnetometer heading is not
+    /// state-independent: [`MagnetometerYawMeasurement::get_measurement`] levels the sensor
+    /// with the state's roll and pitch and takes its declination from the state's position.
+    /// It is then wrapped onto the circle, so a nominal yaw and a heading on opposite sides
+    /// of the branch cut give the small correction they represent rather than a full turn.
+    ///
+    /// # Errors
+    /// Propagated from [`MagnetometerYawMeasurement::get_measurement`].
+    fn update_yaw_only(
+        &mut self,
+        measurement: &MagnetometerYawMeasurement,
+    ) -> Result<(), StrapdownError> {
+        let nominal = self.nominal_state_vector();
+        let mut residual =
+            measurement.get_measurement(&nominal)? - measurement.get_expected_measurement(&nominal);
+        measurement.wrap_residual(&mut residual);
+
+        let mut h = DMatrix::<f64>::zeros(1, self.linear_state_dim());
+        h[(0, YAW_ERROR_STATE_INDEX)] = 1.0;
         self.update_linear_state(&residual, &h, &measurement.get_noise());
 
         if self.config.zero_vertical_velocity {
@@ -694,19 +847,53 @@ impl RaoBlackwellizedParticleFilter {
         self.update_linear_state(&residual, &h, &r);
     }
 
-    fn particle_state_vector(&self, particle: &RbpfParticle) -> DVector<f64> {
+    /// The nominal trajectory as a 9-state vector, with every error state at zero.
+    ///
+    /// The one place the 9-state layout is written down; [`Self::particle_state_vector`]
+    /// adds a particle's errors to this rather than repeating it.
+    fn nominal_state_vector(&self) -> DVector<f64> {
         let (roll, pitch, yaw) = self.nominal.attitude.euler_angles();
         DVector::from_vec(vec![
-            self.nominal.latitude + particle.position_error[0],
-            self.nominal.longitude + particle.position_error[1],
-            self.nominal.altitude + particle.position_error[2],
-            self.nominal.velocity_north + particle.linear_state[0],
-            self.nominal.velocity_east + particle.linear_state[1],
-            self.nominal.velocity_vertical + particle.linear_state[2],
-            roll + particle.linear_state[3],
-            pitch + particle.linear_state[4],
-            yaw + particle.linear_state[5],
+            self.nominal.latitude,
+            self.nominal.longitude,
+            self.nominal.altitude,
+            self.nominal.velocity_north,
+            self.nominal.velocity_east,
+            self.nominal.velocity_vertical,
+            roll,
+            pitch,
+            yaw,
         ])
+    }
+
+    /// One particle's 9-state navigation solution: the nominal trajectory plus its errors.
+    ///
+    /// The three attitude entries are wrapped onto `[-pi, pi]`. `euler_angles` already
+    /// returns that branch, but adding an error state to it does not stay on it: a nominal
+    /// yaw of 179.9 deg plus a 0.3 deg error is 180.2 deg, off the branch every consumer
+    /// assumes (#314). It is wrapped here, where the state is assembled, rather than at
+    /// each of the four call sites that read it. This mirrors
+    /// [`kalman::wrap_attitude_onto_principal_branch`](crate::kalman), including its
+    /// deliberate choice not to clamp pitch to the `[-pi/2, pi/2]` the Euler decomposition
+    /// produces: clamping would change the rotation rather than rename it.
+    ///
+    /// Adding the error state to the Euler angles is not the same map as composing it with
+    /// the nominal rotation, which is how [`crate::linearize::apply_eskf_correction`]
+    /// injects it. The two agree exactly on yaw and to first order elsewhere; the
+    /// discrepancy is the crate-wide chart inconsistency tracked as #349, and wrapping
+    /// neither causes nor cures it.
+    fn particle_state_vector(&self, particle: &RbpfParticle) -> DVector<f64> {
+        let mut state = self.nominal_state_vector();
+        for i in 0..POSITION_STATE_DIM {
+            state[i] += particle.position_error[i];
+        }
+        for i in 0..LINEAR_STATE_DIM_BASE {
+            state[POSITION_STATE_DIM + i] += particle.linear_state[i];
+        }
+        for index in ATTITUDE_STATE_INDICES {
+            state[index] = crate::wrap_to_pi(state[index]);
+        }
+        state
     }
 
     fn particle_state_vector_full(&self, particle: &RbpfParticle) -> DVector<f64> {
@@ -895,6 +1082,158 @@ mod tests {
     use crate::{IMUData, earth, generate_scenario_data};
     use assert_approx_eq::assert_approx_eq;
     use nalgebra::Rotation3;
+
+    /// A heading measurement must actually reach the attitude states (#341).
+    ///
+    /// This is the structural regression guard, not an accuracy one. Yaw is a linear state
+    /// here, so a magnetometer routed to the particle weights is a silent no-op: every
+    /// particle shares the nominal attitude, so every particle scores the same likelihood
+    /// and the estimate does not move. The filter then runs on dead-reckoned heading while
+    /// appearing to be aided, which is what put its yaw RMSE at 65.9 deg on
+    /// `core/tests/test_data.csv` against a magnetometer good to 17.1 deg.
+    ///
+    /// The assertion is that the estimate closes most of a known heading offset, which is
+    /// what "the information arrived" means and what reweighting cannot produce. The
+    /// residual-fraction bound is a loose one on purpose -- the point is no-op versus
+    /// working, not a gain setting.
+    #[test]
+    fn rbpf_magnetometer_update_moves_yaw_toward_the_measurement() {
+        // Level and pointing north, with the magnetometer seeing a field rotated 30 deg
+        // away: in NED, yaw = atan2(-m_y, m_x), so this is a heading of -30 deg.
+        let truth_yaw = -std::f64::consts::FRAC_PI_6;
+        let nominal = StrapdownState {
+            latitude: 0.7,
+            longitude: -1.3,
+            altitude: 100.0,
+            attitude: Rotation3::from_euler_angles(0.0, 0.0, 0.0),
+            is_enu: false,
+            ..StrapdownState::default()
+        };
+        let mut rbpf = RaoBlackwellizedParticleFilter::new(
+            nominal,
+            RbpfConfig {
+                num_particles: 200,
+                // Off, so the only thing moving yaw is the magnetometer.
+                zero_vertical_velocity: false,
+                ..RbpfConfig::default()
+            },
+        )
+        .unwrap();
+
+        let mag = MagnetometerYawMeasurement {
+            mag_x: truth_yaw.cos(),
+            mag_y: -truth_yaw.sin(),
+            mag_z: 0.0,
+            noise_std: 0.05,
+            apply_declination: false,
+            is_enu: false,
+            ..MagnetometerYawMeasurement::default()
+        };
+        assert_approx_eq!(
+            mag.get_measurement(&rbpf.nominal_state_vector()).unwrap()[0],
+            truth_yaw,
+            1e-12
+        );
+
+        let before = rbpf.estimate().0[8];
+        assert_approx_eq!(before, 0.0, 1e-12);
+        for _ in 0..20 {
+            rbpf.update(&mag).unwrap();
+        }
+        let after = rbpf.estimate().0[8];
+
+        let closed = (after - before) / (truth_yaw - before);
+        assert!(
+            closed > 0.9,
+            "the magnetometer closed {:.1}% of a {:.1} deg heading offset; a heading that \
+             reaches only the particle weights closes ~0% of it (#341). Yaw went {:.3} -> \
+             {:.3} deg against a measured {:.3} deg",
+            closed * 100.0,
+            (truth_yaw - before).to_degrees(),
+            before.to_degrees(),
+            after.to_degrees(),
+            truth_yaw.to_degrees()
+        );
+    }
+
+    /// The reported attitude is a mean on the circle, on the principal branch (#341, #314).
+    ///
+    /// A cloud straddling the +/-pi cut is the case a linear weighted mean gets not merely
+    /// imprecise but backwards, and `NavigationResult` copies these three channels straight
+    /// through without wrapping, so `estimate` is the only place the invariant can hold.
+    #[test]
+    fn rbpf_attitude_estimate_is_a_circular_mean_on_the_principal_branch() {
+        let nominal = StrapdownState {
+            attitude: Rotation3::from_euler_angles(0.0, 0.0, std::f64::consts::PI),
+            ..StrapdownState::default()
+        };
+        let mut rbpf = RaoBlackwellizedParticleFilter::new(
+            nominal,
+            RbpfConfig {
+                num_particles: 2,
+                ..RbpfConfig::default()
+            },
+        )
+        .unwrap();
+
+        // Straddle the cut: nominal yaw is +pi, so error states of -0.1 and +0.1 rad put the
+        // two particles at +179.43 deg and -179.43 deg. Their mean heading is 180 deg; their
+        // linear mean is pi, which is only right because the errors happen to be symmetric,
+        // so skew it to make the two answers differ.
+        rbpf.particles[0].linear_state[YAW_ERROR_STATE_INDEX] = -0.1;
+        rbpf.particles[1].linear_state[YAW_ERROR_STATE_INDEX] = 0.3;
+        let yaws: Vec<f64> = rbpf
+            .particles
+            .iter()
+            .map(|p| rbpf.particle_state_vector(p)[8])
+            .collect();
+        assert!(
+            yaws[0] > 0.0 && yaws[1] < 0.0,
+            "test setup should straddle the branch cut, got {yaws:?}"
+        );
+
+        let (mean, cov) = rbpf.estimate();
+        let yaw = mean[8];
+        assert!(
+            (-std::f64::consts::PI..=std::f64::consts::PI).contains(&yaw),
+            "reported yaw {yaw} is off the principal branch (#314)"
+        );
+        // pi + (-0.1 + 0.3)/2 = pi + 0.1, wrapped.
+        assert_approx_eq!(yaw, crate::wrap_to_pi(std::f64::consts::PI + 0.1), 1e-12);
+        // The spread is 0.4 rad, so the variance is (0.2)^2 -- not the ~pi^2 an unwrapped
+        // difference against the mean would report.
+        assert_approx_eq!(cov[(8, 8)], 0.04, 1e-12);
+    }
+
+    /// A tight cloud must be unaffected by averaging on the circle rather than the line.
+    ///
+    /// The circular mean is the correct estimator, but it would not be worth having if it
+    /// moved the answer for ordinary well-behaved clouds: it agrees with the linear mean to
+    /// second order in the spread, and this pins that so a future change to
+    /// [`circular_mean`] cannot quietly introduce a bias in the normal case.
+    #[test]
+    fn rbpf_circular_mean_agrees_with_the_linear_mean_for_a_tight_cloud() {
+        let angles = [0.30, 0.31, 0.29, 0.305, 0.295];
+        let weights = [0.1, 0.3, 0.2, 0.25, 0.15];
+        let linear: f64 = angles.iter().zip(weights).map(|(a, w)| a * w).sum();
+        let circular = circular_mean(angles.iter().zip(weights));
+        assert_approx_eq!(circular, linear, 1e-6);
+    }
+
+    /// A cloud with no mean direction returns 0 rather than failing.
+    ///
+    /// Two antipodal angles of equal weight have a zero resultant, so no direction is more
+    /// correct than any other. The documented behaviour is `atan2(0, 0)`; what matters is
+    /// that it is finite and does not panic, since this runs in library code.
+    #[test]
+    fn rbpf_circular_mean_of_an_undirected_cloud_is_finite() {
+        let angles = [0.0, std::f64::consts::PI];
+        let mean = circular_mean(angles.iter().zip([0.5, 0.5]));
+        assert!(
+            mean.is_finite(),
+            "circular mean should stay finite, got {mean}"
+        );
+    }
 
     fn run_rbpf_on_scenario(
         nominal: StrapdownState,
