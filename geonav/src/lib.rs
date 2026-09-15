@@ -891,8 +891,9 @@ impl GravityMeasurement {
     /// # Arguments
     ///
     /// * `state` - Current navigation state vector [lat, lon, alt, `v_n`, `v_e`, `v_d`, roll,
-    ///   pitch, yaw], optionally followed by the bias states [`Self::bias_from_end`] counts
-    ///   back from
+    ///   pitch, yaw], followed by whatever else the consuming filter carries. When
+    ///   [`Self::bias_from_end`] is `Some(n)`, the map bias is the `n`-th entry counting
+    ///   back from the end of that vector, so `Some(1)` is its last entry.
     ///
     /// # Errors
     /// Propagates [`StrapdownError::OutOfMapBounds`] when the estimate has left the loaded
@@ -1093,8 +1094,9 @@ impl MagneticAnomalyMeasurement {
     /// # Arguments
     ///
     /// * `state` - Current navigation state vector [lat, lon, alt, `v_n`, `v_e`, `v_d`, roll,
-    ///   pitch, yaw], optionally followed by the bias states [`Self::bias_from_end`] counts
-    ///   back from
+    ///   pitch, yaw], followed by whatever else the consuming filter carries. When
+    ///   [`Self::bias_from_end`] is `Some(n)`, the map bias is the `n`-th entry counting
+    ///   back from the end of that vector, so `Some(1)` is its last entry.
     ///
     /// # Errors
     /// Propagates [`StrapdownError::OutOfMapBounds`] when the estimate has left the loaded
