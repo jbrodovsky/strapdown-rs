@@ -1110,6 +1110,14 @@ impl MeasurementModel for CombinedGeophysicalMeasurement {
 /// * `magnetic_map` - Optional magnetic map for measurements
 /// * `magnetic_noise_std` - Standard deviation for magnetic measurement noise (if `magnetic_map` is Some)
 /// * `geo_frequency_s` - Frequency in seconds for geophysical measurements (None for every available measurement)
+///
+/// # Errors
+/// [`StrapdownError::InvalidConfiguration`] if `records` is empty. The first record supplies
+/// both the stream's `start_time` and the reference altitude for relative-altitude
+/// measurements, and neither has a defensible default. A slice of length one is *accepted*
+/// and yields an empty event list, so the boundary is emptiness, not "fewer than two". This
+/// mirrors [`strapdown::messages::build_event_stream`], which this function shadows with
+/// geophysical measurements added.
 #[allow(
     clippy::needless_pass_by_value,
     reason = "the `Rc<GeoMap>` handles are stored by the measurements this builds; cloning an \
@@ -1124,8 +1132,19 @@ pub fn build_event_stream(
     magnetic_map: Option<Rc<GeoMap>>,
     magnetic_noise_std: Option<f64>,
     geo_frequency_s: Option<f64>,
-) -> EventStream {
-    let start_time = records[0].time;
+) -> Result<EventStream, StrapdownError> {
+    // The first record fixes both the epoch the elapsed clock counts from and the datum the
+    // relative-altitude measurements are referenced to, so an empty slice is rejected here
+    // rather than indexed into. Kept identical to the core copy on purpose (#311).
+    let first = records
+        .first()
+        .ok_or_else(|| StrapdownError::InvalidConfiguration {
+            field: "event stream records",
+            reason: "cannot build an event stream from zero records: the first record supplies \
+                     the stream's start time and the relative-altitude reference"
+                .to_owned(),
+        })?;
+    let start_time = first.time;
     let bias_count = usize::from(gravity_map.is_some()) + usize::from(magnetic_map.is_some());
     let records_with_elapsed: Vec<(f64, &TestDataRecord)> = records
         .iter()
@@ -1146,7 +1165,7 @@ pub fn build_event_stream(
     let mut next_geo_time = 0.0;
     // Through preprocessing we assert that the first record must have a NED position
     // but it may or may not have IMU or other such measurements.
-    let reference_altitude = records[0].altitude;
+    let reference_altitude = first.altitude;
     for w in records_with_elapsed.windows(2) {
         let (t0, _) = (&w[0].0, &w[0].1);
         let (t1, r1) = (&w[1].0, &w[1].1);
@@ -1359,7 +1378,7 @@ pub fn build_event_stream(
             }
         }
     }
-    EventStream { start_time, events }
+    Ok(EventStream { start_time, events })
 }
 // NOTE: `geo_closed_loop_ukf`, `geo_closed_loop_ekf` and `geo_closed_loop_rbpf` were
 // removed in favour of `strapdown::sim::run_closed_loop`.
@@ -1681,6 +1700,52 @@ mod tests {
         }
     }
 
+    /// An empty slice must return the error, not index out of bounds (#311). The geonav copy
+    /// of `build_event_stream` carried the identical defect, so it gets the identical test.
+    #[test]
+    fn empty_records_are_an_error_not_a_panic() {
+        let config = GnssDegradationConfig {
+            scheduler: GnssScheduler::PassThrough,
+            fault: GnssFaultModel::None,
+            seed: 42,
+        };
+        let geomap = Rc::new(create_test_gravity_map());
+
+        let err = build_event_stream(&[], &config, Some(geomap), None, None, None, None)
+            .expect_err("an empty record slice cannot produce a stream");
+        assert!(
+            matches!(
+                err,
+                StrapdownError::InvalidConfiguration { field, .. } if field == "event stream records"
+            ),
+            "an empty record slice must report an invalid configuration, got: {err}"
+        );
+    }
+
+    /// A single record is the boundary the guard must not move: it supplies `start_time` and
+    /// the altitude reference, and the event list is empty because events are built from
+    /// adjacent pairs. A guard written as `len() < 2` would wrongly reject this.
+    #[test]
+    fn single_record_yields_a_stream_with_no_events() {
+        let records = create_test_records();
+        let config = GnssDegradationConfig {
+            scheduler: GnssScheduler::PassThrough,
+            fault: GnssFaultModel::None,
+            seed: 42,
+        };
+        let geomap = Rc::new(create_test_gravity_map());
+
+        let event_stream =
+            build_event_stream(&records[..1], &config, Some(geomap), None, None, None, None)
+                .unwrap();
+
+        assert_eq!(event_stream.start_time, records[0].time);
+        assert!(
+            event_stream.events.is_empty(),
+            "one record spans no interval, so it can produce no events"
+        );
+    }
+
     #[test]
     fn test_build_event_stream() {
         let records = create_test_records();
@@ -1692,7 +1757,7 @@ mod tests {
         let geomap = Rc::new(create_test_gravity_map());
 
         let event_stream =
-            build_event_stream(&records, &config, Some(geomap), None, None, None, None);
+            build_event_stream(&records, &config, Some(geomap), None, None, None, None).unwrap();
 
         assert_eq!(event_stream.start_time, records[0].time);
         assert!(!event_stream.events.is_empty());
@@ -1725,7 +1790,7 @@ mod tests {
         let geomap = Rc::new(create_test_magnetic_map());
 
         let event_stream =
-            build_event_stream(&records, &config, None, None, Some(geomap), None, None);
+            build_event_stream(&records, &config, None, None, Some(geomap), None, None).unwrap();
 
         assert_eq!(event_stream.start_time, records[0].time);
         assert!(!event_stream.events.is_empty());
@@ -1887,7 +1952,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .unwrap();
 
         // Find a gravity measurement event and verify its noise
         let has_gravity_with_custom_noise = event_stream.events.iter().any(|event| {
@@ -1927,7 +1993,8 @@ mod tests {
             None,
             None,
             Some(2.0),
-        );
+        )
+        .unwrap();
 
         // Count gravity measurement events
         let gravity_events = event_stream
@@ -1951,7 +2018,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .unwrap();
 
         let gravity_events_no_limit = event_stream_no_limit
             .events

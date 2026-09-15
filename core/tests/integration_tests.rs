@@ -657,7 +657,7 @@ fn run_rbpf_with_cfg(
     cfg: &GnssDegradationConfig,
     rbpf_config: RbpfConfig,
 ) -> Vec<NavigationResult> {
-    let stream = build_event_stream(records, cfg);
+    let stream = build_event_stream(records, cfg).unwrap();
 
     let nominal = create_nominal_state(&records[0]);
     let mut rbpf = RaoBlackwellizedParticleFilter::new(nominal, rbpf_config).unwrap();
@@ -869,7 +869,7 @@ fn test_ukf_closed_loop_on_real_data() {
         ..Default::default()
     };
 
-    let stream = build_event_stream(&records, &cfg);
+    let stream = build_event_stream(&records, &cfg).unwrap();
 
     // Run closed-loop filter
     let results =
@@ -1027,7 +1027,7 @@ fn test_ukf_with_degraded_gnss() {
         ..Default::default()
     };
 
-    let stream = build_event_stream(&records, &cfg);
+    let stream = build_event_stream(&records, &cfg).unwrap();
 
     // Run closed-loop filter
     let results = run_closed_loop(&mut ukf, stream, None, None)
@@ -1123,7 +1123,7 @@ fn test_ukf_outperforms_dead_reckoning() {
         fault: fault_model,
         ..Default::default()
     };
-    let stream = build_event_stream(&records, &cfg);
+    let stream = build_event_stream(&records, &cfg).unwrap();
 
     let ukf_results = run_closed_loop(&mut ukf, stream, None, None).expect("UKF should complete");
     let ukf_stats = compute_error_metrics(&ukf_results, &records);
@@ -1201,7 +1201,7 @@ fn test_ekf_closed_loop_on_real_data() {
         ..Default::default()
     };
 
-    let stream = build_event_stream(&records, &cfg);
+    let stream = build_event_stream(&records, &cfg).unwrap();
 
     // Run closed-loop filter
     let results = run_closed_loop(&mut ekf, stream, None, None)
@@ -1361,7 +1361,7 @@ fn test_ekf_with_degraded_gnss() {
         ..Default::default()
     };
 
-    let stream = build_event_stream(&records, &cfg);
+    let stream = build_event_stream(&records, &cfg).unwrap();
 
     // Run closed-loop filter
     let results = run_closed_loop(&mut ekf, stream, None, None)
@@ -1502,7 +1502,7 @@ fn test_ekf_outperforms_dead_reckoning() {
         fault: fault_model,
         ..Default::default()
     };
-    let stream = build_event_stream(&records, &cfg);
+    let stream = build_event_stream(&records, &cfg).unwrap();
 
     let ekf_results = run_closed_loop(&mut ekf, stream, None, None).expect("EKF should complete");
     let ekf_stats = compute_error_metrics(&ekf_results, &records);
@@ -1593,7 +1593,7 @@ fn test_eskf_closed_loop_on_real_data() {
         ..Default::default()
     };
 
-    let stream = build_event_stream(&records, &cfg);
+    let stream = build_event_stream(&records, &cfg).unwrap();
 
     // Run closed-loop filter
     let results = run_closed_loop(&mut eskf, stream, None, None)
@@ -1765,7 +1765,7 @@ fn test_eskf_with_degraded_gnss() {
         ..Default::default()
     };
 
-    let stream = build_event_stream(&records, &cfg);
+    let stream = build_event_stream(&records, &cfg).unwrap();
 
     // Run closed-loop filter
     let results = run_closed_loop(&mut eskf, stream, None, None)
@@ -1877,7 +1877,7 @@ fn test_eskf_outperforms_dead_reckoning() {
         fault: GnssFaultModel::None,
         ..Default::default()
     };
-    let stream = build_event_stream(&records, &cfg);
+    let stream = build_event_stream(&records, &cfg).unwrap();
 
     let eskf_results =
         run_closed_loop(&mut eskf, stream, None, None).expect("ESKF should complete");
@@ -1988,7 +1988,7 @@ fn test_eskf_output_stays_valid_across_full_run() {
         ..Default::default()
     };
 
-    let stream = build_event_stream(&records, &cfg);
+    let stream = build_event_stream(&records, &cfg).unwrap();
 
     // Run closed-loop filter
     let results = run_closed_loop(&mut eskf, stream, None, None).expect("ESKF should complete");
@@ -2144,7 +2144,7 @@ fn test_eskf_default_initialization_on_real_data() {
     };
     let results = run_closed_loop(
         &mut eskf,
-        build_event_stream(&records, &cfg),
+        build_event_stream(&records, &cfg).unwrap(),
         None,
         None,
     )
@@ -2269,7 +2269,7 @@ fn test_filter_comparison() {
         2.0,
         0.0,
     );
-    let stream_ukf = build_event_stream(&records, &cfg);
+    let stream_ukf = build_event_stream(&records, &cfg).unwrap();
     let ukf_results =
         run_closed_loop(&mut ukf, stream_ukf, None, None).expect("UKF should complete");
     let ukf_stats = compute_error_metrics(&ukf_results, &records);
@@ -2282,7 +2282,7 @@ fn test_filter_comparison() {
         process_noise,
         true,
     );
-    let stream_ekf = build_event_stream(&records, &cfg);
+    let stream_ekf = build_event_stream(&records, &cfg).unwrap();
     let ekf_results =
         run_closed_loop(&mut ekf, stream_ekf, None, None).expect("EKF should complete");
     let ekf_stats = compute_error_metrics(&ekf_results, &records);
@@ -2298,7 +2298,7 @@ fn test_filter_comparison() {
         process_noise,
     );
 
-    let stream_eskf = build_event_stream(&records, &cfg);
+    let stream_eskf = build_event_stream(&records, &cfg).unwrap();
     let eskf_results =
         run_closed_loop(&mut eskf, stream_eskf, None, None).expect("ESKF should complete");
     let eskf_stats = compute_error_metrics(&eskf_results, &records);
@@ -2563,7 +2563,7 @@ fn test_filter_output_length_matches_input() {
         0.0,  // kappa
     );
 
-    let event_stream = build_event_stream(&records, &degradation);
+    let event_stream = build_event_stream(&records, &degradation).unwrap();
     let ukf_results = run_closed_loop(&mut ukf, event_stream, None, None)
         .expect("UKF closed loop should complete successfully");
 
@@ -2589,7 +2589,7 @@ fn test_filter_output_length_matches_input() {
         true,
     );
 
-    let event_stream = build_event_stream(&records, &degradation);
+    let event_stream = build_event_stream(&records, &degradation).unwrap();
     let ekf_results = run_closed_loop(&mut ekf, event_stream, None, None)
         .expect("EKF closed loop should complete successfully");
 
@@ -2635,7 +2635,7 @@ fn run_filter_on_clean_stream<F: NavigationFilter>(
         fault: GnssFaultModel::None,
         ..Default::default()
     };
-    let stream = build_event_stream(records, &cfg);
+    let stream = build_event_stream(records, &cfg).unwrap();
     run_closed_loop(filter, stream, None, None)
         .unwrap_or_else(|error| panic!("filter should complete the clean stream: {error}"))
 }
@@ -3155,7 +3155,7 @@ fn test_eskf_recovers_from_gnss_outage() {
         fault: GnssFaultModel::None,
         ..Default::default()
     };
-    let stream = build_event_stream(&records, &cfg);
+    let stream = build_event_stream(&records, &cfg).unwrap();
     let results = run_closed_loop(&mut eskf, stream, None, None)
         .expect("ESKF should complete the duty-cycled stream");
 
@@ -3331,7 +3331,7 @@ fn test_eskf_auto_covariance_initialization_on_real_data() {
     };
     let results = run_closed_loop(
         &mut eskf,
-        build_event_stream(&records, &cfg),
+        build_event_stream(&records, &cfg).unwrap(),
         None,
         None,
     )

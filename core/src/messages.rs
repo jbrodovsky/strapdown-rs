@@ -8,13 +8,13 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::Path;
 
-use crate::IMUData;
 use crate::earth::meters_ned_to_dlat_dlon;
 use crate::measurements::{
     GPSPositionAndVelocityMeasurement, MAG_YAW_NOISE, MagnetometerYawMeasurement, MeasurementModel,
     RelativeAltitudeMeasurement,
 };
 use crate::sim::TestDataRecord;
+use crate::{IMUData, StrapdownError};
 /// Scheduler for controlling when GNSS measurements are emitted into the simulation.
 ///
 /// This models denial- or jamming-like effects that reduce the *rate* of
@@ -927,8 +927,9 @@ fn duty_cycle_is_on(elapsed_s: f64, on_s: f64, off_s: f64, start_phase_s: f64) -
 ///   fault model (*what*), plus a seed for deterministic noise.
 ///
 /// # Returns
-/// A `EventStream` containing an interleaved sequence of IMU and (optionally
-/// down-sampled/corrupted) GNSS events, ordered by `elapsed_s`.
+/// `Ok(EventStream)` -- an interleaved sequence of IMU and (optionally
+/// down-sampled/corrupted) GNSS events, ordered by `elapsed_s` -- or the error described
+/// under `# Errors` below.
 ///
 /// # Scheduling semantics
 /// - [`GnssScheduler::PassThrough`]: emit a GNSS event at every record step.
@@ -958,8 +959,9 @@ fn duty_cycle_is_on(elapsed_s: f64, on_s: f64, off_s: f64, start_phase_s: f64) -
 /// - Altitude (m), velocities (m/s), standard deviations are **1σ** (not variances).
 ///
 /// # Preconditions & caveats
-/// - `records.len() >= 2` and timestamps are monotonically increasing. A single record
-///   produces an empty event list, since events are built from adjacent pairs.
+/// - `records` is non-empty and its timestamps are monotonically increasing. A single
+///   record is legal and produces an empty event list, since events are built from
+///   adjacent pairs; an empty slice is an error, see below.
 /// - The accuracy columns (`horizontal_accuracy`, `vertical_accuracy`, `speed_accuracy`)
 ///   are read as 1σ standard deviations, not variances; no square root is taken. A `NaN`
 ///   falls back to a conservative default -- 15.0 m horizontal, 1000.0 m vertical,
@@ -968,15 +970,19 @@ fn duty_cycle_is_on(elapsed_s: f64, on_s: f64, off_s: f64, start_phase_s: f64) -
 ///   zero-variance `R`.
 /// - The event vector capacity is sized roughly to `2 * records.len()` (IMU + GNSS).
 ///
-/// # Panics
-/// If `records` is empty: the first record supplies both the stream's `start_time` and the
-/// reference altitude for relative-altitude measurements.
+/// # Errors
+/// [`StrapdownError::InvalidConfiguration`] if `records` is empty. The first record supplies
+/// both the stream's `start_time` and the reference altitude for relative-altitude
+/// measurements, and neither has a defensible default: an `EventStream` has no representable
+/// "no epoch". A slice of length one is *accepted* and yields an empty event list, so the
+/// boundary is emptiness, not "fewer than two".
 ///
 /// # Example
 /// ```
 /// use strapdown::messages::{build_event_stream, GnssDegradationConfig, GnssScheduler, GnssFaultModel};
 /// use strapdown::sim::TestDataRecord;
 ///
+/// # fn main() -> Result<(), strapdown::StrapdownError> {
 /// let records = vec![TestDataRecord::default(); 10]; // load or generate your test data
 /// let cfg = GnssDegradationConfig {
 ///     scheduler: GnssScheduler::FixedInterval { interval_s: 10.0, phase_s: 0.0 },
@@ -987,11 +993,28 @@ fn duty_cycle_is_on(elapsed_s: f64, on_s: f64, off_s: f64, start_phase_s: f64) -
 ///     },
 ///     ..Default::default()
 /// };
-/// let events = build_event_stream(&records, &cfg);
+/// let events = build_event_stream(&records, &cfg)?;
 /// // feed into your event-driven filter loop
+/// # Ok(())
+/// # }
 /// ```
-pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfig) -> EventStream {
-    let start_time = records[0].time;
+pub fn build_event_stream(
+    records: &[TestDataRecord],
+    cfg: &GnssDegradationConfig,
+) -> Result<EventStream, StrapdownError> {
+    // The first record is load-bearing twice over -- it fixes the epoch the elapsed clock is
+    // measured from and the datum the relative-altitude measurements are referenced to -- so
+    // an empty slice cannot produce a meaningful stream and is rejected up front rather than
+    // indexed into.
+    let first = records
+        .first()
+        .ok_or_else(|| StrapdownError::InvalidConfiguration {
+            field: "event stream records",
+            reason: "cannot build an event stream from zero records: the first record supplies \
+                     the stream's start time and the relative-altitude reference"
+                .to_owned(),
+        })?;
+    let start_time = first.time;
     let records_with_elapsed: Vec<(f64, &TestDataRecord)> = records
         .iter()
         .map(|r| ((r.time - start_time).num_milliseconds() as f64 / 1000.0, r))
@@ -1007,7 +1030,7 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
     };
     // Through preprocessing we assert that the first record must have a NED position
     // but it may or may not have IMU or other such measurements.
-    let reference_altitude = records[0].altitude;
+    let reference_altitude = first.altitude;
     for w in records_with_elapsed.windows(2) {
         let (t0, _) = (&w[0].0, &w[0].1);
         let (t1, r1) = (&w[1].0, &w[1].1);
@@ -1129,7 +1152,7 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
             });
         }
     }
-    EventStream { start_time, events }
+    Ok(EventStream { start_time, events })
 }
 
 #[cfg(test)]
@@ -1182,6 +1205,36 @@ mod tests {
         }
         records
     }
+
+    /// An empty slice must return the error, not index out of bounds (#311). `build_event_stream`
+    /// is `pub` library code, so an empty read from `TestDataRecord::from_csv` -- which skips
+    /// unparseable rows rather than failing -- must not abort the process.
+    #[test]
+    fn empty_records_are_an_error_not_a_panic() {
+        let err = build_event_stream(&[], &GnssDegradationConfig::default()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                StrapdownError::InvalidConfiguration { field, .. } if field == "event stream records"
+            ),
+            "an empty record slice must report an invalid configuration, got: {err}"
+        );
+    }
+
+    /// A single record is the boundary the guard must not move: it supplies `start_time` and
+    /// the altitude reference, and the event list is empty because events are built from
+    /// adjacent pairs. A guard written as `len() < 2` would wrongly reject this.
+    #[test]
+    fn single_record_yields_a_stream_with_no_events() {
+        let records = create_test_records(1, 0.1);
+        let stream = build_event_stream(&records, &GnssDegradationConfig::default()).unwrap();
+        assert_eq!(stream.start_time, records[0].time);
+        assert!(
+            stream.events.is_empty(),
+            "one record spans no interval, so it can produce no events"
+        );
+    }
+
     #[test]
     fn test_passthrough_scheduler() {
         let records = create_test_records(10, 0.1); // 10 records, 0.1s apart
@@ -1191,7 +1244,7 @@ mod tests {
             ..Default::default()
         };
 
-        let events = build_event_stream(&records, &config);
+        let events = build_event_stream(&records, &config).unwrap();
 
         // We expect IMU events for each record except the first,
         // and GNSS events for each record except the first
@@ -1230,7 +1283,7 @@ mod tests {
             ..Default::default()
         };
 
-        let events = build_event_stream(&records, &config);
+        let events = build_event_stream(&records, &config).unwrap();
 
         // We expect IMU events for each record except the first,
         // and GNSS events every 0.5s (so at records 5, 10, 15...)
@@ -1266,7 +1319,7 @@ mod tests {
             ..Default::default()
         };
         //
-        let events = build_event_stream(&records, &config);
+        let events = build_event_stream(&records, &config).unwrap();
         let measurements = events
             .events
             .iter()
@@ -1305,7 +1358,7 @@ mod tests {
             ..Default::default()
         };
 
-        let stream = build_event_stream(&records, &config);
+        let stream = build_event_stream(&records, &config).unwrap();
         // The GNSS fix is the only multi-dimensional measurement in the stream; baro and mag
         // are scalar and are not scheduled.
         let fix_times: Vec<f64> = stream
@@ -1362,7 +1415,7 @@ mod tests {
                 fault: GnssFaultModel::None,
                 ..Default::default()
             };
-            let stream = build_event_stream(&records, &config);
+            let stream = build_event_stream(&records, &config).unwrap();
             let fixes = stream
                 .events
                 .iter()
@@ -1391,7 +1444,7 @@ mod tests {
             seed: 500,
         };
 
-        let events = build_event_stream(&records, &config);
+        let events = build_event_stream(&records, &config).unwrap();
 
         // Find GNSS events
         let gnss_events: Vec<&Event> = events
@@ -1500,7 +1553,7 @@ mod tests {
             ..Default::default()
         };
 
-        let events = build_event_stream(&records, &config);
+        let events = build_event_stream(&records, &config).unwrap();
 
         // Find GNSS events and group by time
         let mut gnss_by_time: Vec<(f64, &GPSPositionAndVelocityMeasurement)> = Vec::new();
@@ -1546,7 +1599,7 @@ mod tests {
         };
 
         // This should at least not crash
-        let events = build_event_stream(&records, &config);
+        let events = build_event_stream(&records, &config).unwrap();
         assert!(!events.events.is_empty());
     }
 
@@ -1587,7 +1640,7 @@ mod tests {
             ..Default::default()
         };
 
-        let events = build_event_stream(&records, &config);
+        let events = build_event_stream(&records, &config).unwrap();
         // Should have events
         assert!(!events.events.is_empty());
 
@@ -1615,7 +1668,7 @@ mod tests {
             ..Default::default()
         };
 
-        let events = build_event_stream(&records, &config);
+        let events = build_event_stream(&records, &config).unwrap();
         // Should have events
         assert!(!events.events.is_empty());
 
@@ -1708,7 +1761,7 @@ mod tests {
             ..Default::default()
         };
 
-        let events = build_event_stream(&records, &config);
+        let events = build_event_stream(&records, &config).unwrap();
 
         // Should have events even with NaN accuracies
         assert!(!events.events.is_empty());
@@ -1736,7 +1789,7 @@ mod tests {
             ..Default::default()
         };
 
-        let events = build_event_stream(&records, &config);
+        let events = build_event_stream(&records, &config).unwrap();
         // Should have events
         assert!(!events.events.is_empty());
     }

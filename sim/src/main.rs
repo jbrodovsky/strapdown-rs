@@ -24,9 +24,9 @@ mod plotting;
 
 use clap::{Args, Parser, Subcommand};
 use common::{
-    get_csv_files, init_logger, prompt_config_name, prompt_config_path, prompt_f64_with_default,
-    prompt_input_path, prompt_output_path, read_user_input, resolve_output_path,
-    validate_input_path, validate_output_path,
+    get_csv_files, init_logger, load_records, prompt_config_name, prompt_config_path,
+    prompt_f64_with_default, prompt_input_path, prompt_output_path, read_user_input,
+    resolve_output_path, validate_input_path, validate_output_path,
 };
 use log::{error, info};
 use nalgebra::Vector3;
@@ -493,12 +493,7 @@ fn process_file(
     info!("Processing file: {}", input_file.display());
 
     // Load sensor data
-    let records = TestDataRecord::from_csv(input_file)?;
-    info!(
-        "Read {} records from {}",
-        records.len(),
-        input_file.display()
-    );
+    let records = load_records(input_file)?;
 
     // Execute based on mode
     match config.mode {
@@ -519,7 +514,7 @@ fn process_file(
         SimulationMode::ClosedLoop => {
             let filter_config = config.closed_loop.clone().unwrap_or_default();
 
-            let event_stream = build_event_stream(&records, &config.gnss_degradation);
+            let event_stream = build_event_stream(&records, &config.gnss_degradation)?;
             info!(
                 "Initialized event stream with {} events",
                 event_stream.events.len()
@@ -643,13 +638,13 @@ fn process_file(
                     magnetic_map.clone(),
                     magnetic_map.as_ref().map(|_| magnetic_noise_std),
                     geo_frequency_s,
-                )
+                )?
             } else {
-                build_event_stream(&records, &config.gnss_degradation)
+                build_event_stream(&records, &config.gnss_degradation)?
             };
 
             #[cfg(not(feature = "geonav"))]
-            let event_stream = build_event_stream(&records, &config.gnss_degradation);
+            let event_stream = build_event_stream(&records, &config.gnss_degradation)?;
 
             let first = &records[0];
             // Quaternion, not Euler angles: `TestDataRecord`'s roll/pitch/yaw are a
@@ -909,7 +904,7 @@ fn run_single_closed_loop_simulation(
     innovation_gate: Option<InnovationGate>,
 ) -> Result<(), Box<dyn Error>> {
     // Build event stream from records and GNSS degradation config
-    let event_stream = build_event_stream(records, gnss_degradation);
+    let event_stream = build_event_stream(records, gnss_degradation)?;
     info!(
         "Initialized event stream with {} events",
         event_stream.events.len()
@@ -1032,16 +1027,24 @@ fn run_dead_reckoning(args: &SimArgs) -> Result<(), Box<dyn Error>> {
     }
 
     // Process each CSV file
+    let mut failures = 0usize;
     for input_file in &csv_files {
         info!("Processing file: {}", input_file.display());
 
-        // Load sensor data records from CSV
-        let records = TestDataRecord::from_csv(input_file)?;
-        info!(
-            "Read {} records from {}",
-            records.len(),
-            input_file.display()
-        );
+        // One unusable file must not abandon the rest of a batch. Before #311 this loop
+        // could not fail here at all -- `from_csv` returned `Ok(vec![])` and the run wrote an
+        // empty output file -- so aborting would trade a silent wrong answer for a loud
+        // incomplete one. `run_from_config` already counts per-file failures and continues;
+        // this matches it.
+        let records = match load_records(input_file) {
+            Ok(records) => records,
+            Err(e) if is_multiple => {
+                error!("Skipping {}: {e}", input_file.display());
+                failures += 1;
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
 
         // Run dead reckoning simulation
         info!(
@@ -1055,6 +1058,10 @@ fn run_dead_reckoning(args: &SimArgs) -> Result<(), Box<dyn Error>> {
         let output_file = resolve_output_path(&args.output, input_file, &csv_files)?;
         NavigationResult::to_csv(&results, &output_file)?;
         info!("Results written to {}", output_file.display());
+    }
+
+    if failures > 0 {
+        error!("{failures} file(s) skipped because they held no usable records");
     }
 
     Ok(())
@@ -1126,16 +1133,24 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
     }
 
     // Process each CSV file
+    let mut failures = 0usize;
     for input_file in &csv_files {
         info!("Processing file: {}", input_file.display());
 
-        // Load sensor data records from CSV
-        let records = TestDataRecord::from_csv(input_file)?;
-        info!(
-            "Read {} records from {}",
-            records.len(),
-            input_file.display()
-        );
+        // One unusable file must not abandon the rest of a batch. Before #311 this loop
+        // could not fail here at all -- `from_csv` returned `Ok(vec![])` and the run wrote an
+        // empty output file -- so aborting would trade a silent wrong answer for a loud
+        // incomplete one. `run_from_config` already counts per-file failures and continues;
+        // this matches it.
+        let records = match load_records(input_file) {
+            Ok(records) => records,
+            Err(e) if is_multiple => {
+                error!("Skipping {}: {e}", input_file.display());
+                failures += 1;
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
 
         // Build GNSS degradation config from CLI args
         let gnss_degradation = strapdown::messages::GnssDegradationConfig {
@@ -1179,6 +1194,10 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
                 );
             }
         }
+    }
+
+    if failures > 0 {
+        error!("{failures} file(s) skipped because they held no usable records");
     }
 
     Ok(())
@@ -1295,16 +1314,24 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
     }
 
     // Process each CSV file
+    let mut failures = 0usize;
     for input_file in &csv_files {
         info!("Processing file: {}", input_file.display());
 
-        // Load sensor data records from CSV
-        let records = TestDataRecord::from_csv(input_file)?;
-        info!(
-            "Read {} records from {}",
-            records.len(),
-            input_file.display()
-        );
+        // One unusable file must not abandon the rest of a batch. Before #311 this loop
+        // could not fail here at all -- `from_csv` returned `Ok(vec![])` and the run wrote an
+        // empty output file -- so aborting would trade a silent wrong answer for a loud
+        // incomplete one. `run_from_config` already counts per-file failures and continues;
+        // this matches it.
+        let records = match load_records(input_file) {
+            Ok(records) => records,
+            Err(e) if is_multiple => {
+                error!("Skipping {}: {e}", input_file.display());
+                failures += 1;
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
 
         // Load gravity map if configured
         let gravity_map = if let Some(res) = args.geo.gravity_resolution {
@@ -1372,7 +1399,7 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                 None
             },
             args.geo.geo_frequency_s,
-        );
+        )?;
         info!("Built event stream with {} events", events.events.len());
 
         // Determine number of geophysical states
@@ -1513,6 +1540,10 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
         }
     }
 
+    if failures > 0 {
+        error!("{failures} file(s) skipped because they held no usable records");
+    }
+
     Ok(())
 }
 
@@ -1586,15 +1617,24 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
         info!("Processing {} CSV files from directory", csv_files.len());
     }
 
+    let mut failures = 0usize;
     for input_file in &csv_files {
         info!("Processing file: {}", input_file.display());
 
-        let records = TestDataRecord::from_csv(input_file)?;
-        info!(
-            "Read {} records from {}",
-            records.len(),
-            input_file.display()
-        );
+        // One unusable file must not abandon the rest of a batch. Before #311 this loop
+        // could not fail here at all -- `from_csv` returned `Ok(vec![])` and the run wrote an
+        // empty output file -- so aborting would trade a silent wrong answer for a loud
+        // incomplete one. `run_from_config` already counts per-file failures and continues;
+        // this matches it.
+        let records = match load_records(input_file) {
+            Ok(records) => records,
+            Err(e) if is_multiple => {
+                error!("Skipping {}: {e}", input_file.display());
+                failures += 1;
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
 
         let gnss_degradation = strapdown::messages::GnssDegradationConfig {
             scheduler: build_scheduler(&args.scheduler),
@@ -1642,7 +1682,7 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
         };
 
         #[cfg(not(feature = "geonav"))]
-        let event_stream = build_event_stream(&records, &gnss_degradation);
+        let event_stream = build_event_stream(&records, &gnss_degradation)?;
 
         #[cfg(feature = "geonav")]
         let event_stream = if args.geo.geo {
@@ -1654,9 +1694,9 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
                 magnetic_map.clone(),
                 magnetic_map.as_ref().map(|_| args.geo.magnetic_noise_std),
                 args.geo.geo_frequency_s,
-            )
+            )?
         } else {
-            build_event_stream(&records, &gnss_degradation)
+            build_event_stream(&records, &gnss_degradation)?
         };
 
         #[cfg(feature = "geonav")]
@@ -1736,6 +1776,10 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
     }
 
     info!("Particle filter simulation complete");
+
+    if failures > 0 {
+        error!("{failures} file(s) skipped because they held no usable records");
+    }
 
     Ok(())
 }
