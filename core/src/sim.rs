@@ -3503,11 +3503,12 @@ pub mod health {
         /// caught by the finiteness and covariance checks rather than by this band. Narrow
         /// it to the scenario's real altitude range to make it an effective gate.
         pub alt_m: (f64, f64),
-        /// Maximum ground speed in m/s (default 500, i.e. road or low-altitude aircraft).
-        /// Checked against the NED velocity indices (3..=5), which are correct for every
-        /// filter in this crate. Narrow this to the scenario's real speed range to make it
-        /// an effective gate; unaided `dead_reckoning` never calls [`HealthMonitor`], so a
-        /// run that deliberately drifts past this bound (see #299) is unaffected.
+        /// Maximum velocity vector magnitude in m/s -- north, east, *and* down combined, not
+        /// ground speed alone (default 500, i.e. road or low-altitude aircraft). Checked
+        /// against the NED velocity indices (3..=5), which are correct for every filter in
+        /// this crate. Narrow this to the scenario's real speed range to make it an
+        /// effective gate; unaided `dead_reckoning` never calls [`HealthMonitor`], so a run
+        /// that deliberately drifts past this bound (see #299) is unaffected.
         pub speed_mps_max: f64,
         /// Largest variance allowed on the covariance diagonal before the run is failed
         /// (default 1e15).
@@ -3596,21 +3597,26 @@ pub mod health {
             }
 
             // 3) Speed sanity (assumes NED velocities at indices 3..=5, true for every
-            // filter in this crate)
-            let v2 = x[3] * x[3] + x[4] * x[4] + x[5] * x[5];
-            if v2.is_finite() && v2.sqrt() > self.limits.speed_mps_max {
-                bail!("Speed exceeded: {:.2} m/s", v2.sqrt());
+            // filter in this crate). `hypot` rather than summing squares directly: x[3..6]
+            // are already known finite from the check above, but a naive sum of squares can
+            // still overflow to infinity for a merely large (not actually non-finite)
+            // component, and `f64::is_finite` on that overflowed value would then read as
+            // "no speed to check" and silently wave the divergence through.
+            let speed = x[3].hypot(x[4]).hypot(x[5]);
+            if speed > self.limits.speed_mps_max {
+                bail!("Speed exceeded: {speed:.2} m/s");
             }
 
             // 4) Covariance sanity: diagonals only. A condition-number check was considered
-            // (see #332) but dropped: this state vector mixes units -- position is carried
-            // in radians^2 while velocity and altitude are in (m/s)^2 and m^2 -- so even the
-            // cheapest proxy, the ratio of the largest to the smallest diagonal entry, is
-            // dominated by that unit mismatch rather than by divergence. It fires on a
-            // perfectly healthy default P0: lat/lon variance is ~1e-13 rad^2 against a ~4 m^2
-            // altitude variance, a ratio in the 1e12-1e13 range before a single sample has
-            // been processed. A true condition number needs a matrix inverse, which this
-            // function cannot afford to run on every predict/update.
+            // (see #332) but dropped: this covariance's diagonal mixes units -- the position
+            // variances are in radians^2 while the velocity and altitude variances are in
+            // (m/s)^2 and m^2 -- so even the cheapest proxy, the ratio of the largest to the
+            // smallest diagonal entry, is dominated by that unit mismatch rather than by
+            // divergence. It fires on a perfectly healthy default P0: lat/lon variance is
+            // ~1e-13 rad^2 against a ~4 m^2 altitude variance, a ratio in the 1e12-1e13 range
+            // before a single sample has been processed. A true condition number needs a
+            // matrix inverse, which this function cannot afford to run on every
+            // predict/update.
             for i in 0..p.nrows().min(p.ncols()) {
                 if p[(i, i)].is_sign_negative() {
                     bail!("Negative variance on diagonal: idx={i}, val={}", p[(i, i)]);
@@ -6689,6 +6695,41 @@ mod tests {
         // vn=100, ve=0, vd=0 -> 100 m/s, over the 50 m/s limit.
         let state = vec![
             0.5, 0.5, 100.0, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ];
+        let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
+
+        let result = monitor.check(&state, &cov, None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Speed exceeded"));
+    }
+
+    /// A naive `vn*vn + ve*ve + vd*vd` sum of squares overflows to infinity for a merely
+    /// large (but finite) component; `f64::MAX.hypot(0.0)` does not, and the speed check
+    /// must not let an overflowed intermediate wave a divergent-but-finite state through.
+    #[test]
+    fn test_health_monitor_check_speed_overflow_does_not_bypass_limit() {
+        let limits = HealthLimits {
+            speed_mps_max: 50.0,
+            ..Default::default()
+        };
+        let mut monitor = HealthMonitor::new(limits);
+
+        let state = vec![
+            0.5,
+            0.5,
+            100.0,
+            f64::MAX / 2.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
         ];
         let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
 
