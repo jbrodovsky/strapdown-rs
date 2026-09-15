@@ -1,4 +1,4 @@
-//! End-to-end cover for the geophysical closed loop (#338).
+//! End-to-end cover for the geophysical closed loop.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -23,6 +23,8 @@ use std::rc::Rc;
 
 use chrono::{TimeZone, Utc};
 use geonav::{GeoMap, GeophysicalMeasurementType, GravityResolution, build_event_stream};
+use nalgebra::{DMatrix, DVector};
+use strapdown::kalman::ExtendedKalmanFilter;
 use strapdown::messages::{GnssDegradationConfig, GnssFaultModel, GnssScheduler};
 use strapdown::sim::{
     DEFAULT_PROCESS_NOISE, GeoStateLayout, TestDataRecord, UkfConfig, initialize_ukf,
@@ -118,7 +120,7 @@ fn aided_ukf(first: &TestDataRecord) -> strapdown::kalman::UnscentedKalmanFilter
 
 /// A gravity-aided run completes and carries its bias state into the solution.
 ///
-/// This is the #338 regression: before the layout reached the conversion, this run panicked on
+/// This is the regression: before the layout reached the conversion, this run panicked on
 /// its very first result with "State vector must have 15 elements; got 16".
 #[test]
 fn gravity_aided_closed_loop_completes_and_labels_its_bias_state() {
@@ -199,7 +201,7 @@ fn gravity_aided_closed_loop_completes_and_labels_its_bias_state() {
 
 /// A run that declares no geophysical states still rejects a filter that has them.
 ///
-/// The #338 fix told the conversion about the extra states; it did not loosen the invariant.
+/// The fix told the conversion about the extra states; it did not loosen the invariant.
 /// A 16-state filter handed to the plain entry point is a caller that forgot its layout, and
 /// silently writing a solution that drops the bias state would be worse than the panic.
 #[test]
@@ -210,4 +212,96 @@ fn plain_closed_loop_still_rejects_a_geophysical_filter() {
         .expect("the plain event stream must build");
     let mut ukf = aided_ukf(&records[0]);
     let _ = run_closed_loop(&mut ukf, events, None, None);
+}
+
+/// The EKF branch of the geophysical CLI carries its bias state too.
+///
+/// The CLI builds the EKF by hand -- `initialize_ekf` has no `other_states`, so the geophysical
+/// covariance and process noise are extended at the call site -- which makes it a different
+/// construction path from the UKF above and worth covering separately. This mirrors what
+/// `run_geo_closed_loop_cli`'s `FilterType::Ekf` arm assembles.
+///
+/// Note what this does *not* assert: that the bias moves. On this path it does not. Same run and
+/// same map, the UKF drives its gravity bias from 0 to roughly 26 mGal with the covariance
+/// converging from 100 to under 2, while the EKF's stays at exactly its seed with the covariance
+/// only growing -- the aiding reaches the state on one path and not the other. That is a
+/// separate defect from the state-shape one fixed here, and asserting movement would make this
+/// test fail for a reason it is not about. What it does assert is the fix: the run completes and
+/// the bias column is labelled rather than dropped.
+#[test]
+fn ekf_branch_completes_and_labels_its_bias_state() {
+    let dir = std::env::temp_dir().join(format!("geonav-ekf-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let map_path = dir.join("gravity.nc");
+    write_gravity_map(&map_path);
+
+    let map = Rc::new(
+        GeoMap::load_geomap(
+            &map_path,
+            GeophysicalMeasurementType::Gravity(GravityResolution::OneMinute),
+        )
+        .expect("the generated map must load"),
+    );
+
+    let records = synthetic_track(60);
+    let events = build_event_stream(
+        &records,
+        &passthrough_config(),
+        Some(Rc::clone(&map)),
+        Some(1.0),
+        None,
+        None,
+        Some(1.0),
+    )
+    .expect("the geophysical event stream must build");
+
+    let layout = GeoStateLayout {
+        gravity: true,
+        magnetic: false,
+    };
+
+    // The covariance and process noise the CLI's EKF arm builds, extended by one geophysical
+    // state, on the 15-state navigation block.
+    let mut covariance_diagonal = vec![
+        1e-10, 1e-10, 1.0, // position
+        0.1, 0.1, 0.1, // velocity
+        1e-4, 1e-4, 1e-4, // attitude
+        1e-6, 1e-6, 1e-6, // accel bias
+        1e-8, 1e-8, 1e-8, // gyro bias
+    ];
+    covariance_diagonal.push(1.0);
+    let mut process_noise_vec = vec![
+        1e-12, 1e-12, 1e-6, // position
+        1e-6, 1e-6, 1e-6, // velocity
+        1e-9, 1e-9, 1e-9, // attitude
+        1e-9, 1e-9, 1e-9, // accel bias
+        1e-9, 1e-9, 1e-9, // gyro bias
+    ];
+    process_noise_vec.push(1e-9);
+
+    let mut ekf = ExtendedKalmanFilter::new(
+        &records[0].initial_state(true),
+        &[0.0; 6],
+        covariance_diagonal,
+        DMatrix::from_diagonal(&DVector::from_vec(process_noise_vec)),
+        true,
+    );
+
+    let results = run_closed_loop_with_geo(&mut ekf, events, None, None, layout)
+        .expect("the geophysical EKF must complete a run");
+
+    assert!(!results.is_empty());
+    for (i, result) in results.iter().enumerate() {
+        assert!(
+            result.gravity_bias.is_some(),
+            "row {i} carried a gravity map, so its gravity bias must be populated"
+        );
+        assert!(result.gravity_bias_cov.is_some());
+        assert!(
+            result.magnetic_bias.is_none(),
+            "row {i} carried no magnetic map, so its magnetic bias must be absent"
+        );
+    }
+
+    std::fs::remove_dir_all(&dir).ok();
 }

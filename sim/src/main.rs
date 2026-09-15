@@ -1479,8 +1479,7 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
 
         // Which geophysical bias states the filter will carry, and in what order. This travels
         // with the run into `NavigationResult`, which cannot work it out from the state vector:
-        // a 16-element state is gravity-only or magnetic-only depending on these same flags
-        // (#338).
+        // a 16-element state is gravity-only or magnetic-only depending on these same flags.
         let geo_layout = GeoStateLayout {
             gravity: gravity_map.is_some(),
             magnetic: magnetic_map.is_some(),

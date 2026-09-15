@@ -1136,7 +1136,7 @@ pub struct NEDCovariance {
 /// cannot describe that on its own: a 16-element state is gravity-only or magnetic-only
 /// depending on which flags the run was given, and reading the wrong label off it would put
 /// a milligal figure in a nanotesla column. So the layout travels with the run rather than
-/// being inferred from a length (#338).
+/// being inferred from a length.
 ///
 /// [`GeoStateLayout::NONE`] is the ordinary, non-geophysical case and is what
 /// [`run_closed_loop`] uses.
@@ -1189,8 +1189,12 @@ impl GeoStateLayout {
     }
 }
 
-/// Length of the navigation state every filter in this crate carries: nine navigation states
-/// plus three accelerometer and three gyroscope biases.
+/// Length of the full Kalman state vector: nine navigation states plus three accelerometer and
+/// three gyroscope biases.
+///
+/// This is the shape the UKF, EKF and ESKF carry and what [`NavigationResult`]'s conversions
+/// index, not a property of every filter in the crate: the particle filter reports a nine-state
+/// navigation estimate and appends its own extra linear states, with no IMU-bias block.
 pub const NAVIGATION_STATES: usize = 15;
 
 /// Read an on-disk geophysical column back into an `Option`.
@@ -1558,6 +1562,21 @@ impl NavigationResult {
                     data
                 }};
             }
+            /// A column that a file written before it existed will not have.
+            ///
+            /// The geophysical columns are additive: every result file written before they
+            /// existed is still a valid navigation solution, and reading one must not fail just
+            /// because it predates the schema. A *missing* dataset reads as all-absent; a
+            /// dataset that is present but unreadable still propagates its error, so this does
+            /// not paper over a corrupt file.
+            macro_rules! read_optional_f64_field {
+                ($field_name:literal) => {{
+                    match group.dataset($field_name) {
+                        Ok(ds) => ds.read_raw::<f64>()?,
+                        Err(_) => vec![f64::NAN; n],
+                    }
+                }};
+            }
 
             // Read navigation solution states
             let latitude = read_f64_field!("latitude");
@@ -1592,10 +1611,10 @@ impl NavigationResult {
             let gyro_bias_x_cov = read_f64_field!("gyro_bias_x_cov");
             let gyro_bias_y_cov = read_f64_field!("gyro_bias_y_cov");
             let gyro_bias_z_cov = read_f64_field!("gyro_bias_z_cov");
-            let gravity_bias = read_f64_field!("gravity_bias");
-            let gravity_bias_cov = read_f64_field!("gravity_bias_cov");
-            let magnetic_bias = read_f64_field!("magnetic_bias");
-            let magnetic_bias_cov = read_f64_field!("magnetic_bias_cov");
+            let gravity_bias = read_optional_f64_field!("gravity_bias");
+            let gravity_bias_cov = read_optional_f64_field!("gravity_bias_cov");
+            let magnetic_bias = read_optional_f64_field!("magnetic_bias");
+            let magnetic_bias_cov = read_optional_f64_field!("magnetic_bias_cov");
 
             let mut records = Vec::with_capacity(n);
             for i in 0..n {
@@ -1804,6 +1823,19 @@ impl NavigationResult {
                 data
             }};
         }
+        /// A variable that a file written before it existed will not have.
+        ///
+        /// Same reasoning as `read_optional_f64_field` in `from_hdf5`: the geophysical columns
+        /// are additive, so a result file that predates them must still read. An absent
+        /// variable yields all-absent; one that is present but unreadable still fails.
+        macro_rules! read_optional_var {
+            ($file:expr, $name:expr, $len:expr) => {{
+                match $file.variable($name) {
+                    Some(var) => var.get_values(..)?,
+                    None => vec![f64::NAN; $len],
+                }
+            }};
+        }
 
         // Read all variables
         let latitude = read_var!(file, "latitude");
@@ -1836,10 +1868,10 @@ impl NavigationResult {
         let gyro_bias_x_cov = read_var!(file, "gyro_bias_x_cov");
         let gyro_bias_y_cov = read_var!(file, "gyro_bias_y_cov");
         let gyro_bias_z_cov = read_var!(file, "gyro_bias_z_cov");
-        let gravity_bias = read_var!(file, "gravity_bias");
-        let gravity_bias_cov = read_var!(file, "gravity_bias_cov");
-        let magnetic_bias = read_var!(file, "magnetic_bias");
-        let magnetic_bias_cov = read_var!(file, "magnetic_bias_cov");
+        let gravity_bias = read_optional_var!(file, "gravity_bias", latitude.len());
+        let gravity_bias_cov = read_optional_var!(file, "gravity_bias_cov", latitude.len());
+        let magnetic_bias = read_optional_var!(file, "magnetic_bias", latitude.len());
+        let magnetic_bias_cov = read_optional_var!(file, "magnetic_bias_cov", latitude.len());
 
         // Build records
         let mut records = Vec::with_capacity(n);
@@ -2029,7 +2061,7 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>)> for NavigationResult {
     ///
     /// A filter carrying geophysical bias states is longer than 15 and must go through the
     /// [`GeoStateLayout`] form below, which knows what those extra states are; this one would
-    /// otherwise reject it. That was #338: the geophysical closed loop built a 16-state filter
+    /// otherwise reject it. That was the regression: the geophysical closed loop built a 16-state filter
     /// and died here on its first result, for every filter and every map.
     fn from(
         (timestamp, state, covariance): (&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>),
@@ -2143,6 +2175,15 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>, GeoStateLayout)> for Na
 ///
 /// # Returns
 /// A `NavigationResult` struct containing the navigation solution.
+/// Converts the canonical fifteen-state solution only.
+///
+/// A filter carrying geophysical bias states has them past index 14, and this conversion leaves
+/// [`NavigationResult`]'s geophysical columns `None` rather than reading them: it is handed a
+/// filter, not a [`GeoStateLayout`], and the state vector cannot say which of its extra states
+/// is gravity and which is magnetic. Geophysical runs therefore go through
+/// [`run_closed_loop_with_geo`], which carries the layout; this impl is for the ordinary path.
+/// Converting an augmented filter here is not wrong, it is lossy, and the lossiness is why the
+/// geophysical CLI does not use it.
 impl From<(&DateTime<Utc>, &UnscentedKalmanFilter)> for NavigationResult {
     fn from((timestamp, ukf): (&DateTime<Utc>, &UnscentedKalmanFilter)) -> Self {
         let state = &ukf.get_estimate();
@@ -2187,6 +2228,15 @@ impl From<(&DateTime<Utc>, &UnscentedKalmanFilter)> for NavigationResult {
     }
 }
 
+/// Converts the canonical fifteen-state solution only.
+///
+/// A filter carrying geophysical bias states has them past index 14, and this conversion leaves
+/// [`NavigationResult`]'s geophysical columns `None` rather than reading them: it is handed a
+/// filter, not a [`GeoStateLayout`], and the state vector cannot say which of its extra states
+/// is gravity and which is magnetic. Geophysical runs therefore go through
+/// [`run_closed_loop_with_geo`], which carries the layout; this impl is for the ordinary path.
+/// Converting an augmented filter here is not wrong, it is lossy, and the lossiness is why the
+/// geophysical CLI does not use it.
 impl From<(&DateTime<Utc>, &crate::kalman::ExtendedKalmanFilter)> for NavigationResult {
     fn from((timestamp, ekf): (&DateTime<Utc>, &crate::kalman::ExtendedKalmanFilter)) -> Self {
         let state = &ekf.get_estimate();
@@ -2640,7 +2690,7 @@ pub fn run_closed_loop<F: NavigationFilter>(
 /// a 16-element state is gravity-only or magnetic-only depending on the run's flags.
 ///
 /// This exists as a separate entry point rather than a fifth parameter on `run_closed_loop`
-/// because only the geophysical paths need it and thirty call sites do not (#338).
+/// because only the geophysical paths need it and thirty call sites do not.
 ///
 /// # Arguments
 /// * `filter` - Mutable reference to a type implementing `NavigationFilter`
@@ -7951,6 +8001,86 @@ mod tests {
                 "Bearing mismatch at index {i}"
             );
         }
+    }
+
+    /// A result file written before the geophysical columns existed must still read.
+    ///
+    /// The four columns are additive, so every file already on disk lacks them. Adding them as
+    /// required datasets would have made this reader reject those files outright -- a
+    /// backwards-incompatible change smuggled in behind a bug fix. A missing dataset reads as
+    /// absent; a dataset that is present but unreadable still fails, which is what keeps this
+    /// from papering over a corrupt file.
+    #[cfg(feature = "hdf5")]
+    #[test]
+    fn test_navigation_result_hdf5_reads_a_file_without_geophysical_columns() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("legacy.h5");
+
+        let mut nav = NavigationResult::new();
+        nav.latitude = 37.0;
+        nav.longitude = -122.0;
+        nav.altitude = 100.0;
+        nav.gravity_bias = Some(1.5);
+        nav.gravity_bias_cov = Some(0.25);
+        NavigationResult::to_hdf5(&[nav], &file_path).unwrap();
+
+        // Delete the four datasets, reproducing a file written before they existed. Everything
+        // else in the file is untouched, so this is exactly an older writer's output.
+        {
+            let file = hdf5::File::open_rw(&file_path).unwrap();
+            let group = file.group("navigation_results").unwrap();
+            for name in [
+                "gravity_bias",
+                "gravity_bias_cov",
+                "magnetic_bias",
+                "magnetic_bias_cov",
+            ] {
+                group.unlink(name).unwrap();
+            }
+        }
+
+        let read = NavigationResult::from_hdf5(&file_path)
+            .expect("a file predating the geophysical columns must still read");
+        assert_eq!(read.len(), 1);
+        assert_approx_eq!(read[0].latitude, 37.0, 1e-9);
+        assert_eq!(
+            read[0].gravity_bias, None,
+            "an absent column must read as absent, not as a zero the caller would believe"
+        );
+        assert_eq!(read[0].gravity_bias_cov, None);
+        assert_eq!(read[0].magnetic_bias, None);
+        assert_eq!(read[0].magnetic_bias_cov, None);
+    }
+
+    /// The geophysical columns survive a round trip when they are present.
+    ///
+    /// The companion to the test above: absent must stay absent, and present must stay present
+    /// with its value, or the NaN sentinel the binary writers use would be indistinguishable
+    /// from a real estimate.
+    #[cfg(feature = "hdf5")]
+    #[test]
+    fn test_navigation_result_hdf5_roundtrips_geophysical_columns() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("geo.h5");
+
+        let mut nav = NavigationResult::new();
+        nav.gravity_bias = Some(12.5);
+        nav.gravity_bias_cov = Some(3.25);
+        // Magnetic deliberately absent: this run carried only a gravity map.
+        NavigationResult::to_hdf5(&[nav], &file_path).unwrap();
+
+        let read = NavigationResult::from_hdf5(&file_path).unwrap();
+        assert_eq!(read.len(), 1);
+        assert_approx_eq!(read[0].gravity_bias.unwrap(), 12.5, 1e-9);
+        assert_approx_eq!(read[0].gravity_bias_cov.unwrap(), 3.25, 1e-9);
+        assert_eq!(
+            read[0].magnetic_bias, None,
+            "a run with no magnetic map must not gain a magnetic estimate on the round trip"
+        );
     }
 
     #[cfg(feature = "hdf5")]
