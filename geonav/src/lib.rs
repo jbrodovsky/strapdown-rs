@@ -88,9 +88,12 @@ fn resolve_bias_index(
     let index = state_len
         .checked_sub(offset)
         .filter(|index| *index >= NAVIGATION_STATE_DIM)
-        .ok_or(StrapdownError::DimensionMismatch {
+        .ok_or_else(|| StrapdownError::DimensionMismatch {
             what: "geophysical bias state",
-            expected: NAVIGATION_STATE_DIM + offset,
+            // Saturating: `bias_from_end` is a public field, so `usize::MAX` can reach
+            // here, and an overflow would turn a malformed configuration into a panic in
+            // debug and a wrapped, misleading width in release.
+            expected: NAVIGATION_STATE_DIM.saturating_add(offset),
             got: state_len,
         })?;
     Ok(Some(index))
@@ -807,6 +810,13 @@ impl MeasurementModel for GravityMeasurement {
         1 // Single measurement: map value at current position
     }
     fn get_measurement(&self, state: &DVector<f64>) -> Result<DVector<f64>, StrapdownError> {
+        // Validate the declared bias against the state actually handed over, and do it on
+        // this method because it is the one method every filter calls. The EKF and the RBPF
+        // also reach `get_jacobian`, which checks the same thing, but the UKF maps sigma
+        // points through `get_expected_measurement` and asks for no Jacobian at all -- so
+        // without this a UKF whose state does not carry the declared bias would silently
+        // drop it and run an inconsistent model.
+        resolve_bias_index(state.len(), self.bias_from_end)?;
         // Return the observed gravity anomaly as the measurement vector.
         // Use provided state if available (for per-particle updates), otherwise fallback to stored state.
         let anomaly = if let Some((lat, alt, v_n, v_e)) = Self::extract_state_inputs(state) {
@@ -830,9 +840,10 @@ impl MeasurementModel for GravityMeasurement {
             .get_point(&lat.to_degrees(), &lon.to_degrees())
             .unwrap_or(f64::NAN);
         // Infallible by trait signature, so a state vector too narrow to carry the bias
-        // drops it here rather than reporting it. `get_jacobian` is where that is reported,
-        // and every filter in the workspace evaluates the Jacobian first -- deliberately,
-        // and documented as such at the EKF, UKF and RBPF call sites.
+        // drops it here rather than reporting it. The loud report is `get_measurement`,
+        // which every filter calls and which validates the same thing: the EKF and RBPF
+        // also reach it through `get_jacobian`, but the UKF maps sigma points and never
+        // asks for a Jacobian at all, so the Jacobian alone would leave that path silent.
         let bias = resolve_bias_index(state.len(), self.bias_from_end)
             .ok()
             .flatten()
@@ -985,6 +996,13 @@ impl MeasurementModel for MagneticAnomalyMeasurement {
         1 // Single measurement: map value at current position
     }
     fn get_measurement(&self, state: &DVector<f64>) -> Result<DVector<f64>, StrapdownError> {
+        // Validate the declared bias against the state actually handed over, and do it on
+        // this method because it is the one method every filter calls. The EKF and the RBPF
+        // also reach `get_jacobian`, which checks the same thing, but the UKF maps sigma
+        // points through `get_expected_measurement` and asks for no Jacobian at all -- so
+        // without this a UKF whose state does not carry the declared bias would silently
+        // drop it and run an inconsistent model.
+        resolve_bias_index(state.len(), self.bias_from_end)?;
         // Return the observed magnetic anomaly as the measurement vector.
         // Use provided state if available (for per-particle updates), otherwise fallback to stored state.
         let anomaly = if let Some((lat_deg, lon_deg, alt)) = Self::extract_state_inputs(state) {
@@ -1033,9 +1051,10 @@ impl MeasurementModel for MagneticAnomalyMeasurement {
             .get_point(&lat.to_degrees(), &lon.to_degrees())
             .unwrap_or(f64::NAN);
         // Infallible by trait signature, so a state vector too narrow to carry the bias
-        // drops it here rather than reporting it. `get_jacobian` is where that is reported,
-        // and every filter in the workspace evaluates the Jacobian first -- deliberately,
-        // and documented as such at the EKF, UKF and RBPF call sites.
+        // drops it here rather than reporting it. The loud report is `get_measurement`,
+        // which every filter calls and which validates the same thing: the EKF and RBPF
+        // also reach it through `get_jacobian`, but the UKF maps sigma points and never
+        // asks for a Jacobian at all, so the Jacobian alone would leave that path silent.
         let bias = resolve_bias_index(state.len(), self.bias_from_end)
             .ok()
             .flatten()
@@ -2014,6 +2033,53 @@ mod tests {
         assert_eq!(resolve_bias_index(10, Some(1)).unwrap(), Some(9));
         assert_eq!(resolve_bias_index(11, Some(2)).unwrap(), Some(9));
         assert_eq!(resolve_bias_index(11, Some(1)).unwrap(), Some(10));
+    }
+
+    /// The UKF never asks for a Jacobian, so `get_measurement` has to carry the check.
+    ///
+    /// `UnscentedKalmanFilter::update` maps sigma points through `get_expected_measurement`
+    /// and takes its innovation from `get_measurement`; it calls `get_jacobian` nowhere. A
+    /// contract enforced only on the Jacobian would therefore leave every UKF silently
+    /// dropping a bias its state could not carry, which is the one thing the loud error is
+    /// meant to prevent.
+    #[test]
+    fn test_gravity_get_measurement_reports_a_missing_bias_state() {
+        let measurement = gravity_measurement_with_bias(Some(1));
+        let err = measurement
+            .get_measurement(&state_with_extras(&[]))
+            .unwrap_err();
+        assert!(matches!(err, StrapdownError::DimensionMismatch { .. }));
+        assert!(!err.is_recoverable());
+
+        // Carried: no error, and the anomaly still comes back.
+        assert!(
+            measurement
+                .get_measurement(&state_with_extras(&[7.0]))
+                .is_ok()
+        );
+        // Not declared: any width is fine.
+        assert!(
+            gravity_measurement_with_bias(None)
+                .get_measurement(&state_with_extras(&[]))
+                .is_ok()
+        );
+    }
+
+    /// A hand-built `bias_from_end` must not overflow the width it reports.
+    ///
+    /// The field is public, so `usize::MAX` can reach the error path; adding it to the
+    /// navigation-state count panicked in debug and wrapped to a misleading width in
+    /// release, turning a malformed configuration into the wrong kind of failure.
+    #[test]
+    fn test_bias_from_end_of_usize_max_reports_rather_than_overflows() {
+        assert!(matches!(
+            resolve_bias_index(9, Some(usize::MAX)),
+            Err(StrapdownError::DimensionMismatch {
+                expected: usize::MAX,
+                got: 9,
+                ..
+            })
+        ));
     }
 
     /// The Jacobian is where the layout disagreement surfaces, because every filter in the

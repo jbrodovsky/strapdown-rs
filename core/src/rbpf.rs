@@ -8,7 +8,7 @@
 use crate::StrapdownError;
 use crate::gating::{InnovationGate, UpdateOutcome, normalized_innovation_squared};
 use crate::horizontal_meters_to_radians;
-use crate::kalman::imu_sample_from_input;
+use crate::kalman::{expand_measurement_jacobian, imu_sample_from_input};
 use crate::linalg::{matrix_square_root, symmetrize};
 use crate::linearize::state_transition_jacobian;
 use crate::measurements::{
@@ -704,6 +704,15 @@ impl RaoBlackwellizedParticleFilter {
         let z_hat = measurement.get_expected_measurement(&mean);
         let mut innovation = measurement.get_measurement(&mean)? - z_hat;
         measurement.wrap_residual(&mut innovation);
+
+        // Pad to the summary's width before multiplying. The navigation models return a
+        // fixed nine columns -- `gps_position_jacobian` is 3x9 whatever it is handed -- so
+        // against an augmented covariance this product was a 3x9 by an 11x11, which nalgebra
+        // panics on. GNSS and geophysical fixes ride the same event stream, so that is every
+        // aided run rather than a corner case. The Kalman filters have always widened here;
+        // this is the same helper, and it rejects a Jacobian *wider* than the state rather
+        // than truncating one.
+        let h = expand_measurement_jacobian(h, covariance.ncols())?;
 
         let s = &h * &covariance * h.transpose() + measurement.get_noise();
         let dof = innovation.len();
@@ -1900,6 +1909,37 @@ mod tests {
         let (a, _) = plain.estimate();
         let (b, _) = plain.estimate_with_extra_states();
         assert_eq!(a, b);
+    }
+
+    /// An ordinary GNSS fix must survive a filter that carries extra states.
+    ///
+    /// The gate summarises the cloud at the augmented width, but the navigation models
+    /// return a fixed nine-column Jacobian -- `gps_position_jacobian` is 3x9 -- so
+    /// `h * covariance` was a 3x9 against an 11x11 and nalgebra panicked before the update
+    /// ran. GNSS fixes and geophysical fixes ride the same event stream, so this is every
+    /// geophysically-aided run rather than a corner case.
+    #[test]
+    fn rbpf_gps_update_survives_a_filter_carrying_extra_states() {
+        let mut rbpf = rbpf_with_extra_states(2, 23);
+        let gps = GPSPositionMeasurement {
+            latitude: 0.7_f64.to_degrees(),
+            longitude: (-1.3_f64).to_degrees(),
+            altitude: 100.0,
+            horizontal_noise_std: 5.0,
+            vertical_noise_std: 10.0,
+        };
+        let outcome = rbpf.update(&gps).unwrap();
+        assert!(
+            outcome.accepted,
+            "a fix at the nominal position should pass the gate, NIS was {}",
+            outcome.nis
+        );
+        // The barometer is the other fixed-width model on this path.
+        let baro = RelativeAltitudeMeasurement {
+            relative_altitude: 0.0,
+            reference_altitude: 100.0,
+        };
+        assert!(rbpf.update(&baro).unwrap().accepted);
     }
 
     fn run_rbpf_on_scenario(
