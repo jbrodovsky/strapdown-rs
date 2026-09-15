@@ -1,0 +1,787 @@
+{
+  "schema_version": 1,
+  "note": "Navigation-accuracy baseline (#328). Regenerate with `UPDATE_PERF_BASELINE=1 cargo test -p strapdown-core --test perf_baseline`, then review the diff: every changed number is a claim about the navigation solution. Values are rounded to 6 significant figures. `null` means the metric is not computable for that scenario -- dead reckoning reports no covariance -- and is not gated. `\"gated\": false` keeps a metric recorded but unasserted. See the module docs in core/tests/perf_baseline.rs for what the numbers do and do not measure.",
+  "default_tolerance": {
+    "regress_fraction": 0.1,
+    "improve_fraction": 0.25
+  },
+  "scenarios": {
+    "real_clean__ekf": {
+      "description": "test_data.csv, GNSS every epoch, no fault",
+      "sample_count": 5366,
+      "metrics": {
+        "attitude_geodesic_rmse_deg": {
+          "value": 22.9455
+        },
+        "containment_3sigma_horizontal": {
+          "value": 1.0,
+          "note": "1.000 is the symptom of an over-conservative horizontal covariance, not a passing grade. Read it against `containment_3sigma_vertical` at 0.40 in the same row."
+        },
+        "containment_3sigma_vertical": {
+          "value": 0.400671
+        },
+        "horizontal_cep50_m": {
+          "value": 23.1926
+        },
+        "horizontal_cep95_m": {
+          "value": 34.4717
+        },
+        "horizontal_max_m": {
+          "value": 37.8044
+        },
+        "horizontal_rmse_m": {
+          "value": 23.5532
+        },
+        "npes_position": {
+          "value": 35.967,
+          "note": "Not the horizontal channel: containment reads a flat 1.000 there, so each horizontal term is bounded by 9. Almost all of this is the vertical channel, whose containment is 0.40. The EKF here is over-conservative horizontally (see core/tests/aiding.rs, `a_note_on_filter_consistency`) and over-confident vertically at the same time. Recorded as measured, not as a target."
+        },
+        "pitch_rmse_deg": {
+          "value": 2.55293
+        },
+        "roll_rmse_deg": {
+          "value": 3.13361
+        },
+        "velocity_horizontal_rmse_mps": {
+          "value": 1.57586
+        },
+        "velocity_vertical_rmse_mps": {
+          "value": 0.838798
+        },
+        "vertical_bias_m": {
+          "value": -2.37908
+        },
+        "vertical_rmse_m": {
+          "value": 3.66312
+        },
+        "yaw_rmse_deg": {
+          "value": 22.6115
+        }
+      }
+    },
+    "real_clean__eskf": {
+      "description": "test_data.csv, GNSS every epoch, no fault",
+      "sample_count": 5366,
+      "metrics": {
+        "attitude_geodesic_rmse_deg": {
+          "value": 26.4965
+        },
+        "containment_3sigma_horizontal": {
+          "value": 0.161387
+        },
+        "containment_3sigma_vertical": {
+          "value": 0.441297
+        },
+        "horizontal_cep50_m": {
+          "value": 22.9244
+        },
+        "horizontal_cep95_m": {
+          "value": 35.4248
+        },
+        "horizontal_max_m": {
+          "value": 41.8697
+        },
+        "horizontal_rmse_m": {
+          "value": 23.7233
+        },
+        "npes_position": {
+          "value": 1250.37,
+          "note": "Horizontally over-confident, unlike the UKF and EKF rows: containment is 0.16 here against their 1.000. Much of the numerator is the one-step labelling offset described in the module docs (#367), which the covariance does not model. Recorded as a drift detector; read the synthetic scenarios for an actual consistency verdict."
+        },
+        "pitch_rmse_deg": {
+          "value": 2.88161
+        },
+        "roll_rmse_deg": {
+          "value": 3.33389
+        },
+        "velocity_horizontal_rmse_mps": {
+          "value": 1.53843
+        },
+        "velocity_vertical_rmse_mps": {
+          "value": 0.553263
+        },
+        "vertical_bias_m": {
+          "value": 0.332768
+        },
+        "vertical_rmse_m": {
+          "value": 2.72391
+        },
+        "yaw_rmse_deg": {
+          "value": 26.1487
+        }
+      }
+    },
+    "real_clean__ukf": {
+      "description": "test_data.csv, GNSS every epoch, no fault",
+      "sample_count": 5366,
+      "metrics": {
+        "attitude_geodesic_rmse_deg": {
+          "value": 23.208
+        },
+        "containment_3sigma_horizontal": {
+          "value": 1.0
+        },
+        "containment_3sigma_vertical": {
+          "value": 0.450801
+        },
+        "horizontal_cep50_m": {
+          "value": 23.1079
+        },
+        "horizontal_cep95_m": {
+          "value": 34.5171
+        },
+        "horizontal_max_m": {
+          "value": 37.7231
+        },
+        "horizontal_rmse_m": {
+          "value": 23.534
+        },
+        "npes_position": {
+          "value": 17.3182
+        },
+        "pitch_rmse_deg": {
+          "value": 3.00036
+        },
+        "roll_rmse_deg": {
+          "value": 3.44202
+        },
+        "velocity_horizontal_rmse_mps": {
+          "value": 1.54268
+        },
+        "velocity_vertical_rmse_mps": {
+          "value": 0.545128
+        },
+        "vertical_bias_m": {
+          "value": 0.339119
+        },
+        "vertical_rmse_m": {
+          "value": 2.70207
+        },
+        "yaw_rmse_deg": {
+          "value": 22.7721
+        }
+      }
+    },
+    "real_degraded__eskf": {
+      "description": "test_data.csv, GNSS every epoch, AR(1) position and velocity fault",
+      "sample_count": 5366,
+      "metrics": {
+        "attitude_geodesic_rmse_deg": {
+          "value": 26.7765
+        },
+        "containment_3sigma_horizontal": {
+          "value": 0.0569325
+        },
+        "containment_3sigma_vertical": {
+          "value": 0.14331
+        },
+        "horizontal_cep50_m": {
+          "value": 42.3484
+        },
+        "horizontal_cep95_m": {
+          "value": 86.8444
+        },
+        "horizontal_max_m": {
+          "value": 136.795
+        },
+        "horizontal_rmse_m": {
+          "value": 50.6011
+        },
+        "npes_position": {
+          "value": 5709.58
+        },
+        "pitch_rmse_deg": {
+          "value": 3.04299
+        },
+        "roll_rmse_deg": {
+          "value": 3.42255
+        },
+        "velocity_horizontal_rmse_mps": {
+          "value": 2.7955
+        },
+        "velocity_vertical_rmse_mps": {
+          "value": 0.818462
+        },
+        "vertical_bias_m": {
+          "value": 0.563234
+        },
+        "vertical_rmse_m": {
+          "value": 10.8728
+        },
+        "yaw_rmse_deg": {
+          "value": 26.3983
+        }
+      }
+    },
+    "real_degraded__ukf": {
+      "description": "test_data.csv, GNSS every epoch, AR(1) position and velocity fault",
+      "sample_count": 5366,
+      "metrics": {
+        "attitude_geodesic_rmse_deg": {
+          "value": 22.8313
+        },
+        "containment_3sigma_horizontal": {
+          "value": 1.0
+        },
+        "containment_3sigma_vertical": {
+          "value": 0.141819
+        },
+        "horizontal_cep50_m": {
+          "value": 26.0827
+        },
+        "horizontal_cep95_m": {
+          "value": 51.1592
+        },
+        "horizontal_max_m": {
+          "value": 82.1857
+        },
+        "horizontal_rmse_m": {
+          "value": 30.6747
+        },
+        "npes_position": {
+          "value": 291.252
+        },
+        "pitch_rmse_deg": {
+          "value": 3.14506
+        },
+        "roll_rmse_deg": {
+          "value": 3.5185
+        },
+        "velocity_horizontal_rmse_mps": {
+          "value": 2.81085
+        },
+        "velocity_vertical_rmse_mps": {
+          "value": 0.808113
+        },
+        "vertical_bias_m": {
+          "value": 0.584548
+        },
+        "vertical_rmse_m": {
+          "value": 10.8636
+        },
+        "yaw_rmse_deg": {
+          "value": 22.351
+        }
+      }
+    },
+    "real_outage_60s__eskf": {
+      "description": "test_data.csv, 120 s of GNSS then a 60 s outage, repeating",
+      "sample_count": 5366,
+      "metrics": {
+        "attitude_geodesic_rmse_deg": {
+          "value": 23.4076
+        },
+        "containment_3sigma_horizontal": {
+          "value": 0.275252
+        },
+        "containment_3sigma_vertical": {
+          "value": 0.377376
+        },
+        "horizontal_cep50_m": {
+          "value": 28.6986
+        },
+        "horizontal_cep95_m": {
+          "value": 705.003
+        },
+        "horizontal_max_m": {
+          "value": 2338.92,
+          "regress_fraction": 0.25,
+          "note": "A single-sample statistic at the end of a 60 s free-inertial coast, so it swings more than the RMS beside it."
+        },
+        "horizontal_rmse_m": {
+          "value": 291.407
+        },
+        "npes_position": {
+          "value": 812.289
+        },
+        "pitch_rmse_deg": {
+          "value": 3.32597
+        },
+        "roll_rmse_deg": {
+          "value": 3.73446
+        },
+        "velocity_horizontal_rmse_mps": {
+          "value": 12.2656
+        },
+        "velocity_vertical_rmse_mps": {
+          "value": 0.670352
+        },
+        "vertical_bias_m": {
+          "value": 0.3127
+        },
+        "vertical_rmse_m": {
+          "value": 5.00862
+        },
+        "yaw_rmse_deg": {
+          "value": 22.8871
+        }
+      }
+    },
+    "real_rbpf_slice__rbpf": {
+      "description": "first 1200 records of test_data.csv, GNSS every epoch, 500 particles",
+      "sample_count": 1200,
+      "metrics": {
+        "attitude_geodesic_rmse_deg": {
+          "value": 21.156
+        },
+        "containment_3sigma_horizontal": {
+          "value": 0.479583
+        },
+        "containment_3sigma_vertical": {
+          "value": 0.6575
+        },
+        "horizontal_cep50_m": {
+          "value": 15.6865
+        },
+        "horizontal_cep95_m": {
+          "value": 28.276
+        },
+        "horizontal_max_m": {
+          "value": 94.4128
+        },
+        "horizontal_rmse_m": {
+          "value": 19.7891
+        },
+        "npes_position": {
+          "value": 183.531
+        },
+        "pitch_rmse_deg": {
+          "value": 3.1689
+        },
+        "roll_rmse_deg": {
+          "value": 2.8251
+        },
+        "velocity_horizontal_rmse_mps": {
+          "value": 2.30771
+        },
+        "velocity_vertical_rmse_mps": {
+          "value": 1.14071
+        },
+        "vertical_bias_m": {
+          "value": -3.20753
+        },
+        "vertical_rmse_m": {
+          "value": 3.84623
+        },
+        "yaw_rmse_deg": {
+          "value": 20.7295
+        }
+      }
+    },
+    "real_sparse_5s__eskf": {
+      "description": "test_data.csv, GNSS every 5 s, no fault",
+      "sample_count": 5366,
+      "metrics": {
+        "attitude_geodesic_rmse_deg": {
+          "value": 20.3388
+        },
+        "containment_3sigma_horizontal": {
+          "value": 0.252236
+        },
+        "containment_3sigma_vertical": {
+          "value": 0.186359
+        },
+        "horizontal_cep50_m": {
+          "value": 23.6036
+        },
+        "horizontal_cep95_m": {
+          "value": 37.8695
+        },
+        "horizontal_max_m": {
+          "value": 150.052
+        },
+        "horizontal_rmse_m": {
+          "value": 25.6779
+        },
+        "npes_position": {
+          "value": 340.081
+        },
+        "pitch_rmse_deg": {
+          "value": 3.17163
+        },
+        "roll_rmse_deg": {
+          "value": 3.81515
+        },
+        "velocity_horizontal_rmse_mps": {
+          "value": 3.39065
+        },
+        "velocity_vertical_rmse_mps": {
+          "value": 0.714806
+        },
+        "vertical_bias_m": {
+          "value": 0.775011
+        },
+        "vertical_rmse_m": {
+          "value": 5.76538
+        },
+        "yaw_rmse_deg": {
+          "value": 19.7316
+        }
+      }
+    },
+    "real_sparse_5s__ukf": {
+      "description": "test_data.csv, GNSS every 5 s, no fault",
+      "sample_count": 5366,
+      "metrics": {
+        "attitude_geodesic_rmse_deg": {
+          "value": 19.535
+        },
+        "containment_3sigma_horizontal": {
+          "value": 1.0
+        },
+        "containment_3sigma_vertical": {
+          "value": 0.208535
+        },
+        "horizontal_cep50_m": {
+          "value": 24.0938
+        },
+        "horizontal_cep95_m": {
+          "value": 36.6137
+        },
+        "horizontal_max_m": {
+          "value": 125.123
+        },
+        "horizontal_rmse_m": {
+          "value": 25.0688
+        },
+        "npes_position": {
+          "value": 39.2081
+        },
+        "pitch_rmse_deg": {
+          "value": 3.27961
+        },
+        "roll_rmse_deg": {
+          "value": 3.81712
+        },
+        "velocity_horizontal_rmse_mps": {
+          "value": 3.30431
+        },
+        "velocity_vertical_rmse_mps": {
+          "value": 0.672072
+        },
+        "vertical_bias_m": {
+          "value": 0.77241
+        },
+        "vertical_rmse_m": {
+          "value": 5.6646
+        },
+        "yaw_rmse_deg": {
+          "value": 18.8743
+        }
+      }
+    },
+    "syn_cruise_1hz__ekf": {
+      "description": "synthetic 300 s at 50 Hz, GNSS every 1 s, scored against exact truth",
+      "sample_count": 15000,
+      "metrics": {
+        "attitude_geodesic_rmse_deg": {
+          "value": 0.981764
+        },
+        "containment_3sigma_horizontal": {
+          "value": 1.0
+        },
+        "containment_3sigma_vertical": {
+          "value": 0.881667
+        },
+        "horizontal_cep50_m": {
+          "value": 3.68846
+        },
+        "horizontal_cep95_m": {
+          "value": 7.67934
+        },
+        "horizontal_max_m": {
+          "value": 10.1844
+        },
+        "horizontal_rmse_m": {
+          "value": 4.42112
+        },
+        "npes_position": {
+          "value": 3.50377
+        },
+        "pitch_rmse_deg": {
+          "value": 0.0687535
+        },
+        "roll_rmse_deg": {
+          "value": 0.114408
+        },
+        "velocity_horizontal_rmse_mps": {
+          "value": 0.0490831
+        },
+        "velocity_vertical_rmse_mps": {
+          "value": 0.367515
+        },
+        "vertical_bias_m": {
+          "value": 0.0387863
+        },
+        "vertical_rmse_m": {
+          "value": 0.666961
+        },
+        "yaw_rmse_deg": {
+          "value": 0.972588
+        }
+      }
+    },
+    "syn_cruise_1hz__eskf": {
+      "description": "synthetic 300 s at 50 Hz, GNSS every 1 s, scored against exact truth",
+      "sample_count": 15000,
+      "metrics": {
+        "attitude_geodesic_rmse_deg": {
+          "value": 2.60293
+        },
+        "containment_3sigma_horizontal": {
+          "value": 0.9961
+        },
+        "containment_3sigma_vertical": {
+          "value": 0.880467
+        },
+        "horizontal_cep50_m": {
+          "value": 2.8319
+        },
+        "horizontal_cep95_m": {
+          "value": 5.96639
+        },
+        "horizontal_max_m": {
+          "value": 9.26196
+        },
+        "horizontal_rmse_m": {
+          "value": 3.41087
+        },
+        "npes_position": {
+          "value": 5.65257
+        },
+        "pitch_rmse_deg": {
+          "value": 0.954678
+        },
+        "roll_rmse_deg": {
+          "value": 1.06766
+        },
+        "velocity_horizontal_rmse_mps": {
+          "value": 1.17306
+        },
+        "velocity_vertical_rmse_mps": {
+          "value": 0.32217
+        },
+        "vertical_bias_m": {
+          "value": 0.0676607
+        },
+        "vertical_rmse_m": {
+          "value": 0.664777
+        },
+        "yaw_rmse_deg": {
+          "value": 2.17485
+        }
+      }
+    },
+    "syn_cruise_1hz__ukf": {
+      "description": "synthetic 300 s at 50 Hz, GNSS every 1 s, scored against exact truth",
+      "sample_count": 15000,
+      "metrics": {
+        "attitude_geodesic_rmse_deg": {
+          "value": 48.7508
+        },
+        "containment_3sigma_horizontal": {
+          "value": 1.0
+        },
+        "containment_3sigma_vertical": {
+          "value": 0.880133
+        },
+        "horizontal_cep50_m": {
+          "value": 3.672
+        },
+        "horizontal_cep95_m": {
+          "value": 7.82503
+        },
+        "horizontal_max_m": {
+          "value": 10.1513
+        },
+        "horizontal_rmse_m": {
+          "value": 4.42368
+        },
+        "npes_position": {
+          "value": 3.56469
+        },
+        "pitch_rmse_deg": {
+          "value": 0.511887
+        },
+        "roll_rmse_deg": {
+          "value": 0.976684
+        },
+        "velocity_horizontal_rmse_mps": {
+          "value": 0.495976
+        },
+        "velocity_vertical_rmse_mps": {
+          "value": 0.381411
+        },
+        "vertical_bias_m": {
+          "value": 0.0645409
+        },
+        "vertical_rmse_m": {
+          "value": 0.680761
+        },
+        "yaw_rmse_deg": {
+          "value": 48.7354,
+          "note": "48.7 deg where the EKF holds 0.97 and the ESKF 2.17 on the same measurements. This is #336 -- the UKF averages sigma-point Euler angles linearly -- not an observability limit. Recorded as measured; fixing #336 trips the improvement side. #369 tracks modelling a real magnetic field here."
+        }
+      }
+    },
+    "syn_dead_reckoning": {
+      "description": "synthetic first 120 s, unaided mechanization",
+      "sample_count": 6000,
+      "metrics": {
+        "attitude_geodesic_rmse_deg": {
+          "value": 1.30061
+        },
+        "containment_3sigma_horizontal": {
+          "value": null
+        },
+        "containment_3sigma_vertical": {
+          "value": null
+        },
+        "horizontal_cep50_m": {
+          "value": 110.233
+        },
+        "horizontal_cep95_m": {
+          "value": 715.856
+        },
+        "horizontal_max_m": {
+          "value": 835.634
+        },
+        "horizontal_rmse_m": {
+          "value": 316.86
+        },
+        "npes_position": {
+          "value": null,
+          "note": "`sim::dead_reckoning` emits no covariance, so the three consistency metrics are `null` here. This scenario is what exercises that path end to end."
+        },
+        "pitch_rmse_deg": {
+          "value": 1.10586
+        },
+        "roll_rmse_deg": {
+          "value": 0.46791
+        },
+        "velocity_horizontal_rmse_mps": {
+          "value": 9.36277
+        },
+        "velocity_vertical_rmse_mps": {
+          "value": 1.89618
+        },
+        "vertical_bias_m": {
+          "value": -64.2546
+        },
+        "vertical_rmse_m": {
+          "value": 86.5915
+        },
+        "yaw_rmse_deg": {
+          "value": 0.493822
+        }
+      }
+    },
+    "syn_outage_60s__eskf": {
+      "description": "synthetic 300 s at 50 Hz, 60 s of GNSS then 60 s of outage",
+      "sample_count": 15000,
+      "metrics": {
+        "attitude_geodesic_rmse_deg": {
+          "value": 2.21149
+        },
+        "containment_3sigma_horizontal": {
+          "value": 0.992067
+        },
+        "containment_3sigma_vertical": {
+          "value": 0.8686
+        },
+        "horizontal_cep50_m": {
+          "value": 1.50684
+        },
+        "horizontal_cep95_m": {
+          "value": 268.475
+        },
+        "horizontal_max_m": {
+          "value": 1885.74,
+          "regress_fraction": 0.25,
+          "note": "As `real_outage_60s__eskf`: a single sample at the end of a coast."
+        },
+        "horizontal_rmse_m": {
+          "value": 137.659
+        },
+        "npes_position": {
+          "value": 5.55197
+        },
+        "pitch_rmse_deg": {
+          "value": 1.49992
+        },
+        "roll_rmse_deg": {
+          "value": 1.23139
+        },
+        "velocity_horizontal_rmse_mps": {
+          "value": 8.0382
+        },
+        "velocity_vertical_rmse_mps": {
+          "value": 0.335292
+        },
+        "vertical_bias_m": {
+          "value": 0.0649525
+        },
+        "vertical_rmse_m": {
+          "value": 0.671058
+        },
+        "yaw_rmse_deg": {
+          "value": 1.05999
+        }
+      }
+    },
+    "syn_outage_60s__ukf": {
+      "description": "synthetic 300 s at 50 Hz, 60 s of GNSS then 60 s of outage",
+      "sample_count": 15000,
+      "metrics": {
+        "attitude_geodesic_rmse_deg": {
+          "value": 105.204
+        },
+        "containment_3sigma_horizontal": {
+          "value": 1.0
+        },
+        "containment_3sigma_vertical": {
+          "value": 0.845267
+        },
+        "horizontal_cep50_m": {
+          "value": 6.33478
+        },
+        "horizontal_cep95_m": {
+          "value": 412.956
+        },
+        "horizontal_max_m": {
+          "value": 2337.14,
+          "regress_fraction": 0.25,
+          "note": "As `real_outage_60s__eskf`: a single sample at the end of a coast."
+        },
+        "horizontal_rmse_m": {
+          "value": 221.67
+        },
+        "npes_position": {
+          "value": 4.37542
+        },
+        "pitch_rmse_deg": {
+          "value": 3.84761
+        },
+        "roll_rmse_deg": {
+          "value": 3.509
+        },
+        "velocity_horizontal_rmse_mps": {
+          "value": 13.6229
+        },
+        "velocity_vertical_rmse_mps": {
+          "value": 0.594801
+        },
+        "vertical_bias_m": {
+          "value": -0.0244624
+        },
+        "vertical_rmse_m": {
+          "value": 0.762667
+        },
+        "yaw_rmse_deg": {
+          "value": 105.085,
+          "note": "Free-inertial coasting on top of the #336 attitude averaging described on `syn_cruise_1hz__ukf`. 105 deg is near the 103.9 deg of an error uniform on the circle."
+        }
+      }
+    }
+  }
+}
