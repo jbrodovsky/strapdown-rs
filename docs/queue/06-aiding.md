@@ -84,6 +84,19 @@ propagation. `filter_comparison.rs` misses it because it feeds fixes taken noise
 truth. Reproducer: `core/tests/aiding.rs::a_note_on_filter_consistency` (`#[ignore]`d,
 asserting the healthy behaviour so it turns green when fixed).
 
+> **Update, 2026-09-15.** The vertical half of this is resolved and the reproducer is no
+> longer `#[ignore]`d. It now sweeps the fix noise over three decades and prints the result:
+> the ESKF's vertical leak is *quadratic* in the disturbance (1.7e-7 m at 0.38 m rms through
+> 1.5e-1 m at 380 m rms) and the EKF's is linear at 1.4e-7 m, neither of which is the
+> amplitude-independent unstable mode described above. Peak altitude error over the committed
+> scenario is 1.5e-5 m (ESKF), 1.4e-7 m (EKF) and 0.279 m (UKF), the last a sigma-point
+> transient out of the seed covariance rather than a response to the fixes at all. The 1e8 m
+> divergence recorded above is not reproducible at any commit reachable from `main`, `bdffed9`
+> and its parent included, so it described a pre-merge state of this branch.
+>
+> **The horizontal half is still open**, which is why the paragraph below stands unchanged and
+> why the gating tests still size their outliers in sigmas.
+
 **#307** -- the EKF ends `test_data.csv` ~14,707 km from truth, and the existing assertions
 accept it because they compare against dead reckoning, which is worse. Wiring the real NIS
 into `HealthMonitor` is what exposed this: the monitor's `nis_pos_max`/`nis_pos_consec_fail`
