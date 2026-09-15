@@ -1199,6 +1199,11 @@ pub const NAVIGATION_STATES: usize = 15;
 /// format has an option type and both write flat f64 tables. NaN is not a value the filter
 /// can produce for a bias it is actually estimating -- a NaN there would have failed the
 /// health monitor long before the writer -- so it round-trips unambiguously.
+///
+/// Gated to match its only callers, `from_hdf5` and `from_netcdf`. Without this the default
+/// build -- which has neither feature, and is what `cargo build -p strapdown-core` gives you --
+/// carries it as dead code, and the CI lint job runs `-D warnings`.
+#[cfg(any(feature = "hdf5", feature = "netcdf"))]
 const fn none_if_nan(value: f64) -> Option<f64> {
     if value.is_nan() { None } else { Some(value) }
 }
