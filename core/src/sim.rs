@@ -413,6 +413,51 @@ impl TestDataRecord {
         )
     }
 
+    /// The record as an [`InitialState`] for seeding a filter, in the caller's declared frame.
+    ///
+    /// This is the one place a `TestDataRecord` is turned into a filter seed:
+    /// [`initialize_ukf`], [`initialize_ekf`] and [`initialize_eskf`] all call it, so the
+    /// three cannot drift apart in their unit handling the way they had (#337).
+    ///
+    /// Every angular field leaves here in **radians**, tagged `in_degrees: false`, because a
+    /// single flag cannot describe this record: its `latitude`/`longitude` are degrees while
+    /// its `roll`/`pitch`/`yaw` are radians. Building the struct as a literal with
+    /// `in_degrees: true` -- what all three did -- was therefore right for the position pair
+    /// and wrong for the attitude triple, which the filter constructors then converted a
+    /// second time: a 0.5 rad (28.6 deg) roll reached the filter as 0.0087 rad, shrunk by
+    /// 57.3x. Converting once here and declaring radians removes the ambiguity rather than
+    /// re-sharing the flag.
+    ///
+    /// Attitude comes from the record's quaternion via [`TestDataRecord::attitude`], not from
+    /// its Euler columns, for the reason documented there: those columns are radians but not
+    /// nalgebra's intrinsic XYZ sequence, so they are not interchangeable with the rotation
+    /// the rest of the crate uses. [`dead_reckoning`] was switched to the quaternion in #302;
+    /// this puts the closed-loop seed on the same footing, so `cl` and `open-loop` now start
+    /// from the same attitude.
+    ///
+    /// Horizontal velocity comes from [`TestDataRecord::ground_track_velocity`], which does
+    /// the degrees-to-radians conversion on `bearing` that [`initialize_ukf`] was missing
+    /// entirely -- seeding a due-east track (bearing 90) as north-west at half speed. Vertical
+    /// velocity is seeded at zero: the format reports no vertical rate, in either frame.
+    #[must_use]
+    pub fn initial_state(&self, is_enu: bool) -> InitialState {
+        let (northward_velocity, eastward_velocity) = self.ground_track_velocity();
+        let (roll, pitch, yaw) = self.attitude().euler_angles();
+        InitialState::new(
+            self.latitude.to_radians(),
+            self.longitude.to_radians(),
+            self.altitude,
+            northward_velocity,
+            eastward_velocity,
+            0.0,
+            roll,
+            pitch,
+            yaw,
+            false,
+            Some(is_enu),
+        )
+    }
+
     /// Reads a CSV file and returns a vector of `TestDataRecord` structs.
     ///
     /// # Arguments
@@ -2672,36 +2717,14 @@ pub fn initialize_ukf(
     initial_pose: &TestDataRecord,
     config: UkfConfig,
 ) -> Result<UnscentedKalmanFilter, StrapdownError> {
-    let initial_state = InitialState {
-        latitude: initial_pose.latitude,
-        longitude: initial_pose.longitude,
-        altitude: initial_pose.altitude,
-        northward_velocity: initial_pose.speed * initial_pose.bearing.cos(),
-        eastward_velocity: initial_pose.speed * initial_pose.bearing.sin(),
-        vertical_velocity: 0.0, // Assuming no initial vertical velocity for simplicity
-        roll: if initial_pose.roll.is_nan() {
-            0.0
-        } else {
-            initial_pose.roll
-        },
-        pitch: if initial_pose.pitch.is_nan() {
-            0.0
-        } else {
-            initial_pose.pitch
-        },
-        yaw: if initial_pose.yaw.is_nan() {
-            0.0
-        } else {
-            initial_pose.yaw
-        },
-        in_degrees: true,
-        // The caller's declared frame, checked against the data above rather than assumed.
-        // `TestDataRecord` carries no frame tag -- Sensor Logger exports (ENU-convention:
-        // +g along the device's up-axis at rest) and `generate_synthetic` output (NED) are
-        // indistinguishable once loaded -- so this has to be supplied, and supplying it
-        // wrongly is what `check_declared_frame` is for (#296).
-        is_enu: config.is_enu,
-    };
+    // Units, attitude source and frame all live in `TestDataRecord::initial_state`; see it
+    // for why this is not a struct literal any more (#337). The frame is the caller's
+    // declared one, checked against the data by `check_declared_frame` rather than assumed
+    // here: `TestDataRecord` carries no frame tag -- Sensor Logger exports (ENU-convention:
+    // +g along the device's up-axis at rest) and `generate_synthetic` output (NED) are
+    // indistinguishable once loaded -- so this has to be supplied, and supplying it wrongly
+    // is what that guard is for (#296).
+    let initial_state = initial_pose.initial_state(config.is_enu);
     let process_noise_diagonal = match config.process_noise_diagonal {
         Some(pn) => pn,
         None => DEFAULT_PROCESS_NOISE.to_vec(),
@@ -2869,36 +2892,11 @@ pub fn initialize_ekf(
         is_enu,
     } = config;
 
-    // Build initial state from sensor data
-    let initial_state = InitialState {
-        latitude: initial_pose.latitude,
-        longitude: initial_pose.longitude,
-        altitude: initial_pose.altitude,
-        // Note: `initial_pose.bearing` is stored in degrees in `TestDataRecord`.
-        // Convert to radians here for use with trigonometric functions.
-        northward_velocity: initial_pose.speed * initial_pose.bearing.to_radians().cos(),
-        eastward_velocity: initial_pose.speed * initial_pose.bearing.to_radians().sin(),
-        vertical_velocity: 0.0,
-        roll: if initial_pose.roll.is_nan() {
-            0.0
-        } else {
-            initial_pose.roll
-        },
-        pitch: if initial_pose.pitch.is_nan() {
-            0.0
-        } else {
-            initial_pose.pitch
-        },
-        yaw: if initial_pose.yaw.is_nan() {
-            0.0
-        } else {
-            initial_pose.yaw
-        },
-        in_degrees: true,
-        // The caller's declared frame, checked against the data above; see the note in
-        // `initialize_ukf` and `check_declared_frame` (#296).
-        is_enu,
-    };
+    // Build initial state from sensor data. Shared with `initialize_ukf` and
+    // `initialize_eskf` so the three agree on units and on where the attitude comes from
+    // (#337); the frame is the caller's declared one, checked by `check_declared_frame`
+    // (#296).
+    let initial_state = initial_pose.initial_state(is_enu);
 
     // Determine state size based on use_biases flag
     let state_size = if use_biases { 15 } else { 9 };
@@ -3086,36 +3084,11 @@ pub fn initialize_eskf(
         is_enu,
     } = config;
 
-    // Build initial state from sensor data
-    let initial_state = InitialState {
-        latitude: initial_pose.latitude,
-        longitude: initial_pose.longitude,
-        altitude: initial_pose.altitude,
-        // Note: `initial_pose.bearing` is stored in degrees in `TestDataRecord`.
-        // Convert to radians here for use with trigonometric functions.
-        northward_velocity: initial_pose.speed * initial_pose.bearing.to_radians().cos(),
-        eastward_velocity: initial_pose.speed * initial_pose.bearing.to_radians().sin(),
-        vertical_velocity: 0.0,
-        roll: if initial_pose.roll.is_nan() {
-            0.0
-        } else {
-            initial_pose.roll
-        },
-        pitch: if initial_pose.pitch.is_nan() {
-            0.0
-        } else {
-            initial_pose.pitch
-        },
-        yaw: if initial_pose.yaw.is_nan() {
-            0.0
-        } else {
-            initial_pose.yaw
-        },
-        in_degrees: true,
-        // The caller's declared frame, checked against the data above; see the note in
-        // `initialize_ukf` and `check_declared_frame` (#296).
-        is_enu,
-    };
+    // Build initial state from sensor data. Shared with `initialize_ukf` and
+    // `initialize_ekf` so the three agree on units and on where the attitude comes from
+    // (#337); the frame is the caller's declared one, checked by `check_declared_frame`
+    // (#296).
+    let initial_state = initial_pose.initial_state(is_enu);
 
     // ESKF always uses 15-state error vector (pos, vel, att, accel_bias, gyro_bias)
     let state_size = 15;
@@ -6036,6 +6009,151 @@ mod tests {
         .unwrap();
         assert!(!ukf2.get_estimate().is_empty());
     }
+
+    /// A record whose bearing and attitude are both non-zero and both distinctive, so that a
+    /// unit error anywhere in the seeding path shows up as a wrong number rather than as a
+    /// coincidentally-correct zero.
+    ///
+    /// `bearing` is 90 degrees -- due east -- which is the single most diagnostic value
+    /// available: fed to `cos`/`sin` unconverted it gives `(-0.448, +0.894)`, so a filter that
+    /// forgets the conversion seeds a due-east track as north-west at half speed. The Euler
+    /// fields are deliberately set to a *different* attitude from the quaternion, the way
+    /// Sensor Logger's own two conventions disagree, so a seed that reads the columns instead
+    /// of the quaternion cannot pass.
+    fn seeded_pose() -> (TestDataRecord, f64, f64, f64) {
+        let (roll, pitch, yaw) = (0.2_f64, -0.3_f64, 1.1_f64);
+        let quaternion = nalgebra::UnitQuaternion::from_euler_angles(roll, pitch, yaw);
+
+        let mut record = blank_record();
+        record.latitude = 30.0;
+        record.longitude = -80.0;
+        record.altitude = 100.0;
+        record.speed = 5.0;
+        record.bearing = 90.0;
+        record.horizontal_accuracy = 4.0;
+        record.vertical_accuracy = 1.0;
+        record.speed_accuracy = 0.5;
+        record.qw = quaternion.w;
+        record.qx = quaternion.i;
+        record.qy = quaternion.j;
+        record.qz = quaternion.k;
+        // Not the quaternion's angles, and not in its convention either.
+        record.roll = 1.5;
+        record.pitch = 1.5;
+        record.yaw = 1.5;
+
+        (record, roll, pitch, yaw)
+    }
+
+    /// Assert that a filter's reported estimate is the seed the record describes.
+    ///
+    /// The first nine entries are the navigation state in the crate's native units: latitude
+    /// and longitude in radians, altitude in metres, velocities in m/s, attitude in radians.
+    fn assert_seeded_estimate(
+        name: &str,
+        estimate: &DVector<f64>,
+        roll: f64,
+        pitch: f64,
+        yaw: f64,
+    ) {
+        assert_approx_eq!(estimate[0], 30.0_f64.to_radians(), 1e-12);
+        assert_approx_eq!(estimate[1], (-80.0_f64).to_radians(), 1e-12);
+        assert_approx_eq!(estimate[2], 100.0, 1e-9);
+        // Bearing 90 deg at 5 m/s is due east: no northward component at all. Unconverted
+        // it is (-2.24, +4.47), which is what the UKF used to seed; the EKF and ESKF
+        // literals already converted, and this holds all three to that one answer.
+        assert_approx_eq!(estimate[3], 0.0, 1e-9);
+        assert_approx_eq!(estimate[4], 5.0, 1e-9);
+        assert_approx_eq!(estimate[5], 0.0, 1e-12);
+        // Radians, once. Tagged `in_degrees: true` these arrived shrunk by 57.3x.
+        assert_approx_eq!(estimate[6], roll, 1e-9);
+        assert_approx_eq!(estimate[7], pitch, 1e-9);
+        assert_approx_eq!(estimate[8], yaw, 1e-9);
+        assert!(
+            estimate.iter().all(|v| v.is_finite()),
+            "{name} seeded a non-finite estimate: {estimate:?}"
+        );
+    }
+
+    /// The property #337 was about: a record with a known bearing and a known attitude must
+    /// reach every filter as that bearing and that attitude.
+    ///
+    /// Nothing checked this before. The workspace's integration tests all build `InitialState`
+    /// as struct literals with their own values, so none of them exercised these functions'
+    /// unit handling, and the two errors happened to be self-concealing -- the degrees-tagged
+    /// radian attitude shrank the seed *toward* zero, and GNSS velocity aiding corrected the
+    /// mis-seeded velocity within a few seconds -- so the integration metrics absorbed both.
+    #[test]
+    fn initialize_seeds_bearing_and_attitude_in_the_units_the_record_uses() {
+        let (record, roll, pitch, yaw) = seeded_pose();
+
+        let ukf = initialize_ukf(&record, UkfConfig::default()).unwrap();
+        assert_seeded_estimate("UKF", &ukf.get_estimate(), roll, pitch, yaw);
+
+        let ekf = initialize_ekf(&record, EkfConfig::default()).unwrap();
+        assert_seeded_estimate("EKF", &ekf.get_estimate(), roll, pitch, yaw);
+
+        let eskf = initialize_eskf(&record, EskfConfig::default()).unwrap();
+        assert_seeded_estimate("ESKF", &eskf.get_estimate(), roll, pitch, yaw);
+    }
+
+    /// The seed comes from the record's quaternion, not from its Euler columns.
+    ///
+    /// `seeded_pose` gives the two different attitudes on purpose; this pins down which one
+    /// wins, and so keeps the closed-loop seed on the same footing as `dead_reckoning`, which
+    /// #302 moved to the quaternion for the reasons `TestDataRecord::attitude` documents.
+    #[test]
+    fn initial_state_takes_attitude_from_the_quaternion() {
+        let (record, roll, pitch, yaw) = seeded_pose();
+        let seed = record.initial_state(false);
+
+        assert!(!seed.in_degrees, "the seed advertises radians");
+        assert_approx_eq!(seed.roll, roll, 1e-12);
+        assert_approx_eq!(seed.pitch, pitch, 1e-12);
+        assert_approx_eq!(seed.yaw, yaw, 1e-12);
+        // The Euler columns say 1.5 rad on all three axes; none of that reached the seed.
+        assert!((seed.roll - record.roll).abs() > 1.0);
+    }
+
+    /// The declared frame is carried through untouched, and nothing else about the seed
+    /// depends on it: the record reports no vertical rate in either convention, so there is
+    /// no sign to get wrong here (#296).
+    #[test]
+    fn initial_state_carries_the_declared_frame() {
+        let (record, ..) = seeded_pose();
+
+        let ned = record.initial_state(false);
+        let enu = record.initial_state(true);
+
+        assert!(!ned.is_enu);
+        assert!(enu.is_enu);
+        assert_approx_eq!(ned.vertical_velocity, 0.0, 1e-12);
+        assert_approx_eq!(enu.vertical_velocity, 0.0, 1e-12);
+        assert_approx_eq!(ned.northward_velocity, enu.northward_velocity, 1e-12);
+        assert_approx_eq!(ned.eastward_velocity, enu.eastward_velocity, 1e-12);
+    }
+
+    /// A record missing its GNSS track or its quaternion seeds a level, stationary state
+    /// rather than a NaN one. `ground_track_velocity` and `attitude` each already guarantee
+    /// this; the seed inherits it, and a NaN here would poison a whole run.
+    #[test]
+    fn initial_state_absorbs_missing_fields() {
+        let mut record = blank_record();
+        record.speed = f64::NAN;
+        record.bearing = f64::NAN;
+        record.qw = f64::NAN;
+        record.qx = f64::NAN;
+        record.qy = f64::NAN;
+        record.qz = f64::NAN;
+
+        let seed = record.initial_state(false);
+        assert_approx_eq!(seed.northward_velocity, 0.0, 1e-12);
+        assert_approx_eq!(seed.eastward_velocity, 0.0, 1e-12);
+        assert_approx_eq!(seed.roll, 0.0, 1e-12);
+        assert_approx_eq!(seed.pitch, 0.0, 1e-12);
+        assert_approx_eq!(seed.yaw, 0.0, 1e-12);
+    }
+
     // Helper to produce the header in the same order the struct expects
     fn test_header() -> Vec<&'static str> {
         vec![
