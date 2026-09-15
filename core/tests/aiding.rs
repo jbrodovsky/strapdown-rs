@@ -25,14 +25,17 @@
 //! regression checks, not design targets. Each carries the measured value it was derived
 //! from so a future change can tell "this got worse" from "this was always marginal".
 
+use assert_approx_eq::assert_approx_eq;
 use nalgebra::{DMatrix, DVector, Rotation3, Vector3};
 use strapdown::earth::haversine_distance;
-use strapdown::gating::InnovationGate;
+use strapdown::gating::{
+    DEFAULT_FORCED_UPDATE_AFTER, DEFAULT_REJECTION_INFLATION, GateRecovery, InnovationGate,
+};
 use strapdown::kalman::{
     ErrorStateKalmanFilter, ExtendedKalmanFilter, InitialState, UnscentedKalmanFilter,
 };
 use strapdown::measurements::{
-    GPSPositionAndVelocityMeasurement, ZaruMeasurement, ZuptMeasurement,
+    GPSPositionAndVelocityMeasurement, MeasurementModel, ZaruMeasurement, ZuptMeasurement,
 };
 use strapdown::sim::DEFAULT_PROCESS_NOISE;
 use strapdown::stationary::{StationaryConfig, StationaryDetector};
@@ -408,6 +411,9 @@ fn gating_accepts_every_honest_fix() {
 
 #[test]
 fn gating_rejects_a_fix_inconsistent_with_the_filters_own_uncertainty() {
+    /// Share of the inflation factor an *unobserved* state may pick up through its
+    /// correlation with the observed ones before the projection is deemed to have leaked.
+    const MAX_CORRELATED_SHARE: f64 = 0.25;
     // A gate is specified against the filter's *own* innovation covariance, not against
     // metres: it rejects what the filter's model says should not happen. So the outlier
     // here is sized in sigmas read back from the filter after it has settled, which
@@ -460,19 +466,158 @@ fn gating_rejects_a_fix_inconsistent_with_the_filters_own_uncertainty() {
             "{name} reported a NIS below the threshold it was rejected on"
         );
 
-        // The property the whole design rests on: a rejected update leaves the state and
-        // the covariance exactly as they were. For the ESKF this is load-bearing rather
-        // than merely tidy -- `inject_error_state` mutates the nominal state and zeroes
-        // the error state, so there is no way to undo a correction once it has started.
+        // The property the whole design rests on: a rejected update leaves the state
+        // exactly as it was. For the ESKF this is load-bearing rather than merely tidy --
+        // `inject_error_state` mutates the nominal state and zeroes the error state, so
+        // there is no way to undo a correction once it has started.
         assert_eq!(
             filter.get_estimate(),
             before_state,
             "{name} modified the state on a rejected update"
         );
-        assert_eq!(
-            filter.get_certainty(),
-            before_covariance,
-            "{name} modified the covariance on a rejected update"
+
+        // The covariance is the deliberate exception, and #340 is why: a rejection that
+        // left the covariance alone as well would make the next fix fail the test by more
+        // than this one did, forever.
+        //
+        // What is inflated is the subspace the measurement observed, which is the property
+        // checked here directly: `H P H^T` -- the filter's own contribution to the
+        // innovation covariance the *next* fix of this kind will be judged against -- must
+        // grow by exactly the configured factor. Asserting on `P` itself would either be
+        // the wrong claim (it is not a uniform scaling) or a re-implementation of the
+        // formula.
+        let after_covariance = filter.get_certainty();
+        let jacobian = outlier
+            .get_jacobian(&before_state)
+            .expect("the GNSS Jacobian is defined everywhere");
+        let mut h = DMatrix::zeros(jacobian.nrows(), before_covariance.ncols());
+        h.view_mut((0, 0), (jacobian.nrows(), jacobian.ncols()))
+            .copy_from(&jacobian);
+        let before_observed = &h * &before_covariance * h.transpose();
+        let after_observed = &h * &after_covariance * h.transpose();
+        for index in 0..jacobian.nrows() {
+            // 1e-6 relative, not tighter: the inflation goes through a symmetric solve of
+            // `H P H^T`, so the identity holds to that matrix's conditioning rather than to
+            // machine epsilon.
+            let expected = DEFAULT_REJECTION_INFLATION * before_observed[(index, index)];
+            assert_approx_eq!(
+                after_observed[(index, index)],
+                expected,
+                1e-6 * expected.abs().max(1e-12)
+            );
+        }
+
+        // States the measurement does not observe grow only through their *correlation*
+        // with the ones it does, not by the full factor. That distinction is the whole
+        // point of projecting: scaling the entire covariance instead let a rejected 1-dof
+        // barometric update double the velocity variance, and the next accepted baro
+        // update then applied a correction weighted by a velocity uncertainty of tens of
+        // m/s (#340, measured in `gating_through_the_closed_loop_no_longer_cascades`).
+        //
+        // The gyro bias is the cleanest witness: no GNSS fix observes it. Measured here it
+        // grows by about 4% while the observed block grows by 100%.
+        for index in 12..15 {
+            let growth = after_covariance[(index, index)] / before_covariance[(index, index)];
+            assert!(
+                growth < 1.0 + MAX_CORRELATED_SHARE * (DEFAULT_REJECTION_INFLATION - 1.0),
+                "{name} grew its gyro bias variance {growth:.3}x on a rejected GNSS fix, \
+                 which no GNSS fix observes; the inflation is not staying in the subspace \
+                 the measurement disputed"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_rejected_fix_does_not_doom_the_one_after_it() {
+    // #340, stated as the smallest thing that reproduces it. A gate with no way back is
+    // a one-way door: the filter that rejects a fix keeps drifting while the covariance
+    // it judges the next fix against does not grow, so every subsequent fix disagrees by
+    // more and is rejected harder. On `core/tests/test_data.csv` that cost 4.2e6 m of
+    // final error against 2.29 m ungated, and no test in the workspace would have caught
+    // it -- this is that test, without the 90-minute dataset.
+    //
+    // The displacement is held fixed while the same fix is offered repeatedly, so the
+    // only thing that can change the verdict is the filter's own recovery. A run with
+    // `GateRecovery::none` is the control, and it is the pre-fix behaviour: every fix
+    // rejected, forever.
+    const OUTLIER_SIGMAS: f64 = 50.0;
+    const ATTEMPTS: usize = 20;
+
+    let scenario = build_gating_scenario();
+    for ((name, mut recovering), (_, mut stuck)) in gating_filters(&scenario.initial)
+        .into_iter()
+        .zip(gating_filters(&scenario.initial))
+    {
+        let mut accepted_on = Vec::new();
+        for (filter, recovery) in [
+            (recovering.as_mut(), GateRecovery::default()),
+            (stuck.as_mut(), GateRecovery::none()),
+        ] {
+            filter.set_innovation_gate(Some(InnovationGate::chi_squared(0.999).unwrap()));
+            assert!(
+                filter.set_gate_recovery(recovery),
+                "{name} does not honour a gate recovery policy"
+            );
+
+            // Settle on clean data, so the covariance is a converged filter's rather than
+            // the initial guess.
+            for (index, sample) in scenario.samples.iter().enumerate() {
+                filter.predict(sample, sample.dt).unwrap();
+                if index % GPS_DECIMATION == 0 {
+                    filter.update(&scenario.gps[index]).unwrap();
+                }
+            }
+
+            // One displacement, sized in the filter's own sigmas so this tests the gate
+            // rather than the tuning, offered over and over.
+            let position_sigma_rad = filter.get_certainty()[(0, 0)].sqrt();
+            let last = scenario.gps.last().unwrap();
+            let displaced = GPSPositionAndVelocityMeasurement {
+                latitude: last.latitude + (OUTLIER_SIGMAS * position_sigma_rad).to_degrees(),
+                ..last.clone()
+            };
+
+            let mut first_accepted = None;
+            for attempt in 0..ATTEMPTS {
+                let outcome = filter.update(&displaced).unwrap();
+                if outcome.accepted {
+                    first_accepted = Some((attempt, outcome));
+                    break;
+                }
+            }
+            accepted_on.push(first_accepted);
+        }
+
+        let (with_recovery, without_recovery) = (accepted_on[0], accepted_on[1]);
+        println!(
+            "{name}: recovery accepted the fix on attempt {:?}, none accepted {:?}",
+            with_recovery.map(|(attempt, _)| attempt),
+            without_recovery.map(|(attempt, _)| attempt)
+        );
+
+        let (attempt, outcome) = with_recovery.unwrap_or_else(|| {
+            panic!(
+                "{name} never accepted the fix in {ATTEMPTS} attempts, so its gate still has \
+                 no recovery path"
+            )
+        });
+        // Bounded, not merely eventual: the default policy forces an update after five
+        // consecutive rejections, so the sixth attempt is the worst case.
+        assert!(
+            attempt < DEFAULT_FORCED_UPDATE_AFTER,
+            "{name} took {} attempts to accept the fix, more than the forced-update \
+             escape allows",
+            attempt + 1
+        );
+        assert!(
+            outcome.nis.is_finite(),
+            "{name} accepted a fix on an unusable NIS"
+        );
+        assert!(
+            without_recovery.is_none(),
+            "{name} accepted the fix with recovery switched off, so the control is not \
+             reproducing the defect this test exists for"
         );
     }
 }

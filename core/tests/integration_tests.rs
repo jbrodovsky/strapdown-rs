@@ -3542,7 +3542,7 @@ fn stationary_config_for_1hz() -> StationaryConfig {
 /// so the engine is levelled from the first record's attitude the same way the rest of this
 /// suite seeds its filters. When #282 merges this test should start from a genuine alignment.
 ///
-/// One number here needs reading carefully. The aided error of ~1.8 m is *below* the 3.81 m
+/// One number here needs reading carefully. The aided error of ~2.3 m is *below* the 3.81 m
 /// accuracy of the reference, which is impossible for a real accuracy figure. It happens
 /// because this loop scores each solution against the very fix it has just consumed, so it
 /// measures how tightly the engine follows its aiding rather than how close it is to truth.
@@ -3550,49 +3550,42 @@ fn stationary_config_for_1hz() -> StationaryConfig {
 /// against recovered, all measured the same way -- but it is not an accuracy result.
 /// `test_rmse_benchmark_across_filters` is where accuracy is reported.
 ///
-/// # Quarantined by #308: the gate has no recovery path
+/// # Gating history: quarantined by #308, reinstated by #340
 ///
-/// This test passed only because the process noise was wrong. With the horizontal terms at
-/// #308's 6.4 km per-step standard deviation (18 km here, after the old 8x), the innovation
-/// covariance was so large that a chi-squared gate could not reject anything it was shown:
-/// NIS sat at a median of 0.27 against a 3-dof gate at 16.27, and 39 of 5,365 fixes were
-/// gated across the whole drive. Correcting the units makes the gate work, and the first
-/// thing it does is prove itself unusable here.
+/// This test passed originally only because the process noise was wrong. With the horizontal
+/// terms at #308's 6.4 km per-step standard deviation (18 km here, after the old 8x), the
+/// innovation covariance was so large that a chi-squared gate could not reject anything it
+/// was shown: NIS sat at a median of 0.27 against a 3-dof gate at 16.27, and 39 of 5,365
+/// fixes were gated across the whole drive. Correcting the units made the gate work, and the
+/// first thing it did was prove itself unusable here.
 ///
-/// Measured on this recording, `InsEngine` with the corrected diagonal:
-///
-/// | run | accepted | rejected | NIS median | median innovation |
+/// | run | accepted | rejected | NIS median | final horizontal error |
 /// |---|---|---|---|---|
 /// | ungated | 5,365 | 0 | 0.553 | 2.29 m |
-/// | gated, chi-squared 0.999 | 116 | 5,249 | 242.8 | 4.2e6 m |
+/// | gated, no recovery (#308 units, #340 defect) | 116 | 5,249 | 242.8 | 4.2e6 m |
+/// | gated, with recovery (today) | 5,155 | 90 | -- | 2.29 m aided, 2.16 m rms recovered |
 ///
-/// Ungated the engine is healthy, and its NIS is *below* the 2.37 a 3-dof measurement should
-/// show -- so the fixes are, on the whole, more consistent with the filter than the gate
-/// requires. The gated run diverges anyway, and the trace says exactly why. The first
-/// rejection is fix #110, on a genuine 19.3 m innovation that a filter claiming 0.8 m of its
-/// own uncertainty against a 3.81 m fix is right to disbelieve. What follows is a cascade
-/// with no bottom: pre-update innovation 19.3, 32.0, 46.3, 61.8, 77.3, 92.1, 105.9, 117.9 m
-/// over the next eight fixes, every one rejected, forever. Nothing in the gating path
-/// re-inflates the covariance after a rejection, so a filter that has rejected one fix can
-/// never accept another.
+/// The middle row is #340. The first rejection was fix #110, on a genuine 19.3 m innovation
+/// that a filter claiming 0.8 m of its own uncertainty against a 3.81 m fix is right to
+/// disbelieve. What followed had no bottom: pre-update innovation 19.3, 32.0, 46.3, 61.8,
+/// 77.3, 92.1, 105.9, 117.9 m over the next eight fixes, every one rejected, forever, because
+/// nothing in the gating path re-inflated the covariance after a rejection. The old `Q`
+/// cascaded the same way at fix #1487 and *escaped*, because adding (18 km)^2 to the
+/// covariance once per step is an accidental covariance reset -- so the units defect was
+/// supplying the recovery path the gating code did not have, and removing it is the point of
+/// #308.
 ///
-/// The old Q cascaded in the same way at fix #1487 (2.06 m growing to 15.7 m over seven
-/// rejections) and *escaped*, because adding (18 km)^2 to the covariance once per step is an
-/// accidental covariance reset. That escape hatch is what the units defect was providing, and
-/// removing it is the point of #308.
+/// It could not be fixed from here, which is why this test was quarantined rather than tuned
+/// around, per the #267 precedent: sweeping the position process noise showed the only values
+/// that kept the run green were 10 m and above, where NIS collapses to a median of 0.017 and
+/// then 0.002 -- #308 restored under another name. The fix is `GateRecovery`: the covariance
+/// is inflated on every rejection and an update is forced through after five consecutive
+/// ones, so a rejection can no longer be permanent. The third row is this test with it.
 ///
-/// So this cannot be fixed from here. Sweeping the position process noise shows the only
-/// values that keep the run green are 10 m and above, where NIS collapses to a median of
-/// 0.017 and 0.002 -- which is #308 restored, not a tuning. The fix belongs in the gating
-/// path (#260): a consecutive-rejection escape, covariance inflation on rejection, or a
-/// forced update after N rejections. **Filed as #340**, which also carries the measurements
-/// above and the note that no other test in the workspace exercises the gate at all -- every
-/// other filter test calls `run_closed_loop(.., None, None)`. Quarantined rather than tuned
-/// around, per the #267 precedent; #340 is what removes this `#[ignore]`.
-#[ignore = "#340: gating has no recovery path -- the engine's chi-squared gate rejects fix \
-            #110 on a genuine 19.3 m innovation and can never accept another. #308 removed \
-            the accidental covariance reset that was masking it. Needs a fix in the gating \
-            path, not a re-tuned Q."]
+/// It remains the only end-to-end exercise of `InsEngine` together with innovation gating --
+/// every other filter test calls `run_closed_loop(&mut f, stream, None, None)` with no gate
+/// and no health monitor -- which is why the assertions below check that fixes were both
+/// accepted *and* rejected. A run with nothing rejected is not evidence that the gate works.
 #[test]
 fn test_full_lifecycle_through_ins_engine() {
     // The outage: two minutes without fixes in the middle of the drive.
@@ -3761,6 +3754,15 @@ fn test_full_lifecycle_through_ins_engine() {
         gnss_accepted > 1000,
         "only {gnss_accepted} GNSS fixes were accepted; the gate is rejecting fixes it should \
          not, and the lifecycle is not being exercised as intended"
+    );
+    // The other direction, and the reason this test exists in this file at all: a gate that
+    // rejects nothing on 89 minutes of consumer GNSS is not a gate. Measured here, 90 of
+    // 5,245 fixes are gated out and the rest are used, which is the behaviour #340 restored
+    // -- before it, the same configuration accepted 116 and rejected 5,249.
+    assert!(
+        gnss_rejected > 0,
+        "no GNSS fix was gated out across the whole drive; the gate is installed but is not \
+         deciding anything, so every gating assertion here is vacuous"
     );
     assert!(
         !errors_during_outage.is_empty() && !errors_after_recovery.is_empty(),
@@ -3970,6 +3972,137 @@ fn test_eskf_recovers_from_gnss_outage() {
             outage_stats.rms
         );
     }
+}
+
+/// Gating through `run_closed_loop`, the loop a simulation run actually goes through (#340).
+///
+/// Before #340 nothing tested this path with a gate installed: every other closed-loop test in
+/// this file calls `run_closed_loop(&mut f, stream, None, None)` -- no gate -- so the gating
+/// path was exercised end to end only by `test_full_lifecycle_through_ins_engine`, which drives
+/// `InsEngine` directly and was itself quarantined on this very defect. This is the other half,
+/// and it covers what the lifecycle test cannot: `run_closed_loop` feeds barometric altitude
+/// and magnetometer yaw on *every* sample alongside 1 Hz GNSS, so it is where a recovery policy
+/// has to get the interaction between several sensors right rather than just one.
+///
+/// `HealthMonitor` is live here -- `run_closed_loop` builds one from `HealthLimits::default()`
+/// whether or not limits are passed -- so completing the run is itself an assertion: 20
+/// consecutive NIS exceedances, a 500 m/s speed bound or a diverging covariance all abort.
+///
+/// # Quarantined: two compounding problems, neither of them the cascade
+///
+/// The #340 cascade *is* fixed here -- the run no longer walks off to 4.2e6 m -- but the run
+/// still ends early, failed by the health monitor at 667.72 m/s, and the reasons sit outside
+/// what a recovery policy can reach.
+///
+/// **This filter is over-confident for the aiding it is given here.** Ungated it is healthy --
+/// 23.59 m rms, 41.71 m peak, tracking truth for 89 minutes -- and yet the 5-dof GNSS
+/// position+velocity NIS has a median of 7.42 and a 90th percentile of 24.30 against a 0.999
+/// threshold of 20.52 and an expected median of 4.35, while the 1-dof baro and magnetometer
+/// updates sit at a median of 1.06 with a 90th percentile of 13.85 against a threshold of 10.83
+/// and an expected median of 0.45. The innovations are about 1.7x larger than the covariance
+/// says they should be, so an *honest* gate rejects roughly one measurement in seven on a run
+/// that is doing fine. That is a covariance-consistency defect of the same family as #303, and
+/// the fix is a retune measured against the validation suite, not a looser gate.
+///
+/// **The consecutive-rejection escape cannot be reached on this stream.** `GatePolicy` counts
+/// one rejection streak across all sensors, and here two 1-dof updates arrive per sample and
+/// are mostly accepted, so the streak is cleared before the 1 Hz GNSS channel can accumulate
+/// the five rejections that would force an update. GNSS is left recovering on covariance
+/// inflation alone, which is slower than the drift, and the vertical channel is what runs away
+/// first.
+///
+/// Keying the streak per measurement type instead -- so the GNSS channel reaches its own escape
+/// -- does fix *this* test (23.68 m rms against 23.59 m ungated, health monitor satisfied) and
+/// breaks the lifecycle one, which is the acceptance criterion #340 is written against: gated
+/// fixes go from 43 to 2,139 and post-outage reconvergence from 2.20 m rms to 102.14 m. The
+/// reason is visible in the sweep -- forcing earlier means forcing with less accumulated
+/// inflation behind it, so the forced update's gain is too small to correct the state that
+/// caused the rejections. Getting both almost certainly means inflating *in proportion to the
+/// streak* at the moment an update is forced, rather than choosing between the two counters,
+/// and that is a design change with its own measurements to take. Quarantined rather than
+/// tuned around, per the #267 precedent.
+#[ignore = "gating through run_closed_loop needs two things #340 does not deliver: a filter \
+            whose covariance matches its innovations on this stream (it over-states confidence \
+            by ~1.7x, #303 family), and a consecutive-rejection escape that a 100 Hz accepted \
+            sensor cannot starve. The #340 cascade itself is fixed; see the doc comment."]
+#[test]
+fn gating_through_the_closed_loop_no_longer_cascades() {
+    // Sized against the table above, not fitted to it: the gated run sits at 1.03x the
+    // ungated rms with a 94 m peak, while the #340 cascade reached 4.2e6 m and
+    // whole-covariance inflation reached 719 m/s and a health-monitor abort.
+    const MAX_GATED_RMSE_RATIO: f64 = 1.5;
+    const MAX_GATED_PEAK_M: f64 = 2000.0;
+
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let records = load_test_data(&Path::new(manifest_dir).join("tests/test_data.csv"));
+    let initial_state = create_initial_state(&records[0]);
+    let degradation = GnssDegradationConfig::default();
+
+    let mut summaries = Vec::new();
+    for gate in [
+        None,
+        Some(InnovationGate::chi_squared(0.999).expect("0.999 is a valid confidence")),
+    ] {
+        let mut eskf = build_eskf(&initial_state);
+        assert!(
+            eskf.set_innovation_gate(gate),
+            "the ESKF must honour an innovation gate for this test to mean anything"
+        );
+        let stream = build_event_stream(&records, &degradation, TEST_DATA_IS_ENU)
+            .expect("the clean stream should build");
+        let results = run_closed_loop(&mut eskf, stream, None, None).unwrap_or_else(|error| {
+            panic!(
+                "the {} run did not survive its health monitor: {error}",
+                if gate.is_some() { "gated" } else { "ungated" }
+            );
+        });
+
+        let errors: Vec<f64> = results
+            .iter()
+            .filter_map(|result| {
+                records
+                    .iter()
+                    .find(|record| record.time == result.timestamp)
+                    .map(|record| {
+                        haversine_distance(
+                            result.latitude.to_radians(),
+                            result.longitude.to_radians(),
+                            record.latitude.to_radians(),
+                            record.longitude.to_radians(),
+                        )
+                    })
+            })
+            .filter(|error| error.is_finite())
+            .collect();
+        assert!(
+            !errors.is_empty(),
+            "no comparable results came back from the closed-loop run"
+        );
+        summaries.push(summarize(&errors));
+    }
+
+    let (ungated, gated) = (summaries[0], summaries[1]);
+    println!("\n=== gated vs ungated closed loop ===");
+    println!(
+        "ungated: rms={:.2} m max={:.2} m\ngated:   rms={:.2} m max={:.2} m",
+        ungated.rms, ungated.max, gated.rms, gated.max
+    );
+
+    assert!(
+        gated.rms < MAX_GATED_RMSE_RATIO * ungated.rms,
+        "gating cost {:.2} m rms against {:.2} m ungated. A gate whose rejections compound is \
+         #340, and inflating the whole covariance rather than the observed subspace is the \
+         other way to get here; check `GateRecovery` and `GateDecision::inflate_observed` \
+         before adjusting this bound",
+        gated.rms,
+        ungated.rms
+    );
+    assert!(
+        gated.max < MAX_GATED_PEAK_M,
+        "the gated run peaked at {:.0} m. The recovery path bounds how long a rejection can \
+         stand; a peak this large means it is not bounding it",
+        gated.max
+    );
 }
 
 /// The opt-in `IMUQuality::auto_covariance` initialisation on the same recording (#257).

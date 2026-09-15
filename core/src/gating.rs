@@ -26,11 +26,25 @@
 //! - [`normalized_innovation_squared`] -- the statistic itself.
 //! - [`InnovationGate`] -- the accept/reject policy, either a $\chi^2$ quantile
 //!   evaluated at the measurement's own degrees of freedom or a fixed threshold.
+//! - [`GateRecovery`] -- how the filter climbs back out of a rejection, by inflating
+//!   its covariance and, after enough consecutive rejections, applying a measurement
+//!   anyway. Without it a gate is a one-way door (#340).
+//! - [`GatePolicy`] -- the gate, its recovery and the rejection streak they share;
+//!   this is what a filter stores, and [`GateDecision`] is what it gets back.
 //! - [`UpdateOutcome`] -- what every [`NavigationFilter::update`] now returns, so a
 //!   caller can log rejections and feed a real NIS to
 //!   [`sim::health::HealthMonitor`](crate::sim::health::HealthMonitor).
 //! - [`chi_squared_cdf`] and [`chi_squared_quantile`] -- the distribution functions
 //!   the gate is built on, public because a test or a report generator needs them.
+//!
+//! # A gate needs a way back
+//!
+//! Rejecting a measurement is only half a policy. The filter that rejected it keeps
+//! propagating and keeps accumulating error, while the covariance it judges the next
+//! fix against does not grow at all -- so the next innovation is larger, fails the
+//! test by more, and the rejection becomes self-reinforcing. [`GateRecovery`] is the
+//! way back, and it is on by default in [`GatePolicy`] for exactly that reason; see
+//! its documentation for the measured cascade (#340) that made it necessary.
 //!
 //! # Gating is not a substitute for health monitoring
 //!
@@ -73,8 +87,9 @@ pub const DEFAULT_GATE_CONFIDENCE: f64 = 0.999;
 /// Returned by [`NavigationFilter::update`](crate::NavigationFilter::update) so
 /// callers can distinguish "the correction was applied" from "the measurement was
 /// gated out", and can log or monitor the statistic that decided it. An update
-/// that is gated out leaves the state and covariance untouched; it is not an
-/// error, because the filter behaved exactly as configured.
+/// that is gated out leaves the state untouched apart from the covariance
+/// inflation [`GateRecovery`] calls for; it is not an error, because the filter
+/// behaved exactly as configured.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct UpdateOutcome {
     /// Normalized innovation squared, $\nu^\top S^{-1} \nu$.
@@ -83,6 +98,14 @@ pub struct UpdateOutcome {
     pub dof: usize,
     /// Whether the correction was applied to the state.
     pub accepted: bool,
+    /// Whether the correction was applied *despite* failing the gate, because
+    /// [`GateRecovery::forced_update_after`] consecutive rejections had accumulated.
+    ///
+    /// Only ever true together with [`Self::accepted`]. Reported rather than folded
+    /// into `accepted` because the two mean different things to a reader of the logs:
+    /// an ordinary acceptance says the fix agreed with the filter, a forced one says
+    /// the filter gave up disagreeing.
+    pub forced: bool,
 }
 
 impl UpdateOutcome {
@@ -93,6 +116,7 @@ impl UpdateOutcome {
             nis,
             dof,
             accepted: true,
+            forced: false,
         }
     }
 
@@ -103,6 +127,21 @@ impl UpdateOutcome {
             nis,
             dof,
             accepted: false,
+            forced: false,
+        }
+    }
+
+    /// An update applied by the recovery escape after repeated rejections.
+    ///
+    /// The correction *was* applied, so this counts as an acceptance everywhere an
+    /// acceptance is counted; [`Self::forced`] is what distinguishes it.
+    #[must_use]
+    pub const fn forced(nis: f64, dof: usize) -> Self {
+        Self {
+            nis,
+            dof,
+            accepted: true,
+            forced: true,
         }
     }
 }
@@ -225,6 +264,465 @@ impl InnovationGate {
     #[must_use]
     pub fn accepts(&self, nis: f64, dof: usize) -> bool {
         nis.is_finite() && nis >= 0.0 && nis <= self.threshold(dof)
+    }
+}
+
+/// Default covariance inflation applied each time the gate rejects a measurement.
+///
+/// Doubling is the standard choice and the reason is the arithmetic of a cascade
+/// (#340). A filter that has rejected a fix keeps propagating, so its *true* error
+/// grows roughly linearly in the number of missed corrections while its *claimed*
+/// uncertainty does not grow at all; the NIS therefore grows quadratically and the
+/// gate closes further with every rejection. Multiplying the covariance by a
+/// constant factor per rejection makes the claimed uncertainty grow geometrically,
+/// which overtakes any polynomial divergence after a handful of fixes, and 2.0 is
+/// slow enough that a single unlucky rejection barely moves the threshold.
+pub const DEFAULT_REJECTION_INFLATION: f64 = 2.0;
+
+/// Default number of consecutive rejections after which an update is forced through.
+///
+/// Five 1 Hz fixes is a few seconds of disagreement -- long enough that a genuine
+/// multipath burst or a single corrupted fix is still rejected on its own merits,
+/// short enough that a filter whose own state is the thing that is wrong cannot
+/// coast for a minute before finding out. Combined with
+/// [`DEFAULT_REJECTION_INFLATION`] it also bounds the inflation: at most $2^4 = 16$
+/// times the covariance accumulates before a measurement is admitted.
+pub const DEFAULT_FORCED_UPDATE_AFTER: usize = 5;
+
+/// How a filter recovers from a rejected measurement.
+///
+/// An [`InnovationGate`] on its own is a one-way door. Rejecting a measurement leaves
+/// the state and the covariance exactly as they were, so the filter keeps propagating,
+/// keeps accumulating error, and keeps comparing the next innovation against a
+/// covariance that never grew -- the next fix disagrees *more*, is rejected harder, and
+/// the run degrades to dead reckoning while reporting a covariance that says everything
+/// is fine. That is #340: measured on `core/tests/test_data.csv`, a chi-squared 0.999
+/// gate rejected one genuine 19.3 m innovation at fix #110 and then every one of the
+/// following 5,249 fixes, ending 4.2e6 m out, where the same run ungated finished at
+/// 2.29 m.
+///
+/// The two mechanisms here are the standard defences, and most production
+/// loosely-coupled implementations carry both:
+///
+/// 1. **Covariance inflation.** Grow the filter's uncertainty by
+///    [`Self::rejection_inflation`] on every rejection, in the directions the rejected
+///    measurement observed, so the claimed uncertainty grows geometrically while the error
+///    grows polynomially and the gate re-opens on its own.
+/// 2. **Forced update.** After [`Self::forced_update_after`] consecutive rejections,
+///    apply the next measurement whatever its NIS: a belief contradicted that many
+///    times running is more likely wrong than the sensor contradicting it.
+///
+/// Inflation is the mechanism that keeps the covariance *honest*, and it is the one doing
+/// the work: measured on the `InsEngine` lifecycle over `core/tests/test_data.csv`, the
+/// default policy gates out 43 of 5,245 fixes and reconverges to 2.20 m rms after a
+/// two-minute outage, where the forced update on its own -- inflation set to 1.0 -- gates
+/// 2,956 and never reconverges. The forced update is the bound on how long the filter is
+/// allowed to be wrong before it is overruled, not the recovery itself.
+/// Either can be switched off on its own -- an inflation of 1.0 and a
+/// `forced_update_after` of `None` together give the pre-#340 behaviour, which
+/// [`Self::none`] spells out.
+///
+/// # Example
+///
+/// ```rust
+/// use strapdown::gating::GateRecovery;
+///
+/// // The default: double P per rejection, force an update after five in a row.
+/// let recovery = GateRecovery::default();
+/// assert_eq!(recovery.forced_update_after, Some(5));
+///
+/// // Inflation only, for a deployment that must never use a fix it disbelieves.
+/// let inflation_only = GateRecovery::new(3.0, None).unwrap();
+/// assert!(inflation_only.forced_update_after.is_none());
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+// Container-level, so a scenario file may name either field, both, or neither and the
+// rest come from `Default` -- a config that says nothing about recovery must get the
+// recovery, not a gate that can never re-open (#340).
+#[serde(default)]
+pub struct GateRecovery {
+    /// Factor by which a rejection inflates the filter's uncertainty in the directions the
+    /// rejected measurement observed.
+    ///
+    /// Must be finite and at least 1.0; 1.0 disables inflation. It is applied through
+    /// [`GateDecision::inflate_observed`], so `H P H^T` -- the filter's own contribution to
+    /// the innovation covariance the next measurement of this kind is tested against --
+    /// grows by exactly this factor, and states the measurement does not observe grow only
+    /// to the extent they are correlated with the ones it does.
+    ///
+    /// Scaling the *whole* covariance instead is the obvious reading of "inflate P on
+    /// rejection" and it is measurably worse. On `core/tests/test_data.csv`, where
+    /// `run_closed_loop` feeds barometric altitude and magnetometer yaw on every sample
+    /// alongside 1 Hz GNSS, whole-covariance scaling let each rejected 1-dof baro update
+    /// multiply the *velocity* variance; the next accepted baro update then applied a
+    /// correction weighted by a velocity uncertainty of tens of m/s, and the run reached
+    /// 719 m/s of reported ground speed.
+    pub rejection_inflation: f64,
+    /// Number of consecutive rejections after which the next measurement is applied
+    /// regardless of its NIS, or `None` to never force one.
+    ///
+    /// Counted across every sensor, like
+    /// [`HealthLimits::nis_pos_consec_fail`](crate::sim::health::HealthLimits::nis_pos_consec_fail),
+    /// and reset by any accepted update. A measurement whose NIS is not finite is
+    /// never forced through, whatever the streak: that NIS means the innovation
+    /// covariance was unusable, and a correction computed from it would put `NaN` into
+    /// the navigation state.
+    ///
+    /// **One streak, not one per sensor**, and that has a known cost: a fast sensor whose
+    /// updates are accepted clears the streak, so a slow sensor whose fixes are being
+    /// rejected may never reach this escape and is left recovering on
+    /// [`Self::rejection_inflation`] alone. Keying the streak per measurement type fixes
+    /// that case and costs the one this default is measured on -- forcing earlier means
+    /// forcing with less accumulated inflation behind it, so the forced update's gain is
+    /// too small to correct the state that caused the rejections. The measurements for both
+    /// are in `integration_tests::gating_through_the_closed_loop_no_longer_cascades`, which
+    /// is quarantined on exactly this.
+    ///
+    /// `None` also removes the bound on how far
+    /// [`Self::rejection_inflation`] can take the covariance, since nothing then ends a
+    /// streak but an accepted fix. A run that never finds one grows its covariance
+    /// geometrically until
+    /// [`HealthLimits::cov_diag_max`](crate::sim::health::HealthLimits::cov_diag_max)
+    /// fails it, which is the correct ending for a filter with no usable aiding -- but it
+    /// is an abort, not a recovery.
+    pub forced_update_after: Option<usize>,
+}
+
+impl Default for GateRecovery {
+    fn default() -> Self {
+        Self {
+            rejection_inflation: DEFAULT_REJECTION_INFLATION,
+            forced_update_after: Some(DEFAULT_FORCED_UPDATE_AFTER),
+        }
+    }
+}
+
+impl GateRecovery {
+    /// Recovery with both mechanisms switched off, i.e. a gate that never re-opens.
+    ///
+    /// Provided for reproducing a pre-#340 run and for a test that wants to observe a
+    /// cascade rather than be protected from one. It is not a configuration to fly.
+    #[must_use]
+    pub const fn none() -> Self {
+        Self {
+            rejection_inflation: 1.0,
+            forced_update_after: None,
+        }
+    }
+
+    /// Build a recovery policy.
+    ///
+    /// # Errors
+    /// - [`StrapdownError::OutOfRange`] if `rejection_inflation` is not finite or is
+    ///   below 1.0. A factor under 1 would *shrink* the covariance on a rejection,
+    ///   closing the gate faster -- the defect this type exists to fix, spelled as a
+    ///   configuration.
+    /// - [`StrapdownError::InvalidConfiguration`] if `forced_update_after` is
+    ///   `Some(0)` or `Some(1)`: forcing on the first rejection accepts every
+    ///   measurement, which is not a gate at all. Pass `None` to say that on purpose.
+    pub fn new(
+        rejection_inflation: f64,
+        forced_update_after: Option<usize>,
+    ) -> Result<Self, StrapdownError> {
+        if !rejection_inflation.is_finite() || rejection_inflation < 1.0 {
+            return Err(StrapdownError::OutOfRange {
+                what: "gate rejection inflation",
+                value: rejection_inflation,
+                min: 1.0,
+                max: f64::INFINITY,
+            });
+        }
+        if let Some(limit) = forced_update_after
+            && limit < 2
+        {
+            return Err(StrapdownError::InvalidConfiguration {
+                field: "forced_update_after",
+                reason: format!(
+                    "{limit} would apply a measurement the gate rejected as soon as it was \
+                     rejected, which is the same as installing no gate; use `None` to say that"
+                ),
+            });
+        }
+        Ok(Self {
+            rejection_inflation,
+            forced_update_after,
+        })
+    }
+
+    /// The inflation to actually apply, with an unusable configured value ignored.
+    ///
+    /// Deserialization bypasses [`Self::new`], so a hand-edited config can arrive with
+    /// a `NaN` or a factor below 1. Both degrade to "no inflation" here rather than
+    /// taking a run down or shrinking the covariance, on the same principle as
+    /// [`InnovationGate::threshold`]: the constructors complain loudly, the hot path
+    /// fails safe.
+    #[must_use]
+    pub fn effective_inflation(&self) -> f64 {
+        if self.rejection_inflation.is_finite() && self.rejection_inflation >= 1.0 {
+            self.rejection_inflation
+        } else {
+            1.0
+        }
+    }
+}
+
+/// What the gate decided about one measurement, and what the filter owes its covariance.
+///
+/// Returned by [`GatePolicy::evaluate`] rather than a bare [`UpdateOutcome`] because a
+/// rejection is not inert: it carries the covariance inflation that stops the rejection
+/// from being self-reinforcing, and only the filter knows where its covariance lives
+/// (the EKF and UKF hold one $P$, the ESKF an error covariance, the RBPF a particle
+/// cloud with no matrix to scale).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GateDecision {
+    /// Accept/reject, the NIS it was decided on, and whether the escape fired.
+    pub outcome: UpdateOutcome,
+    /// Factor by which the filter should grow its uncertainty before returning -- in the
+    /// directions this measurement observed, via [`Self::inflate_observed`]. 1.0 means
+    /// "nothing to do", which is every accepted measurement.
+    pub covariance_inflation: f64,
+}
+
+impl GateDecision {
+    /// Scale the whole of `covariance` in place by the inflation this decision calls for.
+    ///
+    /// A no-op unless the measurement was rejected *and* inflation is configured, so
+    /// callers can call it unconditionally.
+    ///
+    /// This is the blunt form, for a caller with no measurement Jacobian to project
+    /// through -- the RBPF's particle cloud. Prefer [`Self::inflate_observed`] wherever a
+    /// Jacobian exists: scaling the whole covariance also inflates states the rejected
+    /// measurement says nothing about, and in a filter aided by more than one sensor that
+    /// misfires badly. Measured on `core/tests/test_data.csv`, where `run_closed_loop`
+    /// feeds barometric altitude and magnetometer yaw on every sample alongside 1 Hz GNSS:
+    /// blunt inflation let each rejected 1-dof baro update multiply the *velocity*
+    /// variance, the next accepted baro update then applied a correction weighted by a
+    /// velocity uncertainty of tens of m/s, and the solution reached 719 m/s of reported
+    /// ground speed.
+    pub fn inflate(&self, covariance: &mut DMatrix<f64>) {
+        if self.covariance_inflation > 1.0 {
+            *covariance *= self.covariance_inflation;
+        }
+    }
+
+    /// Inflate only the directions the rejected measurement actually observed.
+    ///
+    /// With $G = P H^\top$ and $M = H P H^\top$,
+    ///
+    /// $$
+    /// P \leftarrow P + (f - 1)\, G M^{-1} G^\top
+    /// $$
+    ///
+    /// which satisfies $H P' H^\top = f\, H P H^\top$ exactly -- the innovation covariance
+    /// the gate will test the *next* measurement of this kind against grows by the factor
+    /// asked for. A state the measurement does not observe grows only through its
+    /// *correlation* with the ones it does, and a state uncorrelated with all of them is
+    /// left untouched, because a measurement that disagreed with the filter is evidence
+    /// about the states it observes and about whatever they are tied to, not about
+    /// everything. (Measured: a rejected GNSS fix grows the gyro-bias variance by about 4%
+    /// against the observed block's 100%.) The added term is $G M^{-1} G^\top$ with $M$
+    /// symmetric positive-definite, so it is positive semi-definite and the result stays a
+    /// covariance.
+    ///
+    /// `projected` is $G$ ($n \times m$) and `observed` is $M$ ($m \times m$). Both are
+    /// already formed on the way to the innovation covariance $S = M + R$ in every filter
+    /// here, so this costs one $m \times m$ solve on the rejection path and nothing on the
+    /// accepted path.
+    ///
+    /// Infallible on purpose: a rejection must not turn into an error. If $M$ cannot be
+    /// factored -- a measurement the current covariance says is unobservable, which is the
+    /// one case where there is no "observed subspace" to inflate -- the covariance is left
+    /// as it is and the reason is logged. The consecutive-rejection escape in
+    /// [`GateRecovery::forced_update_after`] is what bounds the streak in that case.
+    pub fn inflate_observed(
+        &self,
+        covariance: &mut DMatrix<f64>,
+        projected: &DMatrix<f64>,
+        observed: &DMatrix<f64>,
+    ) {
+        if self.covariance_inflation <= 1.0 {
+            return;
+        }
+        match robust_spd_solve(&symmetrize(observed), &projected.transpose()) {
+            Ok(solved) => {
+                let update = (self.covariance_inflation - 1.0) * projected * solved;
+                *covariance = symmetrize(&(&*covariance + update));
+            }
+            Err(error) => {
+                log::debug!(
+                    "gate recovery could not inflate the observed subspace ({error}); \
+                     leaving the covariance unchanged"
+                );
+            }
+        }
+    }
+}
+
+/// An [`InnovationGate`] together with its [`GateRecovery`] and the streak it needs.
+///
+/// This is what a filter stores. The gate decides; the recovery decides what happens
+/// next; the consecutive-rejection count is the one piece of history either needs, and
+/// it lives here rather than in the filter so all four filters share one
+/// implementation of the policy instead of four copies of a counter.
+///
+/// [`Default`] is an open gate -- no gating at all -- with the default recovery behind
+/// it, so constructing one changes nothing until a gate is installed.
+///
+/// # Example
+///
+/// ```rust
+/// use strapdown::gating::{GatePolicy, GateRecovery, InnovationGate};
+///
+/// let mut policy = GatePolicy::new(
+///     Some(InnovationGate::fixed(10.0).unwrap()),
+///     GateRecovery::new(2.0, Some(3)).unwrap(),
+/// );
+///
+/// // A wild fix is rejected, and the filter is told to inflate its covariance.
+/// let first = policy.decide(1000.0, 3, "example");
+/// assert!(!first.outcome.accepted);
+/// assert!((first.covariance_inflation - 2.0).abs() < 1e-12);
+///
+/// // The third consecutive rejection is applied anyway: at that point the filter's
+/// // own belief is the likelier of the two to be wrong.
+/// policy.decide(1000.0, 3, "example");
+/// let third = policy.decide(1000.0, 3, "example");
+/// assert!(third.outcome.accepted && third.outcome.forced);
+/// ```
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GatePolicy {
+    /// The accept/reject test, or `None` to accept every measurement.
+    gate: Option<InnovationGate>,
+    /// What to do about a rejection.
+    recovery: GateRecovery,
+    /// Measurement updates rejected since the last one was applied, counted across every
+    /// sensor rather than per sensor. See [`GateRecovery::forced_update_after`] for what
+    /// that costs and why it is nonetheless what the measurements support.
+    consecutive_rejections: usize,
+}
+
+impl GatePolicy {
+    /// Build a policy from a gate and its recovery.
+    #[must_use]
+    pub const fn new(gate: Option<InnovationGate>, recovery: GateRecovery) -> Self {
+        Self {
+            gate,
+            recovery,
+            consecutive_rejections: 0,
+        }
+    }
+
+    /// The installed gate, if any.
+    #[must_use]
+    pub const fn gate(&self) -> Option<InnovationGate> {
+        self.gate
+    }
+
+    /// Install (or clear, with `None`) the gate, and forget any rejection streak.
+    ///
+    /// The streak is dropped because it was accumulated under the old gate and says
+    /// nothing about the new one.
+    pub const fn set_gate(&mut self, gate: Option<InnovationGate>) {
+        self.gate = gate;
+        self.consecutive_rejections = 0;
+    }
+
+    /// The recovery policy in force.
+    #[must_use]
+    pub const fn recovery(&self) -> GateRecovery {
+        self.recovery
+    }
+
+    /// Replace the recovery policy, leaving the rejection streak alone.
+    ///
+    /// The streak survives because it is a fact about the measurements seen so far, not
+    /// about how the filter has been told to respond to them.
+    pub const fn set_recovery(&mut self, recovery: GateRecovery) {
+        self.recovery = recovery;
+    }
+
+    /// Measurement updates rejected since the last one was applied, across all sensors.
+    #[must_use]
+    pub const fn consecutive_rejections(&self) -> usize {
+        self.consecutive_rejections
+    }
+
+    /// Score an innovation against the gate and report what the filter should do.
+    ///
+    /// # Errors
+    /// Whatever [`normalized_innovation_squared`] returns -- in practice a singular
+    /// innovation covariance, which is a reason to skip the measurement rather than
+    /// apply a correction computed from it. The streak is left untouched in that case:
+    /// the gate never got to form an opinion.
+    pub fn evaluate(
+        &mut self,
+        innovation: &DVector<f64>,
+        innovation_covariance: &DMatrix<f64>,
+        filter_name: &str,
+    ) -> Result<GateDecision, StrapdownError> {
+        let dof = innovation.len();
+        let nis = normalized_innovation_squared(innovation, innovation_covariance)?;
+        Ok(self.decide(nis, dof, filter_name))
+    }
+
+    /// Apply the policy to an already-computed statistic.
+    ///
+    /// Separate from [`Self::evaluate`] so the RBPF, which forms its innovation against
+    /// the ensemble summary, and any test that wants to drive the policy directly can
+    /// reuse the decision logic rather than re-implement it.
+    pub fn decide(&mut self, nis: f64, dof: usize, filter_name: &str) -> GateDecision {
+        let Some(gate) = self.gate else {
+            self.consecutive_rejections = 0;
+            return GateDecision {
+                outcome: UpdateOutcome::accepted(nis, dof),
+                covariance_inflation: 1.0,
+            };
+        };
+        if gate.accepts(nis, dof) {
+            self.consecutive_rejections = 0;
+            return GateDecision {
+                outcome: UpdateOutcome::accepted(nis, dof),
+                covariance_inflation: 1.0,
+            };
+        }
+
+        self.consecutive_rejections += 1;
+        let streak = self.consecutive_rejections;
+        let threshold = gate.threshold(dof);
+
+        // The escape, but never on a statistic that is not a number: a non-finite NIS
+        // means `S` was unusable, so the correction it would produce is `NaN` and
+        // forcing it through would destroy the state rather than rescue it.
+        if let Some(limit) = self.recovery.forced_update_after
+            && nis.is_finite()
+            && streak >= limit.max(1)
+        {
+            // `warn`, unlike the per-rejection line below: this is the filter being
+            // overruled by its own sensors, which is worth seeing in a default log even
+            // at one line per `limit` fixes.
+            log::warn!(
+                "{filter_name}: forcing a measurement through the gate after \
+                 {streak} consecutive rejections, NIS = {nis:.3} > {threshold:.3} (dof {dof})"
+            );
+            self.consecutive_rejections = 0;
+            return GateDecision {
+                outcome: UpdateOutcome::forced(nis, dof),
+                covariance_inflation: 1.0,
+            };
+        }
+
+        let inflation = self.recovery.effective_inflation();
+        // `debug`, not `warn`: `run_closed_loop` already warns once with the
+        // total, and a run that gates a lot would otherwise bury every other
+        // message under one line per rejected fix.
+        log::debug!(
+            "{filter_name}: measurement gated out, NIS = {nis:.3} > {threshold:.3} (dof {dof}), \
+             rejection {streak} in a row, inflating covariance by {inflation}"
+        );
+        GateDecision {
+            outcome: UpdateOutcome::rejected(nis, dof),
+            covariance_inflation: inflation,
+        }
     }
 }
 
@@ -647,6 +1145,207 @@ mod tests {
         ));
     }
 
+    /// A gate that rejects everything it is shown, for driving the recovery path.
+    fn closed_gate() -> InnovationGate {
+        InnovationGate::fixed(1.0).unwrap()
+    }
+
+    #[test]
+    fn recovery_constructor_rejects_a_covariance_that_would_shrink() {
+        // Below 1.0 the "recovery" would close the gate faster on every rejection, which
+        // is the #340 cascade with the accelerator held down.
+        for bad in [0.0, 0.5, -2.0, f64::NAN, f64::INFINITY] {
+            assert!(
+                GateRecovery::new(bad, None).is_err(),
+                "accepted an inflation factor of {bad}"
+            );
+        }
+        assert!(GateRecovery::new(1.0, None).is_ok());
+    }
+
+    #[test]
+    fn recovery_constructor_rejects_forcing_on_the_first_rejection() {
+        // Forcing after 0 or 1 rejections applies every measurement the gate rejects, so
+        // the gate decides nothing. `None` says that on purpose; these say it by accident.
+        for bad in [0, 1] {
+            assert!(
+                GateRecovery::new(2.0, Some(bad)).is_err(),
+                "accepted forced_update_after = {bad}"
+            );
+        }
+        assert!(GateRecovery::new(2.0, Some(2)).is_ok());
+    }
+
+    #[test]
+    fn a_rejection_asks_for_inflation_and_an_acceptance_does_not() {
+        let mut policy = GatePolicy::new(Some(closed_gate()), GateRecovery::default());
+        let rejected = policy.decide(100.0, 3, "test");
+        assert!(!rejected.outcome.accepted);
+        assert_approx_eq!(
+            rejected.covariance_inflation,
+            DEFAULT_REJECTION_INFLATION,
+            1e-15
+        );
+        assert_eq!(policy.consecutive_rejections(), 1);
+
+        let mut open = GatePolicy::new(
+            Some(InnovationGate::fixed(1000.0).unwrap()),
+            GateRecovery::default(),
+        );
+        let accepted = open.decide(1.0, 3, "test");
+        assert!(accepted.outcome.accepted && !accepted.outcome.forced);
+        assert_approx_eq!(accepted.covariance_inflation, 1.0, 1e-15);
+    }
+
+    #[test]
+    fn consecutive_rejections_eventually_force_an_update() {
+        // The escape, and the bound it puts on how long a filter may go on disbelieving
+        // its own sensors: `limit` rejections, then the measurement is applied.
+        let limit = 3;
+        let mut policy = GatePolicy::new(
+            Some(closed_gate()),
+            GateRecovery::new(2.0, Some(limit)).unwrap(),
+        );
+        for rejection in 1..limit {
+            let decision = policy.decide(100.0, 3, "test");
+            assert!(
+                !decision.outcome.accepted,
+                "rejection {rejection} was applied"
+            );
+            assert_eq!(policy.consecutive_rejections(), rejection);
+        }
+        let forced = policy.decide(100.0, 3, "test");
+        assert!(
+            forced.outcome.accepted && forced.outcome.forced,
+            "the {limit}th consecutive rejection was not forced through"
+        );
+        // A forced update is applied, so the streak starts again from there rather than
+        // forcing every measurement from now on.
+        assert_eq!(policy.consecutive_rejections(), 0);
+        assert_approx_eq!(forced.covariance_inflation, 1.0, 1e-15);
+    }
+
+    #[test]
+    fn an_accepted_measurement_clears_the_streak() {
+        let gate = InnovationGate::fixed(10.0).unwrap();
+        let mut policy = GatePolicy::new(Some(gate), GateRecovery::new(2.0, Some(3)).unwrap());
+        policy.decide(100.0, 3, "test");
+        policy.decide(100.0, 3, "test");
+        assert_eq!(policy.consecutive_rejections(), 2);
+        assert!(policy.decide(1.0, 3, "test").outcome.accepted);
+        assert_eq!(
+            policy.consecutive_rejections(),
+            0,
+            "an accepted measurement left the rejection streak standing"
+        );
+    }
+
+    #[test]
+    fn recovery_none_reproduces_the_one_way_door() {
+        // The pre-#340 behaviour, kept reachable so a run can reproduce an old result --
+        // and so this test can show what it costs. Nothing re-opens the gate, ever.
+        let mut policy = GatePolicy::new(Some(closed_gate()), GateRecovery::none());
+        for _ in 0..1000 {
+            let decision = policy.decide(100.0, 3, "test");
+            assert!(!decision.outcome.accepted);
+            assert_approx_eq!(decision.covariance_inflation, 1.0, 1e-15);
+        }
+        assert_eq!(policy.consecutive_rejections(), 1000);
+    }
+
+    #[test]
+    fn a_non_finite_statistic_is_never_forced_through() {
+        // A NaN NIS means the innovation covariance was unusable, so the correction it
+        // would produce is NaN too. Forcing that through would destroy the navigation
+        // state rather than rescue it, whatever the streak.
+        let mut policy = GatePolicy::new(
+            Some(closed_gate()),
+            GateRecovery::new(2.0, Some(2)).unwrap(),
+        );
+        for _ in 0..20 {
+            let decision = policy.decide(f64::NAN, 3, "test");
+            assert!(
+                !decision.outcome.accepted,
+                "a NaN NIS was applied to the state"
+            );
+        }
+    }
+
+    #[test]
+    fn an_absent_gate_accepts_everything_and_keeps_no_streak() {
+        let mut policy = GatePolicy::new(None, GateRecovery::default());
+        let decision = policy.decide(1e9, 3, "test");
+        assert!(decision.outcome.accepted && !decision.outcome.forced);
+        assert_approx_eq!(decision.covariance_inflation, 1.0, 1e-15);
+        assert_eq!(policy.consecutive_rejections(), 0);
+    }
+
+    #[test]
+    fn installing_a_gate_forgets_the_old_gates_streak() {
+        let mut policy = GatePolicy::new(Some(closed_gate()), GateRecovery::default());
+        policy.decide(100.0, 3, "test");
+        assert_eq!(policy.consecutive_rejections(), 1);
+        policy.set_gate(Some(InnovationGate::fixed(1000.0).unwrap()));
+        assert_eq!(policy.consecutive_rejections(), 0);
+    }
+
+    #[test]
+    fn an_unusable_deserialized_inflation_degrades_to_no_inflation() {
+        // Deserialization bypasses the constructor, so the hot path has to cope with a
+        // hand-edited config. It fails in the direction that leaves the covariance alone,
+        // never in the direction that shrinks it.
+        for bad in [f64::NAN, 0.25, -3.0] {
+            let recovery = GateRecovery {
+                rejection_inflation: bad,
+                forced_update_after: None,
+            };
+            assert_approx_eq!(recovery.effective_inflation(), 1.0, 1e-15);
+        }
+    }
+
+    #[test]
+    fn a_decision_inflates_the_covariance_by_its_own_factor() {
+        let mut policy =
+            GatePolicy::new(Some(closed_gate()), GateRecovery::new(4.0, None).unwrap());
+        let decision = policy.decide(100.0, 3, "test");
+        let mut covariance = DMatrix::from_diagonal(&DVector::from_vec(vec![1.0, 2.0, 3.0]));
+        decision.inflate(&mut covariance);
+        assert_approx_eq!(covariance[(0, 0)], 4.0, 1e-12);
+        assert_approx_eq!(covariance[(1, 1)], 8.0, 1e-12);
+        assert_approx_eq!(covariance[(2, 2)], 12.0, 1e-12);
+
+        // An accepted measurement leaves it alone, so filters can call this blind.
+        let mut open = GatePolicy::new(None, GateRecovery::default());
+        let accepted = open.decide(1.0, 3, "test");
+        accepted.inflate(&mut covariance);
+        assert_approx_eq!(covariance[(0, 0)], 4.0, 1e-12);
+    }
+
+    #[test]
+    fn recovery_defaults_survive_an_empty_configuration() {
+        // A scenario file that says nothing about recovery gets the recovery, not a gate
+        // that cannot re-open. This is the field's whole reason for having serde defaults.
+        let recovery: GateRecovery = serde_yaml::from_str("{}").unwrap();
+        assert_eq!(recovery, GateRecovery::default());
+        assert_approx_eq!(
+            recovery.rejection_inflation,
+            DEFAULT_REJECTION_INFLATION,
+            1e-15
+        );
+        assert_eq!(
+            recovery.forced_update_after,
+            Some(DEFAULT_FORCED_UPDATE_AFTER)
+        );
+
+        // And a partial one keeps the default for the half it does not mention.
+        let partial: GateRecovery = serde_yaml::from_str("rejection_inflation: 3.0").unwrap();
+        assert_approx_eq!(partial.rejection_inflation, 3.0, 1e-15);
+        assert_eq!(
+            partial.forced_update_after,
+            Some(DEFAULT_FORCED_UPDATE_AFTER)
+        );
+    }
+
     #[test]
     fn chi_squared_gate_threshold_follows_the_measurement_dimension() {
         let gate = InnovationGate::chi_squared(0.999).unwrap();
@@ -746,9 +1445,19 @@ mod tests {
         assert_approx_eq!(accepted.nis, 4.2, 1e-15);
         assert_eq!(accepted.dof, 3);
 
+        assert!(!accepted.forced);
+
         let rejected = UpdateOutcome::rejected(400.0, 3);
         assert!(!rejected.accepted);
+        assert!(!rejected.forced);
         assert_approx_eq!(rejected.nis, 400.0, 1e-15);
+
+        // A forced update was applied, so it counts as an acceptance everywhere an
+        // acceptance is counted; `forced` is the only thing that tells them apart.
+        let forced = UpdateOutcome::forced(400.0, 3);
+        assert!(forced.accepted);
+        assert!(forced.forced);
+        assert_approx_eq!(forced.nis, 400.0, 1e-15);
     }
 
     #[test]

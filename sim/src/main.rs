@@ -51,7 +51,9 @@ use std::rc::Rc;
 // Unconditional since #259: the RBPF event loop drives the filter through this trait, not
 // through inherent methods, so it is needed with or without the geonav feature.
 use strapdown::NavigationFilter;
-use strapdown::gating::InnovationGate;
+use strapdown::gating::{
+    DEFAULT_FORCED_UPDATE_AFTER, DEFAULT_REJECTION_INFLATION, GateRecovery, InnovationGate,
+};
 #[cfg(feature = "geonav")]
 use strapdown::kalman::ExtendedKalmanFilter;
 use strapdown::sim::HealthLimits;
@@ -388,6 +390,23 @@ struct ClosedLoopSimArgs {
     #[arg(long, value_name = "PROBABILITY")]
     gate_confidence: Option<f64>,
 
+    /// Multiply the filter covariance by this factor each time the gate rejects a fix.
+    ///
+    /// Only used together with `--gate-confidence`. A gate with no recovery path is a
+    /// one-way door: the filter keeps drifting while the covariance it judges the next
+    /// fix against does not grow, so one rejection begets the next. Must be at least
+    /// 1.0; 1.0 disables inflation.
+    #[arg(long, value_name = "FACTOR", default_value_t = DEFAULT_REJECTION_INFLATION)]
+    gate_inflation: f64,
+
+    /// Apply a measurement despite the gate after this many consecutive rejections.
+    ///
+    /// Only used together with `--gate-confidence`. A belief contradicted this many
+    /// times running is likelier to be wrong than the sensor contradicting it. Zero
+    /// never forces an update, which leaves `--gate-inflation` as the only way back.
+    #[arg(long, value_name = "COUNT", default_value_t = DEFAULT_FORCED_UPDATE_AFTER)]
+    gate_force_after: usize,
+
     /// GNSS scheduler settings (dropouts / reduced rate)
     #[command(flatten)]
     scheduler: SchedulerArgs,
@@ -568,6 +587,7 @@ fn process_file(
                     )?;
                     info!("Initialized UKF");
                     ukf.set_innovation_gate(filter_config.innovation_gate);
+                    ukf.set_gate_recovery(filter_config.gate_recovery);
                     run_closed_loop(&mut ukf, event_stream, None, Some(execution_limits))
                 }
                 FilterType::Ekf => {
@@ -580,6 +600,7 @@ fn process_file(
                     )?;
                     info!("Initialized EKF");
                     ekf.set_innovation_gate(filter_config.innovation_gate);
+                    ekf.set_gate_recovery(filter_config.gate_recovery);
                     run_closed_loop(&mut ekf, event_stream, None, Some(execution_limits))
                 }
                 FilterType::Eskf => {
@@ -592,6 +613,7 @@ fn process_file(
                     )?;
                     info!("Initialized ESKF");
                     eskf.set_innovation_gate(filter_config.innovation_gate);
+                    eskf.set_gate_recovery(filter_config.gate_recovery);
                     run_closed_loop(&mut eskf, event_stream, None, Some(execution_limits))
                 }
             };
@@ -969,6 +991,7 @@ fn run_single_closed_loop_simulation(
     ukf_beta: f64,
     ukf_kappa: f64,
     innovation_gate: Option<InnovationGate>,
+    gate_recovery: GateRecovery,
     is_enu: bool,
 ) -> Result<(), Box<dyn Error>> {
     // Same full-window guard as the other entry points: the `initialize_*` helpers below see
@@ -997,6 +1020,7 @@ fn run_single_closed_loop_simulation(
             )?;
             info!("Initialized UKF");
             ukf.set_innovation_gate(innovation_gate);
+            ukf.set_gate_recovery(gate_recovery);
             run_closed_loop(&mut ukf, event_stream, None, Some(execution_limits))
         }
         FilterType::Ekf => {
@@ -1009,6 +1033,7 @@ fn run_single_closed_loop_simulation(
             )?;
             info!("Initialized EKF");
             ekf.set_innovation_gate(innovation_gate);
+            ekf.set_gate_recovery(gate_recovery);
             run_closed_loop(&mut ekf, event_stream, None, Some(execution_limits))
         }
         FilterType::Eskf => {
@@ -1021,6 +1046,7 @@ fn run_single_closed_loop_simulation(
             )?;
             info!("Initialized ESKF");
             eskf.set_innovation_gate(innovation_gate);
+            eskf.set_gate_recovery(gate_recovery);
             run_closed_loop(&mut eskf, event_stream, None, Some(execution_limits))
         }
     };
@@ -1203,8 +1229,14 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
         .gate_confidence
         .map(InnovationGate::chi_squared)
         .transpose()?;
+    // Validated up front for the same reason as the gate itself, and unconditionally:
+    // an out-of-range factor is a mistake worth reporting whether or not this run gates.
+    let gate_recovery = GateRecovery::new(
+        args.gate_inflation,
+        (args.gate_force_after > 0).then_some(args.gate_force_after),
+    )?;
     if let Some(gate) = innovation_gate {
-        info!("Innovation gating enabled: {gate:?}");
+        info!("Innovation gating enabled: {gate:?}, recovery {gate_recovery:?}");
     }
 
     // Get all CSV files to process
@@ -1258,6 +1290,7 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
             args.ukf_beta,
             args.ukf_kappa,
             innovation_gate,
+            gate_recovery,
             args.sim.enu,
         ) {
             Ok(()) => {

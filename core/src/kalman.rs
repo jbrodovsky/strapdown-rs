@@ -5,7 +5,7 @@
 //! provided in the [crate] root module.
 
 use crate::StrapdownError;
-use crate::gating::{InnovationGate, UpdateOutcome, normalized_innovation_squared};
+use crate::gating::{GatePolicy, GateRecovery, InnovationGate, UpdateOutcome};
 use crate::linalg::{matrix_square_root, robust_spd_solve, symmetrize};
 use crate::measurements::MeasurementModel;
 use crate::{
@@ -257,39 +257,6 @@ fn wrap_attitude_onto_principal_branch(state: &mut DVector<f64>) {
     }
 }
 
-/// Score an innovation against the filter's gate and report the decision.
-///
-/// Factored out of all three filters because the statistic, the comparison and the
-/// log line are identical in each; only the way `innovation` and `S` were arrived at
-/// differs.
-///
-/// # Errors
-/// Whatever [`normalized_innovation_squared`] returns -- in practice a singular
-/// innovation covariance, which is a reason to skip the measurement rather than
-/// apply a correction computed from it.
-fn evaluate_gate(
-    gate: Option<InnovationGate>,
-    innovation: &DVector<f64>,
-    innovation_covariance: &DMatrix<f64>,
-    filter_name: &str,
-) -> Result<UpdateOutcome, StrapdownError> {
-    let dof = innovation.len();
-    let nis = normalized_innovation_squared(innovation, innovation_covariance)?;
-    if let Some(gate) = gate
-        && !gate.accepts(nis, dof)
-    {
-        // `debug`, not `warn`: `run_closed_loop` already warns once with the
-        // total, and a run that gates a lot would otherwise bury every other
-        // message under one line per rejected fix.
-        log::debug!(
-            "{filter_name}: measurement gated out, NIS = {nis:.3} > {:.3} (dof {dof})",
-            gate.threshold(dof)
-        );
-        return Ok(UpdateOutcome::rejected(nis, dof));
-    }
-    Ok(UpdateOutcome::accepted(nis, dof))
-}
-
 /// Unscented Kalman Filter (UKF) implementation for strapdown navigation.
 ///
 /// The UKF approximates the posterior distribution using a deterministic set
@@ -315,8 +282,9 @@ pub struct UnscentedKalmanFilter {
     weights_mean: DVector<f64>,
     weights_cov: DVector<f64>,
     is_enu: bool,
-    /// Innovation gate applied by `update`; `None` accepts every measurement.
-    innovation_gate: Option<InnovationGate>,
+    /// Innovation gate applied by `update` together with the recovery policy that keeps
+    /// a rejection from being permanent; an empty gate accepts every measurement.
+    gate_policy: GatePolicy,
 }
 impl Debug for UnscentedKalmanFilter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -435,7 +403,7 @@ impl UnscentedKalmanFilter {
             weights_mean,
             weights_cov,
             is_enu: initial_state.is_enu,
-            innovation_gate: None,
+            gate_policy: GatePolicy::default(),
         }
     }
     /// # Errors
@@ -650,14 +618,16 @@ impl NavigationFilter for UnscentedKalmanFilter {
         // uncertainty the points do not straddle the cut.)
         measurement.wrap_residual(&mut innovation);
 
-        // Gate before the cross-covariance and the gain: a rejected measurement must
-        // leave the state untouched, and there is no point paying for a gain that
-        // will not be applied.
-        let outcome = evaluate_gate(self.innovation_gate, &innovation, &s, "UKF")?;
-        if !outcome.accepted {
-            return Ok(outcome);
-        }
+        // Gate before the gain: a rejected measurement must leave the state untouched, and
+        // there is no point paying for a gain that will not be applied.
+        let decision = self.gate_policy.evaluate(&innovation, &s, "UKF")?;
+        let outcome = decision.outcome;
 
+        // The cross covariance is `P H^T` in sigma-point form, so it is what the gain needs
+        // on the accepted path *and* what the observed-subspace inflation projects through
+        // on the rejected one. It is therefore computed before the branch rather than after
+        // it, which costs one accumulation on a rejection and buys a recovery that inflates
+        // only the states this measurement observed (#340).
         let sigma_points = self.get_sigma_points()?;
         let mut cross_covariance =
             DMatrix::<f64>::zeros(self.state_size, measurement.get_dimension());
@@ -666,6 +636,17 @@ impl NavigationFilter for UnscentedKalmanFilter {
             let state_diff = sigma_points.column(i) - &self.mean_state;
             cross_covariance += self.weights_cov[i] * state_diff * measurement_diff.transpose();
         }
+
+        if !outcome.accepted {
+            // The covariance, unlike the state, does not come through a rejection
+            // unchanged: inflating it is what stops the next fix being rejected harder
+            // than this one (#340). `s` is `H P H^T + R`, so the measurement noise comes
+            // back off to leave the filter's own contribution.
+            let observed = &s - measurement.get_noise();
+            decision.inflate_observed(&mut self.covariance, &cross_covariance, &observed);
+            return Ok(outcome);
+        }
+
         let k = Self::robust_kalman_gain(&cross_covariance, &s)?;
         self.mean_state += &k * innovation;
         // Report attitude on the same branch `predict` writes (#314).
@@ -682,7 +663,12 @@ impl NavigationFilter for UnscentedKalmanFilter {
     }
 
     fn set_innovation_gate(&mut self, gate: Option<InnovationGate>) -> bool {
-        self.innovation_gate = gate;
+        self.gate_policy.set_gate(gate);
+        true
+    }
+
+    fn set_gate_recovery(&mut self, recovery: GateRecovery) -> bool {
+        self.gate_policy.set_recovery(recovery);
         true
     }
     /// Return the current mean state estimate.
@@ -858,8 +844,9 @@ pub struct ExtendedKalmanFilter {
     use_biases: bool,
     /// Coordinate frame flag (true for ENU, false for NED)
     is_enu: bool,
-    /// Innovation gate applied by `update`; `None` accepts every measurement.
-    innovation_gate: Option<InnovationGate>,
+    /// Innovation gate applied by `update` together with the recovery policy that keeps
+    /// a rejection from being permanent; an empty gate accepts every measurement.
+    gate_policy: GatePolicy,
 }
 
 impl Debug for ExtendedKalmanFilter {
@@ -871,7 +858,7 @@ impl Debug for ExtendedKalmanFilter {
             .field("state_size", &self.state_size)
             .field("use_biases", &self.use_biases)
             .field("is_enu", &self.is_enu)
-            .field("innovation_gate", &self.innovation_gate)
+            .field("gate_policy", &self.gate_policy)
             .finish()
     }
 }
@@ -976,7 +963,7 @@ impl ExtendedKalmanFilter {
             state_size,
             use_biases,
             is_enu: initial_state.is_enu,
-            innovation_gate: None,
+            gate_policy: GatePolicy::default(),
         }
     }
 }
@@ -1198,10 +1185,21 @@ impl NavigationFilter for ExtendedKalmanFilter {
         // Keep angular innovations on the circle (see `wrap_residual`, #286).
         measurement.wrap_residual(&mut innovation);
 
-        // Gate before the gain, so a rejected measurement costs one solve and leaves
-        // both the state and the covariance exactly as they were.
-        let outcome = evaluate_gate(self.innovation_gate, &innovation, &s, "EKF")?;
+        // Gate before the gain, so a rejected measurement costs one solve and leaves the
+        // state exactly as it was. The covariance is the deliberate exception: a
+        // rejection inflates it, or the next fix is judged against the same covariance
+        // by a filter that has drifted further, and the rejection is self-reinforcing
+        // (#340).
+        let decision = self.gate_policy.evaluate(&innovation, &s, "EKF")?;
+        let outcome = decision.outcome;
         if !outcome.accepted {
+            // Only the directions `h_matrix` observes: a rejected barometric altitude is
+            // evidence about the altitude channel and about nothing else, and inflating
+            // the whole covariance on it lets the *next* accepted measurement of another
+            // kind apply a wildly over-weighted correction.
+            let projected = &self.covariance * h_matrix.transpose();
+            let observed = &h_matrix * &projected;
+            decision.inflate_observed(&mut self.covariance, &projected, &observed);
             return Ok(outcome);
         }
 
@@ -1235,7 +1233,12 @@ impl NavigationFilter for ExtendedKalmanFilter {
     }
 
     fn set_innovation_gate(&mut self, gate: Option<InnovationGate>) -> bool {
-        self.innovation_gate = gate;
+        self.gate_policy.set_gate(gate);
+        true
+    }
+
+    fn set_gate_recovery(&mut self, recovery: GateRecovery) -> bool {
+        self.gate_policy.set_recovery(recovery);
         true
     }
 
@@ -1452,8 +1455,9 @@ pub struct ErrorStateKalmanFilter {
     /// Coordinate frame flag (true for ENU, false for NED)
     is_enu: bool,
 
-    /// Innovation gate applied by `update`; `None` accepts every measurement.
-    innovation_gate: Option<InnovationGate>,
+    /// Innovation gate applied by `update` together with the recovery policy that keeps
+    /// a rejection from being permanent; an empty gate accepts every measurement.
+    gate_policy: GatePolicy,
 }
 
 impl Debug for ErrorStateKalmanFilter {
@@ -1621,7 +1625,7 @@ impl ErrorStateKalmanFilter {
             error_covariance,
             process_noise,
             is_enu: initial_state.is_enu,
-            innovation_gate: None,
+            gate_policy: GatePolicy::default(),
         }
     }
 
@@ -2053,8 +2057,17 @@ impl NavigationFilter for ErrorStateKalmanFilter {
         // Gate before injecting anything. The ESKF makes this ordering load-bearing
         // rather than merely tidy: `inject_error_state` mutates the nominal state and
         // zeroes the error state, so there is no "undo" once the correction starts.
-        let outcome = evaluate_gate(self.innovation_gate, &innovation, &s, "ESKF")?;
+        let decision = self.gate_policy.evaluate(&innovation, &s, "ESKF")?;
+        let outcome = decision.outcome;
         if !outcome.accepted {
+            // Inflate the error covariance on the way out, in the directions this
+            // measurement observed. The nominal state is untouched, so this is the filter
+            // recording that it is further from that nominal than it thought -- which is
+            // what re-opens the gate (#340) -- and confining it to `h_error`'s row space
+            // keeps a rejection on one sensor out of every other sensor's gain.
+            let projected = &self.error_covariance * h_error.transpose();
+            let observed = &h_error * &projected;
+            decision.inflate_observed(&mut self.error_covariance, &projected, &observed);
             return Ok(outcome);
         }
 
@@ -2082,7 +2095,12 @@ impl NavigationFilter for ErrorStateKalmanFilter {
     }
 
     fn set_innovation_gate(&mut self, gate: Option<InnovationGate>) -> bool {
-        self.innovation_gate = gate;
+        self.gate_policy.set_gate(gate);
+        true
+    }
+
+    fn set_gate_recovery(&mut self, recovery: GateRecovery) -> bool {
+        self.gate_policy.set_recovery(recovery);
         true
     }
 
