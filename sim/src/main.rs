@@ -437,8 +437,10 @@ struct ParticleFilterSimArgs {
     #[arg(long, default_value_t = 0.01)]
     gyro_bias_std: f64,
 
-    /// Process noise standard deviation for the velocity-based particle filter (meters)
-    /// as `[lat_m, lon_m, alt_m]`.
+    /// Position random-walk rate for the particle filter as `[north, east, up]` in
+    /// m/sqrt(s). The filter forms the per-step standard deviation as this times
+    /// `sqrt(dt)`, so the value is unchanged at a 1 s step and the spread it produces
+    /// depends on elapsed time rather than on the log's sample rate.
     ///
     /// Examples:
     /// - `--process-noise-std-m 1 1 2`
