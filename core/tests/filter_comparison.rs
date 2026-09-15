@@ -47,6 +47,14 @@ use strapdown::kalman::{
 };
 use strapdown::measurements::GPSPositionAndVelocityMeasurement;
 use strapdown::rbpf::{RaoBlackwellizedParticleFilter, RbpfConfig};
+// Shared process noise, 15-state: the crate default itself, so that a divergence between this
+// suite and `integration_tests.rs` is attributable to the filters rather than to the tuning.
+// It used to be a local copy of the same literals, claiming in a comment to match. Both copies
+// carried #308 -- latitude and longitude written in rad^2 with values picked as though they
+// were metres, making `1e-6` a 6.4 km per-step standard deviation -- and a local copy is
+// precisely what stops a suite noticing that about the tuning it is validating.
+use strapdown::sim::DEFAULT_INITIAL_POSITION_UNCERTAINTY_M;
+use strapdown::sim::DEFAULT_PROCESS_NOISE as PROCESS_NOISE;
 use strapdown::{ImuSample, NavigationFilter, StrapdownState, mechanize};
 
 /// Scenario latitude, degrees.
@@ -71,33 +79,27 @@ const GPS_DECIMATION: usize = 5;
 /// uses it is quarantined.
 const SEEDED_POSITION_ERROR_M: f64 = 20.0;
 
-/// Shared process noise, 15-state. Matches `integration_tests.rs`'s `DEFAULT_PROCESS_NOISE`
-/// so that a divergence between the two suites is attributable to the filters rather than
-/// to the tuning.
-const PROCESS_NOISE: [f64; 15] = [
-    1e-6, 1e-6, 1e-6, // position
-    1e-3, 1e-3, 1e-3, // velocity
-    1e-5, 1e-5, 1e-5, // attitude
-    1e-6, 1e-6, 1e-6, // accelerometer bias
-    1e-8, 1e-8, 1e-8, // gyroscope bias
-];
-
 /// Maximum final horizontal position error against truth, meters.
 ///
-/// Worst measured on this branch is the RBPF's 0.222 m (ESKF and EKF are exact to printing
-/// precision, UKF 0.019 m), so this carries ~4.5x margin -- the same margin the ESKF
-/// integration bounds were rederived to in #288, and for the same reason: a ceiling loose
+/// Worst measured across this file, re-measured after #308: the RBPF's 0.192 m (ESKF and EKF
+/// are exact to printing precision, UKF 0.020 m), so this carries ~5x margin -- the margin the
+/// ESKF integration bounds were rederived to in #288, and for the same reason: a ceiling loose
 /// enough that any non-divergent filter clears it tests nothing.
+///
+/// Note the bounds below are looser against their observations than that. They were quoted
+/// from an older measurement (0.222 m horizontal, 0.613 m altitude, 0.117 m/s velocity) that
+/// no run on this branch reproduces, so they have more margin than the ~5x this file intends;
+/// re-deriving them is its own piece of work and not #308's to do while it is moving Q.
 const MAX_HORIZONTAL_ERROR_M: f64 = 1.0;
-/// Maximum final altitude error against truth, meters. Worst measured: RBPF 0.613 m.
+/// Maximum final altitude error against truth, meters. Worst measured: RBPF 0.129 m.
 const MAX_ALTITUDE_ERROR_M: f64 = 3.0;
-/// Maximum final speed error against truth, m/s. Worst measured: RBPF 0.117 m/s.
+/// Maximum final speed error against truth, m/s. Worst measured: UKF 0.033 m/s.
 const MAX_VELOCITY_ERROR_MPS: f64 = 0.5;
 /// Maximum horizontal separation between any two filters' final solutions, meters.
 ///
 /// Looser than the truth bound on purpose: two filters may sit on opposite sides of truth,
 /// so the worst legitimate separation is roughly twice the worst legitimate error. Worst
-/// measured: 0.222 m, between the RBPF and the two Jacobian filters.
+/// measured: 0.182 m, between the UKF and the RBPF.
 const MAX_PAIRWISE_SEPARATION_M: f64 = 1.5;
 
 /// UKF sigma-point tuning, matching `sim::default_ukf_*`.
@@ -109,13 +111,36 @@ const RBPF_PARTICLES: usize = 500;
 const RBPF_SEED: u64 = 259;
 
 /// Shared initial covariance, 15-state.
+///
+/// The position block comes from the crate's own [`DEFAULT_INITIAL_POSITION_UNCERTAINTY_M`],
+/// for the reason the process noise above is imported rather than copied. The literals it
+/// replaces -- `1e-6, 1e-6, 1.0`, correctly *labelled* `lat/lon rad^2, alt m^2` -- were #308
+/// in $P_0$: 1e-6 rad^2 is a 6367 m horizontal claim next to a 1 m vertical one, so every
+/// filter here began the run believing it might be most of an Earth radius from where it had
+/// been seeded.
 const INITIAL_COVARIANCE: [f64; 15] = [
-    1e-6, 1e-6, 1.0, // position (lat/lon rad^2, alt m^2)
-    0.1, 0.1, 0.1, // velocity
-    0.01, 0.01, 0.01, // attitude
-    0.01, 0.01, 0.01, // accelerometer bias
-    0.001, 0.001, 0.001, // gyroscope bias
+    INITIAL_HORIZONTAL_VARIANCE_RAD2, // latitude, rad^2
+    INITIAL_HORIZONTAL_VARIANCE_RAD2, // longitude, rad^2
+    DEFAULT_INITIAL_POSITION_UNCERTAINTY_M * DEFAULT_INITIAL_POSITION_UNCERTAINTY_M, // alt, m^2
+    0.1,
+    0.1,
+    0.1, // velocity
+    0.01,
+    0.01,
+    0.01, // attitude
+    0.01,
+    0.01,
+    0.01, // accelerometer bias
+    0.001,
+    0.001,
+    0.001, // gyroscope bias
 ];
+
+/// [`DEFAULT_INITIAL_POSITION_UNCERTAINTY_M`] as a latitude/longitude variance, rad^2.
+const INITIAL_HORIZONTAL_VARIANCE_RAD2: f64 = {
+    let radians = DEFAULT_INITIAL_POSITION_UNCERTAINTY_M * strapdown::earth::METERS_TO_RADIANS;
+    radians * radians
+};
 
 /// The scenario, generated once and shared by every filter.
 struct Scenario {
@@ -236,10 +261,12 @@ fn build_scenario(seed_offset_m: f64) -> Scenario {
 /// The seed state in the form the Kalman-family constructors take.
 ///
 /// Built as a struct literal rather than through [`InitialState::new`], matching
-/// `integration_tests.rs` and `sim::initialize_eskf` -- no caller in the workspace uses the
-/// constructor. Its radian path (`in_degrees: false`) converts latitude to degrees while
-/// leaving longitude alone, and the filter constructors then read the result back as
-/// radians, so a seed built that way starts 40 radians north.
+/// `integration_tests.rs` and `sim::initialize_eskf`. That is a stylistic match, not a
+/// workaround: the constructor's old radian path -- which stored latitude in degrees while
+/// leaving `in_degrees == false`, so a 40 deg seed was read back as 40 radians -- has been
+/// fixed, and `engine.rs`, both `core/examples` and `engine_lever_arm.rs` all call it
+/// today. Either form is correct here; the literal just keeps the seed adjacent to the
+/// scenario it is built from.
 fn initial_state(scenario: &Scenario) -> InitialState {
     let (roll, pitch, yaw) = scenario.initial.attitude.euler_angles();
     InitialState {
@@ -270,12 +297,27 @@ fn all_filters(
     scenario: &Scenario,
     biases: &[f64; 6],
 ) -> Vec<(&'static str, Box<dyn NavigationFilter>)> {
-    let init = initial_state(scenario);
+    all_filters_from(&initial_state(scenario), scenario.initial, biases)
+}
+
+/// `all_filters`, but from explicit seeds rather than the scenario's own.
+///
+/// The Kalman family is seeded from an [`InitialState`] and the RBPF from a
+/// [`StrapdownState`] nominal, so both have to be supplied together or the filters start
+/// from different attitudes. Exists so a test can seed an attitude the scenario does not
+/// carry -- see `every_filter_reports_attitude_on_the_principal_branch`, which needs a
+/// deliberately *negative* seed because a level one cannot tell the two wrapping
+/// conventions apart.
+fn all_filters_from(
+    init: &InitialState,
+    nominal: StrapdownState,
+    biases: &[f64; 6],
+) -> Vec<(&'static str, Box<dyn NavigationFilter>)> {
     vec![
         (
             "ESKF",
             Box::new(ErrorStateKalmanFilter::new(
-                &init,
+                init,
                 biases,
                 INITIAL_COVARIANCE.to_vec(),
                 process_noise_matrix(),
@@ -284,7 +326,7 @@ fn all_filters(
         (
             "EKF",
             Box::new(ExtendedKalmanFilter::new(
-                &init,
+                init,
                 biases,
                 INITIAL_COVARIANCE.to_vec(),
                 process_noise_matrix(),
@@ -294,7 +336,7 @@ fn all_filters(
         (
             "UKF",
             Box::new(UnscentedKalmanFilter::new(
-                &init,
+                init,
                 biases,
                 None,
                 INITIAL_COVARIANCE.to_vec(),
@@ -308,7 +350,7 @@ fn all_filters(
             "RBPF",
             Box::new(
                 RaoBlackwellizedParticleFilter::new(
-                    scenario.initial,
+                    nominal,
                     RbpfConfig {
                         num_particles: RBPF_PARTICLES,
                         position_init_std_m: Vector3::new(10.0, 10.0, 5.0),
@@ -482,6 +524,83 @@ fn rate_and_increment_inputs_are_equivalent() {
                 (lhs - rhs).abs() <= 1e-12 * lhs.abs().max(rhs.abs()).max(1.0),
                 "{name} state {j} differs between rate and increment inputs: {lhs} vs {rhs}"
             );
+        }
+    }
+}
+
+/// Every filter reports roll/pitch/yaw on one branch, and the same one, at every step.
+///
+/// #314: the EKF and UKF wrapped the attitude block onto 0..2*pi in `update` while their own
+/// `predict` wrote `Rotation3::euler_angles`'s -pi..pi straight back into it, and the ESKF
+/// wrapped its quaternion decomposition the same way in `get_estimate`. A level vehicle --
+/// which this scenario is -- therefore reported roll as -0.002 rad after a predict and 6.281
+/// rad one update later: the same rotation, named two ways, one timestep apart, with the
+/// branch cut sitting exactly on the attitude the vehicle actually holds.
+///
+/// This file is the right home because it already drives all four filters through
+/// `&mut dyn NavigationFilter`, so a filter that reintroduces its own convention fails here
+/// rather than in whichever suite happens to read its attitude.
+#[test]
+fn every_filter_reports_attitude_on_the_principal_branch() {
+    // Near-level: the scenario's truth attitude is the identity and every filter is seeded a
+    // hundredth of a radian off it, so the *only* thing separating a passing report from a
+    // failing one is which branch the filter names the answer on. The bound is two orders of
+    // magnitude below a full turn and one above the seed, so it catches the convention
+    // without being a tuning knob.
+    const MAX_LEVEL_ATTITUDE_RAD: f64 = 0.1;
+    // Seeded deliberately NEGATIVE, and that is the whole point of the test.
+    //
+    // A level seed cannot distinguish the two conventions: the angles come out as +/-0.0 or
+    // a rounding residue of ~1e-11, and `wrap_to_2pi`'s `wrapped < 0.0` guard is false for
+    // negative zero, so under the pre-#314 code two of the three filters would report 0.0
+    // and pass. The only thing that tripped the old code on a level scenario was the *sign*
+    // of a 1e-11 residue in one filter -- a recompile away from detecting nothing.
+    //
+    // At -0.02 rad the old `wrap_to_2pi` reports 6.263 rad for every filter, which fails
+    // both assertions below by a wide margin, on every platform.
+    const SEED_ATTITUDE_RAD: f64 = -0.02;
+
+    let scenario = build_scenario(0.0);
+
+    let mut init = initial_state(&scenario);
+    init.roll = SEED_ATTITUDE_RAD;
+    init.pitch = SEED_ATTITUDE_RAD;
+    init.yaw = SEED_ATTITUDE_RAD;
+    let mut nominal = scenario.initial;
+    nominal.attitude = nalgebra::Rotation3::from_euler_angles(
+        SEED_ATTITUDE_RAD,
+        SEED_ATTITUDE_RAD,
+        SEED_ATTITUDE_RAD,
+    );
+
+    for (name, mut filter) in all_filters_from(&init, nominal, &[0.0; 6]) {
+        let dt = 1.0 / SCENARIO_SAMPLE_RATE_HZ as f64;
+
+        for stage in ["predict", "update"] {
+            if stage == "predict" {
+                filter.predict(&scenario.samples[0], dt).unwrap();
+            } else {
+                filter.update(&scenario.gps[0]).unwrap();
+            }
+
+            let estimate = filter.get_estimate();
+            for (axis, angle) in [
+                ("roll", estimate[6]),
+                ("pitch", estimate[7]),
+                ("yaw", estimate[8]),
+            ] {
+                assert!(
+                    (-std::f64::consts::PI..=std::f64::consts::PI).contains(&angle),
+                    "{name} reported {axis} = {angle} rad after {stage}, outside the -pi..pi \
+                     branch `Rotation3::euler_angles` returns"
+                );
+                assert!(
+                    angle.abs() <= MAX_LEVEL_ATTITUDE_RAD,
+                    "{name} reported {axis} = {angle} rad after {stage} for a near-level \
+                     vehicle; a value near a full turn here means the 0..2*pi convention \
+                     is back"
+                );
+            }
         }
     }
 }

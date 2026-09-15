@@ -15,7 +15,18 @@ repository.workspace = true
 rust-version.workspace = true
 
 [package.metadata.docs.rs]
-all-features = true
+# NOT `all-features = true`. That is what it was, and it is why the docs.rs build for
+# strapdown-core 0.5.0 failed outright: `--all-features` turns on `netcdf`, whose
+# `netcdf-sys` build script panics with "A system version of libnetcdf could not be found"
+# because the docs.rs sandbox has no libnetcdf or libhdf5. The crate has no rendered
+# documentation on docs.rs at all as a result (#263).
+#
+# `docsrs` below is `full` with the C libraries built from source instead of linked from
+# the system, which is the escape hatch netcdf-sys's own error message points at. It costs
+# a source build of HDF5 and netCDF -- minutes, not seconds -- which is acceptable on a
+# documentation build and is the price of the gated I/O modules appearing at all.
+# The two pure-Rust optional features, and deliberately not `hdf5` or `netcdf`.
+features = ["clap", "mcap"]
 rustdoc-args = [ "--html-in-header", "katex-header.html" ]
 
 [lib]
@@ -34,6 +45,11 @@ netcdf = ["dep:netcdf"]
 mcap = ["dep:mcap", "dep:memmap2", "dep:rmp-serde"]
 # Everything, for convenience and for `cargo test --all-features`.
 full = ["clap", "hdf5", "netcdf", "mcap"]
+# NOTE: do not add a `docsrs = ["full", "hdf5/static", "netcdf/static"]` feature here.
+# It is the obvious way to get the gated I/O modules onto docs.rs, and it backfires:
+# `--all-features` activates *every* feature in the manifest, so the CI `full` job and
+# `pixi run lint`/`test` would start building libhdf5 and libnetcdf from source on every
+# cold cache. The `[package.metadata.docs.rs]` block above takes the other trade instead.
 
 [dependencies]
 angle = "0.5.0"
@@ -56,6 +72,22 @@ log.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 netcdf = { workspace = true, optional = true }
+# Deliberately NOT feature-gated, though #263 asked for a `wmm` feature.
+#
+# `MagnetometerYawMeasurement::get_declination` (`measurements.rs`) is the only consumer
+# that needs a real WMM lookup, and `messages::build_event_stream` emits a
+# `MagnetometerYawMeasurement` for every record with finite magnetometer channels, with
+# `apply_declination: true`. Gating it would make the *numerical output of the filter*
+# depend on a cargo feature -- declination silently zero with the feature off -- which
+# breaks feature additivity in the one channel this crate can least afford it, and would
+# move the 22 `build_event_stream` call sites in `core/tests/integration_tests.rs` against
+# a dataset that does carry mag columns.
+#
+# Measured cost, clean `cargo build -p strapdown-core --no-default-features --timings`:
+# the wmm subtree is ~20% of build CPU, almost all of it `uom` (7.75 s) rather than
+# `world_magnetic_model` itself (0.16 s). `uom` finishes last, so removing the subtree
+# would take roughly 1.2 s off an 11.1 s wall clock. Real, but not worth a silent
+# behaviour fork.
 world_magnetic_model.workspace = true
 clap = { workspace = true, optional = true }
 

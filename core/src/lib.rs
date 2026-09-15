@@ -83,7 +83,7 @@
 //!
 //! This mechanization and coordinate frame is only valid for positions relatively close to the Earth's surface (within 30 km above mean sea level).
 //! Above that it is more common to use the Earth-Centered Earth-Fixed (ECEF) frame for navigation. Additionally, the deepest ocean trenches
-//! are approximately 11 km below mean sea level. Thus, this mechanization is not valid for positions deeper than that. [sim::health]
+//! are approximately 11 km below mean sea level. Thus, this mechanization is not valid for positions deeper than that. [`sim::health`]
 //! implements general sanity checks to ensure that the position states remain within valid bounds, given a specific coordinate frame:
 //! - Latitude: [-90 deg, 90 deg]
 //! - Longitude: [-180 deg, 180 deg]
@@ -175,6 +175,7 @@ pub mod kalman;
 pub mod linalg;
 pub mod linearize;
 pub mod measurements;
+/// Event-stream construction and GNSS degradation scheduling.
 pub mod messages;
 pub mod particle;
 pub mod rbpf;
@@ -267,7 +268,7 @@ const _: fn(&dyn NavigationFilter) = |_| {};
 /// error. In navigation, this is typically higher-order states such
 /// as velocities or accelerations.
 ///
-/// See [measurements::MeasurementModel] for the complementary trait
+/// See [`measurements::MeasurementModel`] for the complementary trait
 /// used for measurement updates. Similar to that trait, this trait
 /// is intended to permit a generic input to truly generalize the
 /// Bayesian architecture. This is largely done in effort to reuse
@@ -388,14 +389,14 @@ impl IMUQuality {
     /// Process noise added to the velocity states over one propagation step of `dt` seconds.
     ///
     /// Derived from the velocity random walk, whose defining property is that velocity error
-    /// grows as \\(\\sigma_v(\\tau) = K \\sqrt{\\tau}\\). The variance accumulated over an
+    /// grows as \\(\\`sigma_v`(\\tau) = K \\sqrt{\\tau}\\). The variance accumulated over an
     /// interval is therefore \\(K^2 \\tau\\), and since [`Self::accel_velocity_random_walk`]
     /// is quoted per root *hour* while `dt` is in seconds, the conversion is
     /// \\(K^2 \\, dt / 3600\\).
     ///
     /// # Units
     /// Returns (m/s)^2 -- a variance, not a spectral density. Both filters propagate as
-    /// \\(P_{k+1} = F P_k F^T + Q\\) with no internal `dt` scaling, so what they consume is
+    /// \\(P_{k+1} = F `P_k` F^T + Q\\) with no internal `dt` scaling, so what they consume is
     /// the per-step increment this returns. That is why `dt` is a parameter: the same IMU
     /// grade yields a different `Q` at 100 Hz than at 1 Hz.
     ///
@@ -468,7 +469,7 @@ impl IMUQuality {
     /// Bias instability is the floor of the Allan deviation -- the steady-state spread of the
     /// bias itself -- not the coefficient of the random walk that drives it. Squaring it
     /// yields a *bias variance*, which belongs on the diagonal of the initial covariance
-    /// \\(P_0\\), not in \\(Q\\). Turning it into a process noise additionally requires a
+    /// \\(`P_0`\\), not in \\(Q\\). Turning it into a process noise additionally requires a
     /// bias correlation time, which this crate does not model and which no source in this
     /// repository supplies; inventing one per IMU grade would be exactly the hand-picked
     /// tuning this project avoids.
@@ -492,7 +493,7 @@ impl IMUQuality {
     /// # This is not a process noise
     ///
     /// The same objection as [`Self::gyro_process_noise`]: bias instability is a steady-state
-    /// bias spread, so its square is a \\(P_0\\) term rather than a \\(Q\\) term, and deriving
+    /// bias spread, so its square is a \\(`P_0`\\) term rather than a \\(Q\\) term, and deriving
     /// a process noise from it needs a bias correlation time this crate does not model.
     ///
     /// Use [`IMUQuality::auto_covariance`] instead.
@@ -826,7 +827,7 @@ impl TryFrom<Vec<f64>> for IMUData {
     /// Builds an [`IMUData`] from `[a_x, a_y, a_z, g_x, g_y, g_z]`.
     ///
     /// `TryFrom` rather than `From`: the conversion has a length precondition, and the
-    /// vectors it is fed come from parsed CSV, HDF5 and NetCDF records, where a short or
+    /// vectors it is fed come from parsed CSV, HDF5 and `NetCDF` records, where a short or
     /// malformed row is a data problem to report rather than a reason to abort (#254).
     ///
     /// # Errors
@@ -846,7 +847,7 @@ impl TryFrom<Vec<f64>> for IMUData {
     }
 }
 impl From<IMUData> for Vec<f64> {
-    /// Converts an IMUData instance to a `Vec<f64>` of length 6 (3 for accel, 3 for gyro).
+    /// Converts an `IMUData` instance to a `Vec<f64>` of length 6 (3 for accel, 3 for gyro).
     fn from(data: IMUData) -> Self {
         vec![
             data.accel[0],
@@ -1024,7 +1025,7 @@ impl Default for StrapdownState {
     }
 }
 impl StrapdownState {
-    /// Create a new StrapdownState from explicit position and velocity components, and attitude
+    /// Create a new `StrapdownState` from explicit position and velocity components, and attitude
     ///
     /// # Arguments
     /// * `latitude` - Latitude in radians or degrees (see `in_degrees`).
@@ -1178,7 +1179,7 @@ impl StrapdownState {
     // --- From/Into trait implementations for StrapdownState <-> Vec<f64> and &[f64] ---
 }
 impl From<StrapdownState> for Vec<f64> {
-    /// Converts a StrapdownState to a `Vec<f64>` in NED order, angles in radians.
+    /// Converts a `StrapdownState` to a `Vec<f64>` in NED order, angles in radians.
     fn from(state: StrapdownState) -> Self {
         let (roll, pitch, yaw) = state.attitude.euler_angles();
         vec![
@@ -1195,7 +1196,7 @@ impl From<StrapdownState> for Vec<f64> {
     }
 }
 impl From<&StrapdownState> for Vec<f64> {
-    /// Converts a reference to StrapdownState to a `Vec<f64>` in NED order, angles in radians.
+    /// Converts a reference to `StrapdownState` to a `Vec<f64>` in NED order, angles in radians.
     fn from(state: &StrapdownState) -> Self {
         let (roll, pitch, yaw) = state.attitude.euler_angles();
         vec![
@@ -1239,19 +1240,19 @@ impl TryFrom<&[f64]> for StrapdownState {
 impl TryFrom<Vec<f64>> for StrapdownState {
     type Error = StrapdownError;
 
-    /// Attempts to create a StrapdownState from a `Vec<f64>` of length 9 (NED order, radians).
+    /// Attempts to create a `StrapdownState` from a `Vec<f64>` of length 9 (NED order, radians).
     fn try_from(vec: Vec<f64>) -> Result<Self, Self::Error> {
         Self::try_from(vec.as_slice())
     }
 }
 impl From<StrapdownState> for DVector<f64> {
-    /// Converts a StrapdownState to a `DVector<f64>` in NED order, angles in radians.
+    /// Converts a `StrapdownState` to a `DVector<f64>` in NED order, angles in radians.
     fn from(state: StrapdownState) -> Self {
         Self::from_vec(state.into())
     }
 }
 impl From<&StrapdownState> for DVector<f64> {
-    /// Converts a reference to StrapdownState to a `DVector<f64>` in NED order, angles in radians.
+    /// Converts a reference to `StrapdownState` to a `DVector<f64>` in NED order, angles in radians.
     fn from(state: &StrapdownState) -> Self {
         Self::from_vec(state.into())
     }
@@ -1285,7 +1286,7 @@ pub(crate) fn normal_with_std(sigma: f64) -> rand_distr::Normal<f64> {
 /// the IMU data and the time step as inputs and updates the position, velocity, and attitude of the system.
 ///
 /// # Arguments
-/// * `imu_data` - An IMUData instance containing the acceleration and gyro data in the body frame.
+/// * `imu_data` - An `IMUData` instance containing the acceleration and gyro data in the body frame.
 /// * `dt` - A f64 representing the time step in seconds.
 ///
 /// # Example
@@ -1545,7 +1546,7 @@ pub fn forward(
 /// on the book _Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems, Second Edition_ by Paul D. Groves.
 ///
 /// # Arguments
-/// * `state` - A reference to the current StrapdownState.
+/// * `state` - A reference to the current `StrapdownState`.
 /// * `delta_theta` - Integrated angular rate over the interval, radians, body frame.
 /// * `dt` - A f64 representing the time step in seconds. Still required: the earth-rate and
 ///   transport-rate terms below scale with the interval and are not part of the sensed
@@ -1661,7 +1662,7 @@ fn velocity_update_ned(state: &StrapdownState, delta_v_nav: Vector3<f64>, dt: f6
 /// the velocity vector, and the time step as inputs and returns the updated position (latitude, longitude, altitude).
 ///
 /// # Arguments
-/// * `state` - A reference to the current StrapdownState containing the position and velocity.
+/// * `state` - A reference to the current `StrapdownState` containing the position and velocity.
 /// * `velocity` - A Vector3 of (north, east, vertical) velocity in m/s. The vertical component
 ///   follows `state.is_enu`: positive down in NED, positive up in ENU.
 /// * `dt` - A f64 representing the time step in seconds.
@@ -1797,7 +1798,13 @@ where
 /// # Arguments
 /// * `angle` - The angle to be wrapped, which can be of any type that implements the necessary traits.
 /// # Returns
-/// * The wrapped angle, which will be in the range -π to π radians.
+/// * The wrapped angle, in the range 0 to $2 \pi$ radians -- as the name says. This
+///   previously read "-π to π", contradicting both the name and the example below.
+///
+/// Since #314 no filter reports attitude on this branch: [`wrap_to_pi`] is what the UKF, EKF
+/// and ESKF use, because a cut at 0 puts it at the attitude of a level vehicle. This and
+/// [`wrap_to_360`] remain for callers who want a compass-style range, the way
+/// [`crate::engine::NavSolution::heading_deg`] does for display.
 /// # Example
 /// ```rust
 /// use strapdown::wrap_to_2pi;
@@ -1918,16 +1925,16 @@ fn calculate_constant_velocity_acceleration_ned(
 /// Helper function to generate IMU data and GPS measurements for a given scenario
 ///
 /// # Unit Conventions
-/// - **Input (`initial_state`)**: lat/lon in radians (StrapdownState always uses radians internally)
-/// - **Output GPS measurements**: lat/lon always in degrees (as per GPSPositionMeasurement spec)
-/// - **Output true_states**: lat/lon in radians (StrapdownState internal format)
+/// - **Input (`initial_state`)**: lat/lon in radians (`StrapdownState` always uses radians internally)
+/// - **Output GPS measurements**: lat/lon always in degrees (as per `GPSPositionMeasurement` spec)
+/// - **Output `true_states`**: lat/lon in radians (`StrapdownState` internal format)
 /// - **IMU gyro data**: always in rad/s
 ///
 /// # Arguments
 /// * `initial_state` - Initial navigation state with lat/lon in RADIANS
 /// * `duration_seconds` - Duration of the simulation in seconds
 /// * `sample_rate_hz` - IMU sample rate in Hz
-/// * `accel_body` - Constant acceleration in body frame (m/s²) - ignored if constant_velocity=true
+/// * `accel_body` - Constant acceleration in body frame (m/s²) - ignored if `constant_velocity=true`
 /// * `gyro_body` - Constant angular velocity in body frame (rad/s)
 /// * `geosynchronous` - If true, adds Earth rotation rate to gyro to keep vehicle stationary on Earth's surface
 /// * `constant_velocity` - If true, dynamically calculates acceleration to maintain exactly constant velocity

@@ -8,13 +8,13 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::Path;
 
-use crate::IMUData;
 use crate::earth::meters_ned_to_dlat_dlon;
 use crate::measurements::{
     GPSPositionAndVelocityMeasurement, MAG_YAW_NOISE, MagnetometerYawMeasurement, MeasurementModel,
     RelativeAltitudeMeasurement,
 };
 use crate::sim::TestDataRecord;
+use crate::{IMUData, StrapdownError};
 /// Scheduler for controlling when GNSS measurements are emitted into the simulation.
 ///
 /// This models denial- or jamming-like effects that reduce the *rate* of
@@ -101,8 +101,9 @@ pub enum GnssScheduler {
 /// ## Variants
 ///
 /// - `None`: deliver the fix unchanged.
-/// - `Degraded`: add AR(1)-correlated noise to position and velocity, and
-///   inflate the advertised covariance. Simulates low-SNR or multi-path conditions.
+/// - `Degraded`: add AR(1)-correlated noise to position and velocity, and inflate the
+///   advertised 1-sigma accuracies (so `R` moves by the square of `r_scale`). Simulates
+///   low-SNR or multi-path conditions.
 /// - `SlowBias`: apply a slowly drifting offset in N/E position and velocity.
 ///   Simulates soft spoofing where the trajectory is nudged gradually away
 ///   from truth.
@@ -120,7 +121,7 @@ pub enum GnssScheduler {
 /// // No corruption (baseline)
 /// let fault = GnssFaultModel::None;
 ///
-/// // Degraded accuracy: ~3 m wander, ~0.3 m/s vel wander, 5x inflated R
+/// // Degraded accuracy: ~3 m wander, ~0.3 m/s vel wander, sigmas x5 (so R x25)
 /// let fault = GnssFaultModel::Degraded {
 ///     rho_pos: 0.99,
 ///     sigma_pos_m: 3.0,
@@ -159,7 +160,7 @@ pub enum GnssFaultModel {
     None,
 
     /// (2) Degraded accuracy: AR(1)-correlated noise on position and velocity,
-    /// plus inflated advertised covariance. Models low-SNR or multi-path cases.
+    /// plus inflated advertised accuracies. Models low-SNR or multi-path cases.
     Degraded {
         /// AR(1) correlation coefficient for position error (close to 1.0).
         rho_pos: f64,
@@ -169,7 +170,13 @@ pub enum GnssFaultModel {
         rho_vel: f64,
         /// AR(1) innovation standard deviation for velocity error (m/s).
         sigma_vel_mps: f64,
-        /// Scale factor for inflating the advertised measurement noise covariance.
+        /// Multiplies the advertised 1-sigma accuracies -- *not* the covariance.
+        ///
+        /// `apply_fault` returns `horizontal_accuracy * r_scale` and
+        /// `speed_accuracy * r_scale`, and the measurement models square those to build
+        /// `R` ([`crate::measurements::GPSPositionAndVelocityMeasurement`]), so the noise
+        /// covariance is inflated by `r_scale` **squared**: the common value 5.0 gives a
+        /// 25x `R`, not a 5x one.
         r_scale: f64,
     },
 
@@ -182,7 +189,11 @@ pub enum GnssFaultModel {
         drift_n_mps: f64,
         /// Eastward drift rate (m/s).
         drift_e_mps: f64,
-        /// Random walk PSD (m²/s³) for adding a small stochastic component to the bias.
+        /// Random-walk rate (m²/s, equivalently (m/√s)²) at which the metre-valued bias
+        /// accumulates variance: each step perturbs the bias by a zero-mean draw with
+        /// standard deviation `sqrt(q_bias * dt)`, so its variance grows by `q_bias * dt`.
+        /// Set to zero to disable the stochastic component and leave a purely
+        /// deterministic drift.
         q_bias: f64,
         /// Optional slow rotation of drift direction (rad/s).
         rotate_omega_rps: f64,
@@ -207,6 +218,11 @@ pub enum GnssFaultModel {
     /// The output of one model is fed as the input to the next. This allows
     /// combining e.g. `SlowBias` with a `Hijack` to simulate multi-stage spoofing.
     Combo(Vec<Self>),
+}
+
+/// Default seed value for reproducible simulations
+const fn default_seed() -> u64 {
+    42
 }
 
 /// Configuration container for GNSS degradation in simulation.
@@ -245,11 +261,6 @@ pub enum GnssFaultModel {
 ///     ..Default::default()
 /// };
 /// ```
-/// Default seed value for reproducible simulations
-const fn default_seed() -> u64 {
-    42
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GnssDegradationConfig {
     /// Scheduler that determines when GNSS measurements are emitted
@@ -385,21 +396,19 @@ impl GnssDegradationConfig {
 ///
 /// ## Variants
 ///
-/// - `Imu`: An inertial measurement unit (IMU) step, including the time delta
-///   since the previous step. Drives the prediction step.
-/// - `Gnss`: A GNSS position/velocity fix (possibly degraded or spoofed).
-/// - `Altitude`: A relative altitude or barometric measurement, constraining
-///   vertical drift.
-/// - `GravityAnomaly`: A gravity anomaly measurement, derived from accelerometer
-///   or dedicated gravimeter data and matched against a gravity anomaly map.
-/// - `MagneticAnomaly`: A magnetic anomaly measurement, derived from
-///   magnetometer data (magnitude or components) and matched against a magnetic
-///   anomaly map.
+/// - `Imu`: An inertial measurement unit (IMU) step, carrying the interval between
+///   this source record and the one before it -- not the time since the previously
+///   emitted event. Drives the prediction step.
+/// - `Measurement`: Any boxed [`MeasurementModel`], driving the update step. In a
+///   stream from [`build_event_stream`] this is a GNSS position/velocity fix
+///   (possibly degraded or spoofed), a relative altitude measurement, or a
+///   magnetometer yaw measurement; `strapdown-geonav` additionally puts gravity and
+///   magnetic anomaly measurements into the same variant.
 ///
 /// ## Extensibility
 ///
-/// You can add further variants (e.g., `Pressure`, `SonarDepth`, `StarTracker`)
-/// in the same style if more sensors are to be fused.
+/// A new sensor is added by implementing [`MeasurementModel`] for it, not by adding a
+/// variant here -- `Measurement` already carries any implementor.
 ///
 /// ## Example
 ///
@@ -432,17 +441,31 @@ impl GnssDegradationConfig {
 pub enum Event {
     /// IMU prediction step.
     ///
-    /// - `dt_s`: Time delta since the previous event (seconds).
+    /// - `dt_s`: Integration interval for this step (seconds): the gap between this
+    ///   record's timestamp and the previous record's, *not* the time since the previously
+    ///   emitted event.
     /// - `imu`: Inertial data record (accelerometer, gyroscope, etc.).
     /// - `elapsed_s`: Elapsed simulation time at this event (seconds).
     Imu {
+        /// Integration interval for this step (seconds): the gap between this record's
+        /// timestamp and the previous record's.
         dt_s: f64,
+        /// Body-frame specific force (m/s^2) and angular rate (rad/s) for this step,
+        /// taken from the record unmodified -- gravity is still present in `accel` and is
+        /// removed by the strapdown mechanization during propagation.
         imu: IMUData,
+        /// Elapsed simulation time at this event (seconds since
+        /// [`EventStream::start_time`]).
         elapsed_s: f64,
     },
-    /// Any measurement that implements the MeasurementModel trait.
+    /// Any measurement that implements the `MeasurementModel` trait.
     Measurement {
-        meas: Box<dyn MeasurementModel>, // trait object
+        /// The measurement to run the filter's update step against, held as a trait
+        /// object so one stream can carry GNSS, barometric, magnetometer and
+        /// geophysical updates without the filter loop knowing their concrete types.
+        meas: Box<dyn MeasurementModel>,
+        /// Elapsed simulation time at this event (seconds since
+        /// [`EventStream::start_time`]).
         elapsed_s: f64,
     },
 }
@@ -472,9 +495,22 @@ impl std::fmt::Debug for Event {
         }
     }
 }
+/// A time-ordered sequence of [`Event`]s together with the absolute time its clock runs from.
+///
+/// Produced by [`build_event_stream`] from a slice of [`TestDataRecord`], and consumed by the
+/// event-driven filter loops in `strapdown-sim`. Every event carries an `elapsed_s` measured
+/// from `start_time`, so a consumer recovers the absolute timestamp of an event as
+/// `start_time + elapsed_s` -- which is how each navigation solution gets stamped.
+///
+/// Events are ordered by non-decreasing `elapsed_s`, and a single source record may contribute
+/// several events at the same instant: an [`Event::Imu`] step followed by whichever
+/// measurements that epoch carries.
 #[derive(Debug)]
 pub struct EventStream {
+    /// UTC timestamp of the first source record; the origin every event's `elapsed_s` is
+    /// measured from.
     pub start_time: DateTime<Utc>,
+    /// The events themselves, ordered by elapsed time.
     pub events: Vec<Event>,
 }
 // -------- internal state for AR(1) and bias integration --------
@@ -485,7 +521,7 @@ pub struct EventStream {
 ///
 /// - **Degraded (AR(1))**: maintains correlated error states for position and
 ///   velocity, updated each epoch with an autoregressive process.
-/// - **SlowBias**: integrates a slow, possibly rotating bias in N/E position,
+/// - **`SlowBias`**: integrates a slow, possibly rotating bias in N/E position,
 ///   with optional random walk.
 /// - **Hijack**: does not need state, but still shares the RNG.
 ///
@@ -823,84 +859,6 @@ pub fn apply_fault(
     }
 }
 // --------------------------- public API ---------------------------
-/// Build a time-ordered event stream from recorded data and a GNSS degradation
-/// configuration.
-///
-/// This function converts raw `records` into a vector of [`Event`]s suitable
-/// for an event-driven filter loop. It:
-///
-/// 1. Normalizes the record timestamps to **elapsed seconds** from the first sample.
-/// 2. Emits an [`Event::Imu`] at each step with `dt_s = t[i] - t[i-1]`.
-/// 3. Uses the provided [`GnssDegradationConfig`] to decide *when* to emit GNSS
-///    (via the [`GnssScheduler`]) and *how* to corrupt that GNSS fix
-///    (via the [`GnssFaultModel`], applied by [`apply_fault`]).
-/// 4. Appends each emitted GNSS fix as an [`Event::Gnss`] with the same `elapsed_s`
-///    as the IMU step.
-///
-/// The resulting event stream cleanly separates simulation policy (scheduling
-/// and corruption) from the filter loop, enabling reproducible scenario testing.
-///
-/// # Arguments
-/// - `records`: Source telemetry, ordered by time, providing IMU and GNSS-like
-///   fields (lat/lon/alt/speed/bearing/accuracies).
-/// - `cfg`: GNSS degradation configuration combining a scheduler (*when*) and a
-///   fault model (*what*), plus a seed for deterministic noise.
-///
-/// # Returns
-/// A `EventStream` containing an interleaved sequence of IMU and (optionally
-/// down-sampled/corrupted) GNSS events, ordered by `elapsed_s`.
-///
-/// # Scheduling semantics
-/// - [`GnssScheduler::PassThrough`]: emit a GNSS event at every record step.
-/// - [`GnssScheduler::FixedInterval`]: emit when `elapsed_s >= next_emit_time`,
-///   then advance `next_emit_time += interval_s` (with initial `phase_s`).
-/// - [`GnssScheduler::DutyCycle`]: emit at every record step that falls inside an ON
-///   window. The timeline is `start_phase_s` of initial ON, then `off_s` OFF and `on_s` ON
-///   repeating. See `duty_cycle_is_on`.
-///
-/// # Corruption semantics
-/// The truth-like GNSS (lat/lon/alt + velocity derived from `speed`/`bearing`)
-/// is transformed by [`apply_fault`] according to `cfg.fault`:
-/// - `None`: unchanged.
-/// - `Degraded`: AR(1) wander on position/velocity; advertised horizontal and
-///   velocity sigmas scaled by `r_scale`.
-/// - `SlowBias`: integrates a drifting N/E bias (with optional rotation/random walk).
-/// - `Hijack`: applies a constant N/E offset within a time window.
-/// - `Combo`: intended for sequential composition (hook up as needed).
-///
-/// > **Note:** The current implementation passes `vertical_noise_std` through
-/// > unchanged. If you also want to degrade vertical accuracy, extend the
-/// > `apply_fault` branch and adjust the GNSS measurement construction.
-///
-/// # Units & conventions
-/// - Elapsed time is in **seconds** from the first record.
-/// - `lat_deg`, `lon_deg` are **degrees**; small-offset conversions use radians internally.
-/// - Altitude (m), velocities (m/s), standard deviations are **1σ** (not variances).
-///
-/// # Preconditions & caveats
-/// - `records.len() >= 2` and timestamps are monotonically increasing.
-/// - If your `horizontal_accuracy`/`vertical_accuracy` fields are *variances*,
-///   adjust the `.sqrt()` usage accordingly.
-/// - The event vector capacity is sized roughly to `2 * records.len()` (IMU + GNSS).
-///
-/// # Example
-/// ```
-/// use strapdown::messages::{build_event_stream, GnssDegradationConfig, GnssScheduler, GnssFaultModel};
-/// use strapdown::sim::TestDataRecord;
-///
-/// let records = vec![TestDataRecord::default(); 10]; // load or generate your test data
-/// let cfg = GnssDegradationConfig {
-///     scheduler: GnssScheduler::FixedInterval { interval_s: 10.0, phase_s: 0.0 },
-///     fault: GnssFaultModel::Degraded {
-///         rho_pos: 0.99, sigma_pos_m: 3.0,
-///         rho_vel: 0.95, sigma_vel_mps: 0.3,
-///         r_scale: 5.0,
-///     },
-///     ..Default::default()
-/// };
-/// let events = build_event_stream(&records, &cfg);
-/// // feed into your event-driven filter loop
-/// ```
 /// Tolerance for comparing a sample's elapsed time against a scheduler boundary.
 ///
 /// Elapsed times are reconstructed from millisecond timestamps, so a sample that should land
@@ -935,8 +893,139 @@ fn duty_cycle_is_on(elapsed_s: f64, on_s: f64, off_s: f64, start_phase_s: f64) -
     into_cycle + DUTY_CYCLE_EPSILON_S >= off_s
 }
 
-pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfig) -> EventStream {
-    let start_time = records[0].time;
+/// Build a time-ordered event stream from recorded data and a GNSS degradation
+/// configuration.
+///
+/// This function converts raw `records` into a vector of [`Event`]s suitable
+/// for an event-driven filter loop. It:
+///
+/// 1. Normalizes the record timestamps to **elapsed seconds** from the first sample.
+/// 2. Emits an [`Event::Imu`] at each step with `dt_s = t[i] - t[i-1]`, provided the
+///    record carries all six accelerometer and gyroscope components. If any of them is
+///    `NaN`, only the [`Event::Imu`] is skipped: the relative-altitude and magnetometer
+///    events for that same record are still emitted, and the GNSS event is too if it
+///    would otherwise have been (it is independently gated by the scheduler and by its
+///    own `NaN` check over the fix columns). The next IMU event's `dt_s` still spans only
+///    one record interval rather than absorbing the skipped one.
+/// 3. Uses the provided [`GnssDegradationConfig`] to decide *when* to emit GNSS
+///    (via the [`GnssScheduler`]) and *how* to corrupt that GNSS fix
+///    (via the [`GnssFaultModel`], applied by [`apply_fault`]).
+/// 4. Appends each emitted GNSS fix as an [`Event::Measurement`] carrying a
+///    [`GPSPositionAndVelocityMeasurement`], with the same `elapsed_s` as the IMU step.
+/// 5. Appends a [`RelativeAltitudeMeasurement`] and a [`MagnetometerYawMeasurement`]
+///    whenever the record carries them. These are **not** scheduled or faulted: the
+///    scheduler and fault model govern GNSS only, so baro and magnetometer updates
+///    continue through a GNSS outage.
+///
+/// The resulting event stream cleanly separates simulation policy (scheduling
+/// and corruption) from the filter loop, enabling reproducible scenario testing.
+///
+/// # Arguments
+/// - `records`: Source telemetry, ordered by time, providing IMU and GNSS-like
+///   fields (lat/lon/alt/speed/bearing/accuracies).
+/// - `cfg`: GNSS degradation configuration combining a scheduler (*when*) and a
+///   fault model (*what*), plus a seed for deterministic noise.
+/// - `is_enu`: the local-level frame the filter consuming this stream works in -- `true` for
+///   ENU, `false` for NED. Only the [`MagnetometerYawMeasurement`] reads it, and it must
+///   match the state being updated: the heading a magnetometer implies is a different number
+///   in the two conventions, not merely a different sign, so a mismatch drives yaw to a
+///   reflection of the truth rather than weakening the aid (#305). It is a parameter rather
+///   than a field on `cfg` deliberately: `strapdown-sim` already carries the frame at the top
+///   level of its own configuration, and a second copy inside `GnssDegradationConfig` would
+///   be a second source of truth for one physical fact -- which is how the reflection went
+///   unnoticed in the first place. This mirrors [`crate::sim::dead_reckoning`], which took
+///   the same argument for the same reason in #296.
+///
+/// # Returns
+/// `Ok(EventStream)` -- an interleaved sequence of IMU and (optionally
+/// down-sampled/corrupted) GNSS events, ordered by `elapsed_s` -- or the error described
+/// under `# Errors` below.
+///
+/// # Scheduling semantics
+/// - [`GnssScheduler::PassThrough`]: emit a GNSS event at every record step.
+/// - [`GnssScheduler::FixedInterval`]: emit when `elapsed_s >= next_emit_time`,
+///   then advance `next_emit_time += interval_s` (with initial `phase_s`).
+/// - [`GnssScheduler::DutyCycle`]: emit at every record step that falls inside an ON
+///   window. The timeline is `start_phase_s` of initial ON, then `off_s` OFF and `on_s` ON
+///   repeating. See `duty_cycle_is_on`.
+///
+/// # Corruption semantics
+/// The truth-like GNSS (lat/lon/alt + velocity derived from `speed`/`bearing`)
+/// is transformed by [`apply_fault`] according to `cfg.fault`:
+/// - `None`: unchanged.
+/// - `Degraded`: AR(1) wander on position/velocity; advertised horizontal and
+///   velocity sigmas scaled by `r_scale`.
+/// - `SlowBias`: integrates a drifting N/E bias (with optional rotation/random walk).
+/// - `Hijack`: applies a constant N/E offset within a time window.
+/// - `Combo`: intended for sequential composition (hook up as needed).
+///
+/// > **Note:** The current implementation passes `vertical_noise_std` through
+/// > unchanged. If you also want to degrade vertical accuracy, extend the
+/// > `apply_fault` branch and adjust the GNSS measurement construction.
+///
+/// # Units & conventions
+/// - Elapsed time is in **seconds** from the first record.
+/// - `lat_deg`, `lon_deg` are **degrees**; small-offset conversions use radians internally.
+/// - Altitude (m), velocities (m/s), standard deviations are **1σ** (not variances).
+///
+/// # Preconditions & caveats
+/// - `records` is non-empty and its timestamps are monotonically increasing. A single
+///   record is legal and produces an empty event list, since events are built from
+///   adjacent pairs; an empty slice is an error, see below.
+/// - The accuracy columns (`horizontal_accuracy`, `vertical_accuracy`, `speed_accuracy`)
+///   are read as 1σ standard deviations, not variances; no square root is taken. A `NaN`
+///   falls back to a conservative default -- 15.0 m horizontal, 1000.0 m vertical,
+///   100.0 m/s velocity -- and a finite value is floored before use, at 1e-3 m for both
+///   position accuracies and at 0.1 m/s for speed, so a logged 0.0 cannot produce a
+///   zero-variance `R`.
+/// - The event vector capacity is sized roughly to `2 * records.len()` (IMU + GNSS).
+///
+/// # Errors
+/// [`StrapdownError::InvalidConfiguration`] if `records` is empty. The first record supplies
+/// both the stream's `start_time` and the reference altitude for relative-altitude
+/// measurements, and neither has a defensible default: an `EventStream` has no representable
+/// "no epoch". A slice of length one is *accepted* and yields an empty event list, so the
+/// boundary is emptiness, not "fewer than two".
+///
+/// # Example
+/// ```
+/// use strapdown::messages::{build_event_stream, GnssDegradationConfig, GnssScheduler, GnssFaultModel};
+/// use strapdown::sim::TestDataRecord;
+///
+/// # fn main() -> Result<(), strapdown::StrapdownError> {
+/// let records = vec![TestDataRecord::default(); 10]; // load or generate your test data
+/// let cfg = GnssDegradationConfig {
+///     scheduler: GnssScheduler::FixedInterval { interval_s: 10.0, phase_s: 0.0 },
+///     fault: GnssFaultModel::Degraded {
+///         rho_pos: 0.99, sigma_pos_m: 3.0,
+///         rho_vel: 0.95, sigma_vel_mps: 0.3,
+///         r_scale: 5.0,
+///     },
+///     ..Default::default()
+/// };
+/// let events = build_event_stream(&records, &cfg, false)?; // false = NED
+/// // feed into your event-driven filter loop
+/// # Ok(())
+/// # }
+/// ```
+pub fn build_event_stream(
+    records: &[TestDataRecord],
+    cfg: &GnssDegradationConfig,
+    is_enu: bool,
+) -> Result<EventStream, StrapdownError> {
+    // The first record is load-bearing twice over -- it fixes the epoch the elapsed clock is
+    // measured from and the datum the relative-altitude measurements are referenced to -- so
+    // an empty slice cannot produce a meaningful stream and is rejected up front rather than
+    // indexed into.
+    let first = records
+        .first()
+        .ok_or_else(|| StrapdownError::InvalidConfiguration {
+            field: "event stream records",
+            reason: "cannot build an event stream from zero records: the first record supplies \
+                     the stream's start time and the relative-altitude reference"
+                .to_owned(),
+        })?;
+    let start_time = first.time;
     let records_with_elapsed: Vec<(f64, &TestDataRecord)> = records
         .iter()
         .map(|r| ((r.time - start_time).num_milliseconds() as f64 / 1000.0, r))
@@ -952,7 +1041,7 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
     };
     // Through preprocessing we assert that the first record must have a NED position
     // but it may or may not have IMU or other such measurements.
-    let reference_altitude = records[0].altitude;
+    let reference_altitude = first.altitude;
     for w in records_with_elapsed.windows(2) {
         let (t0, _) = (&w[0].0, &w[0].1);
         let (t1, r1) = (&w[1].0, &w[1].1);
@@ -1007,7 +1096,9 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
                 let vn = r1.speed * bearing_rad.cos();
                 let ve = r1.speed * bearing_rad.sin();
 
-                // Use your provided accuracies (adjust if these are variances vs std).
+                // The record's accuracy columns are 1-sigma standard deviations, floored
+                // so a logged zero cannot produce a singular R. See the caveats on
+                // `build_event_stream`.
                 // If an accuracy is missing (NaN), substitute a conservative default
                 // to avoid propagating NaN into the measurement noise.
                 let horiz_std = if r1.horizontal_accuracy.is_nan() {
@@ -1064,7 +1155,14 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
                 noise_std: MAG_YAW_NOISE, // set a default noise std; adjust as needed
                 apply_declination: true,
                 year: r1.time.year(),
-                day_of_year: r1.time.day() as u16,
+                // `ordinal()`, not `day()`: the WMM wants the day of the *year*, and `day()`
+                // is the day of the month, so every record before this fix claimed to be in
+                // the first 31 days of January. The cost is small -- declination moves 0.004
+                // deg over that span at this dataset's position, well inside the model's own
+                // uncertainty -- but a date field that is wrong by construction is not
+                // something to leave for the next reader to rediscover (#305).
+                day_of_year: r1.time.ordinal() as u16,
+                is_enu,
             };
             events.push(Event::Measurement {
                 meas: Box::new(mag_meas),
@@ -1072,7 +1170,7 @@ pub fn build_event_stream(records: &[TestDataRecord], cfg: &GnssDegradationConfi
             });
         }
     }
-    EventStream { start_time, events }
+    Ok(EventStream { start_time, events })
 }
 
 #[cfg(test)]
@@ -1125,6 +1223,37 @@ mod tests {
         }
         records
     }
+
+    /// An empty slice must return the error, not index out of bounds (#311). `build_event_stream`
+    /// is `pub` library code, so an empty read from `TestDataRecord::from_csv` -- which skips
+    /// unparseable rows rather than failing -- must not abort the process.
+    #[test]
+    fn empty_records_are_an_error_not_a_panic() {
+        let err = build_event_stream(&[], &GnssDegradationConfig::default(), false).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                StrapdownError::InvalidConfiguration { field, .. } if field == "event stream records"
+            ),
+            "an empty record slice must report an invalid configuration, got: {err}"
+        );
+    }
+
+    /// A single record is the boundary the guard must not move: it supplies `start_time` and
+    /// the altitude reference, and the event list is empty because events are built from
+    /// adjacent pairs. A guard written as `len() < 2` would wrongly reject this.
+    #[test]
+    fn single_record_yields_a_stream_with_no_events() {
+        let records = create_test_records(1, 0.1);
+        let stream =
+            build_event_stream(&records, &GnssDegradationConfig::default(), false).unwrap();
+        assert_eq!(stream.start_time, records[0].time);
+        assert!(
+            stream.events.is_empty(),
+            "one record spans no interval, so it can produce no events"
+        );
+    }
+
     #[test]
     fn test_passthrough_scheduler() {
         let records = create_test_records(10, 0.1); // 10 records, 0.1s apart
@@ -1134,7 +1263,7 @@ mod tests {
             ..Default::default()
         };
 
-        let events = build_event_stream(&records, &config);
+        let events = build_event_stream(&records, &config, false).unwrap();
 
         // We expect IMU events for each record except the first,
         // and GNSS events for each record except the first
@@ -1173,7 +1302,7 @@ mod tests {
             ..Default::default()
         };
 
-        let events = build_event_stream(&records, &config);
+        let events = build_event_stream(&records, &config, false).unwrap();
 
         // We expect IMU events for each record except the first,
         // and GNSS events every 0.5s (so at records 5, 10, 15...)
@@ -1209,7 +1338,7 @@ mod tests {
             ..Default::default()
         };
         //
-        let events = build_event_stream(&records, &config);
+        let events = build_event_stream(&records, &config, false).unwrap();
         let measurements = events
             .events
             .iter()
@@ -1248,7 +1377,7 @@ mod tests {
             ..Default::default()
         };
 
-        let stream = build_event_stream(&records, &config);
+        let stream = build_event_stream(&records, &config, false).unwrap();
         // The GNSS fix is the only multi-dimensional measurement in the stream; baro and mag
         // are scalar and are not scheduled.
         let fix_times: Vec<f64> = stream
@@ -1305,7 +1434,7 @@ mod tests {
                 fault: GnssFaultModel::None,
                 ..Default::default()
             };
-            let stream = build_event_stream(&records, &config);
+            let stream = build_event_stream(&records, &config, false).unwrap();
             let fixes = stream
                 .events
                 .iter()
@@ -1334,7 +1463,7 @@ mod tests {
             seed: 500,
         };
 
-        let events = build_event_stream(&records, &config);
+        let events = build_event_stream(&records, &config, false).unwrap();
 
         // Find GNSS events
         let gnss_events: Vec<&Event> = events
@@ -1443,7 +1572,7 @@ mod tests {
             ..Default::default()
         };
 
-        let events = build_event_stream(&records, &config);
+        let events = build_event_stream(&records, &config, false).unwrap();
 
         // Find GNSS events and group by time
         let mut gnss_by_time: Vec<(f64, &GPSPositionAndVelocityMeasurement)> = Vec::new();
@@ -1489,7 +1618,7 @@ mod tests {
         };
 
         // This should at least not crash
-        let events = build_event_stream(&records, &config);
+        let events = build_event_stream(&records, &config, false).unwrap();
         assert!(!events.events.is_empty());
     }
 
@@ -1530,7 +1659,7 @@ mod tests {
             ..Default::default()
         };
 
-        let events = build_event_stream(&records, &config);
+        let events = build_event_stream(&records, &config, false).unwrap();
         // Should have events
         assert!(!events.events.is_empty());
 
@@ -1558,7 +1687,7 @@ mod tests {
             ..Default::default()
         };
 
-        let events = build_event_stream(&records, &config);
+        let events = build_event_stream(&records, &config, false).unwrap();
         // Should have events
         assert!(!events.events.is_empty());
 
@@ -1651,7 +1780,7 @@ mod tests {
             ..Default::default()
         };
 
-        let events = build_event_stream(&records, &config);
+        let events = build_event_stream(&records, &config, false).unwrap();
 
         // Should have events even with NaN accuracies
         assert!(!events.events.is_empty());
@@ -1679,7 +1808,7 @@ mod tests {
             ..Default::default()
         };
 
-        let events = build_event_stream(&records, &config);
+        let events = build_event_stream(&records, &config, false).unwrap();
         // Should have events
         assert!(!events.events.is_empty());
     }

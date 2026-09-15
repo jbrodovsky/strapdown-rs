@@ -61,7 +61,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use clap::{Args, ValueEnum};
 
 use crate::NavigationFilter;
-use crate::earth::METERS_TO_DEGREES;
+use crate::earth::{METERS_TO_DEGREES, METERS_TO_RADIANS};
 use crate::gating::InnovationGate;
 use crate::kalman::{InitialState, UnscentedKalmanFilter};
 use crate::messages::{Event, EventStream, GnssFaultModel, GnssScheduler};
@@ -73,27 +73,171 @@ use health::HealthMonitor;
 pub use execution::{ExecutionLimits, ExecutionMonitor};
 pub use health::HealthLimits;
 
+/// Per-step position process noise for [`DEFAULT_PROCESS_NOISE`], as a standard deviation in
+/// **metres**.
+///
+/// Every position quantity in the default diagonal is written here, in one unit, and converted
+/// to each state's own unit exactly once at the point of use. That is the whole of the fix for
+/// #308: latitude and longitude are held in radians and altitude in metres, so three literals
+/// chosen to look alike on the page are three different physical claims, and the crate shipped
+/// `1e-6, 1e-6, 1e-4` -- a 6367 m horizontal standard deviation next to a 1 cm vertical one --
+/// for exactly that reason.
+///
+/// # Why 0.1 m
+///
+/// The value is not new: [`crate::sim`]'s own aiding acceptance tests (`core/tests/aiding.rs`)
+/// already define `POSITION_PROCESS_NOISE_M = 0.1` and build their diagonal this way, having
+/// hit the same trap. Adopting it here gives the workspace one number for this quantity instead
+/// of a fourth.
+///
+/// What bounds it is the Kalman gain it implies. For a scalar random walk of per-step standard
+/// deviation $q$ observed with measurement standard deviation $r$, the steady-state prior
+/// variance solves $P^2 - q^2 P - q^2 r^2 = 0$, so for $q \ll r$ it is $P \approx qr$ and the
+/// steady-state gain is
+///
+/// $$ K = \frac{P}{P + r^2} \approx \frac{q}{q + r}. $$
+///
+/// The reference recording's GNSS reports a 3.81 m horizontal 1-sigma, and that sets both ends
+/// of the admissible band:
+///
+/// - **Upper.** $K$ is what decides whether the filter filters at all. Requiring it to average
+///   at least ten fixes ($K \le 0.1$) caps $q$ at $r/9 \approx 0.42$ m. Above that the filter
+///   increasingly discards its own prediction, continuously, all the way up to the $K = 0.999$
+///   of the defect -- which is why the old value produced a final solution sitting $10^{-8}$ m
+///   from the fix it had just consumed.
+/// - **Lower.** As $q \to 0$ the position block of $P$ collapses, $K \to 0$, and fixes stop
+///   being able to correct inertial drift that is really there. There is no clean closed form
+///   for this end, because what it trades against is unmodelled dynamics rather than a quantity
+///   in the filter; empirically on the reference recording the whole-run statistics are flat
+///   from 0.01 m to 1 m and the bias estimates stay inside their anti-windup clamps throughout.
+///
+/// 0.1 m sits an order of magnitude inside the derived upper bound, not against it: it gives
+/// $K = 0.026$, so the filter averages roughly forty fixes and settles at a horizontal standard
+/// deviation of $\sqrt{qr} = 0.62$ m against a 3.81 m fix. None of that is read off what the
+/// suite currently prints.
+pub const POSITION_PROCESS_NOISE_M: f64 = 0.1;
+
+/// [`POSITION_PROCESS_NOISE_M`] as a latitude/longitude variance, rad^2.
+///
+/// The filters hold latitude and longitude in radians, so a metric horizontal uncertainty has
+/// to pass through [`crate::earth::METERS_TO_RADIANS`] before it can sit on a covariance
+/// diagonal -- the same conversion [`initialize_ukf`] spells out as
+/// `(position_accuracy * METERS_TO_DEGREES).to_radians()` when it builds $P_0$.
+const HORIZONTAL_POSITION_PROCESS_NOISE_RAD2: f64 = {
+    let radians = POSITION_PROCESS_NOISE_M * METERS_TO_RADIANS;
+    radians * radians
+};
+
+/// Initial position uncertainty the default 15-state filters claim, as a standard deviation
+/// in **metres**.
+///
+/// The $P_0$ counterpart of [`POSITION_PROCESS_NOISE_M`], and it exists for the same reason:
+/// [`initialize_eskf`] and [`crate::engine`]'s `DEFAULT_INITIAL_COVARIANCE` both wrote their
+/// position block as three literals -- `1e-6, 1e-6, 1e-4`, one of them commented "(m^2)" --
+/// when latitude and longitude are radians and altitude is metres. Read correctly that is a
+/// 6367 m horizontal claim beside a 1 cm vertical one, which is #308 in $P_0$ rather than in
+/// $Q$; #303 had already noticed it in passing. Written in metres and converted at the point
+/// of use, the units are checkable by reading them.
+///
+/// # Why 10 m
+///
+/// A coarse GNSS initialisation, and deliberately conservative: the reference recording's
+/// receiver reports 3.81 m horizontal and 1.38 m vertical 1-sigma, so this is about 2.6x what
+/// the fix that positions the vehicle actually claims.
+///
+/// Erring large is the safe direction, and the asymmetry is the derivation. A $P_0$ that is
+/// too large costs only a short transient: with a 5 m fix the scalar Riccati recursion
+/// $1/P_k = 1/P_0 + k/R$ pulls $(10 \text{ m})^2$ down to the metre level inside about twenty
+/// fixes, twenty seconds at 1 Hz. A $P_0$ that is too small does not self-correct -- the
+/// filter reports an uncertainty it has not earned, weights its own prediction accordingly,
+/// and rejects or discounts the fixes that would have corrected it, which is the failure #260
+/// gating turns from a slow drift into an outright rejection.
+///
+/// The same number is what `core/tests/aiding.rs` already uses for this quantity, so adopting
+/// it gives the workspace one value rather than a fourth. Callers holding a fix's own reported
+/// accuracy should prefer it -- [`initialize_ukf`] and [`initialize_ekf`] build $P_0$ from
+/// `TestDataRecord::horizontal_accuracy`, and [`crate::IMUQuality::auto_covariance`] derives
+/// the whole diagonal from an IMU grade and an [`crate::InitialUncertainty`].
+pub const DEFAULT_INITIAL_POSITION_UNCERTAINTY_M: f64 = 10.0;
+
+/// [`DEFAULT_INITIAL_POSITION_UNCERTAINTY_M`] as a latitude/longitude variance, rad^2.
+pub(crate) const INITIAL_HORIZONTAL_POSITION_VARIANCE_RAD2: f64 = {
+    let radians = DEFAULT_INITIAL_POSITION_UNCERTAINTY_M * METERS_TO_RADIANS;
+    radians * radians
+};
+
+/// [`DEFAULT_INITIAL_POSITION_UNCERTAINTY_M`] as an altitude variance, m^2.
+pub(crate) const INITIAL_VERTICAL_POSITION_VARIANCE_M2: f64 =
+    DEFAULT_INITIAL_POSITION_UNCERTAINTY_M * DEFAULT_INITIAL_POSITION_UNCERTAINTY_M;
+
+/// Per-step altitude process noise for [`DEFAULT_PROCESS_NOISE`], m^2.
+///
+/// **Deliberately its own constant, and deliberately unchanged at its historical value.**
+/// #308 is a units defect in the *horizontal* entries: they were rad^2 written as though they
+/// were m^2. The altitude entry never had that defect -- it was already m^2 and already meant
+/// what it said.
+///
+/// So it is not tied to [`POSITION_PROCESS_NOISE_M`], even though `0.1 m` squared would be the
+/// tidy-looking thing to write. Doing that would multiply this entry by 100 in variance, and
+/// downstream by 1250 where `core/tests/integration_tests.rs` scales it -- a silent retune of
+/// the vertical channel, folded into a units fix, in the one channel this crate's history says
+/// cannot take one quietly (#266, #286, #295 are all vertical-channel issues).
+///
+/// Whether 1e-4 m^2 -- a 1 cm per-step standard deviation against a 1.38 m reported vertical
+/// fix accuracy -- is the right *tuning* is a fair question and a separate one. The derivation
+/// offered for [`POSITION_PROCESS_NOISE_M`] is horizontal-only: it bounds the steady-state
+/// gain against the 3.81 m horizontal accuracy, and says nothing about the vertical channel.
+const VERTICAL_POSITION_PROCESS_NOISE_M2: f64 = 1e-4;
+
+/// Default process noise covariance diagonal used when a caller supplies none.
+///
+/// The filters in this crate build $Q$ with `DMatrix::from_diagonal` from this array and add
+/// it to the propagated covariance once per step, so each entry is a per-step variance and not
+/// a spectral density scaled by $\Delta t$. Ordering matches the 15-state vector
+/// \[lat, lon, alt, v_n, v_e, v_d, roll, pitch, yaw, accel bias x/y/z, gyro bias x/y/z\], with
+/// the states in the crate's native units (angles in radians, altitude in metres, velocities in
+/// m/s). Nine-state filters take only the leading nine entries.
+///
+/// The three position entries are built from named constants rather than written as literals,
+/// because they are *not* in the same unit as each other: latitude and longitude are radians
+/// and altitude is metres. Until #308 they were written as `1e-6, 1e-6, 1e-4`, three literals
+/// picked as though they were, which made the horizontal terms a 6.4 km per-step standard
+/// deviation sitting next to a 1 cm one.
+///
+/// Only the horizontal pair changed. [`VERTICAL_POSITION_PROCESS_NOISE_M2`] keeps its
+/// historical `1e-4`, because altitude never carried the defect and a units fix is not the
+/// place to retune the vertical channel. The remaining entries are hand-picked tuning values
+/// rather than values derived from any particular sensor.
+///
+/// Callers in this crate have also reused the array verbatim as an initial error covariance
+/// $P_0$; [`crate::IMUQuality::auto_covariance`] derives that fifteen-element diagonal from an
+/// IMU grade and an initial fix accuracy instead.
 pub const DEFAULT_PROCESS_NOISE: [f64; 15] = [
-    // Default process noise if not provided
-    1e-6, // position noise 1e-6
-    1e-6, // position noise 1e-6
-    1e-4, // altitude noise
-    1e-3, // velocity north noise
-    1e-3, // velocity east noise
-    1e-3, // velocity down noise
-    1e-5, // roll noise
-    1e-5, // pitch noise
-    1e-5, // yaw noise
-    1e-6, // acc bias x noise
-    1e-6, // acc bias y noise
-    1e-6, // acc bias z noise
-    1e-8, // gyro bias x noise
-    1e-8, // gyro bias y noise
-    1e-8, // gyro bias z noise
+    HORIZONTAL_POSITION_PROCESS_NOISE_RAD2, // latitude, rad^2
+    HORIZONTAL_POSITION_PROCESS_NOISE_RAD2, // longitude, rad^2
+    VERTICAL_POSITION_PROCESS_NOISE_M2,     // altitude, m^2
+    1e-3,                                   // velocity north noise
+    1e-3,                                   // velocity east noise
+    1e-3,                                   // velocity down noise
+    1e-5,                                   // roll noise
+    1e-5,                                   // pitch noise
+    1e-5,                                   // yaw noise
+    1e-6,                                   // acc bias x noise
+    1e-6,                                   // acc bias y noise
+    1e-6,                                   // acc bias z noise
+    1e-8,                                   // gyro bias x noise
+    1e-8,                                   // gyro bias y noise
+    1e-8,                                   // gyro bias z noise
 ];
 
+/// Default [`ExecutionLimits::max_wall_clock_ratio`]: a run may burn at most a quarter of a
+/// second of wall-clock time per second of trajectory it simulates.
 pub const DEFAULT_MAX_WALL_CLOCK_RATIO: f64 = 0.25;
+/// Default [`ExecutionLimits::max_wall_clock_s`]: hard ceiling of 1200 wall-clock seconds per
+/// trajectory, whichever of it and the ratio budget is smaller.
 pub const DEFAULT_MAX_WALL_CLOCK_S: f64 = 1200.0;
+/// Default [`ExecutionLimits::max_no_progress_s`]: 600 wall-clock seconds without a call to
+/// [`ExecutionMonitor::mark_progress`] before the run is treated as hung.
 pub const DEFAULT_MAX_NO_PROGRESS_S: f64 = 600.0;
 
 fn de_f64_nan<'de, D>(deserializer: D) -> Result<f64, D::Error>
@@ -300,10 +444,10 @@ impl TestDataRecord {
         }
         Ok(records)
     }
-    /// Writes a vector of TestDataRecord structs to a CSV file.
+    /// Writes a vector of `TestDataRecord` structs to a CSV file.
     ///
     /// # Arguments
-    /// * `records` - Vector of TestDataRecord structs to write
+    /// * `records` - Vector of `TestDataRecord` structs to write
     /// * `path` - Path where the CSV file will be saved
     ///
     /// # Returns
@@ -366,10 +510,10 @@ impl TestDataRecord {
         Ok(())
     }
 
-    /// Writes a vector of TestDataRecord structs to an HDF5 file.
+    /// Writes a vector of `TestDataRecord` structs to an HDF5 file.
     ///
     /// # Arguments
-    /// * `records` - Vector of TestDataRecord structs to write
+    /// * `records` - Vector of `TestDataRecord` structs to write
     /// * `path` - Path where the HDF5 file will be saved
     ///
     /// # Returns
@@ -462,14 +606,14 @@ impl TestDataRecord {
         write_f64_field!("grav_x", grav_x);
         Ok(())
     }
-    /// Writes a vector of TestDataRecord structs to an MCAP file.
+    /// Writes a vector of `TestDataRecord` structs to an MCAP file.
     ///
-    /// **Note**: This method uses MessagePack encoding. Due to CSV-specific field deserializers\
-    /// in TestDataRecord, direct MCAP deserialization may have limitations. For production use,
-    /// consider converting to NavigationResult or using CSV format for TestDataRecord.
+    /// **Note**: This method uses `MessagePack` encoding. Due to CSV-specific field deserializers\
+    /// in `TestDataRecord`, direct MCAP deserialization may have limitations. For production use,
+    /// consider converting to `NavigationResult` or using CSV format for `TestDataRecord`.
     ///
     /// # Arguments
-    /// * `records` - Vector of TestDataRecord structs to write
+    /// * `records` - Vector of `TestDataRecord` structs to write
     /// * `path` - Path where the MCAP file will be saved
     ///
     /// # Returns
@@ -529,7 +673,7 @@ impl TestDataRecord {
         Ok(())
     }
 
-    /// Reads an HDF5 file and returns a vector of TestDataRecord structs.
+    /// Reads an HDF5 file and returns a vector of `TestDataRecord` structs.
     ///
     /// # Arguments
     /// * `path` - Path to the HDF5 file to read.
@@ -654,10 +798,10 @@ impl TestDataRecord {
         }
     }
 
-    /// Writes a vector of TestDataRecord structs to a netCDF file.
+    /// Writes a vector of `TestDataRecord` structs to a netCDF file.
     ///
     /// # Arguments
-    /// * `records` - Vector of TestDataRecord structs to write
+    /// * `records` - Vector of `TestDataRecord` structs to write
     /// * `path` - Path where the netCDF file will be saved
     ///
     /// # Returns
@@ -665,7 +809,7 @@ impl TestDataRecord {
     #[cfg(feature = "netcdf")]
     /// # Errors
     /// If the file cannot be created or written, or the records cannot be
-    /// serialised as NetCDF.
+    /// serialised as `NetCDF`.
     pub fn to_netcdf<P: AsRef<Path>>(records: &[Self], path: P) -> Result<()> {
         if records.is_empty() {
             bail!("Cannot write empty records to netCDF");
@@ -764,7 +908,7 @@ impl TestDataRecord {
     /// * `Err` if the file cannot be read or parsed.
     #[cfg(feature = "netcdf")]
     /// # Errors
-    /// If the file cannot be read, or its contents are not valid NetCDF.
+    /// If the file cannot be read, or its contents are not valid `NetCDF`.
     pub fn from_netcdf<P: AsRef<Path>>(path: P) -> Result<Vec<Self>> {
         let file = netcdf::open(path)?;
 
@@ -863,11 +1007,11 @@ impl TestDataRecord {
         Ok(records)
     }
 
-    /// Reads an MCAP file and returns a vector of TestDataRecord structs.
+    /// Reads an MCAP file and returns a vector of `TestDataRecord` structs.
     ///
-    /// **Note**: Due to CSV-specific field deserializers in TestDataRecord, MCAP deserialization\
-    /// may fail. For production use, consider using CSV format for TestDataRecord or convert\
-    /// to NavigationResult which fully supports MCAP.
+    /// **Note**: Due to CSV-specific field deserializers in `TestDataRecord`, MCAP deserialization\
+    /// may fail. For production use, consider using CSV format for `TestDataRecord` or convert\
+    /// to `NavigationResult` which fully supports MCAP.
     ///
     /// # Arguments
     /// * `path` - Path to the MCAP file to read.
@@ -908,20 +1052,35 @@ impl Display for TestDataRecord {
 /// Struct representing the covariance diagonal of a navigation solution in NED coordinates.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct NEDCovariance {
+    /// Variance of the latitude estimate.
     pub latitude_cov: f64,
+    /// Variance of the longitude estimate.
     pub longitude_cov: f64,
+    /// Variance of the altitude estimate.
     pub altitude_cov: f64,
+    /// Variance of the north velocity estimate.
     pub velocity_n_cov: f64,
+    /// Variance of the east velocity estimate.
     pub velocity_e_cov: f64,
+    /// Variance of the vertical velocity estimate.
     pub velocity_v_cov: f64,
+    /// Variance of the roll estimate.
     pub roll_cov: f64,
+    /// Variance of the pitch estimate.
     pub pitch_cov: f64,
+    /// Variance of the yaw estimate.
     pub yaw_cov: f64,
+    /// Variance of the accelerometer x-axis bias estimate.
     pub acc_bias_x_cov: f64,
+    /// Variance of the accelerometer y-axis bias estimate.
     pub acc_bias_y_cov: f64,
+    /// Variance of the accelerometer z-axis bias estimate.
     pub acc_bias_z_cov: f64,
+    /// Variance of the gyroscope x-axis bias estimate.
     pub gyro_bias_x_cov: f64,
+    /// Variance of the gyroscope y-axis bias estimate.
     pub gyro_bias_y_cov: f64,
+    /// Variance of the gyroscope z-axis bias estimate.
     pub gyro_bias_z_cov: f64,
 }
 /// Generic result struct for navigation simulations.
@@ -953,11 +1112,18 @@ pub struct NavigationResult {
     pub velocity_east: f64,
     /// Vertical velocity in m/s
     pub velocity_vertical: f64,
-    /// Roll angle in radians
+    /// Roll angle in radians, on -pi..pi.
+    ///
+    /// All three angles are written on the branch `Rotation3::euler_angles` returns, whether
+    /// the row came from a filter's `get_estimate` or from the dead-reckoning writer; before
+    /// #314 the closed-loop rows used 0..2*pi and the open-loop rows did not, so one CSV
+    /// schema carried two conventions.
     pub roll: f64,
-    /// Pitch angle in radians
+    /// Pitch angle in radians. On -pi/2..pi/2 whenever the row came from a rotation -- that
+    /// is the range the Euler decomposition produces -- and on -pi..pi in general, since the
+    /// EKF and UKF carry pitch as a plain state element that an update can move.
     pub pitch: f64,
-    /// Yaw angle in radians
+    /// Yaw angle in radians, on -pi..pi; negative is west of north.
     pub yaw: f64,
     /// IMU accelerometer x-axis bias in m/s^2
     pub acc_bias_x: f64,
@@ -1041,15 +1207,15 @@ impl Default for NavigationResult {
     }
 }
 impl NavigationResult {
-    /// Creates a new NavigationResult with default values.
+    /// Creates a new `NavigationResult` with default values.
     pub fn new() -> Self {
         Self::default() // add in validation
     }
 
-    /// Writes the NavigationResult to a CSV file.
+    /// Writes the `NavigationResult` to a CSV file.
     ///
     /// # Arguments
-    /// * `records` - Vector of NavigationResult structs to write
+    /// * `records` - Vector of `NavigationResult` structs to write
     /// * `path` - Path where the CSV file will be saved
     ///
     /// # Returns
@@ -1065,7 +1231,7 @@ impl NavigationResult {
         writer.flush()?;
         Ok(())
     }
-    /// Reads a CSV file and returns a vector of NavigationResult structs.
+    /// Reads a CSV file and returns a vector of `NavigationResult` structs.
     ///
     /// # Arguments
     /// * `path` - Path to the CSV file to read.
@@ -1087,10 +1253,10 @@ impl NavigationResult {
         Ok(records)
     }
 
-    /// Writes a vector of NavigationResult structs to an HDF5 file.
+    /// Writes a vector of `NavigationResult` structs to an HDF5 file.
     ///
     /// # Arguments
-    /// * `records` - Vector of NavigationResult structs to write
+    /// * `records` - Vector of `NavigationResult` structs to write
     /// * `path` - Path where the HDF5 file will be saved
     ///    
     ///
@@ -1184,7 +1350,7 @@ impl NavigationResult {
 
         Ok(())
     }
-    /// Reads an HDF5 file and returns a vector of NavigationResult structs.
+    /// Reads an HDF5 file and returns a vector of `NavigationResult` structs.
     ///
     /// # Arguments
     /// * `path` - Path to the HDF5 file to read.
@@ -1312,10 +1478,10 @@ impl NavigationResult {
         }
     }
 
-    /// Writes a vector of NavigationResult structs to a netCDF file.
+    /// Writes a vector of `NavigationResult` structs to a netCDF file.
     ///
     /// # Arguments
-    /// * `records` - Vector of NavigationResult structs to write
+    /// * `records` - Vector of `NavigationResult` structs to write
     /// * `path` - Path where the netCDF file will be saved
     ///
     /// # Returns
@@ -1323,7 +1489,7 @@ impl NavigationResult {
     #[cfg(feature = "netcdf")]
     /// # Errors
     /// If the file cannot be created or written, or the records cannot be
-    /// serialised as NetCDF.
+    /// serialised as `NetCDF`.
     pub fn to_netcdf<P: AsRef<Path>>(records: &[Self], path: P) -> Result<()> {
         if records.is_empty() {
             bail!("Cannot write empty records to netCDF");
@@ -1425,7 +1591,7 @@ impl NavigationResult {
     /// * `Err` if the file cannot be read or parsed.
     #[cfg(feature = "netcdf")]
     /// # Errors
-    /// If the file cannot be read, or its contents are not valid NetCDF.
+    /// If the file cannot be read, or its contents are not valid `NetCDF`.
     pub fn from_netcdf<P: AsRef<Path>>(path: P) -> Result<Vec<Self>> {
         let file = netcdf::open(path)?;
 
@@ -1523,10 +1689,10 @@ impl NavigationResult {
 
         Ok(records)
     }
-    /// Writes a vector of NavigationResult structs to an MCAP file.
+    /// Writes a vector of `NavigationResult` structs to an MCAP file.
     ///
     /// # Arguments
-    /// * `records` - Vector of NavigationResult structs to write
+    /// * `records` - Vector of `NavigationResult` structs to write
     /// * `path` - Path where the MCAP file will be saved
     ///
     /// # Returns
@@ -1600,7 +1766,7 @@ impl NavigationResult {
         Ok(())
     }
 
-    /// Reads an MCAP file and returns a vector of NavigationResult structs.
+    /// Reads an MCAP file and returns a vector of `NavigationResult` structs.
     ///
     /// # Example
     /// ```no_run
@@ -1634,23 +1800,23 @@ impl NavigationResult {
         Ok(records)
     }
 }
-/// Convert DVectors containing the navigation state mean and covariance into a NavigationResult
+/// Convert `DVectors` containing the navigation state mean and covariance into a `NavigationResult`
 /// struct.
 ///
 /// This implementation is useful for converting the output of a Kalman filter or UKF into a
-/// NavigationResult, which can then be used for further processing or analysis.
+/// `NavigationResult`, which can then be used for further processing or analysis.
 ///
 /// # Arguments
 /// - `timestamp`: The timestamp of the navigation solution.
-/// - `state`: A DVector containing the navigation state mean.
-/// - `covariance`: A DMatrix containing the covariance of the state.
-/// - `imu_data`: An IMUData struct containing the IMU measurements.
+/// - `state`: A `DVector` containing the navigation state mean.
+/// - `covariance`: A `DMatrix` containing the covariance of the state.
+/// - `imu_data`: An `IMUData` struct containing the IMU measurements.
 /// - `mag_x`, `mag_y`, `mag_z`: Magnetic field strength in micro teslas.
 /// - `pressure`: Pressure in millibars.
 /// - `freeair`: Free-air gravity anomaly in mGal.
 ///
 /// # Returns
-/// A NavigationResult struct containing the navigation solution.
+/// A `NavigationResult` struct containing the navigation solution.
 impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>)> for NavigationResult {
     /// # Panics
     /// If the state is not 15 elements or the covariance is not 15x15.
@@ -1720,20 +1886,20 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>)> for NavigationResult {
         }
     }
 }
-/// Convert NED UKF to NavigationResult.
+/// Convert NED UKF to `NavigationResult`.
 ///
 /// This implementation is useful for converting the output of a UKF into a
-/// NavigationResult, which can then be used for further processing or analysis.
+/// `NavigationResult`, which can then be used for further processing or analysis.
 ///
 /// # Arguments
 /// - `timestamp`: The timestamp of the navigation solution.
 /// - `ukf`: A reference to the UKF instance containing the navigation state mean and covariance.
-/// - `imu_data`: An IMUData struct containing the IMU measurements.
+/// - `imu_data`: An `IMUData` struct containing the IMU measurements.
 /// - `magnetic_vector`: Magnetic field strength measurement in micro teslas (body frame x, y, z).
 /// - `pressure`: Pressure in millibars.
 ///
 /// # Returns
-/// A NavigationResult struct containing the navigation solution.
+/// A `NavigationResult` struct containing the navigation solution.
 impl From<(&DateTime<Utc>, &UnscentedKalmanFilter)> for NavigationResult {
     fn from((timestamp, ukf): (&DateTime<Utc>, &UnscentedKalmanFilter)) -> Self {
         let state = &ukf.get_estimate();
@@ -1838,17 +2004,17 @@ impl From<(&DateTime<Utc>, &crate::kalman::ExtendedKalmanFilter)> for Navigation
     }
 }
 
-/// Convert StrapdownState to NavigationResult.
+/// Convert `StrapdownState` to `NavigationResult`.
 ///
-/// This implementation is useful for converting the output of a StrapdownState into a
-/// NavigationResult, which can then be used for further processing or analysis.
+/// This implementation is useful for converting the output of a `StrapdownState` into a
+/// `NavigationResult`, which can then be used for further processing or analysis.
 ///
 /// # Arguments
 /// - `timestamp`: The timestamp of the navigation solution.
-/// - `state`: A reference to the StrapdownState instance containing the navigation state.
+/// - `state`: A reference to the `StrapdownState` instance containing the navigation state.
 ///
 /// # Returns
-/// A NavigationResult struct containing the navigation solution.
+/// A `NavigationResult` struct containing the navigation solution.
 impl From<(&DateTime<Utc>, &StrapdownState)> for NavigationResult {
     fn from((timestamp, state): (&DateTime<Utc>, &StrapdownState)) -> Self {
         //let wmm_date: Date = Date::from_calendar_date(
@@ -1900,7 +2066,7 @@ impl From<(&DateTime<Utc>, &StrapdownState)> for NavigationResult {
 }
 
 impl NavigationResult {
-    /// Create NavigationResult from particle filter state
+    /// Create `NavigationResult` from particle filter state
     ///
     /// Creates a navigation result from a 9-element state vector (position, velocity, attitude)
     /// and covariance matrix produced by particle filter averaging. Since particle filters don't
@@ -1961,11 +2127,130 @@ impl NavigationResult {
     }
 }
 
+/// Number of leading records averaged when checking a file against its declared frame.
+///
+/// Ten samples is a compromise between two failure modes. One sample is what
+/// [`initialize_ukf`] and friends have available -- they are handed a single pose -- and it
+/// carries the full per-sample accelerometer noise; averaging ten suppresses that by
+/// $\sqrt{10}$ without reaching far enough into the recording to average over a manoeuvre.
+/// At the 1 Hz of `core/tests/test_data.csv` that is ten seconds, and at the 10 Hz of
+/// `strapdown-sim syn` it is one.
+pub const FRAME_CHECK_SAMPLES: usize = 10;
+
+/// Fraction of local gravity by which sensed specific force must contradict the declared
+/// frame before [`check_declared_frame`] rejects it.
+///
+/// The decision variable is the sensed vertical specific force multiplied by the sign the
+/// declared frame expects, so at rest it reads $+g$ when the declaration is right and $-g$
+/// when it is wrong -- the two conventions are a full $2g$ apart. Rejecting at $-0.5g$
+/// rather than at the $0$ midpoint is a deliberate asymmetry: a false rejection stops a
+/// legitimate run, while a false acceptance only reproduces the behaviour this crate shipped
+/// before #296, so the guard is biased towards believing the caller.
+///
+/// What that buys, in physical terms: firing on a *correctly* declared file needs the
+/// windowed mean vertical acceleration to exceed $1.5g$ **downward** -- past free fall
+/// ($1g$, which reads as exactly zero specific force and is accepted), and so requiring
+/// sustained downward thrust or a near-inverted platform. Firing on a *wrongly* declared
+/// file at rest has $1g$ of margin, twice the threshold. Sensor noise is nowhere near
+/// either bound: consumer-grade accelerometer bias instability is 0.1 m/s^2 and the
+/// velocity random walk contributes ~5e-3 m/s^2 per 0.1 s sample, three orders of magnitude
+/// under $0.5g$.
+pub const FRAME_CHECK_MARGIN_G: f64 = 0.5;
+
+/// Reject records whose sensed specific force contradicts the declared local-level frame.
+///
+/// At rest an accelerometer senses the reaction to gravity, so rotating its reading into the
+/// navigation frame gives $+g$ on ENU up and $-g$ on NED down (Groves 5.54 with zero
+/// inertial acceleration). [`TestDataRecord`] carries no frame tag -- a Sensor Logger export
+/// and [`generate_synthetic`] output are indistinguishable once loaded -- so this quantity is
+/// the only thing that can tell the two apart. It is the same quantity
+/// [`TestDataRecord::attitude`] documents and that `test_attitude_cancels_gravity_in_enu`
+/// already asserts: $+9.72$ m/s^2 on `core/tests/test_data.csv`, $-9.78$ m/s^2 on `syn`
+/// output.
+///
+/// This exists because getting the frame wrong is not a small error. Mechanizing NED records
+/// as ENU adds the gravity model to the sensed specific force instead of cancelling it, and
+/// the solution falls at $2g$: 35 km and 1174 m/s of vertical velocity in 60 s of stationary
+/// truth (#296). Before the frame was selectable that was the only thing these entry points
+/// could do; now that it is, the wrong answer must be an error rather than a plausible-looking
+/// CSV.
+///
+/// The check fails **open**, never closed. An empty window, a non-finite gravity (which a NaN
+/// latitude or altitude produces), or a record whose rotated specific force is not finite all
+/// return `Ok`: this guard's job is to catch the overwhelming case, not to adjudicate
+/// marginal ones, and every comparison against NaN is false anyway.
+///
+/// # Arguments
+/// * `records` - The records about to be mechanized; only the first [`FRAME_CHECK_SAMPLES`]
+///   are read.
+/// * `is_enu` - The frame the caller declared: `false` for NED, `true` for ENU.
+///
+/// # Errors
+/// [`StrapdownError::InvalidConfiguration`] on `is_enu` when the windowed mean vertical
+/// specific force is more than [`FRAME_CHECK_MARGIN_G`] of local gravity the wrong way for
+/// the declared frame. The message names the flag to pass.
+pub fn check_declared_frame(
+    records: &[TestDataRecord],
+    is_enu: bool,
+) -> Result<(), StrapdownError> {
+    let Some(first) = records.first() else {
+        return Ok(());
+    };
+    let window = &records[..records.len().min(FRAME_CHECK_SAMPLES)];
+    let mut sum = 0.0;
+    // `u32` rather than `usize` so the mean below is `f64::from(used)`, which is exact and
+    // needs no cast: the window is at most `FRAME_CHECK_SAMPLES` long.
+    let mut used = 0_u32;
+    for record in window {
+        // The quaternion, not the Euler angles: see `TestDataRecord::attitude` for why the
+        // two are not interchangeable in this format, and what feeding the raw angles here
+        // would cost (it smears a full gravity across the horizontal axes, which would make
+        // this check read ~0 and fail open on every record).
+        let specific_force_nav =
+            record.attitude().matrix() * Vector3::new(record.acc_x, record.acc_y, record.acc_z);
+        if specific_force_nav[2].is_finite() {
+            sum += specific_force_nav[2];
+            used += 1;
+        }
+    }
+    let gravity = crate::earth::gravity(&first.latitude, &first.altitude);
+    if used == 0 || !gravity.is_finite() {
+        return Ok(());
+    }
+    let sensed = sum / f64::from(used);
+    let expected_sign = if is_enu { 1.0 } else { -1.0 };
+    let frame = if is_enu { "ENU" } else { "NED" };
+    if sensed * expected_sign < -FRAME_CHECK_MARGIN_G * gravity {
+        let other = if is_enu { "NED" } else { "ENU" };
+        return Err(StrapdownError::InvalidConfiguration {
+            field: "is_enu",
+            reason: format!(
+                "mean vertical specific force over the first {used} record(s) is \
+                 {sensed:+.2} m/s^2, but {frame} mechanization expects {:+.2} m/s^2 at rest: \
+                 these look like {other} records. Mechanizing them as {frame} would \
+                 double-count gravity and integrate at 2 g. Declare the frame that matches \
+                 the data ({}), or re-record it in {frame}.",
+                expected_sign * gravity,
+                if is_enu {
+                    "drop `--enu`, or set `is_enu = false` in the config file"
+                } else {
+                    "pass `--enu`, or set `is_enu = true` in the config file"
+                },
+            ),
+        });
+    }
+    info!(
+        "Mechanizing input as {frame}: mean vertical specific force over the first {used} \
+         record(s) is {sensed:+.3} m/s^2 against a local gravity of {gravity:.3} m/s^2"
+    );
+    Ok(())
+}
+
 /// Run dead reckoning or "open-loop" simulation using test data.
 ///
-/// This function processes a sequence of sensor records through a StrapdownState, using
+/// This function processes a sequence of sensor records through a `StrapdownState`, using
 /// the "forward" method to propagate the state based on IMU measurements. It initializes
-/// the StrapdownState with position, velocity, and attitude from the first record, and
+/// the `StrapdownState` with position, velocity, and attitude from the first record, and
 /// then applies the IMU measurements from subsequent records. It does not record the
 /// errors or confidence values, as this is a simple dead reckoning simulation and in testing
 /// these values would be used as a baseline for comparison. Keep in mind that this toolbox
@@ -1978,25 +2263,33 @@ impl NavigationResult {
 ///
 /// # Arguments
 /// * `records` - Vector of test data records containing IMU measurements and other sensor data
+/// * `is_enu` - The local-level frame the records are expressed in: `false` for NED (the
+///   library default, and what `strapdown-sim syn` emits), `true` for ENU (the convention
+///   Sensor Logger exports). [`TestDataRecord`] carries no frame tag, so this cannot be
+///   inferred; it is checked against the data by [`check_declared_frame`] rather than guessed.
 ///
 /// # Returns
-/// * `Vec<NavigationResult>` containing the sequence of StrapdownState instances over time,
+/// * `Vec<NavigationResult>` containing the sequence of `StrapdownState` instances over time,
 ///   along with timestamps and time differences.
 /// # Errors
-/// Propagated from [`crate::mechanize`] -- chiefly a non-positive `dt`, which duplicate or
-/// out-of-order record timestamps produce.
-pub fn dead_reckoning(records: &[TestDataRecord]) -> Result<Vec<NavigationResult>, StrapdownError> {
+/// [`StrapdownError::InvalidConfiguration`] if the records' sensed specific force contradicts
+/// `is_enu` -- see [`check_declared_frame`]. Otherwise propagated from [`crate::mechanize`] --
+/// chiefly a non-positive `dt`, which duplicate or out-of-order record timestamps produce.
+pub fn dead_reckoning(
+    records: &[TestDataRecord],
+    is_enu: bool,
+) -> Result<Vec<NavigationResult>, StrapdownError> {
     if records.is_empty() {
         return Ok(Vec::new());
     }
+    check_declared_frame(records, is_enu)?;
     // Initialize the result vector
     let mut results = Vec::with_capacity(records.len());
     // Initialize the StrapdownState with the first record
     let first_record = &records[0];
     // Attitude comes from the record's quaternion, not its Euler angles -- see
     // `TestDataRecord::attitude` for why the two are not interchangeable and what feeding
-    // the raw angles here used to cost. `is_enu: true` is correct for this format: through
-    // the quaternion, the first sample's specific force lands on ENU up at +9.7 m/s^2.
+    // the raw angles here used to cost.
     let attitude = first_record.attitude();
     let (velocity_north, velocity_east) = first_record.ground_track_velocity();
     let mut state = StrapdownState {
@@ -2007,11 +2300,7 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Result<Vec<NavigationResult
         velocity_east,
         velocity_vertical: 0.0, // initial velocities
         attitude,
-        // Deliberately ENU and deliberately still hardcoded; see the note in
-        // `initial_state_from_record`. `TestDataRecord` carries no frame tag, so honouring the NED
-        // default here would break every ENU recording with no way to opt back in. The
-        // frame becomes a caller-supplied option in queue 7's `InsEngine` builder (#296).
-        is_enu: true,
+        is_enu,
     };
     // Store the initial state and metadata
     results.push(NavigationResult::from((&first_record.time, &state)));
@@ -2040,7 +2329,7 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Result<Vec<NavigationResult
 /// two. At typical 1 Hz aiding it is roughly 100 s without a usable fix.
 const MAX_CONSECUTIVE_REJECTIONS: usize = 100;
 
-/// Generic closed-loop simulation runner for any NavigationFilter
+/// Generic closed-loop simulation runner for any `NavigationFilter`
 ///
 /// This function implements the core simulation loop for navigation filter architectures.
 /// It iterates through the event stream, performs prediction and update steps, checks health limits,
@@ -2059,7 +2348,7 @@ const MAX_CONSECUTIVE_REJECTIONS: usize = 100;
 /// consecutive-exceedance limit instead of silently degrading to dead reckoning.
 ///
 /// # Arguments
-/// * `filter` - Mutable reference to a type implementing NavigationFilter
+/// * `filter` - Mutable reference to a type implementing `NavigationFilter`
 /// * `stream` - Event stream containing IMU and measurement events
 /// * `health_limits` - Optional health limits for monitoring
 /// * `execution_limits` - Optional wall-clock and no-progress limits
@@ -2332,6 +2621,14 @@ pub struct UkfConfig {
     pub ukf_beta: Option<f64>,
     /// Optional UKF kappa parameter (secondary spread control).
     pub ukf_kappa: Option<f64>,
+    /// Local-level frame of the records: `false` (the default) is NED, `true` is ENU.
+    ///
+    /// Sensor Logger exports are ENU -- at rest their specific force lands on the device's
+    /// up-axis at $+g$ -- while anything from [`generate_synthetic`] or `strapdown-sim syn`
+    /// is NED. [`TestDataRecord`] carries no frame tag, so the caller has to say which, and
+    /// [`check_declared_frame`] rejects a declaration the data contradicts rather than
+    /// silently mechanizing at 2 g (#296).
+    pub is_enu: bool,
 }
 
 /// Reject an invalid configuration value.
@@ -2343,60 +2640,6 @@ fn require_config(ok: bool, field: &'static str, reason: String) -> Result<(), S
         Ok(())
     } else {
         Err(StrapdownError::InvalidConfiguration { field, reason })
-    }
-}
-
-/// Build the [`InitialState`] that the three filter initialisers seed from a
-/// [`TestDataRecord`].
-///
-/// Both unit conversions below were got wrong independently in each of the three callers,
-/// which is why they now happen in exactly one place:
-///
-/// * **Ground track.** `bearing` is stored in degrees.
-///   [`TestDataRecord::ground_track_velocity`] converts it and guards the NaN case once;
-///   `initialize_ukf` used to open-code the trigonometry *without* the conversion, so it
-///   seeded a different velocity than `initialize_ekf`/`initialize_eskf` did from the same
-///   record -- at bearing 90 degrees, 10 m/s of ground track became (-4.5, 8.9) m/s north/east
-///   instead of (0.0, 10.0).
-/// * **Attitude.** The `roll`/`pitch`/`yaw` columns are radians, but all three callers
-///   passed them with `in_degrees: true`, so every filter constructor scaled the initial
-///   attitude by pi/180. Those columns are not nalgebra's intrinsic XYZ sequence either --
-///   see [`TestDataRecord::attitude`] for what feeding them raw costs -- so the angles come
-///   from the record's quaternion, the authoritative attitude in this format. That makes
-///   `in_degrees: false` correct, which in turn makes converting latitude and longitude
-///   this function's job rather than the filter constructors'.
-///
-/// A record whose quaternion is absent (all-NaN or zero-norm) yields the identity rotation,
-/// so the zero attitude the NaN guards here used to produce is still what an attitude-less
-/// record gets.
-fn initial_state_from_record(record: &TestDataRecord) -> InitialState {
-    let (roll, pitch, yaw) = record.attitude().euler_angles();
-    let (northward_velocity, eastward_velocity) = record.ground_track_velocity();
-    InitialState {
-        latitude: record.latitude.to_radians(),
-        longitude: record.longitude.to_radians(),
-        altitude: record.altitude,
-        northward_velocity,
-        eastward_velocity,
-        vertical_velocity: 0.0, // no initial vertical velocity is assumed
-        roll,
-        pitch,
-        yaw,
-        in_degrees: false,
-        // Deliberately ENU, and deliberately still hardcoded.
-        //
-        // These entry points build their own `InitialState` from a `TestDataRecord`, which
-        // carries no frame tag -- Sensor Logger exports (ENU-convention: +g along the
-        // device's up-axis at rest) and `generate_synthetic` output (NED) are
-        // indistinguishable once loaded. Honouring the new NED default here would silently
-        // break every ENU recording with no way to opt back in, so the frame has to become a
-        // caller-supplied option first. That is a signature change across
-        // `dead_reckoning`/`initialize_ukf`/`initialize_ekf`/`initialize_eskf` and the CLI,
-        // which is queue 7's `InsEngine` builder (#262), not this PR's default flip.
-        //
-        // Known symptom until then: `strapdown-sim syn` emits NED, so dead-reckoning it
-        // through this ENU path double-counts gravity and falls at 2 g. Tracked in #296.
-        is_enu: true,
     }
 }
 
@@ -2416,11 +2659,48 @@ fn initial_state_from_record(record: &TestDataRecord) -> InitialState {
 /// # Errors
 /// [`StrapdownError::InvalidConfiguration`] if any configured vector length disagrees with
 /// the filter's state size.
+///
+/// **This function does not validate `config.is_enu` against the data**, and deliberately so:
+/// it is handed one [`TestDataRecord`], and a single sample cannot tell a frame error from a
+/// motion transient. Checking it here was worse than not checking it -- one NaN or accelerating
+/// first sample disabled the guard entirely, while one ordinary sample above 1.5 g rejected a
+/// correctly declared file and advised the caller to flip the flag. Call
+/// [`check_declared_frame`] over the whole record slice instead, as `strapdown-sim` does on
+/// every path (#296).
 pub fn initialize_ukf(
     initial_pose: &TestDataRecord,
     config: UkfConfig,
 ) -> Result<UnscentedKalmanFilter, StrapdownError> {
-    let initial_state = initial_state_from_record(initial_pose);
+    let initial_state = InitialState {
+        latitude: initial_pose.latitude,
+        longitude: initial_pose.longitude,
+        altitude: initial_pose.altitude,
+        northward_velocity: initial_pose.speed * initial_pose.bearing.cos(),
+        eastward_velocity: initial_pose.speed * initial_pose.bearing.sin(),
+        vertical_velocity: 0.0, // Assuming no initial vertical velocity for simplicity
+        roll: if initial_pose.roll.is_nan() {
+            0.0
+        } else {
+            initial_pose.roll
+        },
+        pitch: if initial_pose.pitch.is_nan() {
+            0.0
+        } else {
+            initial_pose.pitch
+        },
+        yaw: if initial_pose.yaw.is_nan() {
+            0.0
+        } else {
+            initial_pose.yaw
+        },
+        in_degrees: true,
+        // The caller's declared frame, checked against the data above rather than assumed.
+        // `TestDataRecord` carries no frame tag -- Sensor Logger exports (ENU-convention:
+        // +g along the device's up-axis at rest) and `generate_synthetic` output (NED) are
+        // indistinguishable once loaded -- so this has to be supplied, and supplying it
+        // wrongly is what `check_declared_frame` is for (#296).
+        is_enu: config.is_enu,
+    };
     let process_noise_diagonal = match config.process_noise_diagonal {
         Some(pn) => pn,
         None => DEFAULT_PROCESS_NOISE.to_vec(),
@@ -2503,6 +2783,50 @@ pub fn initialize_ukf(
     ))
 }
 
+/// Configuration parameters for EKF initialization.
+///
+/// Mirrors [`UkfConfig`]: the alternative is a seventh positional argument on
+/// [`initialize_ekf`], which already carried five `Option`s whose order the compiler cannot
+/// check for you.
+///
+/// Note that [`Default`] is written by hand rather than derived, because a derived one would
+/// give `use_biases: false` and silently demote every caller from the 15-state EKF to the
+/// 9-state one -- a retune disguised as a struct literal.
+#[derive(Debug, Clone)]
+pub struct EkfConfig {
+    /// Optional initial attitude covariance (3 elements, rad^2).
+    pub attitude_covariance: Option<Vec<f64>>,
+    /// Optional initial IMU biases (6 elements: 3 accelerometer, 3 gyroscope).
+    pub imu_biases: Option<Vec<f64>>,
+    /// Optional IMU bias covariance (6 elements).
+    pub imu_biases_covariance: Option<Vec<f64>>,
+    /// Optional process noise diagonal (9 or 15 elements, matching `use_biases`).
+    pub process_noise_diagonal: Option<Vec<f64>>,
+    /// 15-state (navigation states plus IMU biases) when `true`, 9-state otherwise.
+    pub use_biases: bool,
+    /// Local-level frame of the records: `false` (the default) is NED, `true` is ENU.
+    ///
+    /// See [`UkfConfig::is_enu`]; the same reasoning and the same guard apply.
+    pub is_enu: bool,
+}
+
+impl Default for EkfConfig {
+    fn default() -> Self {
+        Self {
+            attitude_covariance: None,
+            imu_biases: None,
+            imu_biases_covariance: None,
+            process_noise_diagonal: None,
+            // Every caller in this workspace asked for the 15-state filter before this
+            // struct existed, and estimating the IMU biases is the whole reason to prefer
+            // the EKF over dead reckoning on a drifting sensor. Deriving `Default` here
+            // would flip that to 9-state without a diff anyone would read as a retune.
+            use_biases: true,
+            is_enu: false,
+        }
+    }
+}
+
 /// Initialize an Extended Kalman Filter for simulation.
 ///
 /// This function creates and initializes an `ExtendedKalmanFilter` with the given parameters,
@@ -2511,11 +2835,8 @@ pub fn initialize_ukf(
 /// # Arguments
 ///
 /// * `initial_pose` - A `TestDataRecord` containing the initial pose information.
-/// * `attitude_covariance` - Optional initial attitude covariance.
-/// * `imu_biases` - Optional initial IMU biases.
-/// * `imu_biases_covariance` - Optional IMU bias covariance.
-/// * `process_noise_diagonal` - Optional process noise diagonal.
-/// * `use_biases` - If true, uses 15-state (with IMU biases), otherwise 9-state.
+/// * `config` - An [`EkfConfig`] carrying the optional covariance, bias, process-noise,
+///   state-size and frame settings.
 ///
 /// # Returns
 ///
@@ -2524,19 +2845,59 @@ pub fn initialize_ukf(
 /// # Errors
 /// [`StrapdownError::InvalidConfiguration`] if any configured vector length disagrees with
 /// the filter's state size.
-#[allow(clippy::too_many_arguments)]
+///
+/// **This function does not validate `config.is_enu` against the data**, and deliberately so:
+/// it is handed one [`TestDataRecord`], and a single sample cannot tell a frame error from a
+/// motion transient. Checking it here was worse than not checking it -- one NaN or accelerating
+/// first sample disabled the guard entirely, while one ordinary sample above 1.5 g rejected a
+/// correctly declared file and advised the caller to flip the flag. Call
+/// [`check_declared_frame`] over the whole record slice instead, as `strapdown-sim` does on
+/// every path (#296).
 pub fn initialize_ekf(
     initial_pose: &TestDataRecord,
-    attitude_covariance: Option<Vec<f64>>,
-    imu_biases: Option<Vec<f64>>,
-    imu_biases_covariance: Option<Vec<f64>>,
-    process_noise_diagonal: Option<Vec<f64>>,
-    use_biases: bool,
+    config: EkfConfig,
 ) -> Result<crate::kalman::ExtendedKalmanFilter, StrapdownError> {
     use crate::kalman::ExtendedKalmanFilter;
 
+    let EkfConfig {
+        attitude_covariance,
+        imu_biases,
+        imu_biases_covariance,
+        process_noise_diagonal,
+        use_biases,
+        is_enu,
+    } = config;
+
     // Build initial state from sensor data
-    let initial_state = initial_state_from_record(initial_pose);
+    let initial_state = InitialState {
+        latitude: initial_pose.latitude,
+        longitude: initial_pose.longitude,
+        altitude: initial_pose.altitude,
+        // Note: `initial_pose.bearing` is stored in degrees in `TestDataRecord`.
+        // Convert to radians here for use with trigonometric functions.
+        northward_velocity: initial_pose.speed * initial_pose.bearing.to_radians().cos(),
+        eastward_velocity: initial_pose.speed * initial_pose.bearing.to_radians().sin(),
+        vertical_velocity: 0.0,
+        roll: if initial_pose.roll.is_nan() {
+            0.0
+        } else {
+            initial_pose.roll
+        },
+        pitch: if initial_pose.pitch.is_nan() {
+            0.0
+        } else {
+            initial_pose.pitch
+        },
+        yaw: if initial_pose.yaw.is_nan() {
+            0.0
+        } else {
+            initial_pose.yaw
+        },
+        in_degrees: true,
+        // The caller's declared frame, checked against the data above; see the note in
+        // `initialize_ukf` and `check_declared_frame` (#296).
+        is_enu,
+    };
 
     // Determine state size based on use_biases flag
     let state_size = if use_biases { 15 } else { 9 };
@@ -2560,11 +2921,20 @@ pub fn initialize_ekf(
         }
     };
 
-    // Build covariance diagonal
+    // Build covariance diagonal.
+    //
+    // The EKF holds latitude and longitude in radians, so the reported accuracy needs *both*
+    // conversions, not just the metres-to-degrees one: this read
+    // `(position_accuracy * METERS_TO_DEGREES).powf(2.0)` until #308, which is degrees
+    // squared on a radian state -- 57.3x too large as a standard deviation, 3283x in
+    // variance, so a 5 m fix was entered as a 286 m one. `initialize_ukf` above spells the
+    // same conversion out as `(position_accuracy * METERS_TO_DEGREES).to_radians()`;
+    // [`METERS_TO_RADIANS`] is that composition as a single constant.
     let position_accuracy = initial_pose.horizontal_accuracy;
+    let position_std_rad = position_accuracy * METERS_TO_RADIANS;
     let mut covariance_diagonal = vec![
-        (position_accuracy * METERS_TO_DEGREES).powf(2.0),
-        (position_accuracy * METERS_TO_DEGREES).powf(2.0),
+        position_std_rad.powf(2.0),
+        position_std_rad.powf(2.0),
         initial_pose.vertical_accuracy.powf(2.0),
         initial_pose.speed_accuracy.powf(2.0),
         initial_pose.speed_accuracy.powf(2.0),
@@ -2631,6 +3001,27 @@ pub fn initialize_ekf(
     ))
 }
 
+/// Configuration parameters for ESKF initialization.
+///
+/// Mirrors [`EkfConfig`] minus `use_biases`: the error-state filter is always 15-state
+/// (position, velocity, attitude, accelerometer bias, gyroscope bias), so there is nothing to
+/// select.
+#[derive(Debug, Clone, Default)]
+pub struct EskfConfig {
+    /// Optional initial attitude error covariance (3 elements, rad^2).
+    pub attitude_covariance: Option<Vec<f64>>,
+    /// Optional initial IMU biases (6 elements: `b_ax`, `b_ay`, `b_az`, `b_gx`, `b_gy`, `b_gz`).
+    pub imu_biases: Option<Vec<f64>>,
+    /// Optional IMU bias error covariance (6 elements).
+    pub imu_biases_covariance: Option<Vec<f64>>,
+    /// Optional process noise diagonal (15 elements for the error state).
+    pub process_noise_diagonal: Option<Vec<f64>>,
+    /// Local-level frame of the records: `false` (the default) is NED, `true` is ENU.
+    ///
+    /// See [`UkfConfig::is_enu`]; the same reasoning and the same guard apply.
+    pub is_enu: bool,
+}
+
 /// Initialize an Error-State Kalman Filter (ESKF) for simulation.
 ///
 /// This function creates and initializes an `ErrorStateKalmanFilter` with the given parameters,
@@ -2643,10 +3034,8 @@ pub fn initialize_ekf(
 /// # Arguments
 ///
 /// * `initial_pose` - A `TestDataRecord` containing the initial pose information.
-/// * `attitude_covariance` - Optional initial attitude covariance (for error state).
-/// * `imu_biases` - Optional initial IMU biases [b_ax, b_ay, b_az, b_gx, b_gy, b_gz].
-/// * `imu_biases_covariance` - Optional IMU bias covariance (for error state).
-/// * `process_noise_diagonal` - Optional process noise diagonal (15 elements for error state).
+/// * `config` - An [`EskfConfig`] carrying the optional covariance, bias, process-noise and
+///   frame settings.
 ///
 /// # Returns
 ///
@@ -2656,10 +3045,18 @@ pub fn initialize_ekf(
 /// [`StrapdownError::InvalidConfiguration`] if any configured vector length disagrees with
 /// the filter's state size.
 ///
+/// **This function does not validate `config.is_enu` against the data**, and deliberately so:
+/// it is handed one [`TestDataRecord`], and a single sample cannot tell a frame error from a
+/// motion transient. Checking it here was worse than not checking it -- one NaN or accelerating
+/// first sample disabled the guard entirely, while one ordinary sample above 1.5 g rejected a
+/// correctly declared file and advised the caller to flip the flag. Call
+/// [`check_declared_frame`] over the whole record slice instead, as `strapdown-sim` does on
+/// every path (#296).
+///
 /// # Example
 ///
 /// ```no_run
-/// use strapdown::sim::{initialize_eskf, TestDataRecord};
+/// use strapdown::sim::{EskfConfig, initialize_eskf, TestDataRecord};
 /// use chrono::Utc;
 ///
 /// let initial_pose = TestDataRecord {
@@ -2670,20 +3067,54 @@ pub fn initialize_ekf(
 ///     // ... other fields ...
 ///     ..Default::default()
 /// };
-/// let eskf = initialize_eskf(&initial_pose, None, None, None, None).unwrap();
+/// // `EskfConfig::default()` is NED; pass `EskfConfig { is_enu: true, ..Default::default() }`
+/// // for a Sensor Logger export.
+/// let eskf = initialize_eskf(&initial_pose, EskfConfig::default()).unwrap();
 /// ```
-#[allow(clippy::too_many_arguments)]
 pub fn initialize_eskf(
     initial_pose: &TestDataRecord,
-    attitude_covariance: Option<Vec<f64>>,
-    imu_biases: Option<Vec<f64>>,
-    imu_biases_covariance: Option<Vec<f64>>,
-    process_noise_diagonal: Option<Vec<f64>>,
+    config: EskfConfig,
 ) -> Result<crate::kalman::ErrorStateKalmanFilter, StrapdownError> {
     use crate::kalman::ErrorStateKalmanFilter;
 
+    let EskfConfig {
+        attitude_covariance,
+        imu_biases,
+        imu_biases_covariance,
+        process_noise_diagonal,
+        is_enu,
+    } = config;
+
     // Build initial state from sensor data
-    let initial_state = initial_state_from_record(initial_pose);
+    let initial_state = InitialState {
+        latitude: initial_pose.latitude,
+        longitude: initial_pose.longitude,
+        altitude: initial_pose.altitude,
+        // Note: `initial_pose.bearing` is stored in degrees in `TestDataRecord`.
+        // Convert to radians here for use with trigonometric functions.
+        northward_velocity: initial_pose.speed * initial_pose.bearing.to_radians().cos(),
+        eastward_velocity: initial_pose.speed * initial_pose.bearing.to_radians().sin(),
+        vertical_velocity: 0.0,
+        roll: if initial_pose.roll.is_nan() {
+            0.0
+        } else {
+            initial_pose.roll
+        },
+        pitch: if initial_pose.pitch.is_nan() {
+            0.0
+        } else {
+            initial_pose.pitch
+        },
+        yaw: if initial_pose.yaw.is_nan() {
+            0.0
+        } else {
+            initial_pose.yaw
+        },
+        in_degrees: true,
+        // The caller's declared frame, checked against the data above; see the note in
+        // `initialize_ukf` and `check_declared_frame` (#296).
+        is_enu,
+    };
 
     // ESKF always uses 15-state error vector (pos, vel, att, accel_bias, gyro_bias)
     let state_size = 15;
@@ -2714,11 +3145,27 @@ pub fn initialize_eskf(
         None => vec![0.0; 6],
     };
 
-    // Build error covariance diagonal
-    // This represents initial uncertainty in the error state (NOT nominal state)
+    // Build error covariance diagonal.
+    //
+    // This represents initial uncertainty in the error state (NOT nominal state). The error
+    // state's position block is carried in the *filter's* units rather than in metres:
+    // radians for latitude and longitude, metres for altitude. `inject_error_state` adds
+    // those corrections straight onto the nominal latitude and longitude with no conversion
+    // (deliberately -- dividing by the principal radii there is what #266 removed), and the
+    // GNSS position Jacobian is the identity against a radian-valued measurement.
+    //
+    // So the three entries are two different units, and the literals this used to carry --
+    // `1e-6, 1e-6, 1e-4`, commented "(m²)" -- were #308's defect in P0 rather than in Q: a
+    // 6367 m horizontal claim sitting beside a 1 cm vertical one, in the filter this crate
+    // ships as its default. Written from one metric constant and converted once, the way
+    // `initialize_ukf` above builds its own P0 and the way `DEFAULT_PROCESS_NOISE` is built.
     let mut error_covariance_diagonal = vec![
-        1e-6, 1e-6, 1e-4, // position error covariance (m²)
-        1e-3, 1e-3, 1e-3, // velocity error covariance (m²/s²)
+        INITIAL_HORIZONTAL_POSITION_VARIANCE_RAD2, // latitude error, rad^2
+        INITIAL_HORIZONTAL_POSITION_VARIANCE_RAD2, // longitude error, rad^2
+        INITIAL_VERTICAL_POSITION_VARIANCE_M2,     // altitude error, m^2
+        1e-3,
+        1e-3,
+        1e-3, // velocity error covariance (m²/s²)
     ];
 
     // Add attitude error covariance
@@ -2772,6 +3219,16 @@ pub fn initialize_eskf(
 
 // ==== Simulation Helper functions ====
 
+/// Logs a one-line summary of a filter's current position estimate and its uncertainty.
+///
+/// Reads the filter's mean state and covariance, converts latitude and longitude from radians
+/// to degrees, and emits latitude, longitude, altitude (metres), the three position standard
+/// deviations $\sqrt{P_{ii}}$ (degrees, degrees, metres) and their root-sum-square at `debug`
+/// level -- despite the name, nothing is written to stdout, so the message appears only when
+/// the logger is configured for [`LogLevel::Debug`] or finer.
+///
+/// The filter must expose at least the three position states; any 9- or 15-state filter in this
+/// crate does.
 pub fn print_sim_status<F: NavigationFilter>(filter: &F) {
     let mean = filter.get_estimate();
     let cov = filter.get_certainty();
@@ -2794,6 +3251,13 @@ pub fn print_sim_status<F: NavigationFilter>(filter: &F) {
     );
 }
 
+/// Wall-clock guards that stop a simulation which is running too long or has stopped
+/// progressing.
+///
+/// A diverging filter can take arbitrarily long per step without ever failing an arithmetic
+/// check, so the simulation drivers pair the numerical guards in [`health`] with a time budget:
+/// [`ExecutionLimits`] states the budget and [`ExecutionMonitor`] enforces it, failing the run
+/// with a message naming the context it was checked from.
 pub mod execution {
     use super::{
         DEFAULT_MAX_NO_PROGRESS_S, DEFAULT_MAX_WALL_CLOCK_RATIO, DEFAULT_MAX_WALL_CLOCK_S, Debug,
@@ -3007,19 +3471,60 @@ pub mod execution {
     }
 }
 
+/// Divergence detection for a running filter.
+///
+/// [`HealthMonitor::check`] is called after every predict and update with the current mean and
+/// covariance, and aborts the run as soon as the estimate stops being physically or numerically
+/// meaningful -- a non-finite state or covariance, a position outside the bounds in
+/// [`HealthLimits`], a negative or absurdly large variance on the covariance diagonal, or a run
+/// of consecutive measurement updates whose normalised innovation squared (NIS) exceeds its
+/// gate. That NIS streak is not GNSS-specific: the monitor is called once per
+/// [`crate::messages::Event`] measurement, so barometric altitude, magnetometer-yaw and
+/// geophysical updates increment the same counter that GNSS fixes do.
+/// This is the circuit breaker behind the per-update gating in [`crate::gating`]: gating rejects
+/// individual measurements, the monitor gives up on the whole trajectory.
 pub mod health {
     use super::{Debug, Result, bail, f64};
 
+    /// Bounds a filter estimate must stay inside for [`HealthMonitor`] to consider it healthy.
+    ///
+    /// [`Default`] is deliberately permissive -- in particular the altitude band is opened to
+    /// +/-1e8 m so that vertical-channel instability shows up as a covariance or NIS failure
+    /// rather than as an altitude bound trip.
     #[derive(Clone, Debug)]
     pub struct HealthLimits {
-        pub lat_rad: (f64, f64),        // [-90°, +90°]
-        pub lon_rad: (f64, f64),        // [-180°, +180°]
-        pub alt_m: (f64, f64),          // e.g., [-500, 15000]
-        pub speed_mps_max: f64,         // e.g., 500 m/s (road/low-altitude aircraft)
-        pub cov_diag_max: f64,          // e.g., 1e15
-        pub cond_max: f64,              // e.g., 1e12 (optional)
-        pub nis_pos_max: f64,           // e.g., 100 (huge outlier)
-        pub nis_pos_consec_fail: usize, // e.g., 20
+        /// Inclusive (min, max) latitude band in radians; defaults to the full +/-90 degrees.
+        pub lat_rad: (f64, f64),
+        /// Inclusive (min, max) longitude band in radians; defaults to the full +/-180 degrees.
+        pub lon_rad: (f64, f64),
+        /// Inclusive (min, max) altitude band in metres above the ellipsoid. Defaults to
+        /// +/-1e8 -- deliberately far wider than the [-11,000 m, 30,000 m] over which the
+        /// mechanization is documented to be valid, so that a diverging vertical channel is
+        /// caught by the finiteness and covariance checks rather than by this band. Narrow
+        /// it to the scenario's real altitude range to make it an effective gate.
+        pub alt_m: (f64, f64),
+        /// Maximum ground speed in m/s (default 500, i.e. road or low-altitude aircraft).
+        /// Currently inert -- the speed test in [`HealthMonitor::check`] is commented out, so
+        /// setting this field has no effect on a run. Issue #332 tracks resolving that.
+        pub speed_mps_max: f64,
+        /// Largest variance allowed on the covariance diagonal before the run is failed
+        /// (default 1e15).
+        pub cov_diag_max: f64,
+        /// Maximum covariance condition number (default 1e12). Currently inert -- the condition
+        /// estimate in [`HealthMonitor::check`] is commented out as too expensive, so setting
+        /// this field has no effect on a run. Issue #332 tracks resolving that.
+        pub cond_max: f64,
+        /// NIS above which a measurement update counts as an outlier (default 100).
+        ///
+        /// Despite the name, the gate applies to **every** measurement update in the event
+        /// stream, whatever the sensor: `run_closed_loop` calls [`HealthMonitor::check`] from
+        /// the single measurement arm of the event loop, so GNSS position/velocity fixes,
+        /// `RelativeAltitudeMeasurement`, magnetometer-yaw and geophysical updates are all
+        /// tested against this one threshold. The `_pos` in the field name is historical.
+        pub nis_pos_max: f64,
+        /// Number of consecutive NIS exceedances that fails the run (default 20). A single
+        /// update whose NIS is within [`Self::nis_pos_max`] resets the streak.
+        pub nis_pos_consec_fail: usize,
     }
 
     impl Default for HealthLimits {
@@ -3037,6 +3542,12 @@ pub mod health {
         }
     }
 
+    /// Stateful divergence detector for one simulation run.
+    ///
+    /// Holds the [`HealthLimits`] to test against plus the only piece of history the tests need:
+    /// how many measurement updates in a row have failed the NIS gate, counted across every
+    /// sensor rather than GNSS alone. Construct one per trajectory and call
+    /// [`check`](Self::check) after every predict and update.
     #[derive(Default, Clone, Debug)]
     pub struct HealthMonitor {
         limits: HealthLimits,
@@ -3044,6 +3555,7 @@ pub mod health {
     }
 
     impl HealthMonitor {
+        /// Creates a monitor that enforces `limits`, with an empty NIS-failure streak.
         pub const fn new(limits: HealthLimits) -> Self {
             Self {
                 limits,
@@ -3051,7 +3563,8 @@ pub mod health {
             }
         }
 
-        /// Call after **every event** (predict or update). Provide optional NIS when you have a GNSS update.
+        /// Call after **every event** (predict or update). Provide the optional NIS whenever the
+        /// event was a measurement update -- of any sensor, not only GNSS.
         ///
         /// # Errors
         /// If the state has left the configured physical bounds, the covariance diagonal has
@@ -3138,8 +3651,11 @@ pub mod health {
 #[derive(Copy, Clone, Debug)]
 #[cfg_attr(feature = "clap", derive(ValueEnum))]
 pub enum SchedKind {
+    /// Deliver every GNSS fix unchanged ([`GnssScheduler::PassThrough`]).
     Passthrough,
+    /// Deliver a fix every `interval_s` seconds ([`GnssScheduler::FixedInterval`]).
     Fixed,
+    /// Alternate `on_s`/`off_s` availability windows ([`GnssScheduler::DutyCycle`]).
     Duty,
 }
 
@@ -3171,9 +3687,15 @@ pub struct SchedulerArgs {
 #[derive(Copy, Clone, Debug)]
 #[cfg_attr(feature = "clap", derive(ValueEnum))]
 pub enum FaultKind {
+    /// No corruption; fixes reach the filter unchanged ([`GnssFaultModel::None`]).
     None,
+    /// AR(1)-correlated position and velocity error plus an inflated measurement covariance
+    /// ([`GnssFaultModel::Degraded`]).
     Degraded,
+    /// Slowly drifting north/east offset, a soft spoof ([`GnssFaultModel::SlowBias`]).
     Slowbias,
+    /// Constant north/east offset applied over a fixed window, a hard spoof
+    /// ([`GnssFaultModel::Hijack`]).
     Hijack,
 }
 
@@ -3184,33 +3706,53 @@ pub struct FaultArgs {
     /// Fault kind: none | degraded | slowbias | hijack
     #[cfg_attr(feature = "clap", arg(long, value_enum, default_value_t = FaultKind::None))]
     pub fault: FaultKind,
-    /// Degraded (AR(1))
+    /// Degraded: AR(1) correlation coefficient for the position error (0 to 1)
     #[cfg_attr(feature = "clap", arg(long, default_value_t = 0.99))]
     pub rho_pos: f64,
+    /// Degraded: AR(1) innovation standard deviation for the position error, in meters
     #[cfg_attr(feature = "clap", arg(long, default_value_t = 3.0))]
     pub sigma_pos_m: f64,
+    /// Degraded: AR(1) correlation coefficient for the velocity error (0 to 1)
     #[cfg_attr(feature = "clap", arg(long, default_value_t = 0.95))]
     pub rho_vel: f64,
+    /// Degraded: AR(1) innovation standard deviation for the velocity error, in m/s
     #[cfg_attr(feature = "clap", arg(long, default_value_t = 0.3))]
     pub sigma_vel_mps: f64,
+    /// Degraded: factor applied to the advertised 1-sigma measurement standard deviations
+    /// (horizontal position in metres and velocity in m/s), NOT to the covariance.
+    ///
+    /// The scaled standard deviations reach the filter as
+    /// `GPSPositionAndVelocityMeasurement::horizontal_noise_std` and `velocity_noise_std`, and
+    /// the measurement model squares them to build R. **R is therefore inflated by `r_scale`
+    /// squared**: the default 5.0 multiplies R by 25, not by 5.
     #[cfg_attr(feature = "clap", arg(long, default_value_t = 5.0))]
     pub r_scale: f64,
-    /// Slow bias
+    /// Slow bias: northward drift rate of the injected offset, in m/s
     #[cfg_attr(feature = "clap", arg(long, default_value_t = 0.02))]
     pub drift_n_mps: f64,
+    /// Slow bias: eastward drift rate of the injected offset, in m/s
     #[cfg_attr(feature = "clap", arg(long, default_value_t = 0.0))]
     pub drift_e_mps: f64,
+    /// Slow bias: random-walk PSD of the drifting offset, in m^2/s.
+    ///
+    /// The offset itself is in metres and the driving noise adds variance `q_bias * dt` to it on
+    /// every step, so the PSD carries units of metres squared per second -- not m^2/s^3, which
+    /// would be the PSD of a random walk driving a velocity.
     #[cfg_attr(feature = "clap", arg(long, default_value_t = 1e-6))]
     pub q_bias: f64,
+    /// Slow bias: rate at which the drift direction rotates, in rad/s (0 keeps it fixed)
     #[cfg_attr(feature = "clap", arg(long, default_value_t = 0.0))]
     pub rotate_omega_rps: f64,
-    /// Hijack
+    /// Hijack: constant northward offset applied during the window, in meters
     #[cfg_attr(feature = "clap", arg(long, default_value_t = 50.0))]
     pub hijack_offset_n_m: f64,
+    /// Hijack: constant eastward offset applied during the window, in meters
     #[cfg_attr(feature = "clap", arg(long, default_value_t = 0.0))]
     pub hijack_offset_e_m: f64,
+    /// Hijack: start of the spoofing window, in seconds from the start of the run
     #[cfg_attr(feature = "clap", arg(long, default_value_t = 120.0))]
     pub hijack_start_s: f64,
+    /// Hijack: length of the spoofing window, in seconds
     #[cfg_attr(feature = "clap", arg(long, default_value_t = 60.0))]
     pub hijack_duration_s: f64,
 }
@@ -3372,7 +3914,7 @@ pub struct ParticleFilterConfig {
     /// Number of particles in the filter.
     #[serde(default = "default_num_particles")]
     pub num_particles: usize,
-    /// Initial position standard deviation [lat_m, lon_m, alt_m].
+    /// Initial position standard deviation [`lat_m`, `lon_m`, `alt_m`].
     #[serde(default = "default_position_init_std_m")]
     pub position_init_std_m: Vec<f64>,
     /// Initial velocity standard deviation (m/s).
@@ -3381,7 +3923,7 @@ pub struct ParticleFilterConfig {
     /// Initial attitude standard deviation (rad).
     #[serde(default = "default_attitude_init_std_rad")]
     pub attitude_init_std_rad: f64,
-    /// Position process noise standard deviation [lat_m, lon_m, alt_m].
+    /// Position process noise standard deviation [`lat_m`, `lon_m`, `alt_m`].
     #[serde(default = "default_position_process_noise_std_m")]
     pub position_process_noise_std_m: Vec<f64>,
     /// Velocity process noise standard deviation (m/s).
@@ -3485,16 +4027,22 @@ impl Default for ParticleFilterConfig {
 #[serde(rename_all = "lowercase")]
 #[cfg_attr(feature = "clap", derive(ValueEnum))]
 pub enum LogLevel {
+    /// Emit nothing at all (`"off"`).
     Off,
+    /// Errors only (`"error"`).
     Error,
+    /// Errors and warnings (`"warn"`).
     Warn,
+    /// Progress and configuration messages and above (`"info"`); the default.
     Info,
+    /// Per-step filter detail and above (`"debug"`).
     Debug,
+    /// Everything, including the noisiest tracing (`"trace"`).
     Trace,
 }
 
 impl LogLevel {
-    /// Convert LogLevel to string representation
+    /// Convert `LogLevel` to string representation
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Off => "off",
@@ -3545,6 +4093,15 @@ pub struct SimulationConfig {
     /// Random number generator seed
     #[serde(default = "default_seed")]
     pub seed: u64,
+    /// Local-level frame the input records are expressed in: `false` (the default) is NED,
+    /// `true` is ENU.
+    ///
+    /// Sensor Logger exports are ENU; `strapdown-sim syn` output and the rest of the library
+    /// are NED. `serde(default)` is `false`, so every config file written before this field
+    /// existed keeps parsing -- and any such file describing a Sensor Logger recording now
+    /// fails loudly in `check_declared_frame` rather than mechanizing at 2 g (#296).
+    #[serde(default)]
+    pub is_enu: bool,
     /// Run simulations in parallel when processing multiple files
     #[serde(default)]
     pub parallel: bool,
@@ -3557,10 +4114,10 @@ pub struct SimulationConfig {
     /// Logging configuration
     #[serde(default)]
     pub logging: LoggingConfig,
-    /// Closed-loop specific settings (only used if mode is ClosedLoop)
+    /// Closed-loop specific settings (only used if mode is `ClosedLoop`)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closed_loop: Option<ClosedLoopConfig>,
-    /// Particle filter settings (only used if mode is ParticleFilter)
+    /// Particle filter settings (only used if mode is `ParticleFilter`)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub particle_filter: Option<ParticleFilterConfig>,
     /// Geophysical measurement configuration (optional, requires --features geonav)
@@ -3593,6 +4150,7 @@ impl Default for SimulationConfig {
             output: "output.csv".to_string(),
             mode: SimulationMode::ClosedLoop,
             seed: default_seed(),
+            is_enu: false,
             parallel: false,
             generate_plot: false,
             execution_limits: ExecutionLimits::default(),
@@ -4082,8 +4640,8 @@ pub struct SyntheticConfig {
     /// Random number generator seed for reproducibility
     #[serde(default = "default_seed")]
     pub seed: u64,
-    /// If true, output 9-state kinematic truth (NavigationResult format).
-    /// If false (default), output noisy sensor measurements (TestDataRecord format).
+    /// If true, output 9-state kinematic truth (`NavigationResult` format).
+    /// If false (default), output noisy sensor measurements (`TestDataRecord` format).
     #[serde(default)]
     pub no_noise: bool,
     /// GNSS horizontal position noise standard deviation in meters
@@ -4899,6 +5457,229 @@ mod tests {
         }
     }
 
+    /// A stationary navigation-grade synthetic run in `frame`, exactly as `syn` writes it.
+    ///
+    /// Stationary is the point: the truth altitude never moves, so any altitude the solution
+    /// accumulates is the mechanization's own error and needs no differencing against a
+    /// moving reference to read.
+    fn stationary_synthetic_records(is_enu: bool, duration_s: f64) -> Vec<TestDataRecord> {
+        let config = SyntheticConfig {
+            output: String::new(),
+            initial_state: SyntheticInitialState {
+                latitude_deg: 40.0,
+                longitude_deg: -76.0,
+                altitude_m: 100.0,
+                is_enu,
+                ..SyntheticInitialState::default()
+            },
+            duration_s,
+            sample_rate_hz: 10.0,
+            imu_quality: crate::IMUQuality::Navigation,
+            seed: 42,
+            no_noise: false,
+            gnss_horizontal_noise_m: 2.5,
+            gnss_vertical_noise_m: 5.0,
+            baro_noise_std_pa: 50.0,
+        };
+        let mut rng = rand::SeedableRng::seed_from_u64(42);
+        generate_synthetic(&config, &mut rng)
+            .expect("synthetic generation must succeed")
+            .1
+    }
+
+    /// Altitude a stationary navigation-grade solution may drift over 60 s, in metres.
+    ///
+    /// Derived, not fitted, from the three things that move the vertical channel over a
+    /// minute:
+    ///
+    /// 1. Accelerometer bias. [`crate::IMUQuality::Navigation`] quotes 1e-4 m/s^2 of bias
+    ///    instability; a 3-sigma draw of 3e-4 m/s^2 integrates to
+    ///    $\tfrac{1}{2} a t^2 = 0.54$ m at $t = 60$ s.
+    /// 2. Velocity random walk. 0.005 m/s/$\sqrt{\text{h}}$ gives
+    ///    $\sigma_v(60\,\text{s}) = 6.5\times10^{-4}$ m/s, under 0.04 m of position.
+    /// 3. The vertical channel's own instability, which grows as
+    ///    $\cosh(t/\tau)$ with $\tau = \sqrt{R/g} \approx 806$ s -- a factor of 1.003 over
+    ///    this interval, so it multiplies the 0.58 m above rather than adding to it.
+    ///
+    /// The budget is therefore ~0.6 m and the bound is ~3x it. What matters is the other
+    /// end: mechanizing these NED records as ENU reaches 35 km in the same 60 s (#296), four
+    /// and a half orders of magnitude outside this bound, so the test cannot pass by accident
+    /// with the frame wrong.
+    const MAX_STATIONARY_ALTITUDE_DRIFT_M: f64 = 2.0;
+
+    /// Worst absolute altitude excursion from the run's own first sample, in metres.
+    fn worst_altitude_excursion(results: &[NavigationResult]) -> f64 {
+        let start = results[0].altitude;
+        results
+            .iter()
+            .map(|result| (result.altitude - start).abs())
+            .fold(0.0, f64::max)
+    }
+
+    #[test]
+    fn test_dead_reckoning_holds_altitude_on_ned_synthetic() {
+        // The regression this issue is about: `syn` emits NED, and until the frame became a
+        // parameter `dead_reckoning` mechanized it as ENU, which adds the gravity model to
+        // the sensed specific force instead of cancelling it and falls at 2 g.
+        let records = stationary_synthetic_records(false, 60.0);
+        let results = dead_reckoning(&records, false).expect("NED records must dead-reckon as NED");
+        let worst = worst_altitude_excursion(&results);
+        assert!(
+            worst < MAX_STATIONARY_ALTITUDE_DRIFT_M,
+            "stationary navigation-grade NED truth drifted {worst:.3} m of altitude over 60 s, \
+             past the {MAX_STATIONARY_ALTITUDE_DRIFT_M} m budget derived in \
+             MAX_STATIONARY_ALTITUDE_DRIFT_M. A figure in the tens of kilometres means the \
+             frame is being double-counted again (#296); a figure a little over the bound \
+             means the IMU error model or the vertical channel moved and the budget needs \
+             re-deriving."
+        );
+    }
+
+    #[test]
+    fn test_dead_reckoning_holds_altitude_on_enu_synthetic() {
+        // The other half of the same claim, and the one that stops a future default flip from
+        // quietly breaking Sensor Logger recordings: matched ENU has to be just as exact as
+        // matched NED, because since #321 an ENU run converts to NED internally rather than
+        // approximating.
+        let records = stationary_synthetic_records(true, 60.0);
+        let results = dead_reckoning(&records, true).expect("ENU records must dead-reckon as ENU");
+        let worst = worst_altitude_excursion(&results);
+        assert!(
+            worst < MAX_STATIONARY_ALTITUDE_DRIFT_M,
+            "stationary navigation-grade ENU truth drifted {worst:.3} m of altitude over 60 s, \
+             past the {MAX_STATIONARY_ALTITUDE_DRIFT_M} m budget derived in \
+             MAX_STATIONARY_ALTITUDE_DRIFT_M"
+        );
+    }
+
+    #[test]
+    fn test_dead_reckoning_rejects_a_frame_the_records_contradict() {
+        // Both directions, because the guard has to be a discriminator rather than a
+        // one-sided preference for the new default.
+        for declared_enu in [false, true] {
+            let records = stationary_synthetic_records(!declared_enu, 10.0);
+            let error = dead_reckoning(&records, declared_enu).expect_err(
+                "records generated in one frame must not be silently mechanized in the other",
+            );
+            assert!(
+                matches!(
+                    error,
+                    StrapdownError::InvalidConfiguration {
+                        field: "is_enu",
+                        ..
+                    }
+                ),
+                "expected an InvalidConfiguration on is_enu, got {error:?}"
+            );
+            // The message has to name the way out, or the user is told only that they are
+            // wrong. This is the half of #272's objection the flag alone does not answer.
+            let message = error.to_string();
+            assert!(
+                message.contains("--enu"),
+                "the rejection must name the flag to pass, got: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_check_declared_frame_accepts_each_frame_at_rest() {
+        let gravity = crate::earth::gravity(&0.0, &0.0);
+
+        // Identity attitude, so the body reading is already the navigation-frame one.
+        let mut enu = blank_record();
+        enu.acc_z = gravity;
+        assert!(check_declared_frame(std::slice::from_ref(&enu), true).is_ok());
+        assert!(check_declared_frame(std::slice::from_ref(&enu), false).is_err());
+
+        let mut ned = blank_record();
+        ned.acc_z = -gravity;
+        assert!(check_declared_frame(std::slice::from_ref(&ned), false).is_ok());
+        assert!(check_declared_frame(std::slice::from_ref(&ned), true).is_err());
+    }
+
+    #[test]
+    fn test_check_declared_frame_fires_at_the_derived_margin() {
+        // Brackets FRAME_CHECK_MARGIN_G from the outside, with literal accelerations rather
+        // than by restating the constant -- a straddle computed *from* the constant would
+        // follow it wherever it moved and prove nothing about where it should be.
+        //
+        // In NED the sensed vertical specific force is $f_z = a_\text{down} - g$, so a
+        // descent at $\alpha$ g reads $(\alpha - 1) g$, and the guard fires at
+        // $\alpha > 1 + \text{margin}$. The four cases below are each an independent
+        // constraint on the margin:
+        //
+        // - free fall ($\alpha = 1$, $f_z = 0$) accepted  =>  margin > 0
+        // - at rest in the *other* frame rejected          =>  margin < 1
+        // - a 1.45 g descent accepted                      =>  margin > 0.45
+        // - a 1.55 g descent rejected                      =>  margin < 0.55
+        //
+        // The last two pin the constant to 0.5 +/- 0.05. The first two are the physical
+        // requirements that motivate it: free fall is a real flight condition and must never
+        // be mistaken for a frame error, and a stationary wrong-frame file must never be
+        // mistaken for flight.
+        let gravity = crate::earth::gravity(&0.0, &0.0);
+        let with_downward_acceleration = |alpha: f64| {
+            let mut record = blank_record();
+            record.acc_z = (alpha - 1.0) * gravity;
+            record
+        };
+
+        for (alpha, must_reject) in [(1.0, false), (1.45, false), (1.55, true)] {
+            let record = with_downward_acceleration(alpha);
+            let rejected = check_declared_frame(std::slice::from_ref(&record), false).is_err();
+            assert_eq!(
+                rejected, must_reject,
+                "a {alpha} g descent in correctly declared NED records: expected \
+                 rejected={must_reject}, got rejected={rejected}. FRAME_CHECK_MARGIN_G is \
+                 {FRAME_CHECK_MARGIN_G} and these cases bracket it to 0.5 +/- 0.05."
+            );
+        }
+
+        // At rest in the other frame: the case the guard exists for.
+        let mut at_rest_in_enu = blank_record();
+        at_rest_in_enu.acc_z = gravity;
+        assert!(
+            check_declared_frame(std::slice::from_ref(&at_rest_in_enu), false).is_err(),
+            "a stationary ENU record declared NED must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_check_declared_frame_tolerates_a_manoeuvring_start() {
+        // The guard must not fire on a run that simply begins under acceleration: 0.4 g of
+        // horizontal specific force leaves the vertical channel where it was, and a 0.9 g
+        // descent -- just short of free fall -- still reads on the correct side of zero.
+        let gravity = crate::earth::gravity(&0.0, &0.0);
+
+        let mut manoeuvring = blank_record();
+        manoeuvring.acc_x = 0.4 * gravity;
+        manoeuvring.acc_y = -0.4 * gravity;
+        manoeuvring.acc_z = -gravity;
+        assert!(check_declared_frame(std::slice::from_ref(&manoeuvring), false).is_ok());
+
+        let mut descending = blank_record();
+        descending.acc_z = -0.1 * gravity; // a_down = 0.9 g
+        assert!(check_declared_frame(std::slice::from_ref(&descending), false).is_ok());
+    }
+
+    #[test]
+    fn test_check_declared_frame_fails_open_on_unusable_records() {
+        // Deliberately permissive: an empty slice, a non-finite reading and a non-finite
+        // gravity all pass. Every comparison against NaN is false anyway, so the choice is
+        // between failing open explicitly and failing open by accident.
+        assert!(check_declared_frame(&[], false).is_ok());
+        assert!(check_declared_frame(&[], true).is_ok());
+
+        let mut nan_accel = blank_record();
+        nan_accel.acc_z = f64::NAN;
+        assert!(check_declared_frame(std::slice::from_ref(&nan_accel), false).is_ok());
+
+        let mut nan_position = blank_record();
+        nan_position.acc_z = crate::earth::gravity(&0.0, &0.0);
+        nan_position.latitude = f64::NAN;
+        assert!(check_declared_frame(std::slice::from_ref(&nan_position), false).is_ok());
+    }
+
     #[test]
     fn test_generate_northward_motion_records_end_latitude() {
         let records = generate_northward_motion_records();
@@ -4930,7 +5711,7 @@ mod tests {
         let result = TestDataRecord::from_csv(path);
         assert!(result.is_err(), "Should error on missing file");
     }
-    /// Test writing TestDataRecord to CSV and reading it back
+    /// Test writing `TestDataRecord` to CSV and reading it back
     #[test]
     fn test_data_record_to_and_from_csv() {
         // Read original records
@@ -5416,7 +6197,7 @@ mod tests {
     }
     #[test]
     fn test_dead_reckoning_empty_records() {
-        let results = dead_reckoning(&[]).unwrap();
+        let results = dead_reckoning(&[], false).unwrap();
         assert!(results.is_empty());
     }
     #[test]
@@ -5439,7 +6220,9 @@ mod tests {
             gyro_z: 0.0,
             ..Default::default()
         };
-        let results = dead_reckoning(&[rec]).unwrap();
+        // The stub's `acc_z: 9.81` with an identity attitude is ENU-convention specific
+        // force, so declare ENU: `check_declared_frame` would (correctly) reject NED here.
+        let results = dead_reckoning(&[rec], true).unwrap();
         assert_eq!(results.len(), 1);
     }
     #[test]
@@ -5463,108 +6246,6 @@ mod tests {
         // Just ensure it doesn't panic
         print_ukf(&ukf, &rec);
     }
-    /// All three filter initialisers must seed the same ground track from the same record.
-    ///
-    /// `bearing` is degrees. `initialize_ukf` fed it to `cos`/`sin` raw while
-    /// `initialize_ekf` and `initialize_eskf` converted first, so the three disagreed on
-    /// the same input: at bearing 90 the UKF seeded (-4.48, 8.94) m/s north/east where the
-    /// other two seeded (0.00, 10.00). All three now route through
-    /// [`TestDataRecord::ground_track_velocity`], which owns the conversion.
-    #[test]
-    fn test_initializers_agree_on_ground_track() {
-        let rec = TestDataRecord {
-            time: Utc::now(),
-            horizontal_accuracy: 5.0,
-            vertical_accuracy: 2.0,
-            speed_accuracy: 1.0,
-            latitude: 37.0,
-            longitude: -122.0,
-            altitude: 100.0,
-            speed: 10.0,
-            // Chosen because degrees and radians differ most visibly here: due east should
-            // put the entire 10 m/s on the east channel and nothing on the north one.
-            bearing: 90.0,
-            qw: 1.0,
-            ..Default::default()
-        };
-
-        let ukf = initialize_ukf(&rec, UkfConfig::default()).unwrap();
-        let ekf = initialize_ekf(&rec, None, None, None, None, true).unwrap();
-        let eskf = initialize_eskf(&rec, None, None, None, None).unwrap();
-
-        for (name, estimate) in [
-            ("UKF", ukf.get_estimate()),
-            ("EKF", ekf.get_estimate()),
-            ("ESKF", eskf.get_estimate()),
-        ] {
-            assert_approx_eq!(estimate[3], 0.0, 1e-12); // northward velocity
-            assert_approx_eq!(estimate[4], 10.0, 1e-12); // eastward velocity
-            assert!(
-                estimate[3].abs() < 1e-12,
-                "{name} seeded {:.3} m/s of northward velocity from a due-east ground track, \
-                 which is the un-converted-degrees signature",
-                estimate[3]
-            );
-        }
-    }
-
-    /// All three filter initialisers must seed the attitude the record's quaternion describes.
-    ///
-    /// Two defects at once: `roll`/`pitch`/`yaw` are radians but were passed with
-    /// `in_degrees: true`, so every filter constructor scaled them by pi/180; and those
-    /// columns are not nalgebra's XYZ sequence in the first place -- see
-    /// [`TestDataRecord::attitude`]. The assertion is the convention-free angle between the
-    /// seeded rotation and the record's own, so it catches either failure. Under the old
-    /// code this angle was 1.21 rad.
-    #[test]
-    fn test_initializers_seed_attitude_from_quaternion() {
-        let quaternion = nalgebra::UnitQuaternion::from_euler_angles(0.4, -0.3, 1.2);
-        let rec = TestDataRecord {
-            time: Utc::now(),
-            horizontal_accuracy: 5.0,
-            vertical_accuracy: 2.0,
-            speed_accuracy: 1.0,
-            latitude: 37.0,
-            longitude: -122.0,
-            altitude: 100.0,
-            speed: 10.0,
-            bearing: 45.0,
-            qw: quaternion.w,
-            qx: quaternion.i,
-            qy: quaternion.j,
-            qz: quaternion.k,
-            // Deliberately disagreeing with the quaternion, the way a real Sensor Logger row
-            // does: these are the first sample of `core/tests/test_data.csv`.
-            roll: 0.163,
-            pitch: -1.340,
-            yaw: 0.179,
-            ..Default::default()
-        };
-
-        let expected = rec.attitude();
-        let ukf = initialize_ukf(&rec, UkfConfig::default()).unwrap();
-        let ekf = initialize_ekf(&rec, None, None, None, None, true).unwrap();
-        let eskf = initialize_eskf(&rec, None, None, None, None).unwrap();
-
-        for (name, estimate) in [
-            ("UKF", ukf.get_estimate()),
-            ("EKF", ekf.get_estimate()),
-            ("ESKF", eskf.get_estimate()),
-        ] {
-            // Reconstructing rather than comparing angles elementwise: `ErrorStateKalmanFilter`
-            // wraps its Euler output into [0, 2pi), and each elementary rotation is
-            // 2pi-periodic, so the rotation is the quantity the three agree on.
-            let seeded =
-                nalgebra::Rotation3::from_euler_angles(estimate[6], estimate[7], estimate[8]);
-            let error_angle = (seeded.inverse() * expected).angle();
-            assert!(
-                error_angle < 1e-9,
-                "{name} seeded an attitude {error_angle:.6} rad away from the record's \
-                 quaternion"
-            );
-        }
-    }
-
     #[test]
     fn test_initialize_ukf_with_nan_angles() {
         let rec = TestDataRecord {
@@ -6296,11 +6977,57 @@ mod tests {
         assert!(nav.latitude_cov.is_nan());
         assert_eq!(nav.acc_bias_x, 0.0);
     }
+
+    /// The two horizontal entries must be one physical quantity, in radians.
+    ///
+    /// Asserting the literals back is what let #308 live: `1e-6, 1e-6, 1e-4` is a perfectly
+    /// self-consistent set of numbers and a perfectly inconsistent set of *claims*, and a test
+    /// that reads the array back cannot tell the difference. So this converts the horizontal
+    /// pair back to metres through the inverse of the conversion that built them.
+    ///
+    /// # What this cannot do
+    ///
+    /// It cannot check [`METERS_TO_RADIANS`] itself, because it divides by the same constant
+    /// the array multiplied by: redefine that constant as [`METERS_TO_DEGREES`] -- restoring
+    /// exactly the 57.3x error the fix exists to remove -- and both sides move together and
+    /// this still passes. The constant is checked independently, against the ellipsoid, in
+    /// [`crate::earth`]'s `meters_to_radians_matches_a_wgs84_principal_radius`; without that
+    /// test this one is a tautology, and the two are meant to be read as a pair.
+    ///
+    /// Altitude is deliberately *not* compared against [`POSITION_PROCESS_NOISE_M`]. The two
+    /// are different quantities on purpose -- see [`VERTICAL_POSITION_PROCESS_NOISE_M2`] --
+    /// and asserting they agree would turn "the vertical channel keeps its historical tuning"
+    /// into a test failure rather than the recorded decision it is.
     #[test]
-    fn test_default_process_noise_values() {
+    fn default_process_noise_position_entries_are_one_quantity() {
         assert_eq!(DEFAULT_PROCESS_NOISE.len(), 15);
-        assert_eq!(DEFAULT_PROCESS_NOISE[0], 1e-6); // position
-        assert_eq!(DEFAULT_PROCESS_NOISE[2], 1e-4); // altitude
+        let latitude_m = DEFAULT_PROCESS_NOISE[0].sqrt() / METERS_TO_RADIANS;
+        let longitude_m = DEFAULT_PROCESS_NOISE[1].sqrt() / METERS_TO_RADIANS;
+        assert_approx_eq!(latitude_m, POSITION_PROCESS_NOISE_M, 1e-12);
+        assert_approx_eq!(longitude_m, POSITION_PROCESS_NOISE_M, 1e-12);
+        // Altitude is in metres already and keeps its own constant. Asserted as an identity
+        // so that re-tying it to `POSITION_PROCESS_NOISE_M` -- the tidy-looking change the
+        // doc comment argues against -- has to be a deliberate edit here too.
+        assert_approx_eq!(
+            DEFAULT_PROCESS_NOISE[2],
+            VERTICAL_POSITION_PROCESS_NOISE_M2,
+            1e-18
+        );
+        // Not a re-assertion of the same arithmetic: this is the bound the doc comment derives
+        // the value from, and it is what fails if someone raises the constant back towards the
+        // regime where the filter stops filtering. K = q / (q + r) <= 0.1 at r = 3.81 m, the
+        // reference recording's reported horizontal 1-sigma, caps q at r / 9.
+        let reported_fix_accuracy_m = 3.81;
+        let steady_state_gain =
+            POSITION_PROCESS_NOISE_M / (POSITION_PROCESS_NOISE_M + reported_fix_accuracy_m);
+        assert!(
+            steady_state_gain <= 0.1,
+            "position process noise implies a steady-state gain of {steady_state_gain:.3}; \
+             above 0.1 the filter averages fewer than ten fixes and is on its way back to the \
+             #308 regime where it lands on each one"
+        );
+        // The remaining entries are untouched tuning values; spot-check one so a wholesale
+        // rewrite of the array does not slip past.
         assert_eq!(DEFAULT_PROCESS_NOISE[3], 1e-3); // velocity
     }
 
@@ -6328,7 +7055,17 @@ mod tests {
             ..Default::default()
         };
 
-        let mut ukf = initialize_ukf(&rec, UkfConfig::default()).unwrap();
+        // The stub's `acc_z: 9.81` with an all-zero (hence identity) quaternion is ENU
+        // specific force, so the filter has to be told ENU: `check_declared_frame` rejects
+        // NED here, which is the guard doing its job rather than collateral damage.
+        let mut ukf = initialize_ukf(
+            &rec,
+            UkfConfig {
+                is_enu: true,
+                ..UkfConfig::default()
+            },
+        )
+        .unwrap();
 
         let stream = EventStream {
             start_time: rec.time,
@@ -6366,7 +7103,14 @@ mod tests {
             yaw: 0.0,
             ..Default::default()
         };
-        let ekf = initialize_ekf(&rec, None, None, None, None, false).unwrap();
+        let ekf = initialize_ekf(
+            &rec,
+            EkfConfig {
+                use_biases: false,
+                ..EkfConfig::default()
+            },
+        )
+        .unwrap();
         let estimate = ekf.get_estimate();
         assert_eq!(estimate.len(), 9, "9-state EKF should have 9 states");
         // Check velocity decomposition (bearing 45° means equal north/east components)
@@ -6390,7 +7134,7 @@ mod tests {
             yaw: 0.0,
             ..Default::default()
         };
-        let ekf = initialize_ekf(&rec, None, None, None, None, true).unwrap();
+        let ekf = initialize_ekf(&rec, EkfConfig::default()).unwrap();
         let estimate = ekf.get_estimate();
         assert_eq!(estimate.len(), 15, "15-state EKF should have 15 states");
         // Check that biases are initialized to zero by default
@@ -6419,7 +7163,7 @@ mod tests {
             yaw: f64::NAN,
             ..Default::default()
         };
-        let ekf = initialize_ekf(&rec, None, None, None, None, true).unwrap();
+        let ekf = initialize_ekf(&rec, EkfConfig::default()).unwrap();
         let estimate = ekf.get_estimate();
         // Should default NaN angles to 0.0
         assert!(estimate[6].abs() < 1e-6, "NaN roll should default to 0"); // roll
@@ -6446,11 +7190,12 @@ mod tests {
         };
         let ekf = initialize_ekf(
             &rec,
-            Some(vec![1e-4, 2e-4, 3e-4]),
-            Some(vec![0.01, 0.02, 0.03, 0.001, 0.002, 0.003]),
-            Some(vec![1e-5; 6]),
-            None,
-            true,
+            EkfConfig {
+                attitude_covariance: Some(vec![1e-4, 2e-4, 3e-4]),
+                imu_biases: Some(vec![0.01, 0.02, 0.03, 0.001, 0.002, 0.003]),
+                imu_biases_covariance: Some(vec![1e-5; 6]),
+                ..EkfConfig::default()
+            },
         )
         .unwrap();
         let estimate = ekf.get_estimate();
@@ -6479,7 +7224,14 @@ mod tests {
             ..Default::default()
         };
         let custom_noise = vec![1e-7; 15];
-        let ekf = initialize_ekf(&rec, None, None, None, Some(custom_noise), true).unwrap();
+        let ekf = initialize_ekf(
+            &rec,
+            EkfConfig {
+                process_noise_diagonal: Some(custom_noise),
+                ..EkfConfig::default()
+            },
+        )
+        .unwrap();
         // Verify EKF was created successfully
         assert_eq!(ekf.get_estimate().len(), 15);
     }

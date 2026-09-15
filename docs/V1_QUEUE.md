@@ -61,6 +61,16 @@ way today; the rest become verifiable the moment 1.0.0 is live.
 | # | Branch | Issues | Summary | Status |
 |---|---|---|---|---|
 | 100 | [`v1/p-lint-config`](queue/p-lint-config.md) | #253, #263 | Lint config (**enforced**, not warn-level) + feature gating | merged |
+
+#263's feature gating landed in 100; what was left of it was settled later in the issue
+tracker rather than on a branch. Both its acceptance criteria pass, the `--no-default-features`
+workspace build is now a CI step rather than an untested claim, and the `wmm` bullet was
+**declined** in writing (`core/Cargo.toml`): gating `world_magnetic_model` would make the
+filter's numerical output depend on a cargo feature, because `build_event_stream` emits a
+declination-corrected magnetometer yaw measurement for every record that has one. Fixing it
+also turned up a real v1.0 blocker the issue did not anticipate -- `all-features = true` in
+`[package.metadata.docs.rs]` is why `strapdown-core` 0.5.0 has no documentation on docs.rs at
+all. That is fixed for `core`; the `geonav` half is #335.
 | 101 | [`v1/p-imu-quality-cov`](queue/p-imu-quality-cov.md) | #257 | `auto_covariance` from `IMUQuality` | merged (#280) |
 | 102 | [`v1/p-calibration`](queue/p-calibration.md) | #256 | `ImuCalibration` | merged (#281) |
 | 103 | [`v1/p-alignment`](queue/p-alignment.md) | #257 | Coarse alignment and initialisation | merged (#282) |

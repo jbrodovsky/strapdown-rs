@@ -114,8 +114,10 @@ strapdown-geonav \
 ### Programmatic API
 
 ```rust
+use std::rc::Rc;
 use strapdown::kalman::{ExtendedKalmanFilter, InitialState};
-use geonav::{GeoMap, build_event_stream, geo_closed_loop_ekf};
+use strapdown::sim::run_closed_loop;
+use geonav::{GeoMap, build_event_stream};
 
 // Initialize EKF
 let initial_state = InitialState { /* ... */ };
@@ -131,10 +133,20 @@ let mut ekf = ExtendedKalmanFilter::new(
 let geomap = GeoMap::load_geomap(map_path, measurement_type)?;
 
 // Build event stream
-let events = build_event_stream(&records, &config, geomap, noise_std, frequency);
+// `?`: an empty record slice cannot supply the stream's start time or altitude reference.
+let events = build_event_stream(
+    &records,
+    &config,
+    Some(Rc::new(geomap)),
+    Some(noise_std),
+    None, // no magnetic map
+    None,
+    frequency,
+)?;
 
-// Run EKF navigation
-let results = geo_closed_loop_ekf(&mut ekf, events)?;
+// Run EKF navigation. The geonav-specific `geo_closed_loop_*` drivers were removed in
+// favour of the one driver in `strapdown-core`, which takes any `NavigationFilter`.
+let results = run_closed_loop(&mut ekf, events, None, None)?;
 ```
 
 ## Performance Comparison: EKF vs UKF

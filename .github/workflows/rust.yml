@@ -80,6 +80,13 @@ jobs:
       - name: Lint
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
+      # #263's literal acceptance criterion. It belongs here rather than in `minimal`,
+      # because `strapdown-geonav` depends on netcdf unconditionally, so a workspace build
+      # needs libnetcdf whatever the feature flags say -- the `minimal` job deliberately
+      # installs no system libraries and builds `strapdown-core` alone.
+      - name: Build (workspace, no default features)
+        run: cargo build --workspace --no-default-features --locked
+
       - name: Test
         run: cargo test --workspace --all-features --locked
 

@@ -5,9 +5,11 @@
 //! - Path validation and file discovery
 //! - User input prompts
 
+use log::info;
 use std::error::Error;
 use std::io;
 use std::path::{Path, PathBuf};
+use strapdown::sim::TestDataRecord;
 
 /// Initialize the logger with the specified configuration.
 ///
@@ -86,7 +88,7 @@ pub(crate) fn validate_input_path(input: &Path) -> Result<(), Box<dyn Error>> {
 /// * `input` - Path to a CSV file or directory containing CSV files
 ///
 /// # Returns
-/// A sorted vector of PathBuf for each CSV file found.
+/// A sorted vector of `PathBuf` for each CSV file found.
 ///
 /// # Errors
 /// Returns an error if:
@@ -306,6 +308,47 @@ fn canonical_parent_and_name(path: &Path) -> Option<PathBuf> {
 }
 
 // ============================================================================
+// Input Loading
+// ============================================================================
+
+/// Load one input CSV, refusing an empty read.
+///
+/// [`TestDataRecord::from_csv`] warns about and skips rows it cannot parse rather than
+/// failing, so a file whose schema does not match the Sensor Logger columns -- or one that
+/// is empty or header-only -- yields `Ok(vec![])`. Everything downstream needs a first
+/// record, so the empty read is caught here, where the file name is still in hand, instead
+/// of surfacing several frames deeper as a library error that cannot name it (#311).
+///
+/// This also subsumes the `Read {n} records from {path}` logging that every call site used
+/// to repeat.
+///
+/// # Errors
+/// Returns an error if the file cannot be read or parsed at all, or if it parsed but
+/// yielded no usable records.
+pub(crate) fn load_records(input_file: &Path) -> Result<Vec<TestDataRecord>, Box<dyn Error>> {
+    let records = TestDataRecord::from_csv(input_file)?;
+    if records.is_empty() {
+        return Err(format!(
+            // No pointer at "the warnings above": `TestDataRecord::from_csv` warns per
+            // *unparseable row*, so an empty or header-only file produces none, and at
+            // `--log-level error` they are suppressed even when rows were skipped. Sending
+            // the user to look for output that may not exist is worse than saying nothing.
+            "No usable records read from '{}': the file is empty, or none of its rows match \
+             the expected schema. Run with `--log-level warn` or finer to see which rows \
+             were skipped.",
+            input_file.display()
+        )
+        .into());
+    }
+    info!(
+        "Read {} records from {}",
+        records.len(),
+        input_file.display()
+    );
+    Ok(records)
+}
+
+// ============================================================================
 // User Input Utilities
 // ============================================================================
 
@@ -504,6 +547,37 @@ mod tests {
         let dir = tempdir().unwrap();
         let result = get_csv_files(dir.path());
         assert!(result.is_err());
+    }
+
+    /// A CSV whose rows do not match the schema parses "successfully" into zero records,
+    /// because `from_csv` warns and skips rather than failing. That empty vector used to
+    /// reach `build_event_stream` and panic with an index-out-of-bounds naming neither the
+    /// file nor the cause (#311).
+    #[test]
+    fn test_load_records_rejects_a_csv_with_no_usable_rows() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("wrong_schema.csv");
+        std::fs::write(&file_path, "alpha,beta,gamma\n1,2,3\n").unwrap();
+
+        let err = load_records(&file_path).expect_err("a file with no usable rows has no records");
+        let message = err.to_string();
+        assert!(
+            message.contains("wrong_schema.csv"),
+            "the error must name the offending file, got: {message}"
+        );
+    }
+
+    /// The guard must not reject a file that does parse. Round-tripping through `to_csv`
+    /// keeps the fixture honest about the schema `from_csv` expects.
+    #[test]
+    fn test_load_records_accepts_a_parseable_csv() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("records.csv");
+        let written = vec![TestDataRecord::default(); 3];
+        TestDataRecord::to_csv(&written, &file_path).unwrap();
+
+        let read = load_records(&file_path).unwrap();
+        assert_eq!(read.len(), written.len());
     }
 
     #[test]

@@ -34,6 +34,7 @@ use strapdown::kalman::{
 use strapdown::measurements::{
     GPSPositionAndVelocityMeasurement, ZaruMeasurement, ZuptMeasurement,
 };
+use strapdown::sim::DEFAULT_PROCESS_NOISE;
 use strapdown::stationary::{StationaryConfig, StationaryDetector};
 use strapdown::{IMUData, ImuSample, NavigationFilter, StrapdownState, mechanize};
 
@@ -115,8 +116,10 @@ fn process_noise_matrix() -> DMatrix<f64> {
 
 /// The seed state in the form the Kalman-family constructors take.
 ///
-/// Built as a struct literal rather than through [`InitialState::new`], matching every
-/// other caller in the workspace -- see the note in `filter_comparison.rs`.
+/// Built as a struct literal rather than through [`InitialState::new`], matching the other
+/// test seeds in `filter_comparison.rs` and `integration_tests.rs`. The constructor is
+/// equally correct -- `engine.rs` and the `core/examples` binaries use it -- and this is
+/// only a convention among the test fixtures.
 fn initial_state(state: &StrapdownState) -> InitialState {
     let (roll, pitch, yaw) = state.attitude.euler_angles();
     InitialState {
@@ -301,6 +304,17 @@ fn rejected_fixes(
 /// Returned as trait objects in a fixed order so a filter that stopped implementing
 /// [`NavigationFilter`] fails to build here rather than quietly dropping out.
 fn gating_filters(initial: &StrapdownState) -> Vec<(&'static str, Box<dyn NavigationFilter>)> {
+    filters_with_process_noise(initial, &process_noise_matrix())
+}
+
+/// [`gating_filters`], with the process noise supplied by the caller.
+///
+/// Split out for [`the_shipped_default_process_noise_lets_the_eskf_filter`], which is a
+/// test *of* a process-noise diagonal and so cannot use this file's own.
+fn filters_with_process_noise(
+    initial: &StrapdownState,
+    process_noise: &DMatrix<f64>,
+) -> Vec<(&'static str, Box<dyn NavigationFilter>)> {
     let init = initial_state(initial);
     let biases = [0.0_f64; 6];
     vec![
@@ -310,7 +324,7 @@ fn gating_filters(initial: &StrapdownState) -> Vec<(&'static str, Box<dyn Naviga
                 &init,
                 &biases,
                 initial_covariance().to_vec(),
-                process_noise_matrix(),
+                process_noise.clone(),
             )) as Box<dyn NavigationFilter>,
         ),
         (
@@ -319,7 +333,7 @@ fn gating_filters(initial: &StrapdownState) -> Vec<(&'static str, Box<dyn Naviga
                 &init,
                 &biases,
                 initial_covariance().to_vec(),
-                process_noise_matrix(),
+                process_noise.clone(),
                 true,
             )) as Box<dyn NavigationFilter>,
         ),
@@ -330,7 +344,7 @@ fn gating_filters(initial: &StrapdownState) -> Vec<(&'static str, Box<dyn Naviga
                 &biases,
                 None,
                 initial_covariance().to_vec(),
-                process_noise_matrix(),
+                process_noise.clone(),
                 UKF_ALPHA,
                 UKF_BETA,
                 UKF_KAPPA,
@@ -575,6 +589,235 @@ fn a_note_on_filter_consistency() {
             peak_altitude_error_m < MAX_ALTITUDE_ERROR_M,
             "{name} vertical channel reached {peak_altitude_error_m:.3e} m under noisy fixes"
         );
+    }
+}
+
+// ================================================== #308: the shipped process noise
+
+/// Number of GNSS fixes discarded before the statistics below are collected.
+///
+/// Both assertions are statements about the *steady state*, so the initial transient from
+/// [`INITIAL_POSITION_STD_M`] down to the settled prior has to be excluded or it dominates
+/// the averages. Half the run is chosen against the scalar Riccati recursion this scenario
+/// reduces to. With $R = (5\text{ m})^2$, a per-fix-interval process variance of
+/// $5 \times (0.1\text{ m})^2$ (five 5 Hz predicts between 1 Hz fixes) and
+/// $P_0 = (10\text{ m})^2$, the information form $1/P_{k} = 1/P_0 + k/R$ reaches the
+/// recursion's 1.14 m^2 fixed point in about twenty fixes. Fifty is a little over twice
+/// that, and leaves fifty fixes of statistics.
+const PROCESS_NOISE_SETTLING_FIXES: usize = GATING_DURATION_S / 2;
+
+/// Ceiling on the settled prior's share of the innovation covariance, $HPH^T / R$.
+///
+/// The mechanism #308 describes, stated as an inequality: $S = HPH^T + R$ dominated by the
+/// prior rather than by the measurement. One is the break-even point, and it is a property
+/// of the filter rather than of this scenario -- $HPH^T = R$ is a Kalman gain of exactly
+/// $1/2$, the point either side of which the update trusts the prediction more or the fix
+/// more. A filter whose prior is *worse* than a single fix is not filtering: it can only
+/// ever discard what it knows and copy the measurement, which is precisely what the defect
+/// made all three filters do.
+///
+/// The same scalar recursion predicts the healthy value at $1.14 / 25 = 0.046$, and the
+/// ESKF measures 0.063 -- the excess is the fifteen-state coupling the scalar model leaves
+/// out. So this is not a close-run bound; it is set where it is because that is where the
+/// meaning is, not for the margin. Against the pre-#308 diagonal the ratio is 8.1e6.
+const MAX_PRIOR_SHARE_OF_INNOVATION_COVARIANCE: f64 = 1.0;
+
+/// Ceiling on the fraction of the GNSS fix noise allowed through into the solution.
+///
+/// The other half of the issue's description, and the observable one: a filter told its own
+/// prediction is worthless lands on each fix, so its horizontal error *is* that fix's error
+/// and nothing is averaged down.
+///
+/// Derivation. Over a settled run the position error obeys $e_k = (1-K)e_{k-1} + K n_k$ for
+/// fix error $n_k$ and steady-state gain $K$, a one-pole filter whose output standard
+/// deviation is $\sqrt{K/(2-K)}$ times its input's. The ceiling of one half therefore says
+/// exactly $K \le 0.4$: the update must give the prediction at least 60% of the weight.
+/// That is the same "is it filtering at all" statement as
+/// [`MAX_PRIOR_SHARE_OF_INNOVATION_COVARIANCE`] made about the output rather than the
+/// covariance, and deliberately weaker than the $K = 0.043$ this tuning actually implies
+/// ($\sqrt{K/(2-K)} = 0.15$, against 0.072 measured -- the fix noise here is a bounded
+/// repeating pattern rather than white, and a one-pole filter rejects a period-7 sequence
+/// of near-zero mean better than it rejects white noise). The two bounds are independent
+/// observations of one defect, not a tightened pair. Against the pre-#308 diagonal
+/// $K = 0.9997$ and the ratio is 1.000: the solution *is* the fix.
+const MAX_FIX_NOISE_PASSED_THROUGH: f64 = 0.5;
+
+/// Root-mean-square of a sample of errors, or `None` if the sample is empty.
+fn root_mean_square(values: &[f64]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let sum_of_squares: f64 = values.iter().map(|v| v * v).sum();
+    Some((sum_of_squares / values.len() as f64).sqrt())
+}
+
+/// What a run of [`measure_filtering`] observed, once the transient has been dropped.
+struct FilteringOutcome {
+    /// Largest $HPH^T / R$ seen on a settled fix, unit-free.
+    worst_prior_share: f64,
+    /// Root-mean-square horizontal error of the solution against truth, meters.
+    solution_rms_m: f64,
+    /// Root-mean-square horizontal error of the fixes the run consumed, meters.
+    fix_rms_m: f64,
+}
+
+impl FilteringOutcome {
+    /// Fraction of the fix noise that survived into the solution.
+    fn passed_through(&self) -> f64 {
+        self.solution_rms_m / self.fix_rms_m
+    }
+}
+
+/// Drive one filter through the gating scenario and measure whether it filtered.
+///
+/// Ungated on purpose: gating is a separate question, and a gate that rejected the honest
+/// fixes would hide the behaviour being measured behind an empty sample.
+fn measure_filtering(
+    name: &str,
+    filter: &mut dyn NavigationFilter,
+    scenario: &GatingScenario,
+) -> FilteringOutcome {
+    // Latitude's entry in the fix's own noise covariance, rad^2 -- built the same way
+    // `GPSPositionAndVelocityMeasurement::get_noise` builds it, so the ratio below is
+    // against the R the update actually used.
+    let measurement_variance_rad2 = meters_to_radians(GPS_HORIZONTAL_NOISE_M).powi(2);
+    filter.set_innovation_gate(None);
+
+    let mut prior_shares = Vec::new();
+    let mut solution_errors_m = Vec::new();
+    let mut fix_errors_m = Vec::new();
+    let mut fixes_seen = 0_usize;
+
+    for (index, sample) in scenario.samples.iter().enumerate() {
+        filter.predict(sample, sample.dt).unwrap();
+        if index % GPS_DECIMATION != 0 {
+            continue;
+        }
+        // Read the prior *before* the update consumes it: this is the $HPH^T$ the
+        // innovation covariance is formed from, and the Jacobian of this measurement is
+        // the identity on the position block.
+        let prior_variance_rad2 = filter.get_certainty()[(0, 0)];
+        let outcome = filter.update(&scenario.gps[index]).unwrap();
+        assert!(
+            outcome.accepted,
+            "{name} rejected a fix with no gate installed"
+        );
+
+        fixes_seen += 1;
+        if fixes_seen <= PROCESS_NOISE_SETTLING_FIXES {
+            continue;
+        }
+        prior_shares.push(prior_variance_rad2 / measurement_variance_rad2);
+
+        // `truth[index + 1]` is the state the fix was recorded against: the scenario
+        // samples truth *after* propagating `samples[index]`.
+        let truth = &scenario.truth[index + 1];
+        let fix = &scenario.gps[index];
+        solution_errors_m.push(horizontal_error_m(&filter.get_estimate(), truth));
+        fix_errors_m.push(haversine_distance(
+            fix.latitude.to_radians(),
+            fix.longitude.to_radians(),
+            truth.latitude,
+            truth.longitude,
+        ));
+    }
+
+    let outcome = FilteringOutcome {
+        worst_prior_share: prior_shares
+            .iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max),
+        solution_rms_m: root_mean_square(&solution_errors_m).unwrap(),
+        fix_rms_m: root_mean_square(&fix_errors_m).unwrap(),
+    };
+    println!(
+        "{name}: worst HPH'/R {:.4}, solution {:.3} m rms against {:.3} m rms of fix noise \
+         ({:.3} passed through)",
+        outcome.worst_prior_share,
+        outcome.solution_rms_m,
+        outcome.fix_rms_m,
+        outcome.passed_through()
+    );
+    outcome
+}
+
+/// Assert both halves of "this filter filtered" on a measured run.
+fn assert_filtered(name: &str, outcome: &FilteringOutcome) {
+    assert!(
+        outcome.worst_prior_share <= MAX_PRIOR_SHARE_OF_INNOVATION_COVARIANCE,
+        "{name}: the settled prior contributes {:.3e} times the measurement's own variance \
+         to S = HPH' + R, so the update discards the prediction and copies the fix -- the \
+         #308 failure mode",
+        outcome.worst_prior_share
+    );
+    assert!(
+        outcome.passed_through() <= MAX_FIX_NOISE_PASSED_THROUGH,
+        "{name}: {:.3} of the fix noise reached the solution ({:.3} m rms against {:.3} m \
+         rms of fix error); a filtering solution attenuates it, a solution that lands on \
+         each fix does not",
+        outcome.passed_through(),
+        outcome.solution_rms_m,
+        outcome.fix_rms_m
+    );
+}
+
+#[test]
+fn the_shipped_default_process_noise_lets_the_eskf_filter() {
+    // The regression test #308 did not have. Every other assertion in this workspace that
+    // touches the default diagonal reads its entries back, or builds its own copy -- which
+    // is why a horizontal process noise of 6.4 km per step and one of 0.1 m per step were
+    // indistinguishable to the entire suite. This one never mentions a number from the
+    // array. It drives a filter the crate ships, with the diagonal the crate ships, on
+    // honest fixes, and asserts the two things an over-inflated Q destroys.
+    //
+    // Deliberately `strapdown::sim::DEFAULT_PROCESS_NOISE` and not this file's own
+    // `process_noise()`: the local copy was already built through `meters_to_radians`, so
+    // using it would test the fixture instead of the library.
+    //
+    // The ESKF, because it is the filter `sim::initialize_eskf` and `engine::InsEngine`
+    // build by default, and because it is the one of the three whose reported uncertainty
+    // is currently believable -- see the `#[ignore]`d companion below for the other two.
+    let scenario = build_gating_scenario();
+    let shipped = DMatrix::from_diagonal(&DVector::from_row_slice(&DEFAULT_PROCESS_NOISE));
+    let (name, mut filter) = filters_with_process_noise(&scenario.initial, &shipped)
+        .into_iter()
+        .find(|(name, _)| *name == "ESKF")
+        .expect("the filter list no longer contains an ESKF");
+    let outcome = measure_filtering(name, filter.as_mut(), &scenario);
+    assert_filtered(name, &outcome);
+}
+
+#[test]
+#[ignore = "EKF and UKF report horizontal uncertainties of ~493 m and ~201 m on a run \
+            whose actual error is metres -- pre-existing, #303 (closed as completed, \
+            still reproducible)"]
+fn the_shipped_default_process_noise_lets_every_filter_filter() {
+    // The same two assertions across all three filters, which is what #308 is really a
+    // statement about -- Q is shared, so the claim "the filter can filter" should not be
+    // filter-specific.
+    //
+    // It is, for reasons that are not #308's. Measured here with the fixed diagonal:
+    //
+    //     filter | worst HPH'/R | implied sigma | fix noise passed through
+    //     -------|--------------|---------------|------------------------
+    //     ESKF   | 0.063        | 1.3 m         | 0.072
+    //     UKF    | 1622         | 201 m         | 1.000
+    //     EKF    | 9729         | 493 m         | 1.000
+    //
+    // Those two numbers are the same ones `a_note_on_filter_consistency` above records
+    // from the other direction ("the EKF reports a position sigma of roughly 500 m after
+    // converging to metres"), reached here without any seed error: #303's covariance
+    // divergence, not an over-inflated Q. Q cannot be the cause -- the ESKF consumes the
+    // identical diagonal on the identical stream and settles at 0.063.
+    //
+    // Left `#[ignore]`d and asserting the healthy behaviour rather than relaxed to a bound
+    // 9729 would clear, which would import #303's numbers into #308's test and leave
+    // nothing watching either (#288). It turns green when #303 does.
+    let scenario = build_gating_scenario();
+    let shipped = DMatrix::from_diagonal(&DVector::from_row_slice(&DEFAULT_PROCESS_NOISE));
+    for (name, mut filter) in filters_with_process_noise(&scenario.initial, &shipped) {
+        let outcome = measure_filtering(name, filter.as_mut(), &scenario);
+        assert_filtered(name, &outcome);
     }
 }
 
