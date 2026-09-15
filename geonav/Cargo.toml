@@ -17,6 +17,13 @@ homepage.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+# NOTE: this crate will not render on docs.rs, and cannot be made to without a trade-off
+# that has not been taken. netCDF is a hard dependency here -- reading NetCDF maps is what
+# the crate is for -- and the docs.rs sandbox has no libnetcdf, so `netcdf-sys`'s build
+# script panics exactly as it did for `strapdown-core` 0.5.0 (see `core/Cargo.toml`). The
+# only escape is a `netcdf/static` source build, and a feature offering that would be swept
+# up by the `--all-features` in CI and `pixi run lint`. Tracked in #335.
+
 [dependencies]
 strapdown-core = { path = "../core", version = "1.0.0" }
 nalgebra.workspace = true

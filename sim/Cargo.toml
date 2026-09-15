@@ -13,6 +13,13 @@ homepage.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[package.metadata.docs.rs]
+# Documented without default features: `plotting` pulls `plotters`, whose default backend
+# needs the freetype/fontconfig stack that the docs.rs sandbox does not have, and `geonav`
+# pulls libnetcdf for the same reason `strapdown-geonav` needs its own static passthrough.
+# Neither gates any public item that is interesting to a reader of this crate's docs (#263).
+no-default-features = true
+
 [features]
 default = ["plotting"]
 plotting = ["dep:plotters"]
