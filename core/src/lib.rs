@@ -1532,8 +1532,23 @@ pub fn mechanize(state: &mut StrapdownState, sample: &ImuSample) -> Result<(), S
             what: "propagated attitude matrix",
         });
     }
-    // Save updated attitude as rotation matrix
-    work.attitude = Rotation3::from_matrix(&c_1);
+    // Save updated attitude as rotation matrix.
+    //
+    // `Rotation3::from_matrix` is `from_matrix_eps` with an *identity* initial guess, and
+    // identity is a stationary point of that Gauss-Newton iteration for any target a half
+    // turn away from it: the per-column cross products that form the update axis cancel, the
+    // step vanishes, and the routine returns its guess without reporting that it failed. A
+    // level vehicle heading due south has exactly that attitude -- `C_b^n = R_z(pi)` is a
+    // half turn from identity -- so a due-south dead-reckoning run used to have its heading
+    // silently replaced by 0 on the second step, the attitude landing 180 deg from truth
+    // with no error raised. Found reproducing #336, whose repro seeds the UKF at `yaw = pi`.
+    //
+    // `c_0` is the right guess on every count: it is at most one timestep's rotation from
+    // `c_1`, so the iteration starts inside the basin rather than at a degenerate point, and
+    // it converges in fewer steps everywhere else as well. The degeneracy is a knife edge
+    // rather than a basin -- 179.99 deg already converges correctly -- which is why this
+    // survived until a test seeded the exact value.
+    work.attitude = Rotation3::from_matrix_eps(&c_1, f64::EPSILON, 0, c_0);
     // Save update velocity
     work.velocity_north = velocity[0];
     work.velocity_east = velocity[1];
@@ -2733,6 +2748,63 @@ mod tests {
         assert_eq!(state_vector[7], pitch);
         assert_eq!(state_vector[8], yaw);
     }
+    /// A level vehicle heading due south keeps its heading through the mechanization.
+    ///
+    /// Found reproducing #336. `C_b^n = R_z(pi)` is exactly a half turn from identity, and
+    /// identity is the initial guess `Rotation3::from_matrix` hands its Gauss-Newton -- also
+    /// a *stationary point* of that iteration for a target a half turn away, because the
+    /// per-column cross products that form the update axis cancel. The step vanished and the
+    /// routine returned its guess without reporting a failure, so this run used to come out
+    /// pointing due north: a 180 deg attitude error, silently, on the second step.
+    ///
+    /// Two steps is the whole test. The first survives -- `c_1` is still exactly the half
+    /// turn it started as -- and it is the second, where the Earth-rate term has made `c_1`
+    /// non-orthonormal by ~1e-16, that used to collapse.
+    #[test]
+    fn a_due_south_heading_survives_mechanization() {
+        let due_south = Rotation3::from_euler_angles(0.0, 0.0, std::f64::consts::PI);
+        let mut state = StrapdownState {
+            latitude: 40.0_f64.to_radians(),
+            longitude: (-105.0_f64).to_radians(),
+            altitude: 1000.0,
+            velocity_north: -10.0,
+            velocity_east: 0.0,
+            velocity_vertical: 0.0,
+            attitude: due_south,
+            is_enu: false,
+        };
+        // A level hold: specific force opposing gravity, and the angular rate that keeps the
+        // platform level against Earth rate and transport rate. Any *drift* under this
+        // stream is a real mechanization error rather than an uncompensated rotation.
+        let dt = 0.2;
+        for _ in 0..2 {
+            let latitude_deg = state.latitude.to_degrees();
+            let velocity = Vector3::new(
+                state.velocity_north,
+                state.velocity_east,
+                state.velocity_vertical,
+            );
+            let nav_rate = earth::earth_rate_lla(&latitude_deg)
+                + earth::transport_rate(&latitude_deg, &state.altitude, &velocity);
+            let sample = ImuSample {
+                delta_v: state.attitude.inverse()
+                    * Vector3::new(0.0, 0.0, -earth::gravity(&latitude_deg, &state.altitude))
+                    * dt,
+                delta_theta: state.attitude.inverse() * nav_rate * dt,
+                dt,
+            };
+            mechanize(&mut state, &sample).unwrap();
+        }
+
+        let drift = (state.attitude.inverse() * due_south).angle();
+        assert!(
+            drift < 1e-6,
+            "a due-south attitude drifted {drift} rad through two level-hold steps; \
+             the propagated matrix is not being orthonormalised back to the rotation it is \
+             closest to (it used to land on identity, 180 deg away)"
+        );
+    }
+
     #[test]
     fn rest() {
         // Test the forward mechanization with a state at rest
@@ -3564,7 +3636,12 @@ mod tests {
                 velocity_update(&expected, f * dt, dt)
             };
             let (lat, lon, alt) = position_update(&expected, velocity, dt);
-            expected.attitude = Rotation3::from_matrix(&c_1);
+            // Same orthonormalising projection `mechanize` uses, warm start included. This
+            // reference exists to pin the *grouping* of the equations, so it must not differ
+            // from the thing under test in the projection as well: a cold `from_matrix` here
+            // lands one ulp away in roll, which would read as the grouping having changed
+            // when nothing about the grouping had.
+            expected.attitude = Rotation3::from_matrix_eps(&c_1, f64::EPSILON, 0, c_0);
             expected.velocity_north = velocity[0];
             expected.velocity_east = velocity[1];
             expected.velocity_vertical = velocity[2];

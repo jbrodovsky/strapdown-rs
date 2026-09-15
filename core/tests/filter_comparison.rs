@@ -102,6 +102,31 @@ const MAX_VELOCITY_ERROR_MPS: f64 = 0.5;
 /// measured: 0.182 m, between the UKF and the RBPF.
 const MAX_PAIRWISE_SEPARATION_M: f64 = 1.5;
 
+/// Maximum final yaw error against truth on the cardinal-heading runs, radians.
+///
+/// Derived rather than fitted, per #288. [`INITIAL_COVARIANCE`] seeds the attitude block at
+/// 0.01 rad^2, so every filter starts the run claiming a 0.1 rad (5.7 deg) 1-sigma yaw
+/// uncertainty; three of those is the usual consistency ceiling, and a filter that ends a
+/// run *outside its own seed's* 3-sigma has not navigated, whichever way it was pointing.
+/// Yaw is only weakly observable under position-and-velocity aiding (#305), so the bound is
+/// deliberately a "did not grow" test rather than a "converged" one.
+///
+/// Fitting this one to an observation would be worse than usual, because the UKF's yaw on
+/// this scenario is not determined to anything like the precision the printout suggests. Its
+/// mean is `w_0 * x_0 + sum w_i * x_i` with `w_0` about -1e6 (`alpha = 1e-3`, `n = 15`), so a
+/// 1-ulp change anywhere upstream moves the mean by ~1e-10, which re-seeds the next sigma set
+/// and compounds over 1500 steps. Three code paths that differ only in rounding -- the
+/// mechanization's orthonormalisation guess among them -- put the northbound UKF yaw error at
+/// 0.008, 0.099 and 0.123 rad. With yaw only weakly observable under this aiding (#305) there
+/// is nothing pulling it back, so treat any single figure below as one draw from a ~0.1 rad
+/// band rather than as the filter's accuracy.
+///
+/// The measurements, on that understanding: ESKF and EKF are exact to printing precision on
+/// all four headings, the RBPF is within 1.1e-4 rad, and the UKF runs 0.004 rad (east) to
+/// 0.134 rad (south) -- ~2x margin on the worst. The failure this catches is nowhere near
+/// that margin: before #336 the UKF reached 8e5 rad within three samples.
+const MAX_CARDINAL_YAW_ERROR_RAD: f64 = 3.0 * 0.1;
+
 /// UKF sigma-point tuning, matching `sim::default_ukf_*`.
 const UKF_ALPHA: f64 = 1e-3;
 const UKF_BETA: f64 = 2.0;
@@ -172,14 +197,28 @@ struct Scenario {
 /// trajectory gently curving rather than exactly straight, which exercises the filters
 /// slightly harder than a straight line would.
 fn build_scenario(seed_offset_m: f64) -> Scenario {
+    build_scenario_at_heading(seed_offset_m, 0.0)
+}
+
+/// [`build_scenario`] on an arbitrary heading rather than due north.
+///
+/// The vehicle is still level and still holds [`SCENARIO_VELOCITY_NORTH_MPS`] of ground
+/// speed; only the direction changes, with the velocity resolved along the heading and the
+/// attitude set to the matching yaw. Everything else -- the level-hold inertial stream, the
+/// per-sample GPS, truth being the mechanization's own integral -- is unchanged, so two
+/// scenarios at different headings are the same problem rotated, and a filter that tracks
+/// one must track the other.
+///
+/// That invariance is the point: see [`every_filter_navigates_on_every_cardinal_heading`].
+fn build_scenario_at_heading(seed_offset_m: f64, yaw: f64) -> Scenario {
     let truth_initial = StrapdownState {
         latitude: SCENARIO_LATITUDE_DEG.to_radians(),
         longitude: SCENARIO_LONGITUDE_DEG.to_radians(),
         altitude: SCENARIO_ALTITUDE_M,
-        velocity_north: SCENARIO_VELOCITY_NORTH_MPS,
-        velocity_east: 0.0,
+        velocity_north: SCENARIO_VELOCITY_NORTH_MPS * yaw.cos(),
+        velocity_east: SCENARIO_VELOCITY_NORTH_MPS * yaw.sin(),
         velocity_vertical: 0.0,
-        attitude: Rotation3::identity(),
+        attitude: Rotation3::from_euler_angles(0.0, 0.0, yaw),
         is_enu: false,
     };
 
@@ -455,6 +494,118 @@ fn all_filters_agree_on_a_shared_scenario() {
                 "{name_a} and {name_b} disagree by {separation:.3} m, above the \
                  {MAX_PAIRWISE_SEPARATION_M:.3} m consistency bound"
             );
+        }
+    }
+}
+
+/// The same scenario flown on each cardinal heading, where due south is the one that broke.
+///
+/// #336. A heading is a rotation of the problem, not a harder version of it, so the bounds
+/// asserted here are the northbound run's own: anything looser would concede that some
+/// direction is allowed to navigate worse, which is the claim under test. The three headings
+/// beside north are cheap, and running all four is what makes this a statement about the
+/// mechanization and the filters rather than about one magic value.
+///
+/// Due south is the one that failed, because a level vehicle heading due south holds
+/// `C_b^n = R_z(pi)` -- simultaneously the `atan2` branch cut [`Rotation3::euler_angles`]
+/// reports across and a half turn from identity. Two independent defects lived at exactly
+/// that attitude, and the northbound run above could see neither:
+///
+/// 1. The UKF propagated its sigma points, read each one's attitude back through
+///    `euler_angles` -- which canonicalises onto `[-pi, pi]` *independently per point*, so a
+///    set straddling the cut came back as a mix of `+179` and `-179` deg -- and then took the
+///    plain weighted sum. With the UKF's non-convex mean weights (`w_0` about -1e6 against
+///    `w_i` of about +3e4) that does not land between the points but extrapolates away from
+///    them, and the error compounds through the next sigma set. Seeded here, the UKF reached
+///    a reported pitch of 5.7 rad and a yaw of 8e5 rad within three samples.
+/// 2. `mechanize` rebuilt the propagated attitude with `Rotation3::from_matrix`, whose
+///    Gauss-Newton starts from an *identity* guess -- and identity is a stationary point of
+///    that iteration for a target a half turn away. It returned the guess without reporting
+///    a failure, so even *truth* here lost its heading on the second step and dead-reckoned
+///    due north.
+///
+/// Both were knife edges: 179.99 deg converges correctly and does not straddle the cut with
+/// this attitude uncertainty, so nothing short of the exact value finds them.
+#[test]
+fn every_filter_navigates_on_every_cardinal_heading() {
+    for (label, heading) in [
+        ("north", 0.0),
+        ("east", std::f64::consts::FRAC_PI_2),
+        ("south", std::f64::consts::PI),
+        ("west", -std::f64::consts::FRAC_PI_2),
+    ] {
+        let scenario = build_scenario_at_heading(0.0, heading);
+        let truth = scenario.truth.last().unwrap();
+
+        // Truth first: the mechanization has to hold the heading before any filter can be
+        // asked to track it. Asserted separately so defect (2) above reports as itself
+        // rather than as four filters mysteriously failing at once.
+        let truth_yaw = truth.attitude.euler_angles().2;
+        let truth_drift = strapdown::wrap_to_pi(truth_yaw - heading).abs();
+        assert!(
+            truth_drift <= MAX_CARDINAL_YAW_ERROR_RAD,
+            "the {label} scenario's own truth drifted {truth_drift:.6} rad off its commanded \
+             heading, ending at yaw = {truth_yaw} rad; `mechanize` is not preserving the \
+             attitude it was handed"
+        );
+
+        let estimates: Vec<(&str, DVector<f64>)> = all_filters(&scenario, &[0.0; 6])
+            .into_iter()
+            .map(|(name, mut filter)| (name, run(filter.as_mut(), &scenario)))
+            .collect();
+
+        for (name, estimate) in &estimates {
+            let horizontal = horizontal_error_m(estimate, truth);
+            let altitude = (estimate[2] - truth.altitude).abs();
+            let velocity = velocity_error_mps(estimate, truth);
+            // Differenced with `wrap_to_pi` so that `+pi` and `-pi` are the same answer
+            // rather than a full turn apart -- which is the whole point at this heading.
+            let yaw_error = strapdown::wrap_to_pi(estimate[8] - truth_yaw).abs();
+            println!(
+                "{label:>5} {name:>4}: horizontal {horizontal:.3} m | altitude {altitude:.3} m \
+                 | velocity {velocity:.4} m/s | yaw error {yaw_error:.6} rad"
+            );
+            assert!(
+                estimate.iter().take(9).all(|v| v.is_finite()),
+                "{name} produced a non-finite navigation state heading {label}: {estimate:?}"
+            );
+            assert!(
+                (-std::f64::consts::PI..=std::f64::consts::PI).contains(&estimate[8]),
+                "{name} reported yaw = {} rad heading {label}, outside the -pi..pi branch \
+                 every filter reports on (#314)",
+                estimate[8]
+            );
+            assert!(
+                yaw_error <= MAX_CARDINAL_YAW_ERROR_RAD,
+                "{name} yaw error {yaw_error:.6} rad heading {label} exceeds \
+                 {MAX_CARDINAL_YAW_ERROR_RAD:.6} rad"
+            );
+            assert!(
+                horizontal <= MAX_HORIZONTAL_ERROR_M,
+                "{name} horizontal error {horizontal:.3} m heading {label} exceeds \
+                 {MAX_HORIZONTAL_ERROR_M:.3} m"
+            );
+            assert!(
+                altitude <= MAX_ALTITUDE_ERROR_M,
+                "{name} altitude error {altitude:.3} m heading {label} exceeds \
+                 {MAX_ALTITUDE_ERROR_M:.3} m"
+            );
+            assert!(
+                velocity <= MAX_VELOCITY_ERROR_MPS,
+                "{name} velocity error {velocity:.4} m/s heading {label} exceeds \
+                 {MAX_VELOCITY_ERROR_MPS:.4} m/s"
+            );
+        }
+
+        for (i, (name_a, a)) in estimates.iter().enumerate() {
+            for (name_b, b) in &estimates[i + 1..] {
+                let separation = horizontal_separation_m(a, b);
+                assert!(
+                    separation <= MAX_PAIRWISE_SEPARATION_M,
+                    "{name_a} and {name_b} disagree by {separation:.3} m heading {label}, \
+                     above the {MAX_PAIRWISE_SEPARATION_M:.3} m consistency bound"
+                );
+            }
         }
     }
 }
