@@ -135,9 +135,9 @@ point are in #303.
 > | 0.05 m/s north velocity | 0.000 m | 0.000 m | 0.003 m | 0.045 m |
 > | 0.001 rad pitch | 0.000 m | 0.000 m | 0.011 m | 0.106 m |
 >
-> Horizontal error; the altitude column is 0.000 m for the ESKF and EKF on all four, which is
-> the specific claim above -- that each of these "run the vertical channel away within 2-5
-> minutes" -- refuted directly. The 20 m displaced seed of the original test lands at 0.000 m
+> The table reports horizontal error; the ESKF and EKF entries are 0.000 m on all four rows. The same
+> test also checks altitude error separately (against a 3 m bound), so this run does not exhibit the
+> claimed vertical-channel runaway. The 20 m displaced seed of the original test lands at 0.000 m
 > (ESKF and EKF), 0.002 m (UKF) and 0.076 m (RBPF).
 >
 > **#303 is not fully closed.** What is fixed is convergence, which is what this section
