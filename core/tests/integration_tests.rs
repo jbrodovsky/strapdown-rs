@@ -3374,26 +3374,39 @@ fn test_rmse_benchmark_across_filters() {
 
     // Yaw, on the filters whose attitude representation can carry it (#305).
     //
-    // Two filters are excluded, and the exclusions are the point of this being a separate
-    // loop rather than a third entry in the one above:
+    // One filter is excluded, and the exclusion is the point of this being a separate loop
+    // rather than a third entry in the one above:
     //
     // * **UKF** -- #336: it averages sigma-point Euler angles linearly under non-convex
     //   weights, so its yaw is meaningless near the +/-pi branch cut regardless of what the
     //   aiding does. It measures 22.77 deg here, which *would* pass; asserting it would be
     //   asserting that this recording happens not to dwell on the cut, not that the filter
     //   holds heading. Restore it to the list when #336 lands.
-    // * **RBPF** -- 65.89 deg, genuinely over the bound. It improved with the fix below
-    //   (88.22 -> 65.89 deg) but is still 4x the aiding source's own error, because it shares
-    //   #336's defect in its own form: `particle_state_vector` adds each particle's Euler
-    //   error state to a shared nominal without wrapping, and `estimate` takes a linear
-    //   weighted mean of the result, so a cloud straddling the cut averages to nothing
-    //   meaningful. That is an attitude-representation bug in the RBPF, not an aiding gap --
-    //   its geodesic error (66.03 deg) still equals its yaw error, the signature #305
-    //   identified -- and it is left failing-by-exclusion rather than tuned around, per the
-    //   #267 precedent. Tracked as **#341**, which is what removes this exclusion. Its yaw is
-    //   still printed in the table above, so the number stays visible; it is only unasserted.
+    //
+    // The **RBPF** was excluded here too until #341, at 65.89 deg. That exclusion attributed
+    // the number to #336's defect in RBPF form -- unwrapped Euler error states and a linear
+    // weighted mean over a cloud straddling the cut -- and measuring it did not bear that out.
+    // The cloud does cross the cut: on 140 of 21,460 steps at least one particle's assembled
+    // yaw left [-pi, pi], and on 18 of them the linear mean did. But every particle shares one
+    // nominal attitude and carries only a small error state on top of it, so the cloud crosses
+    // as a body, and over the whole run the linear and circular means of its yaw never
+    // differed by more than 2e-4 deg. A defect worth 2e-4 deg is not a 49 deg gap.
+    //
+    // The cause was that the magnetometer reached the filter through the particle weights
+    // alone, which cannot carry a heading in a filter where yaw is a shared linear state:
+    // every particle predicted the same heading, so 5,365 fixes moved the effective sample
+    // size from 500 to a median of 492.6 and the estimate not at all. Routing it through the
+    // Kalman branch (`RaoBlackwellizedParticleFilter::update_yaw_only`) took it to 15.66 deg,
+    // at the aiding source's own floor and the best of the four. The wrap handling was fixed
+    // alongside it as the latent defect it is, worth 2e-4 deg here.
+    //
+    // That 15.66 deg is not a seed: across seeds 1, 2, 3, 7, 42, 123 and 999 at 250, 500 and
+    // 2000 particles it spans 15.65-15.69 deg. It should not vary, and this is the check that
+    // it does not -- yaw now comes from the deterministic Kalman branch rather than from the
+    // sampled cloud, so a result that moved with the seed would mean the heading had found
+    // its way back into the weights.
     for (name, stats) in benchmark {
-        if matches!(name, "UKF" | "RBPF") {
+        if matches!(name, "UKF") {
             continue;
         }
         assert!(

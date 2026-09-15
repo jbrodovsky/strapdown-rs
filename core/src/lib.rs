@@ -1778,18 +1778,57 @@ where
 /// let wrapped_angle = wrap_to_pi(angle);
 /// assert_eq!(wrapped_angle, -PI / 2.0); // 3π/4 radians wrapped to -π/4 radians
 /// ```
+///
+/// # Cost and non-finite inputs
+///
+/// The reduction is constant time. It used to be a `while` loop subtracting one turn at a
+/// time, which cost an iteration per turn and, for an infinite input, never terminated at
+/// all -- subtracting 2π from an infinity leaves it infinite, so the condition never went
+/// false. That mattered because the hot callers evaluate this per particle per estimate.
+/// An input that is already on `[-π, π]`, and any non-finite input, is returned unchanged.
+///
+/// The result is identical to the loop's for every finite input, boundaries included: the
+/// reduction is applied in the direction the loop would have stepped, so `wrap_to_pi(3π)`
+/// is `+π` and `wrap_to_pi(-3π)` is `-π` as before. An input whose magnitude is large enough
+/// that consecutive `f64` values are more than a turn apart has no exact representative and
+/// gets the nearest one the arithmetic allows; the loop did not terminate in useful time for
+/// those at all.
 pub fn wrap_to_pi<T>(angle: T) -> T
 where
-    T: PartialOrd + Copy + std::ops::SubAssign + std::ops::AddAssign + From<f64>,
+    T: PartialOrd + Copy + std::ops::SubAssign + std::ops::AddAssign + From<f64> + Into<f64>,
 {
-    let mut wrapped: T = angle;
-    while wrapped > T::from(std::f64::consts::PI) {
-        wrapped -= T::from(2.0 * std::f64::consts::PI);
+    let value: f64 = angle.into();
+    // Already on the branch: return the input untouched. This is both the overwhelmingly
+    // common case and the one where the reduction below would pick the other representative
+    // of +/-pi, so it is a fast path and a compatibility guarantee at once.
+    if (-std::f64::consts::PI..=std::f64::consts::PI).contains(&value) {
+        return angle;
     }
-    while wrapped < T::from(-std::f64::consts::PI) {
-        wrapped += T::from(2.0 * std::f64::consts::PI);
+    // A non-finite angle has no representative on the circle. Returning it unchanged lets it
+    // propagate to whatever checks for it (`mechanize` raises `StrapdownError::NonFinite`);
+    // the loop this replaces never terminated for an infinity, because subtracting 2*pi from
+    // one leaves it unchanged and the `while` condition therefore never goes false.
+    if !value.is_finite() {
+        return angle;
     }
-    wrapped
+    // Constant-time reduction, in place of a loop that cost one iteration per turn. The
+    // callers that matter evaluate this per particle per estimate
+    // (`rbpf::RaoBlackwellizedParticleFilter::particle_state_vector`) and per filter step
+    // (`kalman::wrap_attitude_onto_principal_branch`), so a diverging attitude used to make
+    // the diagnostic path progressively more expensive exactly when it was least affordable.
+    //
+    // The two branches are what make this agree with the loop on the boundary rather than
+    // merely up to it. The loop stopped as soon as it was back in range, so which of +/-pi
+    // an exact odd multiple lands on depends on the direction it was stepping; `ceil` of the
+    // distance past the near edge reproduces that, where a single symmetric `floor` would
+    // send 3*pi to -pi.
+    let turns = ((value.abs() - std::f64::consts::PI) / std::f64::consts::TAU).ceil();
+    let wrapped = if value > 0.0 {
+        std::f64::consts::TAU.mul_add(-turns, value)
+    } else {
+        std::f64::consts::TAU.mul_add(turns, value)
+    };
+    T::from(wrapped)
 }
 /// Wrap an angle to the range 0 to $2 \pi$ radians
 ///
@@ -2493,6 +2532,86 @@ mod tests {
             -std::f64::consts::PI
         );
     }
+
+    /// The constant-time reduction must agree with the loop it replaced, everywhere.
+    ///
+    /// `wrap_to_pi` is called per particle per estimate in the RBPF and per step in the
+    /// Kalman filters, so it was changed from a `while` loop that cost an iteration per turn.
+    /// This sweeps a dense range of inputs against the loop's own definition, so the
+    /// replacement is pinned to the behaviour rather than to a handful of chosen points --
+    /// the boundaries at odd multiples of pi included, where the two could most easily differ.
+    #[test]
+    fn wrap_to_pi_matches_the_loop_it_replaced() {
+        // This *is* the loop being replaced, reproduced verbatim as the reference; the lint
+        // it trips is the reason it is no longer the implementation.
+        #[allow(clippy::while_float)]
+        fn by_loop(angle: f64) -> f64 {
+            let mut wrapped = angle;
+            while wrapped > std::f64::consts::PI {
+                wrapped -= 2.0 * std::f64::consts::PI;
+            }
+            while wrapped < -std::f64::consts::PI {
+                wrapped += 2.0 * std::f64::consts::PI;
+            }
+            wrapped
+        }
+
+        let mut checked = 0_u32;
+        for step in -2_000_i32..=2_000 {
+            let angle = f64::from(step) * 0.01;
+            assert!(
+                (super::wrap_to_pi(angle) - by_loop(angle)).abs() < 1e-12,
+                "wrap_to_pi({angle}) = {} but the loop gives {}",
+                super::wrap_to_pi(angle),
+                by_loop(angle)
+            );
+            checked += 1;
+        }
+        // The boundaries, exactly: which of +/-pi an odd multiple lands on is the one place
+        // a symmetric reduction would disagree with the loop.
+        for turns in -6_i32..=6 {
+            let angle = f64::from(turns) * std::f64::consts::PI;
+            assert_eq!(
+                super::wrap_to_pi(angle),
+                by_loop(angle),
+                "wrap_to_pi disagrees with the loop at {turns} * pi"
+            );
+            checked += 1;
+        }
+        assert!(checked > 4_000, "sweep should be dense, checked {checked}");
+    }
+
+    /// A non-finite angle is returned unchanged rather than hanging.
+    ///
+    /// The loop this replaced never terminated for an infinity: subtracting a turn from one
+    /// leaves it infinite, so the condition never went false. Since the RBPF now wraps per
+    /// particle, a diverged attitude reaching here used to be a hang rather than a value the
+    /// caller's own `is_finite` checks could catch.
+    #[test]
+    fn wrap_to_pi_passes_non_finite_angles_through() {
+        assert!(super::wrap_to_pi(f64::NAN).is_nan());
+        assert_eq!(super::wrap_to_pi(f64::INFINITY), f64::INFINITY);
+        assert_eq!(super::wrap_to_pi(f64::NEG_INFINITY), f64::NEG_INFINITY);
+    }
+
+    /// An angle many turns out is reduced in constant time, not one turn at a time.
+    ///
+    /// A million turns is unremarkable arithmetic for the closed form and a million
+    /// iterations for the loop. The assertion is on the result; the point is that it returns.
+    #[test]
+    fn wrap_to_pi_reduces_a_far_out_angle() {
+        let angle = 1.0e6_f64.mul_add(2.0 * std::f64::consts::PI, 0.25);
+        let wrapped = super::wrap_to_pi(angle);
+        assert!(
+            (-std::f64::consts::PI..=std::f64::consts::PI).contains(&wrapped),
+            "{wrapped} is off the principal branch"
+        );
+        assert!(
+            (wrapped - 0.25).abs() < 1e-6,
+            "expected ~0.25, got {wrapped}"
+        );
+    }
+
     #[test]
     fn test_wrap_to_2pi() {
         assert_eq!(
