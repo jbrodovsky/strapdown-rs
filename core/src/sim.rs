@@ -2398,15 +2398,16 @@ pub fn run_closed_loop<F: NavigationFilter>(
             let lon = mean[1].to_degrees();
             let alt = mean[2];
 
-            // Get position uncertainty (diagonal elements)
-            let pos_std_lat = cov[(0, 0)].sqrt().to_degrees();
-            let pos_std_lon = cov[(1, 1)].sqrt().to_degrees();
+            // Get position uncertainty (diagonal elements), in the state's native units
+            // (radians for lat/lon, metres for altitude)
+            let pos_std_lat_rad = cov[(0, 0)].sqrt();
+            let pos_std_lon_rad = cov[(1, 1)].sqrt();
             let pos_std_alt = cov[(2, 2)].sqrt();
 
-            // Compute RMS of position covariance
-            let pos_rms = (pos_std_lat.powi(2) + pos_std_lon.powi(2) + pos_std_alt.powi(2)).sqrt();
+            let pos_rms =
+                position_rms_meters(lat, alt, pos_std_lat_rad, pos_std_lon_rad, pos_std_alt);
             info!(
-                "[{:.1}%] Event {}/{} | Pos: ({:.6}°, {:.6}°, {:.1}m) | Vel: ({:.2} m/s, {:.2} m/s, {:.2} m/s) | σ: ({:.2e}°, {:.2e}°, {:.2}m) | RMS: {:.2e}",
+                "[{:.1}%] Event {}/{} | Pos: ({:.6}°, {:.6}°, {:.1}m) | Vel: ({:.2} m/s, {:.2} m/s, {:.2} m/s) | σ: ({:.2e}°, {:.2e}°, {:.2}m) | RMS: {:.2e}m",
                 (i as f64 / total as f64) * 100.0,
                 i,
                 total,
@@ -2416,8 +2417,8 @@ pub fn run_closed_loop<F: NavigationFilter>(
                 mean[3],
                 mean[4],
                 mean[5],
-                pos_std_lat,
-                pos_std_lon,
+                pos_std_lat_rad.to_degrees(),
+                pos_std_lon_rad.to_degrees(),
                 pos_std_alt,
                 pos_rms
             );
