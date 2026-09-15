@@ -367,11 +367,11 @@ fn gating_rejects_a_fix_inconsistent_with_the_filters_own_uncertainty() {
     // here is sized in sigmas read back from the filter after it has settled, which
     // makes the test independent of how well any particular filter is tuned.
     //
-    // That independence is not academic. See `a_note_on_filter_consistency` below: on
-    // this branch all three filters report position uncertainties far larger than their
-    // actual errors, so a fixed 200 m displacement is *within* what the EKF and UKF
-    // believe possible and is correctly not gated. Sizing the outlier in sigmas tests
-    // the gate; sizing it in metres would test the tuning.
+    // That independence is not academic. See `a_note_on_filter_consistency` below, which
+    // measures it: the EKF and UKF report horizontal position uncertainties of 450 m and
+    // 201 m while sitting within 6 m of truth, so a fixed 200 m displacement is *within*
+    // what either believes possible and is correctly not gated. Sizing the outlier in
+    // sigmas tests the gate; sizing it in metres would test the tuning.
     const OUTLIER_SIGMAS: f64 = 50.0;
 
     let scenario = build_gating_scenario();
@@ -520,44 +520,80 @@ fn gating_keeps_a_rejected_outlier_out_of_the_solution() {
 }
 
 #[test]
-#[ignore = "ESKF and EKF vertical channels diverge under ordinary GNSS fix noise -- \
-            pre-existing, #303 (closed as completed, still reproducible)"]
 fn a_note_on_filter_consistency() {
-    // Not a test of anything in this PR. It is the reason the gating tests above size
-    // their outlier in sigmas rather than in metres, recorded as a runnable fact rather
-    // than a comment that can quietly stop being true.
+    // Not a test of anything in this PR. It is the reason the gating tests above size their
+    // outlier in sigmas rather than in metres, recorded as a runnable fact rather than a
+    // comment that can quietly stop being true.
     //
-    // #303 reports that the ESKF and EKF diverge from any non-zero *seed* error, with the
-    // UKF unaffected, and fingers the analytic Jacobians in `linearize.rs`. This is the
-    // same defect reached without any seed error at all: seed every filter exactly on
-    // truth and make only the GNSS fixes noisy, at a quarter of their declared accuracy.
-    // Measured on this branch over a 300 s run with 1 Hz fixes:
+    // # The vertical channel
     //
-    //     fix noise (rms) | ESKF peak |alt err| | EKF peak |alt err| | UKF
-    //     ----------------|---------------------|--------------------|--------
-    //     0 m             | 0.0 m               | 0.0 m              | 0.19 m
-    //     0.5 m           | 9.8e7 m             | 2.0e4 m            | 0.19 m
-    //     5.0 m           | 5.7e8 m             | 2.0e5 m            | 0.19 m
+    // #303 reported that the ESKF and EKF vertical channels run away from any non-zero seed
+    // error, with the UKF unaffected, and fingered the analytic Jacobians in `linearize.rs`.
+    // This scenario reaches the same coupling without any seed error at all: every filter
+    // starts exactly on truth, and `NOISE_PATTERN` perturbs the fixes in *latitude only*.
+    // The fix altitude is truth to the bit, so every metre of altitude error measured below
+    // is horizontal-to-vertical leakage through the transition Jacobian and nothing else.
     //
-    // Two things that matter more than the magnitudes. First, the ESKF's divergence is
-    // essentially independent of the noise amplitude -- a 10x change in excitation moves
-    // it less than an order of magnitude -- which is the signature of an unstable mode
-    // being excited rather than of noise being propagated. The EKF's, by contrast, scales
-    // exactly linearly (2.0e4 : 5.1e4 : 1.0e5 : 2.0e5 for 0.5 : 1.25 : 2.5 : 5.0 m), so
-    // the EKF looks marginally stable where the ESKF does not. Second, noise is not an
-    // edge case: `filter_comparison.rs` misses this entirely because it feeds fixes taken
-    // noise-free from truth, and real GNSS never is.
+    // That leakage is now bounded, and -- more to the point -- it scales the way a correct
+    // linearisation says it must. Peak |altitude error| against the amplitude of the
+    // horizontal disturbance driving it, measured over this run by scaling `NOISE_PATTERN`:
     //
-    // The consequence for #260 is direct. A filter whose reported uncertainty does not
-    // match its actual error cannot gate: on this branch the EKF reports a position sigma
-    // of roughly 500 m after converging to metres, so a genuine 200 m multipath fix is
-    // *within* what it believes possible and is correctly accepted. Gating will only do
-    // what #260 asks of it once the filters are consistent.
+    //     fix noise (rms) | ESKF      | EKF       | UKF
+    //     ----------------|-----------|-----------|--------
+    //     0 m             | 2.3e-13 m | 0.0 m     | 0.175 m
+    //     0.38 m          | 1.0e-7 m  | 9.8e-9 m  | 0.175 m
+    //     3.80 m (this)   | 1.0e-5 m  | 9.8e-8 m  | 0.175 m
+    //     38.0 m          | 1.0e-3 m  | 9.8e-7 m  | 0.175 m
+    //     380 m           | 1.0e-1 m  | 9.8e-6 m  | 0.175 m
     //
-    // Left `#[ignore]`d and asserting the healthy behaviour, matching
-    // `filter_comparison.rs::all_filters_converge_from_a_displaced_seed`: this turns green
-    // when the defect is fixed.
-    const MAX_ALTITUDE_ERROR_M: f64 = 1.0;
+    // The ESKF's leak is *quadratic* in the disturbance -- ten times the excitation for a
+    // hundred times the error -- which is the signature of a first-order term that cancels
+    // exactly, leaving only the curvature the linearisation legitimately drops. The EKF's is
+    // linear and seven orders of magnitude smaller than the horizontal disturbance producing
+    // it. The UKF's is flat across all three decades of excitation because it is not a
+    // response to the fixes at all: it is the sigma-point transient out of
+    // `INITIAL_POSITION_STD_M`, and it is there in full with noise-free fixes.
+    //
+    // None of that is the "unstable mode being excited" #303 describes, and the issue is not
+    // reproducible anywhere on this branch's history: this test passes at every commit since
+    // the file landed in `546675d`, including each later commit that touched `linearize.rs`.
+    // The `#[ignore]` it used to carry, and the 9.8e7 m / 2.0e4 m divergences recorded with
+    // it, described a pre-merge state of the aiding branch.
+    //
+    // # The horizontal channel, which is still inconsistent
+    //
+    // The vertical half being healthy does not make the filters consistent, and the reason
+    // `gating_rejects_a_fix_inconsistent_with_the_filters_own_uncertainty` sizes its outlier
+    // in sigmas survives intact. Reported horizontal position sigma against the error
+    // actually achieved, same run:
+    //
+    //     filter | reported lat sigma | peak horizontal error
+    //     -------|--------------------|----------------------
+    //     ESKF   | 1.24 m             | 2.14 m
+    //     EKF    | 450.22 m           | 6.00 m
+    //     UKF    | 201.40 m           | 6.00 m
+    //
+    // The EKF and UKF believe their horizontal position is uncertain to hundreds of metres
+    // while sitting within six of truth -- and a peak error of 6.00 m is exactly the largest
+    // perturbation in `NOISE_PATTERN` (1.2 * `GPS_HORIZONTAL_NOISE_M`), so both are landing
+    // on each fix rather than averaging across them. A filter whose reported uncertainty
+    // exceeds its actual error by two orders of magnitude cannot gate: a genuine 200 m
+    // multipath fix is well *within* what it believes possible and is correctly accepted.
+    // Sizing the outlier in sigmas tests the gate; sizing it in metres would test the tuning.
+    // Gating will only do what #260 asks of it once that is fixed.
+    //
+    // # The bound
+    //
+    // Set by the UKF at 0.175 m, four orders of magnitude above the ESKF's peak and seven
+    // above the EKF's. It is a seed transient rather than a response to the fixes, so it
+    // moves if `INITIAL_POSITION_STD_M` or the `UKF_*` tuning is changed and will not move
+    // if the Jacobians regress. Half a metre gives that 2.9x, and sits under
+    // both independent ceilings that carry meaning here -- the 1.12-1.19 m settled altitude
+    // sigma all three filters report, and `GPS_VERTICAL_NOISE_M`, the accuracy a single fix
+    // is declared to have. A run that exceeds it has put the vertical error outside the
+    // uncertainty the filter itself advertises. The scenario is fully deterministic (fixed
+    // `NOISE_PATTERN`, no RNG), so the margin is headroom for retuning, not for variance.
+    const MAX_ALTITUDE_ERROR_M: f64 = 0.5;
 
     let scenario = build_gating_scenario();
     for (name, mut filter) in gating_filters(&scenario.initial) {
@@ -571,6 +607,7 @@ fn a_note_on_filter_consistency() {
                     .max((filter.get_estimate()[2] - scenario.truth[index + 1].altitude).abs());
             }
         }
+        println!("{name}: peak |altitude error| {peak_altitude_error_m:.3e} m under noisy fixes");
         assert!(
             peak_altitude_error_m < MAX_ALTITUDE_ERROR_M,
             "{name} vertical channel reached {peak_altitude_error_m:.3e} m under noisy fixes"
