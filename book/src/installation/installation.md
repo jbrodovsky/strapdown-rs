@@ -6,47 +6,47 @@ This page provides detailed instructions for installing Strapdown-rs on your sys
 
 Before installing Strapdown-rs, ensure you have the following:
 
-- **Rust**: Version 1.70 or higher (install from [rustup.rs](https://rustup.rs))
-- **System Libraries**: Required for building certain dependencies
+- **Rust**: Version 1.91 or higher (install from [rustup.rs](https://rustup.rs))
+- **A C/C++ compiler and cmake >= 3.26**, for the features that use a C library
 
-## System Dependencies
+## Build Dependencies
 
-Strapdown-rs requires several system libraries for HDF5 and NetCDF support:
+There are **no system libraries to install**. libhdf5, libnetcdf, zlib and freetype are
+compiled from vendored sources that ship as ordinary cargo dependencies, so nothing is looked
+for on your machine. You only need a toolchain to compile them with.
 
 ### Ubuntu/Debian
 
 ```bash
 sudo apt update
-sudo apt install -y pkg-config \
-  libhdf5-dev \
-  libhdf5-openmpi-dev \
-  libnetcdf-dev \
-  zlib1g-dev
+sudo apt install -y build-essential cmake
 ```
+
+Check `cmake --version`: the bundled HDF5 needs **3.26 or newer**, which is more than Ubuntu
+22.04 (3.22) or Debian 12 (3.25) ship. On those, install cmake from
+[Kitware's APT repository](https://apt.kitware.com/), or with `pip install cmake`, or with
+`snap install cmake --classic`.
 
 ### Fedora/RHEL
 
 ```bash
-sudo dnf install -y pkg-config \
-  hdf5-devel \
-  hdf5-openmpi-devel \
-  netcdf-devel \
-  zlib-devel
+sudo dnf install -y gcc gcc-c++ cmake
 ```
 
 ### macOS
 
 ```bash
-brew install pkg-config hdf5 netcdf
+xcode-select --install
+brew install cmake
 ```
 
 ### Windows
 
-For Windows users, we recommend using [vcpkg](https://vcpkg.io/) to install dependencies:
+Install the MSVC toolchain from Visual Studio Build Tools, plus
+[cmake](https://cmake.org/download/). vcpkg is not needed.
 
-```powershell
-vcpkg install hdf5 netcdf zlib
-```
+> **Note:** `strapdown-core` on its own needs none of this -- `cargo add strapdown-core` and a
+> Rust toolchain are enough unless you turn on its `hdf5` or `netcdf` features.
 
 ## Installation Methods
 
@@ -86,25 +86,14 @@ cargo build --workspace --all-features --release
 # Install the simulation binary
 cargo install --path sim
 
-# Optionally, install the geonav binary
-cargo install --path geonav
+# Optionally, with geophysical (gravity/magnetic) navigation. This is the variant that
+# compiles libnetcdf from source, so it needs cmake.
+cargo install --path sim --features geonav
 ```
 
-### Method 3: Using Pixi (Experimental)
-
-The project includes a `pixi.toml` for environment management:
-
-```bash
-# Install pixi
-curl -fsSL https://pixi.sh/install.sh | bash
-
-# Activate the environment
-pixi install
-pixi shell
-
-# Build and run
-cargo build --release
-```
+> The repository used to ship a `pixi.toml` for environment management. It was removed once
+> the C libraries began building from source, since there was nothing left for it to provide;
+> `cargo build` is now the whole story.
 
 ## Verifying Installation
 
@@ -120,20 +109,24 @@ cargo test -p strapdown-core
 
 ## Troubleshooting
 
-### HDF5/NetCDF Linking Issues
+### HDF5/NetCDF Build Issues
 
-If you encounter linking errors:
+These libraries are compiled from source, so failures look like cmake or compiler errors
+rather than linker errors.
 
-1. Ensure `pkg-config` can find the libraries:
+1. **`CMake 3.26 or higher is required`** -- your cmake is too old. See the Build Dependencies
+   section above.
+
+2. **Confusing cmake failures inside the netCDF build** -- check whether `HDF5_DIR` is set:
    ```bash
-   pkg-config --modversion hdf5
-   pkg-config --modversion netcdf
+   echo "${HDF5_DIR:-unset}"
    ```
+   If it is, the HDF5 build script quietly switches to looking for a *system* library instead
+   of building the vendored one, and the netCDF build is then handed the wrong headers. Unset
+   it. A leftover conda or pixi shell is the usual source.
 
-2. Set environment variables if needed:
-   ```bash
-   export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH
-   ```
+3. **`cargo install` is slow the first time** -- that is the one-off source build of libhdf5
+   and libnetcdf, roughly a minute on a modern machine. It is cached afterwards.
 
 ### Rust Version Issues
 
@@ -141,8 +134,10 @@ Ensure you're using a recent Rust version:
 
 ```bash
 rustc --version
-rustup update stable
 ```
+
+Inside a clone of the repository, `rust-toolchain.toml` pins the version and rustup fetches it
+for you, so this should already agree with what CI uses.
 
 ## Next Steps
 

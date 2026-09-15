@@ -57,21 +57,25 @@ Additional core capabilities should be implemented as needed either as a new cre
 
 ## Dependencies and Prerequisites
 
-### System Dependencies
-The project requires the following system libraries for building:
-- `pkg-config`
-- `libhdf5-dev` and `libhdf5-openmpi-dev` (for HDF5 support)
-- `libnetcdf-dev` (for NetCDF geophysical data)
-- `zlib1g-dev` (for compression support)
+### Build Dependencies
+There are no system libraries to install. libhdf5, libnetcdf, zlib and freetype are compiled
+from vendored sources shipped as cargo dependencies, so nothing is searched for on the machine.
+What is required beyond Rust:
+- a C/C++ compiler
+- **cmake 3.26 or newer** (the bundled HDF5 requires it; Ubuntu 22.04 and Debian 12 ship older)
 
 On Ubuntu/Debian systems, install with:
 ```bash
 sudo apt update
-sudo apt install -y pkg-config libhdf5-dev libhdf5-openmpi-dev libnetcdf-dev zlib1g-dev
+sudo apt install -y build-essential cmake
 ```
 
+Neither is needed for `cargo build -p strapdown-core`, which uses no C library by default.
+`HDF5_DIR` must be left unset -- if set, the HDF5 build script looks for a system library even
+when a vendored build was requested.
+
 ### Rust Toolchain
-- Minimum Rust version: 1.70+ (stable channel)
+- Pinned to 1.91 by `rust-toolchain.toml`; rustup fetches it automatically
 - Required components: `clippy`, `rustfmt`
 
 ## Build and Test Commands

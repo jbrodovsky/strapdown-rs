@@ -1,0 +1,33 @@
+# Replaces `pixi.toml`'s `[activation.env]` and `[tasks]`. The variables that pointed at
+# conda's `lib/` (HDF5_DIR, LIBRARY_PATH, PKG_CONFIG_PATH, and an rpath in RUSTFLAGS) are
+# deliberately gone: since #335 every C dependency is built from source, so there is no
+# external prefix to point at.
+#
+# HDF5_DIR in particular must stay unset. `hdf5-metno-sys`'s build script takes the system
+# search path whenever it is present *even with the `static` feature on*
+# (`build.rs:742`: `if feature_enabled("STATIC") && env::var_os("HDF5_DIR").is_none()`), and
+# `netcdf-src` then hands those system headers to cmake alongside
+# `HDF5_USE_STATIC_LIBRARIES=ON`. A stale `pixi shell` is the likely way to hit it.
+
+[env]
+# Not forced, so `RUST_BACKTRACE=0 cargo test` still works.
+RUST_BACKTRACE = "1"
+
+[build]
+# KaTeX for the Groves equations in the doc comments. The header lives at the workspace root
+# for this, and a per-package copy lives in `core/` for the docs.rs build, which reads
+# `[package.metadata.docs.rs] rustdoc-args` instead and only ever sees the crate tarball.
+# Note this is overridden wholesale, not merged, if RUSTDOCFLAGS is set in the environment.
+rustdocflags = ["--html-in-header", "katex-header.html"]
+
+# The pixi tasks that were not already plain cargo. `build`, `test` and `doc` are omitted on
+# purpose: cargo refuses to let an alias shadow a built-in subcommand and silently ignores it,
+# so `doc` is spelled `docs` here.
+[alias]
+lint = "clippy --workspace --all-targets --all-features -- -D warnings"
+lint-fix = "clippy --workspace --all-targets --all-features --fix --allow-dirty -- -D warnings"
+fmt-check = "fmt --all -- --check"
+docs = "doc --workspace --no-deps"
+# Needs `cargo install cargo-tarpaulin` first; it was never part of the pixi environment
+# either, despite `pixi run coverage` implying otherwise.
+coverage = "tarpaulin --workspace --timeout 600"

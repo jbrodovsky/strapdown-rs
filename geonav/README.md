@@ -103,6 +103,36 @@ Maps should contain:
 - `lon` variable: longitude coordinates (degrees)
 - `z` variable: anomaly data (mGal for gravity, nT for magnetic)
 
+Only those three variables are read, and the whole grid is loaded into memory. `lat` and `lon`
+are assumed to be ascending; no CF attributes, scale factors or `_FillValue` handling are
+applied.
+
+### Where to get the grids
+
+No map data is vendored in this repository, and there is no fetcher yet (tracked in
+[#85](https://github.com/jbrodovsky/strapdown-rs/issues/85)). The grids these tools were
+developed against are the GMT remote datasets, most easily retrieved through
+[PyGMT](https://www.pygmt.org/) in a separate Python environment -- PyGMT needs the GMT C
+library, which is why it is not part of this repository's own toolchain:
+
+```python
+import pygmt
+
+# region is [min_lon, max_lon, min_lat, max_lat]; inflate your trajectory's
+# bounding box by ~0.25 deg so interpolation near the edges has data.
+grav = pygmt.datasets.load_earth_free_air_anomaly("01m", region=region)
+mag = pygmt.datasets.load_earth_magnetic_anomaly("02m", region=region)
+
+grav.to_netcdf("<input_stem>_gravity.nc")
+mag.to_netcdf("<input_stem>_magnetic.nc")
+```
+
+The resolution strings match the `--gravity-resolution` / `--magnetic-resolution` flags (see
+the `Display` impls on `GravityResolution` and `MagneticResolution`, which emit the same GMT
+tokens). Save the files next to your input CSV under the `{input_stem}_gravity.nc` /
+`{input_stem}_magnetic.nc` names above so `strapdown-sim` finds them automatically, or pass
+`--gravity-map-file` / `--magnetic-map-file` explicitly.
+
 ## Example Scenarios
 
 ### GNSS-Denied Navigation with Gravity Aiding

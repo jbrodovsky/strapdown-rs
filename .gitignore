@@ -2,7 +2,6 @@
 .claude
 target
 data/raw
-examples/strapdown-sim/out
 data/
 
 # Map files
@@ -28,30 +27,13 @@ data/
 *.vrb
 *.run.xml
 
-# pixi environments
+# Leftover pixi environments. pixi.toml itself was removed in #335 -- the repository is
+# plain cargo now -- but an existing .pixi/ directory should stay out of the index.
 .pixi
-*.egg-info
-
-# python notes
-*.ipynb_checkpoints
-*.pyc
-__pycache__
-
-# pixi environments
-.pixi
-*.egg-info
-.python-version
-batch_process.nu
-.pixi/*
-!.pixi/config.toml
 
 # Data output
-examples/geonav-sim/ukf
-examples/geonav-sim/pf
 data/output/*
 
-# Ignore ruff
-.ruff_cache/
 papers/anomaly_ukf/data/combined_statistics_error.csv
 
 # mdBook output
@@ -70,3 +52,10 @@ data.ipynb
 analysis_rbpf_results.py
 README_files/
 log/
+
+# Analysis notebooks, untracked in #335 for the same reason as analysis/: they import pygmt,
+# cartopy, numpy and filterpy against the Python environment that pixi used to provide, and
+# nothing in this Rust-only repository can run them. Kept on disk, out of the index. The map
+# provenance they used to be the only record of now lives in geonav/README.md.
+examples/geonav-sim/
+examples/strapdown-sim/

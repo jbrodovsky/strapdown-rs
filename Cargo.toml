@@ -16,8 +16,9 @@ edition = "2024"
 license = "MIT"
 homepage = "https://www.strapdown.rs"
 repository = "https://github.com/jbrodovsky/strapdown-rs"
-# Minimum supported Rust version. Keep this in sync with the `rust` pin in
-# pixi.toml and the CI toolchain; raising it is a breaking change.
+# Minimum supported Rust version. Keep this in sync with `channel` in
+# rust-toolchain.toml, `msrv` in clippy.toml and the CI toolchain pins; raising
+# it is a breaking change.
 rust-version = "1.91"
 
 [workspace.dependencies]
@@ -52,7 +53,7 @@ src = "book/src"
 
 # --- Lints (queue 100, issue #253) -------------------------------------------
 #
-# These are enforced, not advisory: the blocking CI gate and `pixi run lint`
+# These are enforced, not advisory: the blocking CI gate and `cargo lint`
 # both run `cargo clippy ... -- -D warnings`, which promotes every warn below
 # to an error. The v1.0 queue originally deferred this to position 9 to avoid
 # churn colliding with positions 2-8, but enforcing now is the deliberate
@@ -128,7 +129,8 @@ similar_names = "allow"
 # of one kind, and there is no way to silence them that is worth the cost:
 #
 # These docs render maths with KaTeX (`katex-header.html`, wired up through
-# `RUSTDOCFLAGS` in `pixi.toml` and `package.metadata.docs.rs`), so they are full
+# `build.rustdocflags` in `.cargo/config.toml` for local `cargo doc` and through
+# `package.metadata.docs.rs` for docs.rs), so they are full
 # of `$...$` and `$$...$$`. `doc_markdown` cannot tell LaTeX from Rust, and reads
 # every subscripted symbol -- `p_n`, `v_e`, `C_b^n`, `\Delta t`, `F_k` -- as an
 # un-backticked item. Backticking them breaks the maths: KaTeX renders the literal

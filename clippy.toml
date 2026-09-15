@@ -10,7 +10,7 @@ allow-expect-in-tests = true
 allow-panic-in-tests = true
 
 # Match the documented MSRV so clippy does not suggest APIs newer than the
-# `rust-version` pin in Cargo.toml and the `rust` pin in pixi.toml.
+# `rust-version` pin in Cargo.toml and `channel` in rust-toolchain.toml.
 msrv = "1.91"
 
 # Filter and mechanization constructors legitimately take a full set of

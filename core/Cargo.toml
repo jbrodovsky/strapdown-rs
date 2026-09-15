@@ -15,18 +15,19 @@ repository.workspace = true
 rust-version.workspace = true
 
 [package.metadata.docs.rs]
-# NOT `all-features = true`. That is what it was, and it is why the docs.rs build for
-# strapdown-core 0.5.0 failed outright: `--all-features` turns on `netcdf`, whose
-# `netcdf-sys` build script panics with "A system version of libnetcdf could not be found"
-# because the docs.rs sandbox has no libnetcdf or libhdf5. The crate has no rendered
-# documentation on docs.rs at all as a result (#263).
+# `all-features = true` is safe again, and this block is deliberately back to it.
 #
-# `docsrs` below is `full` with the C libraries built from source instead of linked from
-# the system, which is the escape hatch netcdf-sys's own error message points at. It costs
-# a source build of HDF5 and netCDF -- minutes, not seconds -- which is acceptable on a
-# documentation build and is the price of the gated I/O modules appearing at all.
-# The two pure-Rust optional features, and deliberately not `hdf5` or `netcdf`.
-features = ["clap", "mcap"]
+# It is what the manifest said when strapdown-core 0.5.0 failed to document at all
+# (docs.rs build 3094875): `--all-features` turns on `netcdf`, and `netcdf-sys`'s build
+# script panicked with "A system version of libnetcdf could not be found" because the
+# docs.rs sandbox has neither libnetcdf nor libhdf5. The stopgap was to document only the
+# two pure-Rust features, which hid every hdf5/netCDF I/O helper on `TestDataRecord` and
+# `NavigationResult` from the rendered docs.
+#
+# The dependencies below now carry `features = ["static"]`, so both C libraries are built
+# from source and no system library is consulted on any machine, docs.rs included (#335).
+# There is nothing left for `--all-features` to get wrong.
+all-features = true
 rustdoc-args = [ "--html-in-header", "katex-header.html" ]
 
 [lib]
@@ -38,18 +39,14 @@ path = "src/lib.rs"
 # `cargo build -p strapdown-core` needs nothing beyond a Rust toolchain.
 default = []
 clap = ["dep:clap"]
-# Binary data formats. Each pulls in a system library (libhdf5, libnetcdf) or a
-# sizeable dependency tree, so they are opt-in.
+# Binary data formats. Each pulls in a C library built from source (libhdf5, libnetcdf --
+# see the dependency declarations below) or a sizeable dependency tree, so they are opt-in:
+# the default build needs nothing but a Rust toolchain, these need cmake and a C compiler.
 hdf5 = ["dep:hdf5"]
 netcdf = ["dep:netcdf"]
 mcap = ["dep:mcap", "dep:memmap2", "dep:rmp-serde"]
 # Everything, for convenience and for `cargo test --all-features`.
 full = ["clap", "hdf5", "netcdf", "mcap"]
-# NOTE: do not add a `docsrs = ["full", "hdf5/static", "netcdf/static"]` feature here.
-# It is the obvious way to get the gated I/O modules onto docs.rs, and it backfires:
-# `--all-features` activates *every* feature in the manifest, so the CI `full` job and
-# `pixi run lint`/`test` would start building libhdf5 and libnetcdf from source on every
-# cold cache. The `[package.metadata.docs.rs]` block above takes the other trade instead.
 
 [dependencies]
 angle = "0.5.0"
@@ -59,7 +56,13 @@ serde_yaml = "0.9"
 toml = "0.7"
 memmap2 = { version = "0.9", optional = true }
 rmp-serde = { version = "1.3", optional = true }
-hdf5 = { package = "hdf5-metno", version = "0.12", optional = true }
+# `static` builds libhdf5 from source (via `hdf5-metno-src`) rather than linking a system
+# copy; see `[package.metadata.docs.rs]` above and #335. `zlib` is not needed by anything
+# this crate writes -- the datasets are flat and uncompressed -- but `netcdf-sys`'s own
+# `static` feature forces `hdf5-sys/zlib` on. Without it here, `--features hdf5` and
+# `--all-features` would configure two different libhdf5 builds and rebuild the C library
+# every time you switched between them.
+hdf5 = { package = "hdf5-metno", version = "0.12", features = ["static", "zlib"], optional = true }
 mcap = { version = "0.23", optional = true }
 
 nalgebra.workspace = true
@@ -71,7 +74,7 @@ csv.workspace = true
 log.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
-netcdf = { workspace = true, optional = true }
+netcdf = { workspace = true, features = ["static"], optional = true }
 # Deliberately NOT feature-gated, though #263 asked for a `wmm` feature.
 #
 # `MagnetometerYawMeasurement::get_declination` (`measurements.rs`) is the only consumer

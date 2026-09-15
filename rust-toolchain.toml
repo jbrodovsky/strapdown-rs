@@ -1,0 +1,18 @@
+# The toolchain pin that `pixi.toml` used to carry (`rust = ">=1.91.0,<1.92"`).
+#
+# This is not just an MSRV declaration, it is a lint-reproducibility gate. `[workspace.lints]`
+# enforces clippy's `pedantic` and `nursery` groups at `deny`, and those groups gain lints
+# every Rust release -- so against a floating `stable`, a PR that is clean when written goes
+# red six weeks later on lints that did not exist at the time, and no local `cargo clippy` can
+# predict CI's answer. That is not hypothetical; it is what broke PR #279.
+#
+# Keep `channel` in sync with `rust-version` in Cargo.toml, `msrv` in clippy.toml, and the
+# `dtolnay/rust-toolchain@` pins in .github/workflows/rust.yml and publish.yml. Raising it is
+# a breaking change.
+#
+# Cost to be aware of: a fresh clone triggers a toolchain download on the first cargo
+# invocation, even for someone already on a nearby stable. That is the price of the
+# determinism pixi used to provide. To step outside it deliberately, use `cargo +stable ...`.
+[toolchain]
+channel = "1.91"
+components = ["clippy", "rustfmt", "rust-src"]

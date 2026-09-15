@@ -13,13 +13,16 @@ This is a Cargo workspace with three crates.
 - Test fixtures live in `core/tests/`; sample datasets are not vendored.
 
 ## Build, Test, and Development Commands
-Use Pixi when available; Cargo works directly too.
-- `pixi run build` / `cargo build --workspace --release`: build all crates.
+Plain Cargo, no environment manager. `rust-toolchain.toml` pins the toolchain and
+`.cargo/config.toml` defines the aliases below.
+- `cargo build --workspace --release`: build all crates.
 - `cargo test --workspace`: run all tests.
 - `cargo test --package strapdown-core`: test a single crate.
-- `pixi run lint`: run clippy as CI does; `pixi run lint-fix` applies fixes.
-- `pixi run fmt`: run rustfmt; `pixi run fmt-check` checks without writing.
-- `pixi run coverage` / `cargo tarpaulin --workspace --timeout 600`: coverage.
+- `cargo lint`: run clippy exactly as CI does; `cargo lint-fix` applies what it can.
+- `cargo fmt --all`: run rustfmt; `cargo fmt-check` checks without writing.
+- `cargo docs`: build the API docs with KaTeX (aliased, because cargo ignores an alias that
+  shadows a built-in subcommand such as `doc`).
+- `cargo coverage`: coverage; needs `cargo install cargo-tarpaulin` first.
 - Example run: `./target/release/strapdown-sim -i input.csv -o output.csv open-loop`.
 
 ## Coding Style & Naming Conventions
@@ -30,10 +33,10 @@ Use Pixi when available; Cargo works directly too.
 
 ## Code Quality Gates
 
-These are **enforced**, not advisory. `pixi run lint` and the blocking CI job both run
+These are **enforced**, not advisory. `cargo lint` and the blocking CI job both run
 `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and every lint level
 in `[workspace.lints]` is `deny`, so a plain `cargo build` fails the same way CI does. Run
-`pixi run lint` and `pixi run fmt-check` before pushing; there is no warning-level grace period.
+`cargo lint` and `cargo fmt-check` before pushing; there is no warning-level grace period.
 
 **What is on** (`Cargo.toml`, `[workspace.lints]`):
 - `clippy::pedantic` and `clippy::nursery`, both at `deny`.
@@ -61,11 +64,14 @@ justification (`suboptimal_flops` changes floating-point results in the mechaniz
 Rust in the KaTeX maths, see #329). Two `#[allow]`s exist at call sites; both carry a `reason`.
 
 **Toolchain pinning.** `pedantic` and `nursery` are lint *groups*, so a newer clippy can add a
-lint this code has never been checked against. CI therefore pins `dtolnay/rust-toolchain@1.91`
-to match `rust-version` in `Cargo.toml`, the `rust` pin in `pixi.toml` and `msrv` in
-`clippy.toml`. Keep all four in sync; raising the MSRV is a breaking change. A forward-looking
-`allow` for a lint the pinned toolchain does not know about is made inert by
-`unknown_lints = "allow"` in `[workspace.lints.rust]`.
+lint this code has never been checked against. The pin therefore lives in five places that must
+agree: `channel` in `rust-toolchain.toml`, `rust-version` in `Cargo.toml`, `msrv` in
+`clippy.toml`, and the `dtolnay/rust-toolchain@1.91` pins in `.github/workflows/rust.yml` and
+`publish.yml`. `rust-toolchain.toml` is what makes a local `cargo clippy` give the same answer
+as CI, which a floating `stable` cannot. Raising the MSRV is a breaking change. A
+forward-looking `allow` for a lint the pinned toolchain does not know about is made inert by
+`unknown_lints = "allow"` in `[workspace.lints.rust]`. `deploy-book.yml` deliberately uses
+`cargo +stable install mdbook`, since a third-party tool need not honour our MSRV.
 
 ## Testing Guidelines
 - Unit tests live alongside modules; integration tests live in `core/tests/integration_tests.rs`.
@@ -77,12 +83,25 @@ to match `rust-version` in `Cargo.toml`, the `rust` pin in `pixi.toml` and `msrv
 - PRs should include a concise description, linked issue(s), and any new flags/configs or dataset notes. Add tests when behavior changes.
 
 ## Environment & Configuration
-- Pixi manages the toolchain and system libraries (`pixi.toml`); Rust >=1.91 is expected. HDF5
-  and netCDF are required for `geonav`, and the freetype/fontconfig stack for the `plotting`
-  feature of `strapdown-sim`.
+- **No environment manager.** `git clone && cargo build` is the whole setup. `rust-toolchain.toml`
+  fetches the pinned toolchain; `.cargo/config.toml` carries the env vars and aliases that
+  `pixi.toml` used to. Pixi was removed in #335.
+- **Build prerequisites** beyond Rust: a C/C++ compiler and **cmake >= 3.26**, needed only when a
+  feature that touches a C library is on (`geonav` always; `strapdown-core`'s `hdf5`/`netcdf`;
+  `strapdown-sim`'s `plotting`, for freetype). libhdf5, libnetcdf, zlib and freetype are all
+  compiled from vendored sources, so no system library is ever searched for. Ubuntu 22.04 (cmake
+  3.22) and Debian 12 (3.25) are too old and need a newer cmake.
+- **`HDF5_DIR` must stay unset.** `hdf5-metno-sys`'s build script prefers a system library
+  whenever that variable is set, *even with the `static` feature on*, and the vendored netCDF
+  build then fails confusingly against those headers. A leftover `pixi shell` is the likely way
+  to hit this.
+- libfontconfig is a **runtime** dependency of the `plotting` feature (it is `dlopen`ed), not a
+  build-time one: a machine without it builds fine and fails when it first renders text.
 - The repository is **Rust-only**. The Python post-processing package under `analysis/` was
-  untracked in `c5f72c6` when the repo was scoped to the v1.0 crate set, so there is no Python
-  source, no `pyproject.toml` and no `ruff`/`ty` configuration to maintain. If Python bindings
+  untracked in `c5f72c6` when the repo was scoped to the v1.0 crate set, and the two analysis
+  notebooks under `examples/` followed in #335 -- they import pygmt, cartopy and filterpy
+  against the environment pixi used to provide, and nothing here can run them. So there is no
+  Python source, no `pyproject.toml` and no `ruff`/`ty` configuration to maintain. If Python bindings
   or an analysis package return (`strapdown_py` is a commented-out workspace member), they get
   their own tooling gate at that point.
 - Scenarios use YAML/JSON configs; CSV inputs follow Sensor Logger-style IMU/GNSS columns.

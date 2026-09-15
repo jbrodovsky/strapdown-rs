@@ -30,23 +30,29 @@ Strapdown-rs is primarily intended for research and development. While the code 
 ### What are the system requirements?
 
 See the [System Requirements](./installation/requirements.md) page for detailed information. In summary:
-- Rust 1.70 or later
-- System libraries: HDF5, NetCDF, zlib
+- Rust 1.91 or later
+- A C/C++ compiler and cmake 3.26+, but only for features that use a C library
+- No system libraries at all
 - Supported on Linux, macOS, and Windows
 
-### Why do I need HDF5 and NetCDF?
+### Do I need to install HDF5 and NetCDF?
 
-These libraries are required for:
-- HDF5: Data storage and processing
-- NetCDF: Geophysical map data for geonav features
+No. They are compiled from vendored sources that ship as ordinary cargo dependencies, along
+with zlib and freetype, so nothing is searched for on your machine. What you need instead is a
+C/C++ compiler and cmake 3.26 or newer to build them with.
 
-If you only need the core INS functionality, you can disable these features in your `Cargo.toml`.
+They are used for:
+- HDF5: binary data storage for `TestDataRecord` and `NavigationResult`
+- NetCDF: geophysical map data for the geonav features
+
+Neither is on by default in `strapdown-core`, so if you only need the core INS functionality
+you need no C toolchain either: `cargo build -p strapdown-core` uses none.
 
 ### How do I install on Windows?
 
-Windows support requires additional setup. We recommend either:
-1. Using [vcpkg](https://vcpkg.io/) to install dependencies
-2. Using WSL2 for a native Linux environment
+Install the MSVC toolchain from Visual Studio Build Tools plus
+[cmake](https://cmake.org/download/). vcpkg is no longer needed, since nothing is looked up on
+the system. WSL2 also works if you prefer a Linux environment.
 
 See [Installation](./installation/installation.md) for details.
 
@@ -124,12 +130,16 @@ If you use Strapdown-rs in your research, please cite the JOSS paper:
 
 ## Troubleshooting
 
-### I'm getting linking errors during build
+### I'm getting build errors from HDF5 or NetCDF
 
-This usually means HDF5 or NetCDF libraries aren't found. Ensure:
-1. Libraries are installed: `pkg-config --modversion hdf5`
-2. `PKG_CONFIG_PATH` is set correctly
-3. Development headers are installed (`-dev` packages on Linux)
+These are built from source, so failures are cmake or compiler errors rather than linker
+errors. The two common ones:
+
+1. **`CMake 3.26 or higher is required`** -- your cmake is older than the bundled HDF5 needs.
+   Ubuntu 22.04 (3.22) and Debian 12 (3.25) both hit this.
+2. **A confusing cmake failure inside the netCDF build** -- check `echo "${HDF5_DIR:-unset}"`.
+   If it is set, the HDF5 build switches to looking for a *system* library even though a
+   vendored build was requested, and netCDF is then given the wrong headers.
 
 See [Installation Troubleshooting](./installation/installation.md#troubleshooting) for more help.
 

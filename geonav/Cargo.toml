@@ -17,18 +17,25 @@ homepage.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
-# NOTE: this crate will not render on docs.rs, and cannot be made to without a trade-off
-# that has not been taken. netCDF is a hard dependency here -- reading NetCDF maps is what
-# the crate is for -- and the docs.rs sandbox has no libnetcdf, so `netcdf-sys`'s build
-# script panics exactly as it did for `strapdown-core` 0.5.0 (see `core/Cargo.toml`). The
-# only escape is a `netcdf/static` source build, and a feature offering that would be swept
-# up by the `--all-features` in CI and `pixi run lint`. Tracked in #335.
+# No `[package.metadata.docs.rs]` block is needed. This crate has no optional features to
+# select, and no KaTeX in its doc comments (unlike `strapdown-core`); it renders on docs.rs
+# purely because `netcdf` is built from source rather than linked from the system -- see the
+# dependency below.
 
 [dependencies]
 strapdown-core = { path = "../core", version = "1.0.0" }
 nalgebra.workspace = true
 chrono.workspace = true
-netcdf.workspace = true
+# `static` is set on the dependency rather than exposed as a feature of this crate, and that
+# is the whole fix for #335. netCDF is not optional here -- reading NetCDF maps is what the
+# crate is for -- so there is no feature set that avoids it, and the docs.rs sandbox has no
+# libnetcdf: `strapdown-geonav` 0.1.0 would have failed to document exactly as
+# `strapdown-core` 0.5.0 did. A `netcdf-static` *feature* was the obvious answer and was
+# rejected, because Cargo cannot exclude a feature from `--all-features` and the CI gate uses
+# it. Setting it on the dependency sidesteps that entirely: there is nothing for
+# `--all-features` to turn on or off, and `cargo build` needs no system library on any
+# machine. The price is cmake and a C compiler at build time.
+netcdf = { workspace = true, features = ["static"] }
 world_magnetic_model.workspace = true
 anyhow.workspace = true
 log.workspace = true

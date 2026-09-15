@@ -28,9 +28,13 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # `+stable` is deliberate. `rust-toolchain.toml` pins the workspace to 1.91 for lint
+      # reproducibility, and that pin would otherwise apply here too -- building a
+      # third-party tool against an older toolchain than it supports is the classic way to
+      # break a docs deploy for a reason that has nothing to do with the docs.
       - name: Install mdBook
         run: |
-          cargo install mdbook --version 0.4.40
+          cargo +stable install mdbook --version 0.4.40
           mdbook --version
 
       - name: Build the book

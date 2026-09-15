@@ -6,15 +6,36 @@ If you are a developer, researcher, or enthusiast interested in contributing to 
 
 If you find a bug while using this software please open an issue and report it as such. If you have a feature request please similarly open an issue to request it.
 
+## Setting up
+
+There is no environment manager to install -- `git clone && cargo build` is the whole setup.
+`rust-toolchain.toml` fetches the pinned toolchain automatically on the first cargo command
+(a few hundred MB the first time), and `.cargo/config.toml` provides the aliases below.
+
+Beyond Rust you need a **C/C++ compiler and cmake >= 3.26**, because libhdf5, libnetcdf, zlib
+and freetype are compiled from vendored sources rather than linked from the system. That is
+what lets every crate build and document anywhere without `apt install` (#335). Two things to
+watch for:
+
+- **Ubuntu 22.04 ships cmake 3.22 and Debian 12 ships 3.25 -- both too old.** Install a newer
+  one from [Kitware's APT repository](https://apt.kitware.com/), or `pip install cmake`, or
+  `snap install cmake --classic`. Ubuntu 24.04 and Fedora 40+ are fine as shipped.
+- **Make sure `HDF5_DIR` is not set** in your shell. Its build script prefers a system library
+  whenever that variable exists, even when asked for a vendored build, and the netCDF build
+  then fails against those headers in a way that does not name the cause.
+
+`strapdown-core` on its own needs none of this: `cargo build -p strapdown-core` uses no C
+toolchain at all.
+
 ## Before you open a pull request
 
 The workspace enforces a strict lint gate rather than a warning-level one. Both of these must
-be clean, and CI runs exactly the same commands on the pinned 1.91 toolchain:
+be clean, and CI runs exactly the same commands on the same pinned 1.91 toolchain:
 
 ```bash
-pixi run fmt-check   # cargo fmt --all -- --check
-pixi run lint        # cargo clippy --workspace --all-targets --all-features -- -D warnings
-pixi run test        # cargo test --workspace --all-features
+cargo fmt-check   # cargo fmt --all -- --check
+cargo lint        # cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features
 ```
 
 `clippy::pedantic` and `clippy::nursery` are denied workspace-wide, as are `missing_docs` and

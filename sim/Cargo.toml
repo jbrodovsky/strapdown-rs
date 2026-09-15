@@ -14,10 +14,11 @@ repository.workspace = true
 rust-version.workspace = true
 
 [package.metadata.docs.rs]
-# Documented without default features: `plotting` pulls `plotters`, whose default backend
-# needs the freetype/fontconfig stack that the docs.rs sandbox does not have, and `geonav`
-# pulls libnetcdf for the same reason `strapdown-geonav` needs its own static passthrough.
-# Neither gates any public item that is interesting to a reader of this crate's docs (#263).
+# Still documented without default features, but no longer because it *cannot* be otherwise.
+# `plotting` and `geonav` both used to need system libraries the docs.rs sandbox lacks; since
+# #335 they build their C dependencies from source and would document fine. Neither gates a
+# public item that is interesting to a reader of this crate's docs, though, so skipping them
+# keeps the docs build small for no loss (#263).
 no-default-features = true
 
 [features]
@@ -30,7 +31,14 @@ strapdown-core = { path = "../core", features = ["clap"], version = "1.0.0" }
 strapdown-geonav = { path = "../geonav", optional = true, version = "0.1.0" }
 env_logger = "0.11"
 rayon = "1.10"
-plotters = { version = "0.3.7", optional = true }
+# `fontconfig-dlopen` is what lets this build with no system libraries at all. plotters draws
+# text through `font-kit`, which otherwise links libfontconfig at build time and needs
+# `libfontconfig-dev` present; the feature switches it to a runtime `dlopen` instead. The
+# other half of the stack, `freetype-sys`, already compiles its bundled C sources when
+# pkg-config finds nothing. Note the trade: libfontconfig is now a *runtime* requirement of
+# the `plotting` feature rather than a build-time one, so a machine without it builds fine
+# and fails when it first tries to render text.
+plotters = { version = "0.3.7", features = ["fontconfig-dlopen"], optional = true }
 
 clap.workspace = true
 log.workspace = true
