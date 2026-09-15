@@ -37,6 +37,7 @@ use world_magnetic_model::time::Date;
 use world_magnetic_model::uom::si::angle::degree;
 use world_magnetic_model::uom::si::f32::{Angle, Length};
 use world_magnetic_model::uom::si::length::meter;
+use world_magnetic_model::uom::si::magnetic_flux_density::nanotesla;
 
 use strapdown::earth::gravity_anomaly;
 use strapdown::measurements::{
@@ -50,6 +51,18 @@ use strapdown::{IMUData, StrapdownState};
 
 /// Conversion factor from radians to degrees (180/π)
 const RAD_TO_DEG: f64 = 180.0 / std::f64::consts::PI;
+
+/// Conversion from the microtesla the magnetometer reports to the nanotesla anomalies are in.
+///
+/// The crate keeps two magnetic units and they are not interchangeable. Body-frame magnetometer
+/// readings are **microtesla** -- [`TestDataRecord`]'s `mag_x`/`mag_y`/`mag_z` and
+/// [`strapdown::measurements::MagnetometerYawMeasurement`] both document that -- while anomaly
+/// quantities are **nanotesla**: the maps [`GeoMap`] loads,
+/// [`strapdown::sim::NavigationResult::magnetic_bias`],
+/// and [`strapdown::sim::GeophysicalConfig`]'s `magnetic_bias` and `magnetic_noise_std`. An
+/// anomaly is differenced against a map, so nanotesla is the unit this model works in and the
+/// observation has to be converted on the way in.
+const MICROTESLA_TO_NANOTESLA: f64 = 1000.0;
 
 /// Navigation states every filter state vector starts with: position, velocity, attitude.
 ///
@@ -1097,7 +1110,12 @@ pub struct MagneticAnomalyMeasurement {
     pub map: Rc<GeoMap>,
     /// Measurement Noise
     pub noise_std: f64,
-    /// Measured magnetic field x-component (micro teslas)
+    /// Observed total magnetic field magnitude, **in nanotesla**.
+    ///
+    /// Not a single component, despite what this said before: [`build_event_stream`] builds it
+    /// as the norm of the record's three magnetometer axes. Those are microtesla, so the stream
+    /// scales them by a thousand on the way in -- the anomaly this observation feeds is
+    /// differenced against a nanotesla map, so it has to arrive in the map's unit.
     pub mag_obs: f64,
     /// Year for WMM calculation
     pub year: i32,
@@ -1120,29 +1138,7 @@ pub struct MagneticAnomalyMeasurement {
 }
 impl GeophysicalAnomalyMeasurementModel for MagneticAnomalyMeasurement {
     fn get_anomaly(&self) -> Result<f64, StrapdownError> {
-        // Clamp altitude to valid WMM range to prevent errors
-        let alt_clamped = self.altitude.clamp(WMM_MIN_ALTITUDE_M, WMM_MAX_ALTITUDE_M);
-
-        let date = Date::from_ordinal_date(self.year, self.day).map_err(|e| {
-            StrapdownError::ExternalModel {
-                model: "WMM",
-                detail: format!("invalid date (year {}, day {}): {e}", self.year, self.day),
-            }
-        })?;
-        let magnetic_field = GeomagneticField::new(
-            Length::new::<meter>(alt_clamped as f32),
-            Angle::new::<degree>(self.latitude as f32),
-            Angle::new::<degree>(self.longitude as f32),
-            date,
-        )
-        .map_err(|e| StrapdownError::ExternalModel {
-            model: "WMM",
-            detail: format!(
-                "unavailable at lat={}, lon={}, alt={alt_clamped}: {e:?}",
-                self.latitude, self.longitude
-            ),
-        })?;
-        Ok(self.mag_obs - f64::from(magnetic_field.f().value))
+        Ok(self.mag_obs - self.reference_field_nt(self.latitude, self.longitude, self.altitude)?)
     }
     fn set_state(&mut self, state: &StrapdownState) {
         self.latitude = state.latitude.to_degrees();
@@ -1171,32 +1167,7 @@ impl MeasurementModel for MagneticAnomalyMeasurement {
         // Return the observed magnetic anomaly as the measurement vector.
         // Use provided state if available (for per-particle updates), otherwise fallback to stored state.
         let anomaly = if let Some((lat_deg, lon_deg, alt)) = Self::extract_state_inputs(state) {
-            // Clamp altitude to valid WMM range to prevent errors
-            let alt_clamped = alt.clamp(WMM_MIN_ALTITUDE_M, WMM_MAX_ALTITUDE_M);
-
-            if (alt - alt_clamped).abs() > 1.0 {
-                log::warn!("Altitude {alt} m out of WMM bounds, clamped to {alt_clamped} m");
-            }
-
-            let date = Date::from_ordinal_date(self.year, self.day).map_err(|e| {
-                StrapdownError::ExternalModel {
-                    model: "WMM",
-                    detail: format!("invalid date (year {}, day {}): {e}", self.year, self.day),
-                }
-            })?;
-            let magnetic_field = GeomagneticField::new(
-                Length::new::<meter>(alt_clamped as f32),
-                Angle::new::<degree>(lat_deg as f32),
-                Angle::new::<degree>(lon_deg as f32),
-                date,
-            )
-            .map_err(|e| StrapdownError::ExternalModel {
-                model: "WMM",
-                detail: format!(
-                    "unavailable at lat={lat_deg}, lon={lon_deg}, alt={alt} (clamped {alt_clamped}): {e:?}"
-                ),
-            })?;
-            self.mag_obs - f64::from(magnetic_field.f().value)
+            self.mag_obs - self.reference_field_nt(lat_deg, lon_deg, alt)?
         } else {
             self.get_anomaly()?
         };
@@ -1233,6 +1204,53 @@ impl MeasurementModel for MagneticAnomalyMeasurement {
 }
 
 impl MagneticAnomalyMeasurement {
+    /// The World Magnetic Model's total field at a position, **in nanotesla**.
+    ///
+    /// The one place this model evaluates the WMM. It had two, one per anomaly path, and both
+    /// read the field as `magnetic_field.f().value` -- which is uom's *base* unit, tesla. A
+    /// reference field of 5.1e-5 subtracted from an observation of tens of thousands is a no-op
+    /// to eleven significant figures, so the reference removal that makes this an *anomaly*
+    /// never happened and the raw field magnitude reached the filter against a map of anomalies.
+    /// Asking uom for the unit by name rather than taking the raw `.value` is what makes that
+    /// unrepresentable; having one call site is what keeps the two paths from disagreeing again.
+    ///
+    /// # Errors
+    /// [`StrapdownError::ExternalModel`] when the date is invalid or the World Magnetic Model
+    /// rejects the position. Altitude is clamped into the model's valid band first, so only a
+    /// position the model genuinely cannot serve reaches the error.
+    fn reference_field_nt(
+        &self,
+        latitude_deg: f64,
+        longitude_deg: f64,
+        altitude_m: f64,
+    ) -> Result<f64, StrapdownError> {
+        let alt_clamped = altitude_m.clamp(WMM_MIN_ALTITUDE_M, WMM_MAX_ALTITUDE_M);
+        if (altitude_m - alt_clamped).abs() > 1.0 {
+            log::warn!("Altitude {altitude_m} m out of WMM bounds, clamped to {alt_clamped} m");
+        }
+
+        let date = Date::from_ordinal_date(self.year, self.day).map_err(|e| {
+            StrapdownError::ExternalModel {
+                model: "WMM",
+                detail: format!("invalid date (year {}, day {}): {e}", self.year, self.day),
+            }
+        })?;
+        let magnetic_field = GeomagneticField::new(
+            Length::new::<meter>(alt_clamped as f32),
+            Angle::new::<degree>(latitude_deg as f32),
+            Angle::new::<degree>(longitude_deg as f32),
+            date,
+        )
+        .map_err(|e| StrapdownError::ExternalModel {
+            model: "WMM",
+            detail: format!(
+                "unavailable at lat={latitude_deg}, lon={longitude_deg}, alt={altitude_m} \
+                 (clamped {alt_clamped}): {e:?}"
+            ),
+        })?;
+        Ok(f64::from(magnetic_field.f().get::<nanotesla>()))
+    }
+
     fn extract_state_inputs(state: &DVector<f64>) -> Option<(f64, f64, f64)> {
         if state.len() >= 3 && state[0].is_finite() && state[1].is_finite() && state[2].is_finite()
         {
@@ -1368,6 +1386,17 @@ impl MeasurementModel for CombinedGeophysicalMeasurement {
 }
 
 //================= Geophysical Navigation Simulation ======================================================
+/// The record's total magnetic field magnitude, converted into the nanotesla anomalies use.
+///
+/// [`TestDataRecord`]'s three magnetometer axes are microtesla; the map this observation is
+/// differenced against is nanotesla. The scaling used to be missing entirely, which -- together
+/// with a reference field read in tesla -- left the "anomaly" as the raw field magnitude in the
+/// wrong unit. See [`MICROTESLA_TO_NANOTESLA`].
+fn observed_field_nt(record: &TestDataRecord) -> f64 {
+    (record.mag_x.powi(2) + record.mag_y.powi(2) + record.mag_z.powi(2)).sqrt()
+        * MICROTESLA_TO_NANOTESLA
+}
+
 /// Builds and initializes an event stream that also contains geophysical measurements
 ///
 /// This function builds a generic geophysical measurement model and adds it to the event stream.
@@ -1587,8 +1616,7 @@ pub fn build_event_stream(
                 let observed_gravity =
                     (r1.grav_x.powi(2) + r1.grav_y.powi(2) + r1.grav_z.powi(2)).sqrt();
                 let datetime = r1.time;
-                let observed_magnetic =
-                    (r1.mag_x.powi(2) + r1.mag_y.powi(2) + r1.mag_z.powi(2)).sqrt();
+                let observed_magnetic = observed_field_nt(r1);
                 let meas = CombinedGeophysicalMeasurement {
                     gravity: GravityMeasurement {
                         map: g_map.clone(),
@@ -1637,8 +1665,7 @@ pub fn build_event_stream(
             } else if let Some(m_map) = available_magnetic {
                 // Magnetic-only
                 let datetime = r1.time;
-                let observed_magnetic =
-                    (r1.mag_x.powi(2) + r1.mag_y.powi(2) + r1.mag_z.powi(2)).sqrt();
+                let observed_magnetic = observed_field_nt(r1);
                 let meas = MagneticAnomalyMeasurement {
                     map: m_map.clone(),
                     noise_std: magnetic_noise_std.unwrap_or(150.0),
@@ -1731,9 +1758,12 @@ mod tests {
                 grav_x: 0.1,
                 grav_y: 0.1,
                 grav_z: 9.8,
-                mag_x: 20000.0, // micro teslas
-                mag_y: 5000.0,
-                mag_z: 45000.0,
+                // Micro teslas, as `TestDataRecord` documents. These read 20000/5000/45000
+                // under that same label, which is 400x Earth's field -- nanotesla numbers
+                // wearing a microtesla unit, the same confusion the anomaly itself had.
+                mag_x: 20.0,
+                mag_y: 5.0,
+                mag_z: 45.0,
                 relative_altitude: i as f64 * 0.1,
                 pressure: 1013.25 - (i as f64) * 0.1,
                 horizontal_accuracy: 3.0,
@@ -1888,7 +1918,9 @@ mod tests {
         let measurement = MagneticAnomalyMeasurement {
             map,
             noise_std: 100.0,
-            mag_obs: (20000.0_f64.powi(2) + 5000.0_f64.powi(2) + 45000.0_f64.powi(2)).sqrt(),
+            // Nanotesla, the unit `mag_obs` is in: a 49.5 uT reading scaled up.
+            mag_obs: (20.0_f64.powi(2) + 5.0_f64.powi(2) + 45.0_f64.powi(2)).sqrt()
+                * MICROTESLA_TO_NANOTESLA,
             latitude: 40.5,
             longitude: -73.5,
             altitude: 100.0,
@@ -2183,16 +2215,20 @@ mod tests {
         }
     }
 
+    /// A magnetic model at a real position, with a physically sensible observed field.
+    ///
+    /// `mag_obs` is nanotesla: a 49.5 uT reading, which is what a magnetometer on the ground in
+    /// Pennsylvania actually sees.
     fn magnetic_measurement_with_bias(bias: Option<BiasState>) -> MagneticAnomalyMeasurement {
         MagneticAnomalyMeasurement {
             map: Rc::new(create_test_magnetic_map()),
             noise_std: 1.0,
-            mag_obs: 48000.0,
+            mag_obs: 49.5 * MICROTESLA_TO_NANOTESLA,
             latitude: 40.5,
             longitude: -73.5,
             altitude: 100.0,
-            year: 2023,
-            day: 216,
+            year: 2025,
+            day: 60,
             bias,
         }
     }
@@ -2484,61 +2520,115 @@ mod tests {
         assert_approx_eq!(dropped, unbiased, 1e-9);
     }
 
-    /// The magnetic model owes its declared bias the same unit column the gravity model does.
+    /// The WMM reference comes back in nanotesla, not in uom's base unit.
     ///
-    /// `MagneticAnomalyMeasurement` has its own copy of the resolve-and-fill logic, so the
-    /// gravity assertions above say nothing about it: a regression in this column would leave
-    /// every other geophysical test green while magnetic-only and combined runs silently stopped
-    /// estimating their bias, which is the same defect the gravity column already had.
+    /// This is the regression. Both anomaly paths read `magnetic_field.f().value`, and uom's
+    /// `.value` is the *base* unit -- tesla. At this location the field is 5.0869e-5 T, so
+    /// subtracting it from an observation of tens of thousands changed nothing to eleven
+    /// significant figures: the reference removal silently did not happen and the filter was
+    /// handed the raw field magnitude to difference against a map of anomalies.
+    ///
+    /// The band is the real invariant and it is what makes this unit-diagnostic: Earth's total
+    /// field spans roughly 22,000-67,000 nT everywhere on the surface, so a value in tesla
+    /// (5e-5), microtesla (51) or gauss (0.51) all fail it by orders of magnitude.
     #[test]
-    fn test_magnetic_jacobian_carries_a_column_for_the_declared_bias() {
-        let bias = GeoBiasLayout::appended(NAVIGATION_STATE_DIM, false, true)
-            .unwrap()
-            .unwrap()
-            .magnetic_bias();
-        let h = magnetic_measurement_with_bias(bias)
-            .get_jacobian(&state_with_extras(&[7.0]))
-            .unwrap();
-        assert_eq!(h.nrows(), 1);
-        assert_eq!(h.ncols(), 10, "the Jacobian must match the caller's width");
-        assert_approx_eq!(h[(0, 9)], 1.0, 1e-12);
-        for column in 2..9 {
-            assert_approx_eq!(h[(0, column)], 0.0, 1e-12);
-        }
+    fn test_magnetic_reference_field_is_nanotesla() {
+        let measurement = magnetic_measurement_with_bias(None);
+        let reference = measurement
+            .reference_field_nt(40.05, -75.95, 100.0)
+            .expect("the WMM must serve a position in Pennsylvania");
 
-        // No bias declared: nine columns, as before, and no unit entry anywhere.
-        let h = magnetic_measurement_with_bias(None)
-            .get_jacobian(&state_with_extras(&[]))
-            .unwrap();
-        assert_eq!(h.ncols(), 9);
-        for column in 2..9 {
-            assert_approx_eq!(h[(0, column)], 0.0, 1e-12);
-        }
+        assert!(
+            (22_000.0..=67_000.0).contains(&reference),
+            "the reference field must be a physical total field in nT, got {reference}"
+        );
+        // The value the current coefficient set gives at this position and epoch. Loose enough
+        // to survive a WMM coefficient update, which moves this by nanoteslas; the defect moved
+        // it by nine orders of magnitude.
+        assert_approx_eq!(reference, 50_869.4, 50.0);
     }
 
-    /// And the column has to be the slope the predicted measurement actually has.
+    /// And the anomaly is the observation with that reference actually taken off it.
     ///
-    /// Asserting the entry is 1.0 on its own only says the two halves were written to the same
-    /// number; this pins them to each other, which is the invariant that broke.
+    /// `test_magnetic_anomaly_measurement` asserts the two anomaly paths agree with each other,
+    /// which is exactly the shape of assertion that could not catch this: both paths were wrong
+    /// in the same way, so they agreed. This one pins the value.
     #[test]
-    fn test_magnetic_expected_measurement_reads_the_declared_bias() {
-        let bias = GeoBiasLayout::appended(NAVIGATION_STATE_DIM, false, true)
-            .unwrap()
-            .unwrap()
-            .magnetic_bias();
-        let measurement = magnetic_measurement_with_bias(bias);
-        let unbiased = magnetic_measurement_with_bias(None)
-            .get_expected_measurement(&state_with_extras(&[]))[0];
+    fn test_magnetic_anomaly_removes_the_reference_field() {
+        let mut measurement = magnetic_measurement_with_bias(None);
+        measurement.latitude = 40.05;
+        measurement.longitude = -75.95;
+        measurement.altitude = 100.0;
 
-        // yaw is 0.9 and the bias is 7.0, so reading the wrong element is visible.
-        let biased = measurement.get_expected_measurement(&state_with_extras(&[7.0]))[0];
-        assert_approx_eq!(biased, unbiased + 7.0, 1e-9);
-
-        let slope = measurement.get_expected_measurement(&state_with_extras(&[8.0]))[0] - biased;
-        let h = measurement
-            .get_jacobian(&state_with_extras(&[7.0]))
+        let reference = measurement
+            .reference_field_nt(40.05, -75.95, 100.0)
             .unwrap();
-        assert_approx_eq!(h[(0, 9)], slope, 1e-12);
+
+        // An observation 120 nT above the reference is a 120 nT anomaly, which is the scale the
+        // maps and `build_event_stream`'s `magnetic_noise_std` default of 150 are written in.
+        measurement.mag_obs = reference + 120.0;
+        assert_approx_eq!(measurement.get_anomaly().unwrap(), 120.0, 1e-6);
+
+        // The per-state path takes its position from the state and must agree.
+        let state = DVector::from_vec(vec![
+            40.05_f64.to_radians(),
+            (-75.95_f64).to_radians(),
+            100.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        ]);
+        assert_approx_eq!(measurement.get_measurement(&state).unwrap()[0], 120.0, 1e-6);
+
+        // The defect's signature: the anomaly coming back as the raw observation, because
+        // subtracting a tesla-valued reference from a nanotesla observation is a no-op.
+        assert!(
+            (measurement.get_anomaly().unwrap() - measurement.mag_obs).abs() > 1.0,
+            "the reference field was not removed from the observation"
+        );
+    }
+
+    /// The event stream hands the model nanotesla, because the record is microtesla.
+    #[test]
+    fn test_event_stream_converts_the_magnetometer_to_nanotesla() {
+        let records = create_test_records();
+        let expected =
+            (records[1].mag_x.powi(2) + records[1].mag_y.powi(2) + records[1].mag_z.powi(2)).sqrt()
+                * MICROTESLA_TO_NANOTESLA;
+
+        let stream = build_event_stream(
+            &records,
+            &GnssDegradationConfig::default(),
+            None,
+            None,
+            Some(Rc::new(create_test_magnetic_map())),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let observed = stream
+            .events
+            .iter()
+            .find_map(|event| match event {
+                Event::Measurement { meas, .. } => meas
+                    .as_any()
+                    .downcast_ref::<MagneticAnomalyMeasurement>()
+                    .map(|m| m.mag_obs),
+                Event::Imu { .. } => None,
+            })
+            .expect("the stream must carry a magnetic measurement");
+
+        assert_approx_eq!(observed, expected, 1e-9);
+        // A 49.5 uT record reaches the model as ~49,500 nT, not ~49.5.
+        assert!(
+            (20_000.0..=70_000.0).contains(&observed),
+            "the observation must reach the model in nT, got {observed}"
+        );
     }
 
     /// A stream built for a filter with no map-bias states must not declare one.
