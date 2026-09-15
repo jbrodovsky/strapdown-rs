@@ -67,6 +67,8 @@ use strapdown::sim::{
     dead_reckoning, generate_synthetic, initialize_ekf, initialize_eskf, initialize_ukf,
     run_closed_loop,
 };
+#[cfg(feature = "geonav")]
+use strapdown::sim::{GeoStateLayout, run_closed_loop_with_geo};
 
 const LONG_ABOUT: &str =
     "STRAPDOWN SIM: A simulation and analysis tool for strapdown inertial navigation systems.
@@ -1500,6 +1502,18 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
         // Determine number of geophysical states
         let num_geo_states = geo_bias_layout.map_or(0, |layout| layout.bias_count());
 
+        // The same placement, restated for `NavigationResult`, which lives in `core` and so
+        // cannot name `GeoBiasLayout`. Derived from that layout rather than rebuilt from the
+        // map flags, so where the biases live is decided once: a filter that put them
+        // somewhere other than the end would move both together.
+        let geo_layout = geo_bias_layout.map_or(GeoStateLayout::NONE, |layout| {
+            GeoStateLayout::new(
+                layout.state_dim(),
+                layout.gravity_bias().map(|bias| bias.index),
+                layout.magnetic_bias().map(|bias| bias.index),
+            )
+        });
+
         // Run simulation based on filter type
         let results = match args.filter {
             FilterType::Ukf => {
@@ -1541,7 +1555,7 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                 );
 
                 info!("Running UKF geophysical navigation simulation...");
-                run_closed_loop(&mut ukf, events, None, None)
+                run_closed_loop_with_geo(&mut ukf, events, None, None, geo_layout)
             }
             FilterType::Ekf => {
                 info!("Initializing EKF...");
@@ -1624,7 +1638,7 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                 );
 
                 info!("Running EKF geophysical navigation simulation...");
-                run_closed_loop(&mut ekf, events, None, None)
+                run_closed_loop_with_geo(&mut ekf, events, None, None, geo_layout)
             }
             FilterType::Eskf => {
                 error!("ESKF is not yet implemented for geophysical navigation");
