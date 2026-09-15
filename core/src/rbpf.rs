@@ -646,6 +646,16 @@ impl RaoBlackwellizedParticleFilter {
     /// expected measurement is the state yaw, so the only non-zero partial is the one
     /// selected here.
     ///
+    /// That row's gain on the yaw error is exact at any tilt, not merely to first order:
+    /// the correction is injected as `Rz(dyaw) Ry(dpitch) Rx(droll)` times the nominal, and
+    /// `Rz` is outermost, so a pure-yaw error composes with the nominal yaw exactly. What
+    /// the row omits is the cross-coupling -- at a tilted nominal the extracted Euler yaw
+    /// also depends on the roll and pitch error states, by up to 0.24 per radian on this
+    /// dataset. That omission is shared with the EKF, ESKF and UKF, which use the same
+    /// Jacobian, and with [`Self::evaluate_ensemble_gate`], which forms this filter's own
+    /// innovation covariance from it; correcting it here alone would put the update and the
+    /// gate in different coordinates. Tracked crate-wide as #349.
+    ///
     /// The residual is formed at the nominal state rather than at a zero state the way
     /// [`Self::update_velocity_only`] can, because a magnetometer heading is not
     /// state-independent: [`MagnetometerYawMeasurement::get_measurement`] levels the sensor
@@ -862,7 +872,16 @@ impl RaoBlackwellizedParticleFilter {
     /// returns that branch, but adding an error state to it does not stay on it: a nominal
     /// yaw of 179.9 deg plus a 0.3 deg error is 180.2 deg, off the branch every consumer
     /// assumes (#314). It is wrapped here, where the state is assembled, rather than at
-    /// each of the four call sites that read it.
+    /// each of the four call sites that read it. This mirrors
+    /// [`kalman::wrap_attitude_onto_principal_branch`](crate::kalman), including its
+    /// deliberate choice not to clamp pitch to the `[-pi/2, pi/2]` the Euler decomposition
+    /// produces: clamping would change the rotation rather than rename it.
+    ///
+    /// Adding the error state to the Euler angles is not the same map as composing it with
+    /// the nominal rotation, which is how [`crate::linearize::apply_eskf_correction`]
+    /// injects it. The two agree exactly on yaw and to first order elsewhere; the
+    /// discrepancy is the crate-wide chart inconsistency tracked as #349, and wrapping
+    /// neither causes nor cures it.
     fn particle_state_vector(&self, particle: &RbpfParticle) -> DVector<f64> {
         let mut state = self.nominal_state_vector();
         for i in 0..POSITION_STATE_DIM {
