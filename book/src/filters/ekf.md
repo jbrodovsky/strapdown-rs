@@ -68,12 +68,33 @@ let initial_state = InitialState {
     is_enu: false, // NED, the crate default; set true for ENU data
 };
 
+// Initial covariance diagonal.
+//
+// Latitude and longitude are held in RADIANS and altitude in metres, so the three position
+// entries are not the same unit and cannot come from one literal. `vec![1e-6; 9]` -- what
+// this example used to show -- reads as a 6.4 km initial horizontal uncertainty rather than
+// as a small number, and `1e-9` as a per-step process noise is a 201 m one. Both are issue
+// #308; see **Units on the covariance diagonals** below. Write the metres once, convert where
+// they are used.
+let horizontal_std_rad = 10.0 * strapdown::earth::METERS_TO_RADIANS;  // a 10 m GNSS fix
+let mut initial_covariance = vec![
+    horizontal_std_rad.powi(2),  // latitude, rad^2
+    horizontal_std_rad.powi(2),  // longitude, rad^2
+    10.0_f64.powi(2),            // altitude, m^2
+];
+initial_covariance.extend([0.25; 3]);  // velocity, (m/s)^2 -- a 0.5 m/s fix
+initial_covariance.extend([1e-4; 3]);  // attitude, rad^2   -- ~0.6 deg
+
 // Initialize 9-state EKF (no biases)
 let mut ekf = ExtendedKalmanFilter::new(
     initial_state,
     vec![],  // No biases for 9-state
-    vec![1e-6; 9],  // Initial covariance diagonal
-    DMatrix::from_diagonal(&DVector::from_vec(vec![1e-9; 9])),  // Process noise
+    initial_covariance,
+    // The crate's own default, which is built the same way: one metric constant, converted
+    // once. Nine-state filters take its leading nine entries.
+    DMatrix::from_diagonal(&DVector::from_vec(
+        strapdown::sim::DEFAULT_PROCESS_NOISE[0..9].to_vec(),
+    )),
     false,  // use_biases = false for 9-state
 );
 ```
@@ -81,12 +102,20 @@ let mut ekf = ExtendedKalmanFilter::new(
 ### 15-State with Bias Estimation
 
 ```rust
+// The nine-state diagonal built above, extended with the bias states. The same unit
+// caveat applies to its position block, and for the same reason.
+let mut initial_covariance_15 = initial_covariance.clone();
+initial_covariance_15.extend([1e-3; 3]);  // accel bias, (m/s^2)^2
+initial_covariance_15.extend([1e-8; 3]);  // gyro bias, (rad/s)^2
+
 // Initialize 15-state EKF with bias estimation
 let mut ekf = ExtendedKalmanFilter::new(
     initial_state,
     vec![0.0; 6],  // Initial bias estimates (3 accel + 3 gyro)
-    vec![1e-6; 15],  // Initial covariance diagonal
-    DMatrix::from_diagonal(&DVector::from_vec(vec![1e-9; 15])),  // Process noise
+    initial_covariance_15,
+    DMatrix::from_diagonal(&DVector::from_vec(
+        strapdown::sim::DEFAULT_PROCESS_NOISE.to_vec(),
+    )),  // Process noise
     true,  // use_biases = true for 15-state
 );
 ```
@@ -141,6 +170,33 @@ ekf.update(&gps_measurement);
 
 See [EKF vs UKF Comparison](./comparison.md) for detailed analysis.
 
+## Units on the covariance diagonals
+
+The state vector is not in one unit system, and neither $P_0$ nor $Q$ can be filled from a
+single literal. Latitude and longitude are **radians**; altitude, velocity and the
+accelerometer biases are metric; attitude and the gyroscope biases are radians and radians
+per second. A horizontal uncertainty written in metres therefore has to pass through
+`earth::METERS_TO_RADIANS` before it can go on the diagonal.
+
+It is worth knowing what the round numbers mean once the conversion is skipped:
+
+| written as a variance | as a horizontal standard deviation |
+|---|---|
+| `1e-6` rad² | 6367 m |
+| `1e-9` rad² | 201 m |
+| `(5 m × METERS_TO_DEGREES)²` | 286 m (degrees, not radians -- 57.3x too large) |
+
+All three shipped in this crate, in $Q$ and in $P_0$, and are what issue #308 fixed. The
+symptom is characteristic: with $Q$ that large the innovation covariance $S = HPH^T + R$ is
+dominated by the filter's own prediction, so the update discards it and lands on each fix,
+the solution tracks the fix noise one-for-one instead of averaging it down, and innovation
+gating cannot function because a genuinely bad fix is still inside what the filter believes
+possible.
+
+`sim::DEFAULT_PROCESS_NOISE`, `sim::DEFAULT_INITIAL_POSITION_UNCERTAINTY_M` and the
+`sim::initialize_*` helpers all do the conversion for you; `IMUQuality::auto_covariance`
+derives a whole $P_0$ diagonal from an IMU grade and a reported fix accuracy.
+
 ## Best Practices
 
 1. **Start with 9-state** unless you need bias estimation
@@ -148,6 +204,8 @@ See [EKF vs UKF Comparison](./comparison.md) for detailed analysis.
 3. **Monitor innovation**: Check measurement residuals for divergence
 4. **Use 15-state** for long-duration missions or low-quality IMUs
 5. **Validate with dead reckoning**: Compare against open-loop results
+6. **Write position uncertainties in metres** and convert once -- see
+   [Units on the covariance diagonals](#units-on-the-covariance-diagonals)
 
 ## Next Steps
 

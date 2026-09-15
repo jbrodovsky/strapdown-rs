@@ -61,7 +61,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use clap::{Args, ValueEnum};
 
 use crate::NavigationFilter;
-use crate::earth::METERS_TO_DEGREES;
+use crate::earth::{METERS_TO_DEGREES, METERS_TO_RADIANS};
 use crate::gating::InnovationGate;
 use crate::kalman::{InitialState, UnscentedKalmanFilter};
 use crate::messages::{Event, EventStream, GnssFaultModel, GnssScheduler};
@@ -73,6 +73,122 @@ use health::HealthMonitor;
 pub use execution::{ExecutionLimits, ExecutionMonitor};
 pub use health::HealthLimits;
 
+/// Per-step position process noise for [`DEFAULT_PROCESS_NOISE`], as a standard deviation in
+/// **metres**.
+///
+/// Every position quantity in the default diagonal is written here, in one unit, and converted
+/// to each state's own unit exactly once at the point of use. That is the whole of the fix for
+/// #308: latitude and longitude are held in radians and altitude in metres, so three literals
+/// chosen to look alike on the page are three different physical claims, and the crate shipped
+/// `1e-6, 1e-6, 1e-4` -- a 6367 m horizontal standard deviation next to a 1 cm vertical one --
+/// for exactly that reason.
+///
+/// # Why 0.1 m
+///
+/// The value is not new: [`crate::sim`]'s own aiding acceptance tests (`core/tests/aiding.rs`)
+/// already define `POSITION_PROCESS_NOISE_M = 0.1` and build their diagonal this way, having
+/// hit the same trap. Adopting it here gives the workspace one number for this quantity instead
+/// of a fourth.
+///
+/// What bounds it is the Kalman gain it implies. For a scalar random walk of per-step standard
+/// deviation $q$ observed with measurement standard deviation $r$, the steady-state prior
+/// variance solves $P^2 - q^2 P - q^2 r^2 = 0$, so for $q \ll r$ it is $P \approx qr$ and the
+/// steady-state gain is
+///
+/// $$ K = \frac{P}{P + r^2} \approx \frac{q}{q + r}. $$
+///
+/// The reference recording's GNSS reports a 3.81 m horizontal 1-sigma, and that sets both ends
+/// of the admissible band:
+///
+/// - **Upper.** $K$ is what decides whether the filter filters at all. Requiring it to average
+///   at least ten fixes ($K \le 0.1$) caps $q$ at $r/9 \approx 0.42$ m. Above that the filter
+///   increasingly discards its own prediction, continuously, all the way up to the $K = 0.999$
+///   of the defect -- which is why the old value produced a final solution sitting $10^{-8}$ m
+///   from the fix it had just consumed.
+/// - **Lower.** As $q \to 0$ the position block of $P$ collapses, $K \to 0$, and fixes stop
+///   being able to correct inertial drift that is really there. There is no clean closed form
+///   for this end, because what it trades against is unmodelled dynamics rather than a quantity
+///   in the filter; empirically on the reference recording the whole-run statistics are flat
+///   from 0.01 m to 1 m and the bias estimates stay inside their anti-windup clamps throughout.
+///
+/// 0.1 m sits an order of magnitude inside the derived upper bound, not against it: it gives
+/// $K = 0.026$, so the filter averages roughly forty fixes and settles at a horizontal standard
+/// deviation of $\sqrt{qr} = 0.62$ m against a 3.81 m fix. None of that is read off what the
+/// suite currently prints.
+pub const POSITION_PROCESS_NOISE_M: f64 = 0.1;
+
+/// [`POSITION_PROCESS_NOISE_M`] as a latitude/longitude variance, rad^2.
+///
+/// The filters hold latitude and longitude in radians, so a metric horizontal uncertainty has
+/// to pass through [`crate::earth::METERS_TO_RADIANS`] before it can sit on a covariance
+/// diagonal -- the same conversion [`initialize_ukf`] spells out as
+/// `(position_accuracy * METERS_TO_DEGREES).to_radians()` when it builds $P_0$.
+const HORIZONTAL_POSITION_PROCESS_NOISE_RAD2: f64 = {
+    let radians = POSITION_PROCESS_NOISE_M * METERS_TO_RADIANS;
+    radians * radians
+};
+
+/// Initial position uncertainty the default 15-state filters claim, as a standard deviation
+/// in **metres**.
+///
+/// The $P_0$ counterpart of [`POSITION_PROCESS_NOISE_M`], and it exists for the same reason:
+/// [`initialize_eskf`] and [`crate::engine`]'s `DEFAULT_INITIAL_COVARIANCE` both wrote their
+/// position block as three literals -- `1e-6, 1e-6, 1e-4`, one of them commented "(m^2)" --
+/// when latitude and longitude are radians and altitude is metres. Read correctly that is a
+/// 6367 m horizontal claim beside a 1 cm vertical one, which is #308 in $P_0$ rather than in
+/// $Q$; #303 had already noticed it in passing. Written in metres and converted at the point
+/// of use, the units are checkable by reading them.
+///
+/// # Why 10 m
+///
+/// A coarse GNSS initialisation, and deliberately conservative: the reference recording's
+/// receiver reports 3.81 m horizontal and 1.38 m vertical 1-sigma, so this is about 2.6x what
+/// the fix that positions the vehicle actually claims.
+///
+/// Erring large is the safe direction, and the asymmetry is the derivation. A $P_0$ that is
+/// too large costs only a short transient: with a 5 m fix the scalar Riccati recursion
+/// $1/P_k = 1/P_0 + k/R$ pulls $(10 \text{ m})^2$ down to the metre level inside about twenty
+/// fixes, twenty seconds at 1 Hz. A $P_0$ that is too small does not self-correct -- the
+/// filter reports an uncertainty it has not earned, weights its own prediction accordingly,
+/// and rejects or discounts the fixes that would have corrected it, which is the failure #260
+/// gating turns from a slow drift into an outright rejection.
+///
+/// The same number is what `core/tests/aiding.rs` already uses for this quantity, so adopting
+/// it gives the workspace one value rather than a fourth. Callers holding a fix's own reported
+/// accuracy should prefer it -- [`initialize_ukf`] and [`initialize_ekf`] build $P_0$ from
+/// `TestDataRecord::horizontal_accuracy`, and [`crate::IMUQuality::auto_covariance`] derives
+/// the whole diagonal from an IMU grade and an [`crate::InitialUncertainty`].
+pub const DEFAULT_INITIAL_POSITION_UNCERTAINTY_M: f64 = 10.0;
+
+/// [`DEFAULT_INITIAL_POSITION_UNCERTAINTY_M`] as a latitude/longitude variance, rad^2.
+pub(crate) const INITIAL_HORIZONTAL_POSITION_VARIANCE_RAD2: f64 = {
+    let radians = DEFAULT_INITIAL_POSITION_UNCERTAINTY_M * METERS_TO_RADIANS;
+    radians * radians
+};
+
+/// [`DEFAULT_INITIAL_POSITION_UNCERTAINTY_M`] as an altitude variance, m^2.
+pub(crate) const INITIAL_VERTICAL_POSITION_VARIANCE_M2: f64 =
+    DEFAULT_INITIAL_POSITION_UNCERTAINTY_M * DEFAULT_INITIAL_POSITION_UNCERTAINTY_M;
+
+/// Per-step altitude process noise for [`DEFAULT_PROCESS_NOISE`], m^2.
+///
+/// **Deliberately its own constant, and deliberately unchanged at its historical value.**
+/// #308 is a units defect in the *horizontal* entries: they were rad^2 written as though they
+/// were m^2. The altitude entry never had that defect -- it was already m^2 and already meant
+/// what it said.
+///
+/// So it is not tied to [`POSITION_PROCESS_NOISE_M`], even though `0.1 m` squared would be the
+/// tidy-looking thing to write. Doing that would multiply this entry by 100 in variance, and
+/// downstream by 1250 where `core/tests/integration_tests.rs` scales it -- a silent retune of
+/// the vertical channel, folded into a units fix, in the one channel this crate's history says
+/// cannot take one quietly (#266, #286, #295 are all vertical-channel issues).
+///
+/// Whether 1e-4 m^2 -- a 1 cm per-step standard deviation against a 1.38 m reported vertical
+/// fix accuracy -- is the right *tuning* is a fair question and a separate one. The derivation
+/// offered for [`POSITION_PROCESS_NOISE_M`] is horizontal-only: it bounds the steady-state
+/// gain against the 3.81 m horizontal accuracy, and says nothing about the vertical channel.
+const VERTICAL_POSITION_PROCESS_NOISE_M2: f64 = 1e-4;
+
 /// Default process noise covariance diagonal used when a caller supplies none.
 ///
 /// The filters in this crate build $Q$ with `DMatrix::from_diagonal` from this array and add
@@ -82,26 +198,36 @@ pub use health::HealthLimits;
 /// the states in the crate's native units (angles in radians, altitude in metres, velocities in
 /// m/s). Nine-state filters take only the leading nine entries.
 ///
-/// These are hand-picked tuning values rather than values derived from any particular sensor.
+/// The three position entries are built from named constants rather than written as literals,
+/// because they are *not* in the same unit as each other: latitude and longitude are radians
+/// and altitude is metres. Until #308 they were written as `1e-6, 1e-6, 1e-4`, three literals
+/// picked as though they were, which made the horizontal terms a 6.4 km per-step standard
+/// deviation sitting next to a 1 cm one.
+///
+/// Only the horizontal pair changed. [`VERTICAL_POSITION_PROCESS_NOISE_M2`] keeps its
+/// historical `1e-4`, because altitude never carried the defect and a units fix is not the
+/// place to retune the vertical channel. The remaining entries are hand-picked tuning values
+/// rather than values derived from any particular sensor.
+///
 /// Callers in this crate have also reused the array verbatim as an initial error covariance
 /// $P_0$; [`crate::IMUQuality::auto_covariance`] derives that fifteen-element diagonal from an
 /// IMU grade and an initial fix accuracy instead.
 pub const DEFAULT_PROCESS_NOISE: [f64; 15] = [
-    1e-6, // position noise 1e-6
-    1e-6, // position noise 1e-6
-    1e-4, // altitude noise
-    1e-3, // velocity north noise
-    1e-3, // velocity east noise
-    1e-3, // velocity down noise
-    1e-5, // roll noise
-    1e-5, // pitch noise
-    1e-5, // yaw noise
-    1e-6, // acc bias x noise
-    1e-6, // acc bias y noise
-    1e-6, // acc bias z noise
-    1e-8, // gyro bias x noise
-    1e-8, // gyro bias y noise
-    1e-8, // gyro bias z noise
+    HORIZONTAL_POSITION_PROCESS_NOISE_RAD2, // latitude, rad^2
+    HORIZONTAL_POSITION_PROCESS_NOISE_RAD2, // longitude, rad^2
+    VERTICAL_POSITION_PROCESS_NOISE_M2,     // altitude, m^2
+    1e-3,                                   // velocity north noise
+    1e-3,                                   // velocity east noise
+    1e-3,                                   // velocity down noise
+    1e-5,                                   // roll noise
+    1e-5,                                   // pitch noise
+    1e-5,                                   // yaw noise
+    1e-6,                                   // acc bias x noise
+    1e-6,                                   // acc bias y noise
+    1e-6,                                   // acc bias z noise
+    1e-8,                                   // gyro bias x noise
+    1e-8,                                   // gyro bias y noise
+    1e-8,                                   // gyro bias z noise
 ];
 
 /// Default [`ExecutionLimits::max_wall_clock_ratio`]: a run may burn at most a quarter of a
@@ -2613,11 +2739,20 @@ pub fn initialize_ekf(
         }
     };
 
-    // Build covariance diagonal
+    // Build covariance diagonal.
+    //
+    // The EKF holds latitude and longitude in radians, so the reported accuracy needs *both*
+    // conversions, not just the metres-to-degrees one: this read
+    // `(position_accuracy * METERS_TO_DEGREES).powf(2.0)` until #308, which is degrees
+    // squared on a radian state -- 57.3x too large as a standard deviation, 3283x in
+    // variance, so a 5 m fix was entered as a 286 m one. `initialize_ukf` above spells the
+    // same conversion out as `(position_accuracy * METERS_TO_DEGREES).to_radians()`;
+    // [`METERS_TO_RADIANS`] is that composition as a single constant.
     let position_accuracy = initial_pose.horizontal_accuracy;
+    let position_std_rad = position_accuracy * METERS_TO_RADIANS;
     let mut covariance_diagonal = vec![
-        (position_accuracy * METERS_TO_DEGREES).powf(2.0),
-        (position_accuracy * METERS_TO_DEGREES).powf(2.0),
+        position_std_rad.powf(2.0),
+        position_std_rad.powf(2.0),
         initial_pose.vertical_accuracy.powf(2.0),
         initial_pose.speed_accuracy.powf(2.0),
         initial_pose.speed_accuracy.powf(2.0),
@@ -2797,11 +2932,27 @@ pub fn initialize_eskf(
         None => vec![0.0; 6],
     };
 
-    // Build error covariance diagonal
-    // This represents initial uncertainty in the error state (NOT nominal state)
+    // Build error covariance diagonal.
+    //
+    // This represents initial uncertainty in the error state (NOT nominal state). The error
+    // state's position block is carried in the *filter's* units rather than in metres:
+    // radians for latitude and longitude, metres for altitude. `inject_error_state` adds
+    // those corrections straight onto the nominal latitude and longitude with no conversion
+    // (deliberately -- dividing by the principal radii there is what #266 removed), and the
+    // GNSS position Jacobian is the identity against a radian-valued measurement.
+    //
+    // So the three entries are two different units, and the literals this used to carry --
+    // `1e-6, 1e-6, 1e-4`, commented "(m²)" -- were #308's defect in P0 rather than in Q: a
+    // 6367 m horizontal claim sitting beside a 1 cm vertical one, in the filter this crate
+    // ships as its default. Written from one metric constant and converted once, the way
+    // `initialize_ukf` above builds its own P0 and the way `DEFAULT_PROCESS_NOISE` is built.
     let mut error_covariance_diagonal = vec![
-        1e-6, 1e-6, 1e-4, // position error covariance (m²)
-        1e-3, 1e-3, 1e-3, // velocity error covariance (m²/s²)
+        INITIAL_HORIZONTAL_POSITION_VARIANCE_RAD2, // latitude error, rad^2
+        INITIAL_HORIZONTAL_POSITION_VARIANCE_RAD2, // longitude error, rad^2
+        INITIAL_VERTICAL_POSITION_VARIANCE_M2,     // altitude error, m^2
+        1e-3,
+        1e-3,
+        1e-3, // velocity error covariance (m²/s²)
     ];
 
     // Add attitude error covariance
@@ -6378,11 +6529,57 @@ mod tests {
         assert!(nav.latitude_cov.is_nan());
         assert_eq!(nav.acc_bias_x, 0.0);
     }
+
+    /// The two horizontal entries must be one physical quantity, in radians.
+    ///
+    /// Asserting the literals back is what let #308 live: `1e-6, 1e-6, 1e-4` is a perfectly
+    /// self-consistent set of numbers and a perfectly inconsistent set of *claims*, and a test
+    /// that reads the array back cannot tell the difference. So this converts the horizontal
+    /// pair back to metres through the inverse of the conversion that built them.
+    ///
+    /// # What this cannot do
+    ///
+    /// It cannot check [`METERS_TO_RADIANS`] itself, because it divides by the same constant
+    /// the array multiplied by: redefine that constant as [`METERS_TO_DEGREES`] -- restoring
+    /// exactly the 57.3x error the fix exists to remove -- and both sides move together and
+    /// this still passes. The constant is checked independently, against the ellipsoid, in
+    /// [`crate::earth`]'s `meters_to_radians_matches_a_wgs84_principal_radius`; without that
+    /// test this one is a tautology, and the two are meant to be read as a pair.
+    ///
+    /// Altitude is deliberately *not* compared against [`POSITION_PROCESS_NOISE_M`]. The two
+    /// are different quantities on purpose -- see [`VERTICAL_POSITION_PROCESS_NOISE_M2`] --
+    /// and asserting they agree would turn "the vertical channel keeps its historical tuning"
+    /// into a test failure rather than the recorded decision it is.
     #[test]
-    fn test_default_process_noise_values() {
+    fn default_process_noise_position_entries_are_one_quantity() {
         assert_eq!(DEFAULT_PROCESS_NOISE.len(), 15);
-        assert_eq!(DEFAULT_PROCESS_NOISE[0], 1e-6); // position
-        assert_eq!(DEFAULT_PROCESS_NOISE[2], 1e-4); // altitude
+        let latitude_m = DEFAULT_PROCESS_NOISE[0].sqrt() / METERS_TO_RADIANS;
+        let longitude_m = DEFAULT_PROCESS_NOISE[1].sqrt() / METERS_TO_RADIANS;
+        assert_approx_eq!(latitude_m, POSITION_PROCESS_NOISE_M, 1e-12);
+        assert_approx_eq!(longitude_m, POSITION_PROCESS_NOISE_M, 1e-12);
+        // Altitude is in metres already and keeps its own constant. Asserted as an identity
+        // so that re-tying it to `POSITION_PROCESS_NOISE_M` -- the tidy-looking change the
+        // doc comment argues against -- has to be a deliberate edit here too.
+        assert_approx_eq!(
+            DEFAULT_PROCESS_NOISE[2],
+            VERTICAL_POSITION_PROCESS_NOISE_M2,
+            1e-18
+        );
+        // Not a re-assertion of the same arithmetic: this is the bound the doc comment derives
+        // the value from, and it is what fails if someone raises the constant back towards the
+        // regime where the filter stops filtering. K = q / (q + r) <= 0.1 at r = 3.81 m, the
+        // reference recording's reported horizontal 1-sigma, caps q at r / 9.
+        let reported_fix_accuracy_m = 3.81;
+        let steady_state_gain =
+            POSITION_PROCESS_NOISE_M / (POSITION_PROCESS_NOISE_M + reported_fix_accuracy_m);
+        assert!(
+            steady_state_gain <= 0.1,
+            "position process noise implies a steady-state gain of {steady_state_gain:.3}; \
+             above 0.1 the filter averages fewer than ten fixes and is on its way back to the \
+             #308 regime where it lands on each one"
+        );
+        // The remaining entries are untouched tuning values; spot-check one so a wholesale
+        // rewrite of the array does not slip past.
         assert_eq!(DEFAULT_PROCESS_NOISE[3], 1e-3); // velocity
     }
 

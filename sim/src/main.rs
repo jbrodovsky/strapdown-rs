@@ -56,7 +56,9 @@ use strapdown::kalman::{ExtendedKalmanFilter, InitialState};
 use strapdown::sim::HealthLimits;
 use strapdown::sim::health::HealthMonitor;
 #[cfg(feature = "geonav")]
-use strapdown::sim::{DEFAULT_PROCESS_NOISE, GeoResolution};
+use strapdown::sim::{
+    DEFAULT_INITIAL_POSITION_UNCERTAINTY_M, DEFAULT_PROCESS_NOISE, GeoResolution,
+};
 use strapdown::sim::{
     ExecutionLimits, ExecutionMonitor, FaultArgs, FilterType, NavigationResult, ParticleFilterType,
     SchedulerArgs, SimulationConfig, SimulationMode, SyntheticConfig, TestDataRecord, UkfConfig,
@@ -1470,22 +1472,52 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
 
                 let imu_biases = vec![0.0; 6];
 
+                // Initial position uncertainty. Only the *horizontal* pair changes: latitude
+                // and longitude are radians here and altitude is metres, and the `1e-6, 1e-6`
+                // this used to carry was #308 in P0 -- 1e-6 rad^2 is a 6367 m claim, not the
+                // 1e-3 m it reads as. The altitude entry stays at its own 1.0 m^2: it was
+                // already metres-squared, it was never a units defect, and moving it to the
+                // crate default's 100 m^2 would be a silent 10x retune of the vertical channel
+                // folded into a units fix -- the same thing `VERTICAL_POSITION_PROCESS_NOISE_M2`
+                // exists to prevent in `DEFAULT_PROCESS_NOISE`. Everything below the position
+                // block is this path's own and deliberately unchanged.
+                let horizontal_std_rad =
+                    DEFAULT_INITIAL_POSITION_UNCERTAINTY_M * strapdown::earth::METERS_TO_RADIANS;
                 let mut covariance_diagonal = vec![
-                    1e-6, 1e-6, 1.0, // Position uncertainty
-                    0.1, 0.1, 0.1, // Velocity uncertainty
-                    1e-4, 1e-4, 1e-4, // Attitude uncertainty
-                    1e-6, 1e-6, 1e-6, // Accel bias uncertainty
-                    1e-8, 1e-8, 1e-8, // Gyro bias uncertainty
+                    horizontal_std_rad.powi(2),
+                    horizontal_std_rad.powi(2),
+                    1.0, // Position uncertainty (altitude, m^2 -- unchanged, see above)
+                    0.1,
+                    0.1,
+                    0.1, // Velocity uncertainty
+                    1e-4,
+                    1e-4,
+                    1e-4, // Attitude uncertainty
+                    1e-6,
+                    1e-6,
+                    1e-6, // Accel bias uncertainty
+                    1e-8,
+                    1e-8,
+                    1e-8, // Gyro bias uncertainty
                 ];
                 covariance_diagonal.extend(vec![1.0; num_geo_states]);
 
-                let mut process_noise_vec = vec![
-                    1e-9, 1e-9, 1e-6, // Position process noise
+                // Position process noise. Again only the horizontal pair: `1e-9, 1e-9` rad^2
+                // is a 201 m per-step standard deviation, the same units defect as #308 one
+                // third of a magnitude smaller, so those come from the crate default. The
+                // `1e-6` altitude entry was already m^2 and stays exactly where it was --
+                // taking `DEFAULT_PROCESS_NOISE[0..3]` wholesale would have moved it to 1e-4,
+                // a 100x variance retune of the vertical channel that no test here covers
+                // (`run_geo_closed_loop_cli` has no test at all). The entries below the
+                // position block are deliberately tighter than the crate default.
+                let mut process_noise_vec = DEFAULT_PROCESS_NOISE[0..2].to_vec();
+                process_noise_vec.extend([
+                    1e-6, // Altitude process noise, m^2 -- unchanged, see above
                     1e-6, 1e-6, 1e-6, // Velocity process noise
                     1e-9, 1e-9, 1e-9, // Attitude process noise
                     1e-9, 1e-9, 1e-9, // Accel bias process noise
                     1e-9, 1e-9, 1e-9, // Gyro bias process noise
-                ];
+                ]);
                 process_noise_vec.extend(vec![1e-9; num_geo_states]);
                 let process_noise = nalgebra::DMatrix::from_diagonal(&nalgebra::DVector::from_vec(
                     process_noise_vec,

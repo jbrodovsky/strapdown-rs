@@ -363,7 +363,16 @@ impl UnscentedKalmanFilter {
     /// use strapdown::kalman::{UnscentedKalmanFilter, InitialState};
     /// use nalgebra::DMatrix;
     /// let init = InitialState::default();
-    /// let ukf = UnscentedKalmanFilter::new(&init, &[0.0;6], None, vec![1e-6;9], DMatrix::identity(9,9), 1e-3, 2.0, 0.0);
+    /// // Position entries are rad^2, not m^2: convert metres once (#308). An identity
+    /// // process noise would be 1 rad^2 per step, i.e. ~6367 km of horizontal drift.
+    /// let horizontal_std_rad = 10.0 * strapdown::earth::METERS_TO_RADIANS;
+    /// let mut covariance = vec![horizontal_std_rad.powi(2), horizontal_std_rad.powi(2), 100.0];
+    /// covariance.extend([0.25; 3]); // velocity, (m/s)^2
+    /// covariance.extend([1e-4; 3]); // attitude, rad^2
+    /// let process_noise = DMatrix::from_diagonal(
+    ///     &nalgebra::DVector::from_vec(strapdown::sim::DEFAULT_PROCESS_NOISE[0..9].to_vec()),
+    /// );
+    /// let ukf = UnscentedKalmanFilter::new(&init, &[0.0;6], None, covariance, process_noise, 1e-3, 2.0, 0.0);
     /// ```
     pub fn new(
         initial_state: &InitialState,

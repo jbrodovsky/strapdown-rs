@@ -37,12 +37,34 @@ let initial_state = InitialState {
     is_enu: true,
 };
 
+// Initial covariance diagonal.
+//
+// Latitude and longitude are held in RADIANS and altitude in metres, so the three position
+// entries are not in the same unit and cannot be filled from one literal. `vec![1e-6; 15]`
+// -- what this example used to show -- reads as a 6.4 km initial horizontal uncertainty, not
+// as a small number; see "Default Parameters" below and issue #308. Write the uncertainty in
+// metres once and convert where it is used.
+let horizontal_std_rad = 10.0 * strapdown::earth::METERS_TO_RADIANS;  // a 10 m GNSS fix
+let mut initial_covariance = vec![
+    horizontal_std_rad.powi(2),  // latitude, rad^2
+    horizontal_std_rad.powi(2),  // longitude, rad^2
+    10.0_f64.powi(2),            // altitude, m^2
+];
+initial_covariance.extend([0.25; 3]);   // velocity, (m/s)^2   -- a 0.5 m/s fix
+initial_covariance.extend([1e-4; 3]);   // attitude, rad^2     -- ~0.6 deg
+initial_covariance.extend([1e-3; 3]);   // accel bias, (m/s^2)^2
+initial_covariance.extend([1e-8; 3]);   // gyro bias, (rad/s)^2
+
 // Initialize 15-state EKF with biases
 let mut ekf = ExtendedKalmanFilter::new(
     initial_state,
     vec![0.0; 6],  // IMU biases (3 accel + 3 gyro)
-    vec![1e-6; 15],  // Initial covariance diagonal
-    DMatrix::from_diagonal(&DVector::from_vec(vec![1e-9; 15])),  // Process noise
+    initial_covariance.clone(),  // cloned so the 9-state example below can reuse it
+    // Process noise. The crate's own default, which is built the same way -- one metric
+    // constant converted once. `vec![1e-9; 15]` is a 201 m per-step horizontal term.
+    DMatrix::from_diagonal(&DVector::from_vec(
+        strapdown::sim::DEFAULT_PROCESS_NOISE.to_vec(),
+    )),
     true,  // use_biases = true for 15-state
 );
 
@@ -71,12 +93,18 @@ let covariance = ekf.get_certainty();
 ### 9-State Configuration (No Biases)
 
 ```rust
+// The leading nine entries of the 15-state diagonal built above -- the same unit caveat
+// applies, and for the same reason.
+let initial_covariance_9 = initial_covariance[0..9].to_vec();
+
 // Initialize 9-state EKF without biases
 let mut ekf = ExtendedKalmanFilter::new(
     initial_state,
     vec![0.0; 6],  // Biases ignored when use_biases = false
-    vec![1e-6; 9],  // Initial covariance for 9 states
-    DMatrix::from_diagonal(&DVector::from_vec(vec![1e-9; 9])),  // Process noise for 9 states
+    initial_covariance_9,  // Initial covariance for 9 states
+    DMatrix::from_diagonal(&DVector::from_vec(
+        strapdown::sim::DEFAULT_PROCESS_NOISE[0..9].to_vec(),
+    )),  // Process noise for 9 states
     false,  // use_biases = false for 9-state
 );
 ```
@@ -241,12 +269,24 @@ Integration tests include:
 ## Default Parameters
 
 ### Process Noise
-Default process noise diagonal (for 15-state):
+Default process noise diagonal (for 15-state). Note that the three position entries are
+**not** in the same unit as one another: the filter holds latitude and longitude in radians
+and altitude in metres, so a horizontal uncertainty written in metres has to be converted
+before it can go on the diagonal. The crate does that once, from a single metric constant:
+
 ```rust
+// strapdown::sim
+pub const POSITION_PROCESS_NOISE_M: f64 = 0.1; // metres, per step
+
+const HORIZONTAL: f64 = {
+    let radians = POSITION_PROCESS_NOISE_M * strapdown::earth::METERS_TO_RADIANS;
+    radians * radians // 2.467e-16 rad^2
+};
+
 const DEFAULT_PROCESS_NOISE: [f64; 15] = [
-    1e-6,  // latitude
-    1e-6,  // longitude
-    1e-4,  // altitude
+    HORIZONTAL,  // latitude, rad^2
+    HORIZONTAL,  // longitude, rad^2
+    1e-4,  // altitude, m^2 -- its own constant, see below
     1e-3,  // velocity north
     1e-3,  // velocity east
     1e-3,  // velocity down
@@ -262,13 +302,42 @@ const DEFAULT_PROCESS_NOISE: [f64; 15] = [
 ];
 ```
 
+The altitude entry keeps its own constant, `VERTICAL_POSITION_PROCESS_NOISE_M2 = 1e-4`
+(a 1 cm per-step standard deviation), rather than `POSITION_PROCESS_NOISE_M` squared.
+That entry was already in metres and already meant what it said, so #308 left it alone:
+a units fix is not the place to retune the vertical channel. Whether 1 cm per step is the
+right *tuning* is a fair question and a separate one.
+
+If you write the horizontal entries directly in rad^2, be aware what the numbers mean:
+`1e-6 rad^2` is a **6.4 km** per-step standard deviation, not a small number. Writing it
+next to an altitude term of `1e-4 m^2` (1 cm) is the defect issue #308 fixed -- the filter
+is told its own prediction is worthless, so it discards it and lands on each fix instead of
+filtering, and innovation gating cannot function. `1e-9 rad^2` is the same mistake three
+orders of magnitude smaller: a 201 m per-step standard deviation.
+
 ### Initial Covariance
-Recommended initial covariance based on sensor accuracy:
-- Position: `(horizontal_accuracy * METERS_TO_DEGREES)²`
+Everything above is about $Q$, and every word of it applies to $P_0$: latitude and longitude
+are radians there too. `1e-6` as an initial variance is a 6.4 km initial horizontal
+uncertainty, which is how #303 first noticed the problem.
+
+Recommended initial covariance based on sensor accuracy. Convert metres to **radians**, not
+degrees -- `METERS_TO_DEGREES` alone leaves the value 57.3x too large as a standard deviation
+and 3283x in variance:
+
+- Position: `(horizontal_accuracy * METERS_TO_RADIANS)²` for latitude and longitude,
+  `vertical_accuracy²` for altitude
 - Velocity: `(speed_accuracy)²`
-- Attitude: `1e-9` (radians²)
-- Accelerometer biases: `1e-3` (m/s²)²
-- Gyroscope biases: `1e-8` (rad/s)²
+- Attitude: `1e-9` (radians²) is what the `initialize_*` helpers use, which assumes the
+  record's own attitude is trusted. Seeding from a coarse alignment instead, use something
+  like the `1e-4` rad² (~0.6°) in the worked example above -- the two differ by five orders
+  of magnitude because they describe different situations, not because one is wrong
+- Accelerometer and gyroscope biases: `1e-3`, all six entries
+
+`sim::initialize_ekf` and `sim::initialize_ukf` build the position and velocity blocks from a
+`TestDataRecord`'s own reported accuracies and the rest from those defaults, and `sim::initialize_eskf` and
+`engine::InsEngine` use `sim::DEFAULT_INITIAL_POSITION_UNCERTAINTY_M` (10 m) when there is no
+record to read. For a derivation from an IMU grade rather than a hand-picked constant, see
+`IMUQuality::auto_covariance`.
 
 ## Mathematical Background
 

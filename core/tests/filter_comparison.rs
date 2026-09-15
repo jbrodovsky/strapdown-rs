@@ -47,6 +47,14 @@ use strapdown::kalman::{
 };
 use strapdown::measurements::GPSPositionAndVelocityMeasurement;
 use strapdown::rbpf::{RaoBlackwellizedParticleFilter, RbpfConfig};
+// Shared process noise, 15-state: the crate default itself, so that a divergence between this
+// suite and `integration_tests.rs` is attributable to the filters rather than to the tuning.
+// It used to be a local copy of the same literals, claiming in a comment to match. Both copies
+// carried #308 -- latitude and longitude written in rad^2 with values picked as though they
+// were metres, making `1e-6` a 6.4 km per-step standard deviation -- and a local copy is
+// precisely what stops a suite noticing that about the tuning it is validating.
+use strapdown::sim::DEFAULT_INITIAL_POSITION_UNCERTAINTY_M;
+use strapdown::sim::DEFAULT_PROCESS_NOISE as PROCESS_NOISE;
 use strapdown::{ImuSample, NavigationFilter, StrapdownState, mechanize};
 
 /// Scenario latitude, degrees.
@@ -71,33 +79,27 @@ const GPS_DECIMATION: usize = 5;
 /// uses it is quarantined.
 const SEEDED_POSITION_ERROR_M: f64 = 20.0;
 
-/// Shared process noise, 15-state. Matches `integration_tests.rs`'s `DEFAULT_PROCESS_NOISE`
-/// so that a divergence between the two suites is attributable to the filters rather than
-/// to the tuning.
-const PROCESS_NOISE: [f64; 15] = [
-    1e-6, 1e-6, 1e-6, // position
-    1e-3, 1e-3, 1e-3, // velocity
-    1e-5, 1e-5, 1e-5, // attitude
-    1e-6, 1e-6, 1e-6, // accelerometer bias
-    1e-8, 1e-8, 1e-8, // gyroscope bias
-];
-
 /// Maximum final horizontal position error against truth, meters.
 ///
-/// Worst measured on this branch is the RBPF's 0.222 m (ESKF and EKF are exact to printing
-/// precision, UKF 0.019 m), so this carries ~4.5x margin -- the same margin the ESKF
-/// integration bounds were rederived to in #288, and for the same reason: a ceiling loose
+/// Worst measured across this file, re-measured after #308: the RBPF's 0.192 m (ESKF and EKF
+/// are exact to printing precision, UKF 0.020 m), so this carries ~5x margin -- the margin the
+/// ESKF integration bounds were rederived to in #288, and for the same reason: a ceiling loose
 /// enough that any non-divergent filter clears it tests nothing.
+///
+/// Note the bounds below are looser against their observations than that. They were quoted
+/// from an older measurement (0.222 m horizontal, 0.613 m altitude, 0.117 m/s velocity) that
+/// no run on this branch reproduces, so they have more margin than the ~5x this file intends;
+/// re-deriving them is its own piece of work and not #308's to do while it is moving Q.
 const MAX_HORIZONTAL_ERROR_M: f64 = 1.0;
-/// Maximum final altitude error against truth, meters. Worst measured: RBPF 0.613 m.
+/// Maximum final altitude error against truth, meters. Worst measured: RBPF 0.129 m.
 const MAX_ALTITUDE_ERROR_M: f64 = 3.0;
-/// Maximum final speed error against truth, m/s. Worst measured: RBPF 0.117 m/s.
+/// Maximum final speed error against truth, m/s. Worst measured: UKF 0.033 m/s.
 const MAX_VELOCITY_ERROR_MPS: f64 = 0.5;
 /// Maximum horizontal separation between any two filters' final solutions, meters.
 ///
 /// Looser than the truth bound on purpose: two filters may sit on opposite sides of truth,
 /// so the worst legitimate separation is roughly twice the worst legitimate error. Worst
-/// measured: 0.222 m, between the RBPF and the two Jacobian filters.
+/// measured: 0.182 m, between the UKF and the RBPF.
 const MAX_PAIRWISE_SEPARATION_M: f64 = 1.5;
 
 /// UKF sigma-point tuning, matching `sim::default_ukf_*`.
@@ -109,13 +111,36 @@ const RBPF_PARTICLES: usize = 500;
 const RBPF_SEED: u64 = 259;
 
 /// Shared initial covariance, 15-state.
+///
+/// The position block comes from the crate's own [`DEFAULT_INITIAL_POSITION_UNCERTAINTY_M`],
+/// for the reason the process noise above is imported rather than copied. The literals it
+/// replaces -- `1e-6, 1e-6, 1.0`, correctly *labelled* `lat/lon rad^2, alt m^2` -- were #308
+/// in $P_0$: 1e-6 rad^2 is a 6367 m horizontal claim next to a 1 m vertical one, so every
+/// filter here began the run believing it might be most of an Earth radius from where it had
+/// been seeded.
 const INITIAL_COVARIANCE: [f64; 15] = [
-    1e-6, 1e-6, 1.0, // position (lat/lon rad^2, alt m^2)
-    0.1, 0.1, 0.1, // velocity
-    0.01, 0.01, 0.01, // attitude
-    0.01, 0.01, 0.01, // accelerometer bias
-    0.001, 0.001, 0.001, // gyroscope bias
+    INITIAL_HORIZONTAL_VARIANCE_RAD2, // latitude, rad^2
+    INITIAL_HORIZONTAL_VARIANCE_RAD2, // longitude, rad^2
+    DEFAULT_INITIAL_POSITION_UNCERTAINTY_M * DEFAULT_INITIAL_POSITION_UNCERTAINTY_M, // alt, m^2
+    0.1,
+    0.1,
+    0.1, // velocity
+    0.01,
+    0.01,
+    0.01, // attitude
+    0.01,
+    0.01,
+    0.01, // accelerometer bias
+    0.001,
+    0.001,
+    0.001, // gyroscope bias
 ];
+
+/// [`DEFAULT_INITIAL_POSITION_UNCERTAINTY_M`] as a latitude/longitude variance, rad^2.
+const INITIAL_HORIZONTAL_VARIANCE_RAD2: f64 = {
+    let radians = DEFAULT_INITIAL_POSITION_UNCERTAINTY_M * strapdown::earth::METERS_TO_RADIANS;
+    radians * radians
+};
 
 /// The scenario, generated once and shared by every filter.
 struct Scenario {

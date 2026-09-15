@@ -83,7 +83,10 @@ use crate::measurements::{GPSPositionMeasurement, GPSVelocityMeasurement, Measur
 // simulation-only value; it lives in `sim` for historical reasons. Reusing it here keeps the
 // engine's default tuning identical to the one the ESKF integration suite validates.
 use crate::gating::{InnovationGate, UpdateOutcome};
-use crate::sim::DEFAULT_PROCESS_NOISE;
+use crate::sim::{
+    DEFAULT_PROCESS_NOISE, INITIAL_HORIZONTAL_POSITION_VARIANCE_RAD2,
+    INITIAL_VERTICAL_POSITION_VARIANCE_M2,
+};
 use crate::{ImuSample, InputModel, NavigationFilter, StrapdownError};
 
 /// Number of states in the default 15-state error-state filter.
@@ -142,12 +145,29 @@ impl Default for InsEngineConfig {
 ///
 /// Matches [`crate::sim::initialize_eskf`]: position and velocity error variances, then
 /// attitude, then accelerometer and gyro bias.
+///
+/// The position block is taken from that function's own constants rather than copied as
+/// literals. The copy it replaces read `1e-6, 1e-6, 1e-4` -- correctly *labelled*
+/// `rad^2, rad^2, m^2` and still wrong, because the two horizontal values had been chosen as
+/// though they were metres: a 6367 m initial horizontal uncertainty next to a 1 cm vertical
+/// one (#308). Labelling the units is not the same as converting them, and a second copy of
+/// the numbers is what let the label and the values disagree without anything noticing.
 const DEFAULT_INITIAL_COVARIANCE: [f64; FULL_STATE_DIMENSION] = [
-    1e-6, 1e-6, 1e-4, // position error (rad^2, rad^2, m^2)
-    1e-3, 1e-3, 1e-3, // velocity error (m^2/s^2)
-    1e-5, 1e-5, 1e-5, // attitude error (rad^2)
-    1e-6, 1e-6, 1e-6, // accelerometer bias error
-    1e-8, 1e-8, 1e-8, // gyroscope bias error
+    INITIAL_HORIZONTAL_POSITION_VARIANCE_RAD2, // latitude error, rad^2
+    INITIAL_HORIZONTAL_POSITION_VARIANCE_RAD2, // longitude error, rad^2
+    INITIAL_VERTICAL_POSITION_VARIANCE_M2,     // altitude error, m^2
+    1e-3,
+    1e-3,
+    1e-3, // velocity error (m^2/s^2)
+    1e-5,
+    1e-5,
+    1e-5, // attitude error (rad^2)
+    1e-6,
+    1e-6,
+    1e-6, // accelerometer bias error
+    1e-8,
+    1e-8,
+    1e-8, // gyroscope bias error
 ];
 
 /// Builder for [`InsEngine`].
@@ -1635,13 +1655,31 @@ mod tests {
         assert_approx_eq!(solution.latitude, TEST_LATITUDE_DEG, 1e-9);
         assert_approx_eq!(solution.longitude, TEST_LONGITUDE_DEG, 1e-9);
         assert_approx_eq!(solution.altitude, TEST_ALTITUDE_M, 1e-9);
-        // 1e-6 rad^2 of latitude variance is kilometres, not micro-anything: the point of
-        // reporting metres is that this number is legible without the radii in hand.
-        let (meridian_radius, _, _) = principal_radii(&TEST_LATITUDE_DEG, &TEST_ALTITUDE_M);
-        assert_approx_eq!(
+        // The point of reporting metres is that the number is legible without the radii in
+        // hand -- and that it can be compared against the metric constant the default
+        // covariance was built from, which is the only way to notice when it is not what it
+        // claims. This assertion used to read `1e-3 * (meridian_radius + altitude)`, i.e. it
+        // asserted 6362 m and called that correct, because `DEFAULT_INITIAL_COVARIANCE`
+        // carried a latitude variance of `1e-6` written as though radians squared were
+        // metres squared (#308).
+        //
+        // The tolerance is the ellipsoid's own: the diagonal is built through
+        // `earth::METERS_TO_RADIANS`, which is exact for the sphere the nautical mile is
+        // defined on, while this report divides by the WGS84 meridian radius of curvature at
+        // the actual latitude. Those differ by at most 0.52% anywhere on Earth -- see
+        // `earth::tests::meters_to_radians_matches_a_wgs84_principal_radius`, which derives
+        // the figure -- so 1% covers every latitude while still firing on the failures worth
+        // catching: 57x if the degrees-to-radians step is dropped, 636x for the `1e-6` literal
+        // this used to assert.
+        let reported_relative_error =
+            (solution.position_std_m[0] - crate::sim::DEFAULT_INITIAL_POSITION_UNCERTAINTY_M).abs()
+                / crate::sim::DEFAULT_INITIAL_POSITION_UNCERTAINTY_M;
+        assert!(
+            reported_relative_error < 0.01,
+            "the default initial covariance reports a horizontal uncertainty of {:.3} m \
+             where its own constant says {:.3} m",
             solution.position_std_m[0],
-            1e-3 * (meridian_radius + TEST_ALTITUDE_M),
-            1e-6
+            crate::sim::DEFAULT_INITIAL_POSITION_UNCERTAINTY_M
         );
         assert_approx_eq!(solution.velocity_std_mps[0], (1e-3_f64).sqrt(), 1e-12);
     }
