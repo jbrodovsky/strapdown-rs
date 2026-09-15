@@ -77,6 +77,17 @@ forward-looking `allow` for a lint the pinned toolchain does not know about is m
 - Unit tests live alongside modules; integration tests live in `core/tests/integration_tests.rs`.
 - Tests should be deterministic; seed RNGs when applicable.
 - Name test functions in `snake_case` and keep fixtures minimal.
+- Navigation accuracy is gated, not just asserted. `core/tests/perf_baseline.rs` scores every
+  filter over a fixed scenario matrix and compares the result against
+  `core/tests/perf_baseline.json`; it fails both when a metric gets worse and when it gets
+  better, the second asking for the baseline to be re-blessed. It rides in
+  `cargo test --workspace --all-features`, so there is no extra command to run before pushing.
+  `CONTRIBUTING.md` has the bless workflow and `book/src/development/performance.md` the
+  current numbers. Note that this is *accuracy*, not wall-clock: nothing here measures runtime.
+- Do not tighten `core/tests/integration_tests.rs`'s thresholds to match a baseline number.
+  Several of them are derived physical bounds with their derivations written out, and they
+  answer a different question -- "is this physically possible?" rather than "is this worse than
+  yesterday?".
 
 ## Commit & Pull Request Guidelines
 - Commit subjects are short, imperative, and plain (e.g., "Update RBPF documentation..."). Use `Fixes #123` when closing issues.
