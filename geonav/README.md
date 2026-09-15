@@ -116,22 +116,42 @@ developed against are the GMT remote datasets, most easily retrieved through
 library, which is why it is not part of this repository's own toolchain:
 
 ```python
+from pathlib import Path
+
+import pandas as pd
 import pygmt
 
-# region is [min_lon, max_lon, min_lat, max_lat]; inflate your trajectory's
-# bounding box by ~0.25 deg so interpolation near the edges has data.
+# The trajectory strapdown-sim will be run on. The maps have to cover it.
+input_csv = Path("data/input/flight.csv")
+track = pd.read_csv(input_csv)
+
+# PyGMT wants [min_lon, max_lon, min_lat, max_lat]. Pad the trajectory's bounding box so
+# interpolation near the edges still has data on both sides.
+pad = 0.25  # degrees
+region = [
+    track["longitude"].min() - pad,
+    track["longitude"].max() + pad,
+    track["latitude"].min() - pad,
+    track["latitude"].max() + pad,
+]
+
 grav = pygmt.datasets.load_earth_free_air_anomaly("01m", region=region)
 mag = pygmt.datasets.load_earth_magnetic_anomaly("02m", region=region)
 
-grav.to_netcdf("<input_stem>_gravity.nc")
-mag.to_netcdf("<input_stem>_magnetic.nc")
+# These are the names strapdown-sim looks for next to the input CSV.
+stem = input_csv.with_suffix("")
+grav.to_netcdf(f"{stem}_gravity.nc")
+mag.to_netcdf(f"{stem}_magnetic.nc")
 ```
+
+A fixed region works just as well if you already know the area -- for example
+`region = [-76.0, -75.0, 39.5, 40.5]` for the Philadelphia area.
 
 The resolution strings match the `--gravity-resolution` / `--magnetic-resolution` flags (see
 the `Display` impls on `GravityResolution` and `MagneticResolution`, which emit the same GMT
-tokens). Save the files next to your input CSV under the `{input_stem}_gravity.nc` /
-`{input_stem}_magnetic.nc` names above so `strapdown-sim` finds them automatically, or pass
-`--gravity-map-file` / `--magnetic-map-file` explicitly.
+tokens). Writing the files beside the input CSV under those names is what lets `strapdown-sim`
+find them automatically; otherwise pass `--gravity-map-file` / `--magnetic-map-file`
+explicitly.
 
 ## Example Scenarios
 
