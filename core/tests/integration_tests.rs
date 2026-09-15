@@ -102,8 +102,8 @@ use strapdown::rbpf::{RaoBlackwellizedParticleFilter, RbpfConfig};
 // defect survived as long as it did. What these tests exercise is now, by construction, what
 // the library ships.
 use strapdown::sim::{
-    DEFAULT_INITIAL_POSITION_UNCERTAINTY_M, DEFAULT_PROCESS_NOISE, NavigationResult,
-    TestDataRecord, dead_reckoning, initialize_eskf, run_closed_loop,
+    DEFAULT_INITIAL_POSITION_UNCERTAINTY_M, DEFAULT_PROCESS_NOISE, EskfConfig, NavigationResult,
+    TestDataRecord, check_declared_frame, dead_reckoning, initialize_eskf, run_closed_loop,
 };
 use strapdown::stationary::{StationaryConfig, StationaryDetector};
 use strapdown::{
@@ -144,6 +144,18 @@ const INITIAL_HORIZONTAL_VARIANCE_RAD2: f64 = {
     let radians = DEFAULT_INITIAL_POSITION_UNCERTAINTY_M * strapdown::earth::METERS_TO_RADIANS;
     radians * radians
 };
+
+/// The local-level frame `test_data.csv` is recorded in: ENU.
+///
+/// Sensor Logger writes the ENU convention, so at rest the recording's specific force rotated
+/// through its own quaternion lands on up at +9.72 m/s^2 (`TestDataRecord::attitude` quotes
+/// the same figure for sample 0, and `assert_test_data_is_enu` re-derives it from the file on
+/// every run). NED, which is the library's and the CLI's default since #296, expects -9.78,
+/// so every entry point in this file that mechanizes this recording has to say ENU
+/// explicitly. Named rather than spelled `true` at five call sites because the bare boolean
+/// is exactly the kind of argument that gets copied into a sixth call site on a different
+/// dataset without anyone rechecking it.
+const IS_ENU_TEST_DATA: bool = true;
 
 /// Mean 1-sigma horizontal accuracy the receiver reports across `test_data.csv` (meters).
 ///
@@ -765,6 +777,31 @@ fn assert_baseline_window_is_1hz(records: &[TestDataRecord], window: usize) {
     );
 }
 
+/// Check that this recording really is the ENU [`IS_ENU_TEST_DATA`] claims it is.
+///
+/// Re-derived from the file on every run, the way [`assert_reference_accuracy_matches_dataset`]
+/// re-derives the reported accuracies, so the constant cannot go stale if `test_data.csv` is
+/// replaced with a NED log -- which would otherwise turn every number in this file into a 2 g
+/// integration that still produced a plausible-looking CSV (#296).
+///
+/// Both halves matter. The first says the guard accepts the frame this file declares; the
+/// second says it *rejects* the other one, which is what distinguishes a working discriminator
+/// from one that fails open on everything.
+fn assert_test_data_is_enu(records: &[TestDataRecord]) {
+    assert!(
+        check_declared_frame(records, IS_ENU_TEST_DATA).is_ok(),
+        "test_data.csv no longer reads as ENU, which every dead-reckoning and filter bound in \
+         this file assumes. If the dataset has been replaced, set IS_ENU_TEST_DATA to match \
+         it and re-baseline the error statistics -- they are not comparable across a frame \
+         change."
+    );
+    assert!(
+        check_declared_frame(records, !IS_ENU_TEST_DATA).is_err(),
+        "sim::check_declared_frame accepted test_data.csv as both ENU and NED, so it is not \
+         discriminating and the frame pinning in this file is vacuous."
+    );
+}
+
 /// Dead-reckon the first [`DEAD_RECKONING_BASELINE_SAMPLES`] records and score them.
 ///
 /// Returns the solution, its error statistics and the window length actually used, so a caller
@@ -777,7 +814,11 @@ fn dead_reckoning_baseline(
 ) -> (Vec<NavigationResult>, ErrorStats, usize) {
     let window = records.len().min(DEAD_RECKONING_BASELINE_SAMPLES);
     assert_baseline_window_is_1hz(records, window);
-    let results = dead_reckoning(&records[..window]).unwrap();
+    assert_test_data_is_enu(records);
+    // `test_data.csv` is a Sensor Logger export, so ENU: at rest its specific force lands on
+    // the device's up-axis at +9.72 m/s^2. NED here would be rejected by
+    // `sim::check_declared_frame` rather than silently mechanized at 2 g (#296).
+    let results = dead_reckoning(&records[..window], IS_ENU_TEST_DATA).unwrap();
     let stats = compute_error_metrics(&results, &records[..window]);
     (results, stats, window)
 }
@@ -1106,7 +1147,7 @@ fn test_dead_reckoning_on_real_data() {
     // +/-30 km as outside the band the model is valid over, while `mechanize` propagates
     // straight through it -- first at sample 766 of 5,366, with 4,600 samples still to run.
     // That is the reason the comparison tests score a truncated window rather than this arc.
-    match dead_reckoning(&records) {
+    match dead_reckoning(&records, IS_ENU_TEST_DATA) {
         Ok(full) => {
             let first_out_of_domain = full.iter().position(|result| {
                 !(-STATE_CONSTRUCTOR_ALTITUDE_LIMIT_M..=STATE_CONSTRUCTOR_ALTITUDE_LIMIT_M)
@@ -2457,9 +2498,17 @@ fn test_eskf_default_initialization_on_real_data() {
     let records = load_test_data(&test_data_path);
     assert!(!records.is_empty(), "test data should not be empty");
 
-    // Every optional argument `None`: exactly what `strapdown-sim` passes.
-    let mut eskf = initialize_eskf(&records[0], None, None, None, None)
-        .expect("the default ESKF initialisation must succeed on real data");
+    // Every option left at its default, with only the frame set: exactly what
+    // `strapdown-sim cl --enu` passes. Note the CLI's default is NED since #296; `--enu` is
+    // what a Sensor Logger recording like this one needs.
+    let mut eskf = initialize_eskf(
+        &records[0],
+        EskfConfig {
+            is_enu: IS_ENU_TEST_DATA,
+            ..EskfConfig::default()
+        },
+    )
+    .expect("the default ESKF initialisation must succeed on real data");
 
     let cfg = GnssDegradationConfig {
         scheduler: GnssScheduler::PassThrough,

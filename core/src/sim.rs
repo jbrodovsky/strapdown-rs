@@ -2127,6 +2127,125 @@ impl NavigationResult {
     }
 }
 
+/// Number of leading records averaged when checking a file against its declared frame.
+///
+/// Ten samples is a compromise between two failure modes. One sample is what
+/// [`initialize_ukf`] and friends have available -- they are handed a single pose -- and it
+/// carries the full per-sample accelerometer noise; averaging ten suppresses that by
+/// $\sqrt{10}$ without reaching far enough into the recording to average over a manoeuvre.
+/// At the 1 Hz of `core/tests/test_data.csv` that is ten seconds, and at the 10 Hz of
+/// `strapdown-sim syn` it is one.
+pub const FRAME_CHECK_SAMPLES: usize = 10;
+
+/// Fraction of local gravity by which sensed specific force must contradict the declared
+/// frame before [`check_declared_frame`] rejects it.
+///
+/// The decision variable is the sensed vertical specific force multiplied by the sign the
+/// declared frame expects, so at rest it reads $+g$ when the declaration is right and $-g$
+/// when it is wrong -- the two conventions are a full $2g$ apart. Rejecting at $-0.5g$
+/// rather than at the $0$ midpoint is a deliberate asymmetry: a false rejection stops a
+/// legitimate run, while a false acceptance only reproduces the behaviour this crate shipped
+/// before #296, so the guard is biased towards believing the caller.
+///
+/// What that buys, in physical terms: firing on a *correctly* declared file needs the
+/// windowed mean vertical acceleration to exceed $1.5g$ **downward** -- past free fall
+/// ($1g$, which reads as exactly zero specific force and is accepted), and so requiring
+/// sustained downward thrust or a near-inverted platform. Firing on a *wrongly* declared
+/// file at rest has $1g$ of margin, twice the threshold. Sensor noise is nowhere near
+/// either bound: consumer-grade accelerometer bias instability is 0.1 m/s^2 and the
+/// velocity random walk contributes ~5e-3 m/s^2 per 0.1 s sample, three orders of magnitude
+/// under $0.5g$.
+pub const FRAME_CHECK_MARGIN_G: f64 = 0.5;
+
+/// Reject records whose sensed specific force contradicts the declared local-level frame.
+///
+/// At rest an accelerometer senses the reaction to gravity, so rotating its reading into the
+/// navigation frame gives $+g$ on ENU up and $-g$ on NED down (Groves 5.54 with zero
+/// inertial acceleration). [`TestDataRecord`] carries no frame tag -- a Sensor Logger export
+/// and [`generate_synthetic`] output are indistinguishable once loaded -- so this quantity is
+/// the only thing that can tell the two apart. It is the same quantity
+/// [`TestDataRecord::attitude`] documents and that `test_attitude_cancels_gravity_in_enu`
+/// already asserts: $+9.72$ m/s^2 on `core/tests/test_data.csv`, $-9.78$ m/s^2 on `syn`
+/// output.
+///
+/// This exists because getting the frame wrong is not a small error. Mechanizing NED records
+/// as ENU adds the gravity model to the sensed specific force instead of cancelling it, and
+/// the solution falls at $2g$: 35 km and 1174 m/s of vertical velocity in 60 s of stationary
+/// truth (#296). Before the frame was selectable that was the only thing these entry points
+/// could do; now that it is, the wrong answer must be an error rather than a plausible-looking
+/// CSV.
+///
+/// The check fails **open**, never closed. An empty window, a non-finite gravity (which a NaN
+/// latitude or altitude produces), or a record whose rotated specific force is not finite all
+/// return `Ok`: this guard's job is to catch the overwhelming case, not to adjudicate
+/// marginal ones, and every comparison against NaN is false anyway.
+///
+/// # Arguments
+/// * `records` - The records about to be mechanized; only the first [`FRAME_CHECK_SAMPLES`]
+///   are read.
+/// * `is_enu` - The frame the caller declared: `false` for NED, `true` for ENU.
+///
+/// # Errors
+/// [`StrapdownError::InvalidConfiguration`] on `is_enu` when the windowed mean vertical
+/// specific force is more than [`FRAME_CHECK_MARGIN_G`] of local gravity the wrong way for
+/// the declared frame. The message names the flag to pass.
+pub fn check_declared_frame(
+    records: &[TestDataRecord],
+    is_enu: bool,
+) -> Result<(), StrapdownError> {
+    let Some(first) = records.first() else {
+        return Ok(());
+    };
+    let window = &records[..records.len().min(FRAME_CHECK_SAMPLES)];
+    let mut sum = 0.0;
+    // `u32` rather than `usize` so the mean below is `f64::from(used)`, which is exact and
+    // needs no cast: the window is at most `FRAME_CHECK_SAMPLES` long.
+    let mut used = 0_u32;
+    for record in window {
+        // The quaternion, not the Euler angles: see `TestDataRecord::attitude` for why the
+        // two are not interchangeable in this format, and what feeding the raw angles here
+        // would cost (it smears a full gravity across the horizontal axes, which would make
+        // this check read ~0 and fail open on every record).
+        let specific_force_nav =
+            record.attitude().matrix() * Vector3::new(record.acc_x, record.acc_y, record.acc_z);
+        if specific_force_nav[2].is_finite() {
+            sum += specific_force_nav[2];
+            used += 1;
+        }
+    }
+    let gravity = crate::earth::gravity(&first.latitude, &first.altitude);
+    if used == 0 || !gravity.is_finite() {
+        return Ok(());
+    }
+    let sensed = sum / f64::from(used);
+    let expected_sign = if is_enu { 1.0 } else { -1.0 };
+    let frame = if is_enu { "ENU" } else { "NED" };
+    if sensed * expected_sign < -FRAME_CHECK_MARGIN_G * gravity {
+        let other = if is_enu { "NED" } else { "ENU" };
+        return Err(StrapdownError::InvalidConfiguration {
+            field: "is_enu",
+            reason: format!(
+                "mean vertical specific force over the first {used} record(s) is \
+                 {sensed:+.2} m/s^2, but {frame} mechanization expects {:+.2} m/s^2 at rest: \
+                 these look like {other} records. Mechanizing them as {frame} would \
+                 double-count gravity and integrate at 2 g. Declare the frame that matches \
+                 the data ({}), or re-record it in {frame}.",
+                expected_sign * gravity,
+                if is_enu {
+                    "drop `--enu`, or set `is_enu = false` in the config file"
+                } else {
+                    "pass `--enu`, or set `is_enu = true` in the config file"
+                },
+            ),
+        });
+    }
+    info!(
+        "Mechanizing input as {frame}: mean vertical specific force over the first {used} \
+         record(s) is {sensed:+.3} m/s^2 against a local gravity of {gravity:.3} m/s^2"
+    );
+    Ok(())
+}
+
 /// Run dead reckoning or "open-loop" simulation using test data.
 ///
 /// This function processes a sequence of sensor records through a `StrapdownState`, using
@@ -2144,25 +2263,33 @@ impl NavigationResult {
 ///
 /// # Arguments
 /// * `records` - Vector of test data records containing IMU measurements and other sensor data
+/// * `is_enu` - The local-level frame the records are expressed in: `false` for NED (the
+///   library default, and what `strapdown-sim syn` emits), `true` for ENU (the convention
+///   Sensor Logger exports). [`TestDataRecord`] carries no frame tag, so this cannot be
+///   inferred; it is checked against the data by [`check_declared_frame`] rather than guessed.
 ///
 /// # Returns
 /// * `Vec<NavigationResult>` containing the sequence of `StrapdownState` instances over time,
 ///   along with timestamps and time differences.
 /// # Errors
-/// Propagated from [`crate::mechanize`] -- chiefly a non-positive `dt`, which duplicate or
-/// out-of-order record timestamps produce.
-pub fn dead_reckoning(records: &[TestDataRecord]) -> Result<Vec<NavigationResult>, StrapdownError> {
+/// [`StrapdownError::InvalidConfiguration`] if the records' sensed specific force contradicts
+/// `is_enu` -- see [`check_declared_frame`]. Otherwise propagated from [`crate::mechanize`] --
+/// chiefly a non-positive `dt`, which duplicate or out-of-order record timestamps produce.
+pub fn dead_reckoning(
+    records: &[TestDataRecord],
+    is_enu: bool,
+) -> Result<Vec<NavigationResult>, StrapdownError> {
     if records.is_empty() {
         return Ok(Vec::new());
     }
+    check_declared_frame(records, is_enu)?;
     // Initialize the result vector
     let mut results = Vec::with_capacity(records.len());
     // Initialize the StrapdownState with the first record
     let first_record = &records[0];
     // Attitude comes from the record's quaternion, not its Euler angles -- see
     // `TestDataRecord::attitude` for why the two are not interchangeable and what feeding
-    // the raw angles here used to cost. `is_enu: true` is correct for this format: through
-    // the quaternion, the first sample's specific force lands on ENU up at +9.7 m/s^2.
+    // the raw angles here used to cost.
     let attitude = first_record.attitude();
     let (velocity_north, velocity_east) = first_record.ground_track_velocity();
     let mut state = StrapdownState {
@@ -2173,11 +2300,7 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Result<Vec<NavigationResult
         velocity_east,
         velocity_vertical: 0.0, // initial velocities
         attitude,
-        // Deliberately ENU and deliberately still hardcoded; see the note in
-        // `initialize_ukf`. `TestDataRecord` carries no frame tag, so honouring the NED
-        // default here would break every ENU recording with no way to opt back in. The
-        // frame becomes a caller-supplied option in queue 7's `InsEngine` builder (#296).
-        is_enu: true,
+        is_enu,
     };
     // Store the initial state and metadata
     results.push(NavigationResult::from((&first_record.time, &state)));
@@ -2498,6 +2621,14 @@ pub struct UkfConfig {
     pub ukf_beta: Option<f64>,
     /// Optional UKF kappa parameter (secondary spread control).
     pub ukf_kappa: Option<f64>,
+    /// Local-level frame of the records: `false` (the default) is NED, `true` is ENU.
+    ///
+    /// Sensor Logger exports are ENU -- at rest their specific force lands on the device's
+    /// up-axis at $+g$ -- while anything from [`generate_synthetic`] or `strapdown-sim syn`
+    /// is NED. [`TestDataRecord`] carries no frame tag, so the caller has to say which, and
+    /// [`check_declared_frame`] rejects a declaration the data contradicts rather than
+    /// silently mechanizing at 2 g (#296).
+    pub is_enu: bool,
 }
 
 /// Reject an invalid configuration value.
@@ -2528,6 +2659,14 @@ fn require_config(ok: bool, field: &'static str, reason: String) -> Result<(), S
 /// # Errors
 /// [`StrapdownError::InvalidConfiguration`] if any configured vector length disagrees with
 /// the filter's state size.
+///
+/// **This function does not validate `config.is_enu` against the data**, and deliberately so:
+/// it is handed one [`TestDataRecord`], and a single sample cannot tell a frame error from a
+/// motion transient. Checking it here was worse than not checking it -- one NaN or accelerating
+/// first sample disabled the guard entirely, while one ordinary sample above 1.5 g rejected a
+/// correctly declared file and advised the caller to flip the flag. Call
+/// [`check_declared_frame`] over the whole record slice instead, as `strapdown-sim` does on
+/// every path (#296).
 pub fn initialize_ukf(
     initial_pose: &TestDataRecord,
     config: UkfConfig,
@@ -2555,20 +2694,12 @@ pub fn initialize_ukf(
             initial_pose.yaw
         },
         in_degrees: true,
-        // Deliberately ENU, and deliberately still hardcoded.
-        //
-        // These entry points build their own `InitialState` from a `TestDataRecord`, which
-        // carries no frame tag -- Sensor Logger exports (ENU-convention: +g along the
-        // device's up-axis at rest) and `generate_synthetic` output (NED) are
-        // indistinguishable once loaded. Honouring the new NED default here would silently
-        // break every ENU recording with no way to opt back in, so the frame has to become a
-        // caller-supplied option first. That is a signature change across
-        // `dead_reckoning`/`initialize_ukf`/`initialize_ekf`/`initialize_eskf` and the CLI,
-        // which is queue 7's `InsEngine` builder (#262), not this PR's default flip.
-        //
-        // Known symptom until then: `strapdown-sim syn` emits NED, so dead-reckoning it
-        // through this ENU path double-counts gravity and falls at 2 g. Tracked in #296.
-        is_enu: true,
+        // The caller's declared frame, checked against the data above rather than assumed.
+        // `TestDataRecord` carries no frame tag -- Sensor Logger exports (ENU-convention:
+        // +g along the device's up-axis at rest) and `generate_synthetic` output (NED) are
+        // indistinguishable once loaded -- so this has to be supplied, and supplying it
+        // wrongly is what `check_declared_frame` is for (#296).
+        is_enu: config.is_enu,
     };
     let process_noise_diagonal = match config.process_noise_diagonal {
         Some(pn) => pn,
@@ -2652,6 +2783,50 @@ pub fn initialize_ukf(
     ))
 }
 
+/// Configuration parameters for EKF initialization.
+///
+/// Mirrors [`UkfConfig`]: the alternative is a seventh positional argument on
+/// [`initialize_ekf`], which already carried five `Option`s whose order the compiler cannot
+/// check for you.
+///
+/// Note that [`Default`] is written by hand rather than derived, because a derived one would
+/// give `use_biases: false` and silently demote every caller from the 15-state EKF to the
+/// 9-state one -- a retune disguised as a struct literal.
+#[derive(Debug, Clone)]
+pub struct EkfConfig {
+    /// Optional initial attitude covariance (3 elements, rad^2).
+    pub attitude_covariance: Option<Vec<f64>>,
+    /// Optional initial IMU biases (6 elements: 3 accelerometer, 3 gyroscope).
+    pub imu_biases: Option<Vec<f64>>,
+    /// Optional IMU bias covariance (6 elements).
+    pub imu_biases_covariance: Option<Vec<f64>>,
+    /// Optional process noise diagonal (9 or 15 elements, matching `use_biases`).
+    pub process_noise_diagonal: Option<Vec<f64>>,
+    /// 15-state (navigation states plus IMU biases) when `true`, 9-state otherwise.
+    pub use_biases: bool,
+    /// Local-level frame of the records: `false` (the default) is NED, `true` is ENU.
+    ///
+    /// See [`UkfConfig::is_enu`]; the same reasoning and the same guard apply.
+    pub is_enu: bool,
+}
+
+impl Default for EkfConfig {
+    fn default() -> Self {
+        Self {
+            attitude_covariance: None,
+            imu_biases: None,
+            imu_biases_covariance: None,
+            process_noise_diagonal: None,
+            // Every caller in this workspace asked for the 15-state filter before this
+            // struct existed, and estimating the IMU biases is the whole reason to prefer
+            // the EKF over dead reckoning on a drifting sensor. Deriving `Default` here
+            // would flip that to 9-state without a diff anyone would read as a retune.
+            use_biases: true,
+            is_enu: false,
+        }
+    }
+}
+
 /// Initialize an Extended Kalman Filter for simulation.
 ///
 /// This function creates and initializes an `ExtendedKalmanFilter` with the given parameters,
@@ -2660,11 +2835,8 @@ pub fn initialize_ukf(
 /// # Arguments
 ///
 /// * `initial_pose` - A `TestDataRecord` containing the initial pose information.
-/// * `attitude_covariance` - Optional initial attitude covariance.
-/// * `imu_biases` - Optional initial IMU biases.
-/// * `imu_biases_covariance` - Optional IMU bias covariance.
-/// * `process_noise_diagonal` - Optional process noise diagonal.
-/// * `use_biases` - If true, uses 15-state (with IMU biases), otherwise 9-state.
+/// * `config` - An [`EkfConfig`] carrying the optional covariance, bias, process-noise,
+///   state-size and frame settings.
 ///
 /// # Returns
 ///
@@ -2673,16 +2845,28 @@ pub fn initialize_ukf(
 /// # Errors
 /// [`StrapdownError::InvalidConfiguration`] if any configured vector length disagrees with
 /// the filter's state size.
-#[allow(clippy::too_many_arguments)]
+///
+/// **This function does not validate `config.is_enu` against the data**, and deliberately so:
+/// it is handed one [`TestDataRecord`], and a single sample cannot tell a frame error from a
+/// motion transient. Checking it here was worse than not checking it -- one NaN or accelerating
+/// first sample disabled the guard entirely, while one ordinary sample above 1.5 g rejected a
+/// correctly declared file and advised the caller to flip the flag. Call
+/// [`check_declared_frame`] over the whole record slice instead, as `strapdown-sim` does on
+/// every path (#296).
 pub fn initialize_ekf(
     initial_pose: &TestDataRecord,
-    attitude_covariance: Option<Vec<f64>>,
-    imu_biases: Option<Vec<f64>>,
-    imu_biases_covariance: Option<Vec<f64>>,
-    process_noise_diagonal: Option<Vec<f64>>,
-    use_biases: bool,
+    config: EkfConfig,
 ) -> Result<crate::kalman::ExtendedKalmanFilter, StrapdownError> {
     use crate::kalman::ExtendedKalmanFilter;
+
+    let EkfConfig {
+        attitude_covariance,
+        imu_biases,
+        imu_biases_covariance,
+        process_noise_diagonal,
+        use_biases,
+        is_enu,
+    } = config;
 
     // Build initial state from sensor data
     let initial_state = InitialState {
@@ -2710,11 +2894,9 @@ pub fn initialize_ekf(
             initial_pose.yaw
         },
         in_degrees: true,
-        // Deliberately ENU and deliberately still hardcoded; see the note in
-        // `initialize_ukf`. `TestDataRecord` carries no frame tag, so honouring the NED
-        // default here would break every ENU recording with no way to opt back in. The
-        // frame becomes a caller-supplied option in queue 7's `InsEngine` builder (#296).
-        is_enu: true,
+        // The caller's declared frame, checked against the data above; see the note in
+        // `initialize_ukf` and `check_declared_frame` (#296).
+        is_enu,
     };
 
     // Determine state size based on use_biases flag
@@ -2819,6 +3001,27 @@ pub fn initialize_ekf(
     ))
 }
 
+/// Configuration parameters for ESKF initialization.
+///
+/// Mirrors [`EkfConfig`] minus `use_biases`: the error-state filter is always 15-state
+/// (position, velocity, attitude, accelerometer bias, gyroscope bias), so there is nothing to
+/// select.
+#[derive(Debug, Clone, Default)]
+pub struct EskfConfig {
+    /// Optional initial attitude error covariance (3 elements, rad^2).
+    pub attitude_covariance: Option<Vec<f64>>,
+    /// Optional initial IMU biases (6 elements: `b_ax`, `b_ay`, `b_az`, `b_gx`, `b_gy`, `b_gz`).
+    pub imu_biases: Option<Vec<f64>>,
+    /// Optional IMU bias error covariance (6 elements).
+    pub imu_biases_covariance: Option<Vec<f64>>,
+    /// Optional process noise diagonal (15 elements for the error state).
+    pub process_noise_diagonal: Option<Vec<f64>>,
+    /// Local-level frame of the records: `false` (the default) is NED, `true` is ENU.
+    ///
+    /// See [`UkfConfig::is_enu`]; the same reasoning and the same guard apply.
+    pub is_enu: bool,
+}
+
 /// Initialize an Error-State Kalman Filter (ESKF) for simulation.
 ///
 /// This function creates and initializes an `ErrorStateKalmanFilter` with the given parameters,
@@ -2831,10 +3034,8 @@ pub fn initialize_ekf(
 /// # Arguments
 ///
 /// * `initial_pose` - A `TestDataRecord` containing the initial pose information.
-/// * `attitude_covariance` - Optional initial attitude covariance (for error state).
-/// * `imu_biases` - Optional initial IMU biases [`b_ax`, `b_ay`, `b_az`, `b_gx`, `b_gy`, `b_gz`].
-/// * `imu_biases_covariance` - Optional IMU bias covariance (for error state).
-/// * `process_noise_diagonal` - Optional process noise diagonal (15 elements for error state).
+/// * `config` - An [`EskfConfig`] carrying the optional covariance, bias, process-noise and
+///   frame settings.
 ///
 /// # Returns
 ///
@@ -2844,10 +3045,18 @@ pub fn initialize_ekf(
 /// [`StrapdownError::InvalidConfiguration`] if any configured vector length disagrees with
 /// the filter's state size.
 ///
+/// **This function does not validate `config.is_enu` against the data**, and deliberately so:
+/// it is handed one [`TestDataRecord`], and a single sample cannot tell a frame error from a
+/// motion transient. Checking it here was worse than not checking it -- one NaN or accelerating
+/// first sample disabled the guard entirely, while one ordinary sample above 1.5 g rejected a
+/// correctly declared file and advised the caller to flip the flag. Call
+/// [`check_declared_frame`] over the whole record slice instead, as `strapdown-sim` does on
+/// every path (#296).
+///
 /// # Example
 ///
 /// ```no_run
-/// use strapdown::sim::{initialize_eskf, TestDataRecord};
+/// use strapdown::sim::{EskfConfig, initialize_eskf, TestDataRecord};
 /// use chrono::Utc;
 ///
 /// let initial_pose = TestDataRecord {
@@ -2858,17 +3067,23 @@ pub fn initialize_ekf(
 ///     // ... other fields ...
 ///     ..Default::default()
 /// };
-/// let eskf = initialize_eskf(&initial_pose, None, None, None, None).unwrap();
+/// // `EskfConfig::default()` is NED; pass `EskfConfig { is_enu: true, ..Default::default() }`
+/// // for a Sensor Logger export.
+/// let eskf = initialize_eskf(&initial_pose, EskfConfig::default()).unwrap();
 /// ```
-#[allow(clippy::too_many_arguments)]
 pub fn initialize_eskf(
     initial_pose: &TestDataRecord,
-    attitude_covariance: Option<Vec<f64>>,
-    imu_biases: Option<Vec<f64>>,
-    imu_biases_covariance: Option<Vec<f64>>,
-    process_noise_diagonal: Option<Vec<f64>>,
+    config: EskfConfig,
 ) -> Result<crate::kalman::ErrorStateKalmanFilter, StrapdownError> {
     use crate::kalman::ErrorStateKalmanFilter;
+
+    let EskfConfig {
+        attitude_covariance,
+        imu_biases,
+        imu_biases_covariance,
+        process_noise_diagonal,
+        is_enu,
+    } = config;
 
     // Build initial state from sensor data
     let initial_state = InitialState {
@@ -2896,11 +3111,9 @@ pub fn initialize_eskf(
             initial_pose.yaw
         },
         in_degrees: true,
-        // Deliberately ENU and deliberately still hardcoded; see the note in
-        // `initialize_ukf`. `TestDataRecord` carries no frame tag, so honouring the NED
-        // default here would break every ENU recording with no way to opt back in. The
-        // frame becomes a caller-supplied option in queue 7's `InsEngine` builder (#296).
-        is_enu: true,
+        // The caller's declared frame, checked against the data above; see the note in
+        // `initialize_ukf` and `check_declared_frame` (#296).
+        is_enu,
     };
 
     // ESKF always uses 15-state error vector (pos, vel, att, accel_bias, gyro_bias)
@@ -3880,6 +4093,15 @@ pub struct SimulationConfig {
     /// Random number generator seed
     #[serde(default = "default_seed")]
     pub seed: u64,
+    /// Local-level frame the input records are expressed in: `false` (the default) is NED,
+    /// `true` is ENU.
+    ///
+    /// Sensor Logger exports are ENU; `strapdown-sim syn` output and the rest of the library
+    /// are NED. `serde(default)` is `false`, so every config file written before this field
+    /// existed keeps parsing -- and any such file describing a Sensor Logger recording now
+    /// fails loudly in `check_declared_frame` rather than mechanizing at 2 g (#296).
+    #[serde(default)]
+    pub is_enu: bool,
     /// Run simulations in parallel when processing multiple files
     #[serde(default)]
     pub parallel: bool,
@@ -3928,6 +4150,7 @@ impl Default for SimulationConfig {
             output: "output.csv".to_string(),
             mode: SimulationMode::ClosedLoop,
             seed: default_seed(),
+            is_enu: false,
             parallel: false,
             generate_plot: false,
             execution_limits: ExecutionLimits::default(),
@@ -5234,6 +5457,229 @@ mod tests {
         }
     }
 
+    /// A stationary navigation-grade synthetic run in `frame`, exactly as `syn` writes it.
+    ///
+    /// Stationary is the point: the truth altitude never moves, so any altitude the solution
+    /// accumulates is the mechanization's own error and needs no differencing against a
+    /// moving reference to read.
+    fn stationary_synthetic_records(is_enu: bool, duration_s: f64) -> Vec<TestDataRecord> {
+        let config = SyntheticConfig {
+            output: String::new(),
+            initial_state: SyntheticInitialState {
+                latitude_deg: 40.0,
+                longitude_deg: -76.0,
+                altitude_m: 100.0,
+                is_enu,
+                ..SyntheticInitialState::default()
+            },
+            duration_s,
+            sample_rate_hz: 10.0,
+            imu_quality: crate::IMUQuality::Navigation,
+            seed: 42,
+            no_noise: false,
+            gnss_horizontal_noise_m: 2.5,
+            gnss_vertical_noise_m: 5.0,
+            baro_noise_std_pa: 50.0,
+        };
+        let mut rng = rand::SeedableRng::seed_from_u64(42);
+        generate_synthetic(&config, &mut rng)
+            .expect("synthetic generation must succeed")
+            .1
+    }
+
+    /// Altitude a stationary navigation-grade solution may drift over 60 s, in metres.
+    ///
+    /// Derived, not fitted, from the three things that move the vertical channel over a
+    /// minute:
+    ///
+    /// 1. Accelerometer bias. [`crate::IMUQuality::Navigation`] quotes 1e-4 m/s^2 of bias
+    ///    instability; a 3-sigma draw of 3e-4 m/s^2 integrates to
+    ///    $\tfrac{1}{2} a t^2 = 0.54$ m at $t = 60$ s.
+    /// 2. Velocity random walk. 0.005 m/s/$\sqrt{\text{h}}$ gives
+    ///    $\sigma_v(60\,\text{s}) = 6.5\times10^{-4}$ m/s, under 0.04 m of position.
+    /// 3. The vertical channel's own instability, which grows as
+    ///    $\cosh(t/\tau)$ with $\tau = \sqrt{R/g} \approx 806$ s -- a factor of 1.003 over
+    ///    this interval, so it multiplies the 0.58 m above rather than adding to it.
+    ///
+    /// The budget is therefore ~0.6 m and the bound is ~3x it. What matters is the other
+    /// end: mechanizing these NED records as ENU reaches 35 km in the same 60 s (#296), four
+    /// and a half orders of magnitude outside this bound, so the test cannot pass by accident
+    /// with the frame wrong.
+    const MAX_STATIONARY_ALTITUDE_DRIFT_M: f64 = 2.0;
+
+    /// Worst absolute altitude excursion from the run's own first sample, in metres.
+    fn worst_altitude_excursion(results: &[NavigationResult]) -> f64 {
+        let start = results[0].altitude;
+        results
+            .iter()
+            .map(|result| (result.altitude - start).abs())
+            .fold(0.0, f64::max)
+    }
+
+    #[test]
+    fn test_dead_reckoning_holds_altitude_on_ned_synthetic() {
+        // The regression this issue is about: `syn` emits NED, and until the frame became a
+        // parameter `dead_reckoning` mechanized it as ENU, which adds the gravity model to
+        // the sensed specific force instead of cancelling it and falls at 2 g.
+        let records = stationary_synthetic_records(false, 60.0);
+        let results = dead_reckoning(&records, false).expect("NED records must dead-reckon as NED");
+        let worst = worst_altitude_excursion(&results);
+        assert!(
+            worst < MAX_STATIONARY_ALTITUDE_DRIFT_M,
+            "stationary navigation-grade NED truth drifted {worst:.3} m of altitude over 60 s, \
+             past the {MAX_STATIONARY_ALTITUDE_DRIFT_M} m budget derived in \
+             MAX_STATIONARY_ALTITUDE_DRIFT_M. A figure in the tens of kilometres means the \
+             frame is being double-counted again (#296); a figure a little over the bound \
+             means the IMU error model or the vertical channel moved and the budget needs \
+             re-deriving."
+        );
+    }
+
+    #[test]
+    fn test_dead_reckoning_holds_altitude_on_enu_synthetic() {
+        // The other half of the same claim, and the one that stops a future default flip from
+        // quietly breaking Sensor Logger recordings: matched ENU has to be just as exact as
+        // matched NED, because since #321 an ENU run converts to NED internally rather than
+        // approximating.
+        let records = stationary_synthetic_records(true, 60.0);
+        let results = dead_reckoning(&records, true).expect("ENU records must dead-reckon as ENU");
+        let worst = worst_altitude_excursion(&results);
+        assert!(
+            worst < MAX_STATIONARY_ALTITUDE_DRIFT_M,
+            "stationary navigation-grade ENU truth drifted {worst:.3} m of altitude over 60 s, \
+             past the {MAX_STATIONARY_ALTITUDE_DRIFT_M} m budget derived in \
+             MAX_STATIONARY_ALTITUDE_DRIFT_M"
+        );
+    }
+
+    #[test]
+    fn test_dead_reckoning_rejects_a_frame_the_records_contradict() {
+        // Both directions, because the guard has to be a discriminator rather than a
+        // one-sided preference for the new default.
+        for declared_enu in [false, true] {
+            let records = stationary_synthetic_records(!declared_enu, 10.0);
+            let error = dead_reckoning(&records, declared_enu).expect_err(
+                "records generated in one frame must not be silently mechanized in the other",
+            );
+            assert!(
+                matches!(
+                    error,
+                    StrapdownError::InvalidConfiguration {
+                        field: "is_enu",
+                        ..
+                    }
+                ),
+                "expected an InvalidConfiguration on is_enu, got {error:?}"
+            );
+            // The message has to name the way out, or the user is told only that they are
+            // wrong. This is the half of #272's objection the flag alone does not answer.
+            let message = error.to_string();
+            assert!(
+                message.contains("--enu"),
+                "the rejection must name the flag to pass, got: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_check_declared_frame_accepts_each_frame_at_rest() {
+        let gravity = crate::earth::gravity(&0.0, &0.0);
+
+        // Identity attitude, so the body reading is already the navigation-frame one.
+        let mut enu = blank_record();
+        enu.acc_z = gravity;
+        assert!(check_declared_frame(std::slice::from_ref(&enu), true).is_ok());
+        assert!(check_declared_frame(std::slice::from_ref(&enu), false).is_err());
+
+        let mut ned = blank_record();
+        ned.acc_z = -gravity;
+        assert!(check_declared_frame(std::slice::from_ref(&ned), false).is_ok());
+        assert!(check_declared_frame(std::slice::from_ref(&ned), true).is_err());
+    }
+
+    #[test]
+    fn test_check_declared_frame_fires_at_the_derived_margin() {
+        // Brackets FRAME_CHECK_MARGIN_G from the outside, with literal accelerations rather
+        // than by restating the constant -- a straddle computed *from* the constant would
+        // follow it wherever it moved and prove nothing about where it should be.
+        //
+        // In NED the sensed vertical specific force is $f_z = a_\text{down} - g$, so a
+        // descent at $\alpha$ g reads $(\alpha - 1) g$, and the guard fires at
+        // $\alpha > 1 + \text{margin}$. The four cases below are each an independent
+        // constraint on the margin:
+        //
+        // - free fall ($\alpha = 1$, $f_z = 0$) accepted  =>  margin > 0
+        // - at rest in the *other* frame rejected          =>  margin < 1
+        // - a 1.45 g descent accepted                      =>  margin > 0.45
+        // - a 1.55 g descent rejected                      =>  margin < 0.55
+        //
+        // The last two pin the constant to 0.5 +/- 0.05. The first two are the physical
+        // requirements that motivate it: free fall is a real flight condition and must never
+        // be mistaken for a frame error, and a stationary wrong-frame file must never be
+        // mistaken for flight.
+        let gravity = crate::earth::gravity(&0.0, &0.0);
+        let with_downward_acceleration = |alpha: f64| {
+            let mut record = blank_record();
+            record.acc_z = (alpha - 1.0) * gravity;
+            record
+        };
+
+        for (alpha, must_reject) in [(1.0, false), (1.45, false), (1.55, true)] {
+            let record = with_downward_acceleration(alpha);
+            let rejected = check_declared_frame(std::slice::from_ref(&record), false).is_err();
+            assert_eq!(
+                rejected, must_reject,
+                "a {alpha} g descent in correctly declared NED records: expected \
+                 rejected={must_reject}, got rejected={rejected}. FRAME_CHECK_MARGIN_G is \
+                 {FRAME_CHECK_MARGIN_G} and these cases bracket it to 0.5 +/- 0.05."
+            );
+        }
+
+        // At rest in the other frame: the case the guard exists for.
+        let mut at_rest_in_enu = blank_record();
+        at_rest_in_enu.acc_z = gravity;
+        assert!(
+            check_declared_frame(std::slice::from_ref(&at_rest_in_enu), false).is_err(),
+            "a stationary ENU record declared NED must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_check_declared_frame_tolerates_a_manoeuvring_start() {
+        // The guard must not fire on a run that simply begins under acceleration: 0.4 g of
+        // horizontal specific force leaves the vertical channel where it was, and a 0.9 g
+        // descent -- just short of free fall -- still reads on the correct side of zero.
+        let gravity = crate::earth::gravity(&0.0, &0.0);
+
+        let mut manoeuvring = blank_record();
+        manoeuvring.acc_x = 0.4 * gravity;
+        manoeuvring.acc_y = -0.4 * gravity;
+        manoeuvring.acc_z = -gravity;
+        assert!(check_declared_frame(std::slice::from_ref(&manoeuvring), false).is_ok());
+
+        let mut descending = blank_record();
+        descending.acc_z = -0.1 * gravity; // a_down = 0.9 g
+        assert!(check_declared_frame(std::slice::from_ref(&descending), false).is_ok());
+    }
+
+    #[test]
+    fn test_check_declared_frame_fails_open_on_unusable_records() {
+        // Deliberately permissive: an empty slice, a non-finite reading and a non-finite
+        // gravity all pass. Every comparison against NaN is false anyway, so the choice is
+        // between failing open explicitly and failing open by accident.
+        assert!(check_declared_frame(&[], false).is_ok());
+        assert!(check_declared_frame(&[], true).is_ok());
+
+        let mut nan_accel = blank_record();
+        nan_accel.acc_z = f64::NAN;
+        assert!(check_declared_frame(std::slice::from_ref(&nan_accel), false).is_ok());
+
+        let mut nan_position = blank_record();
+        nan_position.acc_z = crate::earth::gravity(&0.0, &0.0);
+        nan_position.latitude = f64::NAN;
+        assert!(check_declared_frame(std::slice::from_ref(&nan_position), false).is_ok());
+    }
+
     #[test]
     fn test_generate_northward_motion_records_end_latitude() {
         let records = generate_northward_motion_records();
@@ -5751,7 +6197,7 @@ mod tests {
     }
     #[test]
     fn test_dead_reckoning_empty_records() {
-        let results = dead_reckoning(&[]).unwrap();
+        let results = dead_reckoning(&[], false).unwrap();
         assert!(results.is_empty());
     }
     #[test]
@@ -5774,7 +6220,9 @@ mod tests {
             gyro_z: 0.0,
             ..Default::default()
         };
-        let results = dead_reckoning(&[rec]).unwrap();
+        // The stub's `acc_z: 9.81` with an identity attitude is ENU-convention specific
+        // force, so declare ENU: `check_declared_frame` would (correctly) reject NED here.
+        let results = dead_reckoning(&[rec], true).unwrap();
         assert_eq!(results.len(), 1);
     }
     #[test]
@@ -6607,7 +7055,17 @@ mod tests {
             ..Default::default()
         };
 
-        let mut ukf = initialize_ukf(&rec, UkfConfig::default()).unwrap();
+        // The stub's `acc_z: 9.81` with an all-zero (hence identity) quaternion is ENU
+        // specific force, so the filter has to be told ENU: `check_declared_frame` rejects
+        // NED here, which is the guard doing its job rather than collateral damage.
+        let mut ukf = initialize_ukf(
+            &rec,
+            UkfConfig {
+                is_enu: true,
+                ..UkfConfig::default()
+            },
+        )
+        .unwrap();
 
         let stream = EventStream {
             start_time: rec.time,
@@ -6645,7 +7103,14 @@ mod tests {
             yaw: 0.0,
             ..Default::default()
         };
-        let ekf = initialize_ekf(&rec, None, None, None, None, false).unwrap();
+        let ekf = initialize_ekf(
+            &rec,
+            EkfConfig {
+                use_biases: false,
+                ..EkfConfig::default()
+            },
+        )
+        .unwrap();
         let estimate = ekf.get_estimate();
         assert_eq!(estimate.len(), 9, "9-state EKF should have 9 states");
         // Check velocity decomposition (bearing 45° means equal north/east components)
@@ -6669,7 +7134,7 @@ mod tests {
             yaw: 0.0,
             ..Default::default()
         };
-        let ekf = initialize_ekf(&rec, None, None, None, None, true).unwrap();
+        let ekf = initialize_ekf(&rec, EkfConfig::default()).unwrap();
         let estimate = ekf.get_estimate();
         assert_eq!(estimate.len(), 15, "15-state EKF should have 15 states");
         // Check that biases are initialized to zero by default
@@ -6698,7 +7163,7 @@ mod tests {
             yaw: f64::NAN,
             ..Default::default()
         };
-        let ekf = initialize_ekf(&rec, None, None, None, None, true).unwrap();
+        let ekf = initialize_ekf(&rec, EkfConfig::default()).unwrap();
         let estimate = ekf.get_estimate();
         // Should default NaN angles to 0.0
         assert!(estimate[6].abs() < 1e-6, "NaN roll should default to 0"); // roll
@@ -6725,11 +7190,12 @@ mod tests {
         };
         let ekf = initialize_ekf(
             &rec,
-            Some(vec![1e-4, 2e-4, 3e-4]),
-            Some(vec![0.01, 0.02, 0.03, 0.001, 0.002, 0.003]),
-            Some(vec![1e-5; 6]),
-            None,
-            true,
+            EkfConfig {
+                attitude_covariance: Some(vec![1e-4, 2e-4, 3e-4]),
+                imu_biases: Some(vec![0.01, 0.02, 0.03, 0.001, 0.002, 0.003]),
+                imu_biases_covariance: Some(vec![1e-5; 6]),
+                ..EkfConfig::default()
+            },
         )
         .unwrap();
         let estimate = ekf.get_estimate();
@@ -6758,7 +7224,14 @@ mod tests {
             ..Default::default()
         };
         let custom_noise = vec![1e-7; 15];
-        let ekf = initialize_ekf(&rec, None, None, None, Some(custom_noise), true).unwrap();
+        let ekf = initialize_ekf(
+            &rec,
+            EkfConfig {
+                process_noise_diagonal: Some(custom_noise),
+                ..EkfConfig::default()
+            },
+        )
+        .unwrap();
         // Verify EKF was created successfully
         assert_eq!(ekf.get_estimate().len(), 15);
     }

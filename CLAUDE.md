@@ -183,9 +183,15 @@ The Free Core implementation must achieve the following capabilities:
   - Vertical velocity: positive down in NED, positive up in ENU
   - `altitude` is height above the ellipsoid -- positive up -- in **both** frames, valid over
     [-11,000m, 30,000m]. It is not a "down" coordinate in NED
-  - Known gap: `sim::dead_reckoning` and `sim::initialize_*` still hardcode ENU, because
-    `TestDataRecord` carries no frame tag. `strapdown-sim syn` emits NED, so dead-reckoning
-    its output through those ENU entry points double-counts gravity
+  - `TestDataRecord` carries no frame tag, so every entry point that loads one takes the
+    frame from its caller: `sim::dead_reckoning(records, is_enu)` and `is_enu` on
+    `UkfConfig`/`EkfConfig`/`EskfConfig`, all defaulting to NED. On the CLI that is `--enu`
+    (and `is_enu` in a config file); Sensor Logger exports need it, `syn` output does not
+  - Declaring the wrong frame is rejected, not guessed at: `sim::check_declared_frame`
+    rotates the leading records' specific force into the navigation frame and requires its
+    sign to match (+g on ENU up, -g on NED down), returning
+    `StrapdownError::InvalidConfiguration` naming the flag to pass. Mechanizing NED records
+    as ENU adds the gravity model instead of cancelling it and falls at 2 g
 - **Attitude representation**: Direction cosine matrices (DCM), Euler angles (XYZ rotation)
 - **Position**: WGS84 geodetic (lat/lon in degrees, altitude in meters)
 - **Velocities**: Local-level frame (m/s)

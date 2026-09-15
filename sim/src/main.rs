@@ -60,10 +60,11 @@ use strapdown::sim::{
     DEFAULT_INITIAL_POSITION_UNCERTAINTY_M, DEFAULT_PROCESS_NOISE, GeoResolution,
 };
 use strapdown::sim::{
-    ExecutionLimits, ExecutionMonitor, FaultArgs, FilterType, NavigationResult, ParticleFilterType,
-    SchedulerArgs, SimulationConfig, SimulationMode, SyntheticConfig, TestDataRecord, UkfConfig,
-    build_fault, build_scheduler, dead_reckoning, generate_synthetic, initialize_ekf,
-    initialize_eskf, initialize_ukf, run_closed_loop,
+    EkfConfig, EskfConfig, ExecutionLimits, ExecutionMonitor, FaultArgs, FilterType,
+    NavigationResult, ParticleFilterType, SchedulerArgs, SimulationConfig, SimulationMode,
+    SyntheticConfig, TestDataRecord, UkfConfig, build_fault, build_scheduler, check_declared_frame,
+    dead_reckoning, generate_synthetic, initialize_ekf, initialize_eskf, initialize_ukf,
+    run_closed_loop,
 };
 
 const LONG_ABOUT: &str =
@@ -209,7 +210,9 @@ struct SyntheticArgs {
     #[arg(long, default_value_t = 0.0)]
     velocity_east_mps: f64,
 
-    /// Initial downward velocity in m/s (positive down in NED)
+    /// Initial vertical velocity in m/s. Positive DOWN by default (NED); with `--enu` the
+    /// sign reverses and positive is UP, because the value is the state's vertical velocity
+    /// and that axis points the other way. The flag keeps its NED name for compatibility.
     #[arg(long, default_value_t = 0.0)]
     velocity_down_mps: f64,
 
@@ -248,6 +251,13 @@ struct SyntheticArgs {
     /// Barometric pressure noise standard deviation in Pascals
     #[arg(long, default_value_t = 50.0)]
     baro_noise_std_pa: f64,
+
+    /// Emit the trajectory in the ENU convention rather than NED.
+    ///
+    /// The mirror image of `--enu` on the simulation subcommands, so that `syn --enu` output
+    /// is what `dr --enu` expects and plain `syn` output is what plain `dr` expects.
+    #[arg(long)]
+    enu: bool,
 }
 
 /// Common simulation arguments for input/output
@@ -277,6 +287,15 @@ struct SimArgs {
     /// Max wall-clock time without progress in seconds (<= 0 disables)
     #[arg(long, default_value_t = strapdown::sim::DEFAULT_MAX_NO_PROGRESS_S)]
     max_no_progress_s: f64,
+
+    /// Interpret the input records in the ENU convention rather than NED.
+    ///
+    /// Sensor Logger exports are ENU: at rest their specific force lands on the device's
+    /// up-axis at +9.8 m/s^2. The default is NED, which is what `syn` writes and what the
+    /// library mechanizes in. A CSV carries no frame tag, so this cannot be inferred -- but
+    /// declaring it wrongly is caught before propagation rather than integrated at 2 g.
+    #[arg(long)]
+    enu: bool,
 }
 
 /// Geophysical measurement arguments (feature-gated)
@@ -501,7 +520,7 @@ fn process_file(
     match config.mode {
         SimulationMode::DeadReckoning => {
             info!("Running dead reckoning simulation");
-            let results = dead_reckoning(&records)?;
+            let results = dead_reckoning(&records, config.is_enu)?;
             info!("Generated {} navigation results", results.len());
 
             let output_file = resolve_output_path(output, input_file, all_inputs)?;
@@ -514,6 +533,15 @@ fn process_file(
             Err("Open-loop mode is not yet fully implemented".into())
         }
         SimulationMode::ClosedLoop => {
+            // Check the declared frame against the WHOLE leading window, not just the first
+            // record. `initialize_{ukf,ekf,eskf}` run the same guard, but they are handed a
+            // single `TestDataRecord`, and a one-sample window is weak in both directions: one
+            // NaN or transient first sample disables it entirely (letting the 2 g double-count
+            // through on the default mode), and one ordinary motion sample above 1.5 g
+            // false-rejects a correctly declared file. The particle-filter paths below already
+            // do this; closed loop is the default mode and needs it more, not less (#296).
+            check_declared_frame(&records, config.is_enu)?;
+
             let filter_config = config.closed_loop.clone().unwrap_or_default();
 
             let event_stream = build_event_stream(&records, &config.gnss_degradation)?;
@@ -525,20 +553,37 @@ fn process_file(
 
             let results = match filter_config.filter {
                 FilterType::Ukf => {
-                    let mut ukf = initialize_ukf(&records[0].clone(), UkfConfig::default())?;
+                    let mut ukf = initialize_ukf(
+                        &records[0].clone(),
+                        UkfConfig {
+                            is_enu: config.is_enu,
+                            ..UkfConfig::default()
+                        },
+                    )?;
                     info!("Initialized UKF");
                     ukf.set_innovation_gate(filter_config.innovation_gate);
                     run_closed_loop(&mut ukf, event_stream, None, Some(execution_limits))
                 }
                 FilterType::Ekf => {
-                    let mut ekf =
-                        initialize_ekf(&records[0].clone(), None, None, None, None, true)?;
+                    let mut ekf = initialize_ekf(
+                        &records[0].clone(),
+                        EkfConfig {
+                            is_enu: config.is_enu,
+                            ..EkfConfig::default()
+                        },
+                    )?;
                     info!("Initialized EKF");
                     ekf.set_innovation_gate(filter_config.innovation_gate);
                     run_closed_loop(&mut ekf, event_stream, None, Some(execution_limits))
                 }
                 FilterType::Eskf => {
-                    let mut eskf = initialize_eskf(&records[0].clone(), None, None, None, None)?;
+                    let mut eskf = initialize_eskf(
+                        &records[0].clone(),
+                        EskfConfig {
+                            is_enu: config.is_enu,
+                            ..EskfConfig::default()
+                        },
+                    )?;
                     info!("Initialized ESKF");
                     eskf.set_innovation_gate(filter_config.innovation_gate);
                     run_closed_loop(&mut eskf, event_stream, None, Some(execution_limits))
@@ -648,6 +693,9 @@ fn process_file(
             #[cfg(not(feature = "geonav"))]
             let event_stream = build_event_stream(&records, &config.gnss_degradation)?;
 
+            // The particle filter builds its nominal state here rather than through
+            // `initialize_*`, so it has to run the frame guard itself.
+            check_declared_frame(&records, config.is_enu)?;
             let first = &records[0];
             // Quaternion, not Euler angles: `TestDataRecord`'s roll/pitch/yaw are a
             // different convention from nalgebra's XYZ. See `TestDataRecord::attitude`.
@@ -661,10 +709,10 @@ fn process_file(
                 velocity_east,
                 velocity_vertical: 0.0,
                 attitude,
-                // ENU, matching `initialize_*` in `strapdown::sim`. Sensor Logger exports
-                // are ENU-convention; `syn` emits NED and needs the frame to become a CLI
-                // option first (queue 7's `InsEngine` builder); see #296.
-                is_enu: true,
+                // The declared frame, as everywhere else. `syn` writes NED and Sensor Logger
+                // writes ENU; `strapdown::sim::check_declared_frame` is what catches the
+                // wrong answer (#296).
+                is_enu: config.is_enu,
             };
 
             let pf_cfg = config.particle_filter.clone().unwrap_or_default();
@@ -904,7 +952,12 @@ fn run_single_closed_loop_simulation(
     ukf_beta: f64,
     ukf_kappa: f64,
     innovation_gate: Option<InnovationGate>,
+    is_enu: bool,
 ) -> Result<(), Box<dyn Error>> {
+    // Same full-window guard as the other entry points: the `initialize_*` helpers below see
+    // only one record, which is not enough evidence in either direction (#296).
+    check_declared_frame(records, is_enu)?;
+
     // Build event stream from records and GNSS degradation config
     let event_stream = build_event_stream(records, gnss_degradation)?;
     info!(
@@ -921,6 +974,7 @@ fn run_single_closed_loop_simulation(
                     ukf_alpha: Some(ukf_alpha),
                     ukf_beta: Some(ukf_beta),
                     ukf_kappa: Some(ukf_kappa),
+                    is_enu,
                     ..Default::default()
                 },
             )?;
@@ -929,13 +983,25 @@ fn run_single_closed_loop_simulation(
             run_closed_loop(&mut ukf, event_stream, None, Some(execution_limits))
         }
         FilterType::Ekf => {
-            let mut ekf = initialize_ekf(&records[0].clone(), None, None, None, None, true)?;
+            let mut ekf = initialize_ekf(
+                &records[0].clone(),
+                EkfConfig {
+                    is_enu,
+                    ..EkfConfig::default()
+                },
+            )?;
             info!("Initialized EKF");
             ekf.set_innovation_gate(innovation_gate);
             run_closed_loop(&mut ekf, event_stream, None, Some(execution_limits))
         }
         FilterType::Eskf => {
-            let mut eskf = initialize_eskf(&records[0].clone(), None, None, None, None)?;
+            let mut eskf = initialize_eskf(
+                &records[0].clone(),
+                EskfConfig {
+                    is_enu,
+                    ..EskfConfig::default()
+                },
+            )?;
             info!("Initialized ESKF");
             eskf.set_innovation_gate(innovation_gate);
             run_closed_loop(&mut eskf, event_stream, None, Some(execution_limits))
@@ -981,7 +1047,7 @@ fn run_synthetic(args: &SyntheticArgs) -> Result<(), Box<dyn Error>> {
             angular_velocity_x_dps: args.angular_velocity_x_dps,
             angular_velocity_y_dps: args.angular_velocity_y_dps,
             angular_velocity_z_dps: args.angular_velocity_z_dps,
-            is_enu: false,
+            is_enu: args.enu,
         },
         duration_s: args.duration_s,
         sample_rate_hz: args.sample_rate_hz,
@@ -1053,7 +1119,7 @@ fn run_dead_reckoning(args: &SimArgs) -> Result<(), Box<dyn Error>> {
             "Running dead reckoning simulation on {} records",
             records.len()
         );
-        let results = dead_reckoning(&records)?;
+        let results = dead_reckoning(&records, args.enu)?;
         info!("Generated {} navigation results", results.len());
 
         // Write results to CSV
@@ -1175,6 +1241,7 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
             args.ukf_beta,
             args.ukf_kappa,
             innovation_gate,
+            args.sim.enu,
         ) {
             Ok(()) => {
                 // Success - result logging is handled by the helper function
@@ -1439,6 +1506,7 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                         ukf_alpha: Some(args.ukf_alpha),
                         ukf_beta: Some(args.ukf_beta),
                         ukf_kappa: Some(args.ukf_kappa),
+                        is_enu: args.sim.enu,
                     },
                 )?;
                 info!(
@@ -1453,6 +1521,7 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
             FilterType::Ekf => {
                 info!("Initializing EKF...");
 
+                check_declared_frame(&records, args.sim.enu)?;
                 let initial_state = InitialState {
                     latitude: records[0].latitude,
                     longitude: records[0].longitude,
@@ -1464,10 +1533,10 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                     pitch: 0.0,
                     yaw: records[0].bearing.to_radians(),
                     in_degrees: true,
-                    // ENU, matching `initialize_*` in `strapdown::sim`. Sensor Logger exports
-                    // are ENU-convention; `syn` emits NED and needs the frame to become a CLI
-                    // option first (queue 7's `InsEngine` builder); see #296.
-                    is_enu: true,
+                    // The declared frame, as everywhere else. This path builds its own
+                    // `InitialState` rather than going through `initialize_ekf`, so the guard
+                    // is run explicitly above (#296).
+                    is_enu: args.sim.enu,
                 };
 
                 let imu_biases = vec![0.0; 6];
@@ -1736,6 +1805,7 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
         #[cfg(not(feature = "geonav"))]
         let geo_bias_dim = 0usize;
 
+        check_declared_frame(&records, args.sim.enu)?;
         let first = &records[0];
         // Quaternion, not Euler angles: `TestDataRecord`'s roll/pitch/yaw are a different
         // convention from nalgebra's XYZ. See `TestDataRecord::attitude`.
@@ -1749,10 +1819,10 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
             velocity_east,
             velocity_vertical: 0.0,
             attitude,
-            // ENU, matching `initialize_*` in `strapdown::sim`. Sensor Logger exports
-            // are ENU-convention; `syn` emits NED and needs the frame to become a CLI
-            // option first (queue 7's `InsEngine` builder); see #296.
-            is_enu: true,
+            // The declared frame, as everywhere else. This path builds its own nominal
+            // state rather than going through `initialize_*`, so the guard is run
+            // explicitly above (#296).
+            is_enu: args.sim.enu,
         };
 
         let process_noise_std_m = Vector3::new(
@@ -2070,6 +2140,30 @@ fn prompt_parallel() -> bool {
     }
 }
 
+/// Prompt for the local-level frame the input records are expressed in
+fn prompt_frame() -> bool {
+    loop {
+        println!(
+            "Which local-level frame is the input data expressed in?\n\
+            [n] - NED, north-east-down (default; `strapdown-sim syn` output)\n\
+            [e] - ENU, east-north-up (Sensor Logger exports)\n\
+            [q] - Quit\n\
+            \n\
+            A CSV carries no frame tag, so this cannot be inferred. Getting it wrong makes \
+            the mechanization add the gravity model to the sensed specific force instead of \
+            cancelling it, which is checked for and rejected before propagation.\n"
+        );
+        match read_user_input() {
+            None => return false,
+            Some(input) => match input.to_lowercase().as_str() {
+                "n" | "ned" => return false,
+                "e" | "enu" => return true,
+                _ => println!("Error: Please enter 'n' or 'e'.\n"),
+            },
+        }
+    }
+}
+
 /// Prompt for log level
 fn prompt_log_level() -> strapdown::sim::LogLevel {
     use strapdown::sim::LogLevel;
@@ -2362,6 +2456,7 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
     let output_path = prompt_output_path();
     let mode = prompt_simulation_mode();
     let seed = prompt_seed();
+    let is_enu = prompt_frame();
     let parallel = prompt_parallel();
     let execution_limits = ExecutionLimits::default();
 
@@ -2452,6 +2547,7 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
         output: output_path,
         mode,
         seed,
+        is_enu,
         parallel,
         generate_plot: false,
         execution_limits,

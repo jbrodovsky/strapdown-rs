@@ -114,18 +114,23 @@ let mut ekf = ExtendedKalmanFilter::new(
 For simulation workflows, use the `initialize_ekf` helper:
 
 ```rust
-use strapdown::sim::{initialize_ekf, TestDataRecord};
+use strapdown::sim::{EkfConfig, initialize_ekf, TestDataRecord};
 
 // Assuming you have TestDataRecord from sensor data
 let initial_pose = TestDataRecord::default();
 
-let ekf = initialize_ekf(
-    initial_pose,
-    None,  // Use default attitude covariance
-    None,  // Use default IMU biases
-    None,  // Use default IMU bias covariance
-    None,  // Use default process noise
-    true,  // Use 15-state configuration
+// `EkfConfig::default()` is the 15-state filter in NED, with the crate's default
+// covariances, biases and process noise. Override only what you need.
+let ekf = initialize_ekf(&initial_pose, EkfConfig::default());
+
+// A Sensor Logger recording is ENU, so say so -- a `TestDataRecord` carries no frame
+// tag, and declaring the wrong one is rejected rather than integrated at 2 g.
+let ekf_enu = initialize_ekf(
+    &initial_pose,
+    EkfConfig {
+        is_enu: true,
+        ..EkfConfig::default()
+    },
 );
 ```
 
