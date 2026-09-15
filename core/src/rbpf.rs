@@ -6,8 +6,8 @@
 //! nonlinear in position but linear in the remaining states.
 
 use crate::StrapdownError;
-use crate::earth::METERS_TO_DEGREES;
 use crate::gating::{InnovationGate, UpdateOutcome, normalized_innovation_squared};
+use crate::horizontal_meters_to_radians;
 use crate::kalman::imu_sample_from_input;
 use crate::linalg::{matrix_square_root, symmetrize};
 use crate::linearize::state_transition_jacobian;
@@ -68,6 +68,30 @@ fn circular_mean<'a>(angles: impl Iterator<Item = (&'a f64, f64)>) -> f64 {
     sin_sum.atan2(cos_sum)
 }
 
+/// Convert a (north, east, up) standard deviation in metres to the units a particle's
+/// [`RbpfParticle::position_error`] carries: radians of latitude, radians of longitude,
+/// metres of altitude.
+///
+/// The two horizontal factors differ by `cos(latitude)` and are supplied by
+/// [`crate::horizontal_meters_to_radians`], which reads them off the WGS84 radii of
+/// curvature at the point given. Applying the latitude factor to both -- what this did
+/// until #331 -- leaves the east extent short by that cosine, so a cloud asked for 10 m
+/// got 7.7 m at 40 degrees of latitude and 1.7 m at 80. The altitude entry is already in
+/// the state's units and passes through.
+fn position_std_to_state_units(
+    std_m: &Vector3<f64>,
+    latitude_rad: f64,
+    altitude_m: f64,
+) -> Vector3<f64> {
+    let (latitude_radians_per_meter, longitude_radians_per_meter) =
+        horizontal_meters_to_radians(latitude_rad.to_degrees(), altitude_m);
+    Vector3::new(
+        std_m[0] * latitude_radians_per_meter,
+        std_m[1] * longitude_radians_per_meter,
+        std_m[2],
+    )
+}
+
 /// RBPF configuration parameters.
 #[derive(Clone, Debug)]
 pub struct RbpfConfig {
@@ -79,18 +103,18 @@ pub struct RbpfConfig {
     /// Resampling trigger as a fraction of `num_particles`: the cloud is resampled
     /// when the effective sample size drops below this fraction of the particle count.
     pub effective_sample_threshold: f64,
-    /// Initial position-error standard deviation in metres, as (latitude, longitude,
-    /// altitude). Both horizontal entries are scaled at construction by the same
-    /// latitude conversion factor ([`crate::earth::METERS_TO_DEGREES`], taken in
-    /// radians). That is correct for latitude but not for longitude, where a metre of
-    /// easting subtends `1 / ((R_e + h) cos(latitude))` radians -- so the `cos(latitude)`
-    /// is missing from the denominator and the radian sigma comes out *too small* by
-    /// that factor. The east extent the cloud actually receives is therefore the
-    /// requested value **multiplied** by cos(latitude): a requested 10 m spreads about
-    /// 7.7 m at 40 degrees, 5.0 m at 60 degrees and 1.7 m at 80 degrees. The cloud is
-    /// under-spread east-west, increasingly so towards the poles. Issue #331 tracks the
-    /// fix, here and in `position_process_noise_std_m`. The altitude entry is used in
-    /// metres directly.
+    /// Initial position-error standard deviation in metres, as (north, east, up) extent
+    /// on the ground. The horizontal entries are converted to the radian units the
+    /// particles carry using the WGS84 radii of curvature at the nominal position:
+    /// `1 / (R_N + h)` radians of latitude per metre of northing, and
+    /// `1 / ((R_E + h) cos(latitude))` radians of longitude per metre of easting. The
+    /// altitude entry is used in metres directly.
+    ///
+    /// Until #331 both horizontal entries took the latitude factor
+    /// ([`crate::earth::METERS_TO_DEGREES`] in radians), which left the longitude sigma
+    /// short by `cos(latitude)` and so spread the cloud only 7.7 m east-west of a
+    /// requested 10 m at 40 degrees, and 1.7 m at 80 -- under-spread, increasingly so
+    /// towards the poles, in the one direction a disagreeing fix then depletes.
     pub position_init_std_m: Vector3<f64>,
     /// Initial standard deviation of each of the three velocity error states, in m/s
     /// (applied uniformly to north, east and vertical).
@@ -98,14 +122,23 @@ pub struct RbpfConfig {
     /// Initial standard deviation of each of the three attitude error states, in
     /// radians (applied uniformly to roll, pitch and yaw).
     pub attitude_init_std_rad: f64,
-    /// Position proposal scale (m per second of sample period). The predict
-    /// step scales it by the IMU sample interval (`pos_noise = std * dt`), so
-    /// the effective per-step standard deviation is this value times `dt_s`.
-    /// It must cover unmodelled position wander between fixes: under the
-    /// reference degraded profile (`Degraded { sigma_pos_m: 3.0 }`, 5 s fixes)
-    /// the default 1 m starves the particle cloud (see #267) -- raise it
-    /// explicitly in that configuration. Kept at 1 m here because a wider
-    /// default proposal measurably degrades clean stationary tracking.
+    /// Position random-walk rate, as (north, east, up) in **m/sqrt(s)** despite the
+    /// `_m` in the name, which is kept for compatibility with existing configuration
+    /// files. The predict step forms the per-step standard deviation as
+    /// `std * sqrt(dt)` and converts the horizontal pair to radians exactly as
+    /// [`RbpfConfig::position_init_std_m`] does, so the per-step variance is
+    /// proportional to the elapsed time and the numeric value is unchanged at a 1 s
+    /// step.
+    ///
+    /// Until #331 this was `std * dt`, which is a per-step variance proportional to
+    /// `dt^2`: 100x too small at 100 Hz, and dependent on the log's sample rate rather
+    /// than on elapsed time alone.
+    ///
+    /// It must cover unmodelled position wander between fixes: under the reference
+    /// degraded profile (`Degraded { sigma_pos_m: 3.0 }`, 5 s fixes) the default 1 m
+    /// starves the particle cloud (see #267) -- raise it explicitly in that
+    /// configuration. Kept at 1 here because a wider default proposal measurably
+    /// degrades clean stationary tracking.
     pub position_process_noise_std_m: Vector3<f64>,
     /// Velocity random-walk scale (m/s per second of sample period), applied
     /// uniformly to the three velocity error states. Like the position term, the
@@ -210,11 +243,10 @@ impl RaoBlackwellizedParticleFilter {
         let mut rng = StdRng::seed_from_u64(config.seed);
         let linear_dim = LINEAR_STATE_DIM_BASE + config.extra_state_dim;
 
-        let meters_to_rad = METERS_TO_DEGREES.to_radians();
-        let pos_std = Vector3::new(
-            config.position_init_std_m[0] * meters_to_rad,
-            config.position_init_std_m[1] * meters_to_rad,
-            config.position_init_std_m[2],
+        let pos_std = position_std_to_state_units(
+            &config.position_init_std_m,
+            nominal.latitude,
+            nominal.altitude,
         );
 
         let position_normal = |axis: usize, name: &'static str| {
@@ -328,13 +360,21 @@ impl RaoBlackwellizedParticleFilter {
             .view_mut((0, 0), (LINEAR_STATE_DIM_BASE, LINEAR_STATE_DIM_BASE))
             .copy_from(&f_ll);
 
-        // Scale process noise with dt to approximate continuous-time random walk.
-        let meters_to_rad = METERS_TO_DEGREES.to_radians();
-        let pos_noise = Vector3::new(
-            self.config.position_process_noise_std_m[0] * meters_to_rad * dt,
-            self.config.position_process_noise_std_m[1] * meters_to_rad * dt,
-            self.config.position_process_noise_std_m[2] * dt,
-        );
+        // Scale process noise with dt to approximate a continuous-time random walk. Such a
+        // walk accumulates *variance* linearly in time -- `var(dt) = q dt` -- so the
+        // standard deviation goes as `sqrt(dt)`, not as `dt`. Scaling the standard
+        // deviation by `dt` made `q_n` proportional to `dt^2`: at the 5-100 Hz this crate
+        // runs at, one to two orders of magnitude smaller than the configuration asked for,
+        // and a function of the log's sample rate rather than of elapsed time alone -- a
+        // 100 Hz log and a 50 Hz log of the same trajectory were given process noise
+        // differing by 4x per step. Fixed in #331, whose scope is the position block: the
+        // velocity, attitude and extra-state terms below still scale their standard
+        // deviations by `dt` and have the same argument against them.
+        let pos_noise = position_std_to_state_units(
+            &self.config.position_process_noise_std_m,
+            self.nominal.latitude,
+            self.nominal.altitude,
+        ) * dt.sqrt();
         let mut q_n = DMatrix::<f64>::zeros(POSITION_STATE_DIM, POSITION_STATE_DIM);
         for i in 0..POSITION_STATE_DIM {
             q_n[(i, i)] = pos_noise[i].powi(2);
@@ -1083,6 +1123,199 @@ mod tests {
     use assert_approx_eq::assert_approx_eq;
     use nalgebra::Rotation3;
 
+    /// Latitude used by the #331 spread tests. Well away from the equator, where the
+    /// `cos(latitude)` the longitude conversion needs is 0.5 -- so the defect the tests
+    /// guard against halves the east spread rather than nudging it.
+    const SPREAD_TEST_LATITUDE_DEG: f64 = 60.0;
+    const SPREAD_TEST_LONGITUDE_DEG: f64 = -105.0;
+    const SPREAD_TEST_ALTITUDE_M: f64 = 1000.0;
+
+    /// Root-mean-square of a sample, which is its standard deviation when its mean is zero.
+    fn root_mean_square(values: impl Iterator<Item = f64>) -> f64 {
+        let (sum_of_squares, count) = values.fold((0.0, 0_usize), |(sum, n), value| {
+            (value.mul_add(value, sum), n + 1)
+        });
+        (sum_of_squares / count as f64).sqrt()
+    }
+
+    /// A particle's position error as a ground displacement in metres, measured
+    /// independently of the conversion under test.
+    ///
+    /// Great-circle distance on a sphere rather than the WGS84 radii the filter divides
+    /// by, so it cannot agree with the code under test by construction. The two differ by
+    /// a few tenths of a percent, which is why the assertions below carry a 3% tolerance
+    /// and not a tighter one.
+    fn position_error_ground_meters(
+        nominal: &StrapdownState,
+        position_error: &Vector3<f64>,
+    ) -> Vector3<f64> {
+        let north_m = earth::haversine_distance(
+            nominal.latitude,
+            nominal.longitude,
+            nominal.latitude + position_error[0],
+            nominal.longitude,
+        );
+        let east_m = earth::haversine_distance(
+            nominal.latitude,
+            nominal.longitude,
+            nominal.latitude,
+            nominal.longitude + position_error[1],
+        );
+        Vector3::new(north_m, east_m, position_error[2])
+    }
+
+    fn spread_test_nominal_state() -> StrapdownState {
+        StrapdownState {
+            latitude: SPREAD_TEST_LATITUDE_DEG.to_radians(),
+            longitude: SPREAD_TEST_LONGITUDE_DEG.to_radians(),
+            altitude: SPREAD_TEST_ALTITUDE_M,
+            velocity_north: 0.0,
+            velocity_east: 0.0,
+            velocity_vertical: 0.0,
+            attitude: Rotation3::identity(),
+            is_enu: true,
+        }
+    }
+
+    /// The initial cloud spreads the requested metres east as well as north (#331).
+    ///
+    /// `position_init_std_m` is a ground extent, so a requested 10 m must put 10 m of
+    /// east-west spread on the ground at any latitude. Converting the east entry with the
+    /// latitude factor -- [`earth::METERS_TO_DEGREES`] is degrees *of latitude* per metre --
+    /// omits the `cos(latitude)` that belongs in the denominator, shrinking the east spread
+    /// to `10 cos(latitude)`: 5 m at the 60 degrees used here. An under-spread prior is the
+    /// condition that depletes a particle filter the first time a fix disagrees with it, so
+    /// this is a correctness guard and not a tuning preference.
+    #[test]
+    fn rbpf_initial_cloud_spreads_the_requested_metres_in_both_directions() {
+        const REQUESTED_HORIZONTAL_STD_M: f64 = 10.0;
+        const REQUESTED_VERTICAL_STD_M: f64 = 5.0;
+
+        let nominal = spread_test_nominal_state();
+        let config = RbpfConfig {
+            num_particles: 50_000,
+            position_init_std_m: Vector3::new(
+                REQUESTED_HORIZONTAL_STD_M,
+                REQUESTED_HORIZONTAL_STD_M,
+                REQUESTED_VERTICAL_STD_M,
+            ),
+            seed: 331,
+            ..RbpfConfig::default()
+        };
+        let rbpf = RaoBlackwellizedParticleFilter::new(nominal, config).unwrap();
+
+        let ground: Vec<Vector3<f64>> = rbpf
+            .particles
+            .iter()
+            .map(|particle| position_error_ground_meters(&nominal, &particle.position_error))
+            .collect();
+
+        for (axis, name, requested) in [
+            (0, "north", REQUESTED_HORIZONTAL_STD_M),
+            (1, "east", REQUESTED_HORIZONTAL_STD_M),
+            (2, "up", REQUESTED_VERTICAL_STD_M),
+        ] {
+            let observed = root_mean_square(ground.iter().map(|v| v[axis]));
+            let relative_error = (observed - requested).abs() / requested;
+            assert!(
+                relative_error < 0.03,
+                "{name} spread is {observed:.3} m for a requested {requested:.3} m at \
+                 {SPREAD_TEST_LATITUDE_DEG} deg latitude; the east entry comes out \
+                 cos(latitude) = {:.3} times the request when it is converted with the \
+                 latitude factor (#331)",
+                SPREAD_TEST_LATITUDE_DEG.to_radians().cos()
+            );
+        }
+    }
+
+    /// Process noise accumulates with elapsed time, not with the log's sample rate (#331).
+    ///
+    /// `position_process_noise_std_m` names a continuous-time random walk, which accumulates
+    /// *variance* linearly in time, so its standard deviation scales as `sqrt(dt)` and one
+    /// second of propagation must produce the same spread however it is subdivided. Scaling
+    /// the standard deviation by `dt` instead makes the per-step variance go as `dt^2`: the
+    /// 100 Hz run below then ends a factor of ten tighter than the 10 Hz one, and both end
+    /// one to two orders of magnitude tighter than the configuration asked for.
+    ///
+    /// The east channel is checked in metres alongside the others, so this also pins the
+    /// `cos(latitude)` conversion on the process-noise path that
+    /// `rbpf_initial_cloud_spreads_the_requested_metres_in_both_directions` pins on the
+    /// initialization path.
+    #[test]
+    fn rbpf_process_noise_depends_on_elapsed_time_not_sample_rate() {
+        const RATE_M_PER_SQRT_S: f64 = 1.0;
+        const ELAPSED_S: f64 = 1.0;
+
+        // One second of propagation, at two sample rates a decade apart.
+        let spreads: Vec<Vector3<f64>> = [(100, 0.01), (10, 0.1)]
+            .iter()
+            .map(|&(steps, dt)| propagated_position_spread_m(steps, dt))
+            .collect();
+
+        let expected = RATE_M_PER_SQRT_S * ELAPSED_S.sqrt();
+        for (axis, name) in [(0, "north"), (1, "east"), (2, "up")] {
+            let fast = spreads[0][axis];
+            let slow = spreads[1][axis];
+            assert!(
+                (fast - slow).abs() / expected < 0.05,
+                "{name} spread after 1 s is {fast:.4} m at 100 Hz but {slow:.4} m at 10 Hz; \
+                 process noise must depend on elapsed time alone (#331)"
+            );
+            for (observed, rate_hz) in [(fast, 100), (slow, 10)] {
+                assert!(
+                    (observed - expected).abs() / expected < 0.05,
+                    "{name} spread after 1 s at {rate_hz} Hz is {observed:.4} m, not the \
+                     {expected:.4} m a {RATE_M_PER_SQRT_S} m/sqrt(s) random walk accumulates \
+                     (#331)"
+                );
+            }
+        }
+    }
+
+    /// Spread in ground metres of a stationary cloud after `steps` predictions of `dt`.
+    ///
+    /// Everything but the position process noise is turned off -- a point-mass initial
+    /// cloud, negligible velocity and attitude uncertainty, no velocity/attitude process
+    /// noise -- so the only thing that reaches `position_error` is the term under test.
+    fn propagated_position_spread_m(steps: usize, dt: f64) -> Vector3<f64> {
+        let nominal = spread_test_nominal_state();
+        let gravity = earth::gravity(&SPREAD_TEST_LATITUDE_DEG, &SPREAD_TEST_ALTITUDE_M);
+        let config = RbpfConfig {
+            num_particles: 50_000,
+            // Not zero: these are standard deviations of a normal distribution, and the
+            // point is to start the cloud from a point mass, not to exercise the
+            // degenerate-distribution path.
+            position_init_std_m: Vector3::new(1e-9, 1e-9, 1e-9),
+            velocity_init_std_mps: 1e-9,
+            attitude_init_std_rad: 1e-12,
+            position_process_noise_std_m: Vector3::new(1.0, 1.0, 1.0),
+            velocity_process_noise_std_mps: 0.0,
+            attitude_process_noise_std_rad: 0.0,
+            seed: 331,
+            ..RbpfConfig::default()
+        };
+        let mut rbpf = RaoBlackwellizedParticleFilter::new(nominal, config).unwrap();
+
+        let imu = IMUData {
+            accel: Vector3::new(0.0, 0.0, gravity),
+            gyro: Vector3::zeros(),
+        };
+        for _ in 0..steps {
+            rbpf.predict(&imu, dt).unwrap();
+        }
+
+        let ground: Vec<Vector3<f64>> = rbpf
+            .particles
+            .iter()
+            .map(|particle| position_error_ground_meters(&nominal, &particle.position_error))
+            .collect();
+        Vector3::new(
+            root_mean_square(ground.iter().map(|v| v[0])),
+            root_mean_square(ground.iter().map(|v| v[1])),
+            root_mean_square(ground.iter().map(|v| v[2])),
+        )
+    }
+
     /// A heading measurement must actually reach the attitude states (#341).
     ///
     /// This is the structural regression guard, not an accuracy one. Yaw is a linear state
@@ -1381,6 +1614,15 @@ mod tests {
     // to explain before this test means anything. Four corrections to the
     // mechanization and its linearisation have now moved the number around
     // without closing the gap, which is the evidence for that reading.
+    //
+    // #331 -- `sqrt(dt)` rather than `dt` on the position process noise -- multiplies the
+    // vertical entry of Q by 5 in variance at this 5 Hz rate, and moved this to **72.67 m**.
+    // The bound below is left at the fitted 15 m rather than raised to suit: this test is
+    // quarantined, and re-fitting a bound #295 already calls fitted would add nothing. See
+    // `rbpf_runs_on_scenario_constant_velocity_north` for the seed scatter #331 measured,
+    // which is the more useful result: a 5x Q gives ~2.4x the altitude error, so the error
+    // scales as sqrt(Q) -- the vertical channel is dominated by its own process noise
+    // rather than held by its 5 Hz altitude fixes, which is what #295 has to explain.
     #[ignore = "RBPF vertical channel was tuned against the pre-#292 radii bug -- see #295"]
     fn rbpf_runs_on_scenario_stationary() {
         let lat_deg: f64 = 40.0;
@@ -1499,10 +1741,37 @@ mod tests {
         // corrections rests on the finite-difference checks in `linearize.rs`, which
         // agree to 1e-12, not on the column above.
         //
-        // 50 m is ~2x the worst of the three, matching the horizontal guard beside
-        // it: a genuine divergence (1e8 m scale, cf. #266) still trips it, codegen
-        // jitter cannot. Do not tighten to the observed value without fixing #295.
-        assert_solution_close_to_truth(&mean, truth, 50.0, 50.0, 1.0);
+        // 150 m is ~2x the worst observed, matching the horizontal guard beside it: a
+        // genuine divergence (1e8 m scale, cf. #266) still trips it, codegen jitter
+        // cannot. It was 50 m until #331 corrected the position process noise to scale
+        // its standard deviation by `sqrt(dt)` rather than `dt`, which at this 5 Hz rate
+        // multiplies the vertical entry of Q by 5 in variance.
+        //
+        // That correction is also the first measurement that says what the vertical
+        // channel is doing. Running all three scenarios over four seeds, before and
+        // after, final altitude error in metres:
+        //
+        //     seed        stationary      v north        v east
+        //                 pre    post     pre    post    pre    post
+        //     123        13.98  72.67     1.73  53.50   21.80  24.73
+        //     7          16.53  17.59    12.89  11.32   14.12  49.83
+        //     20260915    1.20  13.91     5.12   9.62    8.52  21.75
+        //     991         5.05  28.23     7.21  10.66   15.44   5.96
+        //     mean       ~9.2   ~33.1    ~6.7   ~21.3   ~15.0  ~25.6
+        //
+        // Two things follow. The endpoint is a draw from a wide distribution rather than
+        // a converged value -- no scenario is reliably the worst, and one seed's 1.73 m
+        // is another's 53.50 m -- which is what the paragraph above already suspected and
+        // this makes quantitative. And a 5x increase in the vertical Q buys roughly 2.4x
+        // the altitude error, i.e. the error goes as sqrt(Q): the channel is dominated by
+        // its own process noise rather than held by the 5 Hz altitude fixes it is being
+        // given. A healthy channel fed those fixes would sit near the metre level and
+        // barely notice Q. That is #295's defect, stated as a measurement.
+        //
+        // The horizontal and velocity errors move not at all across the same 24 runs
+        // (0.004-0.010 m, 0.002-0.012 m/s), so this is the vertical channel alone.
+        // Do not tighten to the observed value without fixing #295.
+        assert_solution_close_to_truth(&mean, truth, 50.0, 150.0, 1.0);
     }
 
     #[test]
@@ -1552,7 +1821,10 @@ mod tests {
 
         // Expect eastward motion; RBPF estimate should reflect it.
         assert!(mean[1] > initial_state.longitude);
-        assert_solution_close_to_truth(&mean, truth, 50.0, 25.0, 1.0);
+        // Altitude is an anti-divergence guard, not an accuracy claim, and it is the same
+        // 150 m as the northward scenario for the same reason -- see the seed scatter
+        // recorded there. It was 25 m until #331.
+        assert_solution_close_to_truth(&mean, truth, 50.0, 150.0, 1.0);
     }
 
     /// #268: every particle's conditional covariance stays identical.

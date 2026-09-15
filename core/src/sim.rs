@@ -3937,7 +3937,9 @@ pub struct ParticleFilterConfig {
     /// Number of particles in the filter.
     #[serde(default = "default_num_particles")]
     pub num_particles: usize,
-    /// Initial position standard deviation [`lat_m`, `lon_m`, `alt_m`].
+    /// Initial position standard deviation as a ground extent in metres,
+    /// [`north_m`, `east_m`, `up_m`]. Converted to the filter's radian position units
+    /// at the starting latitude; see [`crate::rbpf::RbpfConfig::position_init_std_m`].
     #[serde(default = "default_position_init_std_m")]
     pub position_init_std_m: Vec<f64>,
     /// Initial velocity standard deviation (m/s).
@@ -3946,7 +3948,10 @@ pub struct ParticleFilterConfig {
     /// Initial attitude standard deviation (rad).
     #[serde(default = "default_attitude_init_std_rad")]
     pub attitude_init_std_rad: f64,
-    /// Position process noise standard deviation [`lat_m`, `lon_m`, `alt_m`].
+    /// Position random-walk rate as [`north`, `east`, `up`] in m/sqrt(s) -- the key name
+    /// keeps its `_m` for compatibility with existing configuration files, and the value
+    /// is unchanged at a 1 s step. The per-step standard deviation is this times
+    /// `sqrt(dt)`; see [`crate::rbpf::RbpfConfig::position_process_noise_std_m`].
     #[serde(default = "default_position_process_noise_std_m")]
     pub position_process_noise_std_m: Vec<f64>,
     /// Velocity process noise standard deviation (m/s).
