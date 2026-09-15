@@ -628,7 +628,10 @@ impl NavigationFilter for UnscentedKalmanFilter {
         // on the rejected one. It is therefore computed before the branch rather than after
         // it, which costs one accumulation on a rejection and buys a recovery that inflates
         // only the states this measurement observed (#340).
-        let sigma_points = self.get_sigma_points()?;
+        //
+        // The sigma points above are reused rather than regenerated: neither the mean nor
+        // the covariance has changed since they were drawn, and `get_sigma_points` pays for
+        // a matrix square root every time it is called.
         let mut cross_covariance =
             DMatrix::<f64>::zeros(self.state_size, measurement.get_dimension());
         for (i, measurement_sigma_point) in measurement_sigma_points.column_iter().enumerate() {

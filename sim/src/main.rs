@@ -390,12 +390,13 @@ struct ClosedLoopSimArgs {
     #[arg(long, value_name = "PROBABILITY")]
     gate_confidence: Option<f64>,
 
-    /// Multiply the filter covariance by this factor each time the gate rejects a fix.
+    /// Grow the filter's uncertainty by this factor each time the gate rejects a fix.
     ///
-    /// Only used together with `--gate-confidence`. A gate with no recovery path is a
-    /// one-way door: the filter keeps drifting while the covariance it judges the next
-    /// fix against does not grow, so one rejection begets the next. Must be at least
-    /// 1.0; 1.0 disables inflation.
+    /// Only used together with `--gate-confidence`. Applied in the directions the rejected
+    /// measurement observed, not to the whole covariance. A gate with no recovery path is a
+    /// one-way door: the filter keeps drifting while the covariance it judges the next fix
+    /// against does not grow, so one rejection begets the next. Must be at least 1.0; 1.0
+    /// disables inflation.
     #[arg(long, value_name = "FACTOR", default_value_t = DEFAULT_REJECTION_INFLATION)]
     gate_inflation: f64,
 
@@ -1205,6 +1206,38 @@ fn run_open_loop(args: &SimArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Build the innovation gate and its recovery policy from the closed-loop CLI arguments.
+///
+/// Shared by the plain and geophysical closed-loop paths so that `--gate-confidence` and its
+/// two recovery flags mean the same thing in both. They did not: the geophysical path built
+/// no gate at all, so a `--geo` run silently ignored every gating flag it was given.
+///
+/// Both are built once, before any file is processed: an out-of-range confidence or inflation
+/// factor should be reported up front rather than after the first output file has been
+/// written. The recovery policy is validated even when no gate is installed, because an
+/// impossible factor is a mistake worth naming whether or not this run gates.
+///
+/// # Errors
+/// [`StrapdownError::OutOfRange`](strapdown::StrapdownError::OutOfRange) or
+/// [`StrapdownError::InvalidConfiguration`](strapdown::StrapdownError::InvalidConfiguration)
+/// from the two constructors.
+fn gating_from_args(
+    args: &ClosedLoopSimArgs,
+) -> Result<(Option<InnovationGate>, GateRecovery), Box<dyn Error>> {
+    let innovation_gate = args
+        .gate_confidence
+        .map(InnovationGate::chi_squared)
+        .transpose()?;
+    let gate_recovery = GateRecovery::new(
+        args.gate_inflation,
+        (args.gate_force_after > 0).then_some(args.gate_force_after),
+    )?;
+    if let Some(gate) = innovation_gate {
+        info!("Innovation gating enabled: {gate:?}, recovery {gate_recovery:?}");
+    }
+    Ok((innovation_gate, gate_recovery))
+}
+
 /// Execute closed-loop simulation
 fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
     // Check if geophysical navigation is enabled
@@ -1225,19 +1258,7 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
 
     // Built before the per-file loop on purpose: an out-of-range confidence should
     // be reported once, up front, not after the first file has already been written.
-    let innovation_gate = args
-        .gate_confidence
-        .map(InnovationGate::chi_squared)
-        .transpose()?;
-    // Validated up front for the same reason as the gate itself, and unconditionally:
-    // an out-of-range factor is a mistake worth reporting whether or not this run gates.
-    let gate_recovery = GateRecovery::new(
-        args.gate_inflation,
-        (args.gate_force_after > 0).then_some(args.gate_force_after),
-    )?;
-    if let Some(gate) = innovation_gate {
-        info!("Innovation gating enabled: {gate:?}, recovery {gate_recovery:?}");
-    }
+    let (innovation_gate, gate_recovery) = gating_from_args(args)?;
 
     // Get all CSV files to process
     let csv_files = get_csv_files(&args.sim.input)?;
@@ -1421,6 +1442,10 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
         return Err("At least one of --gravity-resolution or --magnetic-resolution must be specified when using --geo".into());
     }
 
+    // Gating applies here exactly as it does to a non-geophysical run: geophysical anomalies
+    // ride the same event stream and are scored by the same test.
+    let (innovation_gate, gate_recovery) = gating_from_args(args)?;
+
     // Get all CSV files to process
     let csv_files = get_csv_files(&args.sim.input)?;
     let is_multiple = csv_files.len() > 1;
@@ -1586,6 +1611,8 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                     ukf.get_estimate().len(),
                     num_geo_states
                 );
+                ukf.set_innovation_gate(innovation_gate);
+                ukf.set_gate_recovery(gate_recovery);
 
                 info!("Running UKF geophysical navigation simulation...");
                 run_closed_loop_with_geo(&mut ukf, events, None, None, geo_layout)
@@ -1669,6 +1696,8 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                     ekf.get_estimate().len(),
                     num_geo_states
                 );
+                ekf.set_innovation_gate(innovation_gate);
+                ekf.set_gate_recovery(gate_recovery);
 
                 info!("Running EKF geophysical navigation simulation...");
                 run_closed_loop_with_geo(&mut ekf, events, None, None, geo_layout)

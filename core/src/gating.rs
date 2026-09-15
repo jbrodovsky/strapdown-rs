@@ -279,6 +279,17 @@ impl InnovationGate {
 /// slow enough that a single unlucky rejection barely moves the threshold.
 pub const DEFAULT_REJECTION_INFLATION: f64 = 2.0;
 
+/// Smallest meaningful [`GateRecovery::forced_update_after`].
+///
+/// One would apply a measurement the moment the gate rejected it, which is not a gate at
+/// all; zero reads as "immediately" and means the same thing. [`GateRecovery::new`] refuses
+/// both, and because deserialization bypasses it, [`GatePolicy::decide`] ignores them too --
+/// the escape is simply switched off, leaving [`GateRecovery::rejection_inflation`] as the
+/// way back. That is the conservative direction for *this* knob: a threshold below 2 would
+/// silently disable the gate the user asked for, where ignoring it merely makes recovery
+/// slower.
+pub const MIN_FORCED_UPDATE_AFTER: usize = 2;
+
 /// Default number of consecutive rejections after which an update is forced through.
 ///
 /// Five 1 Hz fixes is a few seconds of disagreement -- long enough that a genuine
@@ -368,6 +379,11 @@ pub struct GateRecovery {
     /// covariance was unusable, and a correction computed from it would put `NaN` into
     /// the navigation state.
     ///
+    /// A value below [`MIN_FORCED_UPDATE_AFTER`] switches the escape off rather than
+    /// forcing on the first rejection: [`Self::new`] refuses `Some(0)` and `Some(1)`, and a
+    /// config that deserializes past it is ignored here for the same reason -- forcing
+    /// immediately would disable the gate the user configured.
+    ///
     /// **One streak, not one per sensor**, and that has a known cost: a fast sensor whose
     /// updates are accepted clears the streak, so a slow sensor whose fixes are being
     /// rejected may never reach this escape and is left recovering on
@@ -433,7 +449,7 @@ impl GateRecovery {
             });
         }
         if let Some(limit) = forced_update_after
-            && limit < 2
+            && limit < MIN_FORCED_UPDATE_AFTER
         {
             return Err(StrapdownError::InvalidConfiguration {
                 field: "forced_update_after",
@@ -694,8 +710,9 @@ impl GatePolicy {
         // means `S` was unusable, so the correction it would produce is `NaN` and
         // forcing it through would destroy the state rather than rescue it.
         if let Some(limit) = self.recovery.forced_update_after
+            && limit >= MIN_FORCED_UPDATE_AFTER
             && nis.is_finite()
-            && streak >= limit.max(1)
+            && streak >= limit
         {
             // `warn`, unlike the per-rejection line below: this is the filter being
             // overruled by its own sensors, which is worth seeing in a default log even
@@ -1238,6 +1255,36 @@ mod tests {
             0,
             "an accepted measurement left the rejection streak standing"
         );
+    }
+
+    #[test]
+    fn a_deserialized_escape_below_two_switches_the_escape_off() {
+        // `GateRecovery::new` refuses `Some(0)` and `Some(1)`, but a hand-edited config
+        // reaches the hot path without passing through it. Honouring the value literally
+        // would force the *first* rejected measurement through, i.e. silently disable the
+        // gate; the escape is switched off instead and inflation remains the way back.
+        for degenerate in [Some(0), Some(1)] {
+            let mut policy = GatePolicy::new(
+                Some(closed_gate()),
+                GateRecovery {
+                    rejection_inflation: 2.0,
+                    forced_update_after: degenerate,
+                },
+            );
+            for attempt in 0..10 {
+                let decision = policy.decide(100.0, 3, "test");
+                assert!(
+                    !decision.outcome.accepted,
+                    "forced_update_after = {degenerate:?} applied a rejected measurement on \
+                     attempt {attempt}, which is no gate at all"
+                );
+                assert_approx_eq!(
+                    decision.covariance_inflation,
+                    DEFAULT_REJECTION_INFLATION,
+                    1e-15
+                );
+            }
+        }
     }
 
     #[test]

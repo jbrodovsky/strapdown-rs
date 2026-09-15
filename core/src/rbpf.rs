@@ -746,10 +746,17 @@ impl RaoBlackwellizedParticleFilter {
     /// multiplicative inflation of the ensemble-filter literature (Anderson & Anderson
     /// 1999), and it needs no draw from the RNG, so a seeded run stays reproducible.
     ///
-    /// Each particle's own `linear_cov` is scaled by $f$ as well: the ensemble
-    /// covariance of the linear states is the spread of their means plus the mean of
-    /// their covariances, and inflating only the first half would leave a cloud of
-    /// confident particles in disagreement rather than a cloud of uncertain ones.
+    /// The stretch is what re-opens the gate, and it is enough on its own to do so:
+    /// [`Self::evaluate_ensemble_gate`] scores against [`Self::weighted_moments`], which is
+    /// the weighted *spread* of the particle states -- position, velocity, attitude and
+    /// extra states alike -- so scaling every deviation by $\sqrt{f}$ multiplies the exact
+    /// covariance the next NIS is computed from by $f$. `inflating_the_cloud_multiplies_its\
+    /// _covariance_by_the_factor` asserts that on the same summary the gate uses.
+    ///
+    /// Each particle's own `linear_cov` is scaled by $f$ as well. That does not enter the
+    /// gate's covariance, but it does enter each particle's own Kalman update, and leaving
+    /// it behind would produce a wide cloud of individually over-confident particles -- the
+    /// conditional half of the uncertainty contradicting the ensemble half.
     ///
     /// Unlike the Kalman filters, which inflate only the subspace the rejected measurement
     /// observed, this stretches the cloud in every direction: a weighted ensemble has no

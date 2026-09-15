@@ -4281,12 +4281,14 @@ pub struct ClosedLoopConfig {
     /// rather than optional because a gate without a way back out is the defect in #340,
     /// not a configuration: the filter that rejects one fix keeps drifting while the
     /// covariance it judges the next fix against does not grow, so the rejection is
-    /// self-reinforcing. Write it out only to tune it, or to switch it off:
+    /// self-reinforcing. Write it out only to tune it:
     ///
     /// ```yaml
     /// gate_recovery: { rejection_inflation: 4.0, forced_update_after: 3 }
-    /// gate_recovery: { rejection_inflation: 1.0, forced_update_after: null }
     /// ```
+    ///
+    /// Either field may be omitted and keeps its default. `rejection_inflation: 1.0` with
+    /// `forced_update_after: null` is both mechanisms off, i.e. the pre-#340 behaviour.
     #[serde(default)]
     pub gate_recovery: GateRecovery,
 }
