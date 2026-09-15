@@ -769,7 +769,7 @@ pub struct GravityMeasurement {
     /// Optional bias state index, counted back from the end of the state vector.
     ///
     /// `Some(1)` addresses the last entry, `Some(2)` the one before it; `None` means this
-    /// model carries no bias state. See [`resolve_bias_index`] for the contract, including
+    /// model carries no bias state. See `resolve_bias_index` for the contract, including
     /// what it can and cannot detect when the filter's state does not carry the bias.
     pub bias_from_end: Option<usize>,
 }
@@ -898,7 +898,7 @@ impl GravityMeasurement {
     /// # Errors
     /// Propagates [`StrapdownError::OutOfMapBounds`] when the estimate has left the loaded
     /// tile. That is recoverable: the caller should skip this measurement, not abort.
-    /// Returns [`StrapdownError::DimensionMismatch`] from [`resolve_bias_index`] when
+    /// Returns [`StrapdownError::DimensionMismatch`] from `resolve_bias_index` when
     /// `state` is too narrow to carry the declared bias -- which is not recoverable, since
     /// it means the measurement and the filter disagree about the state layout.
     pub fn get_jacobian_internal(
@@ -950,7 +950,7 @@ pub struct MagneticAnomalyMeasurement {
     /// Optional bias state index, counted back from the end of the state vector.
     ///
     /// `Some(1)` addresses the last entry, `Some(2)` the one before it; `None` means this
-    /// model carries no bias state. See [`resolve_bias_index`] for the contract, including
+    /// model carries no bias state. See `resolve_bias_index` for the contract, including
     /// what it can and cannot detect when the filter's state does not carry the bias.
     pub bias_from_end: Option<usize>,
 }
@@ -1101,7 +1101,7 @@ impl MagneticAnomalyMeasurement {
     /// # Errors
     /// Propagates [`StrapdownError::OutOfMapBounds`] when the estimate has left the loaded
     /// tile. That is recoverable: the caller should skip this measurement, not abort.
-    /// Returns [`StrapdownError::DimensionMismatch`] from [`resolve_bias_index`] when
+    /// Returns [`StrapdownError::DimensionMismatch`] from `resolve_bias_index` when
     /// `state` is too narrow to carry the declared bias -- which is not recoverable, since
     /// it means the measurement and the filter disagree about the state layout.
     pub fn get_jacobian_internal(
