@@ -448,9 +448,10 @@ fn transition_jacobian(
 
     // --- ∂(attitude(+))/∂(position) and ∂(attitude(+))/∂(v): through ω_in ---
     //
-    // 5.46 propagates `C+ = C + C[ω_ib x] dt - [ω_in x] C dt`, so perturbing anything
-    // ω_in = ω_ie + ω_en depends on gives `δC+ = -[δω_in x] C dt`; against this
-    // parametrisation's nav-frame perturbation `C~ = (I + [δθ x]) C` that reads
+    // 5.46 propagates `C+ = C + C[ω_ib x] dt - [ω_in x] C dt`, where ω_in = ω_ie + ω_en.
+    // Perturbing any state element that ω_in is a function of therefore gives
+    // `δC+ = -[δω_in x] C dt`, and against this parametrisation's nav-frame perturbation
+    // `C~ = (I + [δθ x]) C` that reads
     //
     //     δθ+ = -δω_in dt
     //
