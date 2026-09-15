@@ -27,6 +27,16 @@ watch for:
 `strapdown-core` on its own needs none of this: `cargo build -p strapdown-core` uses no C
 toolchain at all.
 
+Nothing here needs the [GitHub CLI](https://cli.github.com/) to build, test or lint, so this is
+only relevant if you use `gh` to open and review pull requests. If you do, it must be **2.71 or
+newer**. Older clients ask for the `projectCards` field that GitHub removed along with Projects
+(classic), so `gh pr view` and `gh issue view` exit 1 on a deprecation notice, and `gh pr edit`
+exits 1 while leaving the pull request body **unchanged** -- easy to miss. No Debian or Ubuntu
+release ships a new enough package (Ubuntu 26.04 and Debian trixie are on 2.46, Debian 12 on
+2.23), so install it from
+[cli.github.com's apt repository](https://github.com/cli/cli/blob/trunk/docs/install_linux.md)
+or put the release binary on your `PATH`.
+
 ## Before you open a pull request
 
 The workspace enforces a strict lint gate rather than a warning-level one. Both of these must
