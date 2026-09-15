@@ -122,21 +122,39 @@ fn synthetic_track(samples: usize) -> Vec<TestDataRecord> {
         .collect()
 }
 
-/// Where the magnetic map's anomalies sit, and what the track's magnetometer reads.
+/// What the track's magnetometer reads, in the microtesla `TestDataRecord` documents.
 ///
-/// Both in the units `MagneticAnomalyMeasurement` works in. The map is the same field as the
-/// gravity one shifted here, and the observed reading is a constant inside that band, so the
-/// innovation is the map's own variation along the track plus whatever the bias is carrying --
-/// small enough to be a well-posed update, varying enough that the bias is actually observable.
-const MAGNETIC_MAP_OFFSET_NT: f64 = 300.0;
-const MAGNETOMETER_READING_NT: f64 = 300.0;
+/// Earth's total field at this track is 50.87 uT, so this is a real reading with 131 nT of
+/// anomaly on it rather than a number picked to make the arithmetic work. That matters more
+/// than it looks: these two constants were 300 and 300 while the observation reached the model
+/// unconverted and the reference was subtracted in tesla, which made a 300 uT magnetometer --
+/// six times Earth's field -- agree with a 300 nT map. Once the units were fixed the same pair
+/// meant a 249,131 nT anomaly against a 281 nT map, and the bias state quietly absorbed 31,166
+/// nT of it. The test still passed: the bias moved and its variance fell, which is all the two
+/// assertions ask. `MAGNETIC_BIAS_PLAUSIBLE_NT` below is what closes that gap.
+const MAGNETOMETER_READING_UT: f64 = 51.0;
+
+/// Where the map's anomalies sit, in nanotesla: the anomaly the reading above actually has.
+///
+/// 51.0 uT observed minus the 50.869 uT reference is 131 nT, and the generated field varies
+/// about +/-40 nT around this, so the innovation stays inside a few times the 10 nT measurement
+/// noise -- well posed, and varying enough along the track that the bias is observable.
+const MAGNETIC_MAP_OFFSET_NT: f64 = 130.0;
+
+/// The largest magnetic bias this run has any business estimating, in nanotesla.
+///
+/// A units error does not make the bias stop moving -- it makes the bias absorb the error, and
+/// absorb it *confidently*, so movement and a falling variance both still hold. Bounding the
+/// magnitude is the assertion that separates a bias tracking a real anomaly from one soaking up
+/// a scale factor, and it is the one that would have caught the microtesla/nanotesla mismatch.
+const MAGNETIC_BIAS_PLAUSIBLE_NT: f64 = 1000.0;
 
 /// The same track with a magnetometer that reads a constant total field.
 fn with_magnetometer(records: Vec<TestDataRecord>) -> Vec<TestDataRecord> {
     records
         .into_iter()
         .map(|record| TestDataRecord {
-            mag_z: MAGNETOMETER_READING_NT,
+            mag_z: MAGNETOMETER_READING_UT,
             ..record
         })
         .collect()
@@ -484,6 +502,15 @@ fn magnetic_only_ekf_estimates_its_bias_state() {
     let biases: Vec<f64> = results.iter().filter_map(|r| r.magnetic_bias).collect();
     let covariances: Vec<f64> = results.iter().filter_map(|r| r.magnetic_bias_cov).collect();
     assert_bias_is_estimated(&biases, &covariances, "magnetic");
+
+    // And it has to be a *plausible* bias, not one absorbing a unit conversion. See
+    // `MAGNETIC_BIAS_PLAUSIBLE_NT`.
+    let worst = biases.iter().fold(0.0_f64, |acc, b| acc.max(b.abs()));
+    assert!(
+        worst < MAGNETIC_BIAS_PLAUSIBLE_NT,
+        "the magnetic bias reached {worst:.0} nT, past anything a real anomaly explains -- the \
+         observation and the reference field are probably not in the same unit"
+    );
 
     std::fs::remove_dir_all(&dir).ok();
 }
