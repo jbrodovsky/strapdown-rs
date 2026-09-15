@@ -2180,10 +2180,16 @@ fn test_eskf_default_initialization_on_real_data() {
 
     // The vertical channel is unobservable at t=0: the filter starts with zero vertical
     // velocity and no knowledge of the accelerometer bias, and needs a few GNSS fixes
-    // before it can separate the two. That settling transient peaks at 42.6 m on sample 3
-    // of this 1 Hz recording and is bounded separately from the steady state, which is the
-    // quantity a vertical-channel regression would move. Excluding it wholesale would hide
-    // a divergence, so it gets its own, looser ceiling rather than no ceiling.
+    // before it can separate the two. That transient used to peak at 42.6 m on sample 3 of
+    // this 1 Hz recording, and is now gone: the peak equals the settled peak below, 12.30 m.
+    //
+    // It was never the unobservable vertical channel. `initialize_eskf` passed the record's
+    // radian Euler columns with `in_degrees: true`, which scaled them by pi/180 and seeded
+    // this recording's 77-degree roll as a 0.16-degree one. The filter spent its first three
+    // samples removing gravity along the wrong body axes; the 30 m of altitude error that
+    // bought is what the transient was. Seeding from the quaternion instead removes it at
+    // the source, so the two ceilings below now measure the same thing -- kept separate
+    // because a reintroduced transient is exactly the regression they exist to catch.
     let settled_max_altitude_error = results
         .iter()
         .zip(records.iter())
@@ -2192,8 +2198,8 @@ fn test_eskf_default_initialization_on_real_data() {
         .fold(0.0_f64, f64::max);
     println!("Altitude Error after settling: max={settled_max_altitude_error:.2}m");
     assert!(
-        stats.max_altitude_error < 100.0,
-        "default-initialised ESKF altitude settling transient should be under 100m, got {:.2}m",
+        stats.max_altitude_error < 40.0,
+        "default-initialised ESKF altitude settling transient should be under 40m, got {:.2}m",
         stats.max_altitude_error
     );
     // ~3x margin over the 12.3 m observed across the remaining 5,336 samples, and far
@@ -3262,11 +3268,18 @@ fn test_eskf_recovers_from_gnss_outage() {
 ///
 /// Measured against the default constant, holding process noise and everything else fixed:
 /// horizontal rms and peak are identical to two decimal places (23.53 m / 37.88 m), altitude
-/// rms moves 3.02 m -> 3.05 m, the vertical settling transient that #266 and #286 were about
-/// halves (42.56 m -> 21.43 m), and the settled altitude peak after that transient moves
-/// 12.30 m -> 14.58 m. The derived P0 is not the default -- changing that is a separate
-/// decision with its own blast radius -- but these are the numbers the #266 retune starts
-/// from.
+/// rms moves 2.77 m -> 2.78 m, and the altitude peak moves 12.30 m -> 12.29 m, which is also
+/// the settled peak for both. The derived P0 is not the default -- changing that is a
+/// separate decision with its own blast radius -- but these are the numbers the #266 retune
+/// starts from.
+///
+/// Those figures used to read 3.02 -> 3.05 m rms, with a 42.56 m vertical transient that the
+/// derived P0 halved to 21.43 m and a settled peak that moved 12.30 m -> 14.58 m. Both sides
+/// of that comparison were measuring a seeding bug: the initial attitude was the record's
+/// radian Euler columns scaled by pi/180, so both filters began level when the phone was at
+/// 77 degrees of roll, and a tighter P0 simply took longer to be talked out of it. With the
+/// attitude seeded from the quaternion there is no transient left for P0 to halve, and the
+/// two initialisations are separated by 0.01 m rather than by a startup artefact.
 #[test]
 fn test_eskf_auto_covariance_initialization_on_real_data() {
     /// Samples the vertical channel is allowed to settle over: 30 s at this recording's 1 Hz.
@@ -3279,23 +3292,13 @@ fn test_eskf_auto_covariance_initialization_on_real_data() {
 
     let first = &records[0];
     // Exactly the state `initialize_eskf` builds, so P0 is the only thing that differs.
-    let initial_state = InitialState {
-        latitude: first.latitude,
-        longitude: first.longitude,
-        altitude: first.altitude,
-        northward_velocity: first.speed * first.bearing.to_radians().cos(),
-        eastward_velocity: first.speed * first.bearing.to_radians().sin(),
-        vertical_velocity: 0.0,
-        roll: if first.roll.is_nan() { 0.0 } else { first.roll },
-        pitch: if first.pitch.is_nan() {
-            0.0
-        } else {
-            first.pitch
-        },
-        yaw: if first.yaw.is_nan() { 0.0 } else { first.yaw },
-        in_degrees: true,
-        is_enu: true,
-    };
+    //
+    // This used to be a hand-copied struct literal, which is how it kept the seeding defect
+    // `initialize_eskf` had -- Euler columns that are radians passed with `in_degrees: true`,
+    // scaling the initial attitude by pi/180 -- for as long as the initialiser did.
+    // `create_initial_state` builds the same state the initialiser now does, field for
+    // field, so the claim above stays true by construction rather than by copying.
+    let initial_state = create_initial_state(first);
 
     // The receiver's own reported horizontal accuracy across this recording, with the usual
     // vertical-is-twice-horizontal ratio and a half-metre-per-second velocity accuracy.
@@ -3355,8 +3358,8 @@ fn test_eskf_auto_covariance_initialization_on_real_data() {
         stats.rms_altitude_error
     );
     assert!(
-        stats.max_altitude_error < 100.0,
-        "auto-covariance ESKF altitude settling transient should be under 100m, got {:.2}m",
+        stats.max_altitude_error < 40.0,
+        "auto-covariance ESKF altitude settling transient should be under 40m, got {:.2}m",
         stats.max_altitude_error
     );
 

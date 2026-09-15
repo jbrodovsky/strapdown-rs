@@ -2008,7 +2008,7 @@ pub fn dead_reckoning(records: &[TestDataRecord]) -> Result<Vec<NavigationResult
         velocity_vertical: 0.0, // initial velocities
         attitude,
         // Deliberately ENU and deliberately still hardcoded; see the note in
-        // `initialize_ukf`. `TestDataRecord` carries no frame tag, so honouring the NED
+        // `initial_state_from_record`. `TestDataRecord` carries no frame tag, so honouring the NED
         // default here would break every ENU recording with no way to opt back in. The
         // frame becomes a caller-supplied option in queue 7's `InsEngine` builder (#296).
         is_enu: true,
@@ -2346,6 +2346,60 @@ fn require_config(ok: bool, field: &'static str, reason: String) -> Result<(), S
     }
 }
 
+/// Build the [`InitialState`] that the three filter initialisers seed from a
+/// [`TestDataRecord`].
+///
+/// Both unit conversions below were got wrong independently in each of the three callers,
+/// which is why they now happen in exactly one place:
+///
+/// * **Ground track.** `bearing` is stored in degrees.
+///   [`TestDataRecord::ground_track_velocity`] converts it and guards the NaN case once;
+///   `initialize_ukf` used to open-code the trigonometry *without* the conversion, so it
+///   seeded a different velocity than `initialize_ekf`/`initialize_eskf` did from the same
+///   record -- at bearing 90 degrees, 10 m/s of ground track became (-4.5, 8.9) m/s north/east
+///   instead of (0.0, 10.0).
+/// * **Attitude.** The `roll`/`pitch`/`yaw` columns are radians, but all three callers
+///   passed them with `in_degrees: true`, so every filter constructor scaled the initial
+///   attitude by pi/180. Those columns are not nalgebra's intrinsic XYZ sequence either --
+///   see [`TestDataRecord::attitude`] for what feeding them raw costs -- so the angles come
+///   from the record's quaternion, the authoritative attitude in this format. That makes
+///   `in_degrees: false` correct, which in turn makes converting latitude and longitude
+///   this function's job rather than the filter constructors'.
+///
+/// A record whose quaternion is absent (all-NaN or zero-norm) yields the identity rotation,
+/// so the zero attitude the NaN guards here used to produce is still what an attitude-less
+/// record gets.
+fn initial_state_from_record(record: &TestDataRecord) -> InitialState {
+    let (roll, pitch, yaw) = record.attitude().euler_angles();
+    let (northward_velocity, eastward_velocity) = record.ground_track_velocity();
+    InitialState {
+        latitude: record.latitude.to_radians(),
+        longitude: record.longitude.to_radians(),
+        altitude: record.altitude,
+        northward_velocity,
+        eastward_velocity,
+        vertical_velocity: 0.0, // no initial vertical velocity is assumed
+        roll,
+        pitch,
+        yaw,
+        in_degrees: false,
+        // Deliberately ENU, and deliberately still hardcoded.
+        //
+        // These entry points build their own `InitialState` from a `TestDataRecord`, which
+        // carries no frame tag -- Sensor Logger exports (ENU-convention: +g along the
+        // device's up-axis at rest) and `generate_synthetic` output (NED) are
+        // indistinguishable once loaded. Honouring the new NED default here would silently
+        // break every ENU recording with no way to opt back in, so the frame has to become a
+        // caller-supplied option first. That is a signature change across
+        // `dead_reckoning`/`initialize_ukf`/`initialize_ekf`/`initialize_eskf` and the CLI,
+        // which is queue 7's `InsEngine` builder (#262), not this PR's default flip.
+        //
+        // Known symptom until then: `strapdown-sim syn` emits NED, so dead-reckoning it
+        // through this ENU path double-counts gravity and falls at 2 g. Tracked in #296.
+        is_enu: true,
+    }
+}
+
 /// Helper function to initialize a UKF for closed-loop mode.
 ///
 /// This function sets up the Unscented Kalman Filter (UKF) with initial pose and configuration parameters.
@@ -2366,44 +2420,7 @@ pub fn initialize_ukf(
     initial_pose: &TestDataRecord,
     config: UkfConfig,
 ) -> Result<UnscentedKalmanFilter, StrapdownError> {
-    let initial_state = InitialState {
-        latitude: initial_pose.latitude,
-        longitude: initial_pose.longitude,
-        altitude: initial_pose.altitude,
-        northward_velocity: initial_pose.speed * initial_pose.bearing.cos(),
-        eastward_velocity: initial_pose.speed * initial_pose.bearing.sin(),
-        vertical_velocity: 0.0, // Assuming no initial vertical velocity for simplicity
-        roll: if initial_pose.roll.is_nan() {
-            0.0
-        } else {
-            initial_pose.roll
-        },
-        pitch: if initial_pose.pitch.is_nan() {
-            0.0
-        } else {
-            initial_pose.pitch
-        },
-        yaw: if initial_pose.yaw.is_nan() {
-            0.0
-        } else {
-            initial_pose.yaw
-        },
-        in_degrees: true,
-        // Deliberately ENU, and deliberately still hardcoded.
-        //
-        // These entry points build their own `InitialState` from a `TestDataRecord`, which
-        // carries no frame tag -- Sensor Logger exports (ENU-convention: +g along the
-        // device's up-axis at rest) and `generate_synthetic` output (NED) are
-        // indistinguishable once loaded. Honouring the new NED default here would silently
-        // break every ENU recording with no way to opt back in, so the frame has to become a
-        // caller-supplied option first. That is a signature change across
-        // `dead_reckoning`/`initialize_ukf`/`initialize_ekf`/`initialize_eskf` and the CLI,
-        // which is queue 7's `InsEngine` builder (#262), not this PR's default flip.
-        //
-        // Known symptom until then: `strapdown-sim syn` emits NED, so dead-reckoning it
-        // through this ENU path double-counts gravity and falls at 2 g. Tracked in #296.
-        is_enu: true,
-    };
+    let initial_state = initial_state_from_record(initial_pose);
     let process_noise_diagonal = match config.process_noise_diagonal {
         Some(pn) => pn,
         None => DEFAULT_PROCESS_NOISE.to_vec(),
@@ -2519,37 +2536,7 @@ pub fn initialize_ekf(
     use crate::kalman::ExtendedKalmanFilter;
 
     // Build initial state from sensor data
-    let initial_state = InitialState {
-        latitude: initial_pose.latitude,
-        longitude: initial_pose.longitude,
-        altitude: initial_pose.altitude,
-        // Note: `initial_pose.bearing` is stored in degrees in `TestDataRecord`.
-        // Convert to radians here for use with trigonometric functions.
-        northward_velocity: initial_pose.speed * initial_pose.bearing.to_radians().cos(),
-        eastward_velocity: initial_pose.speed * initial_pose.bearing.to_radians().sin(),
-        vertical_velocity: 0.0,
-        roll: if initial_pose.roll.is_nan() {
-            0.0
-        } else {
-            initial_pose.roll
-        },
-        pitch: if initial_pose.pitch.is_nan() {
-            0.0
-        } else {
-            initial_pose.pitch
-        },
-        yaw: if initial_pose.yaw.is_nan() {
-            0.0
-        } else {
-            initial_pose.yaw
-        },
-        in_degrees: true,
-        // Deliberately ENU and deliberately still hardcoded; see the note in
-        // `initialize_ukf`. `TestDataRecord` carries no frame tag, so honouring the NED
-        // default here would break every ENU recording with no way to opt back in. The
-        // frame becomes a caller-supplied option in queue 7's `InsEngine` builder (#296).
-        is_enu: true,
-    };
+    let initial_state = initial_state_from_record(initial_pose);
 
     // Determine state size based on use_biases flag
     let state_size = if use_biases { 15 } else { 9 };
@@ -2696,37 +2683,7 @@ pub fn initialize_eskf(
     use crate::kalman::ErrorStateKalmanFilter;
 
     // Build initial state from sensor data
-    let initial_state = InitialState {
-        latitude: initial_pose.latitude,
-        longitude: initial_pose.longitude,
-        altitude: initial_pose.altitude,
-        // Note: `initial_pose.bearing` is stored in degrees in `TestDataRecord`.
-        // Convert to radians here for use with trigonometric functions.
-        northward_velocity: initial_pose.speed * initial_pose.bearing.to_radians().cos(),
-        eastward_velocity: initial_pose.speed * initial_pose.bearing.to_radians().sin(),
-        vertical_velocity: 0.0,
-        roll: if initial_pose.roll.is_nan() {
-            0.0
-        } else {
-            initial_pose.roll
-        },
-        pitch: if initial_pose.pitch.is_nan() {
-            0.0
-        } else {
-            initial_pose.pitch
-        },
-        yaw: if initial_pose.yaw.is_nan() {
-            0.0
-        } else {
-            initial_pose.yaw
-        },
-        in_degrees: true,
-        // Deliberately ENU and deliberately still hardcoded; see the note in
-        // `initialize_ukf`. `TestDataRecord` carries no frame tag, so honouring the NED
-        // default here would break every ENU recording with no way to opt back in. The
-        // frame becomes a caller-supplied option in queue 7's `InsEngine` builder (#296).
-        is_enu: true,
-    };
+    let initial_state = initial_state_from_record(initial_pose);
 
     // ESKF always uses 15-state error vector (pos, vel, att, accel_bias, gyro_bias)
     let state_size = 15;
@@ -5506,6 +5463,108 @@ mod tests {
         // Just ensure it doesn't panic
         print_ukf(&ukf, &rec);
     }
+    /// All three filter initialisers must seed the same ground track from the same record.
+    ///
+    /// `bearing` is degrees. `initialize_ukf` fed it to `cos`/`sin` raw while
+    /// `initialize_ekf` and `initialize_eskf` converted first, so the three disagreed on
+    /// the same input: at bearing 90 the UKF seeded (-4.48, 8.94) m/s north/east where the
+    /// other two seeded (0.00, 10.00). All three now route through
+    /// [`TestDataRecord::ground_track_velocity`], which owns the conversion.
+    #[test]
+    fn test_initializers_agree_on_ground_track() {
+        let rec = TestDataRecord {
+            time: Utc::now(),
+            horizontal_accuracy: 5.0,
+            vertical_accuracy: 2.0,
+            speed_accuracy: 1.0,
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            speed: 10.0,
+            // Chosen because degrees and radians differ most visibly here: due east should
+            // put the entire 10 m/s on the east channel and nothing on the north one.
+            bearing: 90.0,
+            qw: 1.0,
+            ..Default::default()
+        };
+
+        let ukf = initialize_ukf(&rec, UkfConfig::default()).unwrap();
+        let ekf = initialize_ekf(&rec, None, None, None, None, true).unwrap();
+        let eskf = initialize_eskf(&rec, None, None, None, None).unwrap();
+
+        for (name, estimate) in [
+            ("UKF", ukf.get_estimate()),
+            ("EKF", ekf.get_estimate()),
+            ("ESKF", eskf.get_estimate()),
+        ] {
+            assert_approx_eq!(estimate[3], 0.0, 1e-12); // northward velocity
+            assert_approx_eq!(estimate[4], 10.0, 1e-12); // eastward velocity
+            assert!(
+                estimate[3].abs() < 1e-12,
+                "{name} seeded {:.3} m/s of northward velocity from a due-east ground track, \
+                 which is the un-converted-degrees signature",
+                estimate[3]
+            );
+        }
+    }
+
+    /// All three filter initialisers must seed the attitude the record's quaternion describes.
+    ///
+    /// Two defects at once: `roll`/`pitch`/`yaw` are radians but were passed with
+    /// `in_degrees: true`, so every filter constructor scaled them by pi/180; and those
+    /// columns are not nalgebra's XYZ sequence in the first place -- see
+    /// [`TestDataRecord::attitude`]. The assertion is the convention-free angle between the
+    /// seeded rotation and the record's own, so it catches either failure. Under the old
+    /// code this angle was 1.21 rad.
+    #[test]
+    fn test_initializers_seed_attitude_from_quaternion() {
+        let quaternion = nalgebra::UnitQuaternion::from_euler_angles(0.4, -0.3, 1.2);
+        let rec = TestDataRecord {
+            time: Utc::now(),
+            horizontal_accuracy: 5.0,
+            vertical_accuracy: 2.0,
+            speed_accuracy: 1.0,
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            speed: 10.0,
+            bearing: 45.0,
+            qw: quaternion.w,
+            qx: quaternion.i,
+            qy: quaternion.j,
+            qz: quaternion.k,
+            // Deliberately disagreeing with the quaternion, the way a real Sensor Logger row
+            // does: these are the first sample of `core/tests/test_data.csv`.
+            roll: 0.163,
+            pitch: -1.340,
+            yaw: 0.179,
+            ..Default::default()
+        };
+
+        let expected = rec.attitude();
+        let ukf = initialize_ukf(&rec, UkfConfig::default()).unwrap();
+        let ekf = initialize_ekf(&rec, None, None, None, None, true).unwrap();
+        let eskf = initialize_eskf(&rec, None, None, None, None).unwrap();
+
+        for (name, estimate) in [
+            ("UKF", ukf.get_estimate()),
+            ("EKF", ekf.get_estimate()),
+            ("ESKF", eskf.get_estimate()),
+        ] {
+            // Reconstructing rather than comparing angles elementwise: `ErrorStateKalmanFilter`
+            // wraps its Euler output into [0, 2pi), and each elementary rotation is
+            // 2pi-periodic, so the rotation is the quantity the three agree on.
+            let seeded =
+                nalgebra::Rotation3::from_euler_angles(estimate[6], estimate[7], estimate[8]);
+            let error_angle = (seeded.inverse() * expected).angle();
+            assert!(
+                error_angle < 1e-9,
+                "{name} seeded an attitude {error_angle:.6} rad away from the record's \
+                 quaternion"
+            );
+        }
+    }
+
     #[test]
     fn test_initialize_ukf_with_nan_angles() {
         let rec = TestDataRecord {
