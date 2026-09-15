@@ -295,3 +295,8 @@ When developing Free Core features, consider extensibility for future profession
 - Create feature branches for development
 - Current focus: Implementing Free Core specification features for reproducible research simulations
 - When asked to execute on an issue or new high-level feature request, ask the user if this should be completed on the current branch or to create a new branch
+- **`gh` must be 2.71 or newer.** Older clients request the `projectCards` field GitHub removed
+  with Projects (classic), so `gh pr view`/`gh issue view` exit 1 and `gh pr edit` exits 1 while
+  leaving the body **unchanged**. `gh api` and the `--json` forms are unaffected. No Debian or
+  Ubuntu package is new enough -- install from
+  [cli.github.com](https://github.com/cli/cli/blob/trunk/docs/install_linux.md). See #365

@@ -110,6 +110,16 @@ git config rebase.updateRefs true   # carries downstream branch tips when the ba
 
 ### Merging a spine PR
 
+Every command in this section needs **`gh` 2.71 or newer**. Older clients ask for the
+`projectCards` field that GitHub removed along with Projects (classic), so `gh pr view` and
+`gh issue view` exit 1 with a deprecation notice -- and `gh pr edit` exits 1 while leaving the
+body **unchanged**, which is the one that costs a review cycle. `gh api` was never affected, so
+the recipe below ran fine even on an old client; what broke was reading and editing the PRs
+around it. No Debian or Ubuntu release ships a new enough `gh` (Ubuntu 26.04 and Debian trixie
+are both on 2.46), so install it from
+[cli.github.com](https://github.com/cli/cli/blob/trunk/docs/install_linux.md) or put the release
+binary on `PATH`. Diagnosed in #365.
+
 GitHub now treats these branches as a first-class **stack** and does the restacking itself.
 The manual recipe this section used to carry no longer runs: `gh pr merge --rebase` is refused
 ("must be merged using the asynchronous merge REST API"), `PUT .../pulls/<N>/merge` returns 403
