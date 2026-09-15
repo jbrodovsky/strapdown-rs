@@ -82,7 +82,7 @@ use crate::measurements::{GPSPositionMeasurement, GPSVelocityMeasurement, Measur
 // `DEFAULT_PROCESS_NOISE` is a tuning constant for the 15-state filters rather than a
 // simulation-only value; it lives in `sim` for historical reasons. Reusing it here keeps the
 // engine's default tuning identical to the one the ESKF integration suite validates.
-use crate::gating::{InnovationGate, UpdateOutcome};
+use crate::gating::{GateRecovery, InnovationGate, UpdateOutcome};
 use crate::sim::{
     DEFAULT_PROCESS_NOISE, INITIAL_HORIZONTAL_POSITION_VARIANCE_RAD2,
     INITIAL_VERTICAL_POSITION_VARIANCE_M2,
@@ -995,6 +995,20 @@ impl InsEngine {
     /// [`kalman`](crate::kalman) and the RBPF do.
     pub fn set_innovation_gate(&mut self, gate: Option<InnovationGate>) -> bool {
         self.filter.set_innovation_gate(gate)
+    }
+
+    /// Install the [`GateRecovery`] policy the filter applies after a rejected measurement.
+    ///
+    /// Every filter starts with [`GateRecovery::default`] in force, so installing a gate
+    /// already gives a gate that can re-open; this is how that is tuned, or switched off
+    /// with [`GateRecovery::none`]. Gating without recovery is what #340 was: one
+    /// rejection and the filter can never accept a fix again.
+    ///
+    /// # Returns
+    /// `true` if the underlying filter honours the policy. Every filter in
+    /// [`kalman`](crate::kalman) and the RBPF do.
+    pub fn set_gate_recovery(&mut self, recovery: GateRecovery) -> bool {
+        self.filter.set_gate_recovery(recovery)
     }
 
     /// The current estimate, in degrees, metres and m/s.

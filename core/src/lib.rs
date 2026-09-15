@@ -184,7 +184,7 @@ pub mod stationary;
 
 pub use engine::{GnssFix, InsEngine, InsEngineBuilder, InsEngineConfig, NavSolution};
 pub use error::StrapdownError;
-pub use gating::{InnovationGate, UpdateOutcome};
+pub use gating::{GateRecovery, InnovationGate, UpdateOutcome};
 
 use nalgebra::{DMatrix, DVector, Matrix3, Rotation3, Vector3, Vector6};
 
@@ -245,6 +245,25 @@ pub trait NavigationFilter {
     /// # Returns
     /// `true` if the filter will honour the gate.
     fn set_innovation_gate(&mut self, _gate: Option<InnovationGate>) -> bool {
+        false
+    }
+
+    /// Install the [`GateRecovery`] policy the filter applies after a rejected
+    /// measurement.
+    ///
+    /// Gating without recovery is a one-way door: the filter that rejected a fix keeps
+    /// propagating and keeps growing its error while the covariance it judges the next
+    /// fix against does not grow at all, so one rejection begets the next (#340). Every
+    /// filter here starts with [`GateRecovery::default`] already in force; this is how
+    /// that default is changed, including to [`GateRecovery::none`] for a run that
+    /// wants the old behaviour.
+    ///
+    /// Defaults to a no-op returning `false`, like
+    /// [`set_innovation_gate`](Self::set_innovation_gate).
+    ///
+    /// # Returns
+    /// `true` if the filter will honour the policy.
+    fn set_gate_recovery(&mut self, _recovery: GateRecovery) -> bool {
         false
     }
 

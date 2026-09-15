@@ -62,7 +62,7 @@ use clap::{Args, ValueEnum};
 
 use crate::NavigationFilter;
 use crate::earth::{METERS_TO_DEGREES, METERS_TO_RADIANS, principal_radii};
-use crate::gating::InnovationGate;
+use crate::gating::{GateRecovery, InnovationGate};
 use crate::kalman::{InitialState, UnscentedKalmanFilter};
 use crate::messages::{Event, EventStream, GnssFaultModel, GnssScheduler};
 
@@ -2856,6 +2856,7 @@ pub fn run_closed_loop_with_geo<F: NavigationFilter>(
     let mut monitor = HealthMonitor::new(health_limits.unwrap_or_default());
     let mut rejected_measurements: usize = 0;
     let mut gated_measurements: usize = 0;
+    let mut forced_measurements: usize = 0;
     let mut consecutive_rejections: usize = 0;
     let sim_duration_s = stream.events.last().map_or(0.0, |event| match event {
         Event::Imu { elapsed_s, .. } | Event::Measurement { elapsed_s, .. } => *elapsed_s,
@@ -2965,6 +2966,15 @@ pub fn run_closed_loop_with_geo<F: NavigationFilter>(
                         outcome.dof
                     );
                 }
+                if outcome.forced {
+                    forced_measurements += 1;
+                    log::debug!(
+                        "Measurement forced through the gate at {ts} (#{i}): NIS = {:.3} on \
+                         {} dof",
+                        outcome.nis,
+                        outcome.dof
+                    );
+                }
                 let mean = filter.get_estimate();
                 let cov = filter.get_certainty();
                 // The real NIS, at last. `HealthMonitor` counts consecutive
@@ -3021,6 +3031,15 @@ pub fn run_closed_loop_with_geo<F: NavigationFilter>(
     if gated_measurements > 0 {
         log::warn!(
             "closed-loop run completed with {gated_measurements} of {total} events gated out by the innovation test"
+        );
+    }
+    // Forced updates are the recovery path doing its job (#340), but they are also the
+    // filter being overruled: a run with a lot of them is one whose covariance or
+    // process noise does not describe the trajectory it was handed.
+    if forced_measurements > 0 {
+        log::warn!(
+            "closed-loop run completed with {forced_measurements} of {total} events applied \
+             despite failing the innovation test, after repeated consecutive rejections"
         );
     }
     Ok(results)
@@ -4357,6 +4376,22 @@ pub struct ClosedLoopConfig {
     /// ```
     #[serde(default)]
     pub innovation_gate: Option<InnovationGate>,
+    /// How the filter recovers from a measurement the gate rejected.
+    ///
+    /// Only consulted when [`Self::innovation_gate`] installs a gate, and defaulted
+    /// rather than optional because a gate without a way back out is the defect in #340,
+    /// not a configuration: the filter that rejects one fix keeps drifting while the
+    /// covariance it judges the next fix against does not grow, so the rejection is
+    /// self-reinforcing. Write it out only to tune it:
+    ///
+    /// ```yaml
+    /// gate_recovery: { rejection_inflation: 4.0, forced_update_after: 3 }
+    /// ```
+    ///
+    /// Either field may be omitted and keeps its default. `rejection_inflation: 1.0` with
+    /// `forced_update_after: null` is both mechanisms off, i.e. the pre-#340 behaviour.
+    #[serde(default)]
+    pub gate_recovery: GateRecovery,
 }
 
 impl Default for ClosedLoopConfig {
@@ -4367,6 +4402,7 @@ impl Default for ClosedLoopConfig {
             ukf_beta: default_ukf_beta(),
             ukf_kappa: default_ukf_kappa(),
             innovation_gate: None,
+            gate_recovery: GateRecovery::default(),
         }
     }
 }

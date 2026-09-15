@@ -6,7 +6,9 @@
 //! nonlinear in position but linear in the remaining states.
 
 use crate::StrapdownError;
-use crate::gating::{InnovationGate, UpdateOutcome, normalized_innovation_squared};
+use crate::gating::{
+    GatePolicy, GateRecovery, InnovationGate, UpdateOutcome, normalized_innovation_squared,
+};
 use crate::horizontal_meters_to_radians;
 use crate::kalman::{expand_measurement_jacobian, imu_sample_from_input};
 use crate::linalg::{matrix_square_root, symmetrize};
@@ -260,8 +262,9 @@ pub struct RaoBlackwellizedParticleFilter {
     nominal_extra: DVector<f64>,
     rng: StdRng,
     linear_update_applied: bool,
-    /// Innovation gate applied by `update`; `None` accepts every measurement.
-    innovation_gate: Option<InnovationGate>,
+    /// Innovation gate applied by `update` together with the recovery policy that keeps
+    /// a rejection from being permanent; an empty gate accepts every measurement.
+    gate_policy: GatePolicy,
 }
 
 impl RaoBlackwellizedParticleFilter {
@@ -343,7 +346,7 @@ impl RaoBlackwellizedParticleFilter {
             nominal_extra,
             rng,
             linear_update_applied: false,
-            innovation_gate: None,
+            gate_policy: GatePolicy::default(),
         })
     }
 
@@ -713,6 +716,11 @@ impl RaoBlackwellizedParticleFilter {
 
     /// Score a measurement against the particle cloud summarised as a Gaussian.
     ///
+    /// Takes `&mut self` because a rejection is not inert: the cloud is spread out by
+    /// [`GateRecovery::rejection_inflation`] on the way out, which is this filter's form
+    /// of the covariance inflation the Kalman filters apply, and without it one rejection
+    /// would make every subsequent fix disagree by more (#340).
+    ///
     /// Always computes the NIS, gate or no gate, because
     /// [`sim::health::HealthMonitor`](crate::sim::health::HealthMonitor) consumes it
     /// to catch a filter that has diverged rather than merely been handed one bad
@@ -729,7 +737,7 @@ impl RaoBlackwellizedParticleFilter {
     /// a singular innovation covariance from
     /// [`normalized_innovation_squared`](crate::gating::normalized_innovation_squared).
     fn evaluate_ensemble_gate<M: MeasurementModel + ?Sized>(
-        &self,
+        &mut self,
         measurement: &M,
     ) -> Result<UpdateOutcome, StrapdownError> {
         let (mean, covariance) = self.estimate_with_extra_states();
@@ -754,19 +762,67 @@ impl RaoBlackwellizedParticleFilter {
         let s = &h * &covariance * h.transpose() + measurement.get_noise();
         let dof = innovation.len();
         let nis = normalized_innovation_squared(&innovation, &s)?;
-        if let Some(gate) = self.innovation_gate
-            && !gate.accepts(nis, dof)
-        {
-            // `debug`, not `warn`: `run_closed_loop` already warns once with the
-            // total, and a run that gates a lot would otherwise bury every other
-            // message under one line per rejected fix.
-            log::debug!(
-                "RBPF: measurement gated out, NIS = {nis:.3} > {:.3} (dof {dof})",
-                gate.threshold(dof)
-            );
-            return Ok(UpdateOutcome::rejected(nis, dof));
+        let decision = self.gate_policy.decide(nis, dof, "RBPF");
+        if !decision.outcome.accepted {
+            // Inflate the cloud, not a matrix: see `inflate_particle_spread` for why
+            // scaling every particle's deviation from the ensemble mean is the same
+            // operation the Kalman filters perform on their covariance (#340).
+            self.inflate_particle_spread(decision.covariance_inflation);
         }
-        Ok(UpdateOutcome::accepted(nis, dof))
+        Ok(decision.outcome)
+    }
+
+    /// Multiply the ensemble covariance by `factor` by spreading the particles out.
+    ///
+    /// The Kalman filters recover from a gated-out measurement by scaling $P$; an
+    /// ensemble has no $P$ to scale, so the equivalent operation is performed on the
+    /// cloud itself. Replacing every particle's error state by
+    /// $\bar{x} + \sqrt{f}(x_i - \bar{x})$ -- its deviation from the weighted ensemble
+    /// mean, stretched -- multiplies the weighted sample covariance by exactly $f$ while
+    /// leaving the mean, the weights and the particle identities alone. This is the
+    /// multiplicative inflation of the ensemble-filter literature (Anderson & Anderson
+    /// 1999), and it needs no draw from the RNG, so a seeded run stays reproducible.
+    ///
+    /// The stretch is what re-opens the gate, and it is enough on its own to do so:
+    /// [`Self::evaluate_ensemble_gate`] scores against [`Self::weighted_moments`], which is
+    /// the weighted *spread* of the particle states -- position, velocity, attitude and
+    /// extra states alike -- so scaling every deviation by $\sqrt{f}$ multiplies the exact
+    /// covariance the next NIS is computed from by $f$. `inflating_the_cloud_multiplies_its\
+    /// _covariance_by_the_factor` asserts that on the same summary the gate uses.
+    ///
+    /// Each particle's own `linear_cov` is scaled by $f$ as well. That does not enter the
+    /// gate's covariance, but it does enter each particle's own Kalman update, and leaving
+    /// it behind would produce a wide cloud of individually over-confident particles -- the
+    /// conditional half of the uncertainty contradicting the ensemble half.
+    ///
+    /// Unlike the Kalman filters, which inflate only the subspace the rejected measurement
+    /// observed, this stretches the cloud in every direction: a weighted ensemble has no
+    /// covariance matrix to project a Jacobian through, and re-weighting particles towards
+    /// the observed subspace would change the distribution rather than its spread. The cost
+    /// is the one [`GateDecision::inflate`](crate::gating::GateDecision::inflate) documents
+    /// -- a rejection on one sensor widens every other sensor's gain -- so a gated RBPF
+    /// aided by several sensors at different rates deserves more scepticism here than a
+    /// gated ESKF does.
+    ///
+    /// A `factor` at or below 1, or one that is not finite, is a no-op.
+    fn inflate_particle_spread(&mut self, factor: f64) {
+        if !factor.is_finite() || factor <= 1.0 || self.particles.is_empty() {
+            return;
+        }
+        let scale = factor.sqrt();
+        let linear_dim = self.linear_state_dim();
+        let mut mean_position = Vector3::zeros();
+        let mut mean_linear = DVector::zeros(linear_dim);
+        for particle in &self.particles {
+            mean_position += particle.weight * particle.position_error;
+            mean_linear += particle.weight * &particle.linear_state;
+        }
+        for particle in &mut self.particles {
+            particle.position_error =
+                mean_position + scale * (particle.position_error - mean_position);
+            particle.linear_state = &mean_linear + scale * (&particle.linear_state - &mean_linear);
+            particle.linear_cov *= factor;
+        }
     }
 
     /// Compute the effective sample size.
@@ -1245,7 +1301,12 @@ impl NavigationFilter for RaoBlackwellizedParticleFilter {
     }
 
     fn set_innovation_gate(&mut self, gate: Option<InnovationGate>) -> bool {
-        self.innovation_gate = gate;
+        self.gate_policy.set_gate(gate);
+        true
+    }
+
+    fn set_gate_recovery(&mut self, recovery: GateRecovery) -> bool {
+        self.gate_policy.set_recovery(recovery);
         true
     }
 
@@ -1386,6 +1447,55 @@ mod tests {
                  latitude factor (#331)",
                 SPREAD_TEST_LATITUDE_DEG.to_radians().cos()
             );
+        }
+    }
+
+    /// Inflating the cloud multiplies its covariance by the requested factor (#340).
+    ///
+    /// The Kalman filters recover from a gated-out measurement by scaling `P`; this is the
+    /// same operation for an ensemble, and the claim worth checking is that it really is
+    /// the same operation: the sample covariance scales by exactly the factor asked for,
+    /// and the ensemble mean -- the navigation solution the run reports -- does not move.
+    #[test]
+    fn inflating_the_cloud_multiplies_its_covariance_by_the_factor() {
+        const FACTOR: f64 = 4.0;
+
+        let nominal = spread_test_nominal_state();
+        let config = RbpfConfig {
+            num_particles: 2_000,
+            seed: 340,
+            ..RbpfConfig::default()
+        };
+        let mut rbpf = RaoBlackwellizedParticleFilter::new(nominal, config).unwrap();
+
+        let (mean_before, covariance_before) = rbpf.estimate();
+        rbpf.inflate_particle_spread(FACTOR);
+        let (mean_after, covariance_after) = rbpf.estimate();
+
+        for index in 0..mean_before.len() {
+            assert_approx_eq!(
+                mean_after[index],
+                mean_before[index],
+                1e-12 * mean_before[index].abs().max(1.0)
+            );
+        }
+        for index in 0..covariance_before.nrows() {
+            let expected = FACTOR * covariance_before[(index, index)];
+            assert_approx_eq!(
+                covariance_after[(index, index)],
+                expected,
+                1e-9 * expected.abs().max(1e-12)
+            );
+        }
+
+        // A factor that would shrink the cloud, or one that is not a number, is a no-op
+        // rather than a way to collapse the ensemble.
+        for inert in [1.0, 0.5, f64::NAN] {
+            let (mean, covariance) = rbpf.estimate();
+            rbpf.inflate_particle_spread(inert);
+            let (mean_now, covariance_now) = rbpf.estimate();
+            assert_approx_eq!(mean_now[0], mean[0], 1e-15);
+            assert_approx_eq!(covariance_now[(0, 0)], covariance[(0, 0)], 1e-18);
         }
     }
 
