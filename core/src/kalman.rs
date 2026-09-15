@@ -4477,11 +4477,18 @@ mod tests {
     /// so the attitude block must differentiate `h` (here: state yaw), whose
     /// rotation-vector derivative at level attitude is `[0, 0, 1]`. In
     /// particular the FD yaw column must equal the analytic `+1.0`, while the
-    /// FD tilt columns are ~0 -- the analytic tilt columns differentiate `z`,
-    /// not `h`, and copying them into an error-state `H` lets the update feed
-    /// tilt sensitivity back with the wrong sign whenever the tilt derivatives
-    /// exceed 1 (e.g. at high pitch), amplifying the residual instead of
-    /// nulling it.
+    /// FD tilt columns are ~0.
+    ///
+    /// The analytic Jacobian used to return the raw sensor's tilt sensitivity,
+    /// `dz/d(roll, pitch)`, in those columns -- which is why this filter
+    /// overrides them at all: copying them into an error-state `H` lets the
+    /// update feed tilt sensitivity back with the wrong sign whenever the tilt
+    /// derivatives exceed 1 (e.g. at high pitch), amplifying the residual
+    /// instead of nulling it. `magnetometer_yaw_jacobian` no longer does that
+    /// (#305), so the two forms now agree here for a second reason as well.
+    /// The override stays regardless: the Euler/rotation-vector mismatch it
+    /// was written for is independent of that, as the high-pitch test below
+    /// shows.
     #[test]
     fn fd_attitude_columns_match_analytic_at_level_attitude() {
         use crate::measurements::{MagnetometerYawMeasurement, MeasurementModel};
@@ -4494,6 +4501,7 @@ mod tests {
             apply_declination: false,
             year: 2025,
             day_of_year: 1,
+            is_enu: false, // NED fixture
         };
         // Level attitude with a non-zero yaw (exercises the yaw column).
         let nominal = DVector::from_vec(vec![0.7, -1.3, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.3]);
@@ -4513,6 +4521,15 @@ mod tests {
     /// genuinely differ, so the FD columns must differ from the analytic copy
     /// there. Locks in *why* the FD form exists (fails if someone reverts to
     /// copying the analytic attitude columns into the error-state H).
+    ///
+    /// Since #305 the analytic attitude block is the exact Euler-frame
+    /// `dh/dx = [0, 0, 1]`, so what this now measures is the parameterisation
+    /// gap alone rather than that plus the old tilt-sensitivity error: the FD
+    /// tilt columns are non-zero at this attitude precisely because a
+    /// body-frame rotation about x or y moves the *Euler* yaw when the vehicle
+    /// is pitched 77 degrees up. That is the whole content of #286, and it is
+    /// why the override cannot be dropped now that the analytic form is
+    /// otherwise correct.
     #[test]
     fn fd_attitude_columns_differ_from_analytic_at_high_pitch() {
         use crate::measurements::{MagnetometerYawMeasurement, MeasurementModel};
@@ -4525,6 +4542,7 @@ mod tests {
             apply_declination: false,
             year: 2025,
             day_of_year: 1,
+            is_enu: false, // NED fixture
         };
         // Representative of the test dataset's mount: pitched up steeply.
         let nominal = DVector::from_vec(vec![0.7, -1.3, 100.0, 0.0, 0.0, 0.0, 0.16, -1.34, 0.18]);

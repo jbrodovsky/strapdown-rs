@@ -1250,40 +1250,54 @@ pub fn magnetic_anomaly_jacobian(_state: &StrapdownState) -> DMatrix<f64> {
 
 /// Compute measurement Jacobian (H) for magnetometer-based yaw measurement
 ///
-/// The magnetometer yaw measurement depends on roll, pitch, and yaw through the
-/// tilt compensation equations. For a first-order approximation where the
-/// measurement is primarily the yaw angle, the dominant partial derivative is
-/// ∂z/∂ψ ≈ 1 (identity), with smaller contributions from roll and pitch
-/// through the tilt compensation.
-///
-/// # Mathematical Background
-///
-/// The tilt-compensated magnetic heading is computed as:
+/// [`MagnetometerYawMeasurement`](crate::measurements::MagnetometerYawMeasurement)'s expected
+/// measurement is the state's yaw and nothing else, so
 ///
 /// $$
-/// \psi_m = \arctan2(m_{y,h}, m_{x,h})
+/// h(\mathbf{x}) = \psi = x_8, \qquad H = \frac{\partial h}{\partial \mathbf{x}}
+///                                     = \begin{bmatrix} 0 & \cdots & 0 & 1 \end{bmatrix},
 /// $$
 ///
-/// where the horizontal components depend on roll ($\phi$) and pitch ($\theta$):
+/// a single 1 in the yaw column.
 ///
-/// $$
-/// \begin{aligned}
-/// m_{x,h} &= m_x \cos\theta + m_y \sin\phi \sin\theta + m_z \cos\phi \sin\theta \\\\
-/// m_{y,h} &= m_y \cos\phi - m_z \sin\phi
-/// \end{aligned}
-/// $$
+/// # Why the tilt columns are zero
 ///
-/// The Jacobian entries are:
-/// - $\frac{\partial z}{\partial \phi}$ (roll): Non-zero due to tilt compensation
-/// - $\frac{\partial z}{\partial \theta}$ (pitch): Non-zero due to tilt compensation  
-/// - $\frac{\partial z}{\partial \psi}$ (yaw): ≈ 1 (expected measurement is state yaw)
+/// This is worth stating explicitly, because it is not obvious and this function used to do
+/// the other thing. The magnetometer model is unusual among this crate's measurements: its
+/// `z` is not a raw observation but a *pseudo*-measurement, derived by levelling the raw
+/// field with roll and pitch taken from the current estimate. So `z` genuinely does vary with
+/// roll and pitch, and this function used to return that variation --
+/// $\partial z/\partial\phi$ and $\partial z/\partial\theta$ -- in columns 6 and 7.
+///
+/// That is the wrong quantity for the contract every filter here relies on: the update forms
+/// the residual as $z - h(\mathbf{x})$ while taking $H = \partial h/\partial\mathbf{x}$, so a
+/// column holding $\partial z/\partial x_i$ enters the gain with the opposite sign to the one
+/// it describes. The [`ErrorStateKalmanFilter`](crate::kalman::ErrorStateKalmanFilter) already
+/// refused these columns for exactly that reason, overwriting the attitude block with finite
+/// differences of the expected measurement (#286); the EKF, which uses the analytic form
+/// as-is, did not, and the two filters disagreed about what $H$ meant for this one model.
+/// They now agree.
+///
+/// The neglected term is real but small and is deliberately left to the measurement noise:
+/// the tilt sensitivity of a levelled heading is bounded well below the 0.2 rad
+/// [`MAG_YAW_NOISE`](crate::measurements::MAG_YAW_NOISE) the sim path assigns, which is itself
+/// tighter than the 0.293 rad scatter the sensor actually shows on
+/// `core/tests/test_data.csv`. Folding $-\partial z/\partial\mathbf{x}$ in properly would make
+/// the innovation's linearization exact, but it is a change to the
+/// [`MeasurementModel`](crate::measurements::MeasurementModel) contract -- what `get_jacobian`
+/// promises, for every model -- rather than to this function, so it is not made here.
+///
+/// The result is frame-independent, unlike the measurement itself: the NED and ENU heading
+/// formulas differ, but both are functions of the levelled field alone, and $h$ is the state's
+/// yaw in whichever frame that state is expressed in. There is no `is_enu` to thread here.
 ///
 /// # Arguments
 ///
-/// * `state` - Current navigation state
-/// * `mag_x` - Body-frame magnetic field x-component (µT)
-/// * `mag_y` - Body-frame magnetic field y-component (µT)
-/// * `mag_z` - Body-frame magnetic field z-component (µT)
+/// * `_state` - Current navigation state (unused; retained for signature parity with the other
+///   Jacobians in this module, and because a future exact form would need it)
+/// * `_mag_x` - Body-frame magnetic field x-component (µT), unused for the same reason
+/// * `_mag_y` - Body-frame magnetic field y-component (µT), unused for the same reason
+/// * `_mag_z` - Body-frame magnetic field z-component (µT), unused for the same reason
 ///
 /// # Returns
 ///
@@ -1299,49 +1313,31 @@ pub fn magnetic_anomaly_jacobian(_state: &StrapdownState) -> DMatrix<f64> {
 /// let h = magnetometer_yaw_jacobian(&state, 20.0, 5.0, -45.0);
 /// assert_eq!(h.nrows(), 1);
 /// assert_eq!(h.ncols(), 9);
-/// // Yaw partial derivative should be approximately 1
-/// assert!((h[(0, 8)] - 1.0).abs() < 0.01);
+/// // The expected measurement is the state yaw, so the yaw column is exactly 1 ...
+/// assert!((h[(0, 8)] - 1.0).abs() < 1e-12);
+/// // ... and every other column, the tilt columns included, is exactly 0.
+/// assert!((0..8).all(|i| h[(0, i)] == 0.0));
 /// ```
+///
+/// # Compatibility
+///
+/// All four parameters are now ignored; the result is a constant. The signature is kept so
+/// existing callers still compile, but a caller that was relying on the roll and pitch columns
+/// gets zeros with no signal. Measured cost of the change on `core/tests/test_data.csv`: EKF
+/// yaw RMSE 22.647 deg with the old analytic tilt columns against 22.671 deg with them zeroed
+/// -- 0.1%. They were never carrying much; they were carrying it with the wrong sign (#305).
 pub fn magnetometer_yaw_jacobian(
-    state: &StrapdownState,
-    mag_x: f64,
-    mag_y: f64,
-    mag_z: f64,
+    _state: &StrapdownState,
+    _mag_x: f64,
+    _mag_y: f64,
+    _mag_z: f64,
 ) -> DMatrix<f64> {
     let mut h = DMatrix::<f64>::zeros(1, 9);
 
-    // Extract current attitude
-    let (roll, pitch, _yaw) = state.attitude.euler_angles();
-    let (sin_roll, cos_roll) = roll.sin_cos();
-    let (sin_pitch, cos_pitch) = pitch.sin_cos();
-
-    // Compute horizontal components
-    let mag_x_h = mag_x * cos_pitch + mag_y * sin_roll * sin_pitch + mag_z * cos_roll * sin_pitch;
-    let mag_y_h = mag_y * cos_roll - mag_z * sin_roll;
-
-    // Denominator for atan2 derivative
-    let denom = mag_x_h.powi(2) + mag_y_h.powi(2);
-
-    if denom > 1e-10 {
-        // Partial derivatives of horizontal components with respect to roll
-        let d_mx_h_d_roll = mag_y * cos_roll * sin_pitch - mag_z * sin_roll * sin_pitch;
-        let d_my_h_d_roll = -mag_y * sin_roll - mag_z * cos_roll;
-
-        // Partial derivatives of horizontal components with respect to pitch
-        let d_mx_h_d_pitch =
-            -mag_x * sin_pitch + mag_y * sin_roll * cos_pitch + mag_z * cos_roll * cos_pitch;
-        let d_my_h_d_pitch = 0.0; // mag_y_h doesn't depend on pitch
-
-        // Chain rule for atan2: d(atan2(y,x)) = (x*dy - y*dx) / (x^2 + y^2)
-        // ∂ψ/∂roll
-        h[(0, 6)] = (mag_x_h * d_my_h_d_roll - mag_y_h * d_mx_h_d_roll) / denom;
-
-        // ∂ψ/∂pitch
-        h[(0, 7)] = (mag_x_h * d_my_h_d_pitch - mag_y_h * d_mx_h_d_pitch) / denom;
-    }
-
-    // The expected measurement is the state yaw, so ∂z_expected/∂yaw = 1
-    // (the measurement model returns state[8] as expected measurement)
+    // The expected measurement is the state yaw, so ∂h/∂ψ = 1 and every other partial is
+    // identically zero. See the "Why the tilt columns are zero" section above before
+    // reinstating a tilt term here: the levelling's dependence on roll and pitch belongs to
+    // `z`, not to `h`, and putting it in this matrix feeds it back with the wrong sign.
     h[(0, 8)] = 1.0;
 
     h

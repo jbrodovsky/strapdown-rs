@@ -925,6 +925,16 @@ fn duty_cycle_is_on(elapsed_s: f64, on_s: f64, off_s: f64, start_phase_s: f64) -
 ///   fields (lat/lon/alt/speed/bearing/accuracies).
 /// - `cfg`: GNSS degradation configuration combining a scheduler (*when*) and a
 ///   fault model (*what*), plus a seed for deterministic noise.
+/// - `is_enu`: the local-level frame the filter consuming this stream works in -- `true` for
+///   ENU, `false` for NED. Only the [`MagnetometerYawMeasurement`] reads it, and it must
+///   match the state being updated: the heading a magnetometer implies is a different number
+///   in the two conventions, not merely a different sign, so a mismatch drives yaw to a
+///   reflection of the truth rather than weakening the aid (#305). It is a parameter rather
+///   than a field on `cfg` deliberately: `strapdown-sim` already carries the frame at the top
+///   level of its own configuration, and a second copy inside `GnssDegradationConfig` would
+///   be a second source of truth for one physical fact -- which is how the reflection went
+///   unnoticed in the first place. This mirrors [`crate::sim::dead_reckoning`], which took
+///   the same argument for the same reason in #296.
 ///
 /// # Returns
 /// `Ok(EventStream)` -- an interleaved sequence of IMU and (optionally
@@ -993,7 +1003,7 @@ fn duty_cycle_is_on(elapsed_s: f64, on_s: f64, off_s: f64, start_phase_s: f64) -
 ///     },
 ///     ..Default::default()
 /// };
-/// let events = build_event_stream(&records, &cfg)?;
+/// let events = build_event_stream(&records, &cfg, false)?; // false = NED
 /// // feed into your event-driven filter loop
 /// # Ok(())
 /// # }
@@ -1001,6 +1011,7 @@ fn duty_cycle_is_on(elapsed_s: f64, on_s: f64, off_s: f64, start_phase_s: f64) -
 pub fn build_event_stream(
     records: &[TestDataRecord],
     cfg: &GnssDegradationConfig,
+    is_enu: bool,
 ) -> Result<EventStream, StrapdownError> {
     // The first record is load-bearing twice over -- it fixes the epoch the elapsed clock is
     // measured from and the datum the relative-altitude measurements are referenced to -- so
@@ -1144,7 +1155,14 @@ pub fn build_event_stream(
                 noise_std: MAG_YAW_NOISE, // set a default noise std; adjust as needed
                 apply_declination: true,
                 year: r1.time.year(),
-                day_of_year: r1.time.day() as u16,
+                // `ordinal()`, not `day()`: the WMM wants the day of the *year*, and `day()`
+                // is the day of the month, so every record before this fix claimed to be in
+                // the first 31 days of January. The cost is small -- declination moves 0.004
+                // deg over that span at this dataset's position, well inside the model's own
+                // uncertainty -- but a date field that is wrong by construction is not
+                // something to leave for the next reader to rediscover (#305).
+                day_of_year: r1.time.ordinal() as u16,
+                is_enu,
             };
             events.push(Event::Measurement {
                 meas: Box::new(mag_meas),
@@ -1211,7 +1229,7 @@ mod tests {
     /// unparseable rows rather than failing -- must not abort the process.
     #[test]
     fn empty_records_are_an_error_not_a_panic() {
-        let err = build_event_stream(&[], &GnssDegradationConfig::default()).unwrap_err();
+        let err = build_event_stream(&[], &GnssDegradationConfig::default(), false).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -1227,7 +1245,8 @@ mod tests {
     #[test]
     fn single_record_yields_a_stream_with_no_events() {
         let records = create_test_records(1, 0.1);
-        let stream = build_event_stream(&records, &GnssDegradationConfig::default()).unwrap();
+        let stream =
+            build_event_stream(&records, &GnssDegradationConfig::default(), false).unwrap();
         assert_eq!(stream.start_time, records[0].time);
         assert!(
             stream.events.is_empty(),
@@ -1244,7 +1263,7 @@ mod tests {
             ..Default::default()
         };
 
-        let events = build_event_stream(&records, &config).unwrap();
+        let events = build_event_stream(&records, &config, false).unwrap();
 
         // We expect IMU events for each record except the first,
         // and GNSS events for each record except the first
@@ -1283,7 +1302,7 @@ mod tests {
             ..Default::default()
         };
 
-        let events = build_event_stream(&records, &config).unwrap();
+        let events = build_event_stream(&records, &config, false).unwrap();
 
         // We expect IMU events for each record except the first,
         // and GNSS events every 0.5s (so at records 5, 10, 15...)
@@ -1319,7 +1338,7 @@ mod tests {
             ..Default::default()
         };
         //
-        let events = build_event_stream(&records, &config).unwrap();
+        let events = build_event_stream(&records, &config, false).unwrap();
         let measurements = events
             .events
             .iter()
@@ -1358,7 +1377,7 @@ mod tests {
             ..Default::default()
         };
 
-        let stream = build_event_stream(&records, &config).unwrap();
+        let stream = build_event_stream(&records, &config, false).unwrap();
         // The GNSS fix is the only multi-dimensional measurement in the stream; baro and mag
         // are scalar and are not scheduled.
         let fix_times: Vec<f64> = stream
@@ -1415,7 +1434,7 @@ mod tests {
                 fault: GnssFaultModel::None,
                 ..Default::default()
             };
-            let stream = build_event_stream(&records, &config).unwrap();
+            let stream = build_event_stream(&records, &config, false).unwrap();
             let fixes = stream
                 .events
                 .iter()
@@ -1444,7 +1463,7 @@ mod tests {
             seed: 500,
         };
 
-        let events = build_event_stream(&records, &config).unwrap();
+        let events = build_event_stream(&records, &config, false).unwrap();
 
         // Find GNSS events
         let gnss_events: Vec<&Event> = events
@@ -1553,7 +1572,7 @@ mod tests {
             ..Default::default()
         };
 
-        let events = build_event_stream(&records, &config).unwrap();
+        let events = build_event_stream(&records, &config, false).unwrap();
 
         // Find GNSS events and group by time
         let mut gnss_by_time: Vec<(f64, &GPSPositionAndVelocityMeasurement)> = Vec::new();
@@ -1599,7 +1618,7 @@ mod tests {
         };
 
         // This should at least not crash
-        let events = build_event_stream(&records, &config).unwrap();
+        let events = build_event_stream(&records, &config, false).unwrap();
         assert!(!events.events.is_empty());
     }
 
@@ -1640,7 +1659,7 @@ mod tests {
             ..Default::default()
         };
 
-        let events = build_event_stream(&records, &config).unwrap();
+        let events = build_event_stream(&records, &config, false).unwrap();
         // Should have events
         assert!(!events.events.is_empty());
 
@@ -1668,7 +1687,7 @@ mod tests {
             ..Default::default()
         };
 
-        let events = build_event_stream(&records, &config).unwrap();
+        let events = build_event_stream(&records, &config, false).unwrap();
         // Should have events
         assert!(!events.events.is_empty());
 
@@ -1761,7 +1780,7 @@ mod tests {
             ..Default::default()
         };
 
-        let events = build_event_stream(&records, &config).unwrap();
+        let events = build_event_stream(&records, &config, false).unwrap();
 
         // Should have events even with NaN accuracies
         assert!(!events.events.is_empty());
@@ -1789,7 +1808,7 @@ mod tests {
             ..Default::default()
         };
 
-        let events = build_event_stream(&records, &config).unwrap();
+        let events = build_event_stream(&records, &config, false).unwrap();
         // Should have events
         assert!(!events.events.is_empty());
     }

@@ -30,6 +30,16 @@ use world_magnetic_model::uom::si::length::meter;
 /// This is *not* the value produced by [`MagnetometerYawMeasurement`]'s [`Default`] impl, which
 /// uses the tighter 0.05 rad (~3 degrees). Construct the measurement yourself, or set
 /// [`MagnetometerYawMeasurement::noise_std`] directly, to use anything other than 0.2 rad.
+///
+/// "Conservative" was written before the figure had been measured against anything, and it is
+/// the wrong word: on `core/tests/test_data.csv` this model's heading *error* against the
+/// reference is 0.298 rad (17.1 degrees) RMS, scattering by 0.293 rad (16.8 degrees) about its
+/// own +3.1 degree mean bias -- so 0.2 rad is mildly *optimistic* for a phone magnetometer
+/// inside a vehicle. (Those are statistics of the error, not of the heading: the heading
+/// itself swings 1.04 rad about its mean, because the vehicle turns.) It is left where it is because it barely matters -- the ESKF
+/// reaches 15.9, 16.4 and 19.4 degrees yaw RMSE at 0.05, 0.2 and 0.3 rad respectively, so the
+/// weighting is nearly irrelevant next to getting the heading's *frame* right, which is what
+/// #305 turned out to be about. Revisit it alongside per-record accuracy, not on its own.
 pub const MAG_YAW_NOISE: f64 = 0.2;
 
 /// Date substituted when a record carries an unusable year/day-of-year pair.
@@ -491,23 +501,42 @@ impl MeasurementModel for RelativeAltitudeMeasurement {
 /// \end{aligned}
 /// $$
 ///
-/// ## Magnetic Heading
+/// ## Magnetic Heading, and why it depends on the local-level frame
 ///
-/// The magnetic heading (yaw relative to magnetic north) is:
-///
-/// $$
-/// \psi_m = \arctan2(m_{y,h}, m_{x,h})
-/// $$
-///
-/// ## True Heading
-///
-/// If declination correction is enabled, the true heading is:
+/// Levelling with yaw held at zero leaves the field in a frame that differs from the
+/// navigation frame by the yaw rotation alone, so $m_h = R_z(-\psi)\\, m_\text{nav}$ with
 ///
 /// $$
-/// \psi = \psi_m + \delta
+/// \begin{aligned}
+/// m_{x,h} &= \cos\psi \\, m_{\text{nav},x} + \sin\psi \\, m_{\text{nav},y} \\\\
+/// m_{y,h} &= -\sin\psi \\, m_{\text{nav},x} + \cos\psi \\, m_{\text{nav},y}
+/// \end{aligned}
 /// $$
 ///
-/// where $\delta$ is the magnetic declination (positive east) obtained from WMM.
+/// Inverting that for $\psi$ requires knowing which navigation axis is which, and the two
+/// local-level conventions disagree on both the axis order *and* the direction the yaw angle
+/// is measured in. Writing $H$ for the field's horizontal magnitude and $\delta$ for the
+/// magnetic declination (positive east):
+///
+/// - **NED** — $x$ is north, $y$ is east, and $\psi$ is a compass bearing measured clockwise
+///   from north, so $m_\text{nav} = H(\cos\delta,\\, \sin\delta)$ and
+///   $$ \psi = \arctan2(-m_{y,h},\\, m_{x,h}) + \delta. $$
+/// - **ENU** — $x$ is east, $y$ is north, and $\psi$ is measured counter-clockwise from east,
+///   so $m_\text{nav} = H(\sin\delta,\\, \cos\delta)$ and
+///   $$ \psi = \arctan2(m_{x,h},\\, m_{y,h}) - \delta. $$
+///
+/// Note that declination enters with opposite signs: in NED it rotates a magnetic bearing the
+/// same way $\psi$ increases, in ENU the opposite way. The result is wrapped onto
+/// $[-\pi, \pi]$, the branch [`crate::StrapdownState`] carries its yaw on (#314), so the
+/// innovation against `state[8]` is correct before wrapping rather than only after it.
+///
+/// [`is_enu`](Self::is_enu) selects the branch, and it **must** match the frame of the state
+/// the model is updating. The two differ by far more than a sign -- evaluating the NED form
+/// against the ENU dataset in `core/tests/test_data.csv` yields 110.8 deg RMS yaw error
+/// against 17.1 deg for the matching branch -- so there is no safe default to fall back on
+/// when the caller has not said. Getting this wrong does not merely weaken the aid: it
+/// reflects the heading about a fixed axis and drives yaw actively away from truth. Both
+/// branches are pinned by `magnetometer_yaw_recovers_true_heading_in_both_frames` (#305).
 ///
 /// # State Vector Requirements
 ///
@@ -532,9 +561,10 @@ impl MeasurementModel for RelativeAltitudeMeasurement {
 ///     mag_y: 5.0,   // µT
 ///     mag_z: -45.0, // µT
 ///     noise_std: 0.05, // radians (~3 degrees)
-///     apply_declination: true,
+///     apply_declination: false,
 ///     year: 2025,
 ///     day_of_year: 1,
+///     is_enu: false, // the field above is expressed in NED
 /// };
 ///
 /// // State vector with position and attitude
@@ -548,9 +578,13 @@ impl MeasurementModel for RelativeAltitudeMeasurement {
 ///     0.5,      // yaw
 /// ]);
 ///
-/// // Get tilt-compensated yaw measurement
+/// // Get tilt-compensated yaw measurement. The vehicle is level and the field's horizontal
+/// // part points 14.0 deg east of the body's forward axis, so with declination off the
+/// // heading reads -14.0 deg: a magnetometer that sees north off its left bow is pointing
+/// // east of north, in NED, by that angle.
 /// let z = mag_meas.get_measurement(&state).unwrap();
 /// assert_eq!(z.len(), 1);
+/// assert!((z[0].to_degrees() + 14.036).abs() < 1e-3);
 /// ```
 #[derive(Clone, Debug)]
 pub struct MagnetometerYawMeasurement {
@@ -568,6 +602,15 @@ pub struct MagnetometerYawMeasurement {
     pub year: i32,
     /// Day of year for WMM calculation (1-366)
     pub day_of_year: u16,
+    /// Local-level frame the yaw is reported in: `true` for ENU, `false` for NED.
+    ///
+    /// Must match the frame of the state being updated -- [`crate::StrapdownState::is_enu`]
+    /// or [`crate::kalman::InitialState::is_enu`] -- because the two conventions disagree
+    /// about which navigation axis is north and about the direction yaw increases in. See
+    /// the type-level documentation for the two formulas; a mismatch reflects the heading
+    /// rather than degrading it, so this is not a field that can be left at a convenient
+    /// default and quietly ignored.
+    pub is_enu: bool,
 }
 
 impl Default for MagnetometerYawMeasurement {
@@ -580,6 +623,9 @@ impl Default for MagnetometerYawMeasurement {
             apply_declination: false,
             year: 2025,
             day_of_year: 1,
+            // NED to match `StrapdownState::default()`, which is the crate-wide default frame
+            // since #296. A caller on ENU data must say so explicitly.
+            is_enu: false,
         }
     }
 }
@@ -652,24 +698,50 @@ impl MeasurementModel for MagnetometerYawMeasurement {
         // through `get_expected_measurement`, not through the sensor rotation.
         let attitude = Rotation3::from_euler_angles(roll, pitch, 0.0);
         let mag_vector = attitude * Vector3::new(self.mag_x, self.mag_y, self.mag_z);
-        let mut heading = mag_vector.y.atan2(mag_vector.x);
 
-        // Apply declination correction if enabled
+        // Invert `m_h = R_z(-ψ) m_nav` for ψ. Which `atan2` does that depends on the frame,
+        // because NED and ENU disagree about both the axis order (north is x, then y) and the
+        // sense of ψ (clockwise from north, then counter-clockwise from east). The two are
+        // *not* related by a sign: see the type-level docs for the derivation.
+        //
+        // This used to be `atan2(m_y, m_x)` unconditionally, which is neither branch. On ENU
+        // data -- what `core/tests/test_data.csv` is -- it returns π/2 - ψ, the heading
+        // reflected about the 45 deg line, and the filters dutifully converged on the
+        // reflection: 96.8 deg yaw RMSE for the ESKF against 16.4 deg once corrected, and the
+        // EKF was *worse* with the aid than without it (88.2 deg against 57.6 deg stripped),
+        // which is the signature of an aid pulling the wrong way rather than a weak one
+        // (#305).
+        let mut heading = if self.is_enu {
+            mag_vector.x.atan2(mag_vector.y)
+        } else {
+            (-mag_vector.y).atan2(mag_vector.x)
+        };
+
+        // Apply declination correction if enabled. The sign follows the frame for the same
+        // reason the `atan2` does: declination is a rotation about the vertical, and the two
+        // frames measure yaw in opposite directions about opposite vertical axes.
         if self.apply_declination && state.len() >= 3 {
             let lat_deg = state[0].to_degrees();
             let lon_deg = state[1].to_degrees();
             let alt_m = state[2];
             let declination = self.get_declination(lat_deg, lon_deg, alt_m);
-            heading += declination;
-
-            // Re-wrap onto the same branch `atan2` produced above, and the same branch the
-            // state's yaw is on (#314). This used to land on [0, 2π), so with declination
-            // enabled -- which `build_event_stream` does for the whole sim path -- a state
-            // yaw of -0.01 rad met a measurement of 6.27 rad and the raw innovation was a
-            // full turn out. `wrap_residual` below absorbs that, but an innovation that is
-            // only correct after wrapping is a trap for whoever reads or gates it.
-            heading = crate::wrap_to_pi(heading);
+            heading += if self.is_enu {
+                -declination
+            } else {
+                declination
+            };
         }
+
+        // Wrap unconditionally onto [-π, π], the branch the state's yaw is on (#314).
+        // `atan2` already lands there, so this is a no-op without declination; it is applied
+        // outside the branch above so that the invariant holds by construction rather than by
+        // the reader checking which paths can leave it. Before #314 this landed on [0, 2π),
+        // so with declination enabled -- which `build_event_stream` does for the whole sim
+        // path -- a state yaw of -0.01 rad met a measurement of 6.27 rad and the raw
+        // innovation was a full turn out. `wrap_residual` below absorbs that, but an
+        // innovation that is only correct after wrapping is a trap for whoever reads or
+        // gates it.
+        heading = crate::wrap_to_pi(heading);
 
         Ok(DVector::from_vec(vec![heading]))
     }
@@ -1083,6 +1155,7 @@ mod tests {
             apply_declination: false,
             year: 2025,
             day_of_year: 1,
+            is_enu: false, // NED fixture
         };
         let z_at = |yaw: f64| {
             m.get_measurement(&DVector::from_vec(vec![
@@ -1116,6 +1189,7 @@ mod tests {
             apply_declination: false,
             year: 2025,
             day_of_year: 1,
+            is_enu: false, // NED fixture
         };
         let with_declination = MagnetometerYawMeasurement {
             apply_declination: true,
@@ -1177,6 +1251,7 @@ mod tests {
             apply_declination: false,
             year: 2025,
             day_of_year: 1,
+            is_enu: false, // NED fixture
         };
         // z/z_hat straddling the branch cut must not produce a ±2π kick.
         let mut r = DVector::from_vec(vec![6.1]);
@@ -1385,6 +1460,106 @@ mod tests {
         assert!((noise[(2, 2)] - 0.0).abs() < EPS);
     }
 
+    /// #305: the model must return the yaw it was given back, in either frame.
+    ///
+    /// The round trip is the point, and it is what none of the other tests here did. They all
+    /// assert a heading for a hand-written body-frame field, which requires the reader to
+    /// work out by hand what that field means -- and when the answer was wrong, the test
+    /// simply encoded the wrong answer (see `magnetometer_yaw_measurement_east_heading`).
+    ///
+    /// Here the body-frame field is *derived* from a known true yaw instead: build the
+    /// navigation-frame field for the frame under test, rotate it into the body by the
+    /// attitude a vehicle at that yaw would have, and require the model to recover the yaw.
+    /// That pins the physics rather than the implementation -- it cannot be satisfied by a
+    /// reflection, an axis swap or a sign error, because any of those breaks the round trip
+    /// -- and it covers both frames, which is what the defect turned on.
+    ///
+    /// Run at a non-trivial attitude, not level: tilt compensation is exercised, and a
+    /// levelling error that happens to vanish at zero roll and pitch does not slip through.
+    #[test]
+    fn magnetometer_yaw_recovers_true_heading_in_both_frames() {
+        // Field strength and dip: a mid-latitude northern-hemisphere field, pointing down.
+        let horizontal = 20.0_f64;
+        let vertical_ned_down = 45.0_f64;
+
+        for is_enu in [false, true] {
+            for true_yaw_deg in [-170.0_f64, -90.0, -14.5, 0.0, 30.0, 95.0, 179.0] {
+                for (roll, pitch) in [(0.0, 0.0), (0.4, -0.3), (1.48, 0.21)] {
+                    let true_yaw = true_yaw_deg.to_radians();
+
+                    // The field in the navigation frame, pointing at *true* north (the
+                    // declination path is covered separately; here it is off, so magnetic and
+                    // true north coincide and the model must return the true yaw exactly).
+                    let field_nav = if is_enu {
+                        // ENU: x east, y north, z up -- so a downward field has negative z.
+                        Vector3::new(0.0, horizontal, -vertical_ned_down)
+                    } else {
+                        // NED: x north, y east, z down.
+                        Vector3::new(horizontal, 0.0, vertical_ned_down)
+                    };
+
+                    // Body-frame reading: the inverse of the body-to-nav attitude.
+                    let attitude = Rotation3::from_euler_angles(roll, pitch, true_yaw);
+                    let field_body = attitude.inverse() * field_nav;
+
+                    let measurement = MagnetometerYawMeasurement {
+                        mag_x: field_body.x,
+                        mag_y: field_body.y,
+                        mag_z: field_body.z,
+                        noise_std: 0.05,
+                        apply_declination: false,
+                        year: 2025,
+                        day_of_year: 1,
+                        is_enu,
+                    };
+                    let state = DVector::from_vec(vec![
+                        0.7, -1.3, 100.0, 0.0, 0.0, 0.0, roll, pitch, true_yaw,
+                    ]);
+
+                    let recovered = measurement.get_measurement(&state).unwrap()[0];
+                    let frame = if is_enu { "ENU" } else { "NED" };
+                    assert!(
+                        crate::wrap_to_pi(recovered - true_yaw).abs() < 1e-9,
+                        "{frame}: a vehicle at yaw {true_yaw_deg} deg (roll {roll}, pitch \
+                         {pitch}) should read back {true_yaw_deg} deg, got {} deg",
+                        recovered.to_degrees()
+                    );
+
+                    // And the opposite frame must disagree by exactly a quarter turn.
+                    //
+                    // Asserted as an identity rather than as `> 1e-6`. With declination off
+                    // the two branches are `atan2(-ly, lx)` and `atan2(lx, ly)`, which differ
+                    // by a constant `pi/2` for any field and any attitude -- so a mere
+                    // "they differ" check reduces to `|90 deg| > 1e-6` and cannot fail. An
+                    // earlier version asserted that and justified it by claiming the branches
+                    // coincide near yaw = 45 deg; they never coincide, at 45 deg or anywhere.
+                    // (The reflection about 45 deg is real, but it is between the *old* code
+                    // and the fixed ENU branch, not between the two frames.)
+                    //
+                    // Pinning the quarter turn exactly is what makes this sensitive: it fails
+                    // if either branch is changed independently of the other.
+                    let other = MagnetometerYawMeasurement {
+                        is_enu: !is_enu,
+                        ..measurement
+                    };
+                    let other_heading = other.get_measurement(&state).unwrap()[0];
+                    let quarter_turn = if is_enu {
+                        -std::f64::consts::FRAC_PI_2
+                    } else {
+                        std::f64::consts::FRAC_PI_2
+                    };
+                    assert!(
+                        crate::wrap_to_pi(other_heading - recovered - quarter_turn).abs() < 1e-9,
+                        "{frame}: the opposite frame should read exactly a quarter turn away \
+                         at yaw {true_yaw_deg} deg; got {} deg against {} deg",
+                        other_heading.to_degrees(),
+                        recovered.to_degrees()
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn magnetometer_yaw_measurement_level_attitude() {
         // Test magnetometer yaw with level attitude (no tilt)
@@ -1397,6 +1572,7 @@ mod tests {
             apply_declination: false,
             year: 2025,
             day_of_year: 1,
+            is_enu: false, // NED fixture
         };
 
         // State with zero roll/pitch (level)
@@ -1419,17 +1595,25 @@ mod tests {
         assert!(z[0].abs() < 0.01, "Expected heading near 0, got {}", z[0]);
     }
 
+    /// A body-frame field along +y means the vehicle is heading **west**, not east (#305).
+    ///
+    /// This test used to assert +pi/2 and was one of the things that made the reflection in
+    /// `get_measurement` look intentional. The reasoning it encoded confused the direction the
+    /// *sensor* sees the field with the direction the *vehicle* points: a magnetometer whose
+    /// +y (right/starboard) axis reads the full horizontal field has magnetic north off its
+    /// right side, and a vehicle with north to starboard is heading west, i.e. -pi/2 in NED.
     #[test]
     fn magnetometer_yaw_measurement_east_heading() {
-        // Test magnetometer pointing east (positive y)
+        // Body-frame field entirely along +y: magnetic north lies off the vehicle's right.
         let meas = MagnetometerYawMeasurement {
             mag_x: 0.0,
-            mag_y: 20.0, // pointing east
+            mag_y: 20.0,
             mag_z: -45.0,
             noise_std: 0.05,
             apply_declination: false,
             year: 2025,
             day_of_year: 1,
+            is_enu: false,
         };
 
         let state = DVector::from_vec(vec![
@@ -1446,11 +1630,11 @@ mod tests {
 
         let z = meas.get_measurement(&state).unwrap();
 
-        // With mag pointing east and level attitude, heading should be ~π/2 (90 deg)
-        let expected = std::f64::consts::FRAC_PI_2;
+        // North off the right side, level: the vehicle heads west, -π/2 in NED.
+        let expected = -std::f64::consts::FRAC_PI_2;
         assert!(
             (z[0] - expected).abs() < 0.01,
-            "Expected heading near π/2, got {}",
+            "north off the starboard beam is a westerly heading, expected -π/2, got {}",
             z[0]
         );
     }
@@ -1466,6 +1650,7 @@ mod tests {
             apply_declination: false,
             year: 2025,
             day_of_year: 1,
+            is_enu: false, // NED fixture
         };
 
         // Level state
@@ -1555,6 +1740,7 @@ mod tests {
             apply_declination: true,
             year: 2025,
             day_of_year: 1,
+            is_enu: false, // NED fixture
         };
 
         let s = format!("{meas}");

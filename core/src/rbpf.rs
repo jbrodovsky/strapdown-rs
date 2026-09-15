@@ -1273,6 +1273,7 @@ mod tests {
             apply_declination: false,
             year: 2025,
             day_of_year: 1,
+            is_enu: false, // NED fixture
         };
         for _ in 0..50 {
             rbpf.predict(&imu, 0.1).unwrap();

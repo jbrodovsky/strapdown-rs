@@ -57,16 +57,36 @@
 //! than spreading out by tuning. Tightening the horizontal limits much below 20 m would be
 //! measuring this harness's timestamp matching, not the navigation solution.
 //!
-//! **Attitude splits into an observable part and an unobservable one.** Roll and pitch are
+//! **Each attitude axis is bounded by the sensor that observes it.** Roll and pitch are
 //! observable through gravity: the accelerometer senses a 9.81 m/s^2 vector whose direction
-//! in the body frame fixes two of the three angles, so they are bounded and worth asserting.
-//! Yaw has no such anchor under position-only aiding -- it is observable only through the
-//! weak coupling between heading and velocity during acceleration, which a consumer-MEMS gyro
-//! does not hold over 89 minutes. It is reported here and deliberately not asserted; see
-//! #305. The convention-free geodesic attitude error is reported alongside the per-axis
-//! figures because it is the quantity that does not depend on a choice of Euler sequence, and
-//! on this dataset it equals the yaw error to two decimals, which is what shows the other two
-//! axes are healthy.
+//! in the body frame fixes two of the three angles, so [`MAX_LEVEL_ATTITUDE_RMSE_RAD`] is
+//! derived from gravity and they hold 2.55-3.48 deg. Yaw has no such anchor -- position-only
+//! aiding leaves it unobservable, and stripping the magnetometer events from the stream
+//! confirms it: the ESKF reaches 102.9 deg, against the 103.9 deg (= 180/sqrt(3)) of an error
+//! uniform on the circle. What makes it observable is the magnetometer, which this dataset
+//! carries and `build_event_stream` has always emitted, so [`MAX_YAW_RMSE_RAD`] is derived
+//! from *that* sensor's own measured error instead.
+//!
+//! Yaw was previously reported unasserted, described here as unobservable. That description
+//! was half right and the half that was wrong mattered: the aiding was present the whole
+//! time, but [`MagnetometerYawMeasurement`] computed its heading on one hardcoded branch
+//! regardless of the frame of the state it was updating. On this ENU dataset that returns
+//! pi/2 - psi -- the heading reflected about the 45 deg line -- and the filters converged on
+//! the reflection, which is why the yaw column read 86-98 deg and why the EKF was *better*
+//! with the magnetometer stripped (57.6 deg) than with it (88.2 deg). An aid that makes a
+//! filter worse than no aid is a defect, not an observability limit. Fixed in #305; the
+//! numbers are now ESKF 16.4, EKF 22.7, UKF 22.8 deg.
+//!
+//! The convention-free geodesic attitude error is reported alongside the per-axis figures
+//! because it is the quantity that does not depend on a choice of Euler sequence, and on this
+//! dataset it still tracks the yaw error closely, which is what shows the other two axes are
+//! healthy.
+//!
+//! **Two filters are exempt from the yaw bound**, for reasons that are about their attitude
+//! representations rather than about aiding, and both are recorded at the assertion: the UKF
+//! averages sigma-point Euler angles linearly (#336, so its 22.8 deg is not evidence of
+//! anything), and the RBPF linearly averages unwrapped per-particle Euler error states and
+//! sits at 65.9 deg.
 //!
 //! **The dead-reckoning baseline is a 240-sample window, not the whole recording.** Unaided
 //! dead reckoning over all 5,366 samples ends 6.57e6 m from truth, so asserting that a filter
@@ -80,6 +100,7 @@
 //! documented over, and placed where the margins against those two are equal. See
 //! [`DEAD_RECKONING_BASELINE_SAMPLES`] for the arithmetic. Exactly one test still runs the full
 //! 89-minute arc, `test_dead_reckoning_on_real_data`, and it accepts either outcome.
+use chrono::Datelike;
 use std::path::Path;
 
 use strapdown::earth::haversine_distance;
@@ -88,7 +109,8 @@ use strapdown::gating::InnovationGate;
 use strapdown::kalman::{
     ErrorStateKalmanFilter, ExtendedKalmanFilter, InitialState, UnscentedKalmanFilter,
 };
-use strapdown::measurements::ZuptMeasurement;
+use strapdown::measurements::MAG_YAW_NOISE;
+use strapdown::measurements::{MagnetometerYawMeasurement, MeasurementModel, ZuptMeasurement};
 use strapdown::messages::{
     Event, GnssDegradationConfig, GnssFaultModel, GnssScheduler, build_event_stream,
 };
@@ -192,11 +214,69 @@ const MAX_VERTICAL_RMSE_M: f64 = 10.0;
 
 /// Roll and pitch RMSE ceiling applied to every healthy filter in the benchmark (radians).
 ///
-/// Only the *level* axes. Roll and pitch are gravity-observable and observed at 2.9-3.8 deg;
-/// 10 deg leaves ~2.6x margin. Yaw is excluded on purpose: it is unobservable under
-/// position-only aiding and diverges in every filter (#305), so any ceiling that passed today
-/// would be vacuous rather than a guard. It is reported by the benchmark regardless.
+/// Only the *level* axes. Roll and pitch are gravity-observable and observed at 2.55-3.48 deg;
+/// 10 deg leaves ~2.6x margin. Yaw is bounded separately by [`MAX_YAW_RMSE_RAD`], because it
+/// is observable through a different sensor and its bound is derived from that sensor rather
+/// than from gravity.
 const MAX_LEVEL_ATTITUDE_RMSE_RAD: f64 = 10.0 * std::f64::consts::PI / 180.0;
+
+/// The local-level frame `core/tests/test_data.csv` is expressed in.
+///
+/// One constant rather than a `true` repeated at each call site, because more than one thing
+/// now reads it -- the filters' initial states and the event stream's magnetometer heading --
+/// and they must agree. #305 is what happens when they do not: the magnetometer model assumed
+/// a frame instead of being told one, disagreed with the state it was updating, and drove yaw
+/// to a reflection of the truth for 89 minutes without anything noticing.
+///
+/// ENU because this is a Sensor Logger export, whose accelerometer reads +g along the
+/// device's up-axis at rest; `check_declared_frame` asserts that against the data.
+const TEST_DATA_IS_ENU: bool = true;
+
+/// Yaw RMSE ceiling applied to the magnetometer-aided filters in the benchmark (radians).
+///
+/// # Where this number comes from
+///
+/// Yaw is observable on this dataset **only** through the magnetometer. Stripping the
+/// magnetometer events from the stream leaves the ESKF at 102.9 deg RMSE, against the 103.9
+/// deg (= 180/sqrt(3)) of an error distributed uniformly around the circle: statistically
+/// indistinguishable from carrying no heading information at all, which is what the
+/// position-only observability argument in #305 predicts. So the bound has to be derived from
+/// the aiding source, not from the trajectory or from gravity.
+///
+/// The source's own error is directly measurable, with no filter involved: evaluate
+/// [`MagnetometerYawMeasurement`] at the *reference* attitude for every record and compare
+/// with the reference yaw. On this recording that is **17.06 deg RMS**, with a 3.07 deg mean
+/// bias -- residual hard iron from the vehicle, whose own field puts the implied magnetic
+/// north at -8.21 deg against a WMM declination of -11.40 deg.
+/// `magnetometer_yaw_aiding_source_error_matches_derivation` measures that figure and fails if
+/// the dataset stops supporting it, the same discipline
+/// `assert_reference_accuracy_matches_dataset` applies to the GNSS accuracies.
+///
+/// A filter whose only yaw observation is that source cannot do better than it except by
+/// smoothing, and how much smoothing an 89-minute drive buys is not something to predict in
+/// advance -- so the ceiling is **1.5x the source's own RMS**, 25.6 deg. The factor is margin
+/// for the filter being *worse* than its sensor (gyro drift between updates, the tilt
+/// coupling the Jacobian deliberately neglects), not a fit: bounding at the source's 17.06 deg
+/// itself is equally derivable but leaves 4% of headroom on the ESKF's measured 16.42 deg and
+/// would be flaky rather than informative.
+///
+/// **Margins differ sharply between the filters this is asserted against**, and the ESKF's is
+/// not the one to watch. ESKF 16.42 deg is 1.56x under the bound; **EKF 22.67 deg is 1.13x**,
+/// using 89% of it. A z-gyro bias of 1e-2 rad/s puts the EKF at 24.85 deg -- 97% -- while the
+/// ESKF does not move. So this bound is, in practice, a live assertion on the EKF and a loose
+/// one on the ESKF, and a failure here should be read as an EKF finding first.
+///
+/// This number moves if `core/tests/test_data.csv` is replaced -- it describes that vehicle's
+/// magnetic environment, not the filters.
+const MAX_YAW_RMSE_RAD: f64 = 1.5 * MAG_YAW_SOURCE_RMSE_RAD;
+
+/// Measured RMS error of the magnetometer heading itself on `core/tests/test_data.csv`.
+///
+/// Evaluated at the reference attitude, so no filter is involved: this is what the aiding
+/// source knows, and the floor any filter reading it is working against. See
+/// [`MAX_YAW_RMSE_RAD`], which derives the benchmark's ceiling from it, and
+/// `magnetometer_yaw_aiding_source_error_matches_derivation`, which re-measures it.
+const MAG_YAW_SOURCE_RMSE_RAD: f64 = 17.06 * std::f64::consts::PI / 180.0;
 
 /// Length of the unaided dead-reckoning baseline arc, in samples.
 ///
@@ -892,11 +972,9 @@ fn create_initial_state(first_record: &TestDataRecord) -> InitialState {
         pitch,
         yaw,
         in_degrees: false, // All angles now in radians
-        // ENU on purpose: `test_data.csv` is a Sensor Logger export, whose accelerometer reads
-        // +g along the device's up-axis at rest. Pinning it explicitly -- rather than leaning on
-        // the crate default, which is now NED -- is what keeps this suite's numbers unchanged
-        // across the frame flip, so any movement here is attributable to something else.
-        is_enu: true,
+        // ENU on purpose; see `TEST_DATA_IS_ENU`, which is also what the event stream's
+        // magnetometer heading is built against. The two must agree (#305).
+        is_enu: TEST_DATA_IS_ENU,
     }
 }
 
@@ -912,11 +990,9 @@ fn create_nominal_state(first_record: &TestDataRecord) -> StrapdownState {
         velocity_east: first_record.speed * first_record.bearing.to_radians().sin(),
         velocity_vertical: 0.0,
         attitude: Rotation3::from_euler_angles(roll, pitch, yaw),
-        // ENU on purpose: `test_data.csv` is a Sensor Logger export, whose accelerometer reads
-        // +g along the device's up-axis at rest. Pinning it explicitly -- rather than leaning on
-        // the crate default, which is now NED -- is what keeps this suite's numbers unchanged
-        // across the frame flip, so any movement here is attributable to something else.
-        is_enu: true,
+        // ENU on purpose; see `TEST_DATA_IS_ENU`, which is also what the event stream's
+        // magnetometer heading is built against. The two must agree (#305).
+        is_enu: TEST_DATA_IS_ENU,
     }
 }
 
@@ -950,7 +1026,7 @@ fn run_rbpf_with_cfg(
     cfg: &GnssDegradationConfig,
     rbpf_config: RbpfConfig,
 ) -> Vec<NavigationResult> {
-    let stream = build_event_stream(records, cfg).unwrap();
+    let stream = build_event_stream(records, cfg, TEST_DATA_IS_ENU).unwrap();
 
     let nominal = create_nominal_state(&records[0]);
     let mut rbpf = RaoBlackwellizedParticleFilter::new(nominal, rbpf_config).unwrap();
@@ -1229,7 +1305,7 @@ fn test_ukf_closed_loop_on_real_data() {
         ..Default::default()
     };
 
-    let stream = build_event_stream(&records, &cfg).unwrap();
+    let stream = build_event_stream(&records, &cfg, TEST_DATA_IS_ENU).unwrap();
 
     // Run closed-loop filter
     let results =
@@ -1387,7 +1463,7 @@ fn test_ukf_with_degraded_gnss() {
         ..Default::default()
     };
 
-    let stream = build_event_stream(&records, &cfg).unwrap();
+    let stream = build_event_stream(&records, &cfg, TEST_DATA_IS_ENU).unwrap();
 
     // Run closed-loop filter
     let results = run_closed_loop(&mut ukf, stream, None, None)
@@ -1483,7 +1559,7 @@ fn test_ukf_outperforms_dead_reckoning() {
         fault: fault_model,
         ..Default::default()
     };
-    let stream = build_event_stream(&records, &cfg).unwrap();
+    let stream = build_event_stream(&records, &cfg, TEST_DATA_IS_ENU).unwrap();
 
     // The filter runs the whole stream -- that coverage is worth keeping, and the absolute
     // ceiling below is asserted on it -- but the *comparison* is scored over the baseline
@@ -1570,7 +1646,7 @@ fn test_ekf_closed_loop_on_real_data() {
         ..Default::default()
     };
 
-    let stream = build_event_stream(&records, &cfg).unwrap();
+    let stream = build_event_stream(&records, &cfg, TEST_DATA_IS_ENU).unwrap();
 
     // Run closed-loop filter
     let results = run_closed_loop(&mut ekf, stream, None, None)
@@ -1730,7 +1806,7 @@ fn test_ekf_with_degraded_gnss() {
         ..Default::default()
     };
 
-    let stream = build_event_stream(&records, &cfg).unwrap();
+    let stream = build_event_stream(&records, &cfg, TEST_DATA_IS_ENU).unwrap();
 
     // Run closed-loop filter
     let results = run_closed_loop(&mut ekf, stream, None, None)
@@ -1870,7 +1946,7 @@ fn test_ekf_outperforms_dead_reckoning() {
         fault: fault_model,
         ..Default::default()
     };
-    let stream = build_event_stream(&records, &cfg).unwrap();
+    let stream = build_event_stream(&records, &cfg, TEST_DATA_IS_ENU).unwrap();
 
     // Full stream for the absolute ceiling below, baseline window for the comparison; see the
     // equivalent block in `test_ukf_outperforms_dead_reckoning` for why both are needed.
@@ -1956,7 +2032,7 @@ fn test_eskf_closed_loop_on_real_data() {
         ..Default::default()
     };
 
-    let stream = build_event_stream(&records, &cfg).unwrap();
+    let stream = build_event_stream(&records, &cfg, TEST_DATA_IS_ENU).unwrap();
 
     // Run closed-loop filter
     let results = run_closed_loop(&mut eskf, stream, None, None)
@@ -2128,7 +2204,7 @@ fn test_eskf_with_degraded_gnss() {
         ..Default::default()
     };
 
-    let stream = build_event_stream(&records, &cfg).unwrap();
+    let stream = build_event_stream(&records, &cfg, TEST_DATA_IS_ENU).unwrap();
 
     // Run closed-loop filter
     let results = run_closed_loop(&mut eskf, stream, None, None)
@@ -2239,7 +2315,7 @@ fn test_eskf_outperforms_dead_reckoning() {
         fault: GnssFaultModel::None,
         ..Default::default()
     };
-    let stream = build_event_stream(&records, &cfg).unwrap();
+    let stream = build_event_stream(&records, &cfg, TEST_DATA_IS_ENU).unwrap();
 
     // Full stream for the absolute ceiling below, baseline window for the comparison; see the
     // equivalent block in `test_ukf_outperforms_dead_reckoning` for why both are needed.
@@ -2353,7 +2429,7 @@ fn test_eskf_output_stays_valid_across_full_run() {
         ..Default::default()
     };
 
-    let stream = build_event_stream(&records, &cfg).unwrap();
+    let stream = build_event_stream(&records, &cfg, TEST_DATA_IS_ENU).unwrap();
 
     // Run closed-loop filter
     let results = run_closed_loop(&mut eskf, stream, None, None).expect("ESKF should complete");
@@ -2517,7 +2593,7 @@ fn test_eskf_default_initialization_on_real_data() {
     };
     let results = run_closed_loop(
         &mut eskf,
-        build_event_stream(&records, &cfg).unwrap(),
+        build_event_stream(&records, &cfg, TEST_DATA_IS_ENU).unwrap(),
         None,
         None,
     )
@@ -2649,7 +2725,7 @@ fn test_filter_comparison() {
         2.0,
         0.0,
     );
-    let stream_ukf = build_event_stream(&records, &cfg).unwrap();
+    let stream_ukf = build_event_stream(&records, &cfg, TEST_DATA_IS_ENU).unwrap();
     let ukf_results =
         run_closed_loop(&mut ukf, stream_ukf, None, None).expect("UKF should complete");
     let ukf_stats = compute_error_metrics(&ukf_results, &records);
@@ -2662,7 +2738,7 @@ fn test_filter_comparison() {
         process_noise,
         true,
     );
-    let stream_ekf = build_event_stream(&records, &cfg).unwrap();
+    let stream_ekf = build_event_stream(&records, &cfg, TEST_DATA_IS_ENU).unwrap();
     let ekf_results =
         run_closed_loop(&mut ekf, stream_ekf, None, None).expect("EKF should complete");
     let ekf_stats = compute_error_metrics(&ekf_results, &records);
@@ -2678,7 +2754,7 @@ fn test_filter_comparison() {
         process_noise,
     );
 
-    let stream_eskf = build_event_stream(&records, &cfg).unwrap();
+    let stream_eskf = build_event_stream(&records, &cfg, TEST_DATA_IS_ENU).unwrap();
     let eskf_results =
         run_closed_loop(&mut eskf, stream_eskf, None, None).expect("ESKF should complete");
     let eskf_stats = compute_error_metrics(&eskf_results, &records);
@@ -2944,7 +3020,7 @@ fn test_filter_output_length_matches_input() {
         0.0,  // kappa
     );
 
-    let event_stream = build_event_stream(&records, &degradation).unwrap();
+    let event_stream = build_event_stream(&records, &degradation, TEST_DATA_IS_ENU).unwrap();
     let ukf_results = run_closed_loop(&mut ukf, event_stream, None, None)
         .expect("UKF closed loop should complete successfully");
 
@@ -2970,7 +3046,7 @@ fn test_filter_output_length_matches_input() {
         true,
     );
 
-    let event_stream = build_event_stream(&records, &degradation).unwrap();
+    let event_stream = build_event_stream(&records, &degradation, TEST_DATA_IS_ENU).unwrap();
     let ekf_results = run_closed_loop(&mut ekf, event_stream, None, None)
         .expect("EKF closed loop should complete successfully");
 
@@ -3016,7 +3092,7 @@ fn run_filter_on_clean_stream<F: NavigationFilter>(
         fault: GnssFaultModel::None,
         ..Default::default()
     };
-    let stream = build_event_stream(records, &cfg).unwrap();
+    let stream = build_event_stream(records, &cfg, TEST_DATA_IS_ENU).unwrap();
     run_closed_loop(filter, stream, None, None)
         .unwrap_or_else(|error| panic!("filter should complete the clean stream: {error}"))
 }
@@ -3054,6 +3130,130 @@ fn build_eskf(initial_state: &InitialState) -> ErrorStateKalmanFilter {
         ESKF_INITIAL_COVARIANCE.to_vec(),
         DMatrix::from_diagonal(&DVector::from_vec(ESKF_PROCESS_NOISE.to_vec())),
     )
+}
+
+/// The magnetometer heading's own error on this dataset, measured without a filter (#305).
+///
+/// [`MAX_YAW_RMSE_RAD`] is derived from this number, so this test is what stops that
+/// derivation becoming fiction if `test_data.csv` is ever replaced -- the same job
+/// [`assert_reference_accuracy_matches_dataset`] does for the GNSS accuracies.
+///
+/// The measurement is evaluated at the *reference* attitude rather than at any filter's
+/// estimate, which is what makes it a property of the sensor and the vehicle's magnetic
+/// environment rather than of the estimator. A filter reading only this source cannot beat it
+/// except by smoothing.
+///
+/// It also pins the frame, and that half is the actual #305 regression guard: the same records
+/// evaluated on the NED branch give 110.8 deg rather than 17.1 deg. That gap is the whole
+/// defect -- the model computed one fixed branch regardless of the state it was updating, so
+/// on this ENU dataset it returned pi/2 - psi and every filter converged on the reflection.
+/// A single `assert!(rms < something)` would not have caught it, because 110.8 deg and the
+/// 95.1 deg the original code produced are both just "large"; asserting that the *matching*
+/// branch is small and the *mismatched* branch is large is what makes the orientation
+/// explicit.
+#[test]
+fn magnetometer_yaw_aiding_source_error_matches_derivation() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let test_data_path = Path::new(manifest_dir).join("tests/test_data.csv");
+    let records = load_test_data(&test_data_path);
+    assert!(!records.is_empty(), "test data should not be empty");
+
+    let mut squared_error: [f64; 2] = [0.0, 0.0];
+    let mut signed_error_sum = 0.0;
+    let mut count = 0usize;
+
+    for record in &records {
+        if [record.mag_x, record.mag_y, record.mag_z]
+            .iter()
+            .any(|component| component.is_nan())
+        {
+            continue;
+        }
+        let (roll, pitch, reference_yaw) = reference_attitude(record);
+        let state = DVector::from_vec(vec![
+            record.latitude.to_radians(),
+            record.longitude.to_radians(),
+            record.altitude,
+            0.0,
+            0.0,
+            0.0,
+            roll,
+            pitch,
+            reference_yaw,
+        ]);
+        // Index 0 is the frame the dataset is actually in, index 1 the other one.
+        for (slot, is_enu) in [TEST_DATA_IS_ENU, !TEST_DATA_IS_ENU]
+            .into_iter()
+            .enumerate()
+        {
+            let measurement = MagnetometerYawMeasurement {
+                mag_x: record.mag_x,
+                mag_y: record.mag_y,
+                mag_z: record.mag_z,
+                noise_std: MAG_YAW_NOISE,
+                apply_declination: true,
+                year: record.time.year(),
+                day_of_year: record.time.ordinal() as u16,
+                is_enu,
+            };
+            let heading = measurement
+                .get_measurement(&state)
+                .expect("the magnetometer model is analytic and cannot fail on a valid state")[0];
+            let error = wrap_to_pi(heading - reference_yaw);
+            squared_error[slot] += error * error;
+            if slot == 0 {
+                signed_error_sum += error;
+            }
+        }
+        count += 1;
+    }
+
+    assert!(
+        count > 5000,
+        "expected the full recording, got {count} usable magnetometer records"
+    );
+    let matching_rms = (squared_error[0] / count as f64).sqrt();
+    let mismatched_rms = (squared_error[1] / count as f64).sqrt();
+    let mean_bias = signed_error_sum / count as f64;
+
+    println!(
+        "magnetometer heading vs reference attitude over {count} records: matching frame \
+         {:.2} deg RMS (bias {:.2} deg), mismatched frame {:.2} deg RMS",
+        matching_rms.to_degrees(),
+        mean_bias.to_degrees(),
+        mismatched_rms.to_degrees()
+    );
+
+    assert!(
+        (matching_rms - MAG_YAW_SOURCE_RMSE_RAD).abs() < 0.5_f64.to_radians(),
+        "MAG_YAW_SOURCE_RMSE_RAD is documented as {:.2} deg but the dataset now measures \
+         {:.2} deg; MAX_YAW_RMSE_RAD is derived from it and needs revisiting",
+        MAG_YAW_SOURCE_RMSE_RAD.to_degrees(),
+        matching_rms.to_degrees()
+    );
+
+    // The mean bias is residual hard iron from the vehicle, not noise: the field rotated into
+    // the navigation frame implies a magnetic north of -8.21 deg against a WMM declination of
+    // -11.40 deg. Recorded because it is the reason the filters cannot do much better than
+    // 16 deg, and because a bias that grows means the heading aid has acquired an offset.
+    assert!(
+        mean_bias.abs() < 6.0_f64.to_radians(),
+        "magnetometer heading bias is {:.2} deg, up from the 3.07 deg this dataset showed; \
+         the heading aid has acquired an offset",
+        mean_bias.to_degrees()
+    );
+
+    // The orientation check. Not a tuned threshold: 45 deg is the midpoint of the reflection
+    // the wrong branch performs, so anything at or above it cannot be a matching frame.
+    assert!(
+        mismatched_rms > 45.0_f64.to_radians(),
+        "evaluating the magnetometer on the {} branch should be badly wrong on {} data, but it \
+         measures {:.2} deg -- either the frames have stopped differing or TEST_DATA_IS_ENU no \
+         longer describes this dataset",
+        if TEST_DATA_IS_ENU { "NED" } else { "ENU" },
+        if TEST_DATA_IS_ENU { "ENU" } else { "NED" },
+        mismatched_rms.to_degrees()
+    );
 }
 
 /// Check the documented reference accuracies still describe the dataset.
@@ -3170,6 +3370,43 @@ fn test_rmse_benchmark_across_filters() {
                 rms.to_degrees()
             );
         }
+    }
+
+    // Yaw, on the filters whose attitude representation can carry it (#305).
+    //
+    // Two filters are excluded, and the exclusions are the point of this being a separate
+    // loop rather than a third entry in the one above:
+    //
+    // * **UKF** -- #336: it averages sigma-point Euler angles linearly under non-convex
+    //   weights, so its yaw is meaningless near the +/-pi branch cut regardless of what the
+    //   aiding does. It measures 22.77 deg here, which *would* pass; asserting it would be
+    //   asserting that this recording happens not to dwell on the cut, not that the filter
+    //   holds heading. Restore it to the list when #336 lands.
+    // * **RBPF** -- 65.89 deg, genuinely over the bound. It improved with the fix below
+    //   (88.22 -> 65.89 deg) but is still 4x the aiding source's own error, because it shares
+    //   #336's defect in its own form: `particle_state_vector` adds each particle's Euler
+    //   error state to a shared nominal without wrapping, and `estimate` takes a linear
+    //   weighted mean of the result, so a cloud straddling the cut averages to nothing
+    //   meaningful. That is an attitude-representation bug in the RBPF, not an aiding gap --
+    //   its geodesic error (66.03 deg) still equals its yaw error, the signature #305
+    //   identified -- and it is left failing-by-exclusion rather than tuned around, per the
+    //   #267 precedent. Tracked as **#341**, which is what removes this exclusion. Its yaw is
+    //   still printed in the table above, so the number stays visible; it is only unasserted.
+    for (name, stats) in benchmark {
+        if matches!(name, "UKF" | "RBPF") {
+            continue;
+        }
+        assert!(
+            stats.rms_yaw_error < MAX_YAW_RMSE_RAD,
+            "{name} yaw RMSE should be under {:.1} deg -- 1.5x the {:.1} deg the magnetometer \
+             itself achieves on this recording, see MAX_YAW_RMSE_RAD -- got {:.2} deg. Yaw is \
+             observable here only through the magnetometer, so a regression in this number is \
+             most likely in the heading aid: check that the frame passed to `build_event_stream` \
+             still matches the filters' own (#305).",
+            MAX_YAW_RMSE_RAD.to_degrees(),
+            MAG_YAW_SOURCE_RMSE_RAD.to_degrees(),
+            stats.rms_yaw_error.to_degrees()
+        );
     }
 
     // No filter may beat the reference it is scored against. Tripping this does not mean the
@@ -3580,7 +3817,7 @@ fn test_eskf_recovers_from_gnss_outage() {
         fault: GnssFaultModel::None,
         ..Default::default()
     };
-    let stream = build_event_stream(&records, &cfg).unwrap();
+    let stream = build_event_stream(&records, &cfg, TEST_DATA_IS_ENU).unwrap();
     let results = run_closed_loop(&mut eskf, stream, None, None)
         .expect("ESKF should complete the duty-cycled stream");
 
@@ -3666,19 +3903,46 @@ fn test_eskf_recovers_from_gnss_outage() {
         );
     }
 
-    // And the recovery must be a collapse, not a drift back. Two orders of magnitude is far
-    // below the ~650x actually observed, but far above anything a filter that merely stopped
-    // getting worse could produce.
-    for (label, outage_stats, recovered_stats) in [
-        ("first", outage, recovered),
-        ("second", second_outage, after_second),
-    ] {
+    // And the recovery must be a collapse, not a drift back. Paired with the bound above --
+    // recovered error back under the operating ceiling -- the statement that makes is: the
+    // filter left the band a healthy filter occupies entirely, and came back inside it.
+    //
+    // This used to be a ratio, `recovered * 100 < outage`, justified as "far below the ~650x
+    // actually observed". #305 is what that kind of threshold costs. Fixing the magnetometer's
+    // frame gave the filter a heading to coast on, which cut the second outage's drift from
+    // 6297 m to 1718 m while the recovered window stayed at 21.7 m -- so the ratio fell from
+    // 290x to 79x and the assertion failed *because the filter got better*. The ratio was
+    // never measuring recovery; it was measuring how far the filter flew off during the
+    // outage, which is a property of the route, the outage length and the quality of the
+    // coast. That is the same objection the comment above already raises against ratios
+    // taken over a single window, and it applies here too.
+    //
+    // Both bounds are quantities the suite already derives:
+    // [`DEAD_RECKONING_DIVERGENCE_FLOOR_M`] (400 m) is the point where unaided propagation
+    // leaves the range a degraded-but-not-broken filter can reach, and
+    // [`MAX_HORIZONTAL_RMSE_M`] (40 m) is the ceiling healthy filters hold. A filter that
+    // merely stopped getting worse fails the second; one that was never actually deprived
+    // fails the first.
+    //
+    // **Be honest about what the floor is**: it is a lower bound on how badly the filter
+    // coasts, so it is exactly the kind of assertion that fails when the filter *improves* --
+    // the same character as the ratio it replaced, and the same character as the floor in
+    // `assert_beats_dead_reckoning`. It is not immune, it is only further away: outage 2 sits
+    // at 1718 m against 400 m, and #305 just moved that number by 3.7x, so another improvement
+    // of that size trips it. It earns its place anyway, because "the outage actually deprived
+    // the filter" is a premise the recovery assertion needs and cannot check for itself, and
+    // the failure message says what to do. The genuinely improvement-proof half of the pair is
+    // `outage.max > before.max` above, which compares two windows of the same run.
+    for (label, outage_stats) in [("first", outage), ("second", second_outage)] {
         assert!(
-            recovered_stats.rms * 100.0 < outage_stats.rms,
-            "the {label} recovery should drop the error by at least 100x: {:.0} m during the \
-             outage against {:.2} m after it",
-            outage_stats.rms,
-            recovered_stats.rms
+            outage_stats.rms > DEAD_RECKONING_DIVERGENCE_FLOOR_M,
+            "the {label} outage should push the ESKF clear of the \
+             {DEAD_RECKONING_DIVERGENCE_FLOOR_M} m band a healthy filter occupies, but it only \
+             reached {:.0} m rms. Either GNSS is still reaching the filter, or coasting has \
+             genuinely improved -- check `outage.max > before.max` above, which is the \
+             improvement-proof form of the same question, and if that still passes then \
+             lengthen the outage windows rather than lowering this floor",
+            outage_stats.rms
         );
     }
 }
@@ -3761,7 +4025,7 @@ fn test_eskf_auto_covariance_initialization_on_real_data() {
     };
     let results = run_closed_loop(
         &mut eskf,
-        build_event_stream(&records, &cfg).unwrap(),
+        build_event_stream(&records, &cfg, TEST_DATA_IS_ENU).unwrap(),
         None,
         None,
     )

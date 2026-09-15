@@ -544,7 +544,8 @@ fn process_file(
 
             let filter_config = config.closed_loop.clone().unwrap_or_default();
 
-            let event_stream = build_event_stream(&records, &config.gnss_degradation)?;
+            let event_stream =
+                build_event_stream(&records, &config.gnss_degradation, config.is_enu)?;
             info!(
                 "Initialized event stream with {} events",
                 event_stream.events.len()
@@ -687,11 +688,12 @@ fn process_file(
                     geo_frequency_s,
                 )?
             } else {
-                build_event_stream(&records, &config.gnss_degradation)?
+                build_event_stream(&records, &config.gnss_degradation, config.is_enu)?
             };
 
             #[cfg(not(feature = "geonav"))]
-            let event_stream = build_event_stream(&records, &config.gnss_degradation)?;
+            let event_stream =
+                build_event_stream(&records, &config.gnss_degradation, config.is_enu)?;
 
             // The particle filter builds its nominal state here rather than through
             // `initialize_*`, so it has to run the frame guard itself.
@@ -959,7 +961,7 @@ fn run_single_closed_loop_simulation(
     check_declared_frame(records, is_enu)?;
 
     // Build event stream from records and GNSS degradation config
-    let event_stream = build_event_stream(records, gnss_degradation)?;
+    let event_stream = build_event_stream(records, gnss_degradation, is_enu)?;
     info!(
         "Initialized event stream with {} events",
         event_stream.events.len()
@@ -1783,7 +1785,7 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
         };
 
         #[cfg(not(feature = "geonav"))]
-        let event_stream = build_event_stream(&records, &gnss_degradation)?;
+        let event_stream = build_event_stream(&records, &gnss_degradation, args.sim.enu)?;
 
         #[cfg(feature = "geonav")]
         let event_stream = if args.geo.geo {
@@ -1797,7 +1799,7 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
                 args.geo.geo_frequency_s,
             )?
         } else {
-            build_event_stream(&records, &gnss_degradation)?
+            build_event_stream(&records, &gnss_degradation, args.sim.enu)?
         };
 
         #[cfg(feature = "geonav")]
