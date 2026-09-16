@@ -43,7 +43,9 @@ The numbers are meaningless without them, and none of them is a defect in the ha
    one.** Nothing aids heading there but the GNSS velocity fix on a moving trajectory, which
    turns out to be enough: the EKF holds 0.97 deg and the ESKF 2.07 deg on `syn_cruise_1hz`
    while the UKF sits at 42.7 deg. That gap is not observability -- all three see the same
-   measurements -- it is the UKF averaging sigma-point Euler angles linearly. Modelling a
+   measurements -- it is
+   [#371](https://github.com/jbrodovsky/strapdown-rs/issues/371): the UKF means its
+   sigma-point attitudes by summing Euler triples linearly, which is not the mean rotation. Modelling a
    real field is tracked in
    [#369](https://github.com/jbrodovsky/strapdown-rs/issues/369).
 4. **The consistency columns mean different things on the two sources.** On the synthetic
@@ -243,6 +245,6 @@ The vertical RMSE cost is the honest price: the old value bought that number by 
 its own error, and on the reference recording it is not paid at all -- vertical RMSE there
 improved slightly. The `syn_outage_60s__ukf` row is recorded but not endorsed: across the sweep
 its horizontal RMSE runs 222, 174, 267, 344 m while its yaw runs 105, 98, 21, 34 deg, so
-position degrades exactly where attitude improves fivefold. That row is a filter coasting an
-outage on an attitude it has not estimated, and it does not respond monotonically to this or
-any other knob.
+position degrades exactly where attitude improves fivefold. That row is
+[#371](https://github.com/jbrodovsky/strapdown-rs/issues/371) coasting an outage, and it does
+not respond monotonically to this or any other knob.

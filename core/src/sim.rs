@@ -228,8 +228,9 @@ pub(crate) const INITIAL_VERTICAL_POSITION_VARIANCE_M2: f64 =
 /// accuracy is unchanged everywhere to four significant figures except on the 60 s-outage
 /// scenarios, where the ESKF improves sharply -- synthetic 138 m to 20 m -- and the UKF
 /// worsens, 222 m to 267 m. That UKF row should not be read as a cost of this change: its yaw
-/// error over the same sweep runs 105, 98, 21 and 34 degrees, which is #336 coasting through a
-/// GNSS outage on an attitude it has not estimated, and it bounces with any perturbation.
+/// error over the same sweep runs 105, 98, 21 and 34 degrees, so position degrades exactly
+/// where attitude improves fivefold. That is #371 -- a linear Euler mean over sigma-point
+/// attitudes -- coasting a GNSS outage, and it responds monotonically to no knob at all.
 ///
 /// All of these numbers are gated in `core/tests/perf_baseline.json`, so the next change to
 /// them has to be deliberate.
