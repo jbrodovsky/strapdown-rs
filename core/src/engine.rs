@@ -79,12 +79,12 @@ use serde::{Deserialize, Serialize};
 use crate::earth::principal_radii;
 use crate::kalman::{ErrorStateKalmanFilter, InitialState};
 use crate::measurements::{GPSPositionMeasurement, GPSVelocityMeasurement, MeasurementModel};
-// `DEFAULT_PROCESS_NOISE` is a tuning constant for the 15-state filters rather than a
+// `DEFAULT_PROCESS_NOISE_DENSITY` is a tuning constant for the 15-state filters rather than a
 // simulation-only value; it lives in `sim` for historical reasons. Reusing it here keeps the
 // engine's default tuning identical to the one the ESKF integration suite validates.
 use crate::gating::{GateRecovery, InnovationGate, UpdateOutcome};
 use crate::sim::{
-    DEFAULT_PROCESS_NOISE, INITIAL_HORIZONTAL_POSITION_VARIANCE_RAD2,
+    DEFAULT_PROCESS_NOISE_DENSITY, INITIAL_HORIZONTAL_POSITION_VARIANCE_RAD2,
     INITIAL_VERTICAL_POSITION_VARIANCE_M2,
 };
 use crate::{ImuSample, InputModel, NavigationFilter, StrapdownError};
@@ -117,7 +117,7 @@ pub struct InsEngineConfig {
     /// `[0.0, 0.0, 0.0]` (the default) disables lever-arm compensation.
     pub lever_arm: [f64; 3],
     /// Process noise covariance diagonal, 15 elements. `None` uses
-    /// [`DEFAULT_PROCESS_NOISE`].
+    /// [`DEFAULT_PROCESS_NOISE_DENSITY`].
     pub process_noise_diagonal: Option<Vec<f64>>,
     /// Initial error-state covariance diagonal, 15 elements. `None` uses the same defaults
     /// as [`crate::sim::initialize_eskf`].
@@ -380,7 +380,7 @@ impl InsEngineBuilder {
     fn build_default_filter(&self, is_enu: bool) -> Result<ErrorStateKalmanFilter, StrapdownError> {
         let process_noise = validate_diagonal(
             self.config.process_noise_diagonal.as_deref(),
-            &DEFAULT_PROCESS_NOISE,
+            &DEFAULT_PROCESS_NOISE_DENSITY,
             "process_noise_diagonal",
         )?;
         let initial_covariance = validate_diagonal(

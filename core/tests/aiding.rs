@@ -38,7 +38,7 @@ use strapdown::measurements::{
     GPSPositionAndVelocityMeasurement, MeasurementModel, ZaruMeasurement, ZuptMeasurement,
 };
 use strapdown::metrics::root_mean_square;
-use strapdown::sim::DEFAULT_PROCESS_NOISE;
+use strapdown::sim::DEFAULT_PROCESS_NOISE_DENSITY;
 use strapdown::stationary::{StationaryConfig, StationaryDetector};
 use strapdown::{IMUData, ImuSample, NavigationFilter, StrapdownState, mechanize, wrap_to_pi};
 
@@ -851,7 +851,7 @@ fn a_note_on_filter_consistency() {
     //
     // Measured with this file's `process_noise()`; the `#[ignore]`d companion
     // `the_shipped_default_process_noise_lets_every_filter_filter` quotes ~493 m for the EKF
-    // because it drives `DEFAULT_PROCESS_NOISE` instead. Both say the same thing.
+    // because it drives `DEFAULT_PROCESS_NOISE_DENSITY` instead. Both say the same thing.
     //
     // The EKF and UKF believe their horizontal position is uncertain to hundreds of metres
     // while sitting within six of truth -- and that 6 m is exactly the largest perturbation
@@ -1086,7 +1086,7 @@ fn the_shipped_default_process_noise_lets_the_eskf_filter() {
     // array. It drives a filter the crate ships, with the diagonal the crate ships, on
     // honest fixes, and asserts the two things an over-inflated Q destroys.
     //
-    // Deliberately `strapdown::sim::DEFAULT_PROCESS_NOISE` and not this file's own
+    // Deliberately `strapdown::sim::DEFAULT_PROCESS_NOISE_DENSITY` and not this file's own
     // `process_noise()`: the local copy was already built through `meters_to_radians`, so
     // using it would test the fixture instead of the library.
     //
@@ -1094,7 +1094,7 @@ fn the_shipped_default_process_noise_lets_the_eskf_filter() {
     // build by default, and because it is the one of the three whose reported uncertainty
     // is currently believable -- see the `#[ignore]`d companion below for the other two.
     let scenario = build_gating_scenario();
-    let shipped = DMatrix::from_diagonal(&DVector::from_row_slice(&DEFAULT_PROCESS_NOISE));
+    let shipped = DMatrix::from_diagonal(&DVector::from_row_slice(&DEFAULT_PROCESS_NOISE_DENSITY));
     let (name, mut filter) = filters_with_process_noise(&scenario.initial, &shipped)
         .into_iter()
         .find(|(name, _)| *name == "ESKF")
@@ -1134,7 +1134,7 @@ fn the_shipped_default_process_noise_lets_every_filter_filter() {
     // grounds that doing so would leave nothing watching either defect (#288). That was
     // the right call: the bound it asserts is the one that caught the fix.
     let scenario = build_gating_scenario();
-    let shipped = DMatrix::from_diagonal(&DVector::from_row_slice(&DEFAULT_PROCESS_NOISE));
+    let shipped = DMatrix::from_diagonal(&DVector::from_row_slice(&DEFAULT_PROCESS_NOISE_DENSITY));
     for (name, mut filter) in filters_with_process_noise(&scenario.initial, &shipped) {
         let outcome = measure_filtering(name, filter.as_mut(), &scenario);
         assert_filtered(name, &outcome);

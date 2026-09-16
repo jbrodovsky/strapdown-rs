@@ -54,7 +54,7 @@ use strapdown::rbpf::{RaoBlackwellizedParticleFilter, RbpfConfig};
 // were metres, making `1e-6` a 6.4 km per-step standard deviation -- and a local copy is
 // precisely what stops a suite noticing that about the tuning it is validating.
 use strapdown::sim::DEFAULT_INITIAL_POSITION_UNCERTAINTY_M;
-use strapdown::sim::DEFAULT_PROCESS_NOISE as PROCESS_NOISE;
+use strapdown::sim::DEFAULT_PROCESS_NOISE_DENSITY as PROCESS_NOISE;
 use strapdown::{ImuSample, NavigationFilter, StrapdownState, mechanize};
 
 /// Scenario latitude, degrees.

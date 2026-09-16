@@ -201,7 +201,7 @@ will tell you off; change the numbers by re-blessing.
 These numbers already include one deliberate change the gate was built to catch, and it is
 worth reading as a worked example of the workflow.
 
-`DEFAULT_PROCESS_NOISE`'s altitude entry was `1e-4` m² per step -- a 1 cm standard deviation,
+`DEFAULT_PROCESS_NOISE_DENSITY`'s altitude entry was `1e-4` -- a 1 cm standard deviation,
 a tenth of the horizontal channel's 0.1 m, an asymmetry nothing ever justified. Issue #308 had
 fixed the *units* of the horizontal entries and deliberately left this one alone, recording
 that whether `1e-4` was the right *tuning* was a separate question. The consistency columns
@@ -213,7 +213,7 @@ Three entries could have been blamed. Sweeping each alone over four decades, onl
 position entry moves containment the right way -- the vertical-velocity entry is flat and costs
 a vertical-velocity RMSE growing from 0.34 to 4.37 m/s, and the accelerometer-bias entry makes
 containment *worse* while taking the real 60 s-outage horizontal RMSE from 291 m to 443 m. The
-entry is now `POSITION_PROCESS_NOISE_M²`, which makes the position block isotropic in per-step
+entry is now `POSITION_PROCESS_NOISE_M_PER_ROOT_S²`, which makes the position block isotropic in
 standard deviation and lands on the knee of the measured curve.
 
 What it bought, and what it cost:

@@ -61,9 +61,9 @@ let mut ekf = ExtendedKalmanFilter::new(
     vec![0.0; 6],  // IMU biases (3 accel + 3 gyro)
     initial_covariance.clone(),  // cloned so the 9-state example below can reuse it
     // Process noise. The crate's own default, which is built the same way -- one metric
-    // constant converted once. `vec![1e-9; 15]` is a 201 m per-step horizontal term.
+    // constant converted once. `vec![1e-9; 15]` is a 201 m horizontal term.
     DMatrix::from_diagonal(&DVector::from_vec(
-        strapdown::sim::DEFAULT_PROCESS_NOISE.to_vec(),
+        strapdown::sim::DEFAULT_PROCESS_NOISE_DENSITY.to_vec(),
     )),
     true,  // use_biases = true for 15-state
 );
@@ -103,7 +103,7 @@ let mut ekf = ExtendedKalmanFilter::new(
     vec![0.0; 6],  // Biases ignored when use_biases = false
     initial_covariance_9,  // Initial covariance for 9 states
     DMatrix::from_diagonal(&DVector::from_vec(
-        strapdown::sim::DEFAULT_PROCESS_NOISE[0..9].to_vec(),
+        strapdown::sim::DEFAULT_PROCESS_NOISE_DENSITY[0..9].to_vec(),
     )),  // Process noise for 9 states
     false,  // use_biases = false for 9-state
 );
@@ -281,14 +281,14 @@ before it can go on the diagonal. The crate does that once, from a single metric
 
 ```rust
 // strapdown::sim
-pub const POSITION_PROCESS_NOISE_M: f64 = 0.1; // metres, per step
+pub const POSITION_PROCESS_NOISE_M_PER_ROOT_S: f64 = 0.1; // metres per root-second
 
 const HORIZONTAL: f64 = {
-    let radians = POSITION_PROCESS_NOISE_M * strapdown::earth::METERS_TO_RADIANS;
+    let radians = POSITION_PROCESS_NOISE_M_PER_ROOT_S * strapdown::earth::METERS_TO_RADIANS;
     radians * radians // 2.467e-16 rad^2
 };
 
-const DEFAULT_PROCESS_NOISE: [f64; 15] = [
+const DEFAULT_PROCESS_NOISE_DENSITY: [f64; 15] = [
     HORIZONTAL,  // latitude, rad^2
     HORIZONTAL,  // longitude, rad^2
     1e-2,  // altitude, m^2 -- its own constant, see below
@@ -308,21 +308,21 @@ const DEFAULT_PROCESS_NOISE: [f64; 15] = [
 ```
 
 The altitude entry keeps its own constant, `VERTICAL_POSITION_PROCESS_NOISE_M2`, rather
-than being spelled as `POSITION_PROCESS_NOISE_M` squared -- though since #328 that is
-exactly what it evaluates to, `1e-2 m^2`, a 10 cm per-step standard deviation.
+than being spelled as `POSITION_PROCESS_NOISE_M_PER_ROOT_S` squared -- though since #328 that is
+exactly what it evaluates to, `1e-2 m^2/s`, a 10 cm standard deviation per root-second.
 
-It was `1e-4` (1 cm per step) until then. #308 deliberately left it alone, on the grounds
+It was `1e-4` until then. #308 deliberately left it alone, on the grounds
 that a units fix is not the place to retune the vertical channel; #328 did the retune, on
 evidence that it was the only one of three candidate knobs that moved three-sigma altitude
 containment the right way. It is still short of where it should be -- see #372 -- so treat
 `1e-2` as the current best value rather than a settled one.
 
 If you write the horizontal entries directly in rad^2, be aware what the numbers mean:
-`1e-6 rad^2` is a **6.4 km** per-step standard deviation, not a small number. Writing it
+`1e-6 rad^2/s` is a **6.4 km** standard deviation per root-second, not a small number. Writing it
 next to an altitude term of `1e-2 m^2` (10 cm) is the defect issue #308 fixed -- the filter
 is told its own prediction is worthless, so it discards it and lands on each fix instead of
 filtering, and innovation gating cannot function. `1e-9 rad^2` is the same mistake three
-orders of magnitude smaller: a 201 m per-step standard deviation.
+orders of magnitude smaller: a 201 m standard deviation.
 
 ### Initial Covariance
 Everything above is about $Q$, and every word of it applies to $P_0$: latitude and longitude

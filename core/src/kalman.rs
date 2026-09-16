@@ -394,7 +394,7 @@ impl UnscentedKalmanFilter {
     /// covariance.extend([0.25; 3]); // velocity, (m/s)^2
     /// covariance.extend([1e-4; 3]); // attitude, rad^2
     /// let process_noise = DMatrix::from_diagonal(
-    ///     &nalgebra::DVector::from_vec(strapdown::sim::DEFAULT_PROCESS_NOISE[0..9].to_vec()),
+    ///     &nalgebra::DVector::from_vec(strapdown::sim::DEFAULT_PROCESS_NOISE_DENSITY[0..9].to_vec()),
     /// );
     /// let ukf = UnscentedKalmanFilter::new(&init, &[0.0;6], None, covariance, process_noise, 1e-3, 2.0, 0.0);
     /// ```
@@ -667,7 +667,7 @@ impl NavigationFilter for UnscentedKalmanFilter {
             let diff = sigma_point - &mu_bar;
             p_bar += self.weights_cov[i] * &diff * &diff.transpose();
         }
-        p_bar += &self.process_noise;
+        p_bar += process_noise_for_step(&self.process_noise, sample.dt)?;
         // Report attitude on the same branch `update` writes (#314). The reference branch is
         // whichever one sigma point 0 landed on, so without this a state that sat near the
         // cut would drift a turn away from the principal branch over successive steps.
@@ -1195,7 +1195,8 @@ impl NavigationFilter for ExtendedKalmanFilter {
         // Biases remain unchanged (random walk model)
 
         // Covariance propagation: P_bar = F * P * F^T + Q
-        self.covariance = &f_full * &self.covariance * f_full.transpose() + &self.process_noise;
+        self.covariance = &f_full * &self.covariance * f_full.transpose()
+            + process_noise_for_step(&self.process_noise, sample.dt)?;
 
         // Relative, not absolute: see `regularize_covariance_in_place` and #373. This filter
         // applied the absolute form here *and* in `update`, so it accumulated ~(493 m)^2 of
@@ -1614,6 +1615,33 @@ impl Display for ErrorStateKalmanFilter {
 /// form until #373, which is why they reported a horizontal sigma they could not
 /// possibly have earned -- see [`regularize_covariance_in_place`].
 const COVARIANCE_JITTER_RELATIVE: f64 = 1e-9;
+
+/// Build the per-step process-noise matrix from a spectral density and a step interval.
+///
+/// `density` carries a variance **per second** ([`crate::sim::DEFAULT_PROCESS_NOISE_DENSITY`]),
+/// so the noise a step contributes is `q * dt`. Before #374 the filters added the array
+/// itself, once per IMU sample, with no `dt` anywhere -- which made the process noise a
+/// trajectory saw proportional to its sample rate rather than to elapsed time. The data this
+/// repository ships spans 1 Hz to 50 Hz, so one constant meant a 50x spread in the modelled
+/// random walk.
+///
+/// A negative or non-finite `dt` cannot produce a valid covariance, so it is refused rather
+/// than propagated into one.
+///
+/// # Errors
+///
+/// [`StrapdownError::OutOfRange`] when `dt` is negative or not finite.
+fn process_noise_for_step(density: &DMatrix<f64>, dt: f64) -> Result<DMatrix<f64>, StrapdownError> {
+    if !dt.is_finite() || dt < 0.0 {
+        return Err(StrapdownError::OutOfRange {
+            what: "process noise step interval",
+            value: dt,
+            min: 0.0,
+            max: f64::INFINITY,
+        });
+    }
+    Ok(density * dt)
+}
 
 /// Symmetrise a covariance and add a jitter proportional to each state's own scale.
 ///
@@ -2049,8 +2077,8 @@ impl NavigationFilter for ErrorStateKalmanFilter {
         );
 
         // Propagate error covariance: P = F * P * F^T + Q
-        self.error_covariance =
-            &f_error * &self.error_covariance * f_error.transpose() + &self.process_noise;
+        self.error_covariance = &f_error * &self.error_covariance * f_error.transpose()
+            + process_noise_for_step(&self.process_noise, sample.dt)?;
 
         self.regularize_covariance();
         Ok(())
@@ -3972,6 +4000,91 @@ mod tests {
     /// Rates remain accepted, and the two must agree exactly: `ImuSample::from_rates` is the
     /// same rectangular integration the filter used to perform internally, so routing an
     /// `IMUData` through it may not perturb a single bit of the resulting state.
+    /// Process noise must depend on elapsed time, not on how often the filter was stepped.
+    ///
+    /// This is #374's acceptance criterion, and the defect it guards is the reason it exists:
+    /// the three Kalman filters added `DEFAULT_PROCESS_NOISE_DENSITY` once per IMU sample with
+    /// no `dt` anywhere, so the process noise a trajectory accumulated was proportional to its
+    /// sample rate. Across the data this repository ships -- 1 Hz on `test_data.csv`, 10 Hz
+    /// from `generate_synthetic`'s default, 50 Hz on the `syn_*` baseline scenarios -- that is
+    /// a **50x spread** from a single constant, and resampling a log silently retuned the
+    /// filter.
+    ///
+    /// One second of stationary propagation at 100 Hz and at 10 Hz. `F P F^T` still differs a
+    /// little between the two, because a coarser step is a coarser discretisation of the same
+    /// continuous dynamics, so the bound is a few percent rather than exact. Before the fix
+    /// the two differed by the rate ratio itself -- a factor of ten, which no tolerance of
+    /// this kind would admit.
+    #[test]
+    fn process_noise_accumulates_with_elapsed_time_not_with_step_count() {
+        const ELAPSED_S: f64 = 1.0;
+        const TOLERANCE: f64 = 0.05;
+
+        let level = IMUData {
+            accel: Vector3::new(0.0, 0.0, earth::gravity(&0.0, &0.0)),
+            gyro: Vector3::zeros(),
+        };
+        let density = DMatrix::from_diagonal(&DVector::from_vec(
+            crate::sim::DEFAULT_PROCESS_NOISE_DENSITY.to_vec(),
+        ));
+
+        // `(steps, dt)` pairs that both cover exactly one second.
+        let schedules = [(100_usize, 0.01_f64), (10_usize, 0.1_f64)];
+
+        for filter_name in ["UKF", "EKF", "ESKF"] {
+            let diagonals: Vec<DVector<f64>> = schedules
+                .iter()
+                .map(|&(steps, dt)| {
+                    let mut filter: Box<dyn NavigationFilter> = match filter_name {
+                        "UKF" => Box::new(UnscentedKalmanFilter::new(
+                            &UKF_PARAMS,
+                            &IMU_BIASES,
+                            None,
+                            COVARIANCE_DIAGONAL.to_vec(),
+                            density.clone(),
+                            ALPHA,
+                            BETA,
+                            KAPPA,
+                        )),
+                        "EKF" => Box::new(ExtendedKalmanFilter::new(
+                            &UKF_PARAMS,
+                            &IMU_BIASES,
+                            COVARIANCE_DIAGONAL.to_vec(),
+                            density.clone(),
+                            true,
+                        )),
+                        _ => Box::new(ErrorStateKalmanFilter::new(
+                            &UKF_PARAMS,
+                            &IMU_BIASES,
+                            COVARIANCE_DIAGONAL.to_vec(),
+                            density.clone(),
+                        )),
+                    };
+                    for _ in 0..steps {
+                        filter.predict(&level, dt).expect("stationary predict");
+                    }
+                    filter.get_certainty().diagonal()
+                })
+                .collect();
+
+            let (fast, slow) = (&diagonals[0], &diagonals[1]);
+            for index in 0..fast.len() {
+                let (a, b) = (fast[index], slow[index]);
+                let scale = a.abs().max(b.abs());
+                if scale == 0.0 {
+                    continue;
+                }
+                assert!(
+                    (a - b).abs() / scale < TOLERANCE,
+                    "{filter_name} state {index} covariance after {ELAPSED_S} s is {a:.6e} at \
+                     100 Hz but {b:.6e} at 10 Hz -- a ratio of {:.2}. Process noise must \
+                     accumulate with elapsed time, not with step count (#374).",
+                    a / b
+                );
+            }
+        }
+    }
+
     #[test]
     fn eskf_predicts_identically_from_a_sample_and_from_rates() {
         let dt = 0.02;
