@@ -1580,6 +1580,7 @@ pub fn build_event_stream(
                 relative_altitude: r1.relative_altitude,
                 reference_altitude,
                 noise_std: cfg.baro_noise_std_m,
+                bias_index: cfg.baro_bias_index,
             };
             events.push(Event::Measurement {
                 meas: Box::new(baro),
