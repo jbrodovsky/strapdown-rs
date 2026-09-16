@@ -69,53 +69,53 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 26.2371
+          "value": 26.0458
         },
         "containment_3sigma_horizontal": {
-          "value": 0.497298
+          "value": 0.498043
         },
         "containment_3sigma_vertical": {
-          "value": 0.389676
+          "value": 0.39713
         },
         "horizontal_cep50_m": {
-          "value": 4.24514
+          "value": 4.24063
         },
         "horizontal_cep95_m": {
-          "value": 8.559
+          "value": 8.49247
         },
         "horizontal_max_m": {
-          "value": 28.4547
+          "value": 28.7453
         },
         "horizontal_rmse_m": {
-          "value": 5.12121
+          "value": 5.11145
         },
         "nees_position": {
-          "value": 68.4368
+          "value": 68.2611
         },
         "npes_position": {
-          "value": 68.2947,
+          "value": 68.1248,
           "note": "Horizontally over-confident, unlike the UKF and EKF rows: containment is 0.16 here against their 1.000. Much of the numerator is the one-step labelling offset described in the module docs (#367), which the covariance does not model. Recorded as a drift detector; read the synthetic scenarios for an actual consistency verdict."
         },
         "pitch_rmse_deg": {
-          "value": 2.81287
+          "value": 2.92802
         },
         "roll_rmse_deg": {
-          "value": 3.24052
+          "value": 3.33073
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 1.08486
+          "value": 1.07666
         },
         "velocity_vertical_rmse_mps": {
-          "value": 0.534656
+          "value": 0.531334
         },
         "vertical_bias_m": {
-          "value": 0.383809
+          "value": 0.401687
         },
         "vertical_rmse_m": {
-          "value": 2.5786
+          "value": 2.57517
         },
         "yaw_rmse_deg": {
-          "value": 25.9039
+          "value": 25.683
         }
       }
     },
@@ -125,53 +125,53 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 23.2164
+          "value": 23.1328
         },
         "containment_3sigma_horizontal": {
-          "value": 0.52609,
+          "value": 0.526649,
           "note": "0.526, down from an unfalsifiable 1.000. Before #373 this filter reported a horizontal sigma floored at 201 m against an actual error of metres, so its error could not leave the band. The remaining gap to 0.9973 is genuine over-confidence and is what #373's acceptance criterion 2 asks to be characterised -- a real number to work on rather than a constant."
         },
         "containment_3sigma_vertical": {
-          "value": 0.39713
+          "value": 0.397503
         },
         "horizontal_cep50_m": {
-          "value": 3.90274
+          "value": 3.88904
         },
         "horizontal_cep95_m": {
-          "value": 8.04585
+          "value": 8.00327
         },
         "horizontal_max_m": {
-          "value": 24.2642
+          "value": 24.3046
         },
         "horizontal_rmse_m": {
-          "value": 4.78459
+          "value": 4.77577
         },
         "nees_position": {
-          "value": 62.4192
+          "value": 62.375
         },
         "npes_position": {
-          "value": 62.2663
+          "value": 62.2349
         },
         "pitch_rmse_deg": {
-          "value": 2.89258
+          "value": 2.90842
         },
         "roll_rmse_deg": {
-          "value": 3.35036
+          "value": 3.36397
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 1.14188
+          "value": 1.13469
         },
         "velocity_vertical_rmse_mps": {
-          "value": 0.526697
+          "value": 0.526893
         },
         "vertical_bias_m": {
-          "value": 0.392683
+          "value": 0.397673
         },
         "vertical_rmse_m": {
-          "value": 2.57599
+          "value": 2.57575
         },
         "yaw_rmse_deg": {
-          "value": 22.8061
+          "value": 22.7158
         }
       }
     },
@@ -181,52 +181,52 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 26.5268
+          "value": 26.2797
         },
         "containment_3sigma_horizontal": {
           "value": 0.0789228
         },
         "containment_3sigma_vertical": {
-          "value": 0.130451
+          "value": 0.129519
         },
         "horizontal_cep50_m": {
-          "value": 38.0427
+          "value": 38.0423
         },
         "horizontal_cep95_m": {
-          "value": 81.3227
+          "value": 81.3192
         },
         "horizontal_max_m": {
           "value": 140.586
         },
         "horizontal_rmse_m": {
-          "value": 46.609
+          "value": 46.611
         },
         "nees_position": {
-          "value": 5152.2
+          "value": 5152.46
         },
         "npes_position": {
-          "value": 5151.15
+          "value": 5151.44
         },
         "pitch_rmse_deg": {
-          "value": 2.96726
+          "value": 3.03407
         },
         "roll_rmse_deg": {
-          "value": 3.32982
+          "value": 3.44793
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 2.47481
+          "value": 2.47076
         },
         "velocity_vertical_rmse_mps": {
-          "value": 0.788586
+          "value": 0.788796
         },
         "vertical_bias_m": {
-          "value": 0.622889
+          "value": 0.639372
         },
         "vertical_rmse_m": {
-          "value": 10.6257
+          "value": 10.627
         },
         "yaw_rmse_deg": {
-          "value": 26.1644
+          "value": 25.8872
         }
       }
     },
@@ -236,7 +236,7 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 22.738
+          "value": 22.6524
         },
         "containment_3sigma_horizontal": {
           "value": 0.0803205
@@ -245,44 +245,44 @@
           "value": 0.128215
         },
         "horizontal_cep50_m": {
-          "value": 37.4899
+          "value": 37.4922
         },
         "horizontal_cep95_m": {
-          "value": 80.3105
+          "value": 80.3207
         },
         "horizontal_max_m": {
-          "value": 138.564
+          "value": 138.569
         },
         "horizontal_rmse_m": {
-          "value": 46.0377
+          "value": 46.0368
         },
         "nees_position": {
-          "value": 4986.71
+          "value": 4986.59
         },
         "npes_position": {
-          "value": 4985.86,
+          "value": 4985.73,
           "note": "4,986, up from 347. The denominator is no longer inflated by #373's 201 m floor, so this now reports the covariance the filter actually holds under an AR(1) position fault. High and honest; #372 and #373 own closing it."
         },
         "pitch_rmse_deg": {
-          "value": 3.06056
+          "value": 3.07131
         },
         "roll_rmse_deg": {
-          "value": 3.43086
+          "value": 3.45149
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 2.47861
+          "value": 2.4777
         },
         "velocity_vertical_rmse_mps": {
-          "value": 0.781522
+          "value": 0.782582
         },
         "vertical_bias_m": {
-          "value": 0.629588
+          "value": 0.63499
         },
         "vertical_rmse_m": {
-          "value": 10.6215
+          "value": 10.6224
         },
         "yaw_rmse_deg": {
-          "value": 22.2748
+          "value": 22.1814
         }
       }
     },
@@ -292,55 +292,55 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 23.1261
+          "value": 23.0778
         },
         "containment_3sigma_horizontal": {
-          "value": 0.579482
+          "value": 0.580134
         },
         "containment_3sigma_vertical": {
-          "value": 0.330041
+          "value": 0.338986
         },
         "horizontal_cep50_m": {
-          "value": 4.52361
+          "value": 4.52675
         },
         "horizontal_cep95_m": {
-          "value": 676.95
+          "value": 688.316
         },
         "horizontal_max_m": {
-          "value": 2261.08,
+          "value": 2263.27,
           "regress_fraction": 0.25,
           "note": "A single-sample statistic at the end of a 60 s free-inertial coast, so it swings more than the RMS beside it."
         },
         "horizontal_rmse_m": {
-          "value": 278.819
+          "value": 279.985
         },
         "nees_position": {
-          "value": 83.0408,
+          "value": 82.837,
           "note": "83.04 against `npes_position`'s 73.43, a ratio of 1.13 -- the largest honest gap between the two in the matrix. This is what #376 was for: the diagonal-only form assumes the position states are uncorrelated, and during a 60 s free-inertial coast they are not. Error accumulates along a correlated direction with no fix to break it up, so the diagonal form understates the inconsistency by 13% here. Everywhere the filter is being aided every epoch the two agree to 1%."
         },
         "npes_position": {
-          "value": 73.4283
+          "value": 73.183
         },
         "pitch_rmse_deg": {
-          "value": 3.27366
+          "value": 3.32686
         },
         "roll_rmse_deg": {
-          "value": 3.62855
+          "value": 3.66535
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 11.9003
+          "value": 11.9073
         },
         "velocity_vertical_rmse_mps": {
-          "value": 0.636245
+          "value": 0.630149
         },
         "vertical_bias_m": {
-          "value": 0.475325
+          "value": 0.5179
         },
         "vertical_rmse_m": {
-          "value": 4.90474
+          "value": 4.88761
         },
         "yaw_rmse_deg": {
-          "value": 22.6214
+          "value": 22.5556
         }
       }
     },
@@ -411,52 +411,52 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 20.084
+          "value": 19.91
         },
         "containment_3sigma_horizontal": {
-          "value": 0.604827
+          "value": 0.605013
         },
         "containment_3sigma_vertical": {
-          "value": 0.160827
+          "value": 0.172009
         },
         "horizontal_cep50_m": {
-          "value": 6.19449
+          "value": 6.18128
         },
         "horizontal_cep95_m": {
-          "value": 15.3218
+          "value": 15.0234
         },
         "horizontal_max_m": {
-          "value": 125.778
+          "value": 125.691
         },
         "horizontal_rmse_m": {
-          "value": 9.49149
+          "value": 9.44647
         },
         "nees_position": {
-          "value": 76.8129
+          "value": 76.5659
         },
         "npes_position": {
-          "value": 76.2265
+          "value": 75.9816
         },
         "pitch_rmse_deg": {
-          "value": 3.08125
+          "value": 3.17499
         },
         "roll_rmse_deg": {
-          "value": 3.71196
+          "value": 3.77803
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 2.81772
+          "value": 2.80157
         },
         "velocity_vertical_rmse_mps": {
-          "value": 0.672449
+          "value": 0.668043
         },
         "vertical_bias_m": {
-          "value": 0.921183
+          "value": 0.951644
         },
         "vertical_rmse_m": {
-          "value": 5.59238
+          "value": 5.58319
         },
         "yaw_rmse_deg": {
-          "value": 19.5019
+          "value": 19.2925
         }
       }
     },
@@ -466,52 +466,52 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 19.2585
+          "value": 19.1252
         },
         "containment_3sigma_horizontal": {
-          "value": 0.642285
+          "value": 0.64303
         },
         "containment_3sigma_vertical": {
-          "value": 0.1694
+          "value": 0.168654
         },
         "horizontal_cep50_m": {
-          "value": 5.66374
+          "value": 5.67207
         },
         "horizontal_cep95_m": {
-          "value": 14.5697
+          "value": 14.5544
         },
         "horizontal_max_m": {
-          "value": 124.284
+          "value": 124.263
         },
         "horizontal_rmse_m": {
-          "value": 9.12731
+          "value": 9.10891
         },
         "nees_position": {
-          "value": 71.9047
+          "value": 71.855
         },
         "npes_position": {
-          "value": 71.2806
+          "value": 71.2397
         },
         "pitch_rmse_deg": {
-          "value": 3.17259
+          "value": 3.18052
         },
         "roll_rmse_deg": {
-          "value": 3.73755
+          "value": 3.7589
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 2.86889
+          "value": 2.86467
         },
         "velocity_vertical_rmse_mps": {
-          "value": 0.644356
+          "value": 0.644205
         },
         "vertical_bias_m": {
-          "value": 0.899723
+          "value": 0.906373
         },
         "vertical_rmse_m": {
-          "value": 5.55727
+          "value": 5.55612
         },
         "yaw_rmse_deg": {
-          "value": 18.6189
+          "value": 18.4747
         }
       }
     },
@@ -580,56 +580,56 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 0.472659
+          "value": 0.471711
         },
         "containment_3sigma_horizontal": {
-          "value": 0.9993
+          "value": 0.995333
         },
         "containment_3sigma_vertical": {
-          "value": 0.789467,
+          "value": 0.8352,
           "note": "Down under #375. With the barometer scheduled at 1 Hz instead of firing on all fifty records a second, the vertical error is larger and carries a systematic bias the filter does not model, so the 3-sigma envelope no longer covers it. The horizontal containment on the same row is unchanged. This is the #372 measurement, taken without the 50 Hz aiding that used to hide it."
         },
         "horizontal_cep50_m": {
-          "value": 2.25317
+          "value": 2.2657
         },
         "horizontal_cep95_m": {
-          "value": 4.45851
+          "value": 4.54545
         },
         "horizontal_max_m": {
-          "value": 6.91355
+          "value": 6.91345
         },
         "horizontal_rmse_m": {
-          "value": 2.64579
+          "value": 2.68345
         },
         "nees_position": {
-          "value": 7.9454
+          "value": 7.04217
         },
         "npes_position": {
-          "value": 7.9498,
+          "value": 7.04506,
           "note": "Up under #375, entirely through the vertical channel: the horizontal columns on this row moved by less than half a percent, while `vertical_rmse_m` went ~0.5 to ~2.2-2.8 m and `vertical_bias_m` from about zero to -0.6 to -2.0 m. A normalised error takes that unmodelled bias into a covariance that did not grow to meet it. The gap is #372's to close; the 50 Hz barometer was masking it."
         },
         "pitch_rmse_deg": {
-          "value": 0.263991
+          "value": 0.270155
         },
         "roll_rmse_deg": {
-          "value": 0.336305
+          "value": 0.340114
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 0.59183
+          "value": 0.60385
         },
         "velocity_vertical_rmse_mps": {
-          "value": 0.18872
+          "value": 0.264825
         },
         "vertical_bias_m": {
-          "value": -0.854138,
+          "value": -0.483824,
           "note": "About zero before #375 and -0.6 to -2.0 m after it. This is the number that makes the case for #372's barometer bias state: at 50 Hz the aid was strong enough to crush a systematic altitude offset, and at the 1 Hz a real barometer logs at, it is what the vertical channel actually does. Nothing here models it."
         },
         "vertical_rmse_m": {
-          "value": 2.2292,
+          "value": 2.13726,
           "note": "Roughly 4x worse than at a 50 Hz barometer, and the honest price of #375 scheduling it. `generate_synthetic` fills `relative_altitude` on every record, so before #375 this 50 Hz scenario received fifty pressure readings a second, each entering as an independent fix; averaging fifty samples cuts the effective noise about sevenfold and pinned altitude to the truth. At the 1 Hz the reference recording actually logs, it does not. Note `vertical_bias_m` on the same row moved from about zero to -0.6 to -2.0 m: what is left is a systematic offset, not noise, and an unmodelled offset under a tight R is exactly #372. The real-data rows did not move at all -- they were already 1 Hz."
         },
         "yaw_rmse_deg": {
-          "value": 0.201516
+          "value": 0.184004
         }
       }
     },
@@ -639,57 +639,57 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 2.25128
+          "value": 0.462632
         },
         "containment_3sigma_horizontal": {
-          "value": 0.996667
+          "value": 0.9962
         },
         "containment_3sigma_vertical": {
-          "value": 0.830067,
+          "value": 0.825733,
           "note": "Down under #375. With the barometer scheduled at 1 Hz instead of firing on all fifty records a second, the vertical error is larger and carries a systematic bias the filter does not model, so the 3-sigma envelope no longer covers it. The horizontal containment on the same row is unchanged. This is the #372 measurement, taken without the 50 Hz aiding that used to hide it."
         },
         "horizontal_cep50_m": {
-          "value": 2.29156
+          "value": 2.29063
         },
         "horizontal_cep95_m": {
-          "value": 4.71162
+          "value": 4.51268
         },
         "horizontal_max_m": {
-          "value": 9.79147
+          "value": 6.9249
         },
         "horizontal_rmse_m": {
-          "value": 2.79022
+          "value": 2.69063
         },
         "nees_position": {
-          "value": 7.24656
+          "value": 7.25902
         },
         "npes_position": {
-          "value": 7.2373,
+          "value": 7.26228,
           "note": "Up under #375, entirely through the vertical channel: the horizontal columns on this row moved by less than half a percent, while `vertical_rmse_m` went ~0.5 to ~2.2-2.8 m and `vertical_bias_m` from about zero to -0.6 to -2.0 m. A normalised error takes that unmodelled bias into a covariance that did not grow to meet it. The gap is #372's to close; the 50 Hz barometer was masking it."
         },
         "pitch_rmse_deg": {
-          "value": 0.487652
+          "value": 0.270401
         },
         "roll_rmse_deg": {
-          "value": 0.91226
+          "value": 0.34175
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 0.776274
+          "value": 0.636952
         },
         "velocity_vertical_rmse_mps": {
-          "value": 0.252903
+          "value": 0.306656
         },
         "vertical_bias_m": {
-          "value": -0.645909,
+          "value": -0.65397,
           "note": "About zero before #375 and -0.6 to -2.0 m after it. This is the number that makes the case for #372's barometer bias state: at 50 Hz the aid was strong enough to crush a systematic altitude offset, and at the 1 Hz a real barometer logs at, it is what the vertical channel actually does. Nothing here models it."
         },
         "vertical_rmse_m": {
-          "value": 2.22511,
+          "value": 2.27967,
           "note": "Roughly 4x worse than at a 50 Hz barometer, and the honest price of #375 scheduling it. `generate_synthetic` fills `relative_altitude` on every record, so before #375 this 50 Hz scenario received fifty pressure readings a second, each entering as an independent fix; averaging fifty samples cuts the effective noise about sevenfold and pinned altitude to the truth. At the 1 Hz the reference recording actually logs, it does not. Note `vertical_bias_m` on the same row moved from about zero to -0.6 to -2.0 m: what is left is a systematic offset, not noise, and an unmodelled offset under a tight R is exactly #372. The real-data rows did not move at all -- they were already 1 Hz."
         },
         "yaw_rmse_deg": {
-          "value": 2.0112,
-          "note": "2.011 deg, down from 108.3 -- the largest single improvement in the matrix, and what #369 was for. The UKF's sigma-point attitude mean is still wrong (#371); a direct heading measurement at 1 Hz simply corrects it faster than it can drift, as long as GNSS is also present. Take the outage row away and it does not hold: `syn_outage_60s__ukf` reads 72.68 deg on the same aid. The EKF and ESKF reach 0.28 and 0.20 deg here."
+          "value": 0.155234,
+          "note": "A fraction of a degree, down from 108.3 with no magnetometer at all (#369) and from 2.011 before the initial gyro-bias prior was sized from the IMU grade. That 2.011 was read here as #371 leaking through; it was not. The UKF and EKF shipped a gyro-bias variance of 1e-3 -- a sigma of 1.81 deg/s against a Consumer part's 0.028 -- while the ESKF shipped 1e-8, so no cross-filter reading of this column before that fix was comparing filters. The EKF reads about 0.28 deg here and the ESKF about 0.18."
         }
       }
     },
@@ -755,56 +755,56 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 0.429014
+          "value": 0.485289
         },
         "containment_3sigma_horizontal": {
           "value": 0.996967
         },
         "containment_3sigma_vertical": {
-          "value": 0.866067
+          "value": 0.924533
         },
         "horizontal_cep50_m": {
-          "value": 1.61699
+          "value": 1.60195
         },
         "horizontal_cep95_m": {
-          "value": 54.8969
+          "value": 56.5756
         },
         "horizontal_max_m": {
-          "value": 132.854,
+          "value": 132.685,
           "regress_fraction": 0.25,
           "note": "As `real_outage_60s__eskf`: a single sample at the end of a coast."
         },
         "horizontal_rmse_m": {
-          "value": 24.0184,
+          "value": 26.3336,
           "note": "Worse under #375, which is the same vertical story as the `syn_cruise_1hz` rows and, on this scenario, a compounding one: through a 60 s GNSS outage the barometer is the only aiding source there is, so dropping it from 50 Hz to 1 Hz removes almost all of it. Roll and pitch degrade with it, and horizontal dead reckoning follows the attitude. 24 m of horizontal error over a 60 s free-inertial coast on consumer-grade IMU is a realistic figure; the 12 m it replaces was flattered by a barometer no hardware runs at."
         },
         "nees_position": {
-          "value": 4.63696
+          "value": 3.86313
         },
         "npes_position": {
-          "value": 4.6385
+          "value": 3.8672
         },
         "pitch_rmse_deg": {
-          "value": 0.205374
+          "value": 0.268151
         },
         "roll_rmse_deg": {
-          "value": 0.277285
+          "value": 0.280238
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 1.36216
+          "value": 1.54788
         },
         "velocity_vertical_rmse_mps": {
-          "value": 0.1603
+          "value": 0.236478
         },
         "vertical_bias_m": {
-          "value": -0.710523
+          "value": -0.362851
         },
         "vertical_rmse_m": {
-          "value": 1.81184,
+          "value": 1.71841,
           "note": "Worse under #375, which is the same vertical story as the `syn_cruise_1hz` rows and, on this scenario, a compounding one: through a 60 s GNSS outage the barometer is the only aiding source there is, so dropping it from 50 Hz to 1 Hz removes almost all of it. Roll and pitch degrade with it, and horizontal dead reckoning follows the attitude. 24 m of horizontal error over a 60 s free-inertial coast on consumer-grade IMU is a realistic figure; the 12 m it replaces was flattered by a barometer no hardware runs at."
         },
         "yaw_rmse_deg": {
-          "value": 0.255143
+          "value": 0.291645
         }
       }
     },
@@ -814,63 +814,63 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 73.3131
+          "value": 0.431581
         },
         "containment_3sigma_horizontal": {
-          "value": 0.8978
+          "value": 0.997067
         },
         "containment_3sigma_vertical": {
-          "value": 0.600533
+          "value": 0.9012
         },
         "horizontal_cep50_m": {
-          "value": 3.42799
+          "value": 1.58505
         },
         "horizontal_cep95_m": {
-          "value": 1483.7,
-          "note": "Worse under #369, and the whole row with it -- position 235 -> 809 m, NEES 6.82 -> 44.67, 3-sigma horizontal containment 0.989 -> 0.898. Recorded, not endorsed. Giving a filter a good heading is not supposed to cost it position, and the control is in the same bless: `syn_outage_60s__eskf` reads the identical magnetometer on the identical trajectory and its yaw goes 1.070 -> 0.255 deg with no position cost at all. So it is the filter, not the sensor. This row's yaw is 72.68 deg with a 1 Hz heading aid running through the outage, against 2.01 deg for the same filter on `syn_cruise_1hz` where GNSS never stops: the UKF cannot use an observable heading through free-inertial propagation. That is #371's linear Euler mean over sigma-point attitudes, stated far more sharply than it could be before this row had a magnetometer to ignore."
+          "value": 49.1938,
+          "note": "Read this row as the one the v1.0 spine spent the longest on, and as a lesson about uncontrolled comparisons. It read 809 m of horizontal RMSE, a NEES of 44.67 and 72.68 deg of yaw, and that was attributed here to #371 -- the UKF's linear mean over sigma-point Euler triples -- on the strength of `syn_outage_60s__eskf` reading 0.255 deg on the identical stream. That comparison was not controlled. The UKF and EKF shipped an initial gyro-bias variance of 1e-3, a sigma of 1.81 deg/s against the 0.028 deg/s a Consumer-grade part actually has, while the ESKF shipped 1e-8: the two filters were never handed the same prior. Sizing all three from `IMUQuality::initial_bias_covariance` took this row to about 27 m, a NEES near 4.2 and roughly 0.22 deg of yaw -- past the ESKF's own numbers on the same stream. Fixing #371 afterwards moved the yaw by 0.007 deg and improved the position. The prior was the defect; the chart error was real but is not what this row measured."
         },
         "horizontal_max_m": {
-          "value": 5024.15,
+          "value": 145.647,
           "regress_fraction": 0.25,
-          "note": "Worse under #369, and the whole row with it -- position 235 -> 809 m, NEES 6.82 -> 44.67, 3-sigma horizontal containment 0.989 -> 0.898. Recorded, not endorsed. Giving a filter a good heading is not supposed to cost it position, and the control is in the same bless: `syn_outage_60s__eskf` reads the identical magnetometer on the identical trajectory and its yaw goes 1.070 -> 0.255 deg with no position cost at all. So it is the filter, not the sensor. This row's yaw is 72.68 deg with a 1 Hz heading aid running through the outage, against 2.01 deg for the same filter on `syn_cruise_1hz` where GNSS never stops: the UKF cannot use an observable heading through free-inertial propagation. That is #371's linear Euler mean over sigma-point attitudes, stated far more sharply than it could be before this row had a magnetometer to ignore."
+          "note": "Read this row as the one the v1.0 spine spent the longest on, and as a lesson about uncontrolled comparisons. It read 809 m of horizontal RMSE, a NEES of 44.67 and 72.68 deg of yaw, and that was attributed here to #371 -- the UKF's linear mean over sigma-point Euler triples -- on the strength of `syn_outage_60s__eskf` reading 0.255 deg on the identical stream. That comparison was not controlled. The UKF and EKF shipped an initial gyro-bias variance of 1e-3, a sigma of 1.81 deg/s against the 0.028 deg/s a Consumer-grade part actually has, while the ESKF shipped 1e-8: the two filters were never handed the same prior. Sizing all three from `IMUQuality::initial_bias_covariance` took this row to about 27 m, a NEES near 4.2 and roughly 0.22 deg of yaw -- past the ESKF's own numbers on the same stream. Fixing #371 afterwards moved the yaw by 0.007 deg and improved the position. The prior was the defect; the chart error was real but is not what this row measured."
         },
         "horizontal_rmse_m": {
-          "value": 808.912,
-          "note": "Worse under #369, and the whole row with it -- position 235 -> 809 m, NEES 6.82 -> 44.67, 3-sigma horizontal containment 0.989 -> 0.898. Recorded, not endorsed. Giving a filter a good heading is not supposed to cost it position, and the control is in the same bless: `syn_outage_60s__eskf` reads the identical magnetometer on the identical trajectory and its yaw goes 1.070 -> 0.255 deg with no position cost at all. So it is the filter, not the sensor. This row's yaw is 72.68 deg with a 1 Hz heading aid running through the outage, against 2.01 deg for the same filter on `syn_cruise_1hz` where GNSS never stops: the UKF cannot use an observable heading through free-inertial propagation. That is #371's linear Euler mean over sigma-point attitudes, stated far more sharply than it could be before this row had a magnetometer to ignore."
+          "value": 27.3927,
+          "note": "Read this row as the one the v1.0 spine spent the longest on, and as a lesson about uncontrolled comparisons. It read 809 m of horizontal RMSE, a NEES of 44.67 and 72.68 deg of yaw, and that was attributed here to #371 -- the UKF's linear mean over sigma-point Euler triples -- on the strength of `syn_outage_60s__eskf` reading 0.255 deg on the identical stream. That comparison was not controlled. The UKF and EKF shipped an initial gyro-bias variance of 1e-3, a sigma of 1.81 deg/s against the 0.028 deg/s a Consumer-grade part actually has, while the ESKF shipped 1e-8: the two filters were never handed the same prior. Sizing all three from `IMUQuality::initial_bias_covariance` took this row to about 27 m, a NEES near 4.2 and roughly 0.22 deg of yaw -- past the ESKF's own numbers on the same stream. Fixing #371 afterwards moved the yaw by 0.007 deg and improved the position. The prior was the defect; the chart error was real but is not what this row measured."
         },
         "nees_position": {
-          "value": 44.6651,
-          "note": "44.67 against `npes_position`'s 41.98, a ratio of 1.06. Both are ten times what this row read before #369 gave it a magnetometer, for the reason in `horizontal_rmse_m`'s note: the filter now believes a wrong attitude tightly instead of a wrong attitude loosely. The NEES/NPES ratio is the one thing here that did not degrade -- the diagonal-only form is not what is wrong with this row."
+          "value": 4.20893,
+          "note": "Around 4.2, and within a fraction of a percent of `npes_position`. Both fell by an order of magnitude when the initial gyro-bias prior was sized from the IMU grade rather than left at a copy-pasted 1e-3 -- see `horizontal_rmse_m`'s note. The NEES/NPES ratio was never what was wrong with this row: the diagonal-only form has agreed with the full quadratic form throughout, before and after."
         },
         "npes_position": {
-          "value": 41.9843,
-          "note": "Worse under #369, and the whole row with it -- position 235 -> 809 m, NEES 6.82 -> 44.67, 3-sigma horizontal containment 0.989 -> 0.898. Recorded, not endorsed. Giving a filter a good heading is not supposed to cost it position, and the control is in the same bless: `syn_outage_60s__eskf` reads the identical magnetometer on the identical trajectory and its yaw goes 1.070 -> 0.255 deg with no position cost at all. So it is the filter, not the sensor. This row's yaw is 72.68 deg with a 1 Hz heading aid running through the outage, against 2.01 deg for the same filter on `syn_cruise_1hz` where GNSS never stops: the UKF cannot use an observable heading through free-inertial propagation. That is #371's linear Euler mean over sigma-point attitudes, stated far more sharply than it could be before this row had a magnetometer to ignore."
+          "value": 4.2082,
+          "note": "Read this row as the one the v1.0 spine spent the longest on, and as a lesson about uncontrolled comparisons. It read 809 m of horizontal RMSE, a NEES of 44.67 and 72.68 deg of yaw, and that was attributed here to #371 -- the UKF's linear mean over sigma-point Euler triples -- on the strength of `syn_outage_60s__eskf` reading 0.255 deg on the identical stream. That comparison was not controlled. The UKF and EKF shipped an initial gyro-bias variance of 1e-3, a sigma of 1.81 deg/s against the 0.028 deg/s a Consumer-grade part actually has, while the ESKF shipped 1e-8: the two filters were never handed the same prior. Sizing all three from `IMUQuality::initial_bias_covariance` took this row to about 27 m, a NEES near 4.2 and roughly 0.22 deg of yaw -- past the ESKF's own numbers on the same stream. Fixing #371 afterwards moved the yaw by 0.007 deg and improved the position. The prior was the defect; the chart error was real but is not what this row measured."
         },
         "pitch_rmse_deg": {
-          "value": 10.6062
+          "value": 0.228946
         },
         "roll_rmse_deg": {
-          "value": 13.7998,
-          "note": "Worse under #369, and the whole row with it -- position 235 -> 809 m, NEES 6.82 -> 44.67, 3-sigma horizontal containment 0.989 -> 0.898. Recorded, not endorsed. Giving a filter a good heading is not supposed to cost it position, and the control is in the same bless: `syn_outage_60s__eskf` reads the identical magnetometer on the identical trajectory and its yaw goes 1.070 -> 0.255 deg with no position cost at all. So it is the filter, not the sensor. This row's yaw is 72.68 deg with a 1 Hz heading aid running through the outage, against 2.01 deg for the same filter on `syn_cruise_1hz` where GNSS never stops: the UKF cannot use an observable heading through free-inertial propagation. That is #371's linear Euler mean over sigma-point attitudes, stated far more sharply than it could be before this row had a magnetometer to ignore."
+          "value": 0.290551,
+          "note": "Read this row as the one the v1.0 spine spent the longest on, and as a lesson about uncontrolled comparisons. It read 809 m of horizontal RMSE, a NEES of 44.67 and 72.68 deg of yaw, and that was attributed here to #371 -- the UKF's linear mean over sigma-point Euler triples -- on the strength of `syn_outage_60s__eskf` reading 0.255 deg on the identical stream. That comparison was not controlled. The UKF and EKF shipped an initial gyro-bias variance of 1e-3, a sigma of 1.81 deg/s against the 0.028 deg/s a Consumer-grade part actually has, while the ESKF shipped 1e-8: the two filters were never handed the same prior. Sizing all three from `IMUQuality::initial_bias_covariance` took this row to about 27 m, a NEES near 4.2 and roughly 0.22 deg of yaw -- past the ESKF's own numbers on the same stream. Fixing #371 afterwards moved the yaw by 0.007 deg and improved the position. The prior was the defect; the chart error was real but is not what this row measured."
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 45.0998,
-          "note": "Worse under #369, and the whole row with it -- position 235 -> 809 m, NEES 6.82 -> 44.67, 3-sigma horizontal containment 0.989 -> 0.898. Recorded, not endorsed. Giving a filter a good heading is not supposed to cost it position, and the control is in the same bless: `syn_outage_60s__eskf` reads the identical magnetometer on the identical trajectory and its yaw goes 1.070 -> 0.255 deg with no position cost at all. So it is the filter, not the sensor. This row's yaw is 72.68 deg with a 1 Hz heading aid running through the outage, against 2.01 deg for the same filter on `syn_cruise_1hz` where GNSS never stops: the UKF cannot use an observable heading through free-inertial propagation. That is #371's linear Euler mean over sigma-point attitudes, stated far more sharply than it could be before this row had a magnetometer to ignore."
+          "value": 1.52524,
+          "note": "Read this row as the one the v1.0 spine spent the longest on, and as a lesson about uncontrolled comparisons. It read 809 m of horizontal RMSE, a NEES of 44.67 and 72.68 deg of yaw, and that was attributed here to #371 -- the UKF's linear mean over sigma-point Euler triples -- on the strength of `syn_outage_60s__eskf` reading 0.255 deg on the identical stream. That comparison was not controlled. The UKF and EKF shipped an initial gyro-bias variance of 1e-3, a sigma of 1.81 deg/s against the 0.028 deg/s a Consumer-grade part actually has, while the ESKF shipped 1e-8: the two filters were never handed the same prior. Sizing all three from `IMUQuality::initial_bias_covariance` took this row to about 27 m, a NEES near 4.2 and roughly 0.22 deg of yaw -- past the ESKF's own numbers on the same stream. Fixing #371 afterwards moved the yaw by 0.007 deg and improved the position. The prior was the defect; the chart error was real but is not what this row measured."
         },
         "velocity_vertical_rmse_mps": {
-          "value": 2.23487,
-          "note": "Worse under #369, and the whole row with it -- position 235 -> 809 m, NEES 6.82 -> 44.67, 3-sigma horizontal containment 0.989 -> 0.898. Recorded, not endorsed. Giving a filter a good heading is not supposed to cost it position, and the control is in the same bless: `syn_outage_60s__eskf` reads the identical magnetometer on the identical trajectory and its yaw goes 1.070 -> 0.255 deg with no position cost at all. So it is the filter, not the sensor. This row's yaw is 72.68 deg with a 1 Hz heading aid running through the outage, against 2.01 deg for the same filter on `syn_cruise_1hz` where GNSS never stops: the UKF cannot use an observable heading through free-inertial propagation. That is #371's linear Euler mean over sigma-point attitudes, stated far more sharply than it could be before this row had a magnetometer to ignore."
+          "value": 0.286318,
+          "note": "Read this row as the one the v1.0 spine spent the longest on, and as a lesson about uncontrolled comparisons. It read 809 m of horizontal RMSE, a NEES of 44.67 and 72.68 deg of yaw, and that was attributed here to #371 -- the UKF's linear mean over sigma-point Euler triples -- on the strength of `syn_outage_60s__eskf` reading 0.255 deg on the identical stream. That comparison was not controlled. The UKF and EKF shipped an initial gyro-bias variance of 1e-3, a sigma of 1.81 deg/s against the 0.028 deg/s a Consumer-grade part actually has, while the ESKF shipped 1e-8: the two filters were never handed the same prior. Sizing all three from `IMUQuality::initial_bias_covariance` took this row to about 27 m, a NEES near 4.2 and roughly 0.22 deg of yaw -- past the ESKF's own numbers on the same stream. Fixing #371 afterwards moved the yaw by 0.007 deg and improved the position. The prior was the defect; the chart error was real but is not what this row measured."
         },
         "vertical_bias_m": {
-          "value": -2.55407
+          "value": -0.590127
         },
         "vertical_rmse_m": {
-          "value": 4.14267,
-          "note": "Worse under #369, and the whole row with it -- position 235 -> 809 m, NEES 6.82 -> 44.67, 3-sigma horizontal containment 0.989 -> 0.898. Recorded, not endorsed. Giving a filter a good heading is not supposed to cost it position, and the control is in the same bless: `syn_outage_60s__eskf` reads the identical magnetometer on the identical trajectory and its yaw goes 1.070 -> 0.255 deg with no position cost at all. So it is the filter, not the sensor. This row's yaw is 72.68 deg with a 1 Hz heading aid running through the outage, against 2.01 deg for the same filter on `syn_cruise_1hz` where GNSS never stops: the UKF cannot use an observable heading through free-inertial propagation. That is #371's linear Euler mean over sigma-point attitudes, stated far more sharply than it could be before this row had a magnetometer to ignore."
+          "value": 1.92928,
+          "note": "Read this row as the one the v1.0 spine spent the longest on, and as a lesson about uncontrolled comparisons. It read 809 m of horizontal RMSE, a NEES of 44.67 and 72.68 deg of yaw, and that was attributed here to #371 -- the UKF's linear mean over sigma-point Euler triples -- on the strength of `syn_outage_60s__eskf` reading 0.255 deg on the identical stream. That comparison was not controlled. The UKF and EKF shipped an initial gyro-bias variance of 1e-3, a sigma of 1.81 deg/s against the 0.028 deg/s a Consumer-grade part actually has, while the ESKF shipped 1e-8: the two filters were never handed the same prior. Sizing all three from `IMUQuality::initial_bias_covariance` took this row to about 27 m, a NEES near 4.2 and roughly 0.22 deg of yaw -- past the ESKF's own numbers on the same stream. Fixing #371 afterwards moved the yaw by 0.007 deg and improved the position. The prior was the defect; the chart error was real but is not what this row measured."
         },
         "yaw_rmse_deg": {
-          "value": 72.6771,
-          "note": "72.68 deg, from 89.0 -- with a 1 Hz magnetometer running through the outage, which #369 added. The same filter reads 2.01 deg on `syn_cruise_1hz`, and the ESKF reads 0.255 deg on this one. A heading measurement the filter is being handed every second is not reaching its attitude states through the coast. This is the sharpest single measurement of #371 in the matrix and the one v1/15 should be read against."
+          "value": 0.222306,
+          "note": "Read this row as the one the v1.0 spine spent the longest on, and as a lesson about uncontrolled comparisons. It read 809 m of horizontal RMSE, a NEES of 44.67 and 72.68 deg of yaw, and that was attributed here to #371 -- the UKF's linear mean over sigma-point Euler triples -- on the strength of `syn_outage_60s__eskf` reading 0.255 deg on the identical stream. That comparison was not controlled. The UKF and EKF shipped an initial gyro-bias variance of 1e-3, a sigma of 1.81 deg/s against the 0.028 deg/s a Consumer-grade part actually has, while the ESKF shipped 1e-8: the two filters were never handed the same prior. Sizing all three from `IMUQuality::initial_bias_covariance` took this row to about 27 m, a NEES near 4.2 and roughly 0.22 deg of yaw -- past the ESKF's own numbers on the same stream. Fixing #371 afterwards moved the yaw by 0.007 deg and improved the position. The prior was the defect; the chart error was real but is not what this row measured."
         }
       }
     }

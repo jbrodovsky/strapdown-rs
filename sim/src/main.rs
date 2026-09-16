@@ -1648,6 +1648,7 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                         ukf_alpha: Some(args.ukf_alpha),
                         ukf_beta: Some(args.ukf_beta),
                         ukf_kappa: Some(args.ukf_kappa),
+                        imu_quality: strapdown::IMUQuality::default(),
                         is_enu: args.sim.enu,
                     },
                 )?;
@@ -1698,13 +1699,17 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                     1e-4,
                     1e-4,
                     1e-4, // Attitude uncertainty
-                    1e-6,
-                    1e-6,
-                    1e-6, // Accel bias uncertainty
-                    1e-8,
-                    1e-8,
-                    1e-8, // Gyro bias uncertainty
                 ];
+                // The bias block is the one part of this diagonal that is *not* this path's
+                // own any more. It used to carry `1e-6` x3 and `1e-8` x3 -- the constants
+                // `initialize_eskf` shipped -- while the UKF branch a hundred lines above now
+                // takes its prior from the IMU grade. That is exactly the cross-filter
+                // mismatch this change exists to remove, left alive on `--geo --filter ekf`:
+                // two filters on the same flag pair, given priors five orders of magnitude
+                // apart, and every comparison between them meaningless. It reads the grade
+                // like everything else now.
+                covariance_diagonal
+                    .extend(strapdown::IMUQuality::default().initial_bias_covariance());
                 covariance_diagonal.extend(vec![1.0; num_geo_states]);
 
                 // Position process noise. Again only the horizontal pair: `1e-9, 1e-9` rad^2

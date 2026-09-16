@@ -61,19 +61,36 @@ rather than defects in the harness; the fifth is a defect, in the gate.
    epoch's position and date and rotates it into the body frame through the truth attitude
    ([#369](https://github.com/jbrodovsky/strapdown-rs/issues/369)); before that it wrote
    nothing, and heading was observable only through the GNSS velocity fix. With a 1 Hz heading
-   aid the EKF holds 0.28 deg of yaw on `syn_cruise_1hz`, the ESKF 0.20 deg and the UKF
-   2.01 deg -- the last down from 108.3 deg without one.
+   aid all three filters now hold a fraction of a degree of yaw on `syn_cruise_1hz` -- the EKF
+   0.28, the ESKF 0.18, the UKF 0.16, the last down from 108.3 deg without a magnetometer at
+   all.
 
-   **The `syn_outage_60s__ukf` row is where that stops.** The magnetometer is not withheld by
-   the GNSS duty cycle, so that filter is handed a heading every second through the coast, and
-   still reads 72.68 deg of yaw; the ESKF on the identical stream reads 0.255 deg. Its position
-   degraded from 235 to 809 m and its NEES from 6.82 to 44.67 when the field was added -- a
-   filter that now believes a wrong attitude tightly rather than loosely. Not an observability
-   limit, and not the sensor: it is
-   [#371](https://github.com/jbrodovsky/strapdown-rs/issues/371), the UKF's linear mean over
-   sigma-point Euler triples, which a magnetometer makes visible rather than fixes.
+   **`syn_outage_60s__ukf` used to be where that stopped, and the stated reason was wrong.**
+   With the field added that row read 72.68 deg of yaw, 809 m horizontal and a NEES of 44.67,
+   against the ESKF's 0.255 deg and 24.0 m on the identical stream, and this page cited that
+   pair as evidence for [#371](https://github.com/jbrodovsky/strapdown-rs/issues/371). It was
+   not evidence for anything: the three filter constructors shipped initial gyro-bias variances
+   five orders of magnitude apart -- `1e-3` for the UKF and the EKF against `1e-8` for the
+   ESKF -- so the two filters were never handed the same prior. `1e-3` is a gyro-bias sigma of
+   1.81 deg/s against the 0.028 deg/s a consumer-grade part actually has.
+
+   Sizing all three from the IMU grade takes that row to **0.222 deg of yaw, 27.4 m
+   horizontal, NEES 4.21 and 3-sigma horizontal containment 0.997** against an ideal of 0.9973
+   -- past the ESKF's own numbers on the same stream, so the UKF is not incapable of carrying
+   an attitude through a coast. `syn_outage_60s__eskf` moved the other way and for the same
+   reason: its `1e-8` was about 5x *tighter* than the truth it was modelling, and correcting it
+   costs 24.0 -> 26.3 m of position and 0.255 -> 0.292 deg of yaw while taking its NEES
+   4.64 -> 3.87 and its vertical containment 0.866 -> 0.925. Less accurate, more honest.
+
+   #371 is still a real defect -- a linear mean over sigma-point Euler triples sends 31
+   rotations inside a 0.24 deg cone to a point 14.3 deg outside it -- but it is not what this
+   row was measuring, and a tangent-space prototype moves it by 0.013 deg once the prior is
+   right. The two `__ekf` rows did not move at all, which is a finding rather than a null
+   result: the EKF's bias states are structurally inert
+   ([#394](https://github.com/jbrodovsky/strapdown-rs/issues/394)), so its prior cannot be
+   falsified by any measurement.
 4. **The consistency columns mean different things on the two sources.** On the synthetic
-   scenarios `npes` lands between 4.6 and 12.1 against an ideal of 3.0, which is a real
+   scenarios `npes` lands between 3.9 and 12.1 against an ideal of 3.0, which is a real
    measurement of whether a filter believes the right thing. On the real-data scenarios it reaches the
    hundreds, because caveat 2's offset enters the numerator while the covariance in the
    denominator models none of it. Those values are kept as a drift detector, not read as a
@@ -223,22 +240,22 @@ will tell you off; change the numbers by re-blessing.
   What remains is caveat 1's circularity, which no fix to the filters can remove: the score is
   against the aiding source itself.
 - **`syn_cruise_1hz` is where the filters actually separate**, and no one of them wins. The
-  ESKF leads on position and loses on velocity; the UKF trails on attitude for the reason in
-  caveat 3, though a 1 Hz magnetometer now closes most of that gap on this row (2.01 deg of
-  yaw against 108.3 without one). These rows are scored against exact truth, so nothing here
-  is circular.
+  ESKF leads on vertical error, the EKF on horizontal, and all three now hold a fraction of a
+  degree of yaw — the UKF's, once the worst column in the table at 108.3 deg with no
+  magnetometer and 2.01 deg with one but a mis-sized bias prior, is now the best of the three.
+  These rows are scored against exact truth, so nothing here is circular.
 - **The outage rows are dominated by attitude, not by position.** 60 s of free inertial turns a
-  fraction of a degree of tilt error into hundreds of metres. `syn_outage_60s__eskf` holds
-  0.21 deg of pitch and coasts to 24 m; the UKF, which does not hold its attitude through the
-  coast even when a magnetometer is handing it a heading every second, reaches 809 m.
+  fraction of a degree of tilt error into tens of metres. Both filters now hold about a quarter
+  of a degree of yaw through the coast and land within a couple of metres of each other, around
+  26–27 m. The UKF used to reach 809 m on this row; that was its initial gyro-bias prior, not
+  its attitude algebra, and the story is in caveat 3.
 - **The two consistency columns disagree with each other on real data, and that is the
-  finding.** The UKF and EKF still report a flat 1.000 horizontal containment -- a covariance
-  so conservative it cannot be wrong -- beside a vertical containment of 0.40 and 0.42, where
-  better than half the altitude errors fall outside three sigma. Both halves of that are
-  [#373](https://github.com/jbrodovsky/strapdown-rs/issues/373)'s absolute covariance floor:
-  201 m of fabricated horizontal sigma is what makes the horizontal figure unfalsifiable, and
-  the same constant is a rounding error in the vertical channel, which is therefore left
-  bare.
+  finding.** Horizontal three-sigma containment sits near 0.50 across the three filters and
+  vertical near 0.40, where better than half the altitude errors fall outside three sigma.
+  Neither is the old flat 1.000 — [#373](https://github.com/jbrodovsky/strapdown-rs/issues/373)
+  removed the absolute covariance floor that made the horizontal figure unfalsifiable, so what
+  is left in both columns is a real measurement of over-confidence rather than an artefact. The
+  vertical half is [#372](https://github.com/jbrodovsky/strapdown-rs/issues/372).
 - **The ESKF's numbers moved furthest when #367 landed**, and in the right direction:
   horizontal containment 0.161 to 0.497, `npes` 1,249 to 68. That is the offset leaving the
   numerator. It is still not consistent -- 0.497 against an ideal of 0.9973 -- and what
