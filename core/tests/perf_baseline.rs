@@ -57,10 +57,15 @@
 //!    them at once. What it left behind is the circularity caveat 1 describes, now
 //!    undiluted: a row at `t_k` contains `t_k`'s GNSS update, so on a `PassThrough` schedule
 //!    the horizontal columns measure how completely a filter absorbs its own aiding.
-//!    `real_clean__ukf` reads 0.014 m and `real_clean__ekf` 0.0001 m, both far below the
-//!    receiver's 3.81 m, which is not accuracy but a Kalman gain of ~1 (#373). The rows that
-//!    still measure navigation on real data are the ones where the filter has to predict
-//!    between fixes -- `real_sparse_5s`, `real_outage_60s`, `real_degraded` -- and the
+//!
+//!    That absorption used to be total. `real_clean__ukf` read 0.014 m and `real_clean__ekf`
+//!    0.0001 m against a receiver specified at 3.81 m -- not accuracy but a Kalman gain of
+//!    ~1, caused by an absolute `1e-9` covariance floor on a latitude variance in rad^2.
+//!    **#373 fixed that**, and the three filters now read 4.78, 5.22 and 5.12 m: above the
+//!    receiver's own noise instead of reproducing it, and in agreement with each other.
+//!    Caveat 1 still applies -- they are being scored against their own aiding source -- so
+//!    the rows that measure navigation on real data are still the ones where the filter has
+//!    to predict between fixes (`real_sparse_5s`, `real_outage_60s`, `real_degraded`) and the
 //!    synthetic scenarios, which carry exact independent truth.
 //! 3. **The synthetic scenarios now carry a real magnetic field, and the yaw column says which
 //!    filters can use it.** `generate_synthetic` evaluates the World Magnetic Model at each
