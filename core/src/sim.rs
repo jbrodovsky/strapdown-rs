@@ -3725,6 +3725,16 @@ pub struct EkfConfig {
     pub process_noise_diagonal: Option<Vec<f64>>,
     /// 15-state (navigation states plus IMU biases) when `true`, 9-state otherwise.
     pub use_biases: bool,
+    /// Estimate a barometric altitude bias as a sixteenth state (#372).
+    ///
+    /// `false` -- the default -- models the barometer as unbiased. `true` requires
+    /// [`Self::use_biases`], because the state is appended after the IMU bias block; read the
+    /// index off [`EkfConfig::baro_bias_index`] rather than assuming it.
+    ///
+    /// The state opens at [`INITIAL_BARO_BIAS_VARIANCE_M2`] and walks at
+    /// [`BARO_BIAS_PROCESS_NOISE_M2_PER_S`], both derived from one hectopascal of
+    /// reference-pressure drift per hour.
+    pub estimate_baro_bias: bool,
     /// IMU grade the initial bias covariance is derived from when
     /// `imu_biases_covariance` is not given.
     ///
@@ -3760,6 +3770,7 @@ impl Default for EkfConfig {
             // the EKF over dead reckoning on a drifting sensor. Deriving `Default` here
             // would flip that to 9-state without a diff anyone would read as a retune.
             use_biases: true,
+            estimate_baro_bias: false,
             imu_quality: crate::IMUQuality::default(),
             is_enu: false,
         }
@@ -3804,6 +3815,7 @@ pub fn initialize_ekf(
         imu_biases_covariance,
         process_noise_diagonal,
         use_biases,
+        estimate_baro_bias,
         imu_quality,
         is_enu,
     } = config;
@@ -3814,26 +3826,36 @@ pub fn initialize_ekf(
     // (#296).
     let initial_state = initial_pose.initial_state(is_enu);
 
-    // Determine state size based on use_biases flag
-    let state_size = if use_biases { 15 } else { 9 };
+    // Determine state size based on use_biases flag, plus the barometric bias if asked for.
+    //
+    // The barometer's bias sits after the IMU bias block, so it needs that block to exist; a
+    // 9-state EKF has nowhere to put it. Rejected rather than silently ignored -- a `pub`
+    // config field that does nothing is #392's whole failure mode.
+    require_config(
+        !estimate_baro_bias || use_biases,
+        "estimate_baro_bias",
+        "requires use_biases: the barometric bias is appended after the IMU bias block".to_string(),
+    )?;
+    let state_size = if use_biases { 15 } else { 9 } + usize::from(estimate_baro_bias);
 
     // Build process noise diagonal
-    let process_noise_diagonal = match process_noise_diagonal {
-        Some(pn) => {
-            require_config(
-                pn.len() == state_size,
-                "process_noise_diagonal",
-                format!("expected {state_size} elements, got {}", pn.len()),
-            )?;
-            pn
+    let process_noise_diagonal = if let Some(pn) = process_noise_diagonal {
+        require_config(
+            pn.len() == state_size,
+            "process_noise_diagonal",
+            format!("expected {state_size} elements, got {}", pn.len()),
+        )?;
+        pn
+    } else {
+        let mut default = if use_biases {
+            DEFAULT_PROCESS_NOISE_DENSITY.to_vec()
+        } else {
+            DEFAULT_PROCESS_NOISE_DENSITY[0..9].to_vec()
+        };
+        if estimate_baro_bias {
+            default.push(BARO_BIAS_PROCESS_NOISE_M2_PER_S);
         }
-        None => {
-            if use_biases {
-                DEFAULT_PROCESS_NOISE_DENSITY.to_vec()
-            } else {
-                DEFAULT_PROCESS_NOISE_DENSITY[0..9].to_vec()
-            }
-        }
+        default
     };
 
     // Build covariance diagonal.
@@ -3897,6 +3919,10 @@ pub fn initialize_ekf(
         vec![0.0; 6] // Not used in 9-state, but required by constructor
     };
 
+    if estimate_baro_bias {
+        covariance_diagonal.push(INITIAL_BARO_BIAS_VARIANCE_M2);
+    }
+
     require_config(
         covariance_diagonal.len() == state_size,
         "covariance_diagonal",
@@ -3914,6 +3940,23 @@ pub fn initialize_ekf(
         process_noise,
         use_biases,
     ))
+}
+
+impl EkfConfig {
+    /// Where [`Self::estimate_baro_bias`] puts the barometric bias, if it is on.
+    ///
+    /// Always [`NAVIGATION_STATES`] here, because this constructor has no `other_states` to
+    /// append after. It is still a method rather than a literal for the reason
+    /// [`UkfConfig::baro_bias_index`] gives: three places have to agree on the index, and the
+    /// one that computes it by hand is the one that drifts.
+    #[must_use]
+    pub const fn baro_bias_index(&self) -> Option<usize> {
+        if self.estimate_baro_bias {
+            Some(NAVIGATION_STATES)
+        } else {
+            None
+        }
+    }
 }
 
 /// Configuration parameters for ESKF initialization.
