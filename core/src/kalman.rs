@@ -748,13 +748,12 @@ impl NavigationFilter for UnscentedKalmanFilter {
         // Report attitude on the same branch `predict` writes (#314).
         wrap_attitude_onto_principal_branch(&mut self.mean_state);
         self.covariance -= &k * &s * &k.transpose();
-        // Ensure covariance remains positive semi-definite with gentle regularization
-        self.covariance = symmetrize(&self.covariance);
-        // Add small diagonal regularization to prevent negative eigenvalues
-        let eps = 1e-9;
-        for i in 0..self.state_size {
-            self.covariance[(i, i)] += eps;
-        }
+        // Symmetrise, then jitter each diagonal entry in proportion to its own scale.
+        // Adding an absolute `1e-9` here -- which this did until #373 -- put ~(201 m)^2 of
+        // horizontal variance into a state whose position entries are radians, and the
+        // resulting Kalman gain of 0.999 made this filter copy its fixes rather than
+        // filter them.
+        regularize_covariance_in_place(&mut self.covariance, &self.process_noise);
         Ok(outcome)
     }
 
@@ -1198,14 +1197,10 @@ impl NavigationFilter for ExtendedKalmanFilter {
         // Covariance propagation: P_bar = F * P * F^T + Q
         self.covariance = &f_full * &self.covariance * f_full.transpose() + &self.process_noise;
 
-        // Ensure covariance remains symmetric and positive semi-definite
-        self.covariance = symmetrize(&self.covariance);
-
-        // Add small regularization to prevent numerical issues
-        let eps = 1e-9;
-        for i in 0..self.state_size {
-            self.covariance[(i, i)] += eps;
-        }
+        // Relative, not absolute: see `regularize_covariance_in_place` and #373. This filter
+        // applied the absolute form here *and* in `update`, so it accumulated ~(493 m)^2 of
+        // fabricated horizontal variance between fixes.
+        regularize_covariance_in_place(&mut self.covariance, &self.process_noise);
         Ok(())
     }
 
@@ -1316,14 +1311,8 @@ impl NavigationFilter for ExtendedKalmanFilter {
         let r = measurement.get_noise();
         self.covariance = &i_kh * &self.covariance * i_kh.transpose() + &k * r * k.transpose();
 
-        // Ensure covariance remains symmetric and positive semi-definite
-        self.covariance = symmetrize(&self.covariance);
-
-        // Add small regularization
-        let eps = 1e-9;
-        for i in 0..self.state_size {
-            self.covariance[(i, i)] += eps;
-        }
+        // Relative, not absolute: see `regularize_covariance_in_place` and #373.
+        regularize_covariance_in_place(&mut self.covariance, &self.process_noise);
         Ok(outcome)
     }
 
@@ -1611,16 +1600,49 @@ impl Display for ErrorStateKalmanFilter {
     }
 }
 
-/// Relative floor used to keep the ESKF error covariance numerically conditioned.
+/// Relative floor used to keep a filter covariance numerically conditioned.
 ///
-/// The ESKF error state spans twelve orders of magnitude in units: latitude and
-/// longitude errors are radians (a 1 m error is ~1.6e-7 rad, so ~2.5e-14 rad² of
-/// variance), while accelerometer bias errors are m/s². A single absolute value
-/// added to every diagonal entry cannot serve both -- the 1e-9 this used to add was
-/// simultaneously ~(200 m)² of bogus horizontal position variance and a rounding
-/// error for velocity, and it silently overwrote any deliberately small covariance
-/// (freezing a state by giving it a 1e-12 variance did nothing). See #266.
-const ESKF_COVARIANCE_JITTER_RELATIVE: f64 = 1e-9;
+/// A navigation state spans twelve orders of magnitude in units: latitude and
+/// longitude are radians (a 1 m error is ~1.6e-7 rad, so ~2.5e-14 rad² of variance),
+/// while accelerometer biases are m/s². A single absolute value added to every
+/// diagonal entry cannot serve both -- the `1e-9` this used to add was simultaneously
+/// ~(200 m)² of bogus horizontal position variance and a rounding error for velocity,
+/// and it silently overwrote any deliberately small covariance (freezing a state by
+/// giving it a 1e-12 variance did nothing). See #266.
+///
+/// #266 fixed that for the ESKF and stopped there. The UKF and EKF kept the absolute
+/// form until #373, which is why they reported a horizontal sigma they could not
+/// possibly have earned -- see [`regularize_covariance_in_place`].
+const COVARIANCE_JITTER_RELATIVE: f64 = 1e-9;
+
+/// Symmetrise a covariance and add a jitter proportional to each state's own scale.
+///
+/// The alternative -- one absolute value added to every diagonal entry -- cannot work on
+/// a state vector whose units differ by twelve orders of magnitude, and the arithmetic of
+/// getting it wrong is worth writing down because it went unnoticed for so long.
+///
+/// A latitude variance floored at `1e-9 rad²` is a standard deviation of
+/// `sqrt(1e-9) = 3.16e-5 rad`, which at the Earth's radius is **201.5 m**. Against a GNSS
+/// fix specified at 5 m (`R = 6.16e-13 rad²`), that prior is 1,624 times the measurement
+/// noise, so the Kalman gain `K = P/(P+R)` is 0.9994: the filter discards its own
+/// prediction and lands on each fix. The EKF applied the same floor in `predict` *and*
+/// `update`, so between fixes it accumulated ~`6e-9 rad²` -- **493.5 m**, a prior share of
+/// 9,742, and a gain of 0.9999.
+///
+/// Those are not estimates. `core/tests/aiding.rs` measured 201 m and 493 m with prior
+/// shares of 1,622 and 9,729 before this was understood, and recorded them beside the
+/// ESKF's 0.063 without being able to say why the ESKF differed. The ESKF differed because
+/// #266 had already given it this function's behaviour.
+///
+/// `process_noise` supplies the per-state floor, so a state whose variance has collapsed
+/// to zero still receives a jitter in its own units rather than nothing at all.
+fn regularize_covariance_in_place(covariance: &mut DMatrix<f64>, process_noise: &DMatrix<f64>) {
+    *covariance = symmetrize(covariance);
+    for i in 0..covariance.nrows() {
+        let scale = covariance[(i, i)].abs().max(process_noise[(i, i)].abs());
+        covariance[(i, i)] += COVARIANCE_JITTER_RELATIVE * scale;
+    }
+}
 
 /// Anti-windup caps for ESKF bias estimates (see `inject_error_state`, #286).
 ///
@@ -1732,13 +1754,7 @@ impl ErrorStateKalmanFilter {
     /// per-state floor so a state whose variance has collapsed to zero still gets a
     /// jitter in its own units.
     fn regularize_covariance(&mut self) {
-        self.error_covariance = symmetrize(&self.error_covariance);
-        for i in 0..15 {
-            let scale = self.error_covariance[(i, i)]
-                .abs()
-                .max(self.process_noise[(i, i)].abs());
-            self.error_covariance[(i, i)] += ESKF_COVARIANCE_JITTER_RELATIVE * scale;
-        }
+        regularize_covariance_in_place(&mut self.error_covariance, &self.process_noise);
     }
 
     /// Inject error state into nominal state and reset error state to zero
