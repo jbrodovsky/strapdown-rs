@@ -2342,6 +2342,89 @@ mod tests {
     /// "the sample attitude or IMU moved" as "the Jacobian is wrong"; check
     /// `frame_check_state` and `frame_check_imu` first. Using `|(∂ω_en/∂v_j) × f^n|` itself
     /// rather than the norm product would remove the saturation, at the cost of duplicating
+    /// the very expression under test inside its own oracle.
+    #[test]
+    fn transition_jacobian_velocity_columns_match_finite_differences_in_both_frames() {
+        // Floating-point floor on the numeric side: the difference of two propagated
+        // velocities of ~120 m/s over a 1 m/s step, so ~eps * |v| / step ~ 1e-14.
+        const ROUNDING_FLOOR: f64 = 1e-14;
+        let dt = 0.01;
+        let step = 1.0; // m/s
+        for base in [frame_check_state(), frame_check_state().to_enu()] {
+            let (accel, gyro) = frame_check_imu(base.is_enu);
+            let analytic = state_transition_jacobian(&base, &accel, &gyro, dt);
+
+            let propagate = |offset: Vector3<f64>| {
+                let mut s = base;
+                s.velocity_north += offset[0];
+                s.velocity_east += offset[1];
+                s.velocity_vertical += offset[2];
+                crate::mechanize(
+                    &mut s,
+                    &crate::ImuSample::from_rates(&crate::IMUData { accel, gyro }, dt),
+                )
+                .unwrap();
+                s
+            };
+            let nominal = propagate(Vector3::zeros());
+
+            // The second-order term derived above, per column: `0.5 dt² |∂ω_en/∂v_j| |f^n|`.
+            // `|a × b| <= |a||b|`, so this is an upper bound rather than a fit, and the
+            // reflection an ENU state applies to the gradient preserves its norm.
+            let gradients = transport_rate_velocity_gradients(base.latitude, base.altitude);
+            let specific_force_norm = (base.attitude.matrix() * accel).norm();
+
+            for column in 0..3 {
+                let mut offset = Vector3::zeros();
+                offset[column] = step;
+                let plus = propagate(offset);
+                let minus = propagate(-offset);
+                let averaging_bound =
+                    0.5 * dt * dt * gradients[column].norm() * specific_force_norm;
+                let tolerance = averaging_bound.max(ROUNDING_FLOOR);
+
+                // Velocity rows.
+                let numeric = [
+                    (plus.velocity_north - minus.velocity_north) / (2.0 * step),
+                    (plus.velocity_east - minus.velocity_east) / (2.0 * step),
+                    (plus.velocity_vertical - minus.velocity_vertical) / (2.0 * step),
+                ];
+                for (row, value) in numeric.iter().enumerate() {
+                    assert_approx_eq!(analytic[(3 + row, 3 + column)], *value, tolerance);
+                }
+
+                // Attitude rows, as a nav-frame rotation vector: the left perturbation
+                // `C_pert = (I + [dtheta x]) C_nom`. Via the quaternion, for the reasons
+                // given in `test_error_state_jacobian_matches_nonlinear_propagation`.
+                let delta = |propagated: &StrapdownState| {
+                    UnitQuaternion::from_rotation_matrix(
+                        &(propagated.attitude * nominal.attitude.transpose()),
+                    )
+                    .scaled_axis()
+                };
+                let numeric_attitude = (delta(&plus) - delta(&minus)) / (2.0 * step);
+                for row in 0..3 {
+                    assert_approx_eq!(
+                        analytic[(6 + row, 3 + column)],
+                        numeric_attitude[row],
+                        1e-12
+                    );
+                }
+            }
+
+            // Non-degenerate: the entries actually checked are orders of magnitude above the
+            // tolerances they are checked against.
+            assert!(
+                analytic[(4, 3)].abs() > 1e-7,
+                "Coriolis off-diagonal is empty"
+            );
+            assert!(
+                analytic[(6, 4)].abs() > 1e-10,
+                "transport coupling is empty"
+            );
+        }
+    }
+
     /// [`bias_coupling_blocks`] agrees with finite differences of the mechanization it
     /// linearises, at three attitudes including one well away from level.
     ///
@@ -2457,89 +2540,6 @@ mod tests {
                     }
                 }
             }
-        }
-    }
-
-    /// the very expression under test inside its own oracle.
-    #[test]
-    fn transition_jacobian_velocity_columns_match_finite_differences_in_both_frames() {
-        // Floating-point floor on the numeric side: the difference of two propagated
-        // velocities of ~120 m/s over a 1 m/s step, so ~eps * |v| / step ~ 1e-14.
-        const ROUNDING_FLOOR: f64 = 1e-14;
-        let dt = 0.01;
-        let step = 1.0; // m/s
-        for base in [frame_check_state(), frame_check_state().to_enu()] {
-            let (accel, gyro) = frame_check_imu(base.is_enu);
-            let analytic = state_transition_jacobian(&base, &accel, &gyro, dt);
-
-            let propagate = |offset: Vector3<f64>| {
-                let mut s = base;
-                s.velocity_north += offset[0];
-                s.velocity_east += offset[1];
-                s.velocity_vertical += offset[2];
-                crate::mechanize(
-                    &mut s,
-                    &crate::ImuSample::from_rates(&crate::IMUData { accel, gyro }, dt),
-                )
-                .unwrap();
-                s
-            };
-            let nominal = propagate(Vector3::zeros());
-
-            // The second-order term derived above, per column: `0.5 dt² |∂ω_en/∂v_j| |f^n|`.
-            // `|a × b| <= |a||b|`, so this is an upper bound rather than a fit, and the
-            // reflection an ENU state applies to the gradient preserves its norm.
-            let gradients = transport_rate_velocity_gradients(base.latitude, base.altitude);
-            let specific_force_norm = (base.attitude.matrix() * accel).norm();
-
-            for column in 0..3 {
-                let mut offset = Vector3::zeros();
-                offset[column] = step;
-                let plus = propagate(offset);
-                let minus = propagate(-offset);
-                let averaging_bound =
-                    0.5 * dt * dt * gradients[column].norm() * specific_force_norm;
-                let tolerance = averaging_bound.max(ROUNDING_FLOOR);
-
-                // Velocity rows.
-                let numeric = [
-                    (plus.velocity_north - minus.velocity_north) / (2.0 * step),
-                    (plus.velocity_east - minus.velocity_east) / (2.0 * step),
-                    (plus.velocity_vertical - minus.velocity_vertical) / (2.0 * step),
-                ];
-                for (row, value) in numeric.iter().enumerate() {
-                    assert_approx_eq!(analytic[(3 + row, 3 + column)], *value, tolerance);
-                }
-
-                // Attitude rows, as a nav-frame rotation vector: the left perturbation
-                // `C_pert = (I + [dtheta x]) C_nom`. Via the quaternion, for the reasons
-                // given in `test_error_state_jacobian_matches_nonlinear_propagation`.
-                let delta = |propagated: &StrapdownState| {
-                    UnitQuaternion::from_rotation_matrix(
-                        &(propagated.attitude * nominal.attitude.transpose()),
-                    )
-                    .scaled_axis()
-                };
-                let numeric_attitude = (delta(&plus) - delta(&minus)) / (2.0 * step);
-                for row in 0..3 {
-                    assert_approx_eq!(
-                        analytic[(6 + row, 3 + column)],
-                        numeric_attitude[row],
-                        1e-12
-                    );
-                }
-            }
-
-            // Non-degenerate: the entries actually checked are orders of magnitude above the
-            // tolerances they are checked against.
-            assert!(
-                analytic[(4, 3)].abs() > 1e-7,
-                "Coriolis off-diagonal is empty"
-            );
-            assert!(
-                analytic[(6, 4)].abs() > 1e-10,
-                "transport coupling is empty"
-            );
         }
     }
 
