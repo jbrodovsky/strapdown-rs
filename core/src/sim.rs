@@ -3346,6 +3346,15 @@ pub struct UkfConfig {
     pub ukf_beta: Option<f64>,
     /// Optional UKF kappa parameter (secondary spread control).
     pub ukf_kappa: Option<f64>,
+    /// IMU grade the initial bias covariance is derived from when
+    /// `imu_biases_covariance` is not given.
+    ///
+    /// [`IMUQuality::initial_bias_covariance`] turns the grade's bias instability into the
+    /// six-entry diagonal, so a filter opens believing its biases to within about one
+    /// instability of zero. Before this field the three constructors each hard-coded a
+    /// different answer and none of them modelled any hardware -- see that method for the
+    /// measurement, and for why it made the UKF-versus-ESKF comparison in #371 meaningless.
+    pub imu_quality: crate::IMUQuality,
     /// Local-level frame of the records: `false` (the default) is NED, `true` is ENU.
     ///
     /// Sensor Logger exports are ENU -- at rest their specific force lands on the device's
@@ -3433,7 +3442,11 @@ pub fn initialize_ukf(
     // wrong result out of the simulator".
     covariance_diagonal.extend(match config.imu_biases_covariance {
         Some(imu_cov) => imu_cov,
-        None => vec![1e-3; 6], // Default covariance if not provided
+        // Derived from the IMU grade, not a constant. See
+        // `IMUQuality::initial_bias_covariance`: the `1e-3` this replaces was a gyro-bias
+        // sigma of 1.81 deg/s against a consumer part's 0.028, and the ESKF's own hard-coded
+        // answer disagreed with it by five orders of magnitude.
+        None => config.imu_quality.initial_bias_covariance().to_vec(),
     });
     // Zero, not `1e-3`. `1e-3` is this block's *covariance*, just above, and it had been
     // copied into the estimate: the filter opened by asserting a 1 mrad/s rate bias on every
@@ -3516,6 +3529,23 @@ pub struct EkfConfig {
     pub process_noise_diagonal: Option<Vec<f64>>,
     /// 15-state (navigation states plus IMU biases) when `true`, 9-state otherwise.
     pub use_biases: bool,
+    /// IMU grade the initial bias covariance is derived from when
+    /// `imu_biases_covariance` is not given.
+    ///
+    /// [`IMUQuality::initial_bias_covariance`] turns the grade's bias instability into the
+    /// six-entry diagonal, so a filter opens believing its biases to within about one
+    /// instability of zero. Before this field the three constructors each hard-coded a
+    /// different answer and none of them modelled any hardware -- see that method for the
+    /// measurement, and for why it made the UKF-versus-ESKF comparison in #371 meaningless.
+    ///
+    /// **On this filter the value is currently inert**, and measurably so: any value produces
+    /// bit-identical output, because the EKF's state-transition Jacobian has no
+    /// $\partial(\text{nav})/\partial(\text{bias})$ block, so `P[0..9, 9..15]` starts at zero
+    /// and stays there and the gain over the bias rows is always zero (#394). It is set
+    /// correctly here anyway: the field is what the filter *claims*, the claim should be true
+    /// whether or not anything reads it today, and #394's fix makes it load-bearing without
+    /// touching this line.
+    pub imu_quality: crate::IMUQuality,
     /// Local-level frame of the records: `false` (the default) is NED, `true` is ENU.
     ///
     /// See [`UkfConfig::is_enu`]; the same reasoning and the same guard apply.
@@ -3534,6 +3564,7 @@ impl Default for EkfConfig {
             // the EKF over dead reckoning on a drifting sensor. Deriving `Default` here
             // would flip that to 9-state without a diff anyone would read as a retune.
             use_biases: true,
+            imu_quality: crate::IMUQuality::default(),
             is_enu: false,
         }
     }
@@ -3577,6 +3608,7 @@ pub fn initialize_ekf(
         imu_biases_covariance,
         process_noise_diagonal,
         use_biases,
+        imu_quality,
         is_enu,
     } = config;
 
@@ -3658,11 +3690,11 @@ pub fn initialize_ekf(
                     )?;
                     imu_cov
                 }
-                None => vec![1e-3; 6],
+                None => imu_quality.initial_bias_covariance().to_vec(),
             });
             biases
         } else {
-            covariance_diagonal.extend(vec![1e-3; 6]);
+            covariance_diagonal.extend(imu_quality.initial_bias_covariance());
             vec![0.0; 6]
         }
     } else {
@@ -3703,6 +3735,15 @@ pub struct EskfConfig {
     pub imu_biases_covariance: Option<Vec<f64>>,
     /// Optional process noise diagonal (15 elements for the error state).
     pub process_noise_diagonal: Option<Vec<f64>>,
+    /// IMU grade the initial bias covariance is derived from when
+    /// `imu_biases_covariance` is not given.
+    ///
+    /// [`IMUQuality::initial_bias_covariance`] turns the grade's bias instability into the
+    /// six-entry diagonal, so a filter opens believing its biases to within about one
+    /// instability of zero. Before this field the three constructors each hard-coded a
+    /// different answer and none of them modelled any hardware -- see that method for the
+    /// measurement, and for why it made the UKF-versus-ESKF comparison in #371 meaningless.
+    pub imu_quality: crate::IMUQuality,
     /// Local-level frame of the records: `false` (the default) is NED, `true` is ENU.
     ///
     /// See [`UkfConfig::is_enu`]; the same reasoning and the same guard apply.
@@ -3769,6 +3810,7 @@ pub fn initialize_eskf(
         imu_biases,
         imu_biases_covariance,
         process_noise_diagonal,
+        imu_quality,
         is_enu,
     } = config;
 
@@ -3853,12 +3895,12 @@ pub fn initialize_eskf(
             )?;
             bias_cov
         }
-        None => {
-            vec![
-                1e-6, 1e-6, 1e-6, // accel bias error covariance
-                1e-8, 1e-8, 1e-8, // gyro bias error covariance
-            ]
-        }
+        // Derived from the IMU grade like the other two constructors, rather than the
+        // `1e-6`/`1e-8` this replaces. That pair was the tightest of the three hard-coded
+        // answers -- about 5x tighter than a consumer part's actual bias instability -- and
+        // being the only one in the right order of magnitude is what made this filter look
+        // like the well-behaved one in every cross-filter comparison.
+        None => imu_quality.initial_bias_covariance().to_vec(),
     });
 
     require_config(

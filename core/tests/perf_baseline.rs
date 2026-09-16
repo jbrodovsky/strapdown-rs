@@ -71,20 +71,41 @@
 //!    filters can use it.** `generate_synthetic` evaluates the World Magnetic Model at each
 //!    epoch's position and date and rotates it into the body frame through the truth attitude
 //!    (#369); before that it wrote nothing, and heading was observable only through the GNSS
-//!    velocity fix. With a 1 Hz heading aid the EKF holds 0.28 deg of yaw on `syn_cruise_1hz`,
-//!    the ESKF 0.20 deg and the UKF 2.01 deg -- the last down from 108.3 deg without one.
+//!    velocity fix. With a 1 Hz heading aid all three filters now hold a fraction of a degree
+//!    of yaw on `syn_cruise_1hz` -- the EKF 0.28, the ESKF 0.18, the UKF 0.16, the last down
+//!    from 108.3 deg without a magnetometer at all.
 //!
-//!    **The `syn_outage_60s__ukf` row is where that stops.** The magnetometer is not withheld
-//!    by the GNSS duty cycle, so that filter is handed a heading every second through the
-//!    coast, and still reads 72.68 deg of yaw; the ESKF on the identical stream reads
-//!    0.255 deg. Its position degraded from 235 to 809 m and its NEES from 6.82 to 44.67 when
-//!    the field was added -- a filter that now believes a wrong attitude tightly rather than
-//!    loosely. Not an observability limit and not the sensor: it is #371, the UKF's linear
-//!    mean over sigma-point Euler triples, which a magnetometer makes visible rather than
-//!    fixes. (Not #336, which fixed the branch-cut half of that and is closed.) Fixing #371
-//!    will trip the improvement side across most of that row and ask for a re-bless.
+//!    **`syn_outage_60s__ukf` used to be where that stopped, and the stated reason was
+//!    wrong.** With the field added that row read 72.68 deg of yaw, 809 m horizontal and a
+//!    NEES of 44.67, against the ESKF's 0.255 deg and 24.0 m on the identical stream, and this
+//!    module cited that pair as evidence for #371. It was not evidence for anything: the three
+//!    constructors shipped initial gyro-bias variances five orders of magnitude apart --
+//!    `1e-3` for the UKF and the EKF against `1e-8` for the ESKF -- so the two filters were
+//!    never handed the same prior, and the comparison was not a comparison. `1e-3` is a
+//!    gyro-bias sigma of 1.81 deg/s against the 0.028 deg/s a `Consumer`-grade part actually
+//!    has.
+//!
+//!    Sizing all three from [`strapdown::IMUQuality::initial_bias_covariance`] takes that row
+//!    to **0.222 deg of yaw, 27.4 m horizontal, NEES 4.21 and 3-sigma horizontal containment
+//!    0.997** against an ideal of 0.9973 -- past the ESKF's own numbers on the same stream, so
+//!    the UKF is not incapable of carrying an attitude through a coast. `syn_outage_60s__eskf`
+//!    moved the other way and for the same reason: its `1e-8` was about 5x *tighter* than the
+//!    truth it was modelling, and correcting it costs 24.0 -> 26.3 m of position and
+//!    0.255 -> 0.292 deg of yaw while taking its NEES 4.64 -> 3.87 and its vertical
+//!    containment 0.866 -> 0.925. Less accurate, more honest, which is what replacing a
+//!    fortunate constant with a model looks like.
+//!
+//!    #371 is still a real defect -- a linear mean over sigma-point Euler triples sends 31
+//!    rotations inside a 0.24 deg cone to a point 14.3 deg outside it -- but it is not what
+//!    this row was measuring, and a full tangent-space UKF prototype moves it by 0.013 deg
+//!    once the prior is right. Fixing it should be expected to change these numbers barely at
+//!    all. (Not #336, which fixed the branch-cut half of that and is closed.)
+//!
+//!    The two `__ekf` rows did not move at all, and that is a third finding rather than a
+//!    null result: the EKF's bias states are structurally inert (#394), so its prior is
+//!    unfalsifiable by construction.
 //! 4. **The consistency metrics mean something different on the two sources.** On the synthetic
-//!    scenarios `npes_position` lands between 4.6 and 12.1 against an ideal of 3.0, which is a
+//!    scenarios `npes_position` lands between 3.9 and 12.1 against an ideal of 3.0, which is a
 //!    real measurement of whether the filters believe the right thing. On the real-data
 //!    scenarios it still reaches the tens to hundreds. It used to be dominated by caveat 2's
 //!    21 m offset in the numerator; with #367 fixed, what remains is the covariance itself --

@@ -1648,6 +1648,7 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                         ukf_alpha: Some(args.ukf_alpha),
                         ukf_beta: Some(args.ukf_beta),
                         ukf_kappa: Some(args.ukf_kappa),
+                        imu_quality: strapdown::IMUQuality::default(),
                         is_enu: args.sim.enu,
                     },
                 )?;

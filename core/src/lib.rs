@@ -396,6 +396,57 @@ impl IMUQuality {
             Self::Strategic => 0.00001,
         }
     }
+    /// The initial IMU-bias covariance diagonal a filter should open with for this grade.
+    ///
+    /// Six entries in the order the state vector carries them: three accelerometer variances
+    /// in $(m/s^2)^2$, then three gyroscope variances in $(rad/s)^2$. Each is the square of
+    /// this grade's bias instability, so the filter opens believing the bias is somewhere
+    /// within about one instability of zero -- which is what a bias instability *is*.
+    ///
+    /// # Why this exists
+    ///
+    /// The three constructors in [`crate::sim`] used to hard-code their own answer, and they
+    /// did not agree: `initialize_ukf` and `initialize_ekf` both opened at `1e-3` for all six
+    /// entries while `initialize_eskf` used `1e-6` for the accelerometer and `1e-8` for the
+    /// gyroscope. Against a `Consumer` grade -- 100 deg/h, or $4.85 \times 10^{-4}$ rad/s --
+    /// `1e-3` is a gyro-bias sigma of 1.81 deg/s, **65x too loose in sigma and 4,255x in
+    /// variance**, while the ESKF's `1e-8` is about 5x too tight. None of the three was a
+    /// model of any hardware.
+    ///
+    /// That disagreement was not academic. It made "the UKF reads 72.68 deg where the ESKF
+    /// reads 0.255 on the identical stream" -- the comparison #371 rests on -- not a
+    /// comparison at all: the two filters were given priors five orders of magnitude apart.
+    /// Sweeping the UKF's gyro entry alone takes that row from 18.5 deg of yaw at `1e-3` to
+    /// 0.236 deg at `1e-6`, past the ESKF's own 0.255.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use strapdown::IMUQuality;
+    ///
+    /// let consumer = IMUQuality::Consumer.initial_bias_covariance();
+    /// // Accelerometer: (0.1 m/s^2)^2.
+    /// assert!((consumer[0] - 0.01).abs() < 1e-12);
+    /// // Gyroscope: (100 deg/h in rad/s)^2, about 2.35e-7.
+    /// assert!(consumer[3] < 1e-6 && consumer[3] > 1e-8);
+    /// // A better grade believes its biases more tightly.
+    /// assert!(IMUQuality::Tactical.initial_bias_covariance()[3] < consumer[3]);
+    /// ```
+    #[must_use]
+    pub fn initial_bias_covariance(&self) -> [f64; 6] {
+        let accelerometer = self.accel_bias_instability_mps2().powi(2);
+        // `gyro_bias_instability_dph` returns radians per *hour* despite its name; the state
+        // carries a rate bias in radians per second.
+        let gyroscope = (self.gyro_bias_instability_dph() / SECONDS_PER_HOUR).powi(2);
+        [
+            accelerometer,
+            accelerometer,
+            accelerometer,
+            gyroscope,
+            gyroscope,
+            gyroscope,
+        ]
+    }
     /// Get typical accelerometer velocity random walk in m/s/√h for the given IMU quality
     pub const fn accel_velocity_random_walk(&self) -> f64 {
         match self {
