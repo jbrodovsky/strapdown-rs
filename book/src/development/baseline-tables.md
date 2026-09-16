@@ -43,20 +43,20 @@ overwrites this file, and the gate fails if it is stale. See #380. -->
 
 ### Consistency
 
-| scenario | samples | npes (ideal 3.0) | 3-sigma horiz (ideal 0.9973) | 3-sigma vert (ideal 0.9973) |
-|---|---:|---:|---:|---:|
-| `real_clean__ukf` | 5,366 | 62.266 | 0.526 | 0.397 |
-| `real_clean__ekf` | 5,366 | 80.994 | 0.494 | 0.425 |
-| `real_clean__eskf` | 5,366 | 68.295 | 0.497 | 0.390 |
-| `real_sparse_5s__ukf` | 5,366 | 71.281 | 0.642 | 0.169 |
-| `real_sparse_5s__eskf` | 5,366 | 76.227 | 0.605 | 0.161 |
-| `real_outage_60s__eskf` | 5,366 | 73.428 | 0.579 | 0.330 |
-| `real_degraded__ukf` | 5,366 | 4,985.860 | 0.080 | 0.128 |
-| `real_degraded__eskf` | 5,366 | 5,151.150 | 0.079 | 0.130 |
-| `syn_cruise_1hz__ukf` | 15,000 | 5.963 | 0.998 | 0.883 |
-| `syn_cruise_1hz__ekf` | 15,000 | 6.406 | 0.999 | 0.853 |
-| `syn_cruise_1hz__eskf` | 15,000 | 5.877 | 0.999 | 0.885 |
-| `syn_outage_60s__ukf` | 15,000 | 15.124 | 0.912 | 0.849 |
-| `syn_outage_60s__eskf` | 15,000 | 4.682 | 0.997 | 0.877 |
-| `syn_dead_reckoning` | 6,000 | -- | -- | -- |
-| `real_rbpf_slice__rbpf` | 1,200 | 57,223,400,000,000,002,908,749,824.000 | 0.780 | 0.637 |
+| scenario | samples | nees (ideal 3.0) | npes, diagonal only | 3-sigma horiz (ideal 0.9973) | 3-sigma vert (ideal 0.9973) |
+|---|---:|---:|---:|---:|---:|
+| `real_clean__ukf` | 5,366 | 62.419 | 62.266 | 0.526 | 0.397 |
+| `real_clean__ekf` | 5,366 | 81.185 | 80.994 | 0.494 | 0.425 |
+| `real_clean__eskf` | 5,366 | 68.437 | 68.295 | 0.497 | 0.390 |
+| `real_sparse_5s__ukf` | 5,366 | 71.905 | 71.281 | 0.642 | 0.169 |
+| `real_sparse_5s__eskf` | 5,366 | 76.813 | 76.227 | 0.605 | 0.161 |
+| `real_outage_60s__eskf` | 5,366 | 83.041 | 73.428 | 0.579 | 0.330 |
+| `real_degraded__ukf` | 5,366 | 4,986.710 | 4,985.860 | 0.080 | 0.128 |
+| `real_degraded__eskf` | 5,366 | 5,152.200 | 5,151.150 | 0.079 | 0.130 |
+| `syn_cruise_1hz__ukf` | 15,000 | 5.943 | 5.963 | 0.998 | 0.883 |
+| `syn_cruise_1hz__ekf` | 15,000 | 6.394 | 6.406 | 0.999 | 0.853 |
+| `syn_cruise_1hz__eskf` | 15,000 | 5.873 | 5.877 | 0.999 | 0.885 |
+| `syn_outage_60s__ukf` | 15,000 | 18.452 | 15.124 | 0.912 | 0.849 |
+| `syn_outage_60s__eskf` | 15,000 | 4.682 | 4.682 | 0.997 | 0.877 |
+| `syn_dead_reckoning` | 6,000 | -- | -- | -- | -- |
+| `real_rbpf_slice__rbpf` | 1,200 | 239,809,000,000,000,000.000 | 57,223,400,000,000,002,908,749,824.000 | 0.780 | 0.637 |

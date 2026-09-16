@@ -1028,7 +1028,8 @@ const BOOK_TABLES: &[BookTable] = &[
     BookTable {
         heading: "### Consistency",
         columns: &[
-            (MetricId::NpesPosition, "npes (ideal 3.0)"),
+            (MetricId::NeesPosition, "nees (ideal 3.0)"),
+            (MetricId::NpesPosition, "npes, diagonal only"),
             (
                 MetricId::Containment3SigmaHorizontal,
                 "3-sigma horiz (ideal 0.9973)",

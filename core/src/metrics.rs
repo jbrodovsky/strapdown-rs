@@ -26,20 +26,26 @@
 //!   with the aid rather than independent accuracy, and they cannot fall below the receiver's
 //!   own noise however good the filter is.
 //!
-//! # Consistency: `npes_position`, not NEES
+//! # Consistency: the NEES, and the diagonal-only form beside it
 //!
-//! [`NavigationResult`] keeps only the covariance *diagonal*; the off-diagonal terms are
-//! discarded when the row is built. A true three-degree-of-freedom NEES, $e^T P^{-1} e$, is
-//! therefore not computable from it, and calling the diagonal-only form NEES would be wrong.
-//! [`MetricId::NpesPosition`] is the normalized position error squared,
+//! [`MetricId::NeesPosition`] is the real statistic -- the mean of $e^\top P^{-1} e$ over the
+//! 3x3 position block, off-diagonals included, consistent at 3.0. It became computable in #376,
+//! which stopped [`NavigationResult`] discarding the position off-diagonals when a row is
+//! built.
+//!
+//! [`MetricId::NpesPosition`] is what this crate could measure before that:
 //!
 //! $$ \overline{\epsilon} = \frac{1}{N} \sum_k \left( \frac{e_{lat,k}^2}{P_{lat,k}} +
 //!    \frac{e_{lon,k}^2}{P_{lon,k}} + \frac{e_{alt,k}^2}{P_{alt,k}} \right) $$
 //!
-//! which equals the NEES only when the position block is diagonal, and is optimistic -- too
-//! small -- when the true block is positively correlated. A consistent filter sits at 3.0, the
-//! number of degrees of freedom. The honest version needs `filter.get_certainty()` captured
-//! inside the event loop rather than reconstructed from the output rows.
+//! It equals the NEES only when the position block is genuinely diagonal, and is **optimistic**
+//! -- too small -- whenever the states are correlated, which after a GNSS update they are. The
+//! size of that gap is not subtle: at a latitude-longitude correlation of 0.9, an error along
+//! the unlikely direction scores 2.0 on the diagonal form and 20.0 on the real one.
+//!
+//! Both are kept. The NEES is the one to believe; `npes_position` stays so that the baseline it
+//! has accumulated remains comparable across the change, and it is gated in
+//! `core/tests/perf_baseline.rs` on that basis rather than as a claim about consistency.
 //!
 //! Read it **beside** [`MetricId::Containment3SigmaHorizontal`], never alone. The two together
 //! separate the failure modes that either one alone hides:
@@ -72,7 +78,7 @@
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
-use nalgebra::Rotation3;
+use nalgebra::{Matrix3, Rotation3, Vector3};
 use serde::{Deserialize, Serialize};
 
 use crate::earth::haversine_distance;
@@ -80,8 +86,10 @@ use crate::error::StrapdownError;
 use crate::sim::{NavigationResult, TestDataRecord};
 use crate::wrap_to_pi;
 
-/// Degrees of freedom in the position channel, and therefore the value a consistent filter
-/// scores on [`MetricId::NpesPosition`].
+/// Degrees of freedom in the position channel.
+///
+/// The value a consistent filter scores on [`MetricId::NeesPosition`], and on
+/// [`MetricId::NpesPosition`] when the position block happens to be diagonal.
 pub const POSITION_DEGREES_OF_FREEDOM: f64 = 3.0;
 
 /// Fraction of a Gaussian inside plus or minus three standard deviations.
@@ -250,7 +258,22 @@ pub enum MetricId {
     AttitudeGeodesicRmse,
     /// Mean normalized position error squared, dimensionless. See the module documentation --
     /// this is not the NEES, and 3.0 is the consistent value.
+    ///
+    /// Kept beside [`Self::NeesPosition`] rather than replaced by it, so the baseline this
+    /// metric has accumulated stays comparable across #376.
     NpesPosition,
+    /// Mean normalized estimation error squared over the 3x3 position block, dimensionless.
+    ///
+    /// The real statistic: the mean of $e^\top P^{-1} e$ with $e$ the position error in the
+    /// states' own units (radians, radians, metres) and $P$ the filter's position block,
+    /// off-diagonals included. Consistent at 3.0, the block's degrees of freedom.
+    ///
+    /// [`Self::NpesPosition`] is the same quantity computed as though $P$ were diagonal, which
+    /// is what this crate could measure before the off-diagonals reached
+    /// [`NavigationResult`](crate::sim::NavigationResult). That form is **optimistic**: it
+    /// equals the NEES only when the position states are genuinely uncorrelated, and after a
+    /// GNSS update they are not. Where the two disagree, this one is right.
+    NeesPosition,
     /// Fraction of horizontal channel-samples inside plus or minus three sigma.
     ///
     /// Latitude and longitude are counted as separate channel-samples, so a run of `N` aligned
@@ -291,6 +314,7 @@ impl MetricId {
         Self::YawRmse,
         Self::AttitudeGeodesicRmse,
         Self::NpesPosition,
+        Self::NeesPosition,
         Self::Containment3SigmaHorizontal,
         Self::Containment3SigmaVertical,
     ];
@@ -314,6 +338,7 @@ impl MetricId {
             Self::YawRmse => "yaw_rmse_deg",
             Self::AttitudeGeodesicRmse => "attitude_geodesic_rmse_deg",
             Self::NpesPosition => "npes_position",
+            Self::NeesPosition => "nees_position",
             Self::Containment3SigmaHorizontal => "containment_3sigma_horizontal",
             Self::Containment3SigmaVertical => "containment_3sigma_vertical",
         }
@@ -331,7 +356,7 @@ impl MetricId {
             | Self::VerticalBias => "m",
             Self::VelocityHorizontalRmse | Self::VelocityVerticalRmse => "m/s",
             Self::RollRmse | Self::PitchRmse | Self::YawRmse | Self::AttitudeGeodesicRmse => "deg",
-            Self::NpesPosition => "1",
+            Self::NpesPosition | Self::NeesPosition => "1",
             Self::Containment3SigmaHorizontal | Self::Containment3SigmaVertical => "fraction",
         }
     }
@@ -345,7 +370,7 @@ impl MetricId {
     pub const fn direction(self) -> MetricDirection {
         match self {
             Self::VerticalBias => MetricDirection::TowardTarget { target: 0.0 },
-            Self::NpesPosition => MetricDirection::TowardTarget {
+            Self::NpesPosition | Self::NeesPosition => MetricDirection::TowardTarget {
                 target: POSITION_DEGREES_OF_FREEDOM,
             },
             Self::Containment3SigmaHorizontal | Self::Containment3SigmaVertical => {
@@ -434,6 +459,8 @@ pub struct AccuracyMetrics {
     pub attitude_geodesic_rmse_deg: Option<f64>,
     /// See [`MetricId::NpesPosition`].
     pub npes_position: Option<f64>,
+    /// See [`MetricId::NeesPosition`].
+    pub nees_position: Option<f64>,
     /// See [`MetricId::Containment3SigmaHorizontal`].
     pub containment_3sigma_horizontal: Option<f64>,
     /// See [`MetricId::Containment3SigmaVertical`].
@@ -458,6 +485,7 @@ impl AccuracyMetrics {
             MetricId::YawRmse => self.yaw_rmse_deg,
             MetricId::AttitudeGeodesicRmse => self.attitude_geodesic_rmse_deg,
             MetricId::NpesPosition => self.npes_position,
+            MetricId::NeesPosition => self.nees_position,
             MetricId::Containment3SigmaHorizontal => self.containment_3sigma_horizontal,
             MetricId::Containment3SigmaVertical => self.containment_3sigma_vertical,
         }
@@ -628,6 +656,7 @@ fn reduce(pairs: &[Pair<'_>]) -> AccuracyMetrics {
     let mut yaw = Vec::new();
     let mut geodesic = Vec::new();
     let mut npes = Vec::new();
+    let mut nees = Vec::new();
     let mut horizontal_containment = Containment::default();
     let mut vertical_containment = Containment::default();
     let mut discarded = 0usize;
@@ -704,6 +733,18 @@ fn reduce(pairs: &[Pair<'_>]) -> AccuracyMetrics {
         ) {
             push_or_count(&mut npes, lat + lon + alt, &mut discarded);
         }
+
+        // The real statistic, alongside the diagonal-only form above (#376). Deliberately not
+        // counted into `discarded`: that counter means "a channel this run should have scored
+        // and could not", and a row whose off-diagonals were never recorded -- every row
+        // written before #376, and every row from a constructor with no covariance to report
+        // -- is not a discarded sample. It is a row this metric does not apply to.
+        if let Some(value) = normalized_error_squared(
+            [error_lat_rad, error_lon_rad, error_alt_m],
+            position_block(estimate),
+        ) {
+            push_finite(&mut nees, value);
+        }
     }
 
     AccuracyMetrics {
@@ -724,6 +765,7 @@ fn reduce(pairs: &[Pair<'_>]) -> AccuracyMetrics {
         yaw_rmse_deg: root_mean_square(&yaw).map(f64::to_degrees),
         attitude_geodesic_rmse_deg: root_mean_square(&geodesic).map(f64::to_degrees),
         npes_position: mean(&npes),
+        nees_position: mean(&nees),
         containment_3sigma_horizontal: horizontal_containment.fraction(),
         containment_3sigma_vertical: vertical_containment.fraction(),
     }
@@ -757,6 +799,51 @@ impl Containment {
     fn fraction(&self) -> Option<f64> {
         (self.total > 0).then(|| self.inside as f64 / self.total as f64)
     }
+}
+
+/// The filter's 3x3 position covariance block, in the states' own units.
+///
+/// Rows and columns are (latitude, longitude, altitude), so the units are mixed: rad^2, rad^2,
+/// m^2 on the diagonal and rad*m where altitude meets an angle. The error vector scored against
+/// it has to be `(rad, rad, m)` to match -- which is why [`evaluate`] converts the position
+/// error to radians rather than converting the covariance to degrees.
+const fn position_block(estimate: &NavigationResult) -> Matrix3<f64> {
+    let (lat_lon, lat_alt, lon_alt) = (
+        estimate.latitude_longitude_cov,
+        estimate.latitude_altitude_cov,
+        estimate.longitude_altitude_cov,
+    );
+    Matrix3::new(
+        estimate.latitude_cov,
+        lat_lon,
+        lat_alt,
+        lat_lon,
+        estimate.longitude_cov,
+        lon_alt,
+        lat_alt,
+        lon_alt,
+        estimate.altitude_cov,
+    )
+}
+
+/// $e^\top P^{-1} e$, or `None` when the block cannot support the statistic.
+///
+/// `None` rather than a large number in every degenerate case, because each of them means "this
+/// row cannot answer the question" rather than "this filter is badly wrong":
+///
+/// * any entry non-finite -- a row written before #376 recorded off-diagonals, or by a
+///   constructor that has no covariance to report and writes `NaN`;
+/// * a singular or near-singular block, which `try_inverse` declines;
+/// * a negative result, which a covariance that is not positive definite can produce and which
+///   is not a squared anything.
+fn normalized_error_squared(error: [f64; 3], block: Matrix3<f64>) -> Option<f64> {
+    if !error.iter().all(|v| v.is_finite()) || !block.iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    let inverse = block.try_inverse()?;
+    let error = Vector3::new(error[0], error[1], error[2]);
+    let value = (error.transpose() * inverse * error)[(0, 0)];
+    (value.is_finite() && value >= 0.0).then_some(value)
 }
 
 /// `error^2 / variance` for one channel, or `None` when the variance is unusable.
@@ -934,6 +1021,129 @@ mod tests {
         // One sigma is inside three sigma, so containment is total.
         assert_eq!(metrics.containment_3sigma_horizontal, Some(1.0));
         assert_eq!(metrics.containment_3sigma_vertical, Some(1.0));
+    }
+
+    /// With an uncorrelated position block the two consistency metrics must agree exactly.
+    ///
+    /// That is the condition under which `npes_position` is the NEES rather than a stand-in
+    /// for it, so anything else here would mean one of the two is computing the wrong thing.
+    #[test]
+    fn nees_equals_npes_when_the_position_block_is_diagonal() {
+        let sigma_deg = 1e-5_f64;
+        let sigma_rad = sigma_deg.to_radians();
+
+        let mut estimate = estimate_at(0);
+        estimate.latitude = sigma_deg;
+        estimate.longitude = sigma_deg;
+        estimate.altitude = 2.0;
+        estimate.latitude_cov = sigma_rad * sigma_rad;
+        estimate.longitude_cov = sigma_rad * sigma_rad;
+        estimate.altitude_cov = 4.0;
+        estimate.latitude_longitude_cov = 0.0;
+        estimate.latitude_altitude_cov = 0.0;
+        estimate.longitude_altitude_cov = 0.0;
+
+        let metrics = evaluate(&[estimate], &[truth_at(0)], MetricOptions::default())
+            .expect("one aligned pair");
+        let npes = metrics.npes_position.expect("npes");
+        let nees = metrics.nees_position.expect("nees");
+        assert!(
+            (npes - nees).abs() < 1e-9,
+            "diagonal block: npes {npes} and nees {nees} should agree"
+        );
+        assert!((nees - POSITION_DEGREES_OF_FREEDOM).abs() < 1e-9);
+    }
+
+    /// Correlated position states make `npes_position` **optimistic**, and the NEES is what
+    /// says so.
+    ///
+    /// This is the whole reason #376 exists. With latitude and longitude correlated at 0.9 and
+    /// an error along the correlated direction, the diagonal-only form divides each component
+    /// by its own variance and reports a comfortable number; inverting the real block shows the
+    /// error is far less likely than that. A filter is not consistent because the metric that
+    /// cannot see its correlations says so.
+    #[test]
+    fn nees_exceeds_npes_when_the_position_states_are_correlated() {
+        let sigma_deg = 1e-5_f64;
+        let sigma_rad = sigma_deg.to_radians();
+        let variance = sigma_rad * sigma_rad;
+        let correlation = 0.9;
+
+        let mut estimate = estimate_at(0);
+        // A one-sigma error in latitude and minus one sigma in longitude: against a block that
+        // says the two move *together*, that is a very unlikely place to be.
+        estimate.latitude = sigma_deg;
+        estimate.longitude = -sigma_deg;
+        estimate.altitude = 0.0;
+        estimate.latitude_cov = variance;
+        estimate.longitude_cov = variance;
+        estimate.altitude_cov = 1.0;
+        estimate.latitude_longitude_cov = correlation * variance;
+        estimate.latitude_altitude_cov = 0.0;
+        estimate.longitude_altitude_cov = 0.0;
+
+        let metrics = evaluate(&[estimate], &[truth_at(0)], MetricOptions::default())
+            .expect("one aligned pair");
+        let npes = metrics.npes_position.expect("npes");
+        let nees = metrics.nees_position.expect("nees");
+
+        // The diagonal form sees two one-sigma errors and no altitude error: exactly 2.0.
+        assert!((npes - 2.0).abs() < 1e-9, "npes {npes}");
+        // The real block: e^T P^-1 e for an anti-correlated error is 2/(1 - rho) = 20.
+        let expected = 2.0 / (1.0 - correlation);
+        assert!(
+            (nees - expected).abs() < 1e-6,
+            "nees {nees} should be {expected} for rho = {correlation}"
+        );
+        assert!(
+            nees > npes,
+            "npes {npes} must understate the real {nees}: that is what makes it optimistic"
+        );
+    }
+
+    /// A row with no recorded off-diagonals yields no NEES, and does not count as a discard.
+    ///
+    /// Every row written before #376 is such a row, as is every row from a constructor with no
+    /// covariance to report. `None` is the honest answer -- "this metric does not apply here"
+    /// -- and it must not inflate `discarded_channel_samples`, which means something else:
+    /// a channel this run should have scored and could not.
+    #[test]
+    fn nees_is_absent_rather_than_discarded_when_the_block_is_unrecorded() {
+        let sigma_rad = 1e-5_f64.to_radians();
+        let mut estimate = estimate_at(0);
+        estimate.latitude = 1e-5;
+        estimate.latitude_cov = sigma_rad * sigma_rad;
+        estimate.longitude_cov = sigma_rad * sigma_rad;
+        estimate.altitude_cov = 1.0;
+        estimate.latitude_longitude_cov = f64::NAN;
+        estimate.latitude_altitude_cov = f64::NAN;
+        estimate.longitude_altitude_cov = f64::NAN;
+
+        let metrics = evaluate(&[estimate], &[truth_at(0)], MetricOptions::default())
+            .expect("one aligned pair");
+        assert!(metrics.nees_position.is_none(), "NaN block must not score");
+        assert!(metrics.npes_position.is_some(), "npes is unaffected");
+        assert_eq!(
+            metrics.discarded_channel_samples, 0,
+            "an inapplicable metric is not a discarded sample"
+        );
+    }
+
+    /// A singular position block declines rather than producing an infinity.
+    #[test]
+    fn nees_declines_a_singular_position_block() {
+        let mut estimate = estimate_at(0);
+        estimate.latitude = 1e-5;
+        estimate.latitude_cov = 0.0;
+        estimate.longitude_cov = 0.0;
+        estimate.altitude_cov = 0.0;
+        estimate.latitude_longitude_cov = 0.0;
+        estimate.latitude_altitude_cov = 0.0;
+        estimate.longitude_altitude_cov = 0.0;
+
+        let metrics = evaluate(&[estimate], &[truth_at(0)], MetricOptions::default())
+            .expect("one aligned pair");
+        assert!(metrics.nees_position.is_none());
     }
 
     #[test]

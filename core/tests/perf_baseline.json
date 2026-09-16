@@ -33,6 +33,9 @@
         "horizontal_rmse_m": {
           "value": 5.2227
         },
+        "nees_position": {
+          "value": 81.1848
+        },
         "npes_position": {
           "value": 80.9943,
           "note": "Not the horizontal channel: containment reads a flat 1.000 there, so each horizontal term is bounded by 9. Almost all of this is the vertical channel, whose containment is 0.41. The EKF here is over-conservative horizontally (see core/tests/aiding.rs, `a_note_on_filter_consistency`) and over-confident vertically at the same time. Recorded as measured, not as a target."
@@ -85,6 +88,9 @@
         },
         "horizontal_rmse_m": {
           "value": 5.12121
+        },
+        "nees_position": {
+          "value": 68.4368
         },
         "npes_position": {
           "value": 68.2947,
@@ -140,6 +146,9 @@
         "horizontal_rmse_m": {
           "value": 4.78459
         },
+        "nees_position": {
+          "value": 62.4192
+        },
         "npes_position": {
           "value": 62.2663
         },
@@ -192,6 +201,9 @@
         "horizontal_rmse_m": {
           "value": 46.609
         },
+        "nees_position": {
+          "value": 5152.2
+        },
         "npes_position": {
           "value": 5151.15
         },
@@ -243,6 +255,9 @@
         },
         "horizontal_rmse_m": {
           "value": 46.0377
+        },
+        "nees_position": {
+          "value": 4986.71
         },
         "npes_position": {
           "value": 4985.86,
@@ -299,6 +314,10 @@
         "horizontal_rmse_m": {
           "value": 278.819
         },
+        "nees_position": {
+          "value": 83.0408,
+          "note": "83.04 against `npes_position`'s 73.43, a ratio of 1.13 -- the largest honest gap between the two in the matrix. This is what #376 was for: the diagonal-only form assumes the position states are uncorrelated, and during a 60 s free-inertial coast they are not. Error accumulates along a correlated direction with no fix to break it up, so the diagonal form understates the inconsistency by 13% here. Everywhere the filter is being aided every epoch the two agree to 1%."
+        },
         "npes_position": {
           "value": 73.4283
         },
@@ -352,6 +371,11 @@
         },
         "horizontal_rmse_m": {
           "value": 16.183
+        },
+        "nees_position": {
+          "value": 2.39809e+17,
+          "gated": false,
+          "note": "Not gated, for the same reason as `npes_position` on this row: both are dominated by the RBPF covariance collapse (#385), not by navigation accuracy. 17 of 1,200 epochs report a horizontal sigma of nanometres, and a mean of a ratio cannot survive a near-zero denominator. Note the real NEES reads 2.4e14 against the diagonal form's 5.7e25 -- eleven orders apart, both meaningless. Re-gate when #385 lands."
         },
         "npes_position": {
           "value": 5.72234e+25,
@@ -407,6 +431,9 @@
         "horizontal_rmse_m": {
           "value": 9.49149
         },
+        "nees_position": {
+          "value": 76.8129
+        },
         "npes_position": {
           "value": 76.2265
         },
@@ -459,6 +486,9 @@
         "horizontal_rmse_m": {
           "value": 9.12731
         },
+        "nees_position": {
+          "value": 71.9047
+        },
         "npes_position": {
           "value": 71.2806
         },
@@ -510,6 +540,9 @@
         },
         "horizontal_rmse_m": {
           "value": 2.60083
+        },
+        "nees_position": {
+          "value": 6.39446
         },
         "npes_position": {
           "value": 6.40581,
@@ -566,6 +599,9 @@
         "horizontal_rmse_m": {
           "value": 2.64737
         },
+        "nees_position": {
+          "value": 5.87319
+        },
         "npes_position": {
           "value": 5.87682,
           "note": "Up under #374, while every accuracy metric on the same row improved substantially (vertical RMSE ~0.83 to ~0.48 m, roll and pitch by 2-3x). Both directions are the same mechanism: this scenario runs at 50 Hz and was receiving 50x the intended process noise, so its covariance was inflated. Removing that improves the estimate and tightens the covariance, and a tighter covariance under an unchanged error is a larger normalised error. The consistency gap this exposes is #372's and #373's to close; it was previously hidden by the inflation."
@@ -619,6 +655,9 @@
         },
         "horizontal_rmse_m": {
           "value": 2.7418
+        },
+        "nees_position": {
+          "value": 5.94348
         },
         "npes_position": {
           "value": 5.9633,
@@ -676,6 +715,9 @@
         "horizontal_rmse_m": {
           "value": 316.86
         },
+        "nees_position": {
+          "value": null
+        },
         "npes_position": {
           "value": null,
           "note": "`sim::dead_reckoning` emits no covariance, so the three consistency metrics are `null` here. This scenario is what exercises that path end to end."
@@ -730,6 +772,9 @@
         },
         "horizontal_rmse_m": {
           "value": 12.1679
+        },
+        "nees_position": {
+          "value": 4.6822
         },
         "npes_position": {
           "value": 4.68162
@@ -787,6 +832,10 @@
         "horizontal_rmse_m": {
           "value": 857.982,
           "note": "858 m, up from 251. A 60 s free-inertial coast is where process noise matters most, and #374 cut what this 50 Hz scenario receives by 50x -- it had been given a full second of random walk every 20 ms. With an honest Q the filter is far more confident through the coast, so the attitude error it coasts on is no longer masked by an inflated covariance. The ESKF's equivalent row *improved* over the same change, 20.07 m to 12.17 m, which is what a filter with sound attitude does here. The difference between them is #371: this row's yaw went 24.8 to 95.2 deg while the ESKF's stayed near 1 deg."
+        },
+        "nees_position": {
+          "value": 18.4517,
+          "note": "18.45 against `npes_position`'s 15.12, a ratio of 1.22 -- the largest in the matrix. Same mechanism as `real_outage_60s__eskf`: a free-inertial coast correlates the position error and the diagonal-only form cannot see it."
         },
         "npes_position": {
           "value": 15.1238
