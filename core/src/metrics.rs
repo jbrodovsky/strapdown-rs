@@ -840,9 +840,13 @@ fn normalized_error_squared(error: [f64; 3], block: Matrix3<f64>) -> Option<f64>
     if !error.iter().all(|v| v.is_finite()) || !block.iter().all(|v| v.is_finite()) {
         return None;
     }
-    let inverse = block.try_inverse()?;
+    // Cholesky, not `try_inverse`. A covariance must be positive definite, and inversion only
+    // rejects a *singular* matrix: `diag(-1, 1, 1)` inverts happily, and an error along the
+    // second axis then yields a positive score from a block that is not a covariance at all.
+    // Cholesky fails on exactly the matrices that are not positive definite, which is the
+    // question being asked, and solving beats forming the inverse for conditioning as well.
     let error = Vector3::new(error[0], error[1], error[2]);
-    let value = (error.transpose() * inverse * error)[(0, 0)];
+    let value = block.cholesky()?.solve(&error).dot(&error);
     (value.is_finite() && value >= 0.0).then_some(value)
 }
 
@@ -1106,6 +1110,28 @@ mod tests {
     /// Every row written before #376 is such a row, as is every row from a constructor with no
     /// covariance to report. `None` is the honest answer -- "this metric does not apply here"
     /// -- and it must not inflate `discarded_channel_samples`, which means something else:
+    /// An indefinite block is not a covariance, and must not score.
+    ///
+    /// `try_inverse` accepted it: `diag(-1, 1, 1)` is non-singular, so it inverted, and an
+    /// error along an axis with positive variance then produced a perfectly plausible
+    /// positive NEES from a matrix that cannot be a covariance. Only a *singular* block was
+    /// refused. Cholesky asks the right question.
+    #[test]
+    fn an_indefinite_position_block_does_not_score() {
+        let indefinite = Matrix3::new(-1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0);
+        assert_eq!(
+            normalized_error_squared([0.0, 1.0, 0.0], indefinite),
+            None,
+            "a block with a negative variance scored instead of being refused"
+        );
+        // And the positive-definite case still works, so the guard is not simply rejecting
+        // everything.
+        let definite = Matrix3::new(4.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 4.0);
+        let value = normalized_error_squared([2.0, 0.0, 0.0], definite)
+            .expect("a positive definite block must score");
+        assert!((value - 1.0).abs() < 1e-12, "expected 1.0, got {value}");
+    }
+
     /// a channel this run should have scored and could not.
     #[test]
     fn nees_is_absent_rather_than_discarded_when_the_block_is_unrecorded() {

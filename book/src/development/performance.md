@@ -43,25 +43,35 @@ rather than defects in the harness; the fifth is a defect, in the gate.
 
    What that uncovered is caveat 1 with nothing left diluting it. A row at $t_k$ now contains
    $t_k$'s GNSS update, so on a `PassThrough` schedule these columns measure how completely a
-   filter absorbs its own aiding: `real_clean__ukf` reads 0.014 m and `real_clean__ekf`
-   0.0001 m, both far below the receiver's own 3.81 m. That is not accuracy. It is a Kalman
-   gain of about 1 -- see [#373](https://github.com/jbrodovsky/strapdown-rs/issues/373), where
-   an absolute covariance floor in radian units leaves both filters copying their fixes rather
-   than filtering them. The ESKF, which floors its covariance *relatively*, sits at 5.1 m.
+   filter absorbs its own aiding.
+
+   That absorption used to be total: `real_clean__ukf` read 0.014 m and `real_clean__ekf`
+   0.0001 m, far below the receiver's own 3.81 m. Not accuracy — a Kalman gain of about 1,
+   caused by an absolute covariance floor applied to a latitude variance in radians².
+   [#373](https://github.com/jbrodovsky/strapdown-rs/issues/373) **fixed it**, and the three
+   filters now read **4.78, 5.22 and 5.12 m** — above the receiver's own noise rather than
+   reproducing it, and in agreement with the ESKF, which had floored its covariance relatively
+   since #266.
 
    **The real-data rows that still measure navigation are the ones where the filter has to
    predict between fixes** -- `real_sparse_5s`, `real_outage_60s`, `real_degraded` -- together
    with the `syn_*` scenarios and their exact independent truth.
-3. **The synthetic scenarios carry no magnetometer, and the yaw column says which filters need
-   one.** Nothing aids heading there but the GNSS velocity fix on a moving trajectory, which
-   turns out to be enough: the EKF holds 0.97 deg and the ESKF 1.03 deg on `syn_cruise_1hz`
-   while the UKF sits at 108.3 deg -- worse than the 104 deg RMS of uniformly random yaw, so
-   it has no heading at all. That gap is not observability -- all three see the same
-   measurements -- it is
-   [#371](https://github.com/jbrodovsky/strapdown-rs/issues/371): the UKF means its
-   sigma-point attitudes by summing Euler triples linearly, which is not the mean rotation. Modelling a
-   real field is tracked in
-   [#369](https://github.com/jbrodovsky/strapdown-rs/issues/369).
+3. **The synthetic scenarios now carry a real magnetic field, and the yaw column says which
+   filters can use it.** `generate_synthetic` evaluates the World Magnetic Model at each
+   epoch's position and date and rotates it into the body frame through the truth attitude
+   ([#369](https://github.com/jbrodovsky/strapdown-rs/issues/369)); before that it wrote
+   nothing, and heading was observable only through the GNSS velocity fix. With a 1 Hz heading
+   aid the EKF holds 0.28 deg of yaw on `syn_cruise_1hz`, the ESKF 0.20 deg and the UKF
+   2.01 deg -- the last down from 108.3 deg without one.
+
+   **The `syn_outage_60s__ukf` row is where that stops.** The magnetometer is not withheld by
+   the GNSS duty cycle, so that filter is handed a heading every second through the coast, and
+   still reads 72.68 deg of yaw; the ESKF on the identical stream reads 0.255 deg. Its position
+   degraded from 235 to 809 m and its NEES from 6.82 to 44.67 when the field was added -- a
+   filter that now believes a wrong attitude tightly rather than loosely. Not an observability
+   limit, and not the sensor: it is
+   [#371](https://github.com/jbrodovsky/strapdown-rs/issues/371), the UKF's linear mean over
+   sigma-point Euler triples, which a magnetometer makes visible rather than fixes.
 4. **The consistency columns mean different things on the two sources.** On the synthetic
    scenarios `npes` lands between 4.6 and 12.1 against an ideal of 3.0, which is a real
    measurement of whether a filter believes the right thing. On the real-data scenarios it reaches the
@@ -94,7 +104,8 @@ rather than defects in the harness; the fifth is a defect, in the gate.
    now scheduled at 1 Hz by default. Every `real_*` row came through bit-identical -- they were
    already at 1 Hz -- and all five aided `syn_*` rows moved, almost entirely in the vertical
    channel: horizontal RMSE on `syn_cruise_1hz` moved by under half a percent. Read the
-   synthetic vertical columns as a 1 Hz barometer's, not a 50 Hz one's.
+   synthetic vertical columns as a 1 Hz barometer's, not a 50 Hz one's, and the yaw
+   columns as a 1 Hz magnetometer's.
 
 ## The metrics
 
@@ -205,18 +216,21 @@ will tell you off; change the numbers by re-blessing.
 
 ## What the table is saying
 
-- **The `real_clean` horizontal column is no longer a navigation measurement.** The UKF reads
-  0.014 m and the EKF 0.0001 m against a reference whose own noise is 3.81 m -- caveat 2. Both
-  are reproducing the fix they were handed one event earlier. The ESKF's 5.1 m is the only
-  figure in that column that means anything, and it is the only one of the three whose
-  covariance floor is relative rather than absolute.
+- **The `real_clean` horizontal column measures agreement with the aid, not accuracy.** All
+  three filters now read 4.78, 5.22 and 5.12 m against a reference whose own noise is 3.81 m,
+  so none of them is below its own reference any more — #373 fixed the absolute covariance
+  floor that had the UKF and EKF reproducing the fix they were handed (0.014 m and 0.0001 m).
+  What remains is caveat 1's circularity, which no fix to the filters can remove: the score is
+  against the aiding source itself.
 - **`syn_cruise_1hz` is where the filters actually separate**, and no one of them wins. The
   ESKF leads on position and loses on velocity; the UKF trails on attitude for the reason in
-  caveat 3. These rows are scored against exact truth, so nothing here is circular.
+  caveat 3, though a 1 Hz magnetometer now closes most of that gap on this row (2.01 deg of
+  yaw against 108.3 without one). These rows are scored against exact truth, so nothing here
+  is circular.
 - **The outage rows are dominated by attitude, not by position.** 60 s of free inertial turns a
   fraction of a degree of tilt error into hundreds of metres. `syn_outage_60s__eskf` holds
-  0.20 deg of pitch and coasts to 24 m; the UKF, which does not hold its attitude through the
-  coast, reaches 235 m.
+  0.21 deg of pitch and coasts to 24 m; the UKF, which does not hold its attitude through the
+  coast even when a magnetometer is handing it a heading every second, reaches 809 m.
 - **The two consistency columns disagree with each other on real data, and that is the
   finding.** The UKF and EKF still report a flat 1.000 horizontal containment -- a covariance
   so conservative it cannot be wrong -- beside a vertical containment of 0.40 and 0.42, where
@@ -230,7 +244,7 @@ will tell you off; change the numbers by re-blessing.
   numerator. It is still not consistent -- 0.497 against an ideal of 0.9973 -- and what
   remains is a real finding rather than an artefact.
 - **`real_rbpf_slice__rbpf`'s consistency metrics are not gated.** `npes` reads 5.7e25 and the
-  real `nees` 2.4e14 -- eleven orders apart and both meaningless -- because the particle
+  real `nees` larger still -- both meaningless, and deliberately quoted without a ratio -- because the particle
   cloud collapses to a horizontal sigma of nanometres on 17 of 1,200 epochs, which a mean of
   $e^2/P$ cannot survive. Exposed rather than caused by #367, which stopped sampling the cloud
   one propagation step after each fix had re-inflated it. Tracked as

@@ -195,7 +195,15 @@ fn radians_to_meters(radians: f64) -> f64 {
 ///
 /// The UKF's figure is evidence rather than noise: a filter that cannot reproduce an exact
 /// scaling of its own covariance to better than 1e-5 is losing information in the sigma-point
-/// round trip, which is the "conditioning rather than charting" reading of #371.
+/// round trip, because that round trip goes through `matrix_square_root((n + lambda) * P)`
+/// with `n + lambda = 1.5e-5`.
+///
+/// This is a **numerical conditioning limitation of the covariance round trip, and nothing
+/// more**. It is deliberately not offered as a reading of #371: that issue's attitude defect
+/// was measured to be alpha-independent -- the vertical error reads 2.37798, 2.37798, 2.37721
+/// and 2.30326 m/s at alpha of 1e-3, 1e-2, 1e-1 and 1.0 -- so widening or narrowing the
+/// sigma-point spread, which is exactly what changes the conditioning here, does not move it.
+/// Keep the two separate.
 fn inflation_tolerance(filter: &str) -> f64 {
     // 1e-10 for the two that are exact: six orders of margin over their measured 1.4e-16, and
     // far tighter than the 1e-6 this test asked of them before. 1e-4 for the UKF: one order
@@ -444,11 +452,16 @@ fn gating_rejects_a_fix_inconsistent_with_the_filters_own_uncertainty() {
     // here is sized in sigmas read back from the filter after it has settled, which
     // makes the test independent of how well any particular filter is tuned.
     //
-    // That independence is not academic. See `a_note_on_filter_consistency` below, which
-    // measures it: the EKF and UKF report horizontal position uncertainties of 450 m and
-    // 201 m while sitting within 6 m of truth, so a fixed 200 m displacement is *within*
-    // what either believes possible and is correctly not gated. Sizing the outlier in
-    // sigmas tests the gate; sizing it in metres would test the tuning.
+    // That independence is not academic, and #373 is what proves it. Before that fix the
+    // EKF and UKF reported horizontal position uncertainties of 450 m and 201 m while sitting
+    // within 6 m of truth, so a fixed 200 m displacement was *within* what either believed
+    // possible and was correctly not gated. After it, `a_note_on_filter_consistency` measures
+    // all three at a 1.07 m latitude sigma against a 2.13 m peak error, where the same 200 m
+    // displacement is about 187 sigma and would be rejected hard.
+    //
+    // The conclusion survived a change that inverted its premise, which is the point: sizing
+    // the outlier in sigmas tests the gate, and sizing it in metres would have tested whatever
+    // the tuning happened to be on the day.
     const OUTLIER_SIGMAS: f64 = 50.0;
 
     let scenario = build_gating_scenario();
