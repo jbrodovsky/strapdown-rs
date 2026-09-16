@@ -125,67 +125,17 @@ by before.
 
 ## Current values
 
-Measured on `ubuntu-latest`, rustc 1.91. Regenerate with `cargo perf`.
+Measured on `ubuntu-latest`, rustc 1.91. Read-only with `cargo perf`; re-blessed with
+`UPDATE_PERF_BASELINE=1 cargo test -p strapdown-core --test perf_baseline`.
 
-### Position and velocity
+The three tables below are **generated** from `core/tests/perf_baseline.json` by the same test
+that gates it, and the gate fails if they drift from it. They used to be maintained here by
+hand, which meant every re-bless was a command plus 45 transcribed rows, with nothing checking
+the transcription -- and a wrong number on this page is harder to notice than a wrong number in
+the gated file, because nothing asserts it (#380). Edit `baseline-tables.md` and the next run
+will tell you off; change the numbers by re-blessing.
 
-| scenario | samples | horiz RMSE (m) | CEP50 (m) | CEP95 (m) | horiz max (m) | vert RMSE (m) | vert bias (m) | horiz vel RMSE (m/s) | vert vel RMSE (m/s) |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `real_clean__ukf` | 5,366 | 23.534 | 23.105 | 34.519 | 37.719 | 2.671 | 0.341 | 1.543 | 0.541 |
-| `real_clean__ekf` | 5,366 | 23.553 | 23.188 | 34.472 | 37.804 | 3.655 | -2.398 | 1.575 | 0.869 |
-| `real_clean__eskf` | 5,366 | 23.723 | 22.925 | 35.428 | 41.865 | 2.692 | 0.334 | 1.538 | 0.550 |
-| `real_sparse_5s__ukf` | 5,366 | 25.067 | 24.085 | 36.614 | 124.727 | 5.656 | 0.776 | 3.301 | 0.671 |
-| `real_sparse_5s__eskf` | 5,366 | 25.674 | 23.604 | 37.868 | 149.698 | 5.755 | 0.779 | 3.388 | 0.714 |
-| `real_outage_60s__eskf` | 5,366 | 290.644 | 28.701 | 701.329 | 2,349.680 | 4.992 | 0.316 | 12.226 | 0.671 |
-| `real_degraded__ukf` | 5,366 | 30.675 | 26.076 | 51.158 | 82.184 | 10.839 | 0.585 | 2.810 | 0.795 |
-| `real_degraded__eskf` | 5,366 | 50.601 | 42.344 | 86.848 | 136.791 | 10.847 | 0.564 | 2.795 | 0.806 |
-| `syn_cruise_1hz__ukf` | 15,000 | 4.423 | 3.665 | 7.821 | 10.152 | 0.846 | 0.065 | 0.489 | 0.316 |
-| `syn_cruise_1hz__ekf` | 15,000 | 4.421 | 3.687 | 7.673 | 10.183 | 0.835 | 0.040 | 0.050 | 0.302 |
-| `syn_cruise_1hz__eskf` | 15,000 | 3.412 | 2.835 | 5.964 | 9.284 | 0.836 | 0.069 | 1.170 | 0.239 |
-| `syn_outage_60s__ukf` | 15,000 | 266.681 | 5.914 | 762.191 | 2,109.820 | 0.939 | -0.049 | 15.268 | 1.068 |
-| `syn_outage_60s__eskf` | 15,000 | 20.224 | 1.454 | 44.447 | 247.874 | 0.847 | 0.067 | 1.067 | 0.243 |
-| `syn_dead_reckoning` | 6,000 | 316.860 | 110.128 | 715.856 | 835.634 | 86.591 | -64.255 | 9.363 | 1.896 |
-| `real_rbpf_slice__rbpf` | 1,200 | 19.789 | 15.679 | 28.276 | 94.413 | 3.846 | -3.208 | 2.308 | 1.141 |
-
-### Attitude
-
-| scenario | samples | roll RMSE (deg) | pitch RMSE (deg) | yaw RMSE (deg) | geodesic RMSE (deg) |
-|---|---:|---:|---:|---:|---:|
-| `real_clean__ukf` | 5,366 | 3.448 | 2.999 | 22.773 | 23.210 |
-| `real_clean__ekf` | 5,366 | 3.133 | 2.553 | 22.610 | 22.944 |
-| `real_clean__eskf` | 5,366 | 3.332 | 2.880 | 26.153 | 26.501 |
-| `real_sparse_5s__ukf` | 5,366 | 3.818 | 3.278 | 18.866 | 19.527 |
-| `real_sparse_5s__eskf` | 5,366 | 3.813 | 3.171 | 19.737 | 20.344 |
-| `real_outage_60s__eskf` | 5,366 | 3.727 | 3.326 | 22.880 | 23.399 |
-| `real_degraded__ukf` | 5,366 | 3.525 | 3.143 | 22.347 | 22.829 |
-| `real_degraded__eskf` | 5,366 | 3.421 | 3.042 | 26.406 | 26.784 |
-| `syn_cruise_1hz__ukf` | 15,000 | 0.887 | 0.637 | 42.665 | 42.683 |
-| `syn_cruise_1hz__ekf` | 15,000 | 0.115 | 0.069 | 0.972 | 0.982 |
-| `syn_cruise_1hz__eskf` | 15,000 | 1.064 | 0.946 | 2.067 | 2.509 |
-| `syn_outage_60s__ukf` | 15,000 | 4.341 | 3.853 | 21.461 | 22.228 |
-| `syn_outage_60s__eskf` | 15,000 | 0.242 | 0.205 | 1.181 | 1.223 |
-| `syn_dead_reckoning` | 6,000 | 0.468 | 1.106 | 0.494 | 1.301 |
-| `real_rbpf_slice__rbpf` | 1,200 | 2.825 | 3.169 | 20.730 | 21.156 |
-
-### Consistency
-
-| scenario | samples | npes (ideal 3.0) | 3-sigma horiz (ideal 0.9973) | 3-sigma vert (ideal 0.9973) |
-|---|---:|---:|---:|---:|
-| `real_clean__ukf` | 5,366 | 15.896 | 1.000 | 0.466 |
-| `real_clean__ekf` | 5,366 | 33.366 | 1.000 | 0.412 |
-| `real_clean__eskf` | 5,366 | 1,248.920 | 0.161 | 0.460 |
-| `real_sparse_5s__ukf` | 5,366 | 37.562 | 1.000 | 0.211 |
-| `real_sparse_5s__eskf` | 5,366 | 338.329 | 0.252 | 0.190 |
-| `real_outage_60s__eskf` | 5,366 | 810.816 | 0.274 | 0.390 |
-| `real_degraded__ukf` | 5,366 | 272.127 | 1.000 | 0.146 |
-| `real_degraded__eskf` | 5,366 | 5,690.210 | 0.057 | 0.148 |
-| `syn_cruise_1hz__ukf` | 15,000 | 2.690 | 1.000 | 0.932 |
-| `syn_cruise_1hz__ekf` | 15,000 | 2.649 | 1.000 | 0.934 |
-| `syn_cruise_1hz__eskf` | 15,000 | 4.795 | 0.996 | 0.933 |
-| `syn_outage_60s__ukf` | 15,000 | 3.344 | 1.000 | 0.897 |
-| `syn_outage_60s__eskf` | 15,000 | 4.627 | 0.992 | 0.923 |
-| `syn_dead_reckoning` | 6,000 | -- | -- | -- |
-| `real_rbpf_slice__rbpf` | 1,200 | 183.531 | 0.480 | 0.657 |
+{{#include ./baseline-tables.md}}
 
 ## What the table is saying
 

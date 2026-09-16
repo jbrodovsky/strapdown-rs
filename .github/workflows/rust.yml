@@ -9,6 +9,13 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Every job below sets `timeout-minutes`. GitHub's default is 360, and this crate's
+# characteristic failures -- a filter that diverges, a closed loop that stops making progress --
+# are hangs rather than crashes, so without it a stalled job burns six hours per matrix leg
+# before anyone hears about it. The values are sized from what each job does with headroom, not
+# fitted to a recent run; a job that legitimately outgrows its limit should have the limit
+# raised deliberately. `ExecutionLimits` guards the library's own loops; this guards the job
+# around them. #379.
 jobs:
   # strapdown-core with default features needs no C toolchain at all -- not even cmake.
   # Keeping this job dependency-free is what makes the matrix below cheap and what most
@@ -17,6 +24,7 @@ jobs:
   minimal:
     name: strapdown-core (no default features)
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -59,6 +67,7 @@ jobs:
   full:
     name: Workspace (all features)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -93,6 +102,7 @@ jobs:
   vendored:
     name: Vendored netCDF/HDF5 (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:

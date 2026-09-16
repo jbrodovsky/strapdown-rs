@@ -44,7 +44,7 @@
 //!
 //! # Reading the numbers
 //!
-//! Three caveats apply to every figure in the baseline, and none of them is a defect in this
+//! Four caveats apply to every figure in the baseline, and none of them is a defect in this
 //! harness:
 //!
 //! 1. **Real-data metrics are scored against the GNSS fix, which is also the aiding source.**
@@ -957,6 +957,150 @@ fn markdown_table(measured: &[(Scenario, AccuracyMetrics)]) -> String {
 }
 
 // ---------------------------------------------------------------------------------------
+// The book's tables
+// ---------------------------------------------------------------------------------------
+
+/// The generated table fragment `book/src/development/performance.md` includes.
+///
+/// The book used to carry the whole baseline transcribed by hand -- three tables, 45 rows,
+/// updated by eye after every bless. Nothing kept them honest, and a number in the wrong
+/// column there is far harder to notice than one in the gated JSON, because nothing asserts
+/// it. Now the tables are generated from the blessed file and the page includes them; the
+/// prose around them stays hand-written, because it is genuinely editorial. #380.
+fn book_tables_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../book/src/development/baseline-tables.md")
+}
+
+/// One section of the book's baseline page: a heading and the columns under it.
+///
+/// Three narrow tables rather than the one fifteen-column table [`markdown_table`] prints,
+/// because the book renders on a page rather than in a terminal. Every [`MetricId`] appears
+/// in exactly one of them, which `every_metric_appears_in_a_book_table` asserts -- otherwise
+/// adding a metric would silently drop it from the published record.
+struct BookTable {
+    /// Markdown heading for the section.
+    heading: &'static str,
+    /// The metrics shown, in column order, each with its display label.
+    columns: &'static [(MetricId, &'static str)],
+}
+
+/// The book's three tables, in page order.
+const BOOK_TABLES: &[BookTable] = &[
+    BookTable {
+        heading: "### Position and velocity",
+        columns: &[
+            (MetricId::HorizontalRmse, "horiz RMSE (m)"),
+            (MetricId::HorizontalCep50, "CEP50 (m)"),
+            (MetricId::HorizontalCep95, "CEP95 (m)"),
+            (MetricId::HorizontalMax, "horiz max (m)"),
+            (MetricId::VerticalRmse, "vert RMSE (m)"),
+            (MetricId::VerticalBias, "vert bias (m)"),
+            (MetricId::VelocityHorizontalRmse, "horiz vel RMSE (m/s)"),
+            (MetricId::VelocityVerticalRmse, "vert vel RMSE (m/s)"),
+        ],
+    },
+    BookTable {
+        heading: "### Attitude",
+        columns: &[
+            (MetricId::RollRmse, "roll RMSE (deg)"),
+            (MetricId::PitchRmse, "pitch RMSE (deg)"),
+            (MetricId::YawRmse, "yaw RMSE (deg)"),
+            (MetricId::AttitudeGeodesicRmse, "geodesic RMSE (deg)"),
+        ],
+    },
+    BookTable {
+        heading: "### Consistency",
+        columns: &[
+            (MetricId::NpesPosition, "npes (ideal 3.0)"),
+            (
+                MetricId::Containment3SigmaHorizontal,
+                "3-sigma horiz (ideal 0.9973)",
+            ),
+            (
+                MetricId::Containment3SigmaVertical,
+                "3-sigma vert (ideal 0.9973)",
+            ),
+        ],
+    },
+];
+
+/// Group digits into thousands, in place on the integer part of an already-formatted number.
+///
+/// `290644.0` reads as noise and `290,644.0` reads as a number, and these tables are read by
+/// people rather than parsed.
+fn group_thousands(formatted: &str) -> String {
+    let (sign, rest) = formatted
+        .strip_prefix('-')
+        .map_or(("", formatted), |rest| ("-", rest));
+    let (integer, fraction) = rest.split_once('.').map_or((rest, ""), |(i, f)| (i, f));
+
+    let mut grouped = String::with_capacity(integer.len() + integer.len() / 3);
+    for (offset, digit) in integer.chars().enumerate() {
+        if offset > 0 && (integer.len() - offset) % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+
+    if fraction.is_empty() {
+        format!("{sign}{grouped}")
+    } else {
+        format!("{sign}{grouped}.{fraction}")
+    }
+}
+
+/// Render one baseline value for the book, or `--` where the metric is not computable.
+fn book_value(entry: Option<&BaselineMetric>) -> String {
+    match entry.and_then(|e| e.value) {
+        Some(value) => group_thousands(&format!("{value:.3}")),
+        None => "--".to_string(),
+    }
+}
+
+/// Render the book's three tables from the blessed baseline.
+///
+/// Generated from the recorded file rather than from the live measurement, so the staleness
+/// check below is an exact comparison against what was blessed rather than a re-measurement
+/// that could differ by a platform ulp.
+fn book_tables(baseline: &BaselineFile) -> String {
+    let mut out = String::new();
+    out.push_str(
+        "<!-- Generated by `core/tests/perf_baseline.rs`. Do not edit by hand: a re-bless\n\
+         overwrites this file, and the gate fails if it is stale. See #380. -->\n",
+    );
+
+    let order = scenarios();
+    for table in BOOK_TABLES {
+        let _ = write!(out, "\n{}\n\n| scenario | samples |", table.heading);
+        for (_, label) in table.columns {
+            let _ = write!(out, " {label} |");
+        }
+        out.push_str("\n|---|---:|");
+        for _ in table.columns {
+            out.push_str("---:|");
+        }
+        out.push('\n');
+
+        for scenario in &order {
+            let Some(recorded) = baseline.scenarios.get(&scenario.id) else {
+                continue;
+            };
+            let _ = write!(
+                out,
+                "| `{}` | {} |",
+                scenario.id,
+                group_thousands(&recorded.sample_count.to_string())
+            );
+            for (id, _) in table.columns {
+                let _ = write!(out, " {} |", book_value(recorded.metrics.get(id.key())));
+            }
+            out.push('\n');
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------------------
 
@@ -1006,6 +1150,12 @@ fn navigation_accuracy_matches_the_recorded_baseline() {
         text.push('\n');
         std::fs::write(&path, text).expect("baseline file must be writable");
         println!("Wrote {}", path.display());
+
+        // The book's tables are generated from what was just blessed, so a re-bless is one
+        // command rather than a command plus 45 hand-edited rows (#380).
+        let book = book_tables_path();
+        std::fs::write(&book, book_tables(&rendered)).expect("book tables must be writable");
+        println!("Wrote {}", book.display());
         return;
     }
 
@@ -1022,7 +1172,25 @@ fn navigation_accuracy_matches_the_recorded_baseline() {
         baseline.schema_version
     );
 
-    let problems = compare(&measured, &baseline);
+    let mut problems = compare(&measured, &baseline);
+
+    // The book publishes these numbers, so a stale fragment is a wrong public claim. Checked
+    // against the recorded file rather than the live measurement, so this is an exact
+    // comparison of what was blessed and not a second re-measurement (#380).
+    let book = book_tables_path();
+    let expected = book_tables(&baseline);
+    match std::fs::read_to_string(&book) {
+        Ok(found) if found == expected => {}
+        Ok(_) => problems.push(format!(
+            "BOOK      `{}` no longer matches the baseline it is generated from.",
+            book.display()
+        )),
+        Err(e) => problems.push(format!(
+            "BOOK      `{}` could not be read ({e}); it is generated by this test.",
+            book.display()
+        )),
+    }
+
     assert!(
         problems.is_empty(),
         "navigation accuracy no longer matches {}:\n\n{}\n\n\
@@ -1037,6 +1205,38 @@ fn navigation_accuracy_matches_the_recorded_baseline() {
 #[cfg(test)]
 mod gate_tests {
     use super::*;
+
+    /// Every metric shows up in exactly one of the book's tables.
+    ///
+    /// Without this, adding a [`MetricId`] variant gates it in the JSON and silently drops it
+    /// from the published page -- the failure mode #380 exists to close, one level down.
+    #[test]
+    fn every_metric_appears_in_exactly_one_book_table() {
+        for id in MetricId::ALL {
+            let appearances = BOOK_TABLES
+                .iter()
+                .flat_map(|t| t.columns)
+                .filter(|(other, _)| other == id)
+                .count();
+            assert_eq!(
+                appearances,
+                1,
+                "metric `{}` appears in {appearances} book tables, expected exactly 1",
+                id.key()
+            );
+        }
+    }
+
+    #[test]
+    fn thousands_are_grouped_without_disturbing_the_fraction() {
+        assert_eq!(group_thousands("5366"), "5,366");
+        assert_eq!(group_thousands("2349.680"), "2,349.680");
+        assert_eq!(group_thousands("-64.255"), "-64.255");
+        assert_eq!(group_thousands("-1248920.5"), "-1,248,920.5");
+        assert_eq!(group_thousands("0.161"), "0.161");
+        assert_eq!(group_thousands("999"), "999");
+        assert_eq!(group_thousands("1000"), "1,000");
+    }
 
     const BAND: Tolerance = Tolerance {
         regress_fraction: DEFAULT_REGRESS_FRACTION,
