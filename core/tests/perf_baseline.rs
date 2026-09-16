@@ -61,9 +61,10 @@
 //!    heading there is the GNSS velocity fix on a moving trajectory. That turns out to be
 //!    enough: the EKF holds 0.97 deg of yaw and the ESKF 2.07 deg on `syn_cruise_1hz`, while
 //!    the UKF sits at 42.7 deg. The UKF figure is not an observability limit -- both of the
-//!    other filters see the same measurements -- it is #336, which averages sigma-point Euler
-//!    angles linearly. It is recorded and gated like everything else, so fixing #336 will trip
-//!    the improvement side and ask for a re-bless.
+//!    other filters see the same measurements -- it is #371: the UKF means its sigma-point
+//!    attitudes by summing Euler triples linearly, which is not the mean rotation. (Not #336,
+//!    which fixed the branch-cut half of that and is closed.) It is recorded and gated like
+//!    everything else, so fixing #371 will trip the improvement side and ask for a re-bless.
 //! 4. **The consistency metrics mean something different on the two sources.** On the synthetic
 //!    scenarios `npes_position` lands between 2.6 and 4.8 against an ideal of 3.0, which is a
 //!    real measurement of whether the filters believe the right thing. On the real-data scenarios it

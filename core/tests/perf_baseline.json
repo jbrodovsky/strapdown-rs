@@ -636,7 +636,7 @@
         },
         "yaw_rmse_deg": {
           "value": 42.6654,
-          "note": "42.7 deg where the EKF holds 0.97 and the ESKF 2.07 on the same measurements. This is #336 -- the UKF averages sigma-point Euler angles linearly -- not an observability limit. Recorded as measured; fixing #336 trips the improvement side. #369 tracks modelling a real magnetic field here."
+          "note": "42.7 deg where the EKF holds 0.97 and the ESKF 2.07 on the same measurements. This is #371 -- the UKF means its sigma-point attitudes by summing Euler triples linearly, which is not the mean rotation -- and not an observability limit. Not #336 either: that fixed the branch-cut half of the same code and is closed. Recorded as measured; fixing #371 trips the improvement side. #369 tracks modelling a real magnetic field here."
         }
       }
     },
@@ -767,7 +767,7 @@
         },
         "horizontal_cep95_m": {
           "value": 762.191,
-          "note": "Worse after the vertical process-noise retune (was 221.67 m / 412.96 m / 13.62 m/s / 0.59 m/s / 3.51 deg at the old 1e-4). Recorded, not endorsed. This row does not respond monotonically to that knob -- across a four-decade sweep the horizontal RMSE runs 222, 174, 267, 344 m while the yaw error runs 105, 98, 21, 34 deg, so position gets worse exactly where attitude gets five times better. That is #336 coasting a 60 s GNSS outage on an attitude it has not estimated, and it bounces under any perturbation. Read `syn_outage_60s__eskf`, which is monotone, for what the retune actually did."
+          "note": "Worse after the vertical process-noise retune (was 221.67 m / 412.96 m / 13.62 m/s / 0.59 m/s / 3.51 deg at the old 1e-4). Recorded, not endorsed. This row does not respond monotonically to that knob -- across a four-decade sweep the horizontal RMSE runs 222, 174, 267, 344 m while the yaw error runs 105, 98, 21, 34 deg, so position gets worse exactly where attitude gets five times better. That is #371 -- a linear Euler mean over sigma-point attitudes -- coasting a 60 s GNSS outage, and it bounces under any perturbation. Read `syn_outage_60s__eskf`, which is monotone, for what the retune did."
         },
         "horizontal_max_m": {
           "value": 2109.82,
@@ -776,7 +776,7 @@
         },
         "horizontal_rmse_m": {
           "value": 266.681,
-          "note": "Worse after the vertical process-noise retune (was 221.67 m / 412.96 m / 13.62 m/s / 0.59 m/s / 3.51 deg at the old 1e-4). Recorded, not endorsed. This row does not respond monotonically to that knob -- across a four-decade sweep the horizontal RMSE runs 222, 174, 267, 344 m while the yaw error runs 105, 98, 21, 34 deg, so position gets worse exactly where attitude gets five times better. That is #336 coasting a 60 s GNSS outage on an attitude it has not estimated, and it bounces under any perturbation. Read `syn_outage_60s__eskf`, which is monotone, for what the retune actually did."
+          "note": "Worse after the vertical process-noise retune (was 221.67 m / 412.96 m / 13.62 m/s / 0.59 m/s / 3.51 deg at the old 1e-4). Recorded, not endorsed. This row does not respond monotonically to that knob -- across a four-decade sweep the horizontal RMSE runs 222, 174, 267, 344 m while the yaw error runs 105, 98, 21, 34 deg, so position gets worse exactly where attitude gets five times better. That is #371 -- a linear Euler mean over sigma-point attitudes -- coasting a 60 s GNSS outage, and it bounces under any perturbation. Read `syn_outage_60s__eskf`, which is monotone, for what the retune did."
         },
         "npes_position": {
           "value": 3.34434
@@ -786,15 +786,15 @@
         },
         "roll_rmse_deg": {
           "value": 4.34057,
-          "note": "Worse after the vertical process-noise retune (was 221.67 m / 412.96 m / 13.62 m/s / 0.59 m/s / 3.51 deg at the old 1e-4). Recorded, not endorsed. This row does not respond monotonically to that knob -- across a four-decade sweep the horizontal RMSE runs 222, 174, 267, 344 m while the yaw error runs 105, 98, 21, 34 deg, so position gets worse exactly where attitude gets five times better. That is #336 coasting a 60 s GNSS outage on an attitude it has not estimated, and it bounces under any perturbation. Read `syn_outage_60s__eskf`, which is monotone, for what the retune actually did."
+          "note": "Worse after the vertical process-noise retune (was 221.67 m / 412.96 m / 13.62 m/s / 0.59 m/s / 3.51 deg at the old 1e-4). Recorded, not endorsed. This row does not respond monotonically to that knob -- across a four-decade sweep the horizontal RMSE runs 222, 174, 267, 344 m while the yaw error runs 105, 98, 21, 34 deg, so position gets worse exactly where attitude gets five times better. That is #371 -- a linear Euler mean over sigma-point attitudes -- coasting a 60 s GNSS outage, and it bounces under any perturbation. Read `syn_outage_60s__eskf`, which is monotone, for what the retune did."
         },
         "velocity_horizontal_rmse_mps": {
           "value": 15.2675,
-          "note": "Worse after the vertical process-noise retune (was 221.67 m / 412.96 m / 13.62 m/s / 0.59 m/s / 3.51 deg at the old 1e-4). Recorded, not endorsed. This row does not respond monotonically to that knob -- across a four-decade sweep the horizontal RMSE runs 222, 174, 267, 344 m while the yaw error runs 105, 98, 21, 34 deg, so position gets worse exactly where attitude gets five times better. That is #336 coasting a 60 s GNSS outage on an attitude it has not estimated, and it bounces under any perturbation. Read `syn_outage_60s__eskf`, which is monotone, for what the retune actually did."
+          "note": "Worse after the vertical process-noise retune (was 221.67 m / 412.96 m / 13.62 m/s / 0.59 m/s / 3.51 deg at the old 1e-4). Recorded, not endorsed. This row does not respond monotonically to that knob -- across a four-decade sweep the horizontal RMSE runs 222, 174, 267, 344 m while the yaw error runs 105, 98, 21, 34 deg, so position gets worse exactly where attitude gets five times better. That is #371 -- a linear Euler mean over sigma-point attitudes -- coasting a 60 s GNSS outage, and it bounces under any perturbation. Read `syn_outage_60s__eskf`, which is monotone, for what the retune did."
         },
         "velocity_vertical_rmse_mps": {
           "value": 1.06765,
-          "note": "Worse after the vertical process-noise retune (was 221.67 m / 412.96 m / 13.62 m/s / 0.59 m/s / 3.51 deg at the old 1e-4). Recorded, not endorsed. This row does not respond monotonically to that knob -- across a four-decade sweep the horizontal RMSE runs 222, 174, 267, 344 m while the yaw error runs 105, 98, 21, 34 deg, so position gets worse exactly where attitude gets five times better. That is #336 coasting a 60 s GNSS outage on an attitude it has not estimated, and it bounces under any perturbation. Read `syn_outage_60s__eskf`, which is monotone, for what the retune actually did."
+          "note": "Worse after the vertical process-noise retune (was 221.67 m / 412.96 m / 13.62 m/s / 0.59 m/s / 3.51 deg at the old 1e-4). Recorded, not endorsed. This row does not respond monotonically to that knob -- across a four-decade sweep the horizontal RMSE runs 222, 174, 267, 344 m while the yaw error runs 105, 98, 21, 34 deg, so position gets worse exactly where attitude gets five times better. That is #371 -- a linear Euler mean over sigma-point attitudes -- coasting a 60 s GNSS outage, and it bounces under any perturbation. Read `syn_outage_60s__eskf`, which is monotone, for what the retune did."
         },
         "vertical_bias_m": {
           "value": -0.0490745
@@ -805,7 +805,7 @@
         },
         "yaw_rmse_deg": {
           "value": 21.4607,
-          "note": "Free-inertial coasting on top of the #336 attitude averaging described on `syn_cruise_1hz__ukf`. 105 deg is near the 103.9 deg of an error uniform on the circle."
+          "note": "Free-inertial coasting on top of the #371 attitude averaging described on `syn_cruise_1hz__ukf`. 105 deg is near the 103.9 deg of an error uniform on the circle."
         }
       }
     }
