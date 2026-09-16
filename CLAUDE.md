@@ -216,7 +216,10 @@ The Free Core implementation must achieve the following capabilities:
   - Averaging strategies: mean, weighted mean, maximum weight
   - Includes vertical channel damping with altitude error feedback
   - Each particle propagates independently through strapdown equations
-- **Process noise**: Default values defined in `sim::DEFAULT_PROCESS_NOISE`
+- **Process noise**: `sim::DEFAULT_PROCESS_NOISE_DENSITY` is a **spectral density** -- a
+  variance per second. Each filter forms $Q_k = q\,\Delta t$; it was a per-step variance with
+  no `dt` anywhere until #374, which made effective Q a function of sample rate (a 50x spread
+  across the 1 Hz, 10 Hz and 50 Hz data this repo uses)
 - **Design for extensibility**: Core algorithms separate from simulation framework to enable future professional features
 
 ### Data Format

@@ -491,51 +491,52 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 1.85049
+          "value": 1.0355
         },
         "containment_3sigma_horizontal": {
-          "value": 0.997067
+          "value": 0.998767
         },
         "containment_3sigma_vertical": {
-          "value": 0.926867
+          "value": 0.852733
         },
         "horizontal_cep50_m": {
-          "value": 2.62401
+          "value": 2.26226
         },
         "horizontal_cep95_m": {
-          "value": 5.67001
+          "value": 4.35501
         },
         "horizontal_max_m": {
-          "value": 8.18243
+          "value": 6.31298
         },
         "horizontal_rmse_m": {
-          "value": 3.16962
+          "value": 2.60083
         },
         "npes_position": {
-          "value": 4.65988
+          "value": 6.40581,
+          "note": "Up under #374, while every accuracy metric on the same row improved substantially (vertical RMSE ~0.83 to ~0.48 m, roll and pitch by 2-3x). Both directions are the same mechanism: this scenario runs at 50 Hz and was receiving 50x the intended process noise, so its covariance was inflated. Removing that improves the estimate and tightens the covariance, and a tighter covariance under an unchanged error is a larger normalised error. The consistency gap this exposes is #372's and #373's to close; it was previously hidden by the inflation."
         },
         "pitch_rmse_deg": {
-          "value": 0.852737
+          "value": 0.248185
         },
         "roll_rmse_deg": {
-          "value": 0.963615,
+          "value": 0.293524,
           "note": "0.96 deg, up from 0.12 before #373, and pitch with it. Same cause as the UKF's yaw row: with the fabricated 201 m horizontal sigma gone, position is no longer pinned to the fix, so attitude error is no longer absorbed there and is measured for the first time. Under a degree in absolute terms and the best of the three. Tracked with #372/#373's consistency work."
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 1.13557
+          "value": 0.586184
         },
         "velocity_vertical_rmse_mps": {
-          "value": 0.300996
+          "value": 0.25903
         },
         "vertical_bias_m": {
-          "value": 0.0447475
+          "value": -0.182293
         },
         "vertical_rmse_m": {
-          "value": 0.830891,
+          "value": 0.499845,
           "note": "About a quarter worse than at the old 1e-4 altitude process noise, and the stated price of that retune: the old value bought this RMSE by reporting an uncertainty roughly half the actual error. Containment in the same row moved 0.88 -> 0.93 toward 0.9973. On the reference recording vertical RMSE did not pay this price at all -- it improved slightly. See VERTICAL_POSITION_PROCESS_NOISE_M2 in core/src/sim.rs."
         },
         "yaw_rmse_deg": {
-          "value": 1.32986
+          "value": 0.961345
         }
       }
     },
@@ -545,50 +546,51 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 2.50842
+          "value": 1.1138
         },
         "containment_3sigma_horizontal": {
-          "value": 0.997567
+          "value": 0.999367
         },
         "containment_3sigma_vertical": {
-          "value": 0.9268
+          "value": 0.885467
         },
         "horizontal_cep50_m": {
-          "value": 2.60611
+          "value": 2.24852
         },
         "horizontal_cep95_m": {
-          "value": 5.75523
+          "value": 4.47572
         },
         "horizontal_max_m": {
-          "value": 8.24169
+          "value": 6.90932
         },
         "horizontal_rmse_m": {
-          "value": 3.18748
+          "value": 2.64737
         },
         "npes_position": {
-          "value": 4.65666
+          "value": 5.87682,
+          "note": "Up under #374, while every accuracy metric on the same row improved substantially (vertical RMSE ~0.83 to ~0.48 m, roll and pitch by 2-3x). Both directions are the same mechanism: this scenario runs at 50 Hz and was receiving 50x the intended process noise, so its covariance was inflated. Removing that improves the estimate and tightens the covariance, and a tighter covariance under an unchanged error is a larger normalised error. The consistency gap this exposes is #372's and #373's to close; it was previously hidden by the inflation."
         },
         "pitch_rmse_deg": {
-          "value": 0.945832
+          "value": 0.264559
         },
         "roll_rmse_deg": {
-          "value": 1.06381
+          "value": 0.337131
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 1.16522
+          "value": 0.593004
         },
         "velocity_vertical_rmse_mps": {
-          "value": 0.238815
+          "value": 0.0917479
         },
         "vertical_bias_m": {
-          "value": 0.0693371
+          "value": 0.0338366
         },
         "vertical_rmse_m": {
-          "value": 0.831738,
+          "value": 0.459696,
           "note": "About a quarter worse than at the old 1e-4 altitude process noise, and the stated price of that retune: the old value bought this RMSE by reporting an uncertainty roughly half the actual error. Containment in the same row moved 0.88 -> 0.93 toward 0.9973. On the reference recording vertical RMSE did not pay this price at all -- it improved slightly. See VERTICAL_POSITION_PROCESS_NOISE_M2 in core/src/sim.rs."
         },
         "yaw_rmse_deg": {
-          "value": 2.06694
+          "value": 1.02808
         }
       }
     },
@@ -598,51 +600,52 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 89.805
+          "value": 96.5606
         },
         "containment_3sigma_horizontal": {
-          "value": 0.997767
+          "value": 0.998367
         },
         "containment_3sigma_vertical": {
-          "value": 0.925867
+          "value": 0.8826
         },
         "horizontal_cep50_m": {
-          "value": 2.65155
+          "value": 2.28564
         },
         "horizontal_cep95_m": {
-          "value": 5.7939
+          "value": 4.72203
         },
         "horizontal_max_m": {
-          "value": 8.70514
+          "value": 8.33639
         },
         "horizontal_rmse_m": {
-          "value": 3.23707
+          "value": 2.7418
         },
         "npes_position": {
-          "value": 4.6917
+          "value": 5.9633,
+          "note": "Up under #374, while every accuracy metric on the same row improved substantially (vertical RMSE ~0.83 to ~0.48 m, roll and pitch by 2-3x). Both directions are the same mechanism: this scenario runs at 50 Hz and was receiving 50x the intended process noise, so its covariance was inflated. Removing that improves the estimate and tightens the covariance, and a tighter covariance under an unchanged error is a larger normalised error. The consistency gap this exposes is #372's and #373's to close; it was previously hidden by the inflation."
         },
         "pitch_rmse_deg": {
-          "value": 1.12825,
+          "value": 0.585489,
           "note": "0.51 -> 0.64 deg across the vertical process-noise retune. Small and real; the ESKF and EKF pitch in the same scenario did not move. Sits well inside the gravity-observability bound that core/tests/integration_tests.rs asserts separately."
         },
         "roll_rmse_deg": {
-          "value": 1.35717
+          "value": 0.854069
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 1.21452
+          "value": 0.756379
         },
         "velocity_vertical_rmse_mps": {
-          "value": 0.313889
+          "value": 0.229822
         },
         "vertical_bias_m": {
-          "value": 0.0663742
+          "value": 0.0720809
         },
         "vertical_rmse_m": {
-          "value": 0.840966,
+          "value": 0.495973,
           "note": "About a quarter worse than at the old 1e-4 altitude process noise, and the stated price of that retune: the old value bought this RMSE by reporting an uncertainty roughly half the actual error. Containment in the same row moved 0.88 -> 0.93 toward 0.9973. On the reference recording vertical RMSE did not pay this price at all -- it improved slightly. See VERTICAL_POSITION_PROCESS_NOISE_M2 in core/src/sim.rs."
         },
         "yaw_rmse_deg": {
-          "value": 89.7901,
+          "value": 96.5552,
           "note": "89.79 deg, up from 42.66 before #373 -- and this row has no magnetometer, so yaw is observable only through the GNSS velocity fix. The EKF reaches 1.33 deg on the identical stream. The regression is not a tuning loss: removing the absolute 1e-9 covariance floor stopped this filter pinning its position to each fix, and what had been masking the sigma-point attitude defect was exactly that pinning. Swept over alpha at 1e-3, 1e-2, 1e-1, 0.5 and 1.0, yaw reads 89.8, 90.5, 90.1, 96.5 and 108.3 deg -- so widening the sigma-point spread makes it worse and the tiny `n + lambda` scaling is NOT the cause. That refutes the conditioning hypothesis and leaves #371's original diagnosis, the linear Euler mean over sigma-point attitudes, as the live one."
         }
       }
@@ -706,52 +709,52 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 1.22271
+          "value": 1.09531
         },
         "containment_3sigma_horizontal": {
-          "value": 0.999367
+          "value": 0.996967
         },
         "containment_3sigma_vertical": {
-          "value": 0.915867
+          "value": 0.8774
         },
         "horizontal_cep50_m": {
-          "value": 1.16617
+          "value": 1.45106
         },
         "horizontal_cep95_m": {
-          "value": 44.0745
+          "value": 29.4394
         },
         "horizontal_max_m": {
-          "value": 247.396,
+          "value": 50.1755,
           "regress_fraction": 0.25,
           "note": "As `real_outage_60s__eskf`: a single sample at the end of a coast."
         },
         "horizontal_rmse_m": {
-          "value": 20.0714
+          "value": 12.1679
         },
         "npes_position": {
-          "value": 3.5376
+          "value": 4.68162
         },
         "pitch_rmse_deg": {
-          "value": 0.204531
+          "value": 0.162674
         },
         "roll_rmse_deg": {
-          "value": 0.242268
+          "value": 0.170534
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 1.06628
+          "value": 0.690532
         },
         "velocity_vertical_rmse_mps": {
-          "value": 0.242917
+          "value": 0.0930417
         },
         "vertical_bias_m": {
-          "value": 0.0671439
+          "value": 0.0311129
         },
         "vertical_rmse_m": {
-          "value": 0.842019,
+          "value": 0.460565,
           "note": "About a quarter worse than at the old 1e-4 altitude process noise, and the stated price of that retune: the old value bought this RMSE by reporting an uncertainty roughly half the actual error. Containment in the same row moved 0.88 -> 0.93 toward 0.9973. On the reference recording vertical RMSE did not pay this price at all -- it improved slightly. See VERTICAL_POSITION_PROCESS_NOISE_M2 in core/src/sim.rs."
         },
         "yaw_rmse_deg": {
-          "value": 1.181
+          "value": 1.06976
         }
       }
     },
@@ -761,58 +764,58 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 25.4192
+          "value": 95.4205
         },
         "containment_3sigma_horizontal": {
-          "value": 0.999233
+          "value": 0.911733
         },
         "containment_3sigma_vertical": {
-          "value": 0.893133
+          "value": 0.8492
         },
         "horizontal_cep50_m": {
-          "value": 2.59257
+          "value": 5.41847
         },
         "horizontal_cep95_m": {
-          "value": 710.01,
+          "value": 3152.24,
           "note": "Worse after the vertical process-noise retune (was 221.67 m / 412.96 m / 13.62 m/s / 0.59 m/s / 3.51 deg at the old 1e-4). Recorded, not endorsed. This row does not respond monotonically to that knob -- across a four-decade sweep the horizontal RMSE runs 222, 174, 267, 344 m while the yaw error runs 105, 98, 21, 34 deg, so position gets worse exactly where attitude gets five times better. That is #371 -- a linear Euler mean over sigma-point attitudes -- coasting a 60 s GNSS outage, and it bounces under any perturbation. Read `syn_outage_60s__eskf`, which is monotone, for what the retune did."
         },
         "horizontal_max_m": {
-          "value": 1649.68,
+          "value": 3756.86,
           "regress_fraction": 0.25,
           "note": "As `real_outage_60s__eskf`: a single sample at the end of a coast."
         },
         "horizontal_rmse_m": {
-          "value": 250.627,
-          "note": "Worse after the vertical process-noise retune (was 221.67 m / 412.96 m / 13.62 m/s / 0.59 m/s / 3.51 deg at the old 1e-4). Recorded, not endorsed. This row does not respond monotonically to that knob -- across a four-decade sweep the horizontal RMSE runs 222, 174, 267, 344 m while the yaw error runs 105, 98, 21, 34 deg, so position gets worse exactly where attitude gets five times better. That is #371 -- a linear Euler mean over sigma-point attitudes -- coasting a 60 s GNSS outage, and it bounces under any perturbation. Read `syn_outage_60s__eskf`, which is monotone, for what the retune did."
+          "value": 857.982,
+          "note": "858 m, up from 251. A 60 s free-inertial coast is where process noise matters most, and #374 cut what this 50 Hz scenario receives by 50x -- it had been given a full second of random walk every 20 ms. With an honest Q the filter is far more confident through the coast, so the attitude error it coasts on is no longer masked by an inflated covariance. The ESKF's equivalent row *improved* over the same change, 20.07 m to 12.17 m, which is what a filter with sound attitude does here. The difference between them is #371: this row's yaw went 24.8 to 95.2 deg while the ESKF's stayed near 1 deg."
         },
         "npes_position": {
-          "value": 4.23755
+          "value": 15.1238
         },
         "pitch_rmse_deg": {
-          "value": 3.67894
+          "value": 4.4764
         },
         "roll_rmse_deg": {
-          "value": 4.22895,
+          "value": 5.05743,
           "note": "Worse after the vertical process-noise retune (was 221.67 m / 412.96 m / 13.62 m/s / 0.59 m/s / 3.51 deg at the old 1e-4). Recorded, not endorsed. This row does not respond monotonically to that knob -- across a four-decade sweep the horizontal RMSE runs 222, 174, 267, 344 m while the yaw error runs 105, 98, 21, 34 deg, so position gets worse exactly where attitude gets five times better. That is #371 -- a linear Euler mean over sigma-point attitudes -- coasting a 60 s GNSS outage, and it bounces under any perturbation. Read `syn_outage_60s__eskf`, which is monotone, for what the retune did."
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 14.238,
+          "value": 34.8954,
           "note": "Worse after the vertical process-noise retune (was 221.67 m / 412.96 m / 13.62 m/s / 0.59 m/s / 3.51 deg at the old 1e-4). Recorded, not endorsed. This row does not respond monotonically to that knob -- across a four-decade sweep the horizontal RMSE runs 222, 174, 267, 344 m while the yaw error runs 105, 98, 21, 34 deg, so position gets worse exactly where attitude gets five times better. That is #371 -- a linear Euler mean over sigma-point attitudes -- coasting a 60 s GNSS outage, and it bounces under any perturbation. Read `syn_outage_60s__eskf`, which is monotone, for what the retune did."
         },
         "velocity_vertical_rmse_mps": {
-          "value": 1.0383,
+          "value": 0.433937,
           "note": "Worse after the vertical process-noise retune (was 221.67 m / 412.96 m / 13.62 m/s / 0.59 m/s / 3.51 deg at the old 1e-4). Recorded, not endorsed. This row does not respond monotonically to that knob -- across a four-decade sweep the horizontal RMSE runs 222, 174, 267, 344 m while the yaw error runs 105, 98, 21, 34 deg, so position gets worse exactly where attitude gets five times better. That is #371 -- a linear Euler mean over sigma-point attitudes -- coasting a 60 s GNSS outage, and it bounces under any perturbation. Read `syn_outage_60s__eskf`, which is monotone, for what the retune did."
         },
         "vertical_bias_m": {
-          "value": -0.0395688
+          "value": -0.0632119
         },
         "vertical_rmse_m": {
-          "value": 0.923156,
+          "value": 0.612836,
           "note": "About a quarter worse than at the old 1e-4 altitude process noise, and the stated price of that retune: the old value bought this RMSE by reporting an uncertainty roughly half the actual error. Containment in the same row moved 0.88 -> 0.93 toward 0.9973. On the reference recording vertical RMSE did not pay this price at all -- it improved slightly. See VERTICAL_POSITION_PROCESS_NOISE_M2 in core/src/sim.rs."
         },
         "yaw_rmse_deg": {
-          "value": 24.8048,
-          "note": "Free-inertial coasting on top of the #371 attitude averaging described on `syn_cruise_1hz__ukf`. 105 deg is near the 103.9 deg of an error uniform on the circle."
+          "value": 95.1897,
+          "note": "95.2 deg, up from 24.8. Same cause as the horizontal row above and as this scenario's sibling at `syn_cruise_1hz__ukf`: #371's linear Euler mean over sigma-point attitudes, now unmasked twice over -- once by #373 removing the covariance floor that pinned position, and again by #374 removing 50x of process noise that was hiding the drift. Uniformly random yaw would be about 104 deg RMS, so this filter has essentially no heading through the coast."
         }
       }
     }

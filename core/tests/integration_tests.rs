@@ -126,7 +126,7 @@ use strapdown::messages::{
     Event, GnssDegradationConfig, GnssFaultModel, GnssScheduler, build_event_stream,
 };
 use strapdown::rbpf::{RaoBlackwellizedParticleFilter, RbpfConfig};
-// `DEFAULT_PROCESS_NOISE` is imported, not copied. This file used to keep its own array of
+// `DEFAULT_PROCESS_NOISE_DENSITY` is imported, not copied. This file used to keep its own array of
 // literals carrying a comment claiming it matched the crate's -- it did not (its altitude
 // entry was `1e-6` where the crate's was `1e-4`), and both copies carried #308's units
 // defect: latitude and longitude written in rad^2 with values chosen as though they were
@@ -135,8 +135,9 @@ use strapdown::rbpf::{RaoBlackwellizedParticleFilter, RbpfConfig};
 // defect survived as long as it did. What these tests exercise is now, by construction, what
 // the library ships.
 use strapdown::sim::{
-    DEFAULT_INITIAL_POSITION_UNCERTAINTY_M, DEFAULT_PROCESS_NOISE, EskfConfig, NavigationResult,
-    TestDataRecord, check_declared_frame, dead_reckoning, initialize_eskf, run_closed_loop,
+    DEFAULT_INITIAL_POSITION_UNCERTAINTY_M, DEFAULT_PROCESS_NOISE_DENSITY, EskfConfig,
+    NavigationResult, TestDataRecord, check_declared_frame, dead_reckoning, initialize_eskf,
+    run_closed_loop,
 };
 use strapdown::stationary::{StationaryConfig, StationaryDetector};
 use strapdown::{
@@ -149,7 +150,7 @@ use nalgebra::{DMatrix, DVector, Rotation3, Vector3};
 /// Default initial covariance for testing (15-state).
 ///
 /// The position block comes from the crate's [`DEFAULT_INITIAL_POSITION_UNCERTAINTY_M`], for
-/// the reason `DEFAULT_PROCESS_NOISE` is imported rather than copied. The literals it replaces
+/// the reason `DEFAULT_PROCESS_NOISE_DENSITY` is imported rather than copied. The literals it replaces
 /// -- `1e-6, 1e-6, 1.0`, commented "(lat, lon, alt in meters)" -- were #308 in $P_0$: latitude
 /// and longitude are radians, so `1e-6 rad^2` is a 6367 m claim and only the altitude entry
 /// was ever the metre it said. Every filter in this file therefore started each run believing
@@ -433,7 +434,7 @@ const ESKF_PROCESS_NOISE_SCALE: f64 = 8.0;
 /// process-noise rows being *equal* in the old regime and unequal in the new one, and $P_0$
 /// is held fixed within each comparison.
 const ESKF_PROCESS_NOISE: [f64; 15] = {
-    let mut scaled = DEFAULT_PROCESS_NOISE;
+    let mut scaled = DEFAULT_PROCESS_NOISE_DENSITY;
     let mut i = 3;
     while i < scaled.len() {
         scaled[i] *= ESKF_PROCESS_NOISE_SCALE;
@@ -1291,7 +1292,8 @@ fn test_ukf_closed_loop_on_real_data() {
     let imu_biases = vec![0.0; 6]; // Zero initial bias estimates
     let initial_covariance = DEFAULT_INITIAL_COVARIANCE.to_vec();
 
-    let process_noise = DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec()));
+    let process_noise =
+        DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE_DENSITY.to_vec()));
 
     let mut ukf = UnscentedKalmanFilter::new(
         &initial_state,
@@ -1446,7 +1448,8 @@ fn test_ukf_with_degraded_gnss() {
     let imu_biases = vec![0.0; 6];
     let initial_covariance = DEFAULT_INITIAL_COVARIANCE.to_vec();
 
-    let process_noise = DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec()));
+    let process_noise =
+        DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE_DENSITY.to_vec()));
 
     let mut ukf = UnscentedKalmanFilter::new(
         &initial_state,
@@ -1545,7 +1548,8 @@ fn test_ukf_outperforms_dead_reckoning() {
     // second copy of the literals, which is how it kept #308's `1e-6` horizontal entries
     // after the named constant above was corrected.
     let initial_covariance = DEFAULT_INITIAL_COVARIANCE.to_vec();
-    let process_noise = DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec()));
+    let process_noise =
+        DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE_DENSITY.to_vec()));
 
     let mut ukf = UnscentedKalmanFilter::new(
         &initial_state,
@@ -1633,7 +1637,8 @@ fn test_ekf_closed_loop_on_real_data() {
     // Initialize EKF with 15-state configuration (with biases)
     let initial_covariance = DEFAULT_INITIAL_COVARIANCE.to_vec();
 
-    let process_noise = DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec()));
+    let process_noise =
+        DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE_DENSITY.to_vec()));
 
     // Initialize EKF (note: EKF constructor differs from UKF - no measurement bias parameter,
     // uses use_biases flag instead of optional measurement_bias)
@@ -1792,7 +1797,8 @@ fn test_ekf_with_degraded_gnss() {
     // Initialize EKF
     let initial_covariance = DEFAULT_INITIAL_COVARIANCE.to_vec();
 
-    let process_noise = DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec()));
+    let process_noise =
+        DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE_DENSITY.to_vec()));
 
     let mut ekf = ExtendedKalmanFilter::new(
         &initial_state,
@@ -1935,7 +1941,8 @@ fn test_ekf_outperforms_dead_reckoning() {
     // Run EKF
     let initial_state = create_initial_state(&records[0]);
     let initial_covariance = DEFAULT_INITIAL_COVARIANCE.to_vec();
-    let process_noise = DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec()));
+    let process_noise =
+        DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE_DENSITY.to_vec()));
 
     let mut ekf = ExtendedKalmanFilter::new(
         &initial_state,
@@ -2726,7 +2733,8 @@ fn test_filter_comparison() {
 
     // Run UKF
     let initial_covariance = DEFAULT_INITIAL_COVARIANCE.to_vec();
-    let process_noise = DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec()));
+    let process_noise =
+        DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE_DENSITY.to_vec()));
 
     let mut ukf = UnscentedKalmanFilter::new(
         &initial_state,
@@ -3018,7 +3026,8 @@ fn test_filter_output_length_matches_input() {
     let initial_state = create_initial_state(&records[0]);
     let imu_biases = vec![0.0; 6]; // Zero initial bias estimates
     let initial_covariance = DEFAULT_INITIAL_COVARIANCE.to_vec();
-    let process_noise = DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec()));
+    let process_noise =
+        DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE_DENSITY.to_vec()));
     let degradation = GnssDegradationConfig::default();
 
     // Test UKF
@@ -3117,7 +3126,7 @@ fn build_ukf(initial_state: &InitialState) -> UnscentedKalmanFilter {
         &[0.0; 6],
         None,
         DEFAULT_INITIAL_COVARIANCE.to_vec(),
-        DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec())),
+        DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE_DENSITY.to_vec())),
         1e-3,
         2.0,
         0.0,
@@ -3130,7 +3139,7 @@ fn build_ekf(initial_state: &InitialState) -> ExtendedKalmanFilter {
         initial_state,
         &[0.0; 6],
         DEFAULT_INITIAL_COVARIANCE.to_vec(),
-        DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec())),
+        DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE_DENSITY.to_vec())),
         true,
     )
 }
@@ -4178,7 +4187,7 @@ fn test_eskf_auto_covariance_initialization_on_real_data() {
         &initial_state,
         &[0.0; 6],
         initial_covariance.to_vec(),
-        DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE.to_vec())),
+        DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE_DENSITY.to_vec())),
     );
 
     // The "P0 is the only thing that differs" claim above, made checkable rather than

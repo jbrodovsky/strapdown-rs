@@ -428,32 +428,43 @@ impl RaoBlackwellizedParticleFilter {
         // Scale process noise with dt to approximate a continuous-time random walk. Such a
         // walk accumulates *variance* linearly in time -- `var(dt) = q dt` -- so the
         // standard deviation goes as `sqrt(dt)`, not as `dt`. Scaling the standard
-        // deviation by `dt` made `q_n` proportional to `dt^2`: at the 5-100 Hz this crate
-        // runs at, one to two orders of magnitude smaller than the configuration asked for,
-        // and a function of the log's sample rate rather than of elapsed time alone -- a
+        // deviation by `dt` made the variance proportional to `dt^2`: at the 5-100 Hz this
+        // crate runs at, one to two orders of magnitude smaller than the configuration asked
+        // for, and a function of the log's sample rate rather than of elapsed time alone -- a
         // 100 Hz log and a 50 Hz log of the same trajectory were given process noise
-        // differing by 4x per step. Fixed in #331, whose scope is the position block: the
-        // velocity, attitude and extra-state terms below still scale their standard
-        // deviations by `dt` and have the same argument against them.
+        // differing by 4x per step.
+        //
+        // #331 fixed the position block and said in this comment that "the velocity, attitude
+        // and extra-state terms below still scale their standard deviations by `dt` and have
+        // the same argument against them". #374 finishes the job: every block below now uses
+        // `sqrt(dt)`, so each config entry is a standard deviation per root-second and every
+        // block's variance grows linearly in elapsed time.
+        //
+        // Still open, deliberately: the extra-state noise enters twice, once through `q_l`
+        // here and again as a direct per-particle draw on the mean further down. Both are now
+        // scaled consistently, but whether both should exist at all is #382 -- it is a
+        // question about what the extra states are for, not about units, so it is not settled
+        // here.
+        let root_dt = dt.sqrt();
         let pos_noise = position_std_to_state_units(
             &self.config.position_process_noise_std_m,
             self.nominal.latitude,
             self.nominal.altitude,
-        ) * dt.sqrt();
+        ) * root_dt;
         let mut q_n = DMatrix::<f64>::zeros(POSITION_STATE_DIM, POSITION_STATE_DIM);
         for i in 0..POSITION_STATE_DIM {
             q_n[(i, i)] = pos_noise[i].powi(2);
         }
 
         let mut q_l = DMatrix::<f64>::zeros(linear_dim, linear_dim);
-        let vel_noise = self.config.velocity_process_noise_std_mps * dt;
-        let att_noise = self.config.attitude_process_noise_std_rad * dt;
+        let vel_noise = self.config.velocity_process_noise_std_mps * root_dt;
+        let att_noise = self.config.attitude_process_noise_std_rad * root_dt;
         for i in 0..3 {
             q_l[(i, i)] = vel_noise.powi(2);
             q_l[(i + 3, i + 3)] = att_noise.powi(2);
         }
         if self.config.extra_state_dim > 0 {
-            let extra_noise = self.config.extra_state_process_noise_std * dt;
+            let extra_noise = self.config.extra_state_process_noise_std * root_dt;
             for i in 0..self.config.extra_state_dim {
                 q_l[(LINEAR_STATE_DIM_BASE + i, LINEAR_STATE_DIM_BASE + i)] = extra_noise.powi(2);
             }
@@ -510,9 +521,10 @@ impl RaoBlackwellizedParticleFilter {
             if self.config.extra_state_dim > 0 && self.config.extra_state_process_noise_std > 0.0 {
                 for i in 0..self.config.extra_state_dim {
                     let idx = LINEAR_STATE_DIM_BASE + i;
+                    // Second application of the same noise; see the note above and #382.
                     let noise = normal.sample(&mut self.rng)
                         * self.config.extra_state_process_noise_std
-                        * dt;
+                        * root_dt;
                     x_l_pred[idx] += noise;
                 }
             }

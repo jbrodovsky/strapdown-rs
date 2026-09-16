@@ -39,7 +39,7 @@ use strapdown::kalman::ExtendedKalmanFilter;
 use strapdown::messages::{Event, GnssDegradationConfig, GnssFaultModel, GnssScheduler};
 use strapdown::rbpf::{RaoBlackwellizedParticleFilter, RbpfConfig};
 use strapdown::sim::{
-    DEFAULT_PROCESS_NOISE, GeoStateLayout, NavigationResult, TestDataRecord, UkfConfig,
+    DEFAULT_PROCESS_NOISE_DENSITY, GeoStateLayout, NavigationResult, TestDataRecord, UkfConfig,
     initialize_ukf, run_closed_loop, run_closed_loop_with_geo,
 };
 use strapdown::{NavigationFilter, StrapdownState};
@@ -170,7 +170,7 @@ fn passthrough_config() -> GnssDegradationConfig {
 
 /// A geophysically aided UKF carrying one bias state, tuned as the CLI tunes it.
 fn aided_ukf(first: &TestDataRecord) -> strapdown::kalman::UnscentedKalmanFilter {
-    let mut process_noise: Vec<f64> = DEFAULT_PROCESS_NOISE.into();
+    let mut process_noise: Vec<f64> = DEFAULT_PROCESS_NOISE_DENSITY.into();
     process_noise.push(1e-9);
     initialize_ukf(
         first,

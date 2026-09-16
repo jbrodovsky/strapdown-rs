@@ -530,7 +530,7 @@ impl IMUQuality {
     ///
     /// The 15-state error covariance a filter starts from has to come from somewhere. Every
     /// caller in this crate has so far started it from a hand-picked constant
-    /// ([`crate::sim::DEFAULT_PROCESS_NOISE`] reused verbatim as P0, in fact), which is
+    /// ([`crate::sim::DEFAULT_PROCESS_NOISE_DENSITY`] reused verbatim as P0, in fact), which is
     /// untraceable to any sensor: nothing in it says which IMU it describes or how well the
     /// vehicle's initial position was known. This derives the same fifteen numbers from two
     /// things that *are* knowable at initialisation -- the IMU's grade and the quality of

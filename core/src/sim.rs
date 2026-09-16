@@ -73,8 +73,23 @@ use health::HealthMonitor;
 pub use execution::{ExecutionLimits, ExecutionMonitor};
 pub use health::HealthLimits;
 
-/// Per-step position process noise for [`DEFAULT_PROCESS_NOISE`], as a standard deviation in
-/// **metres**.
+/// Position process-noise density for [`DEFAULT_PROCESS_NOISE_DENSITY`], as the standard
+/// deviation accumulated in **one second**, in **metres** (so m/sqrt(s)).
+///
+/// # Per second, not per step (#374)
+///
+/// This used to be a *per-step* standard deviation, added once per IMU sample with no `dt`
+/// scaling, which made the process noise a trajectory actually saw a function of its sample
+/// rate rather than of its physics. Across the data this repository ships that was a **50x
+/// spread** from one constant: `core/tests/test_data.csv` is 1 Hz, `generate_synthetic`
+/// defaults to 10 Hz, and the `syn_*` baseline scenarios run at 50 Hz. Resampling a log
+/// silently retuned the filter.
+///
+/// The numbers below are unchanged, and are now read as densities. That reinterpretation is
+/// exact rather than approximate for the recording they were tuned on: `test_data.csv` steps
+/// at **1.0000 s**, every step, so `q * dt == q` there and its behaviour is bit-identical
+/// across #374. What changes is everything sampled faster, which stops receiving one full
+/// second of process noise per step.
 ///
 /// Every position quantity in the default diagonal is written here, in one unit, and converted
 /// to each state's own unit exactly once at the point of use. That is the whole of the fix for
@@ -86,12 +101,12 @@ pub use health::HealthLimits;
 /// # Why 0.1 m
 ///
 /// The value is not new: [`crate::sim`]'s own aiding acceptance tests (`core/tests/aiding.rs`)
-/// already define `POSITION_PROCESS_NOISE_M = 0.1` and build their diagonal this way, having
+/// already define `POSITION_PROCESS_NOISE_M_PER_ROOT_S = 0.1` and build their diagonal this way, having
 /// hit the same trap. Adopting it here gives the workspace one number for this quantity instead
 /// of a fourth.
 ///
-/// What bounds it is the Kalman gain it implies. For a scalar random walk of per-step standard
-/// deviation $q$ observed with measurement standard deviation $r$, the steady-state prior
+/// What bounds it is the Kalman gain it implies. For a scalar random walk of standard
+/// deviation $q$ per step observed with measurement standard deviation $r$, the steady-state prior
 /// variance solves $P^2 - q^2 P - q^2 r^2 = 0$, so for $q \ll r$ it is $P \approx qr$ and the
 /// steady-state gain is
 ///
@@ -115,23 +130,38 @@ pub use health::HealthLimits;
 /// $K = 0.026$, so the filter averages roughly forty fixes and settles at a horizontal standard
 /// deviation of $\sqrt{qr} = 0.62$ m against a 3.81 m fix. None of that is read off what the
 /// suite currently prints.
-pub const POSITION_PROCESS_NOISE_M: f64 = 0.1;
+///
+/// # The derivation survives the change of units, and gets better away from 1 Hz
+///
+/// That argument is stated per step, and the step it was made on is the reference recording's
+/// -- which is exactly 1 s, so at 1 Hz the per-step standard deviation and the per-root-second
+/// density are the same number and the bound is unchanged.
+///
+/// Away from 1 Hz the density is the quantity that keeps the argument honest. A step of
+/// $\Delta t$ contributes $q\sqrt{\Delta t}$, so at the 50 Hz the `syn_*` scenarios run at the
+/// per-step figure is $0.1\sqrt{0.02} = 0.014$ m and $K = 0.0037$: the filter averages roughly
+/// 270 fixes rather than 40. That is the *right* answer -- sampling the same trajectory more
+/// often should let a filter average more, not inject fifty times the random walk -- and it is
+/// what the per-step form got backwards. Under the old convention those scenarios received a
+/// full second of process noise every 20 ms.
+pub const POSITION_PROCESS_NOISE_M_PER_ROOT_S: f64 = 0.1;
 
-/// [`POSITION_PROCESS_NOISE_M`] as a latitude/longitude variance, rad^2.
+/// [`POSITION_PROCESS_NOISE_M_PER_ROOT_S`] as a latitude/longitude variance density,
+/// rad^2 per second.
 ///
 /// The filters hold latitude and longitude in radians, so a metric horizontal uncertainty has
 /// to pass through [`crate::earth::METERS_TO_RADIANS`] before it can sit on a covariance
 /// diagonal -- the same conversion [`initialize_ukf`] spells out as
 /// `(position_accuracy * METERS_TO_DEGREES).to_radians()` when it builds $P_0$.
-const HORIZONTAL_POSITION_PROCESS_NOISE_RAD2: f64 = {
-    let radians = POSITION_PROCESS_NOISE_M * METERS_TO_RADIANS;
+const HORIZONTAL_POSITION_PROCESS_NOISE_RAD2_PER_S: f64 = {
+    let radians = POSITION_PROCESS_NOISE_M_PER_ROOT_S * METERS_TO_RADIANS;
     radians * radians
 };
 
 /// Initial position uncertainty the default 15-state filters claim, as a standard deviation
 /// in **metres**.
 ///
-/// The $P_0$ counterpart of [`POSITION_PROCESS_NOISE_M`], and it exists for the same reason:
+/// The $P_0$ counterpart of [`POSITION_PROCESS_NOISE_M_PER_ROOT_S`], and it exists for the same reason:
 /// [`initialize_eskf`] and [`crate::engine`]'s `DEFAULT_INITIAL_COVARIANCE` both wrote their
 /// position block as three literals -- `1e-6, 1e-6, 1e-4`, one of them commented "(m^2)" --
 /// when latitude and longitude are radians and altitude is metres. Read correctly that is a
@@ -170,10 +200,10 @@ pub(crate) const INITIAL_HORIZONTAL_POSITION_VARIANCE_RAD2: f64 = {
 pub(crate) const INITIAL_VERTICAL_POSITION_VARIANCE_M2: f64 =
     DEFAULT_INITIAL_POSITION_UNCERTAINTY_M * DEFAULT_INITIAL_POSITION_UNCERTAINTY_M;
 
-/// Per-step altitude process noise for [`DEFAULT_PROCESS_NOISE`], m^2.
+/// Per-step altitude process noise for [`DEFAULT_PROCESS_NOISE_DENSITY`], m^2.
 ///
 /// Its own constant because it is the one position entry in metres rather than radians, and
-/// tied to [`POSITION_PROCESS_NOISE_M`] because nothing ever justified it being anything else.
+/// tied to [`POSITION_PROCESS_NOISE_M_PER_ROOT_S`] because nothing ever justified it being anything else.
 ///
 /// # Why it is no longer 1e-4
 ///
@@ -211,7 +241,7 @@ pub(crate) const INITIAL_VERTICAL_POSITION_VARIANCE_M2: f64 =
 ///
 /// # Why 1e-2 specifically
 ///
-/// It is [`POSITION_PROCESS_NOISE_M`] squared, which makes the position block isotropic in
+/// It is [`POSITION_PROCESS_NOISE_M_PER_ROOT_S`] squared, which makes the position block isotropic in
 /// per-step standard deviation. That is an argument from symmetry rather than from the
 /// vertical sensor -- $Q$ models unmodelled dynamics, not fix quality, so the vertical fix
 /// being *better* than the horizontal one (1.38 m against 3.81 m) is not a reason for a
@@ -234,13 +264,23 @@ pub(crate) const INITIAL_VERTICAL_POSITION_VARIANCE_M2: f64 =
 ///
 /// All of these numbers are gated in `core/tests/perf_baseline.json`, so the next change to
 /// them has to be deliberate.
-const VERTICAL_POSITION_PROCESS_NOISE_M2: f64 = POSITION_PROCESS_NOISE_M * POSITION_PROCESS_NOISE_M;
+const VERTICAL_POSITION_PROCESS_NOISE_M2_PER_S: f64 =
+    POSITION_PROCESS_NOISE_M_PER_ROOT_S * POSITION_PROCESS_NOISE_M_PER_ROOT_S;
 
-/// Default process noise covariance diagonal used when a caller supplies none.
+/// Default process-noise **spectral density** used when a caller supplies none.
 ///
-/// The filters in this crate build $Q$ with `DMatrix::from_diagonal` from this array and add
-/// it to the propagated covariance once per step, so each entry is a per-step variance and not
-/// a spectral density scaled by $\Delta t$. Ordering matches the 15-state vector
+/// Each entry is a variance **per second**. The filters build $Q_k$ from it as
+/// $Q_k = q \, \Delta t$ and add that to the propagated covariance, so the noise a trajectory
+/// accumulates is a function of elapsed time rather than of how often it was sampled.
+///
+/// That was not true until #374. These entries were per-step variances added once per IMU
+/// sample with no $\Delta t$ anywhere, which made the effective process noise proportional to
+/// the sample rate: 1 Hz on `core/tests/test_data.csv`, 10 Hz from `generate_synthetic`'s
+/// default and 50 Hz on the `syn_*` baseline scenarios -- **a 50x spread from one constant**,
+/// tuned on exactly one of them. The values are unchanged and reinterpreted, which is exact
+/// for the reference recording: it steps at 1.0000 s, so $q \Delta t = q$ there.
+///
+/// Ordering matches the 15-state vector
 /// \[lat, lon, alt, v_n, v_e, v_d, roll, pitch, yaw, accel bias x/y/z, gyro bias x/y/z\], with
 /// the states in the crate's native units (angles in radians, altitude in metres, velocities in
 /// m/s). Nine-state filters take only the leading nine entries.
@@ -251,11 +291,11 @@ const VERTICAL_POSITION_PROCESS_NOISE_M2: f64 = POSITION_PROCESS_NOISE_M * POSIT
 /// picked as though they were, which made the horizontal terms a 6.4 km per-step standard
 /// deviation sitting next to a 1 cm one.
 ///
-/// #308 changed only the horizontal pair, leaving [`VERTICAL_POSITION_PROCESS_NOISE_M2`] at
+/// #308 changed only the horizontal pair, leaving [`VERTICAL_POSITION_PROCESS_NOISE_M2_PER_S`] at
 /// its historical `1e-4` because altitude never carried the units defect and a units fix is
 /// not the place to retune a channel. That retune is now done, separately and on its own
 /// evidence: the altitude entry is `1e-2`, derived from the same
-/// [`POSITION_PROCESS_NOISE_M`] as the horizontal pair, because `1e-4` left the vertical
+/// [`POSITION_PROCESS_NOISE_M_PER_ROOT_S`] as the horizontal pair, because `1e-4` left the vertical
 /// channel reporting an uncertainty roughly half its actual error. See that constant for the
 /// measurements. The remaining entries are hand-picked tuning values rather than values
 /// derived from any particular sensor.
@@ -263,22 +303,22 @@ const VERTICAL_POSITION_PROCESS_NOISE_M2: f64 = POSITION_PROCESS_NOISE_M * POSIT
 /// Callers in this crate have also reused the array verbatim as an initial error covariance
 /// $P_0$; [`crate::IMUQuality::auto_covariance`] derives that fifteen-element diagonal from an
 /// IMU grade and an initial fix accuracy instead.
-pub const DEFAULT_PROCESS_NOISE: [f64; 15] = [
-    HORIZONTAL_POSITION_PROCESS_NOISE_RAD2, // latitude, rad^2
-    HORIZONTAL_POSITION_PROCESS_NOISE_RAD2, // longitude, rad^2
-    VERTICAL_POSITION_PROCESS_NOISE_M2,     // altitude, m^2
-    1e-3,                                   // velocity north noise
-    1e-3,                                   // velocity east noise
-    1e-3,                                   // velocity down noise
-    1e-5,                                   // roll noise
-    1e-5,                                   // pitch noise
-    1e-5,                                   // yaw noise
-    1e-6,                                   // acc bias x noise
-    1e-6,                                   // acc bias y noise
-    1e-6,                                   // acc bias z noise
-    1e-8,                                   // gyro bias x noise
-    1e-8,                                   // gyro bias y noise
-    1e-8,                                   // gyro bias z noise
+pub const DEFAULT_PROCESS_NOISE_DENSITY: [f64; 15] = [
+    HORIZONTAL_POSITION_PROCESS_NOISE_RAD2_PER_S, // latitude, rad^2/s
+    HORIZONTAL_POSITION_PROCESS_NOISE_RAD2_PER_S, // longitude, rad^2/s
+    VERTICAL_POSITION_PROCESS_NOISE_M2_PER_S,     // altitude, m^2/s
+    1e-3,                                         // velocity north, (m/s)^2/s
+    1e-3,                                         // velocity east, (m/s)^2/s
+    1e-3,                                         // velocity down, (m/s)^2/s
+    1e-5,                                         // roll, rad^2/s
+    1e-5,                                         // pitch, rad^2/s
+    1e-5,                                         // yaw, rad^2/s
+    1e-6,                                         // acc bias x, (m/s^2)^2/s
+    1e-6,                                         // acc bias y, (m/s^2)^2/s
+    1e-6,                                         // acc bias z, (m/s^2)^2/s
+    1e-8,                                         // gyro bias x, (rad/s)^2/s
+    1e-8,                                         // gyro bias y, (rad/s)^2/s
+    1e-8,                                         // gyro bias z, (rad/s)^2/s
 ];
 
 /// Default [`ExecutionLimits::max_wall_clock_ratio`]: a run may burn at most a quarter of a
@@ -3297,7 +3337,7 @@ pub fn initialize_ukf(
     let initial_state = initial_pose.initial_state(config.is_enu);
     let process_noise_diagonal = match config.process_noise_diagonal {
         Some(pn) => pn,
-        None => DEFAULT_PROCESS_NOISE.to_vec(),
+        None => DEFAULT_PROCESS_NOISE_DENSITY.to_vec(),
     };
     // Covariance parameters
     let position_accuracy = initial_pose.horizontal_accuracy; //.sqrt();
@@ -3483,9 +3523,9 @@ pub fn initialize_ekf(
         }
         None => {
             if use_biases {
-                DEFAULT_PROCESS_NOISE.to_vec()
+                DEFAULT_PROCESS_NOISE_DENSITY.to_vec()
             } else {
-                DEFAULT_PROCESS_NOISE[0..9].to_vec()
+                DEFAULT_PROCESS_NOISE_DENSITY[0..9].to_vec()
             }
         }
     };
@@ -3673,7 +3713,7 @@ pub fn initialize_eskf(
             )?;
             pn
         }
-        None => DEFAULT_PROCESS_NOISE.to_vec(),
+        None => DEFAULT_PROCESS_NOISE_DENSITY.to_vec(),
     };
 
     // Build IMU biases
@@ -3702,7 +3742,7 @@ pub fn initialize_eskf(
     // `1e-6, 1e-6, 1e-4`, commented "(m²)" -- were #308's defect in P0 rather than in Q: a
     // 6367 m horizontal claim sitting beside a 1 cm vertical one, in the filter this crate
     // ships as its default. Written from one metric constant and converted once, the way
-    // `initialize_ukf` above builds its own P0 and the way `DEFAULT_PROCESS_NOISE` is built.
+    // `initialize_ukf` above builds its own P0 and the way `DEFAULT_PROCESS_NOISE_DENSITY` is built.
     let mut error_covariance_diagonal = vec![
         INITIAL_HORIZONTAL_POSITION_VARIANCE_RAD2, // latitude error, rad^2
         INITIAL_HORIZONTAL_POSITION_VARIANCE_RAD2, // longitude error, rad^2
@@ -7930,23 +7970,23 @@ mod tests {
     /// [`crate::earth`]'s `meters_to_radians_matches_a_wgs84_principal_radius`; without that
     /// test this one is a tautology, and the two are meant to be read as a pair.
     ///
-    /// Altitude is deliberately *not* compared against [`POSITION_PROCESS_NOISE_M`]. The two
-    /// are different quantities on purpose -- see [`VERTICAL_POSITION_PROCESS_NOISE_M2`] --
+    /// Altitude is deliberately *not* compared against [`POSITION_PROCESS_NOISE_M_PER_ROOT_S`]. The two
+    /// are different quantities on purpose -- see [`VERTICAL_POSITION_PROCESS_NOISE_M2_PER_S`] --
     /// and asserting they agree would turn "the vertical channel keeps its historical tuning"
     /// into a test failure rather than the recorded decision it is.
     #[test]
     fn default_process_noise_position_entries_are_one_quantity() {
-        assert_eq!(DEFAULT_PROCESS_NOISE.len(), 15);
-        let latitude_m = DEFAULT_PROCESS_NOISE[0].sqrt() / METERS_TO_RADIANS;
-        let longitude_m = DEFAULT_PROCESS_NOISE[1].sqrt() / METERS_TO_RADIANS;
-        assert_approx_eq!(latitude_m, POSITION_PROCESS_NOISE_M, 1e-12);
-        assert_approx_eq!(longitude_m, POSITION_PROCESS_NOISE_M, 1e-12);
+        assert_eq!(DEFAULT_PROCESS_NOISE_DENSITY.len(), 15);
+        let latitude_m = DEFAULT_PROCESS_NOISE_DENSITY[0].sqrt() / METERS_TO_RADIANS;
+        let longitude_m = DEFAULT_PROCESS_NOISE_DENSITY[1].sqrt() / METERS_TO_RADIANS;
+        assert_approx_eq!(latitude_m, POSITION_PROCESS_NOISE_M_PER_ROOT_S, 1e-12);
+        assert_approx_eq!(longitude_m, POSITION_PROCESS_NOISE_M_PER_ROOT_S, 1e-12);
         // Altitude is in metres already and keeps its own constant. Asserted as an identity
-        // so that re-tying it to `POSITION_PROCESS_NOISE_M` -- the tidy-looking change the
+        // so that re-tying it to `POSITION_PROCESS_NOISE_M_PER_ROOT_S` -- the tidy-looking change the
         // doc comment argues against -- has to be a deliberate edit here too.
         assert_approx_eq!(
-            DEFAULT_PROCESS_NOISE[2],
-            VERTICAL_POSITION_PROCESS_NOISE_M2,
+            DEFAULT_PROCESS_NOISE_DENSITY[2],
+            VERTICAL_POSITION_PROCESS_NOISE_M2_PER_S,
             1e-18
         );
         // Not a re-assertion of the same arithmetic: this is the bound the doc comment derives
@@ -7954,8 +7994,8 @@ mod tests {
         // regime where the filter stops filtering. K = q / (q + r) <= 0.1 at r = 3.81 m, the
         // reference recording's reported horizontal 1-sigma, caps q at r / 9.
         let reported_fix_accuracy_m = 3.81;
-        let steady_state_gain =
-            POSITION_PROCESS_NOISE_M / (POSITION_PROCESS_NOISE_M + reported_fix_accuracy_m);
+        let steady_state_gain = POSITION_PROCESS_NOISE_M_PER_ROOT_S
+            / (POSITION_PROCESS_NOISE_M_PER_ROOT_S + reported_fix_accuracy_m);
         assert!(
             steady_state_gain <= 0.1,
             "position process noise implies a steady-state gain of {steady_state_gain:.3}; \
@@ -7964,7 +8004,7 @@ mod tests {
         );
         // The remaining entries are untouched tuning values; spot-check one so a wholesale
         // rewrite of the array does not slip past.
-        assert_eq!(DEFAULT_PROCESS_NOISE[3], 1e-3); // velocity
+        assert_eq!(DEFAULT_PROCESS_NOISE_DENSITY[3], 1e-3); // velocity
     }
 
     #[test]
