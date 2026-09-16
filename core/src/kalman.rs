@@ -267,6 +267,16 @@ fn wrap_attitude_onto_principal_branch(state: &mut DVector<f64>) {
 /// block and a velocity block says nothing about why those three are special.
 const ATTITUDE_STATE_INDICES: std::ops::Range<usize> = 6..9;
 
+/// The roll row of a filter state, by name.
+///
+/// Derived from [`ATTITUDE_STATE_INDICES`] rather than written as `6`, so the manifold
+/// helpers below cannot drift away from the range the rest of the module uses.
+const ATTITUDE_ROLL_INDEX: usize = ATTITUDE_STATE_INDICES.start;
+/// The pitch row of a filter state, by name. See [`ATTITUDE_ROLL_INDEX`].
+const ATTITUDE_PITCH_INDEX: usize = ATTITUDE_STATE_INDICES.start + 1;
+/// The yaw row of a filter state, by name. See [`ATTITUDE_ROLL_INDEX`].
+const ATTITUDE_YAW_INDEX: usize = ATTITUDE_STATE_INDICES.start + 2;
+
 /// Re-express a state's Euler angles on the same branch as `reference`, in place.
 ///
 /// [`Rotation3::euler_angles`] derives roll and yaw with `atan2`, so it hands every
@@ -311,6 +321,66 @@ fn unwrap_attitude_onto_reference_branch(state: &mut DVector<f64>, reference: &[
             state[index] += turns;
         }
     }
+}
+
+/// Read a state vector's attitude triple as the rotation it denotes.
+///
+/// Rows 6..9 of every filter state in this crate are an intrinsic XYZ Euler triple. This is
+/// where the UKF turns them back into a rotation, and it is the reason the manifold
+/// arithmetic below is insensitive to branch: two triples a whole turn apart in any angle
+/// build the *identical* matrix, so nothing downstream of this call can see which branch a
+/// `euler_angles()` call happened to canonicalise onto.
+fn attitude_of<S>(state: &S) -> Rotation3<f64>
+where
+    S: std::ops::Index<usize, Output = f64> + ?Sized,
+{
+    Rotation3::from_euler_angles(
+        state[ATTITUDE_ROLL_INDEX],
+        state[ATTITUDE_PITCH_INDEX],
+        state[ATTITUDE_YAW_INDEX],
+    )
+}
+
+/// Write a rotation back into a state vector's attitude triple.
+fn set_attitude_of(state: &mut DVector<f64>, attitude: &Rotation3<f64>) {
+    let (roll, pitch, yaw) = attitude.euler_angles();
+    state[ATTITUDE_ROLL_INDEX] = roll;
+    state[ATTITUDE_PITCH_INDEX] = pitch;
+    state[ATTITUDE_YAW_INDEX] = yaw;
+}
+
+/// The rotation vector taking `reference` to `point`: $\log(R_{\text{ref}}^\top R)$.
+///
+/// This is the attitude difference the unscented transform actually wants -- an element of
+/// the tangent space at `reference`, which is a genuine vector and may therefore be scaled,
+/// summed and squared like every other state. The difference of two Euler triples is not.
+///
+/// # Why the quaternion route, and not `Rotation3::scaled_axis`
+///
+/// They compute the same quantity and only one of them is usable at this filter's weights.
+/// `Rotation3::scaled_axis` recovers the angle from the matrix trace -- an `acos` evaluated
+/// within an ulp of 1 for a small rotation, where its derivative is unbounded. The measured
+/// sigma-point attitude spread here is about `1.2e-7` rad (`alpha = 1e-3` places the points
+/// at `0.0039` sigma), and at that magnitude it returns roughly 1.5% relative error. The
+/// scaled transform's weights are large and cancelling -- `w_i` is about `+3.3e4` against a
+/// `w_0` of about `-1.0e6` -- so that error does not stay small: it becomes about `6e-5` rad
+/// of fabricated rotation per step, which is 0.17 deg/s at 50 Hz, the same order as the gyro
+/// bias the filter is trying to estimate.
+///
+/// `UnitQuaternion::from_rotation_matrix` goes through the quaternion's vector part instead,
+/// which is linear in the angle near identity. On the identical sum that lands at `3.7e-12`
+/// rad -- sixteen million times smaller, and the zero it should be.
+fn attitude_tangent(reference: &Rotation3<f64>, point: &Rotation3<f64>) -> Vector3<f64> {
+    UnitQuaternion::from_rotation_matrix(&(reference.transpose() * point)).scaled_axis()
+}
+
+/// Overwrite a state difference's attitude rows with the tangent-space residual.
+///
+/// The other rows of `difference` are ordinary vector subtraction and stay as they are.
+fn set_attitude_residual(difference: &mut DVector<f64>, residual: &Vector3<f64>) {
+    difference[ATTITUDE_ROLL_INDEX] = residual[0];
+    difference[ATTITUDE_PITCH_INDEX] = residual[1];
+    difference[ATTITUDE_YAW_INDEX] = residual[2];
 }
 
 /// Unscented Kalman Filter (UKF) implementation for strapdown navigation.
@@ -476,10 +546,45 @@ impl UnscentedKalmanFilter {
         let mu = self.mean_state.clone();
         let mut pts = DMatrix::<f64>::zeros(self.state_size, 2 * self.state_size + 1);
         pts.column_mut(0).copy_from(&mu);
+        // Attitude is perturbed on the manifold, every other state in the chart. The linear
+        // `mu +/- column` is exactly right for a state whose difference is a vector and
+        // wrong for the three that parameterise a rotation: adding a rotation vector to an
+        // Euler triple is not the same rotation as composing it, and the discrepancy is
+        // second order in the perturbation -- which the scaled transform's own weights then
+        // amplify by the factor the spread shrank by. See `attitude_tangent` (#371).
+        let mean_attitude = attitude_of(&mu);
+        let reference_branch = [
+            mu[ATTITUDE_ROLL_INDEX],
+            mu[ATTITUDE_PITCH_INDEX],
+            mu[ATTITUDE_YAW_INDEX],
+        ];
         for i in 0..sqrt_p.ncols() {
-            pts.column_mut(i + 1).copy_from(&(&mu + sqrt_p.column(i)));
-            pts.column_mut(i + 1 + self.state_size)
-                .copy_from(&(&mu - sqrt_p.column(i)));
+            let column = sqrt_p.column(i);
+            let tangent = Vector3::new(
+                column[ATTITUDE_ROLL_INDEX],
+                column[ATTITUDE_PITCH_INDEX],
+                column[ATTITUDE_YAW_INDEX],
+            );
+            let mut plus = &mu + column;
+            let mut minus = &mu - column;
+            set_attitude_of(
+                &mut plus,
+                &(mean_attitude * Rotation3::from_scaled_axis(tangent)),
+            );
+            set_attitude_of(
+                &mut minus,
+                &(mean_attitude * Rotation3::from_scaled_axis(-tangent)),
+            );
+            // `euler_angles` canonicalises each triple onto `[-pi, pi]` independently, which
+            // the linear form never had to care about because it never left the chart. The
+            // attitude arithmetic downstream is branch-free (see `attitude_of`), but a
+            // measurement model reading the yaw row of a sigma point directly is not, so put
+            // the points back on the mean's branch the way `predict` already does. Exactly
+            // identity when nothing straddles the cut.
+            unwrap_attitude_onto_reference_branch(&mut plus, &reference_branch);
+            unwrap_attitude_onto_reference_branch(&mut minus, &reference_branch);
+            pts.set_column(i + 1, &plus);
+            pts.set_column(i + 1 + self.state_size, &minus);
         }
         Ok(pts)
     }
@@ -658,13 +763,40 @@ impl NavigationFilter for UnscentedKalmanFilter {
         for (i, sigma_point) in sigma_points.column_iter().enumerate() {
             mu_bar += self.weights_mean[i] * sigma_point;
         }
+        // The attitude rows of that sum are not the mean attitude, and the error is not
+        // small. A weighted arithmetic mean of Euler triples is a linear operation on a
+        // nonlinear chart: 31 rotations all lying inside a 0.24 deg cone average, that way,
+        // to a point 14.3 deg *outside* it -- sixty times the spread of the inputs. Across a
+        // 10^4 sweep of the sigma-point spread the discrepancy moves 0.4%, where a genuinely
+        // second-order error would have fallen by 10^8; the scaled transform's weights are
+        // what hold it up (#371).
+        //
+        // So average on the group instead: anchor at sigma point 0 -- the propagated mean,
+        // and the member the rest are closest to -- take each residual into the tangent
+        // space there, sum them with the transform's own weights, and map the result back.
+        // `sum_i w_i == 1` holds even though the weights are not convex, so this is well
+        // defined, and one anchored pass is the whole of it. A Karcher *iteration* is not
+        // available here: re-anchoring on the running mean makes sigma point 0's residual
+        // non-zero, and `w_0` (about -1e6) multiplies it, which NaNs the filter within a few
+        // samples.
+        let reference_attitude = attitude_of(&sigma_points.column(0));
+        let mut tangent_mean = Vector3::<f64>::zeros();
+        for (i, sigma_point) in sigma_points.column_iter().enumerate() {
+            tangent_mean += self.weights_mean[i]
+                * attitude_tangent(&reference_attitude, &attitude_of(&sigma_point));
+        }
+        let mean_attitude = reference_attitude * Rotation3::from_scaled_axis(tangent_mean);
+        set_attitude_of(&mut mu_bar, &mean_attitude);
         let mut p_bar = DMatrix::<f64>::zeros(self.state_size, self.state_size);
         for (i, sigma_point) in sigma_points.column_iter().enumerate() {
-            // No angular wrap here: the loop above already put every sigma point on the
-            // reference's branch, and `mu_bar` is a weighted combination of those, so the
-            // attitude residuals are already the small differences they are meant to be.
-            // Wrapping them would instead *cap* a genuinely large spread at half a turn.
-            let diff = sigma_point - &mu_bar;
+            // No angular wrap here: the attitude rows are replaced below by a tangent-space
+            // residual, which has no branch cut under a half turn at all, and the remaining
+            // rows are ordinary vector differences.
+            let mut diff = sigma_point - &mu_bar;
+            set_attitude_residual(
+                &mut diff,
+                &attitude_tangent(&mean_attitude, &attitude_of(&sigma_point)),
+            );
             p_bar += self.weights_cov[i] * &diff * &diff.transpose();
         }
         p_bar += process_noise_for_step(&self.process_noise, sample.dt)?;
@@ -727,9 +859,17 @@ impl NavigationFilter for UnscentedKalmanFilter {
         // a matrix square root every time it is called.
         let mut cross_covariance =
             DMatrix::<f64>::zeros(self.state_size, measurement.get_dimension());
+        let mean_attitude = attitude_of(&self.mean_state);
         for (i, measurement_sigma_point) in measurement_sigma_points.column_iter().enumerate() {
             let measurement_diff = measurement_sigma_point - &z_hat;
-            let state_diff = sigma_points.column(i) - &self.mean_state;
+            // Same chart arithmetic as `predict`'s `p_bar`, and the same fix: the attitude
+            // rows are the tangent-space residual at the mean, not a difference of Euler
+            // triples (#371).
+            let mut state_diff = sigma_points.column(i) - &self.mean_state;
+            set_attitude_residual(
+                &mut state_diff,
+                &attitude_tangent(&mean_attitude, &attitude_of(&sigma_points.column(i))),
+            );
             cross_covariance += self.weights_cov[i] * state_diff * measurement_diff.transpose();
         }
 
@@ -744,7 +884,18 @@ impl NavigationFilter for UnscentedKalmanFilter {
         }
 
         let k = Self::robust_kalman_gain(&cross_covariance, &s)?;
-        self.mean_state += &k * innovation;
+        let correction = &k * innovation;
+        // The gain was formed against tangent-space attitude residuals, so its attitude rows
+        // are a rotation vector and have to be *composed* onto the mean rather than added to
+        // its Euler triple. Adding them is the same chart error as averaging them (#371).
+        let corrected_attitude = mean_attitude
+            * Rotation3::from_scaled_axis(Vector3::new(
+                correction[ATTITUDE_ROLL_INDEX],
+                correction[ATTITUDE_PITCH_INDEX],
+                correction[ATTITUDE_YAW_INDEX],
+            ));
+        self.mean_state += correction;
+        set_attitude_of(&mut self.mean_state, &corrected_attitude);
         // Report attitude on the same branch `predict` writes (#314).
         wrap_attitude_onto_principal_branch(&mut self.mean_state);
         self.covariance -= &k * &s * &k.transpose();
@@ -3816,6 +3967,123 @@ mod tests {
             unwrapped, original,
             "an angle on the reference's own branch must survive untouched, not merely \
              approximately"
+        );
+    }
+
+    /// #371: averaging sigma-point attitudes in the Euler chart puts the mean nowhere near
+    /// the points, and shrinking the spread does not help.
+    ///
+    /// The numbers are the whole argument. With this filter's own weights -- `n = 15`,
+    /// `alpha = 1e-3`, so `w_0` is about `-1.0e6` against `w_i` of about `+3.3e4`, summing to
+    /// exactly 1 -- 31 rotations all lying inside a **0.24 degree** cone average, in the
+    /// chart, to a point **34 degrees outside** it. That is 140 times the spread of the
+    /// inputs, from a set whose members are indistinguishable by eye.
+    ///
+    /// A second-order error would fall as the square of the spread. This one does not fall at
+    /// all: the spread shrinking is exactly what makes the weights large, and the two cancel.
+    /// That is why no value of `alpha` ever reached this defect and why the original `alpha`
+    /// sweep (89.8, 90.5, 90.1, 96.5, 108.3 degrees over `1e-3 .. 1.0`) got *worse* as the
+    /// spread grew rather than better.
+    ///
+    /// **The level-north case is the control.** There the chart is locally linear, the two
+    /// means agree to 1e-9 degrees, and the defect is simply absent -- which is what makes
+    /// this a chart nonlinearity rather than an arithmetic slip. It is also why this went
+    /// unnoticed: the attitude has to be genuinely away from level before the chart bites.
+    #[test]
+    fn the_euler_chart_mean_leaves_the_cone_its_inputs_sit_in() {
+        /// Half-angle of the cone every sigma point is placed inside, degrees.
+        const CONE_HALF_ANGLE_DEG: f64 = 0.24;
+        /// How far outside that cone the chart mean must land before this test is satisfied.
+        /// Measured at 33.96 degrees; the bound is loose because the point is the order of
+        /// magnitude, not the digit.
+        const MIN_CHART_ERROR_DEG: f64 = 10.0;
+
+        fn rotation_vector(rotation: &Rotation3<f64>) -> Vector3<f64> {
+            UnitQuaternion::from_rotation_matrix(rotation).scaled_axis()
+        }
+
+        /// Place `2n + 1` rotations in the sigma-point pattern around `base`, then report how
+        /// far the chart mean and the manifold mean each land from it, in degrees.
+        fn two_means_about(base: Rotation3<f64>, weights: &DVector<f64>) -> (f64, f64) {
+            let state_size = (weights.len() - 1) / 2;
+            let half_angle = CONE_HALF_ANGLE_DEG.to_radians();
+            let mut points = vec![base];
+            for sign in [1.0, -1.0] {
+                for i in 0..state_size {
+                    let mut axis = Vector3::zeros();
+                    axis[i % 3] = sign * half_angle;
+                    points.push(base * Rotation3::from_scaled_axis(axis));
+                }
+            }
+
+            let mut chart = Vector3::<f64>::zeros();
+            let mut tangent = Vector3::<f64>::zeros();
+            for (i, point) in points.iter().enumerate() {
+                let (roll, pitch, yaw) = point.euler_angles();
+                chart += weights[i] * Vector3::new(roll, pitch, yaw);
+                tangent += weights[i] * rotation_vector(&(base.transpose() * point));
+            }
+            let chart_mean = Rotation3::from_euler_angles(chart[0], chart[1], chart[2]);
+            let manifold_mean = base * Rotation3::from_scaled_axis(tangent);
+
+            (
+                rotation_vector(&(base.transpose() * chart_mean))
+                    .norm()
+                    .to_degrees(),
+                rotation_vector(&(base.transpose() * manifold_mean))
+                    .norm()
+                    .to_degrees(),
+            )
+        }
+
+        // The filter's real weights, read off a real filter rather than re-derived here.
+        let filter = UnscentedKalmanFilter::new(
+            &InitialState::default(),
+            &[0.0; 6],
+            None,
+            vec![1e-6; 15],
+            DMatrix::from_diagonal(&DVector::from_vec(vec![1e-9; 15])),
+            1e-3,
+            2.0,
+            0.0,
+        );
+        assert_approx_eq!(filter.weights_mean.sum(), 1.0, 1e-9);
+        assert!(
+            filter.weights_mean[0] < -1e5 && filter.weights_mean[1] > 1e4,
+            "the defect is about non-convex weights; if these are convex the test proves \
+             nothing. w_0 = {}, w_1 = {}",
+            filter.weights_mean[0],
+            filter.weights_mean[1]
+        );
+
+        // Control: level and pointing north, where the chart is locally linear.
+        let (level_chart, level_manifold) = two_means_about(
+            Rotation3::from_euler_angles(0.0, 0.0, 0.0),
+            &filter.weights_mean,
+        );
+        assert!(
+            level_chart < 1e-9 && level_manifold < 1e-9,
+            "at level north the two means must agree -- if they do not, this test is \
+             measuring something other than the chart. chart {level_chart} deg, manifold \
+             {level_manifold} deg"
+        );
+
+        // The case that matters: a banked, non-level attitude of the kind any real
+        // trajectory spends its time in.
+        let (banked_chart, banked_manifold) = two_means_about(
+            Rotation3::from_euler_angles(0.3, -0.2, 1.1),
+            &filter.weights_mean,
+        );
+        assert!(
+            banked_manifold < 1e-6,
+            "the manifold mean of a symmetric point set is its anchor, exactly; got \
+             {banked_manifold} deg"
+        );
+        assert!(
+            banked_chart > MIN_CHART_ERROR_DEG,
+            "the chart mean is supposed to be badly wrong here -- that is the defect this \
+             filter's arithmetic avoids. Inputs inside a {CONE_HALF_ANGLE_DEG} deg cone, \
+             chart mean {banked_chart} deg out"
         );
     }
 

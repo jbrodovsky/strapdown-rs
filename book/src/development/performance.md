@@ -82,13 +82,26 @@ rather than defects in the harness; the fifth is a defect, in the gate.
    costs 24.0 -> 26.3 m of position and 0.255 -> 0.292 deg of yaw while taking its NEES
    4.64 -> 3.87 and its vertical containment 0.866 -> 0.925. Less accurate, more honest.
 
-   #371 is still a real defect -- a linear mean over sigma-point Euler triples sends 31
-   rotations inside a 0.24 deg cone to a point 14.3 deg outside it -- but it is not what this
-   row was measuring, and a tangent-space prototype moves it by 0.013 deg once the prior is
-   right. The two `__ekf` rows did not move at all, which is a finding rather than a null
-   result: the EKF's bias states are structurally inert
+   #371 was a real defect -- a linear mean over sigma-point Euler triples sends 31 rotations
+   inside a 0.24 deg cone to a point 34 deg outside it -- but it is not what this row was
+   measuring. Fixing it, so the UKF perturbs, averages, correlates and injects attitude on
+   SO(3), moved `syn_outage_60s__ukf` yaw by **0.007 deg** (0.222 to 0.230) and improved its
+   position (27.39 to 27.17 m). That near-nil result on the rows with exact truth is the
+   finding. The two `__ekf` rows did not move at all for the prior change either, which is
+   also a finding rather than a null result: the EKF's bias states are structurally inert
    ([#394](https://github.com/jbrodovsky/strapdown-rs/issues/394)), so its prior cannot be
    falsified by any measurement.
+
+   **The `real_*` UKF rows are the exception, and the yaw column there cannot adjudicate it.**
+   `real_clean__ukf` yaw went 22.72 to 25.83 deg and `real_degraded__ukf` 22.18 to 26.01 when
+   the chart was fixed, which reads as a 14-17% regression. Three measurements say what it
+   actually is. The UKF's disagreement with the **ESKF** -- the other filter here that does its
+   attitude arithmetic on a manifold, and which this change does not touch -- fell from 8.40 to
+   2.57 deg RMS on the same recording. The recording's own magnetometer, levelled by its own
+   roll and pitch, disagrees with its yaw column by **16.8 deg RMS after removing every
+   constant offset**, which is the floor for any filter aided by it, so the 3 deg the UKF moved
+   is inside what that column can resolve. And on the synthetic rows, where truth is exact, the
+   change is neutral. Caveat 1 again, in the attitude channel.
 4. **The consistency columns mean different things on the two sources.** On the synthetic
    scenarios `npes` lands between 3.9 and 12.1 against an ideal of 3.0, which is a real
    measurement of whether a filter believes the right thing. On the real-data scenarios it reaches the

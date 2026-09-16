@@ -95,11 +95,26 @@
 //!    containment 0.866 -> 0.925. Less accurate, more honest, which is what replacing a
 //!    fortunate constant with a model looks like.
 //!
-//!    #371 is still a real defect -- a linear mean over sigma-point Euler triples sends 31
-//!    rotations inside a 0.24 deg cone to a point 14.3 deg outside it -- but it is not what
-//!    this row was measuring, and a full tangent-space UKF prototype moves it by 0.013 deg
-//!    once the prior is right. Fixing it should be expected to change these numbers barely at
-//!    all. (Not #336, which fixed the branch-cut half of that and is closed.)
+//!    #371 was a real defect -- a linear mean over sigma-point Euler triples sends 31
+//!    rotations inside a 0.24 deg cone to a point 34 deg outside it -- but it is not what
+//!    this row was measuring. Fixing it (the UKF now perturbs, averages, correlates and
+//!    injects attitude on SO(3)) moved `syn_outage_60s__ukf` yaw by **0.007 deg**, from 0.222
+//!    to 0.230, and improved its position: 27.39 -> 27.17 m, cep50 -4.4%. That near-nil result
+//!    on the rows with exact truth is the finding, and it is why the chart fix shipped
+//!    separately from the prior fix rather than inside it. (Not #336, which fixed the
+//!    branch-cut half of that and is closed.)
+//!
+//!    **The `real_*` UKF rows are the exception, and the yaw column there cannot adjudicate
+//!    it.** `real_clean__ukf` yaw went 22.72 -> 25.83 deg and `real_degraded__ukf`
+//!    22.18 -> 26.01 when the chart was fixed, which reads as a 14-17% regression. Three
+//!    measurements say what it actually is. The UKF's disagreement with the **ESKF** -- the
+//!    other filter in this suite that does its attitude arithmetic on a manifold, and which
+//!    this change does not touch -- fell from 8.40 to 2.57 deg RMS on the same recording, so
+//!    the two now agree where they did not. The recording's own magnetometer, levelled by its
+//!    own roll and pitch, disagrees with its yaw column by **16.8 deg RMS after removing every
+//!    constant offset**, which is the floor for any filter aided by it: the 3 deg the UKF
+//!    moved is well inside what that column can resolve. And on the synthetic rows, where
+//!    truth is exact, the same change is neutral. Caveat 1 again, in the attitude channel.
 //!
 //!    The two `__ekf` rows did not move at all, and that is a third finding rather than a
 //!    null result: the EKF's bias states are structurally inert (#394), so its prior is
