@@ -7,6 +7,26 @@ keywords = ["strapdown", "inertial", "navigation", "IMU", "INS"]
 categories = ["aerospace", "science", "simulation"]
 documentation = "https://docs.rs/strapdown-core/"
 
+# The integration tests do not ship, and this is the whole of #397.
+#
+# Two problems, one cause. `core/tests/test_data.csv` is **3.1 MB** of Sensor Logger records
+# that exist to gate this repository's own accuracy baseline; nothing in the published library
+# reads it, and every consumer would pay for it on every fetch, forever. And
+# `tests/perf_baseline.rs` resolves the fragment it validates as
+# `CARGO_MANIFEST_DIR/../book/src/development/baseline-tables.md` -- a sibling of this package
+# directory, so outside the package root and impossible for `cargo package` to include. A
+# consumer who downloaded the crate and ran `cargo test` got a failure pointing at a file they
+# cannot have and at a bless workflow that regenerates a book they did not get.
+#
+# `cargo publish`'s verification step runs `cargo build`, not `cargo test`, so neither problem
+# is visible to CI -- only to someone who has already downloaded the crate. That is the worst
+# place to find it, and a published 1.0.0 can only be yanked, not unpublished.
+#
+# Excluding the directory solves both: the fixture stops shipping and the test that cannot run
+# in a package no longer ships either. The accuracy gate is a repository-level guard, not a
+# consumer-facing test, and `cargo test --workspace` in a git checkout is unaffected.
+exclude = ["tests/"]
+
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
