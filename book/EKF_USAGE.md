@@ -291,7 +291,7 @@ const HORIZONTAL: f64 = {
 const DEFAULT_PROCESS_NOISE: [f64; 15] = [
     HORIZONTAL,  // latitude, rad^2
     HORIZONTAL,  // longitude, rad^2
-    1e-4,  // altitude, m^2 -- its own constant, see below
+    1e-2,  // altitude, m^2 -- its own constant, see below
     1e-3,  // velocity north
     1e-3,  // velocity east
     1e-3,  // velocity down
@@ -307,15 +307,19 @@ const DEFAULT_PROCESS_NOISE: [f64; 15] = [
 ];
 ```
 
-The altitude entry keeps its own constant, `VERTICAL_POSITION_PROCESS_NOISE_M2 = 1e-4`
-(a 1 cm per-step standard deviation), rather than `POSITION_PROCESS_NOISE_M` squared.
-That entry was already in metres and already meant what it said, so #308 left it alone:
-a units fix is not the place to retune the vertical channel. Whether 1 cm per step is the
-right *tuning* is a fair question and a separate one.
+The altitude entry keeps its own constant, `VERTICAL_POSITION_PROCESS_NOISE_M2`, rather
+than being spelled as `POSITION_PROCESS_NOISE_M` squared -- though since #328 that is
+exactly what it evaluates to, `1e-2 m^2`, a 10 cm per-step standard deviation.
+
+It was `1e-4` (1 cm per step) until then. #308 deliberately left it alone, on the grounds
+that a units fix is not the place to retune the vertical channel; #328 did the retune, on
+evidence that it was the only one of three candidate knobs that moved three-sigma altitude
+containment the right way. It is still short of where it should be -- see #372 -- so treat
+`1e-2` as the current best value rather than a settled one.
 
 If you write the horizontal entries directly in rad^2, be aware what the numbers mean:
 `1e-6 rad^2` is a **6.4 km** per-step standard deviation, not a small number. Writing it
-next to an altitude term of `1e-4 m^2` (1 cm) is the defect issue #308 fixed -- the filter
+next to an altitude term of `1e-2 m^2` (10 cm) is the defect issue #308 fixed -- the filter
 is told its own prediction is worthless, so it discards it and lands on each fix instead of
 filtering, and innovation gating cannot function. `1e-9 rad^2` is the same mistake three
 orders of magnitude smaller: a 201 m per-step standard deviation.

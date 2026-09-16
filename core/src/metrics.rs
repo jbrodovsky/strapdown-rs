@@ -793,8 +793,19 @@ fn mean(values: &[f64]) -> Option<f64> {
     (!values.is_empty()).then(|| values.iter().sum::<f64>() / values.len() as f64)
 }
 
-/// Root mean square, or `None` for an empty slice.
-fn root_mean_square(values: &[f64]) -> Option<f64> {
+/// Root mean square of a slice, or `None` when it is empty.
+///
+/// Public because the test targets each grew their own copy of this, which is what
+/// [`crate::metrics`] exists to stop (#368). `None` rather than zero for the same reason
+/// [`mean`] returns `None`: a zero is indistinguishable from a perfect run.
+///
+/// ```
+/// use strapdown::metrics::root_mean_square;
+///
+/// assert_eq!(root_mean_square(&[3.0, 4.0]), Some(12.5_f64.sqrt()));
+/// assert_eq!(root_mean_square(&[]), None);
+/// ```
+pub fn root_mean_square(values: &[f64]) -> Option<f64> {
     mean(&values.iter().map(|v| v * v).collect::<Vec<_>>()).map(f64::sqrt)
 }
 

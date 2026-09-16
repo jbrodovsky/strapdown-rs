@@ -100,7 +100,7 @@ The integration tests use real data collected from the Sensor Logger mobile appl
 - IMU measurements (accelerometer and gyroscope) at ~100 Hz
 - GNSS position and velocity measurements at ~1 Hz  
 - Approximately 90 minutes of data with ~5366 samples
-- Dataset location: `sim/data/test_data.csv`
+- Dataset location: `core/tests/test_data.csv`
 
 #### Error Metrics
 
@@ -119,113 +119,79 @@ The integration tests use real data collected from the Sensor Logger mobile appl
 
 #### Test Suite
 
-##### 1. `test_dead_reckoning_on_real_data`
+`core/tests/integration_tests.rs` holds 22 tests, not the handful this page used to walk
+through one by one. That walkthrough transcribed each test's thresholds into prose, and the
+prose then drifted from the constants -- it was still quoting a 30 m horizontal limit long after
+the code moved to 40 m. So this section names the groups and the constants and points at the
+source, rather than copying numbers that nothing keeps honest.
 
-**Purpose**: Establish baseline performance for pure INS dead reckoning without GNSS corrections.
+**Per-filter closed-loop suites.** Each of the four filters gets the same three scenarios:
 
-**What it tests**:
-- Dead reckoning completes without crashes or errors
-- Navigation solution remains finite (no NaN or Inf values)
-- Provides baseline drift metrics for comparison
+| | full-rate GNSS | degraded GNSS (5 s) | beats dead reckoning |
+|---|---|---|---|
+| UKF | `test_ukf_closed_loop_on_real_data` | `test_ukf_with_degraded_gnss` | `test_ukf_outperforms_dead_reckoning` |
+| EKF | `test_ekf_closed_loop_on_real_data` | `test_ekf_with_degraded_gnss` | `test_ekf_outperforms_dead_reckoning` |
+| ESKF | `test_eskf_closed_loop_on_real_data` | `test_eskf_with_degraded_gnss` | `test_eskf_outperforms_dead_reckoning` |
+| RBPF | `test_rbpf_closed_loop_on_real_data` | `test_rbpf_with_degraded_gnss` | -- |
 
-**Expected behavior**:
-- Significant drift over time (this is normal for MEMS IMUs)
-- All state values remain finite
-- Errors grow unbounded (no error thresholds enforced)
+**Plus**: `test_dead_reckoning_on_real_data` (the unaided baseline),
+`test_eskf_output_stays_valid_across_full_run`, `test_eskf_default_initialization_on_real_data`,
+`test_eskf_auto_covariance_initialization_on_real_data`, `test_eskf_recovers_from_gnss_outage`,
+`test_filter_output_length_matches_input`, `test_filters_are_deterministic_across_runs`,
+`test_rmse_benchmark_across_filters`, `test_full_lifecycle_through_ins_engine`,
+`magnetometer_yaw_aiding_source_error_matches_derivation`, and
+`gating_through_the_closed_loop_no_longer_cascades`.
 
-**Typical results**:
-- RMS horizontal error: ~7,000 km (expected drift for 90 minutes without corrections)
-- Test serves as a baseline to demonstrate the value of GNSS-aided navigation
+#### Thresholds
 
-##### 2. `test_ukf_closed_loop_on_real_data`
+The limits live in `core/tests/integration_tests.rs` as named constants, each with its
+derivation in a doc comment. Read those rather than any number on this page:
 
-**Purpose**: Validate UKF performance with full-rate GNSS measurements.
+| constant | what bounds it |
+|---|---|
+| `MAX_HORIZONTAL_RMSE_M` | empirical, with headroom over the observed run |
+| `MAX_VERTICAL_RMSE_M` | empirical |
+| `MAX_LEVEL_ATTITUDE_RMSE_RAD` | **derived** -- gravity observability |
+| `MAX_YAW_RMSE_RAD` | **derived** -- a multiple of `MAG_YAW_SOURCE_RMSE_RAD`, the magnetometer's own measured error |
+| `DEAD_RECKONING_BASELINE_SAMPLES` | **derived** -- see below |
+| `DEAD_RECKONING_BEAT_FACTOR` | **derived** -- how far a filter must beat the baseline for the comparison to be live |
 
-**What it tests**:
-- Closed-loop UKF completes successfully
-- Position errors remain bounded
-- Velocity and attitude estimates are stable
-- All values remain finite
+The distinction matters. An empirical guard answers "is this worse than yesterday?"; a derived
+one answers "is this physically possible?". **Do not tighten a derived bound to match a measured
+number** -- if a filter beats it, the bound was wrong, and the derivation is what changes. See
+`AGENTS.md` for the policy.
 
-**Error thresholds**:
-- RMS horizontal error < 30 m
-- RMS altitude error < 20 m  
-- Maximum horizontal error < 100 m
+#### The dead-reckoning baseline is a window, not the whole run
 
-**Typical results**:
-- RMS horizontal error: ~24 m
-- RMS altitude error: ~4 m
-- Mean velocity errors: <1 m/s
+The `*_outperforms_dead_reckoning` tests score the comparison over
+`DEAD_RECKONING_BASELINE_SAMPLES` records, not the full 90-minute recording. This page
+previously advertised the full-run version -- "dead reckoning RMS error ~7,100 km, improvement
+>99.99%" -- and that headline is exactly what the truncation exists to kill.
 
-These are realistic values for consumer-grade MEMS IMU with smartphone GNSS.
-
-##### 3. `test_ukf_with_degraded_gnss`
-
-**Purpose**: Validate UKF performance under degraded GNSS conditions (reduced update rate).
-
-**What it tests**:
-- UKF handles reduced GNSS update rate (5-second intervals)
-- Errors are higher than full-rate but still bounded
-- Filter doesn't diverge between GNSS updates
-
-**Error thresholds**:
-- RMS horizontal error < 50 m
-- Maximum horizontal error < 600 m
-
-**Typical results**:
-- RMS horizontal error: ~28 m
-- Maximum horizontal error: ~553 m
-- Errors are larger due to drift between 5-second updates
-
-##### 4. `test_ukf_outperforms_dead_reckoning`
-
-**Purpose**: Demonstrate that GNSS-aided UKF provides significant improvement over dead reckoning.
-
-**What it tests**:
-- UKF with GNSS has lower errors than dead reckoning
-- GNSS corrections effectively bound error growth
-
-**Typical results**:
-- Dead reckoning RMS error: ~7,100 km
-- UKF RMS error: ~24 m
-- Improvement: >99.99%
+Unaided dead reckoning over the whole log ends millions of metres out. A test asserting
+`filter_error < dead_reckoning_error` against that is vacuous: it passes for any filter that
+does not itself diverge, including a badly broken one. Truncating to a window where the baseline
+drift is comparable to the filter's error makes the comparison discriminating again, and
+`DEAD_RECKONING_BEAT_FACTOR` then requires a real margin rather than any margin. See #307 and
+#299, and the derivation in the module header.
 
 #### Running Integration Tests
 
-Run all integration tests:
 ```bash
-cd core
-cargo test --test integration_tests
-```
-
-Run a specific test:
-```bash
-cd core
-cargo test --test integration_tests test_ukf_closed_loop_on_real_data -- --nocapture
-```
-
-Run with output visible:
-```bash
-cd core  
-cargo test --test integration_tests -- --nocapture
-```
-
-Run with single thread (sequential execution):
-```bash
-cd core
-cargo test --test integration_tests -- --test-threads=1
+cargo test -p strapdown-core --test integration_tests             # all of them
+cargo test -p strapdown-core --test integration_tests -- --nocapture   # with printed output
+cargo test -p strapdown-core --test integration_tests test_ukf_closed_loop_on_real_data -- --nocapture
+cargo test -p strapdown-core --test integration_tests -- --test-threads=1   # sequential
 ```
 
 #### Expected Runtime
 
-The integration tests process real sensor data and run complex filters:
+Deliberately not itemised here. The previous figures covered four tests where there are now 22,
+and predated the baseline truncation above, so they were wrong in both directions and nothing
+noticed. Nothing in CI measures wall clock today -- that is the open half of #377 -- so treat
+any runtime number as an observation you made, not a contract. What *is* bounded is CI itself:
+every job sets `timeout-minutes` (#379).
 
-- `test_dead_reckoning_on_real_data`: ~5 seconds
-- `test_ukf_closed_loop_on_real_data`: ~60-90 seconds
-- `test_ukf_with_degraded_gnss`: ~60-90 seconds
-- `test_ukf_outperforms_dead_reckoning`: ~120-180 seconds
-
-**Total runtime**: ~4-5 minutes
 
 #### Implementation Details
 
@@ -255,14 +221,15 @@ Tests use the `build_event_stream()` function to create a sequence of IMU propag
 
 Potential improvements for the test suite:
 
-1. **Additional test scenarios**:
-   - GNSS outages (DutyCycle scheduler)
-   - Measurement corruption (fault models)
-   - Different motion profiles
+1. ~~**Additional test scenarios**~~ -- **done.** `core/tests/perf_baseline.rs` covers GNSS
+   outages (`real_outage_60s`, `syn_outage_60s`, both `DutyCycle`), measurement corruption
+   (`real_degraded`, an AR(1) fault model) and a synthetic cruise profile alongside the real
+   recording.
 
-2. **More filters**:
-   - Particle filter integration tests
-   - Extended Kalman Filter (when implemented)
+2. ~~**More filters**~~ -- **done.** The EKF is implemented (`core/src/kalman.rs`) and has the
+   same three-scenario integration suite as the others; the RBPF has
+   `test_rbpf_closed_loop_on_real_data` and `test_rbpf_with_degraded_gnss`, and its own row in
+   the performance baseline.
 
 3. **Performance benchmarks**: *accuracy* regression is done -- `core/tests/perf_baseline.rs`
    gates every filter against a checked-in baseline in both directions, and
@@ -338,9 +305,17 @@ Then open http://localhost:3000 in your browser.
 
 The project uses GitHub Actions for continuous integration. See `.github/workflows/` for workflow definitions:
 
-- `rust.yml`: Builds and tests the project
-- `deploy-book.yml`: Builds and deploys this documentation to GitHub Pages
-- `publish.yml`: Publishes crates to crates.io
+- `rust.yml`: the blocking gate. Three jobs -- `minimal` (`strapdown-core`, no default
+  features, on Linux/macOS/Windows), `full` (fmt, clippy `-D warnings`, and the whole suite
+  with all features, Linux), and `vendored` (the macOS/Windows canary for the source builds of
+  netCDF and HDF5)
+- `deploy-book.yml`: builds and deploys this documentation to GitHub Pages
+- `publish.yml`: verifies, then publishes the crates to crates.io. Takes a `dry_run` input
+- `draft-pdf.yml`: renders the JOSS paper, on the `joss` branch
+- `copilot-setup-steps.yml`: toolchain provisioning only
+
+Every job sets `timeout-minutes` (#379), so a hang fails rather than running to GitHub's
+360-minute default.
 
 ## References
 

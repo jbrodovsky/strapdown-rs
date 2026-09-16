@@ -44,18 +44,24 @@
 //!
 //! # Reading the numbers
 //!
-//! Three caveats apply to every figure in the baseline, and none of them is a defect in this
-//! harness:
+//! Five caveats apply to every figure in the baseline. The first four are properties of the
+//! measurement rather than defects in this harness; the fifth is a defect, in the gate:
 //!
 //! 1. **Real-data metrics are scored against the GNSS fix, which is also the aiding source.**
 //!    They measure agreement with the aid, and cannot fall below the receiver's own 3.81 m
 //!    horizontal noise however good the filter is.
-//! 2. **Every horizontal number on a real-data scenario carries a one-step propagation
-//!    offset.** `sim::run_closed_loop` pushes a row *after* applying the event, so the row
-//!    labelled `t_k` holds a state already propagated through the first event of `t_{k+1}`. At
-//!    1 Hz and 21.19 m/s that is 21.2 m of along-track error on its own. Tracked in #367; the
-//!    synthetic scenarios run at 50 Hz specifically so the same offset is ~1 m there. When
-//!    #367 is fixed every horizontal metric here trips the improvement side at once.
+//! 2. **A full-rate real-data row is scored against a fix it has already been given.**
+//!    #367 fixed the one-step propagation offset that used to dominate every horizontal
+//!    number here -- 21.2 m at 1 Hz and 21.19 m/s, very nearly the whole of the ~23.5 m the
+//!    `real_clean` rows reported -- and, as predicted, tripped the improvement side on all of
+//!    them at once. What it left behind is the circularity caveat 1 describes, now
+//!    undiluted: a row at `t_k` contains `t_k`'s GNSS update, so on a `PassThrough` schedule
+//!    the horizontal columns measure how completely a filter absorbs its own aiding.
+//!    `real_clean__ukf` reads 0.014 m and `real_clean__ekf` 0.0001 m, both far below the
+//!    receiver's 3.81 m, which is not accuracy but a Kalman gain of ~1 (#373). The rows that
+//!    still measure navigation on real data are the ones where the filter has to predict
+//!    between fixes -- `real_sparse_5s`, `real_outage_60s`, `real_degraded` -- and the
+//!    synthetic scenarios, which carry exact independent truth.
 //! 3. **The synthetic scenarios carry no magnetometer, and the yaw column says which filters
 //!    need one.** `generate_synthetic` models no magnetic field, so the only thing aiding
 //!    heading there is the GNSS velocity fix on a moving trajectory. That turns out to be
@@ -67,10 +73,21 @@
 //!    everything else, so fixing #371 will trip the improvement side and ask for a re-bless.
 //! 4. **The consistency metrics mean something different on the two sources.** On the synthetic
 //!    scenarios `npes_position` lands between 2.6 and 4.8 against an ideal of 3.0, which is a
-//!    real measurement of whether the filters believe the right thing. On the real-data scenarios it
-//!    reaches the hundreds, because caveat 2's 21 m offset enters the numerator while the
-//!    covariance in the denominator knows nothing about it. Those values are recorded as a
-//!    drift detector, not read as a consistency verdict.
+//!    real measurement of whether the filters believe the right thing. On the real-data
+//!    scenarios it still reaches the tens to hundreds. It used to be dominated by caveat 2's
+//!    21 m offset in the numerator; with #367 fixed, what remains is the covariance itself --
+//!    which is the finding, not an artefact. Those values are recorded as a drift detector,
+//!    not read as a consistency verdict, until #372 and #373 land.
+//! 5. **The baseline is blessed on one platform and gated on three.** `rust.yml` runs this
+//!    suite on Linux, macOS and Windows; nothing in [`judge`] knows that, and there is no
+//!    cross-platform tolerance floor anywhere in the gate. For most rows that is harmless --
+//!    the same commit agrees to about 1% across platforms. It is not harmless where a metric
+//!    is a *tail* statistic of something unstable: `real_rbpf_slice__rbpf`'s
+//!    `horizontal_cep95_m` measured 34.02 m on Linux and 24.33 m on Windows, a 28.5% spread
+//!    against a 25% improve band, so a Linux bless failed the Windows leg of a run that was
+//!    behaving identically. That metric is ungated, with the numbers in its note; the general
+//!    problem is #386. **This is the one caveat that is a defect** -- in the gate, not in the
+//!    navigation.
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -957,6 +974,155 @@ fn markdown_table(measured: &[(Scenario, AccuracyMetrics)]) -> String {
 }
 
 // ---------------------------------------------------------------------------------------
+// The book's tables
+// ---------------------------------------------------------------------------------------
+
+/// The generated table fragment `book/src/development/performance.md` includes.
+///
+/// The book used to carry the whole baseline transcribed by hand -- three tables, 45 rows,
+/// updated by eye after every bless. Nothing kept them honest, and a number in the wrong
+/// column there is far harder to notice than one in the gated JSON, because nothing asserts
+/// it. Now the tables are generated from the blessed file and the page includes them; the
+/// prose around them stays hand-written, because it is genuinely editorial. #380.
+fn book_tables_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../book/src/development/baseline-tables.md")
+}
+
+/// One section of the book's baseline page: a heading and the columns under it.
+///
+/// Three narrow tables rather than the one fifteen-column table [`markdown_table`] prints,
+/// because the book renders on a page rather than in a terminal. Every [`MetricId`] appears
+/// in exactly one of them, which `every_metric_appears_in_a_book_table` asserts -- otherwise
+/// adding a metric would silently drop it from the published record.
+struct BookTable {
+    /// Markdown heading for the section.
+    heading: &'static str,
+    /// The metrics shown, in column order, each with its display label.
+    columns: &'static [(MetricId, &'static str)],
+}
+
+/// The book's three tables, in page order.
+const BOOK_TABLES: &[BookTable] = &[
+    BookTable {
+        heading: "### Position and velocity",
+        columns: &[
+            (MetricId::HorizontalRmse, "horiz RMSE (m)"),
+            (MetricId::HorizontalCep50, "CEP50 (m)"),
+            (MetricId::HorizontalCep95, "CEP95 (m)"),
+            (MetricId::HorizontalMax, "horiz max (m)"),
+            (MetricId::VerticalRmse, "vert RMSE (m)"),
+            (MetricId::VerticalBias, "vert bias (m)"),
+            (MetricId::VelocityHorizontalRmse, "horiz vel RMSE (m/s)"),
+            (MetricId::VelocityVerticalRmse, "vert vel RMSE (m/s)"),
+        ],
+    },
+    BookTable {
+        heading: "### Attitude",
+        columns: &[
+            (MetricId::RollRmse, "roll RMSE (deg)"),
+            (MetricId::PitchRmse, "pitch RMSE (deg)"),
+            (MetricId::YawRmse, "yaw RMSE (deg)"),
+            (MetricId::AttitudeGeodesicRmse, "geodesic RMSE (deg)"),
+        ],
+    },
+    BookTable {
+        heading: "### Consistency",
+        columns: &[
+            (MetricId::NpesPosition, "npes (ideal 3.0)"),
+            (
+                MetricId::Containment3SigmaHorizontal,
+                "3-sigma horiz (ideal 0.9973)",
+            ),
+            (
+                MetricId::Containment3SigmaVertical,
+                "3-sigma vert (ideal 0.9973)",
+            ),
+        ],
+    },
+];
+
+/// Group digits into thousands, in place on the integer part of an already-formatted number.
+///
+/// `290644.0` reads as noise and `290,644.0` reads as a number, and these tables are read by
+/// people rather than parsed.
+fn group_thousands(formatted: &str) -> String {
+    let (sign, rest) = formatted
+        .strip_prefix('-')
+        .map_or(("", formatted), |rest| ("-", rest));
+    let (integer, fraction) = rest.split_once('.').map_or((rest, ""), |(i, f)| (i, f));
+
+    let mut grouped = String::with_capacity(integer.len() + integer.len() / 3);
+    for (offset, digit) in integer.chars().enumerate() {
+        if offset > 0 && (integer.len() - offset) % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+
+    if fraction.is_empty() {
+        format!("{sign}{grouped}")
+    } else {
+        format!("{sign}{grouped}.{fraction}")
+    }
+}
+
+/// Render one baseline value for the book, or `--` where the metric is not computable.
+fn book_value(entry: Option<&BaselineMetric>) -> String {
+    match entry.and_then(|e| e.value) {
+        Some(value) => group_thousands(&format!("{value:.3}")),
+        None => "--".to_string(),
+    }
+}
+
+/// Strip carriage returns so a CRLF checkout compares equal to an LF one.
+fn normalize_newlines(text: &str) -> String {
+    text.replace("\r\n", "\n")
+}
+
+/// Render the book's three tables from the blessed baseline.
+///
+/// Generated from the recorded file rather than from the live measurement, so the staleness
+/// check below is an exact comparison against what was blessed rather than a re-measurement
+/// that could differ by a platform ulp.
+fn book_tables(baseline: &BaselineFile) -> String {
+    let mut out = String::new();
+    out.push_str(
+        "<!-- Generated by `core/tests/perf_baseline.rs`. Do not edit by hand: a re-bless\n\
+         overwrites this file, and the gate fails if it is stale. See #380. -->\n",
+    );
+
+    let order = scenarios();
+    for table in BOOK_TABLES {
+        let _ = write!(out, "\n{}\n\n| scenario | samples |", table.heading);
+        for (_, label) in table.columns {
+            let _ = write!(out, " {label} |");
+        }
+        out.push_str("\n|---|---:|");
+        for _ in table.columns {
+            out.push_str("---:|");
+        }
+        out.push('\n');
+
+        for scenario in &order {
+            let Some(recorded) = baseline.scenarios.get(&scenario.id) else {
+                continue;
+            };
+            let _ = write!(
+                out,
+                "| `{}` | {} |",
+                scenario.id,
+                group_thousands(&recorded.sample_count.to_string())
+            );
+            for (id, _) in table.columns {
+                let _ = write!(out, " {} |", book_value(recorded.metrics.get(id.key())));
+            }
+            out.push('\n');
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------------------
 
@@ -1006,6 +1172,12 @@ fn navigation_accuracy_matches_the_recorded_baseline() {
         text.push('\n');
         std::fs::write(&path, text).expect("baseline file must be writable");
         println!("Wrote {}", path.display());
+
+        // The book's tables are generated from what was just blessed, so a re-bless is one
+        // command rather than a command plus 45 hand-edited rows (#380).
+        let book = book_tables_path();
+        std::fs::write(&book, book_tables(&rendered)).expect("book tables must be writable");
+        println!("Wrote {}", book.display());
         return;
     }
 
@@ -1022,7 +1194,32 @@ fn navigation_accuracy_matches_the_recorded_baseline() {
         baseline.schema_version
     );
 
-    let problems = compare(&measured, &baseline);
+    let mut problems = compare(&measured, &baseline);
+
+    // The book publishes these numbers, so a stale fragment is a wrong public claim. Checked
+    // against the recorded file rather than the live measurement, so this is an exact
+    // comparison of what was blessed and not a second re-measurement (#380).
+    //
+    // Line endings are normalised on both sides rather than compared byte for byte. The
+    // Windows runner's git checks a text file out with CRLF while `book_tables` joins with
+    // `\n`, so the first version of this check failed every Windows leg of the matrix on a
+    // file whose *content* was identical. `.gitattributes` now pins the committed bytes to
+    // LF, which fixes CI on its own; this normalisation is what stops a contributor who
+    // works on Windows from seeing the same spurious failure locally.
+    let book = book_tables_path();
+    let expected = book_tables(&baseline);
+    match std::fs::read_to_string(&book) {
+        Ok(found) if normalize_newlines(&found) == normalize_newlines(&expected) => {}
+        Ok(_) => problems.push(format!(
+            "BOOK      `{}` no longer matches the baseline it is generated from.",
+            book.display()
+        )),
+        Err(e) => problems.push(format!(
+            "BOOK      `{}` could not be read ({e}); it is generated by this test.",
+            book.display()
+        )),
+    }
+
     assert!(
         problems.is_empty(),
         "navigation accuracy no longer matches {}:\n\n{}\n\n\
@@ -1037,6 +1234,38 @@ fn navigation_accuracy_matches_the_recorded_baseline() {
 #[cfg(test)]
 mod gate_tests {
     use super::*;
+
+    /// Every metric shows up in exactly one of the book's tables.
+    ///
+    /// Without this, adding a [`MetricId`] variant gates it in the JSON and silently drops it
+    /// from the published page -- the failure mode #380 exists to close, one level down.
+    #[test]
+    fn every_metric_appears_in_exactly_one_book_table() {
+        for id in MetricId::ALL {
+            let appearances = BOOK_TABLES
+                .iter()
+                .flat_map(|t| t.columns)
+                .filter(|(other, _)| other == id)
+                .count();
+            assert_eq!(
+                appearances,
+                1,
+                "metric `{}` appears in {appearances} book tables, expected exactly 1",
+                id.key()
+            );
+        }
+    }
+
+    #[test]
+    fn thousands_are_grouped_without_disturbing_the_fraction() {
+        assert_eq!(group_thousands("5366"), "5,366");
+        assert_eq!(group_thousands("2349.680"), "2,349.680");
+        assert_eq!(group_thousands("-64.255"), "-64.255");
+        assert_eq!(group_thousands("-1248920.5"), "-1,248,920.5");
+        assert_eq!(group_thousands("0.161"), "0.161");
+        assert_eq!(group_thousands("999"), "999");
+        assert_eq!(group_thousands("1000"), "1,000");
+    }
 
     const BAND: Tolerance = Tolerance {
         regress_fraction: DEFAULT_REGRESS_FRACTION,

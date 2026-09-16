@@ -76,6 +76,12 @@ UPDATE_PERF_BASELINE=1 cargo test -p strapdown-core --test perf_baseline
 $env:UPDATE_PERF_BASELINE=1; cargo test -p strapdown-core --test perf_baseline
 ```
 
+That one command is the whole bless: it rewrites `core/tests/perf_baseline.json` *and*
+regenerates `book/src/development/baseline-tables.md`, which
+`book/src/development/performance.md` includes. The book used to hold those 45 rows by hand and
+they drifted; the gate now fails if the generated fragment does not match the file it comes
+from, so there is no second step to forget (#380).
+
 Review the diff before committing it -- every changed number is a claim about the navigation
 solution, and the pull request description should say which change produced it. Blessing
 preserves the per-metric `note`, `gated` and tolerance overrides already in the file, so

@@ -22,23 +22,36 @@ commit the diff; `cargo perf` runs the suite and prints the table without writin
 [CONTRIBUTING.md](https://github.com/jbrodovsky/strapdown-rs/blob/main/CONTRIBUTING.md) has the
 workflow.
 
-## Read these four caveats first
+## Read these five caveats first
 
-The numbers are meaningless without them, and none of them is a defect in the harness.
+The numbers are meaningless without them. The first four are properties of the measurement
+rather than defects in the harness; the fifth is a defect, in the gate.
 
 1. **On the real-data scenarios, "truth" is the GNSS fix -- which is also the filters' aiding
    source.** They measure agreement with the aid, not independent accuracy, and cannot fall
    below the receiver's own 3.81 m horizontal noise however good the filter is. The `syn_*`
    scenarios are scored against an exact synthetic trajectory and have no such floor, which is
    why their horizontal figures are five times smaller.
-2. **Every horizontal figure carries a one-step propagation offset.** `sim::run_closed_loop`
-   pushes an output row *after* applying the next event, so the row labelled $t_k$ holds a
-   state already propagated through the first event of $t_{k+1}$. On the 1 Hz recording at
-   21.19 m/s that is 21.2 m of along-track error on its own -- very nearly the whole of the
-   ~23.5 m the `real_clean` rows show, and the reason all three filters land within 0.2 m of
-   each other there rather than spreading out by tuning. Tracked in
-   [#367](https://github.com/jbrodovsky/strapdown-rs/issues/367); the synthetic scenarios run
-   at 50 Hz specifically so the same offset is about 1 m.
+2. **On a full-rate real-data row, the filter is scored against a fix it has already been
+   given.** This used to read differently: every horizontal figure carried a one-step
+   propagation offset, because `sim::run_closed_loop` pushed each row *after* applying the
+   next event, so the row labelled $t_k$ held a state already propagated to $t_{k+1}$. At
+   1 Hz and 21.19 m/s that was 21.2 m of along-track error -- very nearly the whole of the
+   ~23.5 m the `real_clean` rows then showed, and the reason all three filters landed within
+   0.2 m of each other. [#367](https://github.com/jbrodovsky/strapdown-rs/issues/367) fixed
+   it, and every horizontal metric improved at once.
+
+   What that uncovered is caveat 1 with nothing left diluting it. A row at $t_k$ now contains
+   $t_k$'s GNSS update, so on a `PassThrough` schedule these columns measure how completely a
+   filter absorbs its own aiding: `real_clean__ukf` reads 0.014 m and `real_clean__ekf`
+   0.0001 m, both far below the receiver's own 3.81 m. That is not accuracy. It is a Kalman
+   gain of about 1 -- see [#373](https://github.com/jbrodovsky/strapdown-rs/issues/373), where
+   an absolute covariance floor in radian units leaves both filters copying their fixes rather
+   than filtering them. The ESKF, which floors its covariance *relatively*, sits at 5.1 m.
+
+   **The real-data rows that still measure navigation are the ones where the filter has to
+   predict between fixes** -- `real_sparse_5s`, `real_outage_60s`, `real_degraded` -- together
+   with the `syn_*` scenarios and their exact independent truth.
 3. **The synthetic scenarios carry no magnetometer, and the yaw column says which filters need
    one.** Nothing aids heading there but the GNSS velocity fix on a moving trajectory, which
    turns out to be enough: the EKF holds 0.97 deg and the ESKF 2.07 deg on `syn_cruise_1hz`
@@ -54,6 +67,17 @@ The numbers are meaningless without them, and none of them is a defect in the ha
    hundreds, because caveat 2's offset enters the numerator while the covariance in the
    denominator models none of it. Those values are kept as a drift detector, not read as a
    consistency verdict.
+
+5. **The baseline is blessed on one platform and gated on three.** `rust.yml` runs this suite
+   on Linux, macOS and Windows, and nothing in the gate knows that -- there is no
+   cross-platform tolerance floor. For most rows it does not matter: the same commit agrees to
+   about 1% across platforms. It matters where a metric is a *tail* statistic of something
+   unstable. `real_rbpf_slice__rbpf`'s `horizontal_cep95_m` measured 34.02 m on Linux against
+   24.33 m on Windows -- a 28.5% spread against a 25% improve band -- so a Linux bless failed
+   the Windows leg of a run that was behaving identically. That metric is ungated with the
+   numbers recorded in its note; the general problem is
+   [#386](https://github.com/jbrodovsky/strapdown-rs/issues/386). Until it is fixed, **check a
+   Windows run before calling a re-bless done.**
 
 ## The metrics
 
@@ -125,87 +149,49 @@ by before.
 
 ## Current values
 
-Measured on `ubuntu-latest`, rustc 1.91. Regenerate with `cargo perf`.
+Measured on `ubuntu-latest`, rustc 1.91. Read-only with `cargo perf`; re-blessed with
+`UPDATE_PERF_BASELINE=1 cargo test -p strapdown-core --test perf_baseline`.
 
-### Position and velocity
+The three tables below are **generated** from `core/tests/perf_baseline.json` by the same test
+that gates it, and the gate fails if they drift from it. They used to be maintained here by
+hand, which meant every re-bless was a command plus 45 transcribed rows, with nothing checking
+the transcription -- and a wrong number on this page is harder to notice than a wrong number in
+the gated file, because nothing asserts it (#380). Edit `baseline-tables.md` and the next run
+will tell you off; change the numbers by re-blessing.
 
-| scenario | samples | horiz RMSE (m) | CEP50 (m) | CEP95 (m) | horiz max (m) | vert RMSE (m) | vert bias (m) | horiz vel RMSE (m/s) | vert vel RMSE (m/s) |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `real_clean__ukf` | 5,366 | 23.534 | 23.105 | 34.519 | 37.719 | 2.671 | 0.341 | 1.543 | 0.541 |
-| `real_clean__ekf` | 5,366 | 23.553 | 23.188 | 34.472 | 37.804 | 3.655 | -2.398 | 1.575 | 0.869 |
-| `real_clean__eskf` | 5,366 | 23.723 | 22.925 | 35.428 | 41.865 | 2.692 | 0.334 | 1.538 | 0.550 |
-| `real_sparse_5s__ukf` | 5,366 | 25.067 | 24.085 | 36.614 | 124.727 | 5.656 | 0.776 | 3.301 | 0.671 |
-| `real_sparse_5s__eskf` | 5,366 | 25.674 | 23.604 | 37.868 | 149.698 | 5.755 | 0.779 | 3.388 | 0.714 |
-| `real_outage_60s__eskf` | 5,366 | 290.644 | 28.701 | 701.329 | 2,349.680 | 4.992 | 0.316 | 12.226 | 0.671 |
-| `real_degraded__ukf` | 5,366 | 30.675 | 26.076 | 51.158 | 82.184 | 10.839 | 0.585 | 2.810 | 0.795 |
-| `real_degraded__eskf` | 5,366 | 50.601 | 42.344 | 86.848 | 136.791 | 10.847 | 0.564 | 2.795 | 0.806 |
-| `syn_cruise_1hz__ukf` | 15,000 | 4.423 | 3.665 | 7.821 | 10.152 | 0.846 | 0.065 | 0.489 | 0.316 |
-| `syn_cruise_1hz__ekf` | 15,000 | 4.421 | 3.687 | 7.673 | 10.183 | 0.835 | 0.040 | 0.050 | 0.302 |
-| `syn_cruise_1hz__eskf` | 15,000 | 3.412 | 2.835 | 5.964 | 9.284 | 0.836 | 0.069 | 1.170 | 0.239 |
-| `syn_outage_60s__ukf` | 15,000 | 266.681 | 5.914 | 762.191 | 2,109.820 | 0.939 | -0.049 | 15.268 | 1.068 |
-| `syn_outage_60s__eskf` | 15,000 | 20.224 | 1.454 | 44.447 | 247.874 | 0.847 | 0.067 | 1.067 | 0.243 |
-| `syn_dead_reckoning` | 6,000 | 316.860 | 110.128 | 715.856 | 835.634 | 86.591 | -64.255 | 9.363 | 1.896 |
-| `real_rbpf_slice__rbpf` | 1,200 | 19.789 | 15.679 | 28.276 | 94.413 | 3.846 | -3.208 | 2.308 | 1.141 |
-
-### Attitude
-
-| scenario | samples | roll RMSE (deg) | pitch RMSE (deg) | yaw RMSE (deg) | geodesic RMSE (deg) |
-|---|---:|---:|---:|---:|---:|
-| `real_clean__ukf` | 5,366 | 3.448 | 2.999 | 22.773 | 23.210 |
-| `real_clean__ekf` | 5,366 | 3.133 | 2.553 | 22.610 | 22.944 |
-| `real_clean__eskf` | 5,366 | 3.332 | 2.880 | 26.153 | 26.501 |
-| `real_sparse_5s__ukf` | 5,366 | 3.818 | 3.278 | 18.866 | 19.527 |
-| `real_sparse_5s__eskf` | 5,366 | 3.813 | 3.171 | 19.737 | 20.344 |
-| `real_outage_60s__eskf` | 5,366 | 3.727 | 3.326 | 22.880 | 23.399 |
-| `real_degraded__ukf` | 5,366 | 3.525 | 3.143 | 22.347 | 22.829 |
-| `real_degraded__eskf` | 5,366 | 3.421 | 3.042 | 26.406 | 26.784 |
-| `syn_cruise_1hz__ukf` | 15,000 | 0.887 | 0.637 | 42.665 | 42.683 |
-| `syn_cruise_1hz__ekf` | 15,000 | 0.115 | 0.069 | 0.972 | 0.982 |
-| `syn_cruise_1hz__eskf` | 15,000 | 1.064 | 0.946 | 2.067 | 2.509 |
-| `syn_outage_60s__ukf` | 15,000 | 4.341 | 3.853 | 21.461 | 22.228 |
-| `syn_outage_60s__eskf` | 15,000 | 0.242 | 0.205 | 1.181 | 1.223 |
-| `syn_dead_reckoning` | 6,000 | 0.468 | 1.106 | 0.494 | 1.301 |
-| `real_rbpf_slice__rbpf` | 1,200 | 2.825 | 3.169 | 20.730 | 21.156 |
-
-### Consistency
-
-| scenario | samples | npes (ideal 3.0) | 3-sigma horiz (ideal 0.9973) | 3-sigma vert (ideal 0.9973) |
-|---|---:|---:|---:|---:|
-| `real_clean__ukf` | 5,366 | 15.896 | 1.000 | 0.466 |
-| `real_clean__ekf` | 5,366 | 33.366 | 1.000 | 0.412 |
-| `real_clean__eskf` | 5,366 | 1,248.920 | 0.161 | 0.460 |
-| `real_sparse_5s__ukf` | 5,366 | 37.562 | 1.000 | 0.211 |
-| `real_sparse_5s__eskf` | 5,366 | 338.329 | 0.252 | 0.190 |
-| `real_outage_60s__eskf` | 5,366 | 810.816 | 0.274 | 0.390 |
-| `real_degraded__ukf` | 5,366 | 272.127 | 1.000 | 0.146 |
-| `real_degraded__eskf` | 5,366 | 5,690.210 | 0.057 | 0.148 |
-| `syn_cruise_1hz__ukf` | 15,000 | 2.690 | 1.000 | 0.932 |
-| `syn_cruise_1hz__ekf` | 15,000 | 2.649 | 1.000 | 0.934 |
-| `syn_cruise_1hz__eskf` | 15,000 | 4.795 | 0.996 | 0.933 |
-| `syn_outage_60s__ukf` | 15,000 | 3.344 | 1.000 | 0.897 |
-| `syn_outage_60s__eskf` | 15,000 | 4.627 | 0.992 | 0.923 |
-| `syn_dead_reckoning` | 6,000 | -- | -- | -- |
-| `real_rbpf_slice__rbpf` | 1,200 | 183.531 | 0.480 | 0.657 |
+{{#include ./baseline-tables.md}}
 
 ## What the table is saying
 
-- **The three healthy filters agree to within 0.2 m on `real_clean`**, which is caveat 2 in
-  action: the shared 21 m offset dominates, so the row is a regression detector rather than a
-  ranking.
+- **The `real_clean` horizontal column is no longer a navigation measurement.** The UKF reads
+  0.014 m and the EKF 0.0001 m against a reference whose own noise is 3.81 m -- caveat 2. Both
+  are reproducing the fix they were handed one event earlier. The ESKF's 5.1 m is the only
+  figure in that column that means anything, and it is the only one of the three whose
+  covariance floor is relative rather than absolute.
 - **`syn_cruise_1hz` is where the filters actually separate**, and no one of them wins. The
-  ESKF leads on position (3.41 m against 4.42 m for both others) and loses on velocity
-  (1.17 m/s against the EKF's 0.050 m/s and the UKF's 0.489 m/s); the UKF trails on attitude
-  for the reason in caveat 3.
+  ESKF leads on position and loses on velocity; the UKF trails on attitude for the reason in
+  caveat 3. These rows are scored against exact truth, so nothing here is circular.
 - **The outage rows are dominated by attitude, not by position.** 60 s of free inertial turns a
   fraction of a degree of tilt error into hundreds of metres. `syn_outage_60s__eskf` holds
   0.20 deg of pitch and coasts to 20 m; the UKF, which does not hold its attitude through the
   coast, reaches 267 m.
 - **The two consistency columns disagree with each other on real data, and that is the
-  finding.** The UKF and EKF report a flat 1.000 horizontal containment -- a covariance so
-  conservative it cannot be wrong -- beside a vertical containment of 0.47 and 0.41, where
-  better than half the altitude errors fall outside three sigma. Their `npes` of 16 and 33 is
-  almost entirely that vertical channel. The ESKF is the mirror image: 0.16 horizontal
-  containment, an `npes` of 1,249, and caveat 2 in the numerator.
+  finding.** The UKF and EKF still report a flat 1.000 horizontal containment -- a covariance
+  so conservative it cannot be wrong -- beside a vertical containment of 0.40 and 0.42, where
+  better than half the altitude errors fall outside three sigma. Both halves of that are
+  [#373](https://github.com/jbrodovsky/strapdown-rs/issues/373)'s absolute covariance floor:
+  201 m of fabricated horizontal sigma is what makes the horizontal figure unfalsifiable, and
+  the same constant is a rounding error in the vertical channel, which is therefore left
+  bare.
+- **The ESKF's numbers moved furthest when #367 landed**, and in the right direction:
+  horizontal containment 0.161 to 0.497, `npes` 1,249 to 68. That is the offset leaving the
+  numerator. It is still not consistent -- 0.497 against an ideal of 0.9973 -- and what
+  remains is a real finding rather than an artefact.
+- **`real_rbpf_slice__rbpf`'s `npes` is not gated.** It reads 5.7e25 because the particle
+  cloud collapses to a horizontal sigma of nanometres on 17 of 1,200 epochs, which a mean of
+  $e^2/P$ cannot survive. Exposed rather than caused by #367, which stopped sampling the cloud
+  one propagation step after each fix had re-inflated it. Tracked as
+  [#385](https://github.com/jbrodovsky/strapdown-rs/issues/385).
 - **Several numbers here therefore record known defects rather than good behaviour**, which is
   what a two-sided gate is for. Each is annotated in the baseline file. When one is fixed the
   improvement side trips and asks for the diff that records it.

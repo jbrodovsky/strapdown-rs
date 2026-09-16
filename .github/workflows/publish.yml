@@ -17,6 +17,7 @@ jobs:
   verify:
     name: Verify before publishing
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -45,6 +46,7 @@ jobs:
     name: Publish to crates.io
     needs: verify
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 

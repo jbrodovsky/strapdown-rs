@@ -37,9 +37,10 @@ use strapdown::kalman::{
 use strapdown::measurements::{
     GPSPositionAndVelocityMeasurement, MeasurementModel, ZaruMeasurement, ZuptMeasurement,
 };
+use strapdown::metrics::root_mean_square;
 use strapdown::sim::DEFAULT_PROCESS_NOISE;
 use strapdown::stationary::{StationaryConfig, StationaryDetector};
-use strapdown::{IMUData, ImuSample, NavigationFilter, StrapdownState, mechanize};
+use strapdown::{IMUData, ImuSample, NavigationFilter, StrapdownState, mechanize, wrap_to_pi};
 
 /// Scenario latitude, degrees. Mid-latitude, so Earth rate has both a north and a down
 /// component and neither drops out of the ZARU geometry.
@@ -170,17 +171,6 @@ fn radians_to_meters(radians: f64) -> f64 {
 /// Horizontal great-circle distance between an estimate and a truth state, meters.
 fn horizontal_error_m(estimate: &DVector<f64>, truth: &StrapdownState) -> f64 {
     haversine_distance(estimate[0], estimate[1], truth.latitude, truth.longitude)
-}
-
-/// Wrap an angle into `[-pi, pi]` so an error either side of the branch cut is comparable.
-fn wrap_to_pi(angle_rad: f64) -> f64 {
-    let two_pi = 2.0 * std::f64::consts::PI;
-    let wrapped = angle_rad.rem_euclid(two_pi);
-    if wrapped > std::f64::consts::PI {
-        wrapped - two_pi
-    } else {
-        wrapped
-    }
 }
 
 /// Largest per-axis attitude error between an estimate and a truth state, radians.
@@ -942,15 +932,6 @@ const MAX_PRIOR_SHARE_OF_INNOVATION_COVARIANCE: f64 = 1.0;
 /// observations of one defect, not a tightened pair. Against the pre-#308 diagonal
 /// $K = 0.9997$ and the ratio is 1.000: the solution *is* the fix.
 const MAX_FIX_NOISE_PASSED_THROUGH: f64 = 0.5;
-
-/// Root-mean-square of a sample of errors, or `None` if the sample is empty.
-fn root_mean_square(values: &[f64]) -> Option<f64> {
-    if values.is_empty() {
-        return None;
-    }
-    let sum_of_squares: f64 = values.iter().map(|v| v * v).sum();
-    Some((sum_of_squares / values.len() as f64).sqrt())
-}
 
 /// What a run of [`measure_filtering`] observed, once the transient has been dropped.
 struct FilteringOutcome {

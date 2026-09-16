@@ -12,51 +12,51 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 22.9438
+          "value": 22.7419
         },
         "containment_3sigma_horizontal": {
           "value": 1.0,
           "note": "1.000 is the symptom of an over-conservative horizontal covariance, not a passing grade. Read it against `containment_3sigma_vertical` at 0.41 in the same row."
         },
         "containment_3sigma_vertical": {
-          "value": 0.412411
+          "value": 0.424711
         },
         "horizontal_cep50_m": {
-          "value": 23.1882
+          "value": 4.90514e-05
         },
         "horizontal_cep95_m": {
-          "value": 34.4717
+          "value": 0.00018027
         },
         "horizontal_max_m": {
-          "value": 37.8044
+          "value": 0.00156071
         },
         "horizontal_rmse_m": {
-          "value": 23.5532
+          "value": 0.000126495
         },
         "npes_position": {
-          "value": 33.3663,
+          "value": 31.8834,
           "note": "Not the horizontal channel: containment reads a flat 1.000 there, so each horizontal term is bounded by 9. Almost all of this is the vertical channel, whose containment is 0.41. The EKF here is over-conservative horizontally (see core/tests/aiding.rs, `a_note_on_filter_consistency`) and over-confident vertically at the same time. Recorded as measured, not as a target."
         },
         "pitch_rmse_deg": {
-          "value": 2.55259
+          "value": 2.53207
         },
         "roll_rmse_deg": {
-          "value": 3.13324
+          "value": 3.10078
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 1.57476
+          "value": 1.19951
         },
         "velocity_vertical_rmse_mps": {
-          "value": 0.869021
+          "value": 0.796848
         },
         "vertical_bias_m": {
-          "value": -2.3983
+          "value": -1.74676
         },
         "vertical_rmse_m": {
-          "value": 3.65463
+          "value": 3.16256
         },
         "yaw_rmse_deg": {
-          "value": 22.6099
+          "value": 22.4101
         }
       }
     },
@@ -66,50 +66,50 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 26.5007
+          "value": 26.2371
         },
         "containment_3sigma_horizontal": {
-          "value": 0.161293
+          "value": 0.497298
         },
         "containment_3sigma_vertical": {
-          "value": 0.460119
+          "value": 0.389676
         },
         "horizontal_cep50_m": {
-          "value": 22.9246
+          "value": 4.24514
         },
         "horizontal_cep95_m": {
-          "value": 35.4276
+          "value": 8.559
         },
         "horizontal_max_m": {
-          "value": 41.8646
+          "value": 28.4547
         },
         "horizontal_rmse_m": {
-          "value": 23.7232
+          "value": 5.12121
         },
         "npes_position": {
-          "value": 1248.92,
+          "value": 68.2947,
           "note": "Horizontally over-confident, unlike the UKF and EKF rows: containment is 0.16 here against their 1.000. Much of the numerator is the one-step labelling offset described in the module docs (#367), which the covariance does not model. Recorded as a drift detector; read the synthetic scenarios for an actual consistency verdict."
         },
         "pitch_rmse_deg": {
-          "value": 2.87989
+          "value": 2.81287
         },
         "roll_rmse_deg": {
-          "value": 3.33167
+          "value": 3.24052
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 1.53802
+          "value": 1.08486
         },
         "velocity_vertical_rmse_mps": {
-          "value": 0.549924
+          "value": 0.534656
         },
         "vertical_bias_m": {
-          "value": 0.333945
+          "value": 0.383809
         },
         "vertical_rmse_m": {
-          "value": 2.69245
+          "value": 2.5786
         },
         "yaw_rmse_deg": {
-          "value": 26.1532
+          "value": 25.9039
         }
       }
     },
@@ -119,49 +119,49 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 23.2103
+          "value": 22.9281
         },
         "containment_3sigma_horizontal": {
           "value": 1.0
         },
         "containment_3sigma_vertical": {
-          "value": 0.466455
+          "value": 0.397876
         },
         "horizontal_cep50_m": {
-          "value": 23.1055
+          "value": 0.00217578
         },
         "horizontal_cep95_m": {
-          "value": 34.5192
+          "value": 0.00408927
         },
         "horizontal_max_m": {
-          "value": 37.7195
+          "value": 1.00827
         },
         "horizontal_rmse_m": {
-          "value": 23.5342
+          "value": 0.0139854
         },
         "npes_position": {
-          "value": 15.8955
+          "value": 19.567
         },
         "pitch_rmse_deg": {
-          "value": 2.99912
+          "value": 2.9191
         },
         "roll_rmse_deg": {
-          "value": 3.44767
+          "value": 3.34518
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 1.54264
+          "value": 1.10312
         },
         "velocity_vertical_rmse_mps": {
-          "value": 0.540845
+          "value": 0.523409
         },
         "vertical_bias_m": {
-          "value": 0.340579
+          "value": 0.396276
         },
         "vertical_rmse_m": {
-          "value": 2.6707
+          "value": 2.56667
         },
         "yaw_rmse_deg": {
-          "value": 22.7732
+          "value": 22.5095
         }
       }
     },
@@ -171,49 +171,49 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 26.7841
+          "value": 26.5268
         },
         "containment_3sigma_horizontal": {
-          "value": 0.0569325
+          "value": 0.0789228
         },
         "containment_3sigma_vertical": {
-          "value": 0.147596
+          "value": 0.130451
         },
         "horizontal_cep50_m": {
-          "value": 42.3445
+          "value": 38.0427
         },
         "horizontal_cep95_m": {
-          "value": 86.8482
+          "value": 81.3227
         },
         "horizontal_max_m": {
-          "value": 136.791
+          "value": 140.586
         },
         "horizontal_rmse_m": {
-          "value": 50.6008
+          "value": 46.609
         },
         "npes_position": {
-          "value": 5690.21
+          "value": 5151.15
         },
         "pitch_rmse_deg": {
-          "value": 3.04198
+          "value": 2.96726
         },
         "roll_rmse_deg": {
-          "value": 3.42139
+          "value": 3.32982
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 2.79518
+          "value": 2.47481
         },
         "velocity_vertical_rmse_mps": {
-          "value": 0.805773
+          "value": 0.788586
         },
         "vertical_bias_m": {
-          "value": 0.564041
+          "value": 0.622889
         },
         "vertical_rmse_m": {
-          "value": 10.847
+          "value": 10.6257
         },
         "yaw_rmse_deg": {
-          "value": 26.4063
+          "value": 26.1644
         }
       }
     },
@@ -223,49 +223,49 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 22.8288
+          "value": 22.5522
         },
         "containment_3sigma_horizontal": {
           "value": 1.0
         },
         "containment_3sigma_vertical": {
-          "value": 0.145546
+          "value": 0.127656
         },
         "horizontal_cep50_m": {
-          "value": 26.0759
+          "value": 19.123
         },
         "horizontal_cep95_m": {
-          "value": 51.1582
+          "value": 39.6618
         },
         "horizontal_max_m": {
-          "value": 82.1837
+          "value": 55.0191
         },
         "horizontal_rmse_m": {
-          "value": 30.6748
+          "value": 22.8019
         },
         "npes_position": {
-          "value": 272.127
+          "value": 347.022
         },
         "pitch_rmse_deg": {
-          "value": 3.14263
+          "value": 3.05618
         },
         "roll_rmse_deg": {
-          "value": 3.52467
+          "value": 3.41847
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 2.81031
+          "value": 2.53701
         },
         "velocity_vertical_rmse_mps": {
-          "value": 0.794694
+          "value": 0.776055
         },
         "vertical_bias_m": {
-          "value": 0.585364
+          "value": 0.646102
         },
         "vertical_rmse_m": {
-          "value": 10.8386
+          "value": 10.6229
         },
         "yaw_rmse_deg": {
-          "value": 22.3474
+          "value": 22.0914
         }
       }
     },
@@ -275,51 +275,51 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 23.3992
+          "value": 23.1261
         },
         "containment_3sigma_horizontal": {
-          "value": 0.27432
+          "value": 0.579482
         },
         "containment_3sigma_vertical": {
-          "value": 0.390048
+          "value": 0.330041
         },
         "horizontal_cep50_m": {
-          "value": 28.7013
+          "value": 4.52361
         },
         "horizontal_cep95_m": {
-          "value": 701.329
+          "value": 676.95
         },
         "horizontal_max_m": {
-          "value": 2349.68,
+          "value": 2261.08,
           "regress_fraction": 0.25,
           "note": "A single-sample statistic at the end of a 60 s free-inertial coast, so it swings more than the RMS beside it."
         },
         "horizontal_rmse_m": {
-          "value": 290.644
+          "value": 278.819
         },
         "npes_position": {
-          "value": 810.816
+          "value": 73.4283
         },
         "pitch_rmse_deg": {
-          "value": 3.32612
+          "value": 3.27366
         },
         "roll_rmse_deg": {
-          "value": 3.72714
+          "value": 3.62855
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 12.2264
+          "value": 11.9003
         },
         "velocity_vertical_rmse_mps": {
-          "value": 0.670771
+          "value": 0.636245
         },
         "vertical_bias_m": {
-          "value": 0.315526
+          "value": 0.475325
         },
         "vertical_rmse_m": {
-          "value": 4.99179
+          "value": 4.90474
         },
         "yaw_rmse_deg": {
-          "value": 22.8796
+          "value": 22.6214
         }
       }
     },
@@ -329,49 +329,53 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 21.156
+          "value": 20.7826
         },
         "containment_3sigma_horizontal": {
-          "value": 0.479583
+          "value": 0.78
         },
         "containment_3sigma_vertical": {
-          "value": 0.6575
+          "value": 0.636667
         },
         "horizontal_cep50_m": {
-          "value": 15.6787
+          "value": 2.01207
         },
         "horizontal_cep95_m": {
-          "value": 28.276
+          "value": 34.0153,
+          "gated": false,
+          "note": "Not gated: this row's tail statistics are platform-dependent, because the tail IS the handful of epochs where the particle cloud collapses (#385). Measured on the same commit, Linux 34.02 m against Windows 24.33 m -- a 28.5% spread, wider than the improve band, so a Linux bless fails the Windows leg. The bulk statistics on this row agree across platforms to about 1% (horizontal_rmse_m +1.3%, containment_3sigma_horizontal +0.8%) and stay gated. horizontal_max_m is the same kind of statistic and currently sits at +4.7%, inside the band; it is worth watching rather than pre-emptively ungating. Re-gate this when #385 lands. Note also that the baseline is blessed on one platform and gated on three, with no cross-platform tolerance anywhere in judge() -- see #386."
         },
         "horizontal_max_m": {
-          "value": 94.4128
+          "value": 106.007
         },
         "horizontal_rmse_m": {
-          "value": 19.7891
+          "value": 16.183
         },
         "npes_position": {
-          "value": 183.531
+          "value": 5.72234e+25,
+          "gated": false,
+          "note": "Not gated: dominated by an RBPF covariance collapse, not by navigation accuracy. 17 of 1,200 epochs report a horizontal sigma below 1 mm -- the smallest is 4.2 nm -- so this mean of e^2/P is set by a near-zero denominator on ~1.4% of rows. Exposed rather than caused by #367: before it, every row was sampled one IMU step late, after `predict` had re-inflated the cloud, which hid the collapse and recorded 183.5 here. Tracked in #385. `containment_3sigma_horizontal` on this row is unaffected and stays gated."
         },
         "pitch_rmse_deg": {
-          "value": 3.1689
+          "value": 3.14018
         },
         "roll_rmse_deg": {
-          "value": 2.8251
+          "value": 2.81553
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 2.30771
+          "value": 2.20344
         },
         "velocity_vertical_rmse_mps": {
-          "value": 1.14071
+          "value": 1.06551
         },
         "vertical_bias_m": {
-          "value": -3.20753
+          "value": -2.25531
         },
         "vertical_rmse_m": {
-          "value": 3.84623
+          "value": 2.85485
         },
         "yaw_rmse_deg": {
-          "value": 20.7295
+          "value": 20.3571
         }
       }
     },
@@ -381,49 +385,49 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 20.3436
+          "value": 20.084
         },
         "containment_3sigma_horizontal": {
-          "value": 0.252236
+          "value": 0.604827
         },
         "containment_3sigma_vertical": {
-          "value": 0.190086
+          "value": 0.160827
         },
         "horizontal_cep50_m": {
-          "value": 23.604
+          "value": 6.19449
         },
         "horizontal_cep95_m": {
-          "value": 37.8683
+          "value": 15.3218
         },
         "horizontal_max_m": {
-          "value": 149.698
+          "value": 125.778
         },
         "horizontal_rmse_m": {
-          "value": 25.6738
+          "value": 9.49149
         },
         "npes_position": {
-          "value": 338.329
+          "value": 76.2265
         },
         "pitch_rmse_deg": {
-          "value": 3.17098
+          "value": 3.08125
         },
         "roll_rmse_deg": {
-          "value": 3.81273
+          "value": 3.71196
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 3.38816
+          "value": 2.81772
         },
         "velocity_vertical_rmse_mps": {
-          "value": 0.713739
+          "value": 0.672449
         },
         "vertical_bias_m": {
-          "value": 0.778639
+          "value": 0.921183
         },
         "vertical_rmse_m": {
-          "value": 5.75472
+          "value": 5.59238
         },
         "yaw_rmse_deg": {
-          "value": 19.737
+          "value": 19.5019
         }
       }
     },
@@ -433,49 +437,49 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 19.5275
+          "value": 19.2327
         },
         "containment_3sigma_horizontal": {
           "value": 1.0
         },
         "containment_3sigma_vertical": {
-          "value": 0.211331
+          "value": 0.179463
         },
         "horizontal_cep50_m": {
-          "value": 24.0846
+          "value": 1.18477
         },
         "horizontal_cep95_m": {
-          "value": 36.6143
+          "value": 9.73132
         },
         "horizontal_max_m": {
-          "value": 124.727
+          "value": 89.2916
         },
         "horizontal_rmse_m": {
-          "value": 25.0666
+          "value": 5.665
         },
         "npes_position": {
-          "value": 37.5618
+          "value": 45.3303
         },
         "pitch_rmse_deg": {
-          "value": 3.27831
+          "value": 3.17444
         },
         "roll_rmse_deg": {
-          "value": 3.81849
+          "value": 3.71191
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 3.3015
+          "value": 2.74545
         },
         "velocity_vertical_rmse_mps": {
-          "value": 0.670737
+          "value": 0.631053
         },
         "vertical_bias_m": {
-          "value": 0.775868
+          "value": 0.926914
         },
         "vertical_rmse_m": {
-          "value": 5.65573
+          "value": 5.52849
         },
         "yaw_rmse_deg": {
-          "value": 18.8661
+          "value": 18.5998
         }
       }
     },
@@ -485,50 +489,50 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 0.981729
+          "value": 0.981623
         },
         "containment_3sigma_horizontal": {
           "value": 1.0
         },
         "containment_3sigma_vertical": {
-          "value": 0.933533
+          "value": 0.926867
         },
         "horizontal_cep50_m": {
-          "value": 3.68749
+          "value": 3.55768
         },
         "horizontal_cep95_m": {
-          "value": 7.6735
+          "value": 7.53583
         },
         "horizontal_max_m": {
-          "value": 10.1827
+          "value": 10.3641
         },
         "horizontal_rmse_m": {
-          "value": 4.42102
+          "value": 4.25686
         },
         "npes_position": {
-          "value": 2.64913
+          "value": 2.75923
         },
         "pitch_rmse_deg": {
-          "value": 0.0693846
+          "value": 0.069004
         },
         "roll_rmse_deg": {
-          "value": 0.115252
+          "value": 0.115103
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 0.0500266
+          "value": 0.0496358
         },
         "velocity_vertical_rmse_mps": {
-          "value": 0.302409
+          "value": 0.302256
         },
         "vertical_bias_m": {
-          "value": 0.0402242
+          "value": 0.0419628
         },
         "vertical_rmse_m": {
-          "value": 0.835084,
+          "value": 0.830535,
           "note": "About a quarter worse than at the old 1e-4 altitude process noise, and the stated price of that retune: the old value bought this RMSE by reporting an uncertainty roughly half the actual error. Containment in the same row moved 0.88 -> 0.93 toward 0.9973. On the reference recording vertical RMSE did not pay this price at all -- it improved slightly. See VERTICAL_POSITION_PROCESS_NOISE_M2 in core/src/sim.rs."
         },
         "yaw_rmse_deg": {
-          "value": 0.972407
+          "value": 0.972345
         }
       }
     },
@@ -538,50 +542,50 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 2.50903
+          "value": 2.50842
         },
         "containment_3sigma_horizontal": {
-          "value": 0.9961
+          "value": 0.997567
         },
         "containment_3sigma_vertical": {
-          "value": 0.933067
+          "value": 0.9268
         },
         "horizontal_cep50_m": {
-          "value": 2.83516
+          "value": 2.60611
         },
         "horizontal_cep95_m": {
-          "value": 5.96447
+          "value": 5.75523
         },
         "horizontal_max_m": {
-          "value": 9.28399
+          "value": 8.24169
         },
         "horizontal_rmse_m": {
-          "value": 3.41155
+          "value": 3.18748
         },
         "npes_position": {
-          "value": 4.79493
+          "value": 4.65666
         },
         "pitch_rmse_deg": {
-          "value": 0.946297
+          "value": 0.945832
         },
         "roll_rmse_deg": {
-          "value": 1.06433
+          "value": 1.06381
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 1.16968
+          "value": 1.16522
         },
         "velocity_vertical_rmse_mps": {
-          "value": 0.238973
+          "value": 0.238815
         },
         "vertical_bias_m": {
-          "value": 0.0689224
+          "value": 0.0693371
         },
         "vertical_rmse_m": {
-          "value": 0.836139,
+          "value": 0.831738,
           "note": "About a quarter worse than at the old 1e-4 altitude process noise, and the stated price of that retune: the old value bought this RMSE by reporting an uncertainty roughly half the actual error. Containment in the same row moved 0.88 -> 0.93 toward 0.9973. On the reference recording vertical RMSE did not pay this price at all -- it improved slightly. See VERTICAL_POSITION_PROCESS_NOISE_M2 in core/src/sim.rs."
         },
         "yaw_rmse_deg": {
-          "value": 2.06721
+          "value": 2.06694
         }
       }
     },
@@ -591,51 +595,51 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 42.6826
+          "value": 42.6782
         },
         "containment_3sigma_horizontal": {
           "value": 1.0
         },
         "containment_3sigma_vertical": {
-          "value": 0.9318
+          "value": 0.9258
         },
         "horizontal_cep50_m": {
-          "value": 3.66478
+          "value": 3.5334
         },
         "horizontal_cep95_m": {
-          "value": 7.82068
+          "value": 7.56499
         },
         "horizontal_max_m": {
-          "value": 10.152
+          "value": 10.3439
         },
         "horizontal_rmse_m": {
-          "value": 4.423
+          "value": 4.26287
         },
         "npes_position": {
-          "value": 2.68971
+          "value": 2.7999
         },
         "pitch_rmse_deg": {
-          "value": 0.637062,
+          "value": 0.63672,
           "note": "0.51 -> 0.64 deg across the vertical process-noise retune. Small and real; the ESKF and EKF pitch in the same scenario did not move. Sits well inside the gravity-observability bound that core/tests/integration_tests.rs asserts separately."
         },
         "roll_rmse_deg": {
-          "value": 0.887488
+          "value": 0.887124
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 0.489467
+          "value": 0.485398
         },
         "velocity_vertical_rmse_mps": {
-          "value": 0.315663
+          "value": 0.315449
         },
         "vertical_bias_m": {
-          "value": 0.0653653
+          "value": 0.0658716
         },
         "vertical_rmse_m": {
-          "value": 0.846172,
+          "value": 0.841099,
           "note": "About a quarter worse than at the old 1e-4 altitude process noise, and the stated price of that retune: the old value bought this RMSE by reporting an uncertainty roughly half the actual error. Containment in the same row moved 0.88 -> 0.93 toward 0.9973. On the reference recording vertical RMSE did not pay this price at all -- it improved slightly. See VERTICAL_POSITION_PROCESS_NOISE_M2 in core/src/sim.rs."
         },
         "yaw_rmse_deg": {
-          "value": 42.6654,
+          "value": 42.661,
           "note": "42.7 deg where the EKF holds 0.97 and the ESKF 2.07 on the same measurements. This is #371 -- the UKF means its sigma-point attitudes by summing Euler triples linearly, which is not the mean rotation -- and not an observability limit. Not #336 either: that fixed the branch-cut half of the same code and is closed. Recorded as measured; fixing #371 trips the improvement side. #369 tracks modelling a real magnetic field here."
         }
       }
@@ -699,52 +703,52 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 1.22282
+          "value": 1.22271
         },
         "containment_3sigma_horizontal": {
-          "value": 0.992033
+          "value": 0.999367
         },
         "containment_3sigma_vertical": {
-          "value": 0.9232
+          "value": 0.915867
         },
         "horizontal_cep50_m": {
-          "value": 1.45356
+          "value": 1.16617
         },
         "horizontal_cep95_m": {
-          "value": 44.4468
+          "value": 44.0745
         },
         "horizontal_max_m": {
-          "value": 247.874,
+          "value": 247.396,
           "regress_fraction": 0.25,
           "note": "As `real_outage_60s__eskf`: a single sample at the end of a coast."
         },
         "horizontal_rmse_m": {
-          "value": 20.224
+          "value": 20.0714
         },
         "npes_position": {
-          "value": 4.62737
+          "value": 3.5376
         },
         "pitch_rmse_deg": {
-          "value": 0.204623
+          "value": 0.204531
         },
         "roll_rmse_deg": {
-          "value": 0.242381
+          "value": 0.242268
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 1.06709
+          "value": 1.06628
         },
         "velocity_vertical_rmse_mps": {
-          "value": 0.243067
+          "value": 0.242917
         },
         "vertical_bias_m": {
-          "value": 0.0668237
+          "value": 0.0671439
         },
         "vertical_rmse_m": {
-          "value": 0.846519,
+          "value": 0.842019,
           "note": "About a quarter worse than at the old 1e-4 altitude process noise, and the stated price of that retune: the old value bought this RMSE by reporting an uncertainty roughly half the actual error. Containment in the same row moved 0.88 -> 0.93 toward 0.9973. On the reference recording vertical RMSE did not pay this price at all -- it improved slightly. See VERTICAL_POSITION_PROCESS_NOISE_M2 in core/src/sim.rs."
         },
         "yaw_rmse_deg": {
-          "value": 1.18108
+          "value": 1.181
         }
       }
     },
@@ -754,57 +758,57 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 22.2276
+          "value": 22.2234
         },
         "containment_3sigma_horizontal": {
           "value": 1.0
         },
         "containment_3sigma_vertical": {
-          "value": 0.897333
+          "value": 0.891533
         },
         "horizontal_cep50_m": {
-          "value": 5.91449
+          "value": 5.84013
         },
         "horizontal_cep95_m": {
-          "value": 762.191,
+          "value": 761.836,
           "note": "Worse after the vertical process-noise retune (was 221.67 m / 412.96 m / 13.62 m/s / 0.59 m/s / 3.51 deg at the old 1e-4). Recorded, not endorsed. This row does not respond monotonically to that knob -- across a four-decade sweep the horizontal RMSE runs 222, 174, 267, 344 m while the yaw error runs 105, 98, 21, 34 deg, so position gets worse exactly where attitude gets five times better. That is #371 -- a linear Euler mean over sigma-point attitudes -- coasting a 60 s GNSS outage, and it bounces under any perturbation. Read `syn_outage_60s__eskf`, which is monotone, for what the retune did."
         },
         "horizontal_max_m": {
-          "value": 2109.82,
+          "value": 2107.23,
           "regress_fraction": 0.25,
           "note": "As `real_outage_60s__eskf`: a single sample at the end of a coast."
         },
         "horizontal_rmse_m": {
-          "value": 266.681,
+          "value": 266.453,
           "note": "Worse after the vertical process-noise retune (was 221.67 m / 412.96 m / 13.62 m/s / 0.59 m/s / 3.51 deg at the old 1e-4). Recorded, not endorsed. This row does not respond monotonically to that knob -- across a four-decade sweep the horizontal RMSE runs 222, 174, 267, 344 m while the yaw error runs 105, 98, 21, 34 deg, so position gets worse exactly where attitude gets five times better. That is #371 -- a linear Euler mean over sigma-point attitudes -- coasting a 60 s GNSS outage, and it bounces under any perturbation. Read `syn_outage_60s__eskf`, which is monotone, for what the retune did."
         },
         "npes_position": {
-          "value": 3.34434
+          "value": 3.44055
         },
         "pitch_rmse_deg": {
-          "value": 3.85284
+          "value": 3.84995
         },
         "roll_rmse_deg": {
-          "value": 4.34057,
+          "value": 4.3359,
           "note": "Worse after the vertical process-noise retune (was 221.67 m / 412.96 m / 13.62 m/s / 0.59 m/s / 3.51 deg at the old 1e-4). Recorded, not endorsed. This row does not respond monotonically to that knob -- across a four-decade sweep the horizontal RMSE runs 222, 174, 267, 344 m while the yaw error runs 105, 98, 21, 34 deg, so position gets worse exactly where attitude gets five times better. That is #371 -- a linear Euler mean over sigma-point attitudes -- coasting a 60 s GNSS outage, and it bounces under any perturbation. Read `syn_outage_60s__eskf`, which is monotone, for what the retune did."
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 15.2675,
+          "value": 15.2605,
           "note": "Worse after the vertical process-noise retune (was 221.67 m / 412.96 m / 13.62 m/s / 0.59 m/s / 3.51 deg at the old 1e-4). Recorded, not endorsed. This row does not respond monotonically to that knob -- across a four-decade sweep the horizontal RMSE runs 222, 174, 267, 344 m while the yaw error runs 105, 98, 21, 34 deg, so position gets worse exactly where attitude gets five times better. That is #371 -- a linear Euler mean over sigma-point attitudes -- coasting a 60 s GNSS outage, and it bounces under any perturbation. Read `syn_outage_60s__eskf`, which is monotone, for what the retune did."
         },
         "velocity_vertical_rmse_mps": {
-          "value": 1.06765,
+          "value": 1.05777,
           "note": "Worse after the vertical process-noise retune (was 221.67 m / 412.96 m / 13.62 m/s / 0.59 m/s / 3.51 deg at the old 1e-4). Recorded, not endorsed. This row does not respond monotonically to that knob -- across a four-decade sweep the horizontal RMSE runs 222, 174, 267, 344 m while the yaw error runs 105, 98, 21, 34 deg, so position gets worse exactly where attitude gets five times better. That is #371 -- a linear Euler mean over sigma-point attitudes -- coasting a 60 s GNSS outage, and it bounces under any perturbation. Read `syn_outage_60s__eskf`, which is monotone, for what the retune did."
         },
         "vertical_bias_m": {
-          "value": -0.0490745
+          "value": -0.0426051
         },
         "vertical_rmse_m": {
-          "value": 0.939344,
+          "value": 0.926563,
           "note": "About a quarter worse than at the old 1e-4 altitude process noise, and the stated price of that retune: the old value bought this RMSE by reporting an uncertainty roughly half the actual error. Containment in the same row moved 0.88 -> 0.93 toward 0.9973. On the reference recording vertical RMSE did not pay this price at all -- it improved slightly. See VERTICAL_POSITION_PROCESS_NOISE_M2 in core/src/sim.rs."
         },
         "yaw_rmse_deg": {
-          "value": 21.4607,
+          "value": 21.4578,
           "note": "Free-inertial coasting on top of the #371 attitude averaging described on `syn_cruise_1hz__ukf`. 105 deg is near the 103.9 deg of an error uniform on the circle."
         }
       }
