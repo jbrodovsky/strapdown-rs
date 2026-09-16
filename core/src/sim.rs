@@ -3424,25 +3424,26 @@ pub fn initialize_ukf(
         Some(att_cov) => covariance_diagonal.extend(att_cov),
         None => covariance_diagonal.extend(vec![1e-9; 3]), // Default values if not provided
     }
-    // extend the covariance diagonal if imu biases are provided
-    let imu_biases = if let Some(imu_biases) = config.imu_biases {
-        covariance_diagonal.extend(match config.imu_biases_covariance {
-            Some(imu_cov) => imu_cov,
-            None => vec![1e-3; 6], // Default covariance if not provided
-        });
-        imu_biases
-    } else {
-        covariance_diagonal.extend(vec![1e-3; 6]);
-        // Zero, not `1e-3`. `1e-3` is this block's *covariance*, one line up, and it was
-        // copied into the estimate: the filter opened by asserting a 1 mrad/s rate bias on
-        // every gyroscope axis and a 1 mm/s^2 bias on every accelerometer axis, as a point
-        // estimate rather than an uncertainty, and subtracted it from every sample. 1e-3 rad/s
-        // is 0.057 deg/s, and that is exactly the rate at which the UKF's attitude walked away
-        // from `dead_reckoning` on an IMU-only stream. `initialize_ekf` and `initialize_eskf`
-        // both write `vec![0.0; 6]` here against the same `vec![1e-3; 6]` covariance; the UKF
-        // was the only one of the three that did not.
-        vec![0.0; 6]
-    };
+    // The IMU bias estimate and the uncertainty in that estimate are two independent
+    // settings, and are read independently. They were not: `imu_biases_covariance` used to be
+    // consulted only inside the `if let Some(imu_biases)` arm, so a caller who set the
+    // covariance without also setting the estimate had it **silently discarded** in favour of
+    // the hard-coded default -- a `pub` config field that did nothing, which is the failure
+    // mode `book/src/user-guide/configuration.md` calls "the single most common way to get a
+    // wrong result out of the simulator".
+    covariance_diagonal.extend(match config.imu_biases_covariance {
+        Some(imu_cov) => imu_cov,
+        None => vec![1e-3; 6], // Default covariance if not provided
+    });
+    // Zero, not `1e-3`. `1e-3` is this block's *covariance*, just above, and it had been
+    // copied into the estimate: the filter opened by asserting a 1 mrad/s rate bias on every
+    // gyroscope axis and a 1 mm/s^2 bias on every accelerometer axis, as a point estimate
+    // rather than an uncertainty, and subtracted it from every sample. 1e-3 rad/s is
+    // 0.057 deg/s, and that is exactly the rate at which the UKF's attitude walked away from
+    // `dead_reckoning` on an IMU-only stream. `initialize_ekf` and `initialize_eskf` both
+    // write `vec![0.0; 6]` here against the same `vec![1e-3; 6]` covariance; the UKF was the
+    // only one of the three that did not (#392).
+    let imu_biases = config.imu_biases.unwrap_or_else(|| vec![0.0; 6]);
     // extend the covariance diagonal if other states are provided
     let other_states = match config.other_states {
         Some(other_states) => {
