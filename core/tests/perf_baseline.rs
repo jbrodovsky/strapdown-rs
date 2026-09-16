@@ -136,7 +136,7 @@ use strapdown::{IMUQuality, StrapdownState};
 const UPDATE_ENV: &str = "UPDATE_PERF_BASELINE";
 
 /// Schema version of `perf_baseline.json`. Bump it when the file's shape changes.
-const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 3;
 
 /// Fraction a metric may worsen before it is called a regression.
 const DEFAULT_REGRESS_FRACTION: f64 = 0.10;

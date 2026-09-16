@@ -244,7 +244,7 @@ will tell you off; change the numbers by re-blessing.
   numerator. It is still not consistent -- 0.497 against an ideal of 0.9973 -- and what
   remains is a real finding rather than an artefact.
 - **`real_rbpf_slice__rbpf`'s consistency metrics are not gated.** `npes` reads 5.7e25 and the
-  real `nees` 2.4e14 -- eleven orders apart and both meaningless -- because the particle
+  real `nees` larger still -- both meaningless, and deliberately quoted without a ratio -- because the particle
   cloud collapses to a horizontal sigma of nanometres on 17 of 1,200 epochs, which a mean of
   $e^2/P$ cannot survive. Exposed rather than caused by #367, which stopped sampling the cloud
   one propagation step after each fix had re-inflated it. Tracked as

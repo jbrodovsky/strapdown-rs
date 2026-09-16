@@ -939,12 +939,31 @@ const fn initial_emit_time(scheduler: &GnssScheduler) -> f64 {
 /// it emits at the first record at or after each tick, so a log sampled slower than the
 /// interval emits on every record and one sampled faster emits on roughly every `interval_s`
 /// of them.
+///
+/// The clock advances **past** `elapsed_s`, not by a single interval. Advancing once let it
+/// fall behind across a gap in the log and then burst: on a 1 s schedule with records at 0.5,
+/// 2.5 and 2.6 s, the 2.5 s record emitted and left the tick at 2.0 s, so the 2.6 s record
+/// emitted too -- two fixes 0.1 s apart from something advertised as a 1 Hz rate limit. The
+/// baseline never saw it, because `test_data.csv` is spaced at exactly 1.000 s and the
+/// synthetic trajectories at exactly 0.02 s; a Sensor Logger export with a dropped sample is
+/// not.
 fn should_emit(scheduler: &GnssScheduler, elapsed_s: f64, next_emit_time: &mut f64) -> bool {
     match *scheduler {
         GnssScheduler::PassThrough => true,
         GnssScheduler::FixedInterval { interval_s, .. } => {
             if elapsed_s + SCHEDULE_EPSILON_S >= *next_emit_time {
-                *next_emit_time += interval_s;
+                // Step to the first tick strictly after this record, so a gap in the log
+                // cannot leave the clock behind and let the next record through early. A
+                // non-positive or non-finite interval would never advance and would emit on
+                // every record; that degrades to `PassThrough`, which is the same choice
+                // `duty_cycle_is_on` makes for a degenerate cycle and for the same reason --
+                // silently withholding an aiding channel is far harder to notice than
+                // delivering it too often.
+                if interval_s > 0.0 && interval_s.is_finite() {
+                    let behind = elapsed_s + SCHEDULE_EPSILON_S - *next_emit_time;
+                    let whole_intervals = (behind / interval_s).floor() + 1.0;
+                    *next_emit_time += whole_intervals * interval_s;
+                }
                 true
             } else {
                 false
@@ -1548,6 +1567,45 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A gap in the log must not let the next records through early.
+    ///
+    /// The emission clock used to advance by a single interval per emission, so a record
+    /// arriving after a gap emitted and left the tick behind it -- and the very next record,
+    /// milliseconds later, passed too. A 1 Hz rate limit that delivers two fixes 0.1 s apart
+    /// is not a rate limit, and on an aiding channel it is the same over-counting #375 exists
+    /// to stop, just triggered by the data instead of the configuration.
+    ///
+    /// Invisible to every baseline scenario: `test_data.csv` is spaced at exactly 1.000 s and
+    /// the synthetic trajectories at exactly 0.02 s, so no gated row has a gap in it. A
+    /// Sensor Logger export with a dropped sample does.
+    #[test]
+    fn a_gap_in_the_log_does_not_let_the_next_records_through_early() {
+        let base_time = Utc.with_ymd_and_hms(2023, 1, 1, 0, 0, 0).unwrap();
+        // 0.0, then a 2 s hole, then three records 100 ms apart.
+        let offsets_s = [0.0, 0.5, 2.5, 2.6, 2.7, 3.6];
+        let mut records = create_test_records(offsets_s.len(), 1.0);
+        for (record, offset) in records.iter_mut().zip(offsets_s) {
+            record.time = base_time + chrono::Duration::milliseconds((offset * 1000.0) as i64);
+        }
+
+        let stream =
+            build_event_stream(&records, &GnssDegradationConfig::default(), false).unwrap();
+        let times = times_of::<RelativeAltitudeMeasurement>(&stream);
+
+        for pair in times.windows(2) {
+            assert!(
+                pair[1] - pair[0] > 0.5,
+                "a 1 Hz schedule emitted at {:?}, which contains a {:.3} s gap between \
+                 consecutive fixes -- the clock fell behind across the hole in the log and \
+                 then burst",
+                times,
+                pair[1] - pair[0]
+            );
+        }
+        // 0.5 takes the first tick, 2.5 the one after the hole, 3.6 the next.
+        assert_eq!(times.len(), 3, "emitted at {times:?}");
     }
 
     /// A 1 Hz log is left exactly as it was, which is what keeps the real-data baselines fixed.

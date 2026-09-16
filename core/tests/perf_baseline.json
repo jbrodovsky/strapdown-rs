@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "note": "Navigation-accuracy baseline (#328). Regenerate with `UPDATE_PERF_BASELINE=1 cargo test -p strapdown-core --test perf_baseline`, then review the diff: every changed number is a claim about the navigation solution. Values are rounded to 6 significant figures. `null` means the metric is not computable for that scenario -- dead reckoning reports no covariance -- and is not gated. `\"gated\": false` keeps a metric recorded but unasserted. See the module docs in core/tests/perf_baseline.rs for what the numbers do and do not measure.",
   "default_tolerance": {
     "regress_fraction": 0.1,
@@ -373,9 +373,9 @@
           "value": 16.183
         },
         "nees_position": {
-          "value": 2.39809e+17,
+          "value": 4.14907e+37,
           "gated": false,
-          "note": "Not gated, for the same reason as `npes_position` on this row: both are dominated by the RBPF covariance collapse (#385), not by navigation accuracy. 17 of 1,200 epochs report a horizontal sigma of nanometres, and a mean of a ratio cannot survive a near-zero denominator. Note the real NEES reads 2.4e14 against the diagonal form's 5.7e25 -- eleven orders apart, both meaningless. Re-gate when #385 lands."
+          "note": "Not gated, for the same reason as `npes_position` on this row: both are dominated by the RBPF covariance collapse (#385), not by navigation accuracy. 17 of 1,200 epochs report a horizontal sigma of nanometres, and no normalised error survives a near-zero denominator. Deliberately quoting no ratio between the two: the figure is an artefact of the collapse and of how the inverse is formed, not a measurement. It read 2.4e17 while `nees` used `try_inverse` and 4.1e37 once that became a Cholesky solve -- twenty orders, from a change that left the other 239 metrics in this file bit-identical. Re-gate when #385 lands, and expect the value to move again until then."
         },
         "npes_position": {
           "value": 5.72234e+25,
