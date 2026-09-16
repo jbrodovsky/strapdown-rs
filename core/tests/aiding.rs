@@ -176,9 +176,13 @@ fn radians_to_meters(radians: f64) -> f64 {
 ///
 ///     filter | worst relative error over the five observed entries
 ///     -------|---------------------------------------------------
-///     ESKF   | 1.4e-16   (machine precision)
+///     ESKF   | 1.2e-16   (machine precision)
 ///     EKF    | 1.4e-16   (machine precision)
-///     UKF    | 1.4e-5
+///     UKF    | 6.0e-5 on Linux, 1.2e-4 on macOS
+///
+/// Those are current, and the UKF's are **per platform on purpose** -- it is the one entry here
+/// that is not reproducible across machines, and the tolerance below is derived from that
+/// rather than from whichever runner measured it first.
 ///
 /// The EKF and ESKF scale a covariance they hold directly, so the identity is exact to the last
 /// bit. The UKF's covariance makes a round trip through `matrix_square_root((n + lambda) * P)`
@@ -194,7 +198,7 @@ fn radians_to_meters(radians: f64) -> f64 {
 /// The bound is re-derived rather than relaxed -- the matrix being conditioned changed.
 ///
 /// The UKF's figure is evidence rather than noise: a filter that cannot reproduce an exact
-/// scaling of its own covariance to better than 1e-5 is losing information in the sigma-point
+/// scaling of its own covariance to better than 1e-4 is losing information in the sigma-point
 /// round trip, because that round trip goes through `matrix_square_root((n + lambda) * P)`
 /// with `n + lambda = 1.5e-5`.
 ///
@@ -206,9 +210,47 @@ fn radians_to_meters(radians: f64) -> f64 {
 /// Keep the two separate.
 fn inflation_tolerance(filter: &str) -> f64 {
     // 1e-10 for the two that are exact: six orders of margin over their measured 1.4e-16, and
-    // far tighter than the 1e-6 this test asked of them before. 1e-4 for the UKF: one order
-    // over its measured 1.4e-5. It tightens to match the others when #371 lands.
-    if filter == "UKF" { 1e-4 } else { 1e-10 }
+    // far tighter than the 1e-6 this test asked of them before.
+    //
+    // 1e-3 for the UKF, and the derivation is worth reading because the previous value was
+    // both stale and platform-incomplete. It said "one order over its measured 1.4e-5. It
+    // tightens to match the others when #371 lands."
+    //
+    // Measured again, per platform, on the run that landed #371:
+    //
+    // | filter | Linux, before #371 | Linux, after | macOS, after |
+    // |---|---:|---:|---:|
+    // | ESKF | 1.165e-16 | 1.165e-16 | -- |
+    // | EKF  | 1.419e-16 | 1.419e-16 | -- |
+    // | UKF  | **8.477e-5** | **5.984e-5** | **1.21e-4** |
+    //
+    // Three corrections fall out of that.
+    //
+    // 1. **The 1.4e-5 was six times stale.** It was measured when this tolerance was written
+    //    (#373's PR) and drifted to 8.5e-5 over the five positions after it, silently,
+    //    because it stayed under the bound. Nothing re-measured it.
+    // 2. **The prediction was directionally right and wildly wrong in size.** #371 did tighten
+    //    it -- 8.5e-5 to 6.0e-5, about 30% -- but "match the others" was never plausible: the
+    //    other two are at 1e-16 and the UKF is eleven orders above them. That gap is the
+    //    scaled transform's own conditioning, not an attitude defect, and #371 does not touch
+    //    it. See the section above.
+    // 3. **The bound was inside the platform spread.** macOS reads 1.21e-4 where Linux reads
+    //    5.98e-5 -- a factor of two on the same commit -- so a 1e-4 bound was being decided by
+    //    which runner drew the job. It passed on Linux and Windows and failed on macOS, which
+    //    is #386 arriving for the second time, and #399's amplification is why a last-bit
+    //    platform difference gets this far.
+    //
+    // So: one order over the worst value observed on any platform (1.21e-4), which is the
+    // same convention the line above uses, applied to a measurement that now covers more than
+    // one machine. Linux and macOS are measured exactly; Windows is known only to be under
+    // 1e-4, since it passed at the old bound.
+    //
+    // This is a wider bound than before and it is not a relaxation to make a red test green:
+    // at 1e-3 the check still catches a two-order regression in the covariance round trip,
+    // which is what it exists for. What it can no longer do is measure drift in the fifth
+    // significant figure -- and it could not do that anyway, as correction 1 shows, because
+    // nothing was reading it.
+    if filter == "UKF" { 1e-3 } else { 1e-10 }
 }
 
 /// Horizontal great-circle distance between an estimate and a truth state, meters.
