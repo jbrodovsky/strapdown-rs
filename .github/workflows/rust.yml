@@ -3,8 +3,16 @@ name: Test, Lint, and Build Rust Project
 on:
   push:
     branches: [ "main" ]
+  # Pull requests are filtered on their *base*, and a stacked pull request's base is its
+  # parent in the stack rather than `main`. With `main` alone here, every pull request in a
+  # stack except the one at the bottom got **no CI at all** -- not a failure, no check runs,
+  # a green tick from nothing having run. The v1.0 spine is nine deep, so that is nine
+  # changes shipping unverified into the one that does get checked.
+  #
+  # `v1/**` is the spine's own convention (`docs/V1_QUEUE.md`), `claude/**` covers the
+  # agent-authored branches that recent pull requests have used.
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "v1/**", "claude/**" ]
 
 env:
   CARGO_TERM_COLOR: always
