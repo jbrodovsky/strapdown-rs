@@ -58,15 +58,20 @@
 //! timestamp matching; the direction was right and the cause was not, and it was generated in
 //! the runner rather than inherited from the 1 Hz reference. Fixed in #367.
 //!
-//! **What that uncovered underneath it.** With the label corrected, a row at `t_k` contains
-//! `t_k`'s GNSS update -- and on this full-rate stream the UKF and EKF then score *below* the
-//! reference's own 3.81 m, at 0.01 m and 0.0001 m. That is not accuracy: a filter whose
-//! Kalman gain is ~1 reproduces the fix it was given, and scoring it against that fix is
-//! circular. Both carry an absolute `eps = 1e-9` covariance floor against a latitude variance
-//! in rad^2, which is a 201 m horizontal sigma -- #373. The ESKF, which uses a relative floor
-//! (#266), sits at 5 m and is unaffected. So the horizontal limits below stay where they are
-//! rather than being re-derived against the new numbers: those numbers will move again when
-//! #373 lands, and a bound fitted to a transient is worse than a loose one (#288).
+//! **What that uncovered underneath it, and how it was resolved.** With the label corrected,
+//! a row at `t_k` contains `t_k`'s GNSS update -- and on this full-rate stream the UKF and EKF
+//! then scored *below* the reference's own 3.81 m, at 0.01 m and 0.0001 m. That is not
+//! accuracy: a filter whose Kalman gain is ~1 reproduces the fix it was given, and scoring it
+//! against that fix is circular. Both carried an absolute `eps = 1e-9` covariance floor
+//! against a latitude variance in rad^2, which is a 201 m horizontal sigma. The ESKF, which
+//! used a relative floor (#266), sat at 5 m and was unaffected.
+//!
+//! **#373 has since landed** and given all three the relative floor, so they now read 4.78,
+//! 5.22 and 5.12 m -- above the reference's own noise rather than beneath it. The horizontal
+//! limits below were deliberately left un-re-derived while that was in flight, on the grounds
+//! that a bound fitted to a transient is worse than a loose one (#288). They are still the
+//! derived physical bounds they always were, and tightening them to match today's numbers
+//! would make them a baseline, which is what `core/tests/perf_baseline.rs` is for.
 //!
 //! **Each attitude axis is bounded by the sensor that observes it.** Roll and pitch are
 //! observable through gravity: the accelerometer senses a 9.81 m/s^2 vector whose direction
@@ -3399,11 +3404,13 @@ fn test_rmse_benchmark_across_filters() {
     // One filter is excluded, and the exclusion is the point of this being a separate loop
     // rather than a third entry in the one above:
     //
-    // * **UKF** -- #336: it averages sigma-point Euler angles linearly under non-convex
-    //   weights, so its yaw is meaningless near the +/-pi branch cut regardless of what the
-    //   aiding does. It measures 22.77 deg here, which *would* pass; asserting it would be
-    //   asserting that this recording happens not to dwell on the cut, not that the filter
-    //   holds heading. Restore it to the list when #336 lands.
+    // * **UKF** -- #371: it averages sigma-point Euler angles linearly under non-convex
+    //   weights, so its yaw is not the mean rotation and cannot be relied on regardless of
+    //   what the aiding does. It measures 22.77 deg here, which *would* pass; asserting it
+    //   would be asserting that this recording happens to be kind to that defect, not that
+    //   the filter holds heading. (#336, the branch-cut half of the same area, is closed --
+    //   the unwrap it added is in `kalman.rs` and is not what this exclusion waits on.)
+    //   Restore it to the list when #371 lands.
     //
     // The **RBPF** was excluded here too until #341, at 65.89 deg. That exclusion attributed
     // the number to #336's defect in RBPF form -- unwrapped Euler error states and a linear

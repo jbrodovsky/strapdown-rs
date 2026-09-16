@@ -38,7 +38,7 @@
         },
         "npes_position": {
           "value": 80.9943,
-          "note": "Not the horizontal channel: containment reads a flat 1.000 there, so each horizontal term is bounded by 9. Almost all of this is the vertical channel, whose containment is 0.41. The EKF here is over-conservative horizontally (see core/tests/aiding.rs, `a_note_on_filter_consistency`) and over-confident vertically at the same time. Recorded as measured, not as a target."
+          "note": "Both channels contribute now, which they did not before #373. That note used to read \"not the horizontal channel: containment reads a flat 1.000 there, so each horizontal term is bounded by 9\" -- true only while an absolute covariance floor put 201 m of fabricated horizontal sigma into the denominator and made the containment unfalsifiable. With the relative floor the same row reads 0.494 horizontal and 0.425 vertical against an ideal of 0.9973, so this filter is now measurably over-confident in both, and roughly equally. Recorded as measured, not as a target; #372 is the vertical half."
         },
         "pitch_rmse_deg": {
           "value": 2.51203

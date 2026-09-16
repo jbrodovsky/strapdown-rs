@@ -43,11 +43,15 @@ rather than defects in the harness; the fifth is a defect, in the gate.
 
    What that uncovered is caveat 1 with nothing left diluting it. A row at $t_k$ now contains
    $t_k$'s GNSS update, so on a `PassThrough` schedule these columns measure how completely a
-   filter absorbs its own aiding: `real_clean__ukf` reads 0.014 m and `real_clean__ekf`
-   0.0001 m, both far below the receiver's own 3.81 m. That is not accuracy. It is a Kalman
-   gain of about 1 -- see [#373](https://github.com/jbrodovsky/strapdown-rs/issues/373), where
-   an absolute covariance floor in radian units leaves both filters copying their fixes rather
-   than filtering them. The ESKF, which floors its covariance *relatively*, sits at 5.1 m.
+   filter absorbs its own aiding.
+
+   That absorption used to be total: `real_clean__ukf` read 0.014 m and `real_clean__ekf`
+   0.0001 m, far below the receiver's own 3.81 m. Not accuracy — a Kalman gain of about 1,
+   caused by an absolute covariance floor applied to a latitude variance in radians².
+   [#373](https://github.com/jbrodovsky/strapdown-rs/issues/373) **fixed it**, and the three
+   filters now read **4.78, 5.22 and 5.12 m** — above the receiver's own noise rather than
+   reproducing it, and in agreement with the ESKF, which had floored its covariance relatively
+   since #266.
 
    **The real-data rows that still measure navigation are the ones where the filter has to
    predict between fixes** -- `real_sparse_5s`, `real_outage_60s`, `real_degraded` -- together
@@ -212,11 +216,12 @@ will tell you off; change the numbers by re-blessing.
 
 ## What the table is saying
 
-- **The `real_clean` horizontal column is no longer a navigation measurement.** The UKF reads
-  0.014 m and the EKF 0.0001 m against a reference whose own noise is 3.81 m -- caveat 2. Both
-  are reproducing the fix they were handed one event earlier. The ESKF's 5.1 m is the only
-  figure in that column that means anything, and it is the only one of the three whose
-  covariance floor is relative rather than absolute.
+- **The `real_clean` horizontal column measures agreement with the aid, not accuracy.** All
+  three filters now read 4.78, 5.22 and 5.12 m against a reference whose own noise is 3.81 m,
+  so none of them is below its own reference any more — #373 fixed the absolute covariance
+  floor that had the UKF and EKF reproducing the fix they were handed (0.014 m and 0.0001 m).
+  What remains is caveat 1's circularity, which no fix to the filters can remove: the score is
+  against the aiding source itself.
 - **`syn_cruise_1hz` is where the filters actually separate**, and no one of them wins. The
   ESKF leads on position and loses on velocity; the UKF trails on attitude for the reason in
   caveat 3, though a 1 Hz magnetometer now closes most of that gap on this row (2.01 deg of
