@@ -94,17 +94,41 @@ rather than defects in the harness; the fifth is a defect, in the gate.
 | `roll_rmse_deg`, `pitch_rmse_deg` | deg | RMS per-axis error, wrapped onto $[-\pi, \pi]$ | 0 |
 | `yaw_rmse_deg` | deg | RMS heading error, wrapped | 0 |
 | `attitude_geodesic_rmse_deg` | deg | RMS rotation angle of $R_{est}^{-1} R_{true}$ -- the only attitude error independent of the Euler sequence | 0 |
-| `npes_position` | -- | mean normalized position error squared, $\overline{\epsilon} = \frac{1}{N}\sum_k \left(\frac{e_{lat}^2}{P_{lat}} + \frac{e_{lon}^2}{P_{lon}} + \frac{e_{alt}^2}{P_{alt}}\right)$ | 3.0 |
+| `nees_position` | -- | mean normalized estimation error squared over the full 3x3 position block, $\frac{1}{N}\sum_k e_k^\top P_k^{-1} e_k$ | 3.0 |
+| `npes_position` | -- | the same, computed as though $P$ were diagonal: $\overline{\epsilon} = \frac{1}{N}\sum_k \left(\frac{e_{lat}^2}{P_{lat}} + \frac{e_{lon}^2}{P_{lon}} + \frac{e_{alt}^2}{P_{alt}}\right)$ | 3.0 |
 | `containment_3sigma_horizontal` | fraction | share of latitude and longitude samples inside $\pm 3\sigma$ | 0.9973 |
 | `containment_3sigma_vertical` | fraction | share of altitude samples inside $\pm 3\sigma$ | 0.9973 |
 
-`npes_position` is deliberately **not** called NEES. `NavigationResult` keeps only the
-covariance diagonal, so the true $e^T P^{-1} e$ is not computable from it; this form equals the
-NEES only when the position block is diagonal, and is optimistic when it is positively
-correlated. Read it beside the containment row, never alone -- together they separate the two
-failure modes either one alone hides:
+`nees_position` is the real statistic. It became computable in
+[#376](https://github.com/jbrodovsky/strapdown-rs/issues/376), which stopped `NavigationResult`
+discarding the position block's off-diagonal terms; before that the crate could only report the
+diagonal-only `npes_position`, which equals the NEES when the position states are uncorrelated
+and is **optimistic** when they are not.
 
-| containment | `npes_position` | diagnosis |
+Both are kept. `npes_position` stays so the baseline it has accumulated remains comparable
+across that change, not as a claim about consistency.
+
+**How much did the diagonal-only form actually understate?** Less than #376 feared, and
+precisely where you would expect:
+
+| scenario | `npes` | `nees` | ratio |
+|---|---:|---:|---:|
+| every row with GNSS every epoch | — | — | **1.00–1.01** |
+| `real_outage_60s__eskf` | 73.43 | 83.04 | **1.13** |
+| `syn_outage_60s__ukf` | 15.12 | 18.45 | **1.22** |
+
+Where the filter is aided every epoch the two agree to within 1%, so the historical `npes`
+numbers were not misleading. The gap opens on the **outage** rows, and the mechanism is the
+obvious one: during a free-inertial coast the position error accumulates along a correlated
+direction with no fix to break it up, and a diagonal-only statistic cannot see that. The
+contrived worst case is far larger — at a latitude-longitude correlation of 0.9 the two read
+2.0 and 20.0 — so the modest ratios here are a measurement about these trajectories, not a
+general reassurance.
+
+Read either beside the containment row, never alone -- together they separate the two failure
+modes either one alone hides:
+
+| containment | `nees_position` | diagnosis |
 |---|---|---|
 | ~1.0 | far below 3 | over-conservative: the filter is right but does not believe it |
 | below 0.99 | far above 3 | over-confident -- the dangerous one |
@@ -187,7 +211,8 @@ will tell you off; change the numbers by re-blessing.
   horizontal containment 0.161 to 0.497, `npes` 1,249 to 68. That is the offset leaving the
   numerator. It is still not consistent -- 0.497 against an ideal of 0.9973 -- and what
   remains is a real finding rather than an artefact.
-- **`real_rbpf_slice__rbpf`'s `npes` is not gated.** It reads 5.7e25 because the particle
+- **`real_rbpf_slice__rbpf`'s consistency metrics are not gated.** `npes` reads 5.7e25 and the
+  real `nees` 2.4e14 -- eleven orders apart and both meaningless -- because the particle
   cloud collapses to a horizontal sigma of nanometres on 17 of 1,200 epochs, which a mean of
   $e^2/P$ cannot survive. Exposed rather than caused by #367, which stopped sampling the cloud
   one propagation step after each fix had re-inflated it. Tracked as

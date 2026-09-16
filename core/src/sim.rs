@@ -1418,12 +1418,32 @@ pub struct NavigationResult {
     /// IMU gyroscope z-axis bias in radians/s
     pub gyro_bias_z: f64,
     // ---- Covariance values for the navigation solution ----
-    /// Latitude covariance
+    /// Latitude variance, rad^2.
     pub latitude_cov: f64,
-    /// Longitude covariance
+    /// Longitude variance, rad^2.
     pub longitude_cov: f64,
-    /// Altitude covariance
+    /// Altitude variance, m^2.
     pub altitude_cov: f64,
+    // ---- Position off-diagonals: the rest of the 3x3 block (#376) ----
+    //
+    // Everything else on this struct is a covariance *diagonal*, because the filters' full
+    // matrices were reduced to `covariance.diagonal()` on the way in. For the position block
+    // that reduction cost a real capability: `e^T P^-1 e` -- the actual NEES, the statistic
+    // that says whether a filter believes the right thing -- is not computable from a
+    // diagonal. `metrics::npes_position` is the diagonal-only stand-in, and it is
+    // *optimistic*: it equals the NEES only when the block is genuinely diagonal, and after a
+    // GNSS update the position states are correlated.
+    //
+    // Six numbers describe a symmetric 3x3; three are the variances above, and these are the
+    // other three. The velocity, attitude and bias blocks keep their diagonals only -- nothing
+    // scores them against a covariance, so carrying 30 more columns would be schema for its
+    // own sake.
+    /// Latitude-longitude covariance, rad^2.
+    pub latitude_longitude_cov: f64,
+    /// Latitude-altitude covariance, rad*m.
+    pub latitude_altitude_cov: f64,
+    /// Longitude-altitude covariance, rad*m.
+    pub longitude_altitude_cov: f64,
     /// Northward velocity covariance
     pub velocity_n_cov: f64,
     /// Eastward velocity covariance
@@ -1467,6 +1487,9 @@ pub struct NavigationResult {
 impl Default for NavigationResult {
     fn default() -> Self {
         Self {
+            latitude_longitude_cov: 0.0,
+            latitude_altitude_cov: 0.0,
+            longitude_altitude_cov: 0.0,
             timestamp: Utc::now(),
             latitude: 0.0,
             longitude: 0.0,
@@ -1643,6 +1666,9 @@ impl NavigationResult {
 
         // Covariance values
         write_f64_field!("latitude_cov", latitude_cov);
+        write_f64_field!("latitude_longitude_cov", latitude_longitude_cov);
+        write_f64_field!("latitude_altitude_cov", latitude_altitude_cov);
+        write_f64_field!("longitude_altitude_cov", longitude_altitude_cov);
         write_f64_field!("longitude_cov", longitude_cov);
         write_f64_field!("altitude_cov", altitude_cov);
         write_f64_field!("velocity_n_cov", velocity_n_cov);
@@ -1748,6 +1774,9 @@ impl NavigationResult {
 
             // Read covariance values
             let latitude_cov = read_f64_field!("latitude_cov");
+            let latitude_longitude_cov = read_f64_field!("latitude_longitude_cov");
+            let latitude_altitude_cov = read_f64_field!("latitude_altitude_cov");
+            let longitude_altitude_cov = read_f64_field!("longitude_altitude_cov");
             let longitude_cov = read_f64_field!("longitude_cov");
             let altitude_cov = read_f64_field!("altitude_cov");
             let velocity_n_cov = read_f64_field!("velocity_n_cov");
@@ -1774,6 +1803,9 @@ impl NavigationResult {
                     .with_timezone(&Utc);
 
                 records.push(Self {
+                    latitude_longitude_cov: latitude_longitude_cov[i],
+                    latitude_altitude_cov: latitude_altitude_cov[i],
+                    longitude_altitude_cov: longitude_altitude_cov[i],
                     timestamp,
                     latitude: latitude[i],
                     longitude: longitude[i],
@@ -1871,6 +1903,12 @@ impl NavigationResult {
         let gyro_bias_y: Vec<f64> = records.iter().map(|r| r.gyro_bias_y).collect();
         let gyro_bias_z: Vec<f64> = records.iter().map(|r| r.gyro_bias_z).collect();
         let latitude_cov: Vec<f64> = records.iter().map(|r| r.latitude_cov).collect();
+        let latitude_longitude_cov: Vec<f64> =
+            records.iter().map(|r| r.latitude_longitude_cov).collect();
+        let latitude_altitude_cov: Vec<f64> =
+            records.iter().map(|r| r.latitude_altitude_cov).collect();
+        let longitude_altitude_cov: Vec<f64> =
+            records.iter().map(|r| r.longitude_altitude_cov).collect();
         let longitude_cov: Vec<f64> = records.iter().map(|r| r.longitude_cov).collect();
         let altitude_cov: Vec<f64> = records.iter().map(|r| r.altitude_cov).collect();
         let velocity_n_cov: Vec<f64> = records.iter().map(|r| r.velocity_n_cov).collect();
@@ -1921,6 +1959,9 @@ impl NavigationResult {
         add_and_write!(file, "gyro_bias_y", gyro_bias_y);
         add_and_write!(file, "gyro_bias_z", gyro_bias_z);
         add_and_write!(file, "latitude_cov", latitude_cov);
+        add_and_write!(file, "latitude_longitude_cov", latitude_longitude_cov);
+        add_and_write!(file, "latitude_altitude_cov", latitude_altitude_cov);
+        add_and_write!(file, "longitude_altitude_cov", longitude_altitude_cov);
         add_and_write!(file, "longitude_cov", longitude_cov);
         add_and_write!(file, "altitude_cov", altitude_cov);
         add_and_write!(file, "velocity_n_cov", velocity_n_cov);
@@ -2005,6 +2046,9 @@ impl NavigationResult {
         let gyro_bias_y = read_var!(file, "gyro_bias_y");
         let gyro_bias_z = read_var!(file, "gyro_bias_z");
         let latitude_cov = read_var!(file, "latitude_cov");
+        let latitude_longitude_cov = read_var!(file, "latitude_longitude_cov");
+        let latitude_altitude_cov = read_var!(file, "latitude_altitude_cov");
+        let longitude_altitude_cov = read_var!(file, "longitude_altitude_cov");
         let longitude_cov = read_var!(file, "longitude_cov");
         let altitude_cov = read_var!(file, "altitude_cov");
         let velocity_n_cov = read_var!(file, "velocity_n_cov");
@@ -2032,6 +2076,9 @@ impl NavigationResult {
                 .with_timezone(&Utc);
 
             records.push(Self {
+                latitude_longitude_cov: latitude_longitude_cov[i],
+                latitude_altitude_cov: latitude_altitude_cov[i],
+                longitude_altitude_cov: longitude_altitude_cov[i],
                 timestamp,
                 latitude: latitude[i],
                 longitude: longitude[i],
@@ -2275,6 +2322,13 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>, GeoStateLayout)> for Na
             covariance.nrows() == expected && covariance.ncols() == expected,
             "Covariance matrix must be {expected}x{expected}"
         );
+        // Capture the position block's off-diagonals before the diagonal reduction throws the
+        // rest away. Without them `e^T P^-1 e` -- the actual NEES -- is not computable
+        // downstream, and `metrics::npes_position` has to stand in for it optimistically,
+        // assuming a correlation of zero that a GNSS update does not leave behind (#376).
+        let latitude_longitude_cov = covariance[(0, 1)];
+        let latitude_altitude_cov = covariance[(0, 2)];
+        let longitude_altitude_cov = covariance[(1, 2)];
         let covariance = DVector::from_vec(covariance.diagonal().iter().copied().collect());
         // `layout` says which of the states past `NAVIGATION_STATES` is which; an absent map
         // leaves its column `None` rather than zero, so a reader can tell "no gravity map" from
@@ -2310,6 +2364,9 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>, GeoStateLayout)> for Na
         //     wmm_date,
         // );
         Self {
+            latitude_longitude_cov,
+            latitude_altitude_cov,
+            longitude_altitude_cov,
             timestamp: *timestamp,
             latitude: state[0].to_degrees(),
             longitude: state[1].to_degrees(),
@@ -2376,6 +2433,9 @@ impl From<(&DateTime<Utc>, &UnscentedKalmanFilter)> for NavigationResult {
         let state = &ukf.get_estimate();
         let covariance = ukf.get_certainty();
         Self {
+            latitude_longitude_cov: covariance[(0, 1)],
+            latitude_altitude_cov: covariance[(0, 2)],
+            longitude_altitude_cov: covariance[(1, 2)],
             timestamp: *timestamp,
             latitude: state[0].to_degrees(),
             longitude: state[1].to_degrees(),
@@ -2429,6 +2489,9 @@ impl From<(&DateTime<Utc>, &crate::kalman::ExtendedKalmanFilter)> for Navigation
         let state = &ekf.get_estimate();
         let covariance = ekf.get_certainty();
         Self {
+            latitude_longitude_cov: covariance[(0, 1)],
+            latitude_altitude_cov: covariance[(0, 2)],
+            longitude_altitude_cov: covariance[(1, 2)],
             timestamp: *timestamp,
             latitude: state[0].to_degrees(),
             longitude: state[1].to_degrees(),
@@ -2518,6 +2581,9 @@ impl From<(&DateTime<Utc>, &StrapdownState)> for NavigationResult {
         //    wmm_date,
         //);
         Self {
+            latitude_longitude_cov: f64::NAN,
+            latitude_altitude_cov: f64::NAN,
+            longitude_altitude_cov: f64::NAN,
             timestamp: *timestamp,
             latitude: state.latitude.to_degrees(),
             longitude: state.longitude.to_degrees(),
@@ -2657,6 +2723,9 @@ impl NavigationResult {
         let magnetic_bias_cov = magnetic_index.map(|i| cov[(i, i)]);
 
         Self {
+            latitude_longitude_cov: cov[(0, 1)],
+            latitude_altitude_cov: cov[(0, 2)],
+            longitude_altitude_cov: cov[(1, 2)],
             timestamp: *timestamp,
             latitude: mean[0].to_degrees(),
             longitude: mean[1].to_degrees(),
@@ -5544,6 +5613,9 @@ pub fn generate_synthetic(
         // Build truth NavigationResult from current state
         let (roll, pitch, yaw) = state.attitude.euler_angles();
         let truth = NavigationResult {
+            latitude_longitude_cov: 0.0,
+            latitude_altitude_cov: 0.0,
+            longitude_altitude_cov: 0.0,
             timestamp,
             latitude: state.latitude.to_degrees(),
             longitude: state.longitude.to_degrees(),
