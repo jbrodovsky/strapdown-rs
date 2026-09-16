@@ -76,19 +76,32 @@ pub const MAG_YAW_NOISE: f64 = 0.2;
 /// | `syn_outage_60s__ukf` / `horizontal_rmse_m` | 27.1705 | 27.5218 | +1.29% |
 /// | `real_rbpf_slice__rbpf` / `nees_position` | 4.15e37 | 5.19e17 | 20 orders |
 ///
-/// **Two parts in 1e16 of input becomes six parts in 1e2 of output.** Fourteen orders of
-/// amplification, on a metric the gate reads to a 10% band. The RBPF row is #385's collapsed
-/// cloud and is ungated, but the `syn_outage_60s__ukf` entries are gated, and a 5.9% move is
-/// well over half of what separates "unchanged" from "regressed".
+/// **Corrected.** This first read "two parts in 1e16 of input becomes six parts in 1e2 of
+/// output", attributing all of that to the ulp. It is not all the ulp. #399 established that
+/// adding a `pub fn` to `linearize.rs` and **never calling it** moves 59 gated metrics on its
+/// own, `syn_outage_60s__ukf`'s `horizontal_cep95_m` by 4.86% -- so a structural edit to this
+/// module perturbs the numbers through compiler codegen whether or not it changes an
+/// arithmetic value, and the two effects cannot be separated from a single bless. The table
+/// above is the combined movement of this change, which is what a reader of the baseline
+/// needs; it is not a measurement of the ulp alone.
 ///
-/// The mechanism is almost certainly the innovation gate: accepting or rejecting a fix is a
-/// **discrete** decision on a continuous statistic, so a hair's difference in $R$ flips one of
-/// them and the two trajectories separate from there. Over 15,000 steps that is ample.
+/// What survives the correction, and is the part that matters: **any** last-bit perturbation
+/// -- in the data or in the instruction stream -- becomes a percent-level change in these
+/// metrics, on a gate that reads them to a 10% band. The mechanism is almost certainly the
+/// innovation gate, which turns a continuous statistic into a **discrete** accept/reject: one
+/// flipped decision in 15,000 steps separates the trajectories and 60 s of free inertial
+/// compounds it. The pattern fits -- `syn_outage_60s__ukf` moves most, the continuously aided
+/// `syn_cruise_1hz__ukf` moves ~0.5%, and `syn_dead_reckoning`, which takes no measurements
+/// and so makes no gate decisions, does not move at all.
 ///
-/// This corroborates #386 with a mechanism it did not have. A tail statistic differing 28%
-/// between Linux and Windows on an identical commit was written off as platform floating
-/// point; platform floating point is *exactly* this size of perturbation, and this measures
-/// what it does downstream. The gate's bands are not calibrated against that.
+/// This gives #386 a mechanism it did not have. A tail statistic differing 28% between Linux
+/// and Windows on an identical commit was written off as platform floating point; platform
+/// floating point is exactly this size of perturbation, and #399 measures what one does
+/// downstream. The gate's bands are not calibrated against it.
+///
+/// #399 also carries the technique for getting attribution back: bless a **control build**
+/// that compiles the new code without calling it, and diff the real change against that
+/// rather than against the parent commit.
 ///
 /// The baseline **is** re-blessed with this change rather than left alone. Leaving it would
 /// have been the tidier-looking choice -- it passes, so why record noise -- and it is wrong:
