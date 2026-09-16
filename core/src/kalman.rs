@@ -1339,7 +1339,31 @@ impl NavigationFilter for ExtendedKalmanFilter {
         let f_full = if self.use_biases && self.state_size >= 15 {
             let mut f_ext = DMatrix::<f64>::identity(self.state_size, self.state_size);
             f_ext.view_mut((0, 0), (9, 9)).copy_from(&f_matrix);
-            // Bias states and any augmented states have identity dynamics (random walk)
+            // The bias states themselves are a random walk, so their own diagonal is the
+            // identity already written above. What was missing is how they reach the
+            // navigation states: without the two coupling blocks below this filter carried
+            // fifteen states and estimated nine. `P[0..9, 9..15]` started at zero, `F` could
+            // not create it, no shipped measurement model observes a bias, and so the gain
+            // over the bias rows was identically zero -- measured at exactly 0.0 over 299
+            // steps, against the UKF's 4.3e-3 on the same stream (#394). The bias estimate
+            // never left `initialize_ekf`'s seed, which made the compensation applied to
+            // every sample above a no-op and this filter's bias prior unfalsifiable.
+            //
+            // The attitude block is *not* the ESKF's `-I dt`: this state holds Euler angles
+            // and its Jacobian uses the nav-frame error convention, where the ESKF uses a
+            // body-frame rotation vector. See `linearize::bias_coupling_blocks`.
+            let (velocity_bias_block, attitude_bias_block) = crate::linearize::bias_coupling_blocks(
+                &state,
+                &corrected_rates.gyro,
+                corrected_sample.dt,
+                crate::linearize::AttitudeParametrization::Euler,
+            );
+            f_ext
+                .view_mut((3, 9), (3, 3))
+                .copy_from(&velocity_bias_block);
+            f_ext
+                .view_mut((6, 12), (3, 3))
+                .copy_from(&attitude_bias_block);
             f_ext
         } else if self.state_size > 9 {
             // Handle augmented states without biases (should not happen, but be defensive)

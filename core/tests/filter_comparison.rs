@@ -971,3 +971,72 @@ fn every_filter_converges_from_a_seed_error_in_any_channel() {
         failures.join("\n  ")
     );
 }
+
+/// Every 15-state filter must actually couple its bias states to its navigation states.
+///
+/// A filter that carries six bias states and never correlates them with the navigation
+/// states does not have fifteen states; it has nine and six pieces of dead weight that
+/// consume process noise. That was `ExtendedKalmanFilter`'s condition for the whole of its
+/// history (#394): its state-transition Jacobian filled only the 9x9 navigation block and
+/// left $\partial(\text{nav}) / \partial(\text{bias})$ zero, so with a block-diagonal $P_0$
+/// and measurement models that observe navigation states only, `P[0..9, 9..15]` started at
+/// zero and could never become anything else. The Kalman gain over the bias rows was
+/// therefore identically zero, the estimate never left its seed, and the bias compensation
+/// applied to every IMU sample was a no-op.
+///
+/// # Why a covariance block and not an accuracy number
+///
+/// Because the accuracy numbers could not see it. `real_clean__ekf` and `syn_cruise_1hz__ekf`
+/// were **bit-identical** across a change that rewrote the EKF's entire initial bias
+/// covariance -- which is what exposed this -- and a suite that reads only RMSEs has no way
+/// to tell "estimated well" from "not estimated at all". The cross-covariance block is the
+/// thing that is structurally wrong, so it is the thing to assert.
+///
+/// The UKF needs no help here and is included as the control: a sigma point perturbed in a
+/// bias state mechanizes to a different navigation state, so the unscented transform builds
+/// the coupling out of the nonlinear propagation for free. Only a filter that linearises has
+/// to supply it by hand.
+#[test]
+fn every_fifteen_state_filter_couples_its_biases_to_its_navigation_states() {
+    /// The block is zero or it is not; this only has to separate "grew" from "never wrote".
+    /// The measured values are ~4e-3, six orders above this.
+    const MIN_COUPLING: f64 = 1e-12;
+
+    let scenario = build_scenario(0.0);
+    let mut failures = Vec::new();
+
+    for (name, mut filter) in all_filters(&scenario, &[0.0; 6]) {
+        let _ = run(filter.as_mut(), &scenario);
+        let covariance = filter.get_certainty();
+        if covariance.nrows() < 15 {
+            println!(
+                "{name}: {} states, not a 15-state filter",
+                covariance.nrows()
+            );
+            continue;
+        }
+
+        let mut coupling = 0.0_f64;
+        for row in 0..9 {
+            for column in 9..15 {
+                coupling = coupling.max(covariance[(row, column)].abs());
+            }
+        }
+        println!("{name}: max |P[nav, bias]| = {coupling:.6e}");
+
+        if coupling < MIN_COUPLING {
+            failures.push(format!(
+                "{name}: max |P[nav, bias]| is {coupling:.3e}. Its bias states are not \
+                 coupled to anything, so they cannot be estimated and their prior cannot be \
+                 falsified by any measurement (#394)."
+            ));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "{} filter(s) carry bias states that nothing can observe:\n  {}",
+        failures.len(),
+        failures.join("\n  ")
+    );
+}
