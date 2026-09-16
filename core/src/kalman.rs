@@ -786,7 +786,7 @@ impl NavigationFilter for UnscentedKalmanFilter {
         // The attitude rows of that sum are not the mean attitude, and the error is not
         // small. A weighted arithmetic mean of Euler triples is a linear operation on a
         // nonlinear chart: 31 rotations all lying inside a 0.24 deg cone average, that way,
-        // to a point 14.3 deg *outside* it -- sixty times the spread of the inputs. Across a
+        // to a point 34 deg *outside* it -- 140 times the spread of the inputs. Across a
         // 10^4 sweep of the sigma-point spread the discrepancy moves 0.4%, where a genuinely
         // second-order error would have fallen by 10^8; the scaled transform's weights are
         // what hold it up (#371).
