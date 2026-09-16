@@ -225,6 +225,26 @@ const fn default_seed() -> u64 {
     42
 }
 
+/// Default emission schedule for the barometer and the magnetometer: one measurement per second.
+///
+/// Not [`GnssScheduler::PassThrough`], which is what these two channels effectively had before
+/// they were scheduled at all. A barometer and a magnetometer are aiding sources like any
+/// other, and emitting one per record ties their update rate to the *log's* rate rather than
+/// to the sensor's. On a 1 Hz recording that happens to be right; on the 50 Hz synthetic
+/// trajectories it delivered fifty pressure readings and fifty headings a second, each entering
+/// the filter as an independent fix. A heading re-derived from the same field vector fifty
+/// times is one measurement counted fifty times, and the UKF diverges on it (#375).
+///
+/// One per second matches the rate the reference recording logs these channels at, so it is
+/// also the schedule under which every baseline number in `core/tests/perf_baseline.json` that
+/// was measured on real data was measured.
+const fn default_aiding_scheduler() -> GnssScheduler {
+    GnssScheduler::FixedInterval {
+        interval_s: 1.0,
+        phase_s: 0.0,
+    }
+}
+
 /// Configuration container for GNSS degradation in simulation.
 ///
 /// This ties together a [`GnssScheduler`] (which controls *when* GNSS fixes
@@ -236,12 +256,19 @@ const fn default_seed() -> u64 {
 ///
 /// ## Fields
 ///
-/// - `scheduler`: Controls emission rate / outage pattern (e.g. pass-through,
+/// - `scheduler`: Controls GNSS emission rate / outage pattern (e.g. pass-through,
 ///   fixed-interval, duty-cycled).
 /// - `fault`: Corrupts measurement content (e.g. degraded AR(1) wander, slow
 ///   bias, hijack).
+/// - `baro_scheduler`, `magnetometer_scheduler`: the same thing for the other two aiding
+///   channels, each with its own independent state, both defaulting to 1 Hz rather than to
+///   pass-through. Only GNSS has a fault model; the other two are scheduled but not corrupted.
 /// - `seed`: Seed for the internal random number generator, ensuring runs are
 ///   reproducible for debugging and A/B comparisons.
+///
+/// The name is now narrower than the contents -- it schedules three sensors and degrades one.
+/// Renaming it, and [`GnssScheduler`] with it, is on the 1.0 API-freeze list rather than done
+/// here, so that a mechanical 112-site rename does not ride along with a behaviour change.
 ///
 /// ## Example
 ///
@@ -273,6 +300,23 @@ pub struct GnssDegradationConfig {
     #[serde(default)]
     pub fault: GnssFaultModel,
 
+    /// Scheduler that determines when barometric altitude measurements are emitted.
+    ///
+    /// Defaults to one per second (see [`default_aiding_scheduler`]), *not* to
+    /// [`GnssScheduler::PassThrough`]. [`GnssScheduler::DutyCycle`] gives a barometer outage
+    /// the same way it gives a GNSS one.
+    #[serde(default = "default_aiding_scheduler")]
+    pub baro_scheduler: GnssScheduler,
+
+    /// Scheduler that determines when magnetometer heading measurements are emitted.
+    ///
+    /// Defaults to one per second (see [`default_aiding_scheduler`]), *not* to
+    /// [`GnssScheduler::PassThrough`]. The heading a magnetometer yields is derived from a
+    /// field vector, so re-reading it faster than the field changes adds no information while
+    /// adding weight.
+    #[serde(default = "default_aiding_scheduler")]
+    pub magnetometer_scheduler: GnssScheduler,
+
     /// Random number generator seed for deterministic tests and reproducibility.
     ///
     /// Use the same seed to repeat scenarios exactly; change it to get a new
@@ -286,6 +330,8 @@ impl Default for GnssDegradationConfig {
         Self {
             scheduler: GnssScheduler::default(),
             fault: GnssFaultModel::default(),
+            baro_scheduler: default_aiding_scheduler(),
+            magnetometer_scheduler: default_aiding_scheduler(),
             seed: default_seed(),
         }
     }
@@ -866,6 +912,52 @@ pub fn apply_fault(
 /// against a whole-second window drops or gains a fix depending on rounding.
 const DUTY_CYCLE_EPSILON_S: f64 = 1e-9;
 
+/// Slack on a [`GnssScheduler::FixedInterval`] comparison, for the same reason
+/// [`DUTY_CYCLE_EPSILON_S`] exists: an elapsed time built from integer milliseconds is not
+/// exactly the multiple of `interval_s` it is meant to be, and a bare `>=` would drop a fix
+/// on a record that is a rounding error early.
+const SCHEDULE_EPSILON_S: f64 = 1e-9;
+
+/// The emission clock a [`GnssScheduler`] starts from, before any record is seen.
+///
+/// Only [`GnssScheduler::FixedInterval`] carries state between records; the other two variants
+/// decide from `elapsed_s` alone and their initial value is never read.
+const fn initial_emit_time(scheduler: &GnssScheduler) -> f64 {
+    match *scheduler {
+        GnssScheduler::FixedInterval { phase_s, .. } => phase_s,
+        GnssScheduler::PassThrough | GnssScheduler::DutyCycle { .. } => 0.0,
+    }
+}
+
+/// Whether `scheduler` emits at `elapsed_s`, advancing `next_emit_time` if it does.
+///
+/// Each aided channel owns its own `next_emit_time`: a barometer on a 1 s schedule and a GNSS
+/// receiver on a 10 s one must not share an emission clock.
+///
+/// A `FixedInterval` advances by whole intervals from `phase_s`, so its tick times stay on
+/// exact multiples and cannot creep as a run gets long. It is a *rate limit*, not a resampler:
+/// it emits at the first record at or after each tick, so a log sampled slower than the
+/// interval emits on every record and one sampled faster emits on roughly every `interval_s`
+/// of them.
+fn should_emit(scheduler: &GnssScheduler, elapsed_s: f64, next_emit_time: &mut f64) -> bool {
+    match *scheduler {
+        GnssScheduler::PassThrough => true,
+        GnssScheduler::FixedInterval { interval_s, .. } => {
+            if elapsed_s + SCHEDULE_EPSILON_S >= *next_emit_time {
+                *next_emit_time += interval_s;
+                true
+            } else {
+                false
+            }
+        }
+        GnssScheduler::DutyCycle {
+            on_s,
+            off_s,
+            start_phase_s,
+        } => duty_cycle_is_on(elapsed_s, on_s, off_s, start_phase_s),
+    }
+}
+
 /// Whether a [`GnssScheduler::DutyCycle`] is inside an ON window at `elapsed_s`.
 ///
 /// The timeline is `start_phase_s` of initial ON, then `off_s` OFF and `on_s` ON repeating,
@@ -913,9 +1005,13 @@ fn duty_cycle_is_on(elapsed_s: f64, on_s: f64, off_s: f64, start_phase_s: f64) -
 /// 4. Appends each emitted GNSS fix as an [`Event::Measurement`] carrying a
 ///    [`GPSPositionAndVelocityMeasurement`], with the same `elapsed_s` as the IMU step.
 /// 5. Appends a [`RelativeAltitudeMeasurement`] and a [`MagnetometerYawMeasurement`]
-///    whenever the record carries them. These are **not** scheduled or faulted: the
-///    scheduler and fault model govern GNSS only, so baro and magnetometer updates
-///    continue through a GNSS outage.
+///    whenever the record carries them *and* their own scheduler says so. They are
+///    scheduled independently of GNSS and of each other -- so baro and magnetometer
+///    updates continue through a GNSS outage -- but they are never faulted: the fault
+///    model governs GNSS only. Until #375 they were not scheduled either, which tied
+///    their update rate to the log's sample rate: 1 Hz on a Sensor Logger recording,
+///    50 Hz on a synthetic trajectory, where a heading re-derived from the same field
+///    vector fifty times entered the filter as fifty independent fixes.
 ///
 /// The resulting event stream cleanly separates simulation policy (scheduling
 /// and corruption) from the filter loop, enabling reproducible scenario testing.
@@ -924,7 +1020,8 @@ fn duty_cycle_is_on(elapsed_s: f64, on_s: f64, off_s: f64, start_phase_s: f64) -
 /// - `records`: Source telemetry, ordered by time, providing IMU and GNSS-like
 ///   fields (lat/lon/alt/speed/bearing/accuracies).
 /// - `cfg`: GNSS degradation configuration combining a scheduler (*when*) and a
-///   fault model (*what*), plus a seed for deterministic noise.
+///   fault model (*what*), plus a seed for deterministic noise and a scheduler each
+///   for the barometer and the magnetometer.
 /// - `is_enu`: the local-level frame the filter consuming this stream works in -- `true` for
 ///   ENU, `false` for NED. Only the [`MagnetometerYawMeasurement`] reads it, and it must
 ///   match the state being updated: the heading a magnetometer implies is a different number
@@ -948,6 +1045,11 @@ fn duty_cycle_is_on(elapsed_s: f64, on_s: f64, off_s: f64, start_phase_s: f64) -
 /// - [`GnssScheduler::DutyCycle`]: emit at every record step that falls inside an ON
 ///   window. The timeline is `start_phase_s` of initial ON, then `off_s` OFF and `on_s` ON
 ///   repeating. See `duty_cycle_is_on`.
+///
+/// The same three rules drive `cfg.baro_scheduler` and `cfg.magnetometer_scheduler`, each
+/// with its own emission clock. A channel's clock advances on schedule whether or not the
+/// record carries that channel's data, so a sensor that starts logging mid-recording joins
+/// its schedule rather than firing a burst.
 ///
 /// # Corruption semantics
 /// The truth-like GNSS (lat/lon/alt + velocity derived from `speed`/`bearing`)
@@ -1033,12 +1135,13 @@ pub fn build_event_stream(
     let mut events = Vec::with_capacity(records_with_elapsed.len() * 2);
     let mut st = FaultState::new(cfg.seed);
 
-    // Scheduler state. Only `FixedInterval` needs any: `PassThrough` emits unconditionally
-    // and `DutyCycle` derives its window from the elapsed clock, see `duty_cycle_is_on`.
-    let mut next_emit_time = match cfg.scheduler {
-        GnssScheduler::FixedInterval { phase_s, .. } => phase_s,
-        GnssScheduler::PassThrough | GnssScheduler::DutyCycle { .. } => 0.0,
-    };
+    // Scheduler state, one clock per aided channel. Only `FixedInterval` needs any:
+    // `PassThrough` emits unconditionally and `DutyCycle` derives its window from the elapsed
+    // clock, see `duty_cycle_is_on`. The three must not share a clock -- that would couple a
+    // barometer's rate to the GNSS receiver's.
+    let mut next_gnss_emit_time = initial_emit_time(&cfg.scheduler);
+    let mut next_baro_emit_time = initial_emit_time(&cfg.baro_scheduler);
+    let mut next_magnetometer_emit_time = initial_emit_time(&cfg.magnetometer_scheduler);
     // Through preprocessing we assert that the first record must have a NED position
     // but it may or may not have IMU or other such measurements.
     let reference_altitude = first.altitude;
@@ -1066,24 +1169,9 @@ pub fn build_event_stream(
         }
 
         // Decide if GNSS should be emitted at t1
-        let should_emit = match cfg.scheduler {
-            GnssScheduler::PassThrough => true,
-            GnssScheduler::FixedInterval { interval_s, .. } => {
-                if *t1 + 1e-9 >= next_emit_time {
-                    next_emit_time += interval_s;
-                    true
-                } else {
-                    false
-                }
-            }
-            GnssScheduler::DutyCycle {
-                on_s,
-                off_s,
-                start_phase_s,
-            } => duty_cycle_is_on(*t1, on_s, off_s, start_phase_s),
-        };
+        let emit_gnss = should_emit(&cfg.scheduler, *t1, &mut next_gnss_emit_time);
 
-        if should_emit {
+        if emit_gnss {
             // Only create GNSS event when the core GNSS values are present
             let gnss_required = [r1.latitude, r1.longitude, r1.altitude, r1.speed, r1.bearing];
             let gnss_present = gnss_required.iter().all(|v| !v.is_nan());
@@ -1137,7 +1225,13 @@ pub fn build_event_stream(
                 });
             }
         }
-        if !r1.relative_altitude.is_nan() {
+        // The barometer and the magnetometer are scheduled on the same footing as GNSS. Until
+        // #375 they were emitted once per record window, outside the scheduler entirely, which
+        // tied their rate to the log's: 1 Hz on the reference recording and 50 Hz on the
+        // synthetic trajectories.
+        if should_emit(&cfg.baro_scheduler, *t1, &mut next_baro_emit_time)
+            && !r1.relative_altitude.is_nan()
+        {
             let baro: RelativeAltitudeMeasurement = RelativeAltitudeMeasurement {
                 relative_altitude: r1.relative_altitude,
                 reference_altitude,
@@ -1147,7 +1241,12 @@ pub fn build_event_stream(
                 elapsed_s: *t1,
             });
         }
-        if [r1.mag_x, r1.mag_y, r1.mag_z].iter().all(|v| !v.is_nan()) {
+        if should_emit(
+            &cfg.magnetometer_scheduler,
+            *t1,
+            &mut next_magnetometer_emit_time,
+        ) && [r1.mag_x, r1.mag_y, r1.mag_z].iter().all(|v| !v.is_nan())
+        {
             let mag_meas = MagnetometerYawMeasurement {
                 mag_x: r1.mag_x,
                 mag_y: r1.mag_y,
@@ -1224,6 +1323,30 @@ mod tests {
         records
     }
 
+    /// How many events in `stream` carry a measurement of type `M`.
+    ///
+    /// The three aided channels are told apart by their concrete type rather than by
+    /// dimension: GNSS is the only one with more than one row, but the barometer and the
+    /// magnetometer are both scalar, and once they are scheduled independently a test has to
+    /// be able to say which of the two it is looking at.
+    fn count_of<M: MeasurementModel + 'static>(stream: &EventStream) -> usize {
+        times_of::<M>(stream).len()
+    }
+
+    /// The elapsed times at which `stream` carries a measurement of type `M`.
+    fn times_of<M: MeasurementModel + 'static>(stream: &EventStream) -> Vec<f64> {
+        stream
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                Event::Measurement { meas, elapsed_s } if meas.as_any().is::<M>() => {
+                    Some(*elapsed_s)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     /// An empty slice must return the error, not index out of bounds (#311). `build_event_stream`
     /// is `pub` library code, so an empty read from `TestDataRecord::from_csv` -- which skips
     /// unparseable rows rather than failing -- must not abort the process.
@@ -1265,9 +1388,13 @@ mod tests {
 
         let events = build_event_stream(&records, &config, false).unwrap();
 
-        // We expect IMU events for each record except the first,
-        // and GNSS events for each record except the first
-        assert_eq!(events.events.len(), 36); // 9 IMU + 9 GNSS + 9 Baro + 9 Mag
+        // 9 IMU + 9 GNSS, plus one baro and one magnetometer. `PassThrough` applies to GNSS
+        // alone; the other two channels take their 1 Hz default, and 10 records 0.1 s apart
+        // span only 0.9 s, so each fires once (#375). Before they were scheduled this read 36
+        // -- nine of each, i.e. the log's rate rather than the sensors'.
+        assert_eq!(events.events.len(), 20);
+        assert_eq!(count_of::<RelativeAltitudeMeasurement>(&events), 1);
+        assert_eq!(count_of::<MagnetometerYawMeasurement>(&events), 1);
 
         // Count IMU and GNSS events
         let imu_count = events
@@ -1317,7 +1444,11 @@ mod tests {
             .filter(|e| matches!(e, Event::Measurement { .. }))
             .count();
         assert_eq!(imu_count, 19);
-        assert_eq!(measurements, 42); // At 0.5s, 1.0s, 1.5s, and 1.9s + 19 baro measurements + 19 mag measurements
+        // GNSS at 0.5, 1.0, 1.5 and 1.9 s; baro and magnetometer at 0.1 and 1.0 s, their 1 Hz
+        // default over a 1.9 s span. This read 42 before #375 scheduled them -- 19 each.
+        assert_eq!(measurements, 4 + 2 + 2);
+        assert_eq!(count_of::<RelativeAltitudeMeasurement>(&events), 2);
+        assert_eq!(count_of::<MagnetometerYawMeasurement>(&events), 2);
     }
     #[test]
     fn test_duty_cycle_scheduler() {
@@ -1359,6 +1490,161 @@ mod tests {
             30 + 59 + 59,
             "expected 30 GNSS fixes plus 59 baro and 59 mag"
         );
+    }
+
+    /// The barometer and the magnetometer fire at their own rate, not at the log's.
+    ///
+    /// This is the defect #375 names. Before it, both channels were emitted once per record
+    /// window, outside the scheduler entirely, so their update rate was whatever the log
+    /// happened to be sampled at. A 1 Hz Sensor Logger recording made that look correct; the
+    /// 50 Hz synthetic trajectories in `core/tests/perf_baseline.rs` got fifty pressure
+    /// readings and fifty derived headings a second, each entering the filter as an
+    /// independent fix with full weight, and the UKF diverged on it.
+    ///
+    /// Same 10 s of wall clock, three log rates, one assertion: the count must follow the
+    /// schedule and not the sampling. The IMU count, which legitimately does follow the log,
+    /// is asserted alongside so the test cannot pass by producing nothing.
+    #[test]
+    fn aiding_channels_fire_at_their_own_rate_not_the_logs() {
+        for (count, interval_s, imu_events) in [(11, 1.0, 10), (101, 0.1, 100), (501, 0.02, 500)] {
+            let records = create_test_records(count, interval_s);
+            let stream =
+                build_event_stream(&records, &GnssDegradationConfig::default(), false).unwrap();
+
+            let imu = stream
+                .events
+                .iter()
+                .filter(|e| matches!(e, Event::Imu { .. }))
+                .count();
+            assert_eq!(
+                imu, imu_events,
+                "the IMU rate is the log's rate, and must still be, at {interval_s}s spacing"
+            );
+
+            for (channel, times) in [
+                (
+                    "barometer",
+                    times_of::<RelativeAltitudeMeasurement>(&stream),
+                ),
+                (
+                    "magnetometer",
+                    times_of::<MagnetometerYawMeasurement>(&stream),
+                ),
+            ] {
+                // Ten seconds on a 1 Hz schedule is ten or eleven fixes: a log sampled faster
+                // than the schedule has a record available before the first scheduled tick at
+                // t = 0, and takes it. That leading partial interval is the *only* freedom the
+                // count has -- 50 Hz gives 11, not 500.
+                assert!(
+                    (10..=11).contains(&times.len()),
+                    "{channel} fired {} times over 10 s at {interval_s}s spacing; the schedule \
+                     is 1 Hz and the log rate must not enter into it",
+                    times.len()
+                );
+                // The rate itself, which a count alone cannot show: every gap but the leading
+                // partial one is exactly the scheduled interval.
+                for pair in times.windows(2).skip(usize::from(times.len() == 11)) {
+                    assert_approx_eq!(pair[1] - pair[0], 1.0, 1e-9);
+                }
+            }
+        }
+    }
+
+    /// A 1 Hz log is left exactly as it was, which is what keeps the real-data baselines fixed.
+    ///
+    /// `core/tests/test_data.csv` is 5,366 records spaced at exactly 1.000 s, and every
+    /// `real_*` row in `core/tests/perf_baseline.json` was measured with one baro and one
+    /// magnetometer update per record. The 1 Hz default must therefore be a no-op on a 1 Hz
+    /// log -- if it skipped even one record the baselines would move, and a scheduling change
+    /// would have silently become an accuracy change.
+    #[test]
+    fn the_default_schedule_is_a_no_op_on_a_one_hertz_log() {
+        let records = create_test_records(600, 1.0);
+        let stream =
+            build_event_stream(&records, &GnssDegradationConfig::default(), false).unwrap();
+        assert_eq!(count_of::<RelativeAltitudeMeasurement>(&stream), 599);
+        assert_eq!(count_of::<MagnetometerYawMeasurement>(&stream), 599);
+    }
+
+    /// Each channel keeps its own emission clock, so one sensor's rate cannot set another's.
+    #[test]
+    fn each_aiding_channel_keeps_its_own_emission_clock() {
+        let records = create_test_records(1001, 0.02); // 20 s at 50 Hz
+        let config = GnssDegradationConfig {
+            scheduler: GnssScheduler::FixedInterval {
+                interval_s: 10.0,
+                phase_s: 0.0,
+            },
+            baro_scheduler: GnssScheduler::FixedInterval {
+                interval_s: 2.0,
+                phase_s: 0.0,
+            },
+            magnetometer_scheduler: GnssScheduler::PassThrough,
+            ..Default::default()
+        };
+        let stream = build_event_stream(&records, &config, false).unwrap();
+
+        let gnss = count_of::<GPSPositionAndVelocityMeasurement>(&stream);
+        // Fixes at 0.02, 10.0 and 20.0 s.
+        assert_eq!(gnss, 3, "GNSS on its own 10 s schedule");
+        // 0.02 s, then every 2 s through 20.0 s.
+        assert_eq!(
+            count_of::<RelativeAltitudeMeasurement>(&stream),
+            11,
+            "the barometer on its own 2 s schedule"
+        );
+        // Pass-through means one per record window, the old unconditional behaviour, which is
+        // still available -- it is just no longer what you get without asking.
+        assert_eq!(
+            count_of::<MagnetometerYawMeasurement>(&stream),
+            1000,
+            "a pass-through magnetometer still fires on every record"
+        );
+    }
+
+    /// A duty-cycled magnetometer produces a heading outage, the way a duty-cycled GNSS
+    /// produces a position one. #372 wants this for the barometer and #371 for the
+    /// magnetometer, and reusing the GNSS scheduler is what makes it free.
+    #[test]
+    fn an_aiding_channel_can_be_duty_cycled_into_an_outage() {
+        let records = create_test_records(101, 1.0); // 100 s at 1 Hz
+        let config = GnssDegradationConfig {
+            magnetometer_scheduler: GnssScheduler::DutyCycle {
+                on_s: 20.0,
+                off_s: 10.0,
+                start_phase_s: 20.0,
+            },
+            ..Default::default()
+        };
+        let stream = build_event_stream(&records, &config, false).unwrap();
+
+        let heading_times: Vec<f64> = stream
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                Event::Measurement { meas, elapsed_s }
+                    if meas.as_any().is::<MagnetometerYawMeasurement>() =>
+                {
+                    Some(*elapsed_s)
+                }
+                _ => None,
+            })
+            .collect();
+
+        // 20 s of initial ON, then the cycle: 10 s OFF then 20 s ON, repeating from t = 20.
+        // So 20-30, 50-60 and 80-90 are OFF and everything else is ON.
+        for off in [25.0, 55.0, 85.0] {
+            assert!(
+                !heading_times.iter().any(|t| (t - off).abs() < 0.5),
+                "no heading fix at {off}s, which is inside an OFF window"
+            );
+        }
+        for on in [10.0, 35.0, 65.0, 95.0] {
+            assert!(
+                heading_times.iter().any(|t| (t - on).abs() < 0.5),
+                "a heading fix at {on}s, which is inside an ON window"
+            );
+        }
     }
 
     /// A duty cycle must withhold GNSS for the whole OFF window and deliver it for the whole
@@ -1461,6 +1747,7 @@ mod tests {
                 r_scale: 5.0,
             },
             seed: 500,
+            ..Default::default()
         };
 
         let events = build_event_stream(&records, &config, false).unwrap();

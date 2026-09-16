@@ -22,7 +22,7 @@ commit the diff; `cargo perf` runs the suite and prints the table without writin
 [CONTRIBUTING.md](https://github.com/jbrodovsky/strapdown-rs/blob/main/CONTRIBUTING.md) has the
 workflow.
 
-## Read these five caveats first
+## Read these six caveats first
 
 The numbers are meaningless without them. The first four are properties of the measurement
 rather than defects in the harness; the fifth is a defect, in the gate.
@@ -54,19 +54,26 @@ rather than defects in the harness; the fifth is a defect, in the gate.
    with the `syn_*` scenarios and their exact independent truth.
 3. **The synthetic scenarios carry no magnetometer, and the yaw column says which filters need
    one.** Nothing aids heading there but the GNSS velocity fix on a moving trajectory, which
-   turns out to be enough: the EKF holds 0.97 deg and the ESKF 2.07 deg on `syn_cruise_1hz`
-   while the UKF sits at 42.7 deg. That gap is not observability -- all three see the same
+   turns out to be enough: the EKF holds 0.97 deg and the ESKF 1.03 deg on `syn_cruise_1hz`
+   while the UKF sits at 108.3 deg -- worse than the 104 deg RMS of uniformly random yaw, so
+   it has no heading at all. That gap is not observability -- all three see the same
    measurements -- it is
    [#371](https://github.com/jbrodovsky/strapdown-rs/issues/371): the UKF means its
    sigma-point attitudes by summing Euler triples linearly, which is not the mean rotation. Modelling a
    real field is tracked in
    [#369](https://github.com/jbrodovsky/strapdown-rs/issues/369).
 4. **The consistency columns mean different things on the two sources.** On the synthetic
-   scenarios `npes` lands between 2.6 and 4.8 against an ideal of 3.0, which is a real
+   scenarios `npes` lands between 4.6 and 12.1 against an ideal of 3.0, which is a real
    measurement of whether a filter believes the right thing. On the real-data scenarios it reaches the
    hundreds, because caveat 2's offset enters the numerator while the covariance in the
    denominator models none of it. Those values are kept as a drift detector, not read as a
    consistency verdict.
+
+   The synthetic figures roughly doubled when
+   [#375](https://github.com/jbrodovsky/strapdown-rs/issues/375) scheduled the barometer, and
+   the vertical columns say why: what a normalised statistic now sees is a systematic altitude
+   bias of -0.6 to -2.0 m that nothing models. That is
+   [#372](https://github.com/jbrodovsky/strapdown-rs/issues/372), measured rather than masked.
 
 5. **The baseline is blessed on one platform and gated on three.** `rust.yml` runs this suite
    on Linux, macOS and Windows, and nothing in the gate knows that -- there is no
@@ -78,6 +85,16 @@ rather than defects in the harness; the fifth is a defect, in the gate.
    numbers recorded in its note; the general problem is
    [#386](https://github.com/jbrodovsky/strapdown-rs/issues/386). Until it is fixed, **check a
    Windows run before calling a re-bless done.**
+6. **The `syn_*` rows run at 50 Hz and the `real_*` rows at 1 Hz, and the aiding sensors no
+   longer follow that.** Until
+   [#375](https://github.com/jbrodovsky/strapdown-rs/issues/375) the barometer and the
+   magnetometer were emitted once per record, outside the scheduler, so their update rate was
+   the log's: 1 Hz on `test_data.csv` and 50 Hz on the synthetic trajectories, where fifty
+   pressure readings a second each entered the filter as an independent fix. Both channels are
+   now scheduled at 1 Hz by default. Every `real_*` row came through bit-identical -- they were
+   already at 1 Hz -- and all five aided `syn_*` rows moved, almost entirely in the vertical
+   channel: horizontal RMSE on `syn_cruise_1hz` moved by under half a percent. Read the
+   synthetic vertical columns as a 1 Hz barometer's, not a 50 Hz one's.
 
 ## The metrics
 
@@ -115,10 +132,11 @@ precisely where you would expect:
 |---|---:|---:|---:|
 | every row with GNSS every epoch | — | — | **1.00–1.01** |
 | `real_outage_60s__eskf` | 73.43 | 83.04 | **1.13** |
-| `syn_outage_60s__ukf` | 15.12 | 18.45 | **1.22** |
+| `syn_outage_60s__ukf` | 6.54 | 6.82 | **1.04** |
 
 Where the filter is aided every epoch the two agree to within 1%, so the historical `npes`
-numbers were not misleading. The gap opens on the **outage** rows, and the mechanism is the
+numbers were not misleading. The gap opens on the **outage** rows -- `syn_outage_60s__ukf` read
+15.12 against 18.45, a ratio of 1.22, until #375 brought that coast back under control -- and the mechanism is the
 obvious one: during a free-inertial coast the position error accumulates along a correlated
 direction with no fix to break it up, and a diagonal-only statistic cannot see that. The
 contrived worst case is far larger — at a latitude-longitude correlation of 0.9 the two read
@@ -197,8 +215,8 @@ will tell you off; change the numbers by re-blessing.
   caveat 3. These rows are scored against exact truth, so nothing here is circular.
 - **The outage rows are dominated by attitude, not by position.** 60 s of free inertial turns a
   fraction of a degree of tilt error into hundreds of metres. `syn_outage_60s__eskf` holds
-  0.20 deg of pitch and coasts to 20 m; the UKF, which does not hold its attitude through the
-  coast, reaches 267 m.
+  0.20 deg of pitch and coasts to 24 m; the UKF, which does not hold its attitude through the
+  coast, reaches 235 m.
 - **The two consistency columns disagree with each other on real data, and that is the
   finding.** The UKF and EKF still report a flat 1.000 horizontal containment -- a covariance
   so conservative it cannot be wrong -- beside a vertical containment of 0.40 and 0.42, where
@@ -254,7 +272,9 @@ What it bought, and what it cost:
 
 The vertical RMSE cost is the honest price: the old value bought that number by under-reporting
 its own error, and on the reference recording it is not paid at all -- vertical RMSE there
-improved slightly. The `syn_outage_60s__ukf` row is recorded but not endorsed: across the sweep
+improved slightly. (These synthetic figures have since moved again, and further, under #375 --
+see caveat 6. The numbers in this table are the ones that change measured, kept as its
+record.) The `syn_outage_60s__ukf` row is recorded but not endorsed: across the sweep
 its horizontal RMSE runs 222, 174, 267, 344 m while its yaw runs 105, 98, 21, 34 deg, so
 position degrades exactly where attitude improves fivefold. That row is
 [#371](https://github.com/jbrodovsky/strapdown-rs/issues/371) coasting an outage, and it does

@@ -1,17 +1,26 @@
 # Configuration Files
 
-A scenario configuration describes how GNSS behaves during a simulation: **when** fixes are
-delivered and **how** they are corrupted. It is a single document with three sections, and it
-can be written as YAML, JSON or TOML — the format is chosen by the file extension.
+A scenario configuration describes how the aiding sensors behave during a simulation: **when**
+their measurements are delivered and, for GNSS, **how** they are corrupted. It is a single
+document, and it can be written as YAML, JSON or TOML — the format is chosen by the file
+extension.
 
 ```yaml
-scheduler:        # when fixes arrive
+scheduler:        # when GNSS fixes arrive
   kind: duty_cycle
   on_s: 120.0
   off_s: 30.0
   start_phase_s: 0.0
 fault:            # how they are corrupted
   kind: none
+baro_scheduler:           # when barometric altitude arrives; 1 Hz if omitted
+  kind: fixed_interval
+  interval_s: 1.0
+  phase_s: 0.0
+magnetometer_scheduler:   # when a magnetometer heading arrives; 1 Hz if omitted
+  kind: fixed_interval
+  interval_s: 1.0
+  phase_s: 0.0
 seed: 42          # for reproducibility
 ```
 
@@ -30,7 +39,7 @@ Config files use the names of the `GnssScheduler` and `GnssFaultModel` variants:
 
 | Section | Valid `kind` values |
 |---|---|
-| `scheduler` | `pass_through`, `fixed_interval`, `duty_cycle` |
+| `scheduler`, `baro_scheduler`, `magnetometer_scheduler` | `pass_through`, `fixed_interval`, `duty_cycle` |
 | `fault` | `none`, `degraded`, `slow_bias`, `hijack`, `combo` |
 
 **The CLI flags use different spellings for the same things**: `--sched passthrough|fixed|duty`
@@ -78,6 +87,30 @@ scheduler:
 ```
 
 Every fix inside an ON window is delivered, and none inside an OFF window.
+
+## The other two aiding channels
+
+`baro_scheduler` and `magnetometer_scheduler` take the same three kinds and the same fields,
+each with its own independent clock, so a GNSS outage, a barometer outage and a heading outage
+can be configured separately or made to overlap. Neither channel is corrupted: `fault` governs
+GNSS only.
+
+**Both default to `fixed_interval` at 1 Hz, not to `pass_through`.** Before #375 they were not
+scheduled at all — one measurement per record, whatever the log's sample rate happened to be.
+On a 1 Hz Sensor Logger export that is right by coincidence; on a 50 Hz synthetic trajectory it
+delivered fifty pressure readings and fifty derived headings every second, each entering the
+filter as an independent fix with full weight. A heading re-read from the same field vector
+fifty times is one measurement counted fifty times, and the UKF diverges on it.
+
+Set `kind: pass_through` to get the old behaviour back, when your log's rate really is the
+sensor's rate:
+
+```yaml
+magnetometer_scheduler:
+  kind: pass_through
+```
+
+There are no CLI flags for these two; they are configurable from a file only.
 
 ## Fault models
 

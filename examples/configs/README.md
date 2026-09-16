@@ -4,9 +4,12 @@ This directory contains example GNSS degradation configuration files for use wit
 
 ## Configuration File Format
 
-All configurations use YAML format and contain three main sections:
+All configurations use YAML format and contain these sections:
 - **scheduler**: Controls when GNSS measurements are available
 - **fault**: Controls how GNSS measurements are corrupted
+- **baro_scheduler**, **magnetometer_scheduler**: the same scheduling for the other two aiding
+  channels, each on its own clock. Both default to `fixed_interval` at 1 Hz when omitted, so
+  none of the files here sets them; neither channel is ever corrupted.
 - **seed**: Random seed for reproducibility
 
 See the [User Guide](../../docs/USER_GUIDE.md) for detailed documentation.
@@ -161,6 +164,20 @@ scheduler:
   on_s: 30.0
   off_s: 60.0
   start_phase_s: 0.0   # note: not `phase_s`, which belongs to fixed_interval
+```
+
+The same three kinds configure `baro_scheduler` and `magnetometer_scheduler`. Both default to
+one measurement per second rather than to `pass_through`: before #375 they were emitted once
+per record, which tied their rate to the log's rather than the sensor's — 1 Hz on a Sensor
+Logger export, 50 Hz on a synthetic trajectory. Set `kind: pass_through` explicitly to get one
+per record back.
+
+```yaml
+baro_scheduler:
+  kind: duty_cycle       # a barometer outage, independent of the GNSS one
+  on_s: 60.0
+  off_s: 60.0
+  start_phase_s: 0.0
 ```
 
 > **Config files and CLI flags use different names for the same thing.** In a config file the
