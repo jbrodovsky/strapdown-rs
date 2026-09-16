@@ -3330,9 +3330,19 @@ pub fn print_ukf(ukf: &UnscentedKalmanFilter, record: &TestDataRecord) {
 pub struct UkfConfig {
     /// Optional vector of f64 representing the initial attitude covariance (default is a small value).
     pub attitude_covariance: Option<Vec<f64>>,
-    /// Optional vector of f64 representing the initial IMU biases (default is a small value).
+    /// Optional initial IMU bias **estimate**, 6 elements: 3 accelerometer, 3 gyroscope.
+    ///
+    /// Defaults to **zero** on all six -- a filter that is uncertain about its biases, not one
+    /// asserting it has them. This used to default to `1e-3`, which was the *covariance* on
+    /// the line below copied into the estimate, so every UKF built without an explicit value
+    /// opened by claiming a 1 mrad/s (0.0573 deg/s) rate bias on every gyroscope axis and
+    /// subtracting it from every sample (#392).
     pub imu_biases: Option<Vec<f64>>,
-    /// Optional vector of f64 representing the IMU biases covariance.
+    /// Optional initial IMU bias covariance diagonal, 6 elements in the same order.
+    ///
+    /// Defaults to [`crate::IMUQuality::initial_bias_covariance`] for [`Self::imu_quality`],
+    /// not to a constant. Read independently of [`Self::imu_biases`]: setting one without the
+    /// other used to discard this silently (#392).
     pub imu_biases_covariance: Option<Vec<f64>>,
     /// Optional vector of f64 for any additional states (not used in the canonical UKF, but can be useful for custom implementations).
     pub other_states: Option<Vec<f64>>,
@@ -3521,7 +3531,10 @@ pub fn initialize_ukf(
 pub struct EkfConfig {
     /// Optional initial attitude covariance (3 elements, rad^2).
     pub attitude_covariance: Option<Vec<f64>>,
-    /// Optional initial IMU biases (6 elements: 3 accelerometer, 3 gyroscope).
+    /// Optional initial IMU bias **estimate**, 6 elements: 3 accelerometer, 3 gyroscope.
+    ///
+    /// Defaults to zero on all six -- an uncertainty about the biases, never a claim about
+    /// them. See [`UkfConfig::imu_biases`] for why that is worth stating (#392).
     pub imu_biases: Option<Vec<f64>>,
     /// Optional IMU bias covariance (6 elements).
     pub imu_biases_covariance: Option<Vec<f64>>,
@@ -3729,7 +3742,11 @@ pub fn initialize_ekf(
 pub struct EskfConfig {
     /// Optional initial attitude error covariance (3 elements, rad^2).
     pub attitude_covariance: Option<Vec<f64>>,
-    /// Optional initial IMU biases (6 elements: `b_ax`, `b_ay`, `b_az`, `b_gx`, `b_gy`, `b_gz`).
+    /// Optional initial IMU bias **estimate**, 6 elements: `b_ax`, `b_ay`, `b_az`, `b_gx`,
+    /// `b_gy`, `b_gz`.
+    ///
+    /// Defaults to zero on all six -- an uncertainty about the biases, never a claim about
+    /// them. See [`UkfConfig::imu_biases`] for why that is worth stating (#392).
     pub imu_biases: Option<Vec<f64>>,
     /// Optional IMU bias error covariance (6 elements).
     pub imu_biases_covariance: Option<Vec<f64>>,
