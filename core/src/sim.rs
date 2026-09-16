@@ -7578,6 +7578,126 @@ mod tests {
         assert_eq!(estimate.len(), 15);
     }
 
+    /// The three filter constructors seed the same IMU bias prior, and it is the grade's.
+    ///
+    /// This test exists because they did not, twice over, and neither disagreement was
+    /// visible from any one of them.
+    ///
+    /// * **The estimate (#392).** `initialize_ukf` seeded `vec![1e-3; 6]` -- the *covariance*
+    ///   on the line above, copied down -- where the other two seeded zero. A UKF built
+    ///   without explicit biases opened by asserting a 1 mrad/s rate bias on every gyroscope
+    ///   axis and subtracting it from every sample.
+    /// * **The covariance (#371).** The UKF and EKF opened at `1e-3` for all six entries
+    ///   while the ESKF used `1e-6`/`1e-8` -- five orders of magnitude apart on the gyro
+    ///   block, and none of the three a model of any hardware. `1e-3` is a gyro-bias sigma of
+    ///   1.81 deg/s against the 0.028 deg/s a `Consumer`-grade part actually has.
+    ///
+    /// The second one cost more than accuracy. It made "the UKF reads 72.68 deg of yaw where
+    /// the ESKF reads 0.255 on the identical stream" -- the comparison #371 was diagnosed
+    /// from, and which this crate's own docs asserted -- not a comparison at all: the two
+    /// filters were never handed the same prior. Pinning the three against each other *and*
+    /// against the grade they claim to model is what closes that class, which is why this
+    /// asserts the derivation rather than a transcribed constant.
+    #[test]
+    fn the_three_constructors_seed_one_bias_prior_and_it_is_the_grades() {
+        /// Where in a 15-state covariance diagonal the six bias entries live.
+        const BIAS_STATE_INDICES: std::ops::Range<usize> = 9..15;
+
+        let record = TestDataRecord {
+            time: Utc::now(),
+            horizontal_accuracy: 5.0,
+            vertical_accuracy: 2.0,
+            speed_accuracy: 1.0,
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            speed: 10.0,
+            bearing: 45.0,
+            ..Default::default()
+        };
+
+        // Every grade, not just the default: the point is that the constructors read the
+        // grade, and a hard-coded constant that happened to match `Consumer` would pass a
+        // single-grade test.
+        for grade in [
+            crate::IMUQuality::Consumer,
+            crate::IMUQuality::Industrial,
+            crate::IMUQuality::Tactical,
+            crate::IMUQuality::Navigation,
+            crate::IMUQuality::Strategic,
+        ] {
+            let expected = grade.initial_bias_covariance();
+
+            let ukf = initialize_ukf(
+                &record,
+                UkfConfig {
+                    imu_quality: grade,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let ekf = initialize_ekf(
+                &record,
+                EkfConfig {
+                    imu_quality: grade,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let eskf = initialize_eskf(
+                &record,
+                EskfConfig {
+                    imu_quality: grade,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+            for (name, filter) in [
+                ("UKF", ukf.get_certainty()),
+                ("EKF", ekf.get_certainty()),
+                ("ESKF", eskf.get_certainty()),
+            ] {
+                assert_eq!(
+                    filter.nrows(),
+                    15,
+                    "{name} at {grade:?} is not carrying bias states at all"
+                );
+                for (offset, index) in BIAS_STATE_INDICES.enumerate() {
+                    assert_approx_eq!(filter[(index, index)], expected[offset], 1e-18);
+                }
+            }
+
+            // And the estimate is zero -- an uncertainty about the bias, never a claim about
+            // it. `get_estimate` is the UKF's and EKF's mean state; the ESKF carries its
+            // biases outside the error state, which `get_estimate` appends in the same slots.
+            for (name, estimate) in [
+                ("UKF", ukf.get_estimate()),
+                ("EKF", ekf.get_estimate()),
+                ("ESKF", eskf.get_estimate()),
+            ] {
+                for index in BIAS_STATE_INDICES {
+                    assert_eq!(
+                        estimate[index], 0.0,
+                        "{name} at {grade:?} seeds a bias *estimate* at state {index}; that \
+                         is a claim about the hardware, not an uncertainty about it (#392)"
+                    );
+                }
+            }
+        }
+
+        // The derivation itself, so the constants above cannot all drift together: a
+        // consumer gyro's 100 deg/h is 0.0278 deg/s, and the variance is its square.
+        let consumer = crate::IMUQuality::Consumer.initial_bias_covariance();
+        let gyro_sigma_dps = consumer[3].sqrt().to_degrees();
+        assert_approx_eq!(gyro_sigma_dps, 100.0 / 3600.0, 1e-9);
+        assert_approx_eq!(
+            consumer[0].sqrt(),
+            crate::IMUQuality::Consumer.accel_bias_instability_mps2(),
+            1e-12
+        );
+    }
+
     #[test]
     fn test_initialize_ukf_with_custom_process_noise() {
         let rec = TestDataRecord {
