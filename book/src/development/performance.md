@@ -253,22 +253,22 @@ will tell you off; change the numbers by re-blessing.
   What remains is caveat 1's circularity, which no fix to the filters can remove: the score is
   against the aiding source itself.
 - **`syn_cruise_1hz` is where the filters actually separate**, and no one of them wins. The
-  ESKF leads on position and loses on velocity; the UKF trails on attitude for the reason in
-  caveat 3, though a 1 Hz magnetometer now closes most of that gap on this row (2.01 deg of
-  yaw against 108.3 without one). These rows are scored against exact truth, so nothing here
-  is circular.
+  ESKF leads on vertical error, the EKF on horizontal, and all three now hold a fraction of a
+  degree of yaw — the UKF's, once the worst column in the table at 108.3 deg with no
+  magnetometer and 2.01 deg with one but a mis-sized bias prior, is now the best of the three.
+  These rows are scored against exact truth, so nothing here is circular.
 - **The outage rows are dominated by attitude, not by position.** 60 s of free inertial turns a
-  fraction of a degree of tilt error into hundreds of metres. `syn_outage_60s__eskf` holds
-  0.21 deg of pitch and coasts to 24 m; the UKF, which does not hold its attitude through the
-  coast even when a magnetometer is handing it a heading every second, reaches 809 m.
+  fraction of a degree of tilt error into tens of metres. Both filters now hold about a quarter
+  of a degree of yaw through the coast and land within a couple of metres of each other, around
+  26–27 m. The UKF used to reach 809 m on this row; that was its initial gyro-bias prior, not
+  its attitude algebra, and the story is in caveat 3.
 - **The two consistency columns disagree with each other on real data, and that is the
-  finding.** The UKF and EKF still report a flat 1.000 horizontal containment -- a covariance
-  so conservative it cannot be wrong -- beside a vertical containment of 0.40 and 0.42, where
-  better than half the altitude errors fall outside three sigma. Both halves of that are
-  [#373](https://github.com/jbrodovsky/strapdown-rs/issues/373)'s absolute covariance floor:
-  201 m of fabricated horizontal sigma is what makes the horizontal figure unfalsifiable, and
-  the same constant is a rounding error in the vertical channel, which is therefore left
-  bare.
+  finding.** Horizontal three-sigma containment sits near 0.50 across the three filters and
+  vertical near 0.40, where better than half the altitude errors fall outside three sigma.
+  Neither is the old flat 1.000 — [#373](https://github.com/jbrodovsky/strapdown-rs/issues/373)
+  removed the absolute covariance floor that made the horizontal figure unfalsifiable, so what
+  is left in both columns is a real measurement of over-confidence rather than an artefact. The
+  vertical half is [#372](https://github.com/jbrodovsky/strapdown-rs/issues/372).
 - **The ESKF's numbers moved furthest when #367 landed**, and in the right direction:
   horizontal containment 0.161 to 0.497, `npes` 1,249 to 68. That is the offset leaving the
   numerator. It is still not consistent -- 0.497 against an ideal of 0.9973 -- and what
