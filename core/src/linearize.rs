@@ -207,14 +207,44 @@ pub fn bias_coupling_blocks(
         let next_attitude = crate::attitude_update(state, *imu_gyro * dt, dt);
         let next_rotation = Rotation3::from_matrix_unchecked(next_attitude);
         let (next_roll, next_pitch, next_yaw) = next_rotation.euler_angles();
-        euler_rate_matrix(next_roll, next_pitch, next_yaw)
-            .try_inverse()
+        euler_rate_matrix_inverse(next_roll, next_pitch, next_yaw)
             .map_or(velocity_block, |next_inverse| next_inverse * velocity_block)
     } else {
         velocity_block
     };
 
     (velocity_block, attitude_block)
+}
+
+/// Largest factor the Euler conversion may amplify a Jacobian block by before it is refused.
+///
+/// $E(\Phi)^{-1}$ grows as $1/\cos\theta$, so it is unbounded at gimbal lock. Measured on
+/// `euler_rate_matrix`, the largest entry of the inverse is very nearly $0.955/\cos\theta$:
+///
+/// | pitch | 0 deg | 45 | 80 | 89 | 89.9 | 89.99 | 90 |
+/// |---|---:|---:|---:|---:|---:|---:|---:|
+/// | max abs entry | 1.00 | 1.35 | 5.50 | 54.7 | 547 | 5,474 | **1.6e16** |
+///
+/// 100 admits everything up to about 89.45 degrees of pitch, which is past anything a vehicle
+/// trajectory reaches and well short of where the conversion stops meaning anything.
+const MAX_EULER_RATE_AMPLIFICATION: f64 = 100.0;
+
+/// $E(\Phi)^{-1}$, or `None` when the Euler parametrisation is too close to gimbal lock for it
+/// to mean anything.
+///
+/// # Why `try_inverse` alone is not the guard
+///
+/// Because it never fires. `try_inverse` returns `None` only for a matrix that is *exactly*
+/// singular, and `euler_rate_matrix` is not exactly singular even at a pitch of exactly 90
+/// degrees -- it returns an inverse whose largest entry is **1.6e16**. Both callers documented
+/// a fallback to the bounded rotation-vector form "rather than inverting a near-singular
+/// matrix", and both then inverted the near-singular matrix, because the condition they
+/// branched on was never true. This checks the quantity that actually matters -- how big the
+/// conversion's entries are -- rather than a singularity test that a near-singular matrix
+/// passes.
+fn euler_rate_matrix_inverse(roll: f64, pitch: f64, yaw: f64) -> Option<nalgebra::Matrix3<f64>> {
+    let inverse = euler_rate_matrix(roll, pitch, yaw).try_inverse()?;
+    (inverse.abs().max() <= MAX_EULER_RATE_AMPLIFICATION).then_some(inverse)
 }
 
 /// How a Jacobian's attitude columns are parametrised.
@@ -366,7 +396,7 @@ fn transition_jacobian(
         let next_attitude = crate::attitude_update(state, *imu_gyro * dt, dt);
         let next_rotation = Rotation3::from_matrix_unchecked(next_attitude);
         let (next_roll, next_pitch, next_yaw) = next_rotation.euler_angles();
-        euler_rate_matrix(next_roll, next_pitch, next_yaw).try_inverse()
+        euler_rate_matrix_inverse(next_roll, next_pitch, next_yaw)
     } else {
         Some(nalgebra::Matrix3::identity())
     };
@@ -2487,10 +2517,17 @@ mod tests {
         let accel = Vector3::new(0.3, -0.2, -9.7);
         let gyro = Vector3::new(0.01, -0.02, 0.03);
 
-        for (label, roll, pitch, yaw) in [
-            ("level north", 0.0, 0.0, 0.0),
-            ("banked", 0.3, -0.2, 1.1),
-            ("steep", -0.5, 0.6, -2.0),
+        for (label, roll, pitch, yaw, is_enu) in [
+            ("level north NED", 0.0, 0.0, 0.0, false),
+            ("banked NED", 0.3, -0.2, 1.1, false),
+            ("steep NED", -0.5, 0.6, -2.0, false),
+            // ENU is not a relabelling here: `attitude_update` takes a separate reflected
+            // path, so a sign or conjugation error in the gyro-bias block can pass every NED
+            // case and still break ENU bias observability. The filter-level regression is NED
+            // only, so this is the one place that difference is exercised.
+            ("level north ENU", 0.0, 0.0, 0.0, true),
+            ("banked ENU", 0.3, -0.2, 1.1, true),
+            ("steep ENU", -0.5, 0.6, -2.0, true),
         ] {
             let base = StrapdownState {
                 latitude: 40.0_f64.to_radians(),
@@ -2500,7 +2537,7 @@ mod tests {
                 velocity_east: -4.0,
                 velocity_vertical: 0.5,
                 attitude: Rotation3::from_euler_angles(roll, pitch, yaw),
-                is_enu: false,
+                is_enu,
             };
             let (velocity_block, attitude_block) =
                 bias_coupling_blocks(&base, &gyro, dt, AttitudeParametrization::Euler);
