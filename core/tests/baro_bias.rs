@@ -224,3 +224,122 @@ fn the_state_is_absent_unless_asked_for() {
     assert_eq!(UkfConfig::default().baro_bias_index(), None);
     assert_eq!(EskfConfig::default().baro_bias_index(), None);
 }
+
+#[test]
+fn an_index_inside_the_navigation_states_is_rejected() {
+    // `bias_index` reaches this model from a deserialized `GnssDegradationConfig`, so it is
+    // user input. Before this check, an in-range but wrong index was accepted silently:
+    // `2` made the model predict `alt + alt`, and `12` drove the barometer's innovation into
+    // a **gyro bias**. Neither is a short read, so nothing downstream would have noticed.
+    for bad in [0_usize, 2, 8, 12, 14] {
+        let baro = RelativeAltitudeMeasurement {
+            bias_index: Some(bad),
+            ..RelativeAltitudeMeasurement::default()
+        };
+        let state = DVector::from_element(16, 0.0);
+        assert!(
+            baro.get_measurement(&state).is_err(),
+            "index {bad} names a navigation state and must be refused"
+        );
+        assert!(
+            baro.get_jacobian(&state).is_err(),
+            "index {bad} must be refused by the Jacobian too, not only by get_measurement"
+        );
+    }
+    // The first legal index is accepted.
+    let baro = RelativeAltitudeMeasurement {
+        bias_index: Some(BARO_INDEX),
+        ..RelativeAltitudeMeasurement::default()
+    };
+    assert!(
+        baro.get_measurement(&DVector::from_element(16, 0.0))
+            .is_ok()
+    );
+}
+
+#[test]
+fn the_plain_filter_to_result_conversion_carries_the_bias() {
+    // `NavigationResult::from((&timestamp, &filter))` is a public conversion that predates
+    // the layout-aware one. It wrote `None` unconditionally, which silently dropped an
+    // estimate the filter holds -- and since #372 the filter answers for the index itself,
+    // so the "the state vector cannot say which extra state is which" reasoning that justifies
+    // `None` for the *map* biases does not reach this one.
+    let records = records();
+    let mut ukf = initialize_ukf(
+        &records[0],
+        UkfConfig {
+            is_enu: REAL_DATA_IS_ENU,
+            estimate_baro_bias: true,
+            ..UkfConfig::default()
+        },
+    )
+    .expect("UKF");
+    check("UKF", &mut ukf, &records);
+
+    let row = strapdown::sim::NavigationResult::from((&records[0].time, &ukf));
+    assert_eq!(
+        row.baro_bias,
+        Some(ukf.get_estimate()[BARO_INDEX]),
+        "the plain conversion dropped the barometric bias"
+    );
+    assert_eq!(
+        row.baro_bias_cov,
+        Some(ukf.get_certainty()[(BARO_INDEX, BARO_INDEX)])
+    );
+
+    // And a filter without the state still reports nothing rather than zero.
+    let plain = initialize_ukf(
+        &records[0],
+        UkfConfig {
+            is_enu: REAL_DATA_IS_ENU,
+            ..UkfConfig::default()
+        },
+    )
+    .expect("UKF");
+    let row = strapdown::sim::NavigationResult::from((&records[0].time, &plain));
+    assert_eq!(row.baro_bias, None);
+    assert_eq!(row.baro_bias_cov, None);
+}
+
+/// An MCAP file written before the two barometric columns existed must still read.
+///
+/// `NavigationResult::to_mcap` serializes through `rmp_serde::to_vec`, which writes a struct
+/// as a **positional array**. Adding a field lengthens that array, so without
+/// `#[serde(default)]` an older file fails to decode with `invalid length 38, expected struct
+/// NavigationResult with 40 elements` -- not a missing column, a hard read error on the whole
+/// file. (CSV is unaffected: the `csv` crate fills a column the header does not mention.)
+///
+/// Rather than keep a checked-in binary fixture that would go stale, this builds the older
+/// wire shape from the current one: the two new fields are `None`, which MessagePack encodes
+/// as one `nil` byte each, so dropping those two bytes and decrementing the array header is
+/// exactly the file the previous version wrote.
+#[cfg(feature = "mcap")]
+#[test]
+fn an_mcap_record_written_before_the_barometric_columns_still_reads() {
+    let row = strapdown::sim::NavigationResult::default();
+    assert_eq!(
+        row.baro_bias, None,
+        "the fixture below assumes these are nil"
+    );
+    assert_eq!(row.baro_bias_cov, None);
+
+    let mut bytes = rmp_serde::to_vec(&row).expect("encode");
+    let len = bytes.len();
+    assert_eq!(
+        &bytes[len - 2..],
+        &[0xc0, 0xc0],
+        "the last two encoded values should be the two nil barometric fields"
+    );
+    bytes.truncate(len - 2);
+
+    // array16 header: 0xdc then a big-endian u16 count.
+    assert_eq!(bytes[0], 0xdc, "expected an array16 header");
+    let count = u16::from_be_bytes([bytes[1], bytes[2]]);
+    bytes[1..3].copy_from_slice(&(count - 2).to_be_bytes());
+
+    let legacy: strapdown::sim::NavigationResult =
+        rmp_serde::from_slice(&bytes).expect("a record written before #372 must still decode");
+    assert_eq!(legacy.baro_bias, None);
+    assert_eq!(legacy.baro_bias_cov, None);
+    assert!((legacy.altitude - row.altitude).abs() < f64::EPSILON);
+}

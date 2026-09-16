@@ -548,20 +548,49 @@ impl RelativeAltitudeMeasurement {
             .unwrap_or(0.0)
     }
 
-    /// Reject a state too short to hold the bias this model was told to read.
+    /// Reject a [`Self::bias_index`] that does not name a bias state.
+    ///
+    /// Two ways it can fail, and the second is the dangerous one:
+    ///
+    /// * the state is too short to reach the index; or
+    /// * the index lands **inside the navigation states**, at
+    ///   [`NAVIGATION_STATES`](crate::sim::NAVIGATION_STATES) or below. That is not a short
+    ///   read and nothing downstream would notice it: `bias_index: 2` makes the model predict
+    ///   `alt + alt` while `relative_altitude_bias_jacobian` writes a 1 into the altitude
+    ///   column twice, and `bias_index: 12` reads a **gyro bias** as a barometric one and
+    ///   drives the barometer's innovation into it. This field is `pub` and reaches the model
+    ///   from a deserialized
+    ///   [`GnssDegradationConfig`](crate::messages::GnssDegradationConfig), so the value is
+    ///   user input rather than a crate invariant, and it is checked as such.
+    ///
+    /// The lower bound is the same rule
+    /// [`NavigationResult`](crate::sim::NavigationResult)'s conversion already applies to the
+    /// geophysical indices: an extra state lives *after* the navigation block, never in it.
     ///
     /// # Errors
-    /// [`StrapdownError::DimensionMismatch`] if [`Self::bias_index`] is set and the state does
-    /// not reach it.
+    /// [`StrapdownError::DimensionMismatch`] if the state does not reach the index;
+    /// [`StrapdownError::InvalidConfiguration`] if the index names a navigation state.
     fn require_bias_state(&self, state: &DVector<f64>) -> Result<(), StrapdownError> {
-        match self.bias_index {
-            Some(index) if index >= state.len() => Err(StrapdownError::DimensionMismatch {
+        let Some(index) = self.bias_index else {
+            return Ok(());
+        };
+        if index < crate::sim::NAVIGATION_STATES {
+            return Err(StrapdownError::InvalidConfiguration {
+                field: "baro_bias_index",
+                reason: format!(
+                    "index {index} is inside the {} navigation states; a barometric bias lives                      after them, so this would read a navigation state as the barometer's bias",
+                    crate::sim::NAVIGATION_STATES
+                ),
+            });
+        }
+        if index >= state.len() {
+            return Err(StrapdownError::DimensionMismatch {
                 what: "barometric bias state index",
                 expected: index + 1,
                 got: state.len(),
-            }),
-            _ => Ok(()),
+            });
         }
+        Ok(())
     }
 }
 

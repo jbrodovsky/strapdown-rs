@@ -1548,20 +1548,32 @@ pub struct NavigationResult {
     pub gyro_bias_y_cov: f64,
     /// Gyroscope z-axis bias covariance
     pub gyro_bias_z_cov: f64,
-    // ---- Geophysical bias states ----
+    // ---- Extra bias states: two geophysical pairs and the barometer ----
     //
     // `Option` rather than a sentinel because "this run carried no gravity map" and "this run
     // estimated a bias of exactly zero" are different facts, and a reader has to be able to
     // tell them apart. Serde writes `None` as an empty CSV cell and keeps the column, so the
-    // schema is the same width for every run and a non-geophysical solution simply leaves the
-    // last four cells blank.
+    // schema is the same width for every run and a solution carrying none of these states
+    // simply leaves the last *six* cells blank.
+    //
+    // `#[serde(default)]` on all six is what makes an older file still readable. CSV does not
+    // need it -- the `csv` crate fills a column the header does not mention with `None` -- but
+    // **MCAP does**: `rmp_serde::to_vec` writes a struct as a positional array, so a file
+    // written before a column was added decodes as `invalid length 38, expected struct
+    // NavigationResult with 40 elements`. That was already true of the four geophysical
+    // columns when they were added; it is fixed for all six here rather than for the two that
+    // prompted it, because half a rule is the one that drifts.
     /// Estimated gravity-anomaly measurement bias in mGal, when the run carried a gravity map.
+    #[serde(default)]
     pub gravity_bias: Option<f64>,
     /// Covariance of [`NavigationResult::gravity_bias`].
+    #[serde(default)]
     pub gravity_bias_cov: Option<f64>,
     /// Estimated magnetic-anomaly measurement bias in nT, when the run carried a magnetic map.
+    #[serde(default)]
     pub magnetic_bias: Option<f64>,
     /// Covariance of [`NavigationResult::magnetic_bias`].
+    #[serde(default)]
     pub magnetic_bias_cov: Option<f64>,
     /// Estimated barometric altitude bias, metres, when the filter carries that state.
     ///
@@ -1574,8 +1586,10 @@ pub struct NavigationResult {
     /// -- and with no state for it that drift lands in the altitude estimate under a tight $R$.
     /// That is what took three-sigma vertical containment to 0.40 on the reference recording
     /// against an ideal of 0.9973.
+    #[serde(default)]
     pub baro_bias: Option<f64>,
     /// Covariance of [`NavigationResult::baro_bias`], m^2.
+    #[serde(default)]
     pub baro_bias_cov: Option<f64>,
 }
 impl Default for NavigationResult {
@@ -2539,19 +2553,25 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>, GeoStateLayout)> for Na
 ///
 /// # Returns
 /// A `NavigationResult` struct containing the navigation solution.
-/// Converts the canonical fifteen-state solution only.
+/// Converts the navigation states, the IMU biases, and the barometric bias if there is one.
 ///
-/// A filter carrying geophysical bias states has them past index 14, and this conversion leaves
-/// [`NavigationResult`]'s geophysical columns `None` rather than reading them: it is handed a
-/// filter, not a [`GeoStateLayout`], and the state vector cannot say which of its extra states
-/// is gravity and which is magnetic. Geophysical runs therefore go through
-/// [`run_closed_loop_with_geo`], which carries the layout; this impl is for the ordinary path.
-/// Converting an augmented filter here is not wrong, it is lossy, and the lossiness is why the
-/// geophysical CLI does not use it.
+/// A filter carrying *geophysical* bias states has them past index 14, and this conversion
+/// leaves [`NavigationResult`]'s two map columns `None` rather than reading them: it is handed
+/// a filter, not a [`GeoStateLayout`], and the state vector cannot say which of its extra
+/// states is gravity and which is magnetic. Geophysical runs therefore go through
+/// [`run_closed_loop_with_geo`], which carries the layout.
+///
+/// The **barometric** bias is different, and is read here. Since #372 the filter answers
+/// [`NavigationFilter::baro_bias_index`](crate::NavigationFilter::baro_bias_index) for itself,
+/// so the one question this conversion could not previously answer -- which extra state is
+/// which -- now has an answer for that state. Writing `None` regardless would drop an estimate
+/// the filter demonstrably holds.
 impl From<(&DateTime<Utc>, &UnscentedKalmanFilter)> for NavigationResult {
     fn from((timestamp, ukf): (&DateTime<Utc>, &UnscentedKalmanFilter)) -> Self {
         let state = &ukf.get_estimate();
         let covariance = ukf.get_certainty();
+        // `None` when the filter carries no barometric bias, which is every 15-state one.
+        let baro = ukf.baro_bias_index();
         Self {
             latitude_longitude_cov: covariance[(0, 1)],
             latitude_altitude_cov: covariance[(0, 2)],
@@ -2591,25 +2611,31 @@ impl From<(&DateTime<Utc>, &UnscentedKalmanFilter)> for NavigationResult {
             gravity_bias_cov: None,
             magnetic_bias: None,
             magnetic_bias_cov: None,
-            baro_bias: None,
-            baro_bias_cov: None,
+            baro_bias: baro.map(|index| state[index]),
+            baro_bias_cov: baro.map(|index| covariance[(index, index)]),
         }
     }
 }
 
-/// Converts the canonical fifteen-state solution only.
+/// Converts the navigation states, the IMU biases, and the barometric bias if there is one.
 ///
-/// A filter carrying geophysical bias states has them past index 14, and this conversion leaves
-/// [`NavigationResult`]'s geophysical columns `None` rather than reading them: it is handed a
-/// filter, not a [`GeoStateLayout`], and the state vector cannot say which of its extra states
-/// is gravity and which is magnetic. Geophysical runs therefore go through
-/// [`run_closed_loop_with_geo`], which carries the layout; this impl is for the ordinary path.
-/// Converting an augmented filter here is not wrong, it is lossy, and the lossiness is why the
-/// geophysical CLI does not use it.
+/// A filter carrying *geophysical* bias states has them past index 14, and this conversion
+/// leaves [`NavigationResult`]'s two map columns `None` rather than reading them: it is handed
+/// a filter, not a [`GeoStateLayout`], and the state vector cannot say which of its extra
+/// states is gravity and which is magnetic. Geophysical runs therefore go through
+/// [`run_closed_loop_with_geo`], which carries the layout.
+///
+/// The **barometric** bias is different, and is read here. Since #372 the filter answers
+/// [`NavigationFilter::baro_bias_index`](crate::NavigationFilter::baro_bias_index) for itself,
+/// so the one question this conversion could not previously answer -- which extra state is
+/// which -- now has an answer for that state. Writing `None` regardless would drop an estimate
+/// the filter demonstrably holds.
 impl From<(&DateTime<Utc>, &crate::kalman::ExtendedKalmanFilter)> for NavigationResult {
     fn from((timestamp, ekf): (&DateTime<Utc>, &crate::kalman::ExtendedKalmanFilter)) -> Self {
         let state = &ekf.get_estimate();
         let covariance = ekf.get_certainty();
+        // `None` when the filter carries no barometric bias, which is every 15-state one.
+        let baro = ekf.baro_bias_index();
         Self {
             latitude_longitude_cov: covariance[(0, 1)],
             latitude_altitude_cov: covariance[(0, 2)],
@@ -2673,8 +2699,8 @@ impl From<(&DateTime<Utc>, &crate::kalman::ExtendedKalmanFilter)> for Navigation
             gravity_bias_cov: None,
             magnetic_bias: None,
             magnetic_bias_cov: None,
-            baro_bias: None,
-            baro_bias_cov: None,
+            baro_bias: baro.map(|index| state[index]),
+            baro_bias_cov: baro.map(|index| covariance[(index, index)]),
         }
     }
 }
@@ -4007,9 +4033,11 @@ impl EkfConfig {
 
 /// Configuration parameters for ESKF initialization.
 ///
-/// Mirrors [`EkfConfig`] minus `use_biases`: the error-state filter is always 15-state
-/// (position, velocity, attitude, accelerometer bias, gyroscope bias), so there is nothing to
-/// select.
+/// Mirrors [`EkfConfig`] minus `use_biases`: the error-state filter always carries the full
+/// fifteen (position, velocity, attitude, accelerometer bias, gyroscope bias), so there is
+/// nothing to select. [`Self::estimate_baro_bias`] adds a sixteenth, so a
+/// [`Self::process_noise_diagonal`] or `imu_biases_covariance` handed in alongside it is
+/// sized to sixteen and **not** fifteen; read [`Self::baro_bias_index`] for where it lands.
 #[derive(Debug, Clone, Default)]
 pub struct EskfConfig {
     /// Optional initial attitude error covariance (3 elements, rad^2).
