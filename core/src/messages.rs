@@ -10,8 +10,8 @@ use std::path::Path;
 
 use crate::earth::meters_ned_to_dlat_dlon;
 use crate::measurements::{
-    GPSPositionAndVelocityMeasurement, MAG_YAW_NOISE, MagnetometerYawMeasurement, MeasurementModel,
-    RelativeAltitudeMeasurement,
+    BAROMETRIC_ALTITUDE_NOISE_M, GPSPositionAndVelocityMeasurement, MAG_YAW_NOISE,
+    MagnetometerYawMeasurement, MeasurementModel, RelativeAltitudeMeasurement,
 };
 use crate::sim::TestDataRecord;
 use crate::{IMUData, StrapdownError};
@@ -317,12 +317,30 @@ pub struct GnssDegradationConfig {
     #[serde(default = "default_aiding_scheduler")]
     pub magnetometer_scheduler: GnssScheduler,
 
+    /// One-sigma barometric altitude noise, metres, applied to every
+    /// [`RelativeAltitudeMeasurement`] this module builds.
+    ///
+    /// Defaults to [`BAROMETRIC_ALTITUDE_NOISE_M`]. A **standard deviation**: the value it
+    /// replaces lived in a trait impl as `diag([5.0])` and was a variance, so this default is
+    /// its square root and $R$ is unchanged (#375).
+    ///
+    /// The Sensor Logger format carries no pressure-accuracy column, so this cannot come from
+    /// the record the way `horizontal_accuracy` feeds the GNSS models; a scenario that wants a
+    /// good barometer or a bad one sets it here.
+    #[serde(default = "default_baro_noise_std_m")]
+    pub baro_noise_std_m: f64,
+
     /// Random number generator seed for deterministic tests and reproducibility.
     ///
     /// Use the same seed to repeat scenarios exactly; change it to get a new
     /// realization of stochastic processes such as AR(1) degradation.
     #[serde(default = "default_seed")]
     pub seed: u64,
+}
+
+/// Serde default for [`GnssDegradationConfig::baro_noise_std_m`].
+const fn default_baro_noise_std_m() -> f64 {
+    BAROMETRIC_ALTITUDE_NOISE_M
 }
 
 impl Default for GnssDegradationConfig {
@@ -332,6 +350,7 @@ impl Default for GnssDegradationConfig {
             fault: GnssFaultModel::default(),
             baro_scheduler: default_aiding_scheduler(),
             magnetometer_scheduler: default_aiding_scheduler(),
+            baro_noise_std_m: default_baro_noise_std_m(),
             seed: default_seed(),
         }
     }
@@ -1254,6 +1273,7 @@ pub fn build_event_stream(
             let baro: RelativeAltitudeMeasurement = RelativeAltitudeMeasurement {
                 relative_altitude: r1.relative_altitude,
                 reference_altitude,
+                noise_std: cfg.baro_noise_std_m,
             };
             events.push(Event::Measurement {
                 meas: Box::new(baro),
@@ -1364,6 +1384,14 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// The first measurement of type `M` in `stream`, for reading a field off it.
+    fn first_of<M: MeasurementModel + 'static>(stream: &EventStream) -> Option<&M> {
+        stream.events.iter().find_map(|event| match event {
+            Event::Measurement { meas, .. } => meas.as_any().downcast_ref::<M>(),
+            Event::Imu { .. } => None,
+        })
     }
 
     /// An empty slice must return the error, not index out of bounds (#311). `build_event_stream`
@@ -1663,6 +1691,40 @@ mod tests {
     /// A duty-cycled magnetometer produces a heading outage, the way a duty-cycled GNSS
     /// produces a position one. #372 wants this for the barometer and #371 for the
     /// magnetometer, and reusing the GNSS scheduler is what makes it free.
+    #[test]
+    fn the_barometers_noise_is_configurable_and_its_default_holds_r_where_it_was() {
+        let records = create_test_records(10, 1.0);
+
+        // 1. The default reproduces the variance the hardcoded `diag([5.0])` produced.
+        //    `5.0` was an `R` entry -- a variance -- so the default `noise_std` is its square
+        //    root, and squaring it must land back on 5.0. No `f64` squares to exactly 5.0, so
+        //    this is the ulp the round trip costs, not a tolerance for a retune.
+        let stream = build_event_stream(&records, &GnssDegradationConfig::default(), false)
+            .expect("default stream");
+        let baro = first_of::<RelativeAltitudeMeasurement>(&stream)
+            .expect("a default config emits barometric altitude");
+        assert_approx_eq!(baro.noise_std, BAROMETRIC_ALTITUDE_NOISE_M, 1e-15);
+        assert_approx_eq!(baro.get_noise()[(0, 0)], 5.0, 1e-14);
+
+        // 2. A scenario can ask for a good barometer or a bad one, which is the whole of
+        //    #375: `R` follows the *square* of what it sets.
+        for noise_std in [0.1_f64, 25.0] {
+            let stream = build_event_stream(
+                &records,
+                &GnssDegradationConfig {
+                    baro_noise_std_m: noise_std,
+                    ..Default::default()
+                },
+                false,
+            )
+            .expect("configured stream");
+            let baro = first_of::<RelativeAltitudeMeasurement>(&stream)
+                .expect("a configured barometer is still emitted");
+            assert_approx_eq!(baro.noise_std, noise_std, 1e-15);
+            assert_approx_eq!(baro.get_noise()[(0, 0)], noise_std * noise_std, 1e-12);
+        }
+    }
+
     #[test]
     fn an_aiding_channel_can_be_duty_cycled_into_an_outage() {
         let records = create_test_records(101, 1.0); // 100 s at 1 Hz
