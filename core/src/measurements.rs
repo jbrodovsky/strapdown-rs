@@ -656,8 +656,21 @@ impl MagnetometerYawMeasurement {
         let date = Date::from_ordinal_date(self.year, self.day_of_year)
             .unwrap_or_else(|_| fallback_wmm_date());
 
+        // Clamped into the model's own band, with the same constants
+        // `sim::magnetic_field_nav_ut` clamps by. The two must agree: that function writes a
+        // synthetic field carrying the declination at the clamped altitude, and if this one
+        // passed the raw altitude instead, the model would refuse it and the `Err` arm below
+        // would remove **zero** declination from a field that had a full declination put into
+        // it. The result is a systematic heading bias rather than an error -- silent, and
+        // largest exactly where it is least welcome, since on the real sim path `alt_m` is the
+        // *filter's* altitude estimate and a diverging filter is what pushes it out of band.
+        let clamped = alt_m.clamp(
+            crate::sim::WMM_MIN_ALTITUDE_M,
+            crate::sim::WMM_MAX_ALTITUDE_M,
+        );
+
         let field = GeomagneticField::new(
-            Length::new::<meter>(alt_m as f32),
+            Length::new::<meter>(clamped as f32),
             Angle::new::<degree>(lat_deg as f32),
             Angle::new::<degree>(lon_deg as f32),
             date,
@@ -665,7 +678,11 @@ impl MagnetometerYawMeasurement {
 
         match field {
             Ok(f) => f64::from(f.declination().get::<degree>()) * std::f64::consts::PI / 180.0,
-            Err(_) => 0.0, // Return 0 declination if WMM fails (e.g., position out of range)
+            // Still reachable: a non-finite or out-of-range latitude/longitude, which this
+            // does not clamp because a wrapped position is a different claim than a clamped
+            // altitude. Zero is the only neutral answer, and it is a heading bias when it
+            // happens -- see the clamp above for why altitude no longer reaches here.
+            Err(_) => 0.0,
         }
     }
 }

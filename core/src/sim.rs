@@ -5364,9 +5364,16 @@ const fn default_mag_hard_iron_std_ut() -> f64 {
 /// Mirrors the clamp `strapdown-geonav` applies for the same reason: outside this band
 /// `GeomagneticField::new` refuses, and a synthetic trajectory has no business failing because
 /// its altitude wandered past a model boundary.
-const WMM_MIN_ALTITUDE_M: f64 = -1000.0;
+///
+/// Shared with [`crate::measurements::MagnetometerYawMeasurement::get_declination`], which
+/// must clamp identically. It did not, and the asymmetry was a silent heading bias: this
+/// function wrote a field carrying the declination at the clamped altitude while the consumer
+/// passed the raw altitude to a model that refused it and fell back to **zero** declination,
+/// so the declination was put in at one value and taken out at another. The two clamps are one
+/// constant for that reason.
+pub(crate) const WMM_MIN_ALTITUDE_M: f64 = -1000.0;
 /// Upper altitude bound of the World Magnetic Model, metres. See [`WMM_MIN_ALTITUDE_M`].
-const WMM_MAX_ALTITUDE_M: f64 = 850_000.0;
+pub(crate) const WMM_MAX_ALTITUDE_M: f64 = 850_000.0;
 
 /// Nanotesla per microtesla. `TestDataRecord`'s magnetic channels are microtesla; the WMM
 /// reports nanotesla.
@@ -5379,11 +5386,37 @@ const NANOTESLA_PER_MICROTESLA: f64 = 1000.0;
 /// See the comment at its use in [`generate_synthetic`].
 const MAGNETOMETER_NOISE_STREAM_OFFSET: u64 = 0x4d41_474e_4554_4f00;
 
+/// Offset separating the hard-iron draw from the magnetometer's per-sample noise stream.
+///
+/// A third stream rather than the head of the second: hard iron is drawn once and held, so
+/// sharing `mag_rng` made switching it on shift every per-sample noise value after it. See
+/// [`MAGNETOMETER_NOISE_STREAM_OFFSET`] for the same argument one level up.
+const MAGNETOMETER_HARD_IRON_STREAM_OFFSET: u64 = 0x4841_5244_4952_4f4e;
+
 /// The true magnetic field at a point, in the navigation frame, microtesla.
 ///
 /// Returns the field in whichever frame `is_enu` selects, so the caller can rotate it into the
-/// body frame with the same `attitude.matrix().transpose()` it uses for gravity. The World
-/// Magnetic Model reports NED components, so the ENU form is `[east, north, -down]`.
+/// body frame with the same `attitude.matrix().transpose()` it uses for gravity.
+///
+/// # The ENU form is `[east, north, -down]`, and that is not obvious
+///
+/// It disagrees with [`crate::vertical_flip`], which documents this crate's navigation frame
+/// as ordered `(north, east, vertical)` in both conventions, differing only by `diag(1, 1, -1)`.
+/// By that reading the horizontal axes should not swap here. They do, because the consumer
+/// this field exists to feed reads them swapped: `MagnetometerYawMeasurement`'s ENU branch
+/// recovers the heading as `atan2(m_x, m_y)`, which returns the ENU yaw -- counter-clockwise
+/// from east -- only when `m_x` is *east* and `m_y` is *north*. That branch is not a guess;
+/// #305 measured it against real ENU data (`core/tests/test_data.csv`), where the
+/// unconditional NED form had the ESKF converge on the reflected heading at 96.8 deg RMSE
+/// against 16.4 deg once corrected.
+///
+/// So the two conventions genuinely differ between `StrapdownState` and this measurement, and
+/// this function matches the measurement, because matching the other one silently returns
+/// `pi/2 - psi` -- the 45-degree reflection #305 is named for.
+/// `the_enu_magnetic_field_round_trips_through_its_own_measurement` pins it end to end, in
+/// both frames, rather than leaving the next reader to re-derive which convention wins.
+/// Reconciling the two is worth doing, but it is a change to the measurement and the state
+/// together, not to this function alone.
 ///
 /// `date` must be the record's own date. [`MagnetometerYawMeasurement`] looks the declination
 /// up again at consumption time from the record's timestamp, and if the two disagree the
@@ -5741,10 +5774,23 @@ pub fn generate_synthetic(
     let mag_hard_iron = if config.mag_hard_iron_std_ut > 0.0 {
         let dist = Normal::new(0.0_f64, config.mag_hard_iron_std_ut)
             .unwrap_or_else(|_| crate::normal_with_std(1.0));
+        // Its own substream, for the same reason the magnetometer has one at all. Drawn from
+        // `mag_rng` this consumed three values ahead of the per-sample noise, so turning hard
+        // iron on moved every later noise sample as well -- and a hard-iron experiment would
+        // then vary the bias and the realization together, which is exactly the confound the
+        // separate stream was introduced to remove.
+        let mut hard_iron_rng = {
+            use rand::SeedableRng as _;
+            rand::rngs::StdRng::seed_from_u64(
+                config
+                    .seed
+                    .wrapping_add(MAGNETOMETER_HARD_IRON_STREAM_OFFSET),
+            )
+        };
         Vector3::new(
-            mag_rng.sample(dist),
-            mag_rng.sample(dist),
-            mag_rng.sample(dist),
+            hard_iron_rng.sample(dist),
+            hard_iron_rng.sample(dist),
+            hard_iron_rng.sample(dist),
         )
     } else {
         Vector3::zeros()
@@ -9269,6 +9315,129 @@ mod tests {
     /// The World Magnetic Model there gives a total intensity near 50 uT, an inclination near
     /// 66 degrees down and a declination near 12 degrees west -- three independent numbers a
     /// fabricated or mis-rotated field cannot reproduce by accident.
+    /// The ENU field must survive the round trip through the measurement that consumes it.
+    ///
+    /// This is the test that was missing when `magnetic_field_nav_ut` returned the ENU field
+    /// as `(east, north, up)`. Every baseline scenario is NED and
+    /// `synthetic_config_for_tests` hard-codes `is_enu: false`, so nothing exercised the ENU
+    /// branch and a transposed field shipped green.
+    ///
+    /// Generating a heading and reading it back with anything but the real consumer would not
+    /// have caught it either -- a reflected field still has a plausible magnitude and a
+    /// plausible angle. So this drives `MagnetometerYawMeasurement` itself, at the record's
+    /// own timestamp, with declination applied exactly as `build_event_stream` applies it.
+    /// Under the old ordering it reads `pi/2 - psi` instead of `psi`, which at this trajectory
+    /// is 53.13 deg against 36.87 -- off by 16.3 deg and comfortably outside the tolerance.
+    #[test]
+    fn the_enu_magnetic_field_round_trips_through_its_own_measurement() {
+        use crate::measurements::{MagnetometerYawMeasurement, MeasurementModel};
+        use chrono::Datelike;
+
+        for is_enu in [false, true] {
+            let mut config = synthetic_config_for_tests();
+            config.initial_state.is_enu = is_enu;
+            config.no_noise = true;
+            config.duration_s = 2.0;
+            let mut rng = <rand::rngs::StdRng as rand::SeedableRng>::seed_from_u64(7);
+            let (truth, records) = generate_synthetic(&config, &mut rng).expect("generation");
+            let first = &records[0];
+
+            let measurement = MagnetometerYawMeasurement {
+                mag_x: first.mag_x,
+                mag_y: first.mag_y,
+                mag_z: first.mag_z,
+                noise_std: crate::measurements::MAG_YAW_NOISE,
+                apply_declination: true,
+                year: first.time.year(),
+                day_of_year: first.time.ordinal() as u16,
+                is_enu,
+            };
+
+            // The state the measurement reads position and attitude from, in the filter's own
+            // units: radians for latitude and longitude, radians for the Euler triple. The
+            // truth rows already carry the attitude as Euler angles in radians.
+            let (roll, pitch, yaw) = (truth[0].roll, truth[0].pitch, truth[0].yaw);
+            // `NavigationResult` is mixed-unit by design: latitude and longitude in degrees,
+            // the Euler triple in radians. The measurement wants the filter's units, which
+            // are radians throughout, so only the two position angles convert. Getting this
+            // wrong is silent rather than loud -- `get_declination` falls back to zero when
+            // the model declines the position, so degrees-as-radians reads as a clean
+            // 11.94 deg heading bias, which is exactly this trajectory's declination.
+            let state = DVector::from_vec(vec![
+                truth[0].latitude.to_radians(),
+                truth[0].longitude.to_radians(),
+                truth[0].altitude,
+                0.0,
+                0.0,
+                0.0,
+                roll,
+                pitch,
+                yaw,
+            ]);
+
+            let recovered = measurement
+                .get_measurement(&state)
+                .expect("heading from the synthesised field");
+            let error = crate::wrap_to_pi(recovered[0] - yaw).to_degrees();
+            assert!(
+                error.abs() < 1.0,
+                "is_enu={is_enu}: the magnetometer read {:.3} deg against a truth yaw of \
+                 {:.3} deg, {error:.3} deg out. A horizontal axis swap in the generated field \
+                 shows up here as roughly pi/2 - psi.",
+                recovered[0].to_degrees(),
+                yaw.to_degrees(),
+            );
+        }
+    }
+
+    /// An out-of-band altitude must not silently cost the heading its declination.
+    ///
+    /// `magnetic_field_nav_ut` clamps into the WMM's altitude band; `get_declination` did not,
+    /// and returned **zero** when the model refused the position. So a trajectory below -1 km
+    /// had the declination written into its field at the clamp and removed at zero, which is a
+    /// systematic heading bias of the local declination -- about 12 degrees here -- with no
+    /// error anywhere. Both now clamp by the same constants.
+    ///
+    /// Worth pinning beyond the synthetic path: on a real run `alt_m` is the *filter's*
+    /// altitude estimate, so the input that reaches the unsupported band is produced by a
+    /// filter that is already diverging.
+    #[test]
+    fn an_out_of_band_altitude_keeps_its_declination() {
+        use crate::measurements::MagnetometerYawMeasurement;
+
+        let measurement = |altitude_m: f64| {
+            let sample = MagnetometerYawMeasurement {
+                mag_x: 1.0,
+                mag_y: 0.0,
+                mag_z: 0.0,
+                noise_std: crate::measurements::MAG_YAW_NOISE,
+                apply_declination: true,
+                year: 2024,
+                day_of_year: 1,
+                is_enu: false,
+            };
+            sample.get_declination(40.0, -75.0, altitude_m)
+        };
+
+        let in_band = measurement(200.0);
+        assert!(
+            in_band.abs() > 0.1,
+            "40N 75W should have a declination of roughly -12 deg, got {} deg",
+            in_band.to_degrees()
+        );
+
+        for altitude_m in [-5_000.0, 1_000_000.0] {
+            let out_of_band = measurement(altitude_m);
+            assert!(
+                (out_of_band - in_band).abs() < 0.05,
+                "at {altitude_m} m the declination came back as {} deg against {} deg in \
+                 band; an unsupported altitude must clamp, not fall back to zero",
+                out_of_band.to_degrees(),
+                in_band.to_degrees()
+            );
+        }
+    }
+
     fn synthetic_config_for_tests() -> SyntheticConfig {
         SyntheticConfig {
             output: String::new(),
