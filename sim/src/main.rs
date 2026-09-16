@@ -1808,6 +1808,24 @@ fn run_rbpf_event_loop(
         };
         let ts = start_time + chrono::Duration::milliseconds((elapsed_s * 1000.0).round() as i64);
 
+        // Emit the row for the epoch that just ended, before applying anything from this
+        // one, so a row stamped `t_k` holds every event at or before `t_k` and none after.
+        //
+        // This loop used to push with the *current* `ts` on the first event of each epoch --
+        // always the IMU step -- so the row labelled `t_k` was the prior at `t_k` with none
+        // of that epoch's measurement updates, and the final epoch's updates were never
+        // emitted at all. That is the opposite error to the one `sim::run_closed_loop` had
+        // (#367), which is how the workspace came to ship three hand-rolled copies of this
+        // loop under two mutually inconsistent conventions. `sim::dead_reckoning` was the
+        // only one that was right; all of them now agree with it.
+        if ts != last_ts {
+            let (mean, cov) = rbpf.estimate_with_extra_states();
+            results.push(NavigationResult::from_particle_filter_with_geo(
+                &last_ts, &mean, &cov, geo_layout,
+            ));
+            last_ts = ts;
+        }
+
         match event {
             Event::Imu { dt_s, imu, .. } => {
                 rbpf.predict(&imu, dt_s)?;
@@ -1827,13 +1845,15 @@ fn run_rbpf_event_loop(
         }
         execution_monitor.check("particle-filter")?;
         execution_monitor.mark_progress();
+    }
 
-        if ts != last_ts {
-            results.push(NavigationResult::from_particle_filter_with_geo(
-                &ts, &mean, &cov, geo_layout,
-            ));
-            last_ts = ts;
-        }
+    // Flush the final epoch: the boundary push above only fires when a later timestamp
+    // arrives, and there is none.
+    if last_ts != start_time {
+        let (mean, cov) = rbpf.estimate_with_extra_states();
+        results.push(NavigationResult::from_particle_filter_with_geo(
+            &last_ts, &mean, &cov, geo_layout,
+        ));
     }
 
     Ok(results)

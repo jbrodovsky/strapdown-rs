@@ -2997,6 +2997,39 @@ pub fn run_closed_loop_with_geo<F: NavigationFilter>(
         };
         let ts = start_time + Duration::milliseconds((elapsed_s * 1000.0).round() as i64);
 
+        // Emit the row for the epoch that just ended, *before* applying anything from this
+        // one. This is the only moment at which a row stamped `last_ts` means what it says:
+        // every event at or before it has been applied and none after it has (#367).
+        //
+        // It used to sit below the `match`, which made the row labelled `t_k` hold the state
+        // after `t_{k+1}`'s first event -- always an `Event::Imu`, by `build_event_stream`'s
+        // fixed per-epoch ordering -- so every interior row was one propagation step ahead of
+        // its own label. On the 1 Hz reference recording at 21.19 m/s that was 21.2 m of
+        // along-track error, very nearly the whole of the ~23.5 m horizontal RMSE all three
+        // healthy filters reported, which is why they landed within 0.2 m of each other.
+        if Some(ts) != last_ts {
+            if let Some(prev_ts) = last_ts {
+                // The seed row above already covers `start_time`, whose epoch is empty:
+                // `build_event_stream` walks `windows(2)`, so record 0 produces no events.
+                if prev_ts != start_time {
+                    let mean = filter.get_estimate();
+                    let cov = filter.get_certainty();
+                    results.push(NavigationResult::from((&prev_ts, &mean, &cov, layout)));
+                    debug!("Filter state at {prev_ts}: {mean:?}");
+                }
+            }
+            last_ts = Some(ts);
+        }
+
+        // Checked before the event rather than after it, so the recoverable-measurement
+        // `continue` below cannot skip `mark_progress`. It could, and a run legitimately
+        // rejecting off-map samples -- the case that `continue` exists to support -- could
+        // therefore trip `max_no_progress_s` while making perfectly good progress (#367).
+        if let Some(ref mut monitor) = execution_monitor {
+            monitor.check("closed-loop")?;
+            monitor.mark_progress();
+        }
+
         // Apply event
         match event {
             Event::Imu { dt_s, imu, .. } => {
@@ -3068,36 +3101,23 @@ pub fn run_closed_loop_with_geo<F: NavigationFilter>(
                 }
             }
         }
-
-        // Check execution timeouts and mark progress
-        if let Some(ref mut monitor) = execution_monitor {
-            monitor.check("closed-loop")?;
-            monitor.mark_progress();
-        }
-
-        // If timestamp changed, record the previous state (unless it's the initial state)
-        if Some(ts) != last_ts {
-            if let Some(prev_ts) = last_ts {
-                // Skip pushing if this is the initial timestamp (already pushed at line 1945)
-                if prev_ts != start_time {
-                    let mean = filter.get_estimate();
-                    let cov = filter.get_certainty();
-                    results.push(NavigationResult::from((&prev_ts, &mean, &cov, layout)));
-                    debug!("Filter state at {ts}: {mean:?}");
-                }
-            }
-            last_ts = Some(ts);
-        }
-
-        // If this is the last event, also push
-        if i == total - 1 {
-            let mean = filter.get_estimate();
-            let cov = filter.get_certainty();
-            results.push(NavigationResult::from((&ts, &mean, &cov, layout)));
-            debug!("Filter state at {ts}: {mean:?}");
-            last_ts = Some(ts);
-        }
     }
+
+    // Flush the final epoch. Nothing inside the loop can emit it -- the boundary push only
+    // fires when a *later* timestamp arrives, and there is none -- so this is where the last
+    // row comes from, with every event applied.
+    //
+    // The `i == total - 1` push this replaces ran *in addition to* the boundary push when the
+    // last event happened to be the first at its timestamp, emitting one state under two
+    // labels. It never fired on `test_data.csv`, where each epoch carries up to four events,
+    // which is why it survived.
+    if let Some(final_ts) = last_ts.filter(|ts| *ts != start_time) {
+        let mean = filter.get_estimate();
+        let cov = filter.get_certainty();
+        results.push(NavigationResult::from((&final_ts, &mean, &cov, layout)));
+        debug!("Filter state at {final_ts}: {mean:?}");
+    }
+
     debug!("Closed-loop simulation complete");
     // Report the total even when it is zero: a silent run and a run that rejected every
     // measurement look identical from the outside otherwise.
@@ -8943,5 +8963,161 @@ mod tests {
     fn position_rms_is_altitude_sigma_when_horizontal_uncertainty_is_zero() {
         let rms = position_rms_meters(45.0, 1000.0, 0.0, 0.0, 7.5);
         assert_approx_eq!(rms, 7.5, 1e-12);
+    }
+    // ================== #367: what an output row's timestamp means ==================
+
+    /// A filter that counts the events it has been handed instead of navigating.
+    ///
+    /// The point is to assert the *causal* invariant directly rather than through an RMSE: a
+    /// row stamped `t_k` must hold every event at or before `t_k` and none after it. The
+    /// count is carried in the altitude channel, which passes through
+    /// `NavigationResult::from` untouched and sits well inside [`HealthLimits`], so each
+    /// output row reports exactly how many events had been applied when it was emitted.
+    #[derive(Debug, Default)]
+    struct EventCountingFilter {
+        /// Events applied so far, of either kind.
+        applied: usize,
+    }
+
+    /// Altitude the counting filter reports with no events applied, metres.
+    const COUNTING_FILTER_BASE_ALTITUDE_M: f64 = 100.0;
+
+    impl NavigationFilter for EventCountingFilter {
+        fn predict(
+            &mut self,
+            _control_input: &dyn crate::InputModel,
+            _dt: f64,
+        ) -> Result<(), StrapdownError> {
+            self.applied += 1;
+            Ok(())
+        }
+
+        fn update(
+            &mut self,
+            _measurement: &dyn crate::measurements::MeasurementModel,
+        ) -> Result<crate::gating::UpdateOutcome, StrapdownError> {
+            self.applied += 1;
+            Ok(crate::gating::UpdateOutcome::accepted(0.0, 3))
+        }
+
+        fn get_estimate(&self) -> DVector<f64> {
+            let mut state = DVector::zeros(15);
+            state[2] = COUNTING_FILTER_BASE_ALTITUDE_M + self.applied as f64;
+            state
+        }
+
+        fn get_certainty(&self) -> DMatrix<f64> {
+            DMatrix::identity(15, 15)
+        }
+    }
+
+    /// Build a stream of `epochs` epochs, each carrying `events_per_epoch` events one second
+    /// apart, starting one second after `start_time` -- which mirrors `build_event_stream`,
+    /// whose `windows(2)` walk leaves record 0's epoch empty.
+    fn counting_stream(
+        start_time: DateTime<Utc>,
+        epochs: usize,
+        events_per_epoch: usize,
+    ) -> EventStream {
+        let mut events = Vec::new();
+        for epoch in 1..=epochs {
+            for _ in 0..events_per_epoch {
+                events.push(Event::Imu {
+                    dt_s: 1.0,
+                    imu: IMUData {
+                        accel: Vector3::new(0.0, 0.0, 0.0),
+                        gyro: Vector3::new(0.0, 0.0, 0.0),
+                    },
+                    elapsed_s: epoch as f64,
+                });
+            }
+        }
+        EventStream { start_time, events }
+    }
+
+    /// A row stamped `t_k` holds every event at or before `t_k`, and none after it.
+    ///
+    /// This is #367 stated directly. Before the fix the push sat below the `match`, so the
+    /// row labelled `t_k` carried `t_{k+1}`'s first event as well -- every interior row was
+    /// one propagation step ahead of its own label, worth 21.2 m of along-track error on the
+    /// 1 Hz reference recording. Asserting it here rather than through a horizontal RMSE
+    /// means the invariant is pinned whatever the tuning does.
+    #[test]
+    fn a_row_holds_every_event_at_or_before_its_own_timestamp() {
+        for events_per_epoch in [1_usize, 2, 4] {
+            let start_time = Utc::now();
+            let epochs = 5;
+            let mut filter = EventCountingFilter::default();
+            let stream = counting_stream(start_time, epochs, events_per_epoch);
+            let results = run_closed_loop(&mut filter, stream, None, None).unwrap();
+
+            assert_eq!(
+                results.len(),
+                epochs + 1,
+                "expected one seed row plus one row per epoch at {events_per_epoch} \
+                 events/epoch, got {}",
+                results.len()
+            );
+
+            for (index, row) in results.iter().enumerate() {
+                let applied = row.altitude - COUNTING_FILTER_BASE_ALTITUDE_M;
+                // Row 0 is the seed, before any event; row k covers epochs 1..=k.
+                let expected = (index * events_per_epoch) as f64;
+                assert_approx_eq!(applied, expected, 1e-9);
+
+                let expected_ts =
+                    start_time + Duration::milliseconds((index as f64 * 1000.0) as i64);
+                assert_eq!(
+                    row.timestamp, expected_ts,
+                    "row {index} is stamped {} rather than {expected_ts}",
+                    row.timestamp
+                );
+            }
+        }
+    }
+
+    /// The last epoch is emitted exactly once, with all of its events applied.
+    ///
+    /// The `i == total - 1` push this replaces fired *in addition to* the epoch-boundary push
+    /// whenever the final event was the first at its timestamp, emitting one state under two
+    /// labels. One event per epoch is precisely that case; it never arose on
+    /// `test_data.csv`, where each epoch carries up to four events, which is why it survived.
+    #[test]
+    fn the_final_epoch_is_emitted_once_with_all_its_events() {
+        let start_time = Utc::now();
+        let mut filter = EventCountingFilter::default();
+        let results =
+            run_closed_loop(&mut filter, counting_stream(start_time, 3, 1), None, None).unwrap();
+
+        // The duplicate is one *state* under two labels, not one timestamp twice, so
+        // uniqueness of the timestamps does not catch it: pre-fix this emitted
+        // `[seed, t1(2 events), t2(3), t3(3)]` -- four distinct labels, but the last two
+        // holding the same state, because the run had nothing left to apply between them.
+        let counts: Vec<f64> = results
+            .iter()
+            .map(|r| r.altitude - COUNTING_FILTER_BASE_ALTITUDE_M)
+            .collect();
+        assert_eq!(counts, vec![0.0, 1.0, 2.0, 3.0], "rows: {counts:?}");
+
+        for pair in counts.windows(2) {
+            assert!(
+                pair[1] > pair[0],
+                "consecutive rows restate the same state: {counts:?}"
+            );
+        }
+    }
+
+    /// An empty stream yields the seed row alone, not a duplicate of it.
+    #[test]
+    fn an_empty_stream_yields_only_the_seed_row() {
+        let start_time = Utc::now();
+        let mut filter = EventCountingFilter::default();
+        let stream = EventStream {
+            start_time,
+            events: Vec::new(),
+        };
+        let results = run_closed_loop(&mut filter, stream, None, None).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].timestamp, start_time);
     }
 }

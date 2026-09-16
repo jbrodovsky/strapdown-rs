@@ -37,9 +37,9 @@ use strapdown::kalman::{
 use strapdown::measurements::{
     GPSPositionAndVelocityMeasurement, MeasurementModel, ZaruMeasurement, ZuptMeasurement,
 };
+use strapdown::metrics::root_mean_square;
 use strapdown::sim::DEFAULT_PROCESS_NOISE;
 use strapdown::stationary::{StationaryConfig, StationaryDetector};
-use strapdown::metrics::root_mean_square;
 use strapdown::{IMUData, ImuSample, NavigationFilter, StrapdownState, mechanize, wrap_to_pi};
 
 /// Scenario latitude, degrees. Mid-latitude, so Earth rate has both a north and a down

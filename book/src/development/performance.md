@@ -31,14 +31,26 @@ The numbers are meaningless without them, and none of them is a defect in the ha
    below the receiver's own 3.81 m horizontal noise however good the filter is. The `syn_*`
    scenarios are scored against an exact synthetic trajectory and have no such floor, which is
    why their horizontal figures are five times smaller.
-2. **Every horizontal figure carries a one-step propagation offset.** `sim::run_closed_loop`
-   pushes an output row *after* applying the next event, so the row labelled $t_k$ holds a
-   state already propagated through the first event of $t_{k+1}$. On the 1 Hz recording at
-   21.19 m/s that is 21.2 m of along-track error on its own -- very nearly the whole of the
-   ~23.5 m the `real_clean` rows show, and the reason all three filters land within 0.2 m of
-   each other there rather than spreading out by tuning. Tracked in
-   [#367](https://github.com/jbrodovsky/strapdown-rs/issues/367); the synthetic scenarios run
-   at 50 Hz specifically so the same offset is about 1 m.
+2. **On a full-rate real-data row, the filter is scored against a fix it has already been
+   given.** This used to read differently: every horizontal figure carried a one-step
+   propagation offset, because `sim::run_closed_loop` pushed each row *after* applying the
+   next event, so the row labelled $t_k$ held a state already propagated to $t_{k+1}$. At
+   1 Hz and 21.19 m/s that was 21.2 m of along-track error -- very nearly the whole of the
+   ~23.5 m the `real_clean` rows then showed, and the reason all three filters landed within
+   0.2 m of each other. [#367](https://github.com/jbrodovsky/strapdown-rs/issues/367) fixed
+   it, and every horizontal metric improved at once.
+
+   What that uncovered is caveat 1 with nothing left diluting it. A row at $t_k$ now contains
+   $t_k$'s GNSS update, so on a `PassThrough` schedule these columns measure how completely a
+   filter absorbs its own aiding: `real_clean__ukf` reads 0.014 m and `real_clean__ekf`
+   0.0001 m, both far below the receiver's own 3.81 m. That is not accuracy. It is a Kalman
+   gain of about 1 -- see [#373](https://github.com/jbrodovsky/strapdown-rs/issues/373), where
+   an absolute covariance floor in radian units leaves both filters copying their fixes rather
+   than filtering them. The ESKF, which floors its covariance *relatively*, sits at 5.1 m.
+
+   **The real-data rows that still measure navigation are the ones where the filter has to
+   predict between fixes** -- `real_sparse_5s`, `real_outage_60s`, `real_degraded` -- together
+   with the `syn_*` scenarios and their exact independent truth.
 3. **The synthetic scenarios carry no magnetometer, and the yaw column says which filters need
    one.** Nothing aids heading there but the GNSS velocity fix on a moving trajectory, which
    turns out to be enough: the EKF holds 0.97 deg and the ESKF 2.07 deg on `syn_cruise_1hz`
@@ -139,23 +151,35 @@ will tell you off; change the numbers by re-blessing.
 
 ## What the table is saying
 
-- **The three healthy filters agree to within 0.2 m on `real_clean`**, which is caveat 2 in
-  action: the shared 21 m offset dominates, so the row is a regression detector rather than a
-  ranking.
+- **The `real_clean` horizontal column is no longer a navigation measurement.** The UKF reads
+  0.014 m and the EKF 0.0001 m against a reference whose own noise is 3.81 m -- caveat 2. Both
+  are reproducing the fix they were handed one event earlier. The ESKF's 5.1 m is the only
+  figure in that column that means anything, and it is the only one of the three whose
+  covariance floor is relative rather than absolute.
 - **`syn_cruise_1hz` is where the filters actually separate**, and no one of them wins. The
-  ESKF leads on position (3.41 m against 4.42 m for both others) and loses on velocity
-  (1.17 m/s against the EKF's 0.050 m/s and the UKF's 0.489 m/s); the UKF trails on attitude
-  for the reason in caveat 3.
+  ESKF leads on position and loses on velocity; the UKF trails on attitude for the reason in
+  caveat 3. These rows are scored against exact truth, so nothing here is circular.
 - **The outage rows are dominated by attitude, not by position.** 60 s of free inertial turns a
   fraction of a degree of tilt error into hundreds of metres. `syn_outage_60s__eskf` holds
   0.20 deg of pitch and coasts to 20 m; the UKF, which does not hold its attitude through the
   coast, reaches 267 m.
 - **The two consistency columns disagree with each other on real data, and that is the
-  finding.** The UKF and EKF report a flat 1.000 horizontal containment -- a covariance so
-  conservative it cannot be wrong -- beside a vertical containment of 0.47 and 0.41, where
-  better than half the altitude errors fall outside three sigma. Their `npes` of 16 and 33 is
-  almost entirely that vertical channel. The ESKF is the mirror image: 0.16 horizontal
-  containment, an `npes` of 1,249, and caveat 2 in the numerator.
+  finding.** The UKF and EKF still report a flat 1.000 horizontal containment -- a covariance
+  so conservative it cannot be wrong -- beside a vertical containment of 0.40 and 0.42, where
+  better than half the altitude errors fall outside three sigma. Both halves of that are
+  [#373](https://github.com/jbrodovsky/strapdown-rs/issues/373)'s absolute covariance floor:
+  201 m of fabricated horizontal sigma is what makes the horizontal figure unfalsifiable, and
+  the same constant is a rounding error in the vertical channel, which is therefore left
+  bare.
+- **The ESKF's numbers moved furthest when #367 landed**, and in the right direction:
+  horizontal containment 0.161 to 0.497, `npes` 1,249 to 68. That is the offset leaving the
+  numerator. It is still not consistent -- 0.497 against an ideal of 0.9973 -- and what
+  remains is a real finding rather than an artefact.
+- **`real_rbpf_slice__rbpf`'s `npes` is not gated.** It reads 5.7e25 because the particle
+  cloud collapses to a horizontal sigma of nanometres on 17 of 1,200 epochs, which a mean of
+  $e^2/P$ cannot survive. Exposed rather than caused by #367, which stopped sampling the cloud
+  one propagation step after each fix had re-inflated it. Tracked as
+  [#385](https://github.com/jbrodovsky/strapdown-rs/issues/385).
 - **Several numbers here therefore record known defects rather than good behaviour**, which is
   what a two-sided gate is for. Each is annotated in the baseline file. When one is fixed the
   improvement side trips and asks for the diff that records it.

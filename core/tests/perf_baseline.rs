@@ -50,12 +50,18 @@
 //! 1. **Real-data metrics are scored against the GNSS fix, which is also the aiding source.**
 //!    They measure agreement with the aid, and cannot fall below the receiver's own 3.81 m
 //!    horizontal noise however good the filter is.
-//! 2. **Every horizontal number on a real-data scenario carries a one-step propagation
-//!    offset.** `sim::run_closed_loop` pushes a row *after* applying the event, so the row
-//!    labelled `t_k` holds a state already propagated through the first event of `t_{k+1}`. At
-//!    1 Hz and 21.19 m/s that is 21.2 m of along-track error on its own. Tracked in #367; the
-//!    synthetic scenarios run at 50 Hz specifically so the same offset is ~1 m there. When
-//!    #367 is fixed every horizontal metric here trips the improvement side at once.
+//! 2. **A full-rate real-data row is scored against a fix it has already been given.**
+//!    #367 fixed the one-step propagation offset that used to dominate every horizontal
+//!    number here -- 21.2 m at 1 Hz and 21.19 m/s, very nearly the whole of the ~23.5 m the
+//!    `real_clean` rows reported -- and, as predicted, tripped the improvement side on all of
+//!    them at once. What it left behind is the circularity caveat 1 describes, now
+//!    undiluted: a row at `t_k` contains `t_k`'s GNSS update, so on a `PassThrough` schedule
+//!    the horizontal columns measure how completely a filter absorbs its own aiding.
+//!    `real_clean__ukf` reads 0.014 m and `real_clean__ekf` 0.0001 m, both far below the
+//!    receiver's 3.81 m, which is not accuracy but a Kalman gain of ~1 (#373). The rows that
+//!    still measure navigation on real data are the ones where the filter has to predict
+//!    between fixes -- `real_sparse_5s`, `real_outage_60s`, `real_degraded` -- and the
+//!    synthetic scenarios, which carry exact independent truth.
 //! 3. **The synthetic scenarios carry no magnetometer, and the yaw column says which filters
 //!    need one.** `generate_synthetic` models no magnetic field, so the only thing aiding
 //!    heading there is the GNSS velocity fix on a moving trajectory. That turns out to be
