@@ -396,6 +396,22 @@ impl RaoBlackwellizedParticleFilter {
         // states -- so there is nothing to compensate the increments for first.
         let rates = sample.to_rates()?;
         let dt = sample.dt;
+        // `state_transition_jacobian` is the **nav-frame rotation-vector** form, while
+        // `particle_state_vector` assembles the solution as `euler + linear_state`, which is
+        // the Euler chart. Those are different coordinates, and #349 filed the mismatch.
+        //
+        // **It is not fixed by swapping in `euler_state_transition_jacobian`.** Measured:
+        // that diverges this filter on the reference recording within the gated slice --
+        // twenty consecutive NIS exceedances, last NIS 214.8, against a health limit of
+        // twenty. So the chart the propagation uses is load-bearing in a way the assembly is
+        // not, and whichever half is wrong, the rotation-vector `F` is the one keeping this
+        // filter stable today.
+        //
+        // Left as it is deliberately. The ESKF's half of #349 was a chain rule away
+        // (`body_rotation_vector_to_euler_jacobian`); this half needs the particle cloud's
+        // attitude representation designed rather than a call swapped, and it belongs with
+        // the rest of the RBPF work (#382) rather than riding along with a measurement-side
+        // contract fix.
         let f = state_transition_jacobian(&self.nominal, &rates.accel, &rates.gyro, dt);
         let linear_dim = LINEAR_STATE_DIM_BASE + self.config.extra_state_dim;
 

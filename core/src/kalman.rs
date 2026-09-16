@@ -2506,18 +2506,44 @@ impl NavigationFilter for ErrorStateKalmanFilter {
         let mut innovation = measurement.get_measurement(&nominal_state_vec)? - &z_hat;
         measurement.wrap_residual(&mut innovation);
 
-        // The analytic attitude columns differentiate w.r.t. Euler angles;
-        // the error state needs derivatives w.r.t. the body-frame rotation
-        // vector, so overwrite columns 6..8 with the finite-difference form
-        // (see `attitude_error_jacobian`, #286). Measurements whose analytic
-        // attitude block is identically zero (e.g. GPS, baro) are
-        // attitude-independent, so the finite differences would be zero too
-        // and are skipped to keep them out of the hot loop.
-        let analytic_attitude_block_zero = h_error
-            .view((0, 6), (meas_dim, 3))
-            .iter()
-            .all(|v| *v == 0.0);
-        if !analytic_attitude_block_zero {
+        // Convert the attitude columns from the chart `get_jacobian` writes them in to the
+        // one this filter's error state lives in.
+        //
+        // Every `get_jacobian` in this crate differentiates with respect to the Euler angles
+        // `StrapdownState` stores. This filter's error state is a **body-frame rotation
+        // vector** -- `inject_error_state` composes it as `q_nominal (x) dq` -- and the two
+        // are not the same coordinates. The chain rule closes the gap exactly:
+        //
+        //     dh/d(theta_b) = (dh/dPhi) * (dPhi/d(theta_b))
+        //
+        // with the second factor from `body_rotation_vector_to_euler_jacobian`. It is the
+        // identity only at zero roll, so on a recording taken with the device on its side
+        // -- which `core/tests/test_data.csv` is -- the uncorrected row is not slightly off,
+        // it puts almost all of the yaw sensitivity in the wrong column (#349).
+        //
+        // This replaces the per-measurement finite differences #286 added. Those computed the
+        // same quantity numerically, and correctly, but only for measurements whose analytic
+        // attitude block was already non-zero: the skip was justified by "such measurements
+        // are attitude-independent, so the finite differences would be zero too", which is
+        // false for `ZaruMeasurement` -- its expected measurement carries Earth rate rotated
+        // into the body frame. The analytic form needs no such test, so the exception goes
+        // with it, and it costs one 3x3 multiply instead of three model evaluations.
+        //
+        // Finite differences remain the fallback at gimbal lock, where the Euler chart stops
+        // being a chart and no finite conversion matrix is the right answer. They stay
+        // bounded there because they difference finite rotations rather than inverting a
+        // singular matrix, and they are also the oracle the analytic form is tested against.
+        let attitude_chart = crate::linearize::body_rotation_vector_to_euler_jacobian(
+            nominal_state_vec[ATTITUDE_ROLL_INDEX],
+            nominal_state_vec[ATTITUDE_PITCH_INDEX],
+            nominal_state_vec[ATTITUDE_YAW_INDEX],
+        );
+        if let Some(chart) = attitude_chart {
+            let converted = h_error.view((0, 6), (meas_dim, 3)) * chart;
+            h_error
+                .view_mut((0, 6), (meas_dim, 3))
+                .copy_from(&converted);
+        } else {
             let h_att = Self::attitude_error_jacobian(
                 measurement,
                 &self.nominal_quaternion,
@@ -5445,6 +5471,143 @@ mod tests {
         assert!(
             max_diff > 0.05,
             "FD and analytic attitude columns should differ at high pitch, max diff {max_diff}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod attitude_chart_tests {
+    use super::*;
+    use crate::linearize::body_rotation_vector_to_euler_jacobian;
+    use crate::measurements::{MagnetometerYawMeasurement, ZaruMeasurement};
+    use nalgebra::Vector3;
+
+    /// Attitudes the conversion has to hold at, in radians. The third is the reference
+    /// recording's own posture -- a phone on its side -- and is the one the Euler row is
+    /// worst at.
+    const ATTITUDES: [(f64, f64, f64); 5] = [
+        (0.0, 0.0, 0.0),
+        (0.0, 0.0, 1.2),
+        (1.492_256_5, 0.026_179_9, -0.7), // 85.5 deg roll, 1.5 deg pitch
+        (0.35, -0.55, 2.1),
+        (-1.1, 0.9, 0.4),
+    ];
+
+    fn state_at(roll: f64, pitch: f64, yaw: f64) -> DVector<f64> {
+        let mut state = DVector::zeros(15);
+        state[0] = 0.7; // ~40 deg latitude, so Earth rate has north and down components
+        state[1] = -1.3;
+        state[2] = 200.0;
+        state[ATTITUDE_ROLL_INDEX] = roll;
+        state[ATTITUDE_PITCH_INDEX] = pitch;
+        state[ATTITUDE_YAW_INDEX] = yaw;
+        state
+    }
+
+    fn quaternion_wxyz(roll: f64, pitch: f64, yaw: f64) -> nalgebra::Vector4<f64> {
+        let q = UnitQuaternion::from_euler_angles(roll, pitch, yaw);
+        nalgebra::Vector4::new(q.w, q.i, q.j, q.k)
+    }
+
+    /// The whole of #349, as one equality.
+    ///
+    /// `get_jacobian`'s attitude columns are written against Euler angles; the ESKF's error
+    /// state is a body-frame rotation vector. `body_rotation_vector_to_euler_jacobian` is the
+    /// claim that one multiplication converts between them. The finite differences #286 added
+    /// compute the same derivative by perturbing the nominal quaternion directly, with no
+    /// chart arithmetic at all, so they are an independent oracle rather than a restatement.
+    ///
+    /// If this holds, the ESKF can stop calling the model three extra times per update.
+    #[test]
+    fn the_analytic_chart_conversion_matches_differencing_the_model() {
+        for (roll, pitch, yaw) in ATTITUDES {
+            let state = state_at(roll, pitch, yaw);
+            let quaternion = quaternion_wxyz(roll, pitch, yaw);
+            let chart = body_rotation_vector_to_euler_jacobian(roll, pitch, yaw)
+                .expect("none of these attitudes is near gimbal lock");
+
+            let magnetometer = MagnetometerYawMeasurement {
+                mag_x: 21.0,
+                mag_y: -4.0,
+                mag_z: -43.0,
+                noise_std: 0.2,
+                apply_declination: false,
+                year: 2024,
+                day_of_year: 1,
+                is_enu: false,
+            };
+            let analytic = magnetometer
+                .get_jacobian(&state)
+                .expect("magnetometer jacobian")
+                .view((0, 6), (1, 3))
+                * chart;
+            let differenced =
+                ErrorStateKalmanFilter::attitude_error_jacobian(&magnetometer, &quaternion, &state);
+            for column in 0..3 {
+                assert!(
+                    (analytic[(0, column)] - differenced[(0, column)]).abs() < 1e-6,
+                    "magnetometer column {column} at roll {roll:.3} pitch {pitch:.3}: \
+                     analytic {} vs differenced {}",
+                    analytic[(0, column)],
+                    differenced[(0, column)]
+                );
+            }
+        }
+    }
+
+    /// The row the conversion produces for the magnetometer, in closed form.
+    ///
+    /// `magnetometer_yaw_jacobian` is `[0, 0, 1]`, so the converted row is the bottom row of
+    /// the chart matrix: `[0, sin(roll)/cos(pitch), cos(roll)/cos(pitch)]`. Asserting the
+    /// closed form as well as the numerical agreement above means a sign error that happened
+    /// to flip both would still be caught.
+    #[test]
+    fn a_rolled_platform_answers_to_the_body_pitch_axis_not_the_body_yaw_axis() {
+        let (roll, pitch, yaw) = (85.5_f64.to_radians(), 1.5_f64.to_radians(), -0.7);
+        let chart = body_rotation_vector_to_euler_jacobian(roll, pitch, yaw).expect("chart");
+        assert!((chart[(2, 0)] - 0.0).abs() < 1e-12);
+        assert!((chart[(2, 1)] - roll.sin() / pitch.cos()).abs() < 1e-12);
+        assert!((chart[(2, 2)] - roll.cos() / pitch.cos()).abs() < 1e-12);
+        // And the numbers that make this worth doing: 0.997 on the axis the Euler row calls
+        // zero, 0.0785 on the axis it calls one.
+        assert!((chart[(2, 1)] - 0.997).abs() < 1e-3, "{}", chart[(2, 1)]);
+        assert!((chart[(2, 2)] - 0.0785).abs() < 1e-3, "{}", chart[(2, 2)]);
+    }
+
+    /// `ZaruMeasurement` is why the old skip condition was wrong, and how little it cost.
+    ///
+    /// The ESKF used to skip the attitude correction whenever the analytic block was all
+    /// zeros, on the stated grounds that such a measurement is attitude-independent. ZARU is
+    /// not: its expected measurement is `gyro_bias + C_n^b * omega_ie`, which turns with the
+    /// platform. So the premise was false -- and the consequence is negligible, which is why
+    /// nothing ever showed it. Earth rate is 7.29e-5 rad/s, so the whole derivative is bounded
+    /// by that, against a ZARU noise floor three decibels-and-then-some above it.
+    #[test]
+    fn zarus_attitude_sensitivity_is_real_but_a_rounding_error_next_to_its_noise() {
+        const NOISE_STD: f64 = 1e-3;
+        let mut worst: f64 = 0.0;
+        for (roll, pitch, yaw) in ATTITUDES {
+            let state = state_at(roll, pitch, yaw);
+            let differenced = ErrorStateKalmanFilter::attitude_error_jacobian(
+                &ZaruMeasurement::new(Vector3::zeros(), NOISE_STD).expect("zaru"),
+                &quaternion_wxyz(roll, pitch, yaw),
+                &state,
+            );
+            worst = worst.max(differenced.abs().max());
+        }
+        assert!(
+            worst > 0.0,
+            "ZARU's expected measurement does turn with the platform; a zero here would mean \
+             the Earth-rate term had been dropped"
+        );
+        assert!(
+            worst < crate::earth::RATE,
+            "bounded by Earth rate itself: {worst:e}"
+        );
+        assert!(
+            worst < 0.1 * NOISE_STD,
+            "a radian of tilt error moves ZARU by {worst:e} rad/s against a {NOISE_STD:e} \
+             noise floor, so the omission is not what limits it"
         );
     }
 }
