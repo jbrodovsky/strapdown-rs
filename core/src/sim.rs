@@ -3134,13 +3134,20 @@ pub fn run_closed_loop<F: NavigationFilter>(
     health_limits: Option<HealthLimits>,
     execution_limits: Option<ExecutionLimits>,
 ) -> anyhow::Result<Vec<NavigationResult>> {
-    run_closed_loop_with_geo(
-        filter,
-        stream,
-        health_limits,
-        execution_limits,
-        GeoStateLayout::NONE,
-    )
+    // `GeoStateLayout::NONE` is fifteen wide, and the conversion into `NavigationResult`
+    // asserts the state matches it. A filter estimating a barometric bias is sixteen, so
+    // taking the layout from the filter is what keeps this -- the documented runner -- working
+    // when `estimate_baro_bias` is on, instead of panicking deep in a `From` impl (#372).
+    // Only the barometric bias is reachable this way: map biases still need
+    // `run_closed_loop_with_geo`, because the filter cannot say which of its extra states is
+    // a gravity anomaly and which a magnetic one.
+    let layout = match filter.baro_bias_index() {
+        Some(index) => {
+            GeoStateLayout::new(filter.get_estimate().len(), None, None).with_baro_bias(index)
+        }
+        None => GeoStateLayout::NONE,
+    };
+    run_closed_loop_with_geo(filter, stream, health_limits, execution_limits, layout)
 }
 
 /// [`run_closed_loop`] for a filter carrying geophysical bias states.
@@ -3565,6 +3572,10 @@ pub fn initialize_ukf(
     // indistinguishable once loaded -- so this has to be supplied, and supplying it wrongly
     // is what that guard is for (#296).
     let initial_state = initial_pose.initial_state(config.is_enu);
+    // Read before `config` is consumed field by field below. The barometric bias goes last,
+    // after any `other_states`, so its index is not a constant and `UkfConfig::baro_bias_index`
+    // is the one place that arithmetic lives (#372).
+    let baro_bias_index = config.baro_bias_index();
     let process_noise_diagonal = match config.process_noise_diagonal {
         Some(pn) => pn,
         None => DEFAULT_PROCESS_NOISE_DENSITY.to_vec(),
@@ -3635,9 +3646,8 @@ pub fn initialize_ukf(
         }
         None => None,
     };
-    // The barometric bias goes last, after any map biases, so its index is stable and cannot
-    // collide with the ones geonav derives from a base of fifteen. `UkfConfig::baro_bias_index`
-    // is the one place that arithmetic lives.
+    // The barometric bias goes last, after any map biases, so it cannot collide with the
+    // indices geonav derives from a base of fifteen.
     let other_states = if config.estimate_baro_bias {
         covariance_diagonal.push(INITIAL_BARO_BIAS_VARIANCE_M2);
         let mut extra = other_states.unwrap_or_default();
@@ -3682,7 +3692,7 @@ pub fn initialize_ukf(
     )?;
     let process_noise = DMatrix::from_diagonal(&DVector::from_vec(process_noise_diagonal));
     //DVector::from_vec(vec![0.0; 15]);
-    Ok(UnscentedKalmanFilter::new(
+    let mut filter = UnscentedKalmanFilter::new(
         &initial_state,
         &imu_biases,
         other_states.as_deref(),
@@ -3691,7 +3701,12 @@ pub fn initialize_ukf(
         config.ukf_alpha.unwrap_or(1e-3),
         config.ukf_beta.unwrap_or(2.0),
         config.ukf_kappa.unwrap_or(0.0),
-    ))
+    );
+    // This function sized the state, so it is the one thing that knows where the bias landed.
+    // Telling the filter is what lets `run_closed_loop` label the column without being handed
+    // a `GeoStateLayout` (#372).
+    filter.set_baro_bias_index(baro_bias_index)?;
+    Ok(filter)
 }
 
 impl UkfConfig {
@@ -3829,6 +3844,9 @@ pub fn initialize_ekf(
 ) -> Result<crate::kalman::ExtendedKalmanFilter, StrapdownError> {
     use crate::kalman::ExtendedKalmanFilter;
 
+    // Read before the destructure below consumes `config`, so the index comes from
+    // `EkfConfig::baro_bias_index` rather than being spelled out a second time here (#372).
+    let baro_bias_index = config.baro_bias_index();
     let EkfConfig {
         attitude_covariance,
         imu_biases,
@@ -3958,13 +3976,16 @@ pub fn initialize_ekf(
     )?;
 
     let process_noise = DMatrix::from_diagonal(&DVector::from_vec(process_noise_diagonal));
-    Ok(ExtendedKalmanFilter::new(
+    let mut filter = ExtendedKalmanFilter::new(
         &initial_state,
         &imu_biases_vec,
         covariance_diagonal,
         process_noise,
         use_biases,
-    ))
+    );
+    // As in `initialize_ukf`: the constructor knows the layout, so it declares it.
+    filter.set_baro_bias_index(baro_bias_index)?;
+    Ok(filter)
 }
 
 impl EkfConfig {
@@ -4001,8 +4022,17 @@ pub struct EskfConfig {
     pub imu_biases: Option<Vec<f64>>,
     /// Optional IMU bias error covariance (6 elements).
     pub imu_biases_covariance: Option<Vec<f64>>,
-    /// Optional process noise diagonal (15 elements for the error state).
+    /// Optional process noise diagonal (15 elements for the error state, 16 with a
+    /// barometric bias).
     pub process_noise_diagonal: Option<Vec<f64>>,
+    /// Estimate a barometric altitude bias as a sixteenth error state (#372).
+    ///
+    /// `false` -- the default -- is the fifteen-state error vector this filter has always
+    /// carried. Read the index off [`EskfConfig::baro_bias_index`] rather than assuming it.
+    ///
+    /// The state opens at [`INITIAL_BARO_BIAS_VARIANCE_M2`] and walks at
+    /// [`BARO_BIAS_PROCESS_NOISE_M2_PER_S`].
+    pub estimate_baro_bias: bool,
     /// IMU grade the initial bias covariance is derived from when
     /// `imu_biases_covariance` is not given.
     ///
@@ -4016,6 +4046,21 @@ pub struct EskfConfig {
     ///
     /// See [`UkfConfig::is_enu`]; the same reasoning and the same guard apply.
     pub is_enu: bool,
+}
+
+impl EskfConfig {
+    /// Where [`Self::estimate_baro_bias`] puts the barometric bias, if it is on.
+    ///
+    /// Always [`NAVIGATION_STATES`], as for the EKF. See [`UkfConfig::baro_bias_index`] for
+    /// why this is a method.
+    #[must_use]
+    pub const fn baro_bias_index(&self) -> Option<usize> {
+        if self.estimate_baro_bias {
+            Some(NAVIGATION_STATES)
+        } else {
+            None
+        }
+    }
 }
 
 /// Initialize an Error-State Kalman Filter (ESKF) for simulation.
@@ -4078,6 +4123,7 @@ pub fn initialize_eskf(
         imu_biases,
         imu_biases_covariance,
         process_noise_diagonal,
+        estimate_baro_bias,
         imu_quality,
         is_enu,
     } = config;
@@ -4088,20 +4134,25 @@ pub fn initialize_eskf(
     // (#296).
     let initial_state = initial_pose.initial_state(is_enu);
 
-    // ESKF always uses 15-state error vector (pos, vel, att, accel_bias, gyro_bias)
-    let state_size = 15;
+    // Fifteen error states (pos, vel, att, accel bias, gyro bias), plus a barometric bias when
+    // asked for. This filter used to hard-code fifteen in six places; it now takes its width
+    // from the covariance it is handed, the way the EKF already did (#372).
+    let state_size = NAVIGATION_STATES + usize::from(estimate_baro_bias);
 
-    // Build process noise diagonal for error state (15 elements)
-    let process_noise_diagonal = match process_noise_diagonal {
-        Some(pn) => {
-            require_config(
-                pn.len() == state_size,
-                "process_noise_diagonal",
-                format!("expected {state_size} elements, got {}", pn.len()),
-            )?;
-            pn
+    // Build process noise diagonal for the error state: fifteen, or sixteen with the bias.
+    let process_noise_diagonal = if let Some(pn) = process_noise_diagonal {
+        require_config(
+            pn.len() == state_size,
+            "process_noise_diagonal",
+            format!("expected {state_size} elements, got {}", pn.len()),
+        )?;
+        pn
+    } else {
+        let mut default = DEFAULT_PROCESS_NOISE_DENSITY.to_vec();
+        if estimate_baro_bias {
+            default.push(BARO_BIAS_PROCESS_NOISE_M2_PER_S);
         }
-        None => DEFAULT_PROCESS_NOISE_DENSITY.to_vec(),
+        default
     };
 
     // Build IMU biases
@@ -4170,6 +4221,10 @@ pub fn initialize_eskf(
         // like the well-behaved one in every cross-filter comparison.
         None => imu_quality.initial_bias_covariance().to_vec(),
     });
+
+    if estimate_baro_bias {
+        error_covariance_diagonal.push(INITIAL_BARO_BIAS_VARIANCE_M2);
+    }
 
     require_config(
         error_covariance_diagonal.len() == state_size,
@@ -4921,6 +4976,23 @@ pub struct ClosedLoopConfig {
     /// `forced_update_after: null` is both mechanisms off, i.e. the pre-#340 behaviour.
     #[serde(default)]
     pub gate_recovery: GateRecovery,
+    /// Estimate a barometric altitude bias as an extra filter state (#372).
+    ///
+    /// A barometer's reference pressure drifts, and a filter that models the reading as
+    /// unbiased pushes that drift into altitude. Measured on `core/tests/test_data.csv`,
+    /// switching this on takes 3-sigma vertical containment from about 0.40 to 0.84 against
+    /// an ideal of 0.9973, removes a systematic 0.4 m offset and improves vertical RMSE by
+    /// 45%, in all three Kalman filters.
+    ///
+    /// `false` by default, because it widens the state vector by one and that is a default to
+    /// change at the 1.0 API freeze rather than alongside the state itself. Turning it on also
+    /// tells the barometer model which state to read; see
+    /// [`GnssDegradationConfig::baro_bias_index`](crate::messages::GnssDegradationConfig),
+    /// which `strapdown-sim` derives from this rather than making it a second thing to set.
+    ///
+    /// Not available on the geophysical path, whose extra states are map biases.
+    #[serde(default)]
+    pub estimate_baro_bias: bool,
 }
 
 impl Default for ClosedLoopConfig {
@@ -4932,6 +5004,7 @@ impl Default for ClosedLoopConfig {
             ukf_kappa: default_ukf_kappa(),
             innovation_gate: None,
             gate_recovery: GateRecovery::default(),
+            estimate_baro_bias: false,
         }
     }
 }

@@ -268,6 +268,23 @@ pub trait NavigationFilter {
         false
     }
 
+    /// Index of the barometric altitude bias in [`Self::get_estimate`], if this filter
+    /// estimates one (#372).
+    ///
+    /// Defaults to `None` -- no such state -- which is the honest answer for every filter
+    /// that does not carry one, in the same shape as
+    /// [`set_innovation_gate`](Self::set_innovation_gate) above.
+    ///
+    /// [`sim::run_closed_loop`] reads this to label the column on the way out. A filter that
+    /// carries the state without reporting it here would have the value dropped from the
+    /// solution silently, and one that reports an index it does not carry would have a
+    /// *gyro bias* written into the barometric column, so the index is owned by the filter
+    /// rather than guessed from the state's width -- the width alone cannot tell a barometric
+    /// bias from one of `UkfConfig::other_states`.
+    fn baro_bias_index(&self) -> Option<usize> {
+        None
+    }
+
     /// The current state estimate.
     fn get_estimate(&self) -> DVector<f64>;
 

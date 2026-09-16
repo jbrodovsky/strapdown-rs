@@ -408,6 +408,12 @@ pub struct UnscentedKalmanFilter {
     weights_mean: DVector<f64>,
     weights_cov: DVector<f64>,
     is_enu: bool,
+    /// Index of a barometric altitude bias in `mean_state`, when this filter carries one (#372).
+    ///
+    /// Set by [`sim::initialize_ukf`](crate::sim::initialize_ukf) through
+    /// [`Self::set_baro_bias_index`], because that is the only thing that knows the layout it
+    /// built. Reported through [`NavigationFilter::baro_bias_index`].
+    baro_bias_index: Option<usize>,
     /// Innovation gate applied by `update` together with the recovery policy that keeps
     /// a rejection from being permanent; an empty gate accepts every measurement.
     gate_policy: GatePolicy,
@@ -529,9 +535,37 @@ impl UnscentedKalmanFilter {
             weights_mean,
             weights_cov,
             is_enu: initial_state.is_enu,
+            baro_bias_index: None,
             gate_policy: GatePolicy::default(),
         }
     }
+
+    /// Declare where this filter's barometric altitude bias lives (#372).
+    ///
+    /// `pub(crate)` for the reason
+    /// [`ExtendedKalmanFilter::set_baro_bias_index`] gives.
+    ///
+    /// # Errors
+    /// [`StrapdownError::InvalidConfiguration`] if `index` is not inside the state. On this
+    /// filter that is the check that matters most: the bias is appended *after* any
+    /// `UkfConfig::other_states`, so the index is not a constant and an off-by-one would put
+    /// a caller's own extra state into the barometric column.
+    pub(crate) fn set_baro_bias_index(
+        &mut self,
+        index: Option<usize>,
+    ) -> Result<(), StrapdownError> {
+        if let Some(i) = index
+            && i >= self.state_size
+        {
+            return Err(StrapdownError::InvalidConfiguration {
+                field: "baro_bias_index",
+                reason: format!("index {i} is outside a {}-element state", self.state_size),
+            });
+        }
+        self.baro_bias_index = index;
+        Ok(())
+    }
+
     /// # Errors
     /// [`StrapdownError::NotSquare`] if the covariance is not square, propagated from
     /// [`matrix_square_root`].
@@ -667,6 +701,12 @@ pub(crate) fn imu_sample_from_input(
 }
 
 impl NavigationFilter for UnscentedKalmanFilter {
+    /// See [`NavigationFilter::baro_bias_index`]. Reports what
+    /// [`Self::set_baro_bias_index`] was told, so a filter built without one says `None`.
+    fn baro_bias_index(&self) -> Option<usize> {
+        self.baro_bias_index
+    }
+
     /// Predict step for the UKF: propagate sigma points through the mechanization.
     ///
     /// # Arguments
@@ -1109,6 +1149,12 @@ pub struct ExtendedKalmanFilter {
     use_biases: bool,
     /// Coordinate frame flag (true for ENU, false for NED)
     is_enu: bool,
+    /// Index of a barometric altitude bias in `mean_state`, when this filter carries one (#372).
+    ///
+    /// Set by [`sim::initialize_ekf`](crate::sim::initialize_ekf) through
+    /// [`Self::set_baro_bias_index`], because that is the only thing that knows the layout it
+    /// built. Reported through [`NavigationFilter::baro_bias_index`].
+    baro_bias_index: Option<usize>,
     /// Innovation gate applied by `update` together with the recovery policy that keeps
     /// a rejection from being permanent; an empty gate accepts every measurement.
     gate_policy: GatePolicy,
@@ -1123,6 +1169,7 @@ impl Debug for ExtendedKalmanFilter {
             .field("state_size", &self.state_size)
             .field("use_biases", &self.use_biases)
             .field("is_enu", &self.is_enu)
+            .field("baro_bias_index", &self.baro_bias_index)
             .field("gate_policy", &self.gate_policy)
             .finish()
     }
@@ -1228,12 +1275,47 @@ impl ExtendedKalmanFilter {
             state_size,
             use_biases,
             is_enu: initial_state.is_enu,
+            baro_bias_index: None,
             gate_policy: GatePolicy::default(),
         }
+    }
+
+    /// Declare where this filter's barometric altitude bias lives (#372).
+    ///
+    /// `pub(crate)` on purpose: [`sim::initialize_ekf`](crate::sim::initialize_ekf) sizes the
+    /// covariance and so is the one caller that knows the answer, and the 1.0 API freeze is
+    /// not the moment to add a public knob whose only correct value comes from somewhere else.
+    /// A filter built through [`Self::new`] directly reports `None` and is written out through
+    /// [`sim::run_closed_loop_with_geo`](crate::sim::run_closed_loop_with_geo) with an explicit
+    /// layout, exactly as the geophysical paths already are.
+    ///
+    /// # Errors
+    /// [`StrapdownError::InvalidConfiguration`] if `index` is not inside the state, which
+    /// would otherwise write a navigation state into the barometric column.
+    pub(crate) fn set_baro_bias_index(
+        &mut self,
+        index: Option<usize>,
+    ) -> Result<(), StrapdownError> {
+        if let Some(i) = index
+            && i >= self.state_size
+        {
+            return Err(StrapdownError::InvalidConfiguration {
+                field: "baro_bias_index",
+                reason: format!("index {i} is outside a {}-element state", self.state_size),
+            });
+        }
+        self.baro_bias_index = index;
+        Ok(())
     }
 }
 
 impl NavigationFilter for ExtendedKalmanFilter {
+    /// See [`NavigationFilter::baro_bias_index`]. Reports what
+    /// [`Self::set_baro_bias_index`] was told, so a filter built without one says `None`.
+    fn baro_bias_index(&self) -> Option<usize> {
+        self.baro_bias_index
+    }
+
     /// Predict step: propagate state and covariance using IMU measurements
     ///
     /// The predict step consists of:
@@ -1721,15 +1803,24 @@ pub struct ErrorStateKalmanFilter {
     /// IMU biases (part of nominal state, augmented)
     nominal_accel_bias: Vector3<f64>, // m/s²
     nominal_gyro_bias: Vector3<f64>, // rad/s
+    /// Nominal barometric altitude bias, metres, when this filter carries the state.
+    ///
+    /// Meaningful only when [`Self::state_size`] is sixteen; otherwise it stays at zero and
+    /// nothing reads it. Like the other nominal quantities it is a plain field rather than a
+    /// row of the error state, because the error state holds *corrections* and this holds the
+    /// value being corrected.
+    nominal_baro_bias: f64,
 
-    /// Error state vector (15 elements: 3 pos + 3 vel + 3 att + 3 `acc_bias` + 3 `gyro_bias`)
+    /// Error state vector: 3 pos + 3 vel + 3 att + 3 `acc_bias` + 3 `gyro_bias`, plus a
+    /// barometric bias when this filter carries one (#372), so fifteen or sixteen elements.
     /// Initialized to zero and reset to zero after each update
     error_state: DVector<f64>,
 
-    /// Error state covariance matrix (15x15)
+    /// Error state covariance matrix, square and [`Self::state_size`] wide. This is the one
+    /// place the width is decided -- everything else reads it back off here.
     error_covariance: DMatrix<f64>,
 
-    /// Process noise covariance matrix (15x15)
+    /// Process noise covariance matrix, the same size as `error_covariance`
     process_noise: DMatrix<f64>,
 
     /// Coordinate frame flag (true for ENU, false for NED)
@@ -1944,8 +2035,10 @@ impl ErrorStateKalmanFilter {
         let nominal_accel_bias = Vector3::new(imu_biases[0], imu_biases[1], imu_biases[2]);
         let nominal_gyro_bias = Vector3::new(imu_biases[3], imu_biases[4], imu_biases[5]);
 
-        // Initialize error state to zero (15 elements)
-        let error_state = DVector::zeros(15);
+        // Width comes from the covariance the caller supplied, not a constant. Fifteen is the
+        // ordinary shape; sixteen carries a barometric bias (#372). The EKF infers its width
+        // the same way, so a caller that lengthens one diagonal lengthens the filter.
+        let error_state = DVector::zeros(error_covariance_diagonal.len());
 
         // Initialize error covariance
         let error_covariance =
@@ -1961,6 +2054,7 @@ impl ErrorStateKalmanFilter {
             nominal_quaternion,
             nominal_accel_bias,
             nominal_gyro_bias,
+            nominal_baro_bias: 0.0,
             error_state,
             error_covariance,
             process_noise,
@@ -1978,6 +2072,15 @@ impl ErrorStateKalmanFilter {
     /// jitter in its own units.
     fn regularize_covariance(&mut self) {
         regularize_covariance_in_place(&mut self.error_covariance, &self.process_noise);
+    }
+
+    /// Width of this filter's error state and covariance.
+    ///
+    /// Fifteen ordinarily; sixteen when the caller supplied a covariance diagonal long enough
+    /// to carry a barometric bias (#372). Read from the covariance rather than stored, so the
+    /// two cannot disagree.
+    fn state_size(&self) -> usize {
+        self.error_covariance.nrows()
     }
 
     /// Inject error state into nominal state and reset error state to zero
@@ -2090,6 +2193,14 @@ impl ErrorStateKalmanFilter {
             *b = b.clamp(-MAX_GYRO_BIAS_RPS, MAX_GYRO_BIAS_RPS);
         }
 
+        // Barometric bias injection, when the filter carries one. No anti-windup clamp: unlike
+        // the IMU biases it does not feed the mechanization, so a wrong value cannot compound
+        // into the nominal trajectory -- it only mis-predicts the next barometric measurement,
+        // which the next one corrects.
+        if let Some(index) = self.baro_bias_index() {
+            self.nominal_baro_bias += self.error_state[index];
+        }
+
         // Reset error state to zero
         self.error_state.fill(0.0);
     }
@@ -2156,6 +2267,16 @@ impl ErrorStateKalmanFilter {
 }
 
 impl NavigationFilter for ErrorStateKalmanFilter {
+    /// See [`NavigationFilter::baro_bias_index`].
+    ///
+    /// Derived from the width rather than stored, unlike its two siblings: this filter has no
+    /// equivalent of `UkfConfig::other_states`, so the sixteenth error state can only be the
+    /// barometric bias and there is nothing for a stored index to disagree with.
+    fn baro_bias_index(&self) -> Option<usize> {
+        (self.error_covariance.nrows() > crate::ERROR_STATE_DIMENSION)
+            .then_some(crate::ERROR_STATE_DIMENSION)
+    }
+
     /// Predict step: propagate nominal state and error covariance
     ///
     /// The ESKF predict consists of two parts:
@@ -2270,6 +2391,21 @@ impl NavigationFilter for ErrorStateKalmanFilter {
             &corrected_gyro,
             corrected_sample.dt,
         );
+        // A barometric bias, when carried, is a random walk: identity on its own diagonal and
+        // no coupling to anything, because a pressure reference drifting has no effect on the
+        // vehicle's motion. It reaches the navigation states only through the measurement,
+        // whose Jacobian carries the `1` in that column (#372). That is the opposite of the
+        // IMU biases, which act on the mechanization and need the explicit blocks this matrix
+        // already has.
+        let f_error = if self.state_size() > f_error.nrows() {
+            let mut widened = DMatrix::<f64>::identity(self.state_size(), self.state_size());
+            widened
+                .view_mut((0, 0), (f_error.nrows(), f_error.ncols()))
+                .copy_from(&f_error);
+            widened
+        } else {
+            f_error
+        };
 
         // Propagate error covariance: P = F * P * F^T + Q
         self.error_covariance = &f_error * &self.error_covariance * f_error.transpose()
@@ -2318,13 +2454,16 @@ impl NavigationFilter for ErrorStateKalmanFilter {
         // error state uses. The bias entries matter: ZARU observes the gyro bias
         // directly, and a 9-element nominal vector would have left it nothing to
         // predict from.
-        let mut nominal_state_vec = DVector::zeros(15);
+        let mut nominal_state_vec = DVector::zeros(self.state_size());
         nominal_state_vec[0] = self.nominal_latitude;
         nominal_state_vec[1] = self.nominal_longitude;
         nominal_state_vec[2] = self.nominal_altitude;
         nominal_state_vec[3] = self.nominal_velocity_north;
         nominal_state_vec[4] = self.nominal_velocity_east;
         nominal_state_vec[5] = self.nominal_velocity_vertical;
+        if let Some(index) = self.baro_bias_index() {
+            nominal_state_vec[index] = self.nominal_baro_bias;
+        }
 
         // Convert quaternion to Euler angles for measurement model
         let quat = nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
@@ -2355,8 +2494,10 @@ impl NavigationFilter for ErrorStateKalmanFilter {
         // the filter needing to know about them. Nine-column Jacobians are padded
         // into the bias block; a ZARU Jacobian already spans all fifteen.
         let meas_dim = measurement.get_dimension();
-        let mut h_error =
-            expand_measurement_jacobian(measurement.get_jacobian(&nominal_state_vec)?, 15)?;
+        let mut h_error = expand_measurement_jacobian(
+            measurement.get_jacobian(&nominal_state_vec)?,
+            self.state_size(),
+        )?;
 
         // Innovation (measurement residual): nu = z - z_hat. Computed here
         // (rather than below) because the attitude-column correction needs it.
@@ -2419,7 +2560,7 @@ impl NavigationFilter for ErrorStateKalmanFilter {
 
         // Error covariance update (Joseph form for numerical stability):
         // P = (I - K*H)*P*(I - K*H)^T + K*R*K^T
-        let i_kh = DMatrix::identity(15, 15) - &k * &h_error;
+        let i_kh = DMatrix::identity(self.state_size(), self.state_size()) - &k * &h_error;
         let r = measurement.get_noise();
         self.error_covariance =
             &i_kh * &self.error_covariance * i_kh.transpose() + &k * r * k.transpose();
@@ -2447,7 +2588,7 @@ impl NavigationFilter for ErrorStateKalmanFilter {
     /// on `Rotation3::euler_angles`'s principal branch: roll and yaw on -pi..pi, pitch on
     /// -pi/2..pi/2.
     fn get_estimate(&self) -> DVector<f64> {
-        let mut state = DVector::zeros(15);
+        let mut state = DVector::zeros(self.state_size());
 
         // Position
         state[0] = self.nominal_latitude;
@@ -2483,6 +2624,9 @@ impl NavigationFilter for ErrorStateKalmanFilter {
         state[12] = self.nominal_gyro_bias[0];
         state[13] = self.nominal_gyro_bias[1];
         state[14] = self.nominal_gyro_bias[2];
+        if let Some(index) = self.baro_bias_index() {
+            state[index] = self.nominal_baro_bias;
+        }
 
         state
     }
