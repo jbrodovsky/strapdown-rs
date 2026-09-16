@@ -1348,6 +1348,57 @@ impl GeoStateLayout {
     }
 }
 
+/// Reference-pressure drift a barometer is assumed to accumulate over an hour, metres.
+///
+/// One hectopascal, which is about 8.3 m near sea level. That is the everyday scale of
+/// synoptic pressure change -- a front moving through over a few hours -- and it is what a
+/// barometric altimeter reports as altitude when nothing corrects its reference.
+///
+/// This is the single physical quantity both barometric-bias constants below are derived
+/// from, so there is one number to argue with rather than two.
+pub const BARO_BIAS_DRIFT_M_PER_HOUR: f64 = 8.3;
+
+/// Random-walk process noise on the barometric bias state, m^2 per second.
+///
+/// A random walk of spectral density $q$ reaches a standard deviation of $\sqrt{q t}$ after
+/// $t$ seconds, so [`BARO_BIAS_DRIFT_M_PER_HOUR`] over 3,600 s gives
+/// $q = 8.3^2 / 3600 = 0.0191$.
+///
+/// # It was derived and then measured, in that order
+///
+/// Sweeping $q$ on the reference recording through a UKF carrying this state, the vertical
+/// channel reads:
+///
+/// | $q$ | 3-sigma containment | vertical bias | vertical RMSE |
+/// |---|---:|---:|---:|
+/// | none (no bias state) | 0.400 | +0.395 m | 2.575 m |
+/// | 1e-6 | 0.554 | +0.729 m | 2.276 m |
+/// | 1e-4 | 0.785 | -0.002 m | 1.579 m |
+/// | 1e-2 | 0.836 | -0.025 m | 1.413 m |
+///
+/// The best measured value is `1e-2` and this constant is `0.0191`: **the derivation and the
+/// measurement agree to within a factor of two**, on a knob swept over four decades. That is
+/// the reason to take the derived value rather than the fitted one -- a constant that comes
+/// from 1 hPa of pressure drift can be argued with by a meteorologist, and one that comes from
+/// a sweep can only be re-swept (#288).
+pub const BARO_BIAS_PROCESS_NOISE_M2_PER_S: f64 = {
+    let hour = 3600.0;
+    BARO_BIAS_DRIFT_M_PER_HOUR * BARO_BIAS_DRIFT_M_PER_HOUR / hour
+};
+
+/// Initial variance of the barometric bias state, m^2.
+///
+/// [`BARO_BIAS_DRIFT_M_PER_HOUR`] squared: the filter opens believing the barometer's
+/// reference is off by something on the order of an hour's drift, which is what an
+/// uncalibrated turn-on offset is.
+///
+/// The measurement above says this one barely matters -- initial variances of 1, 25 and 100
+/// give the same vertical metrics to four significant figures, because the state is observable
+/// and converges within the first minutes. Only $q$ moves the answer. That insensitivity is
+/// itself the evidence the state is correctly identified rather than absorbing something else.
+pub const INITIAL_BARO_BIAS_VARIANCE_M2: f64 =
+    BARO_BIAS_DRIFT_M_PER_HOUR * BARO_BIAS_DRIFT_M_PER_HOUR;
+
 /// Length of the full Kalman state vector: nine navigation states plus three accelerometer and
 /// three gyroscope biases.
 ///
@@ -3445,6 +3496,17 @@ pub struct UkfConfig {
     /// different answer and none of them modelled any hardware -- see that method for the
     /// measurement, and for why it made the UKF-versus-ESKF comparison in #371 meaningless.
     pub imu_quality: crate::IMUQuality,
+    /// Estimate a barometric altitude bias as an extra state (#372).
+    ///
+    /// `false` -- the default -- models the barometer as unbiased, which is what every filter
+    /// did before #372. `true` appends one state **after** any [`Self::other_states`], so it
+    /// cannot collide with the map-bias indices geonav computes from a base of fifteen; read
+    /// the resulting index off [`UkfConfig::baro_bias_index`] rather than assuming it.
+    ///
+    /// The state opens at [`INITIAL_BARO_BIAS_VARIANCE_M2`] and walks at
+    /// [`BARO_BIAS_PROCESS_NOISE_M2_PER_S`], both derived from one hectopascal of
+    /// reference-pressure drift per hour.
+    pub estimate_baro_bias: bool,
     /// Local-level frame of the records: `false` (the default) is NED, `true` is ENU.
     ///
     /// Sensor Logger exports are ENU -- at rest their specific force lands on the device's
@@ -3558,6 +3620,25 @@ pub fn initialize_ukf(
         }
         None => None,
     };
+    // The barometric bias goes last, after any map biases, so its index is stable and cannot
+    // collide with the ones geonav derives from a base of fifteen. `UkfConfig::baro_bias_index`
+    // is the one place that arithmetic lives.
+    let other_states = if config.estimate_baro_bias {
+        covariance_diagonal.push(INITIAL_BARO_BIAS_VARIANCE_M2);
+        let mut extra = other_states.unwrap_or_default();
+        extra.push(0.0);
+        Some(extra)
+    } else {
+        other_states
+    };
+    let mut process_noise_diagonal = process_noise_diagonal;
+    if config.estimate_baro_bias
+        && process_noise_diagonal.len() + 1 == 15 + other_states.as_ref().map_or(0, Vec::len)
+    {
+        // The caller gave a diagonal sized for the state without this one; extend it rather
+        // than making every caller that turns the flag on also hand-build a longer vector.
+        process_noise_diagonal.push(BARO_BIAS_PROCESS_NOISE_M2_PER_S);
+    }
     let expected = 15 + other_states.as_ref().map_or(0, Vec::len);
     require_config(
         covariance_diagonal.len() == expected,
@@ -3596,6 +3677,28 @@ pub fn initialize_ukf(
         config.ukf_beta.unwrap_or(2.0),
         config.ukf_kappa.unwrap_or(0.0),
     ))
+}
+
+impl UkfConfig {
+    /// Where [`Self::estimate_baro_bias`] puts the barometric bias, if it is on.
+    ///
+    /// One source of truth for the index, because three places need it and they must agree:
+    /// the filter's state layout, the
+    /// [`GnssDegradationConfig::baro_bias_index`](crate::messages::GnssDegradationConfig)
+    /// that tells the measurement which state to read, and the [`GeoStateLayout`] that labels
+    /// it on the way out. A caller computing `15 + n` by hand in each of those is how the two
+    /// drift apart, and a measurement pointed at the wrong state reads a *map* bias as a
+    /// barometric one -- which is the hazard `strapdown-geonav`'s `BiasState` documentation
+    /// describes for index 14.
+    ///
+    /// After the other states, not before them: geonav derives its map-bias indices from a
+    /// base of [`NAVIGATION_STATES`], so taking index 15 for the barometer would collide with
+    /// a gravity bias on any geophysical run.
+    #[must_use]
+    pub fn baro_bias_index(&self) -> Option<usize> {
+        self.estimate_baro_bias
+            .then(|| NAVIGATION_STATES + self.other_states.as_ref().map_or(0, Vec::len))
+    }
 }
 
 /// Configuration parameters for EKF initialization.

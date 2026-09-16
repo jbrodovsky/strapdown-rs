@@ -1649,6 +1649,10 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                         ukf_beta: Some(args.ukf_beta),
                         ukf_kappa: Some(args.ukf_kappa),
                         imu_quality: strapdown::IMUQuality::default(),
+                        // Off on the geophysical path: this filter's extra states are map
+                        // biases, and #372's barometric state has not been measured against a
+                        // geo run. Turning it on here would change two things at once.
+                        estimate_baro_bias: false,
                         is_enu: args.sim.enu,
                     },
                 )?;
