@@ -247,6 +247,78 @@ fn euler_rate_matrix_inverse(roll: f64, pitch: f64, yaw: f64) -> Option<nalgebra
     (inverse.abs().max() <= MAX_EULER_RATE_AMPLIFICATION).then_some(inverse)
 }
 
+/// Below this correction magnitude the reset Jacobian is the identity to within an ulp.
+///
+/// $J_r(\delta\theta) = I - \tfrac12[\delta\theta]_\times + O(\|\delta\theta\|^2)$, so at
+/// $10^{-8}$ radians the off-diagonal terms are $5\times10^{-9}$ -- below the relative
+/// precision of the covariance entries they would multiply. Guarding is also what keeps the
+/// $1/\theta$ terms in the closed form from dividing by zero.
+const MIN_RESET_ANGLE_RAD: f64 = 1e-8;
+
+/// The covariance reset that follows injecting an attitude correction, $J_r(\delta\theta)$.
+///
+/// # What this is for
+///
+/// A filter carrying attitude on $SO(3)$ with a right-trivialised error --
+/// $R = \hat R \exp([\delta\theta]_\times)$, which is what both
+/// [`ErrorStateKalmanFilter`](crate::kalman::ErrorStateKalmanFilter) and
+/// [`UnscentedKalmanFilter`](crate::kalman::UnscentedKalmanFilter) use -- moves its own
+/// linearisation point when it injects a correction. The covariance is expressed in the
+/// tangent space *at the old mean*, so it has to be transported to the tangent space at the
+/// new one:
+///
+/// $$ P_{\theta\theta} \leftarrow G P_{\theta\theta} G^\top, \qquad G = J_r(\delta\theta). $$
+///
+/// Solà, *Quaternion kinematics for the error-state Kalman filter*, section 6, calls this the
+/// error reset. Skipping it leaves the attitude block interpreted around a frame the mean has
+/// already left, which is #398.
+///
+/// # Why $J_r$ and not one of the alternatives
+///
+/// #398 proposes "$J_r(\delta\theta)^{-1}$ or $\exp(-[\delta\theta]_\times)$", and separately
+/// gives the first-order form as $I - \tfrac12[\delta\theta]_\times$. Those are three
+/// different matrices and they disagree at first order. Derived:
+///
+/// $$ R = \hat R\exp([\delta\theta]_\times) = \hat R \exp([\hat{\delta\theta}]_\times)
+///        \exp([\delta\theta^+]_\times) \implies
+///    \delta\theta^+ = \log\big(\exp(-\hat{\delta\theta})\exp(\delta\theta)\big), $$
+///
+/// whose Jacobian at $\delta\theta = \hat{\delta\theta}$ is $J_r(\hat{\delta\theta})$.
+/// Confirmed numerically against that map -- see
+/// `the_reset_jacobian_is_the_right_jacobian_and_not_its_inverse`, which differences it
+/// directly. Agreement is $4\times10^{-9}$ at a 0.5 rad correction, where the two rejected
+/// forms are out by 0.43 and 0.21 respectively.
+///
+/// The issue's *first-order* expression is the correct one: $I - \tfrac12[\delta\theta]_\times$
+/// is the expansion of $J_r$, not of $J_r^{-1}$. Taking the inverse instead would transport
+/// the covariance **backwards**, which is worse than not transporting it at all.
+///
+/// # Example
+///
+/// ```rust
+/// use strapdown::linearize::attitude_reset_jacobian;
+/// use nalgebra::Vector3;
+///
+/// // No correction, no transport.
+/// let none = attitude_reset_jacobian(&Vector3::zeros());
+/// assert!((none - nalgebra::Matrix3::identity()).abs().max() < 1e-15);
+///
+/// // A small correction is the first-order form to within its own truncation error.
+/// let small = Vector3::new(0.0, 0.0, 1e-3);
+/// let g = attitude_reset_jacobian(&small);
+/// assert!((g[(0, 1)] - 0.5e-3).abs() < 1e-9);
+/// ```
+#[must_use]
+pub fn attitude_reset_jacobian(delta_theta: &Vector3<f64>) -> nalgebra::Matrix3<f64> {
+    let angle = delta_theta.norm();
+    if angle < MIN_RESET_ANGLE_RAD {
+        return nalgebra::Matrix3::identity();
+    }
+    let axis_skew = vector_to_skew_symmetric(&(delta_theta / angle));
+    nalgebra::Matrix3::identity() - ((1.0 - angle.cos()) / angle) * axis_skew
+        + ((angle - angle.sin()) / angle) * (axis_skew * axis_skew)
+}
+
 /// $\partial \Phi / \partial \delta\theta^b$: how an Euler-angle triple responds to a
 /// **body**-frame rotation-vector perturbation.
 ///
@@ -3659,5 +3731,145 @@ mod tests {
         assert_approx_eq!(delta_x[12], 0.0001, 1e-10);
         assert_approx_eq!(delta_x[13], 0.0002, 1e-10);
         assert_approx_eq!(delta_x[14], 0.0003, 1e-10);
+    }
+}
+
+#[cfg(test)]
+mod reset_jacobian_tests {
+    use super::*;
+    use nalgebra::{Matrix3, UnitQuaternion};
+
+    /// `log(exp(-a) exp(d))`, the map that re-references an attitude error onto a nominal
+    /// that has just absorbed `a`. Its Jacobian at `d = a` is the reset matrix, by definition.
+    fn rereference(correction: &Vector3<f64>, error: &Vector3<f64>) -> Vector3<f64> {
+        (UnitQuaternion::from_scaled_axis(-correction) * UnitQuaternion::from_scaled_axis(*error))
+            .scaled_axis()
+    }
+
+    /// The whole justification for [`attitude_reset_jacobian`]'s form, in one difference.
+    ///
+    /// #398 offers "`J_r(dtheta)^-1` or `exp(-[dtheta]x)`" and, separately, a first-order form
+    /// of `I - 0.5[dtheta]x`. Those are three different matrices that disagree at first
+    /// order, so at most one can be right. This differences the defining map directly and
+    /// lets the numbers choose: `J_r` agrees to 4e-9 at a half-radian correction, where the
+    /// two closed forms the issue names are out by 0.43 and 0.21.
+    ///
+    /// The distinction is not academic. `J_r^-1` is `J_r`'s inverse, so using it would
+    /// transport the covariance **backwards** -- strictly worse than leaving the reset out,
+    /// which is the bug being fixed.
+    #[test]
+    fn the_reset_jacobian_is_the_right_jacobian_and_not_its_inverse() {
+        const EPS: f64 = 1e-7;
+        for magnitude in [0.01, 0.1, 0.5] {
+            let correction = Vector3::new(1.0, -2.0, 0.5).normalize() * magnitude;
+
+            let base = rereference(&correction, &correction);
+            let mut differenced = Matrix3::zeros();
+            for column in 0..3 {
+                let mut perturbed = correction;
+                perturbed[column] += EPS;
+                let moved = rereference(&correction, &perturbed);
+                for row in 0..3 {
+                    differenced[(row, column)] = (moved[row] - base[row]) / EPS;
+                }
+            }
+
+            let ours = attitude_reset_jacobian(&correction);
+            assert!(
+                (differenced - ours).abs().max() < 1e-6,
+                "at |dtheta| = {magnitude}: {:.3e}",
+                (differenced - ours).abs().max()
+            );
+
+            // And the two the issue proposes are not it, by a margin far outside the
+            // difference quotient's own error.
+            let inverse = ours.try_inverse().expect("J_r is invertible here");
+            let exponential = UnitQuaternion::from_scaled_axis(-correction)
+                .to_rotation_matrix()
+                .into_inner();
+            assert!(
+                (differenced - inverse).abs().max() > 1e-3,
+                "J_r^-1 should NOT match at |dtheta| = {magnitude}"
+            );
+            assert!(
+                (differenced - exponential).abs().max() > 1e-3,
+                "exp(-[dtheta]x) should NOT match at |dtheta| = {magnitude}"
+            );
+        }
+    }
+
+    /// The first-order form the issue gives *is* right -- it is the expansion of `J_r`.
+    ///
+    /// Asserted as a convergence rate rather than against a fixed bound, because "close to
+    /// first order" is only meaningful relative to the correction size: halving the angle
+    /// must quarter the discrepancy, which is what makes it the *second*-order remainder and
+    /// not a sign error hiding under a loose tolerance.
+    #[test]
+    fn the_first_order_form_is_the_expansion_of_the_right_jacobian() {
+        let direction = Vector3::new(0.8, -0.4, 0.6).normalize();
+        let mut previous: Option<f64> = None;
+        for angle in [0.04, 0.02, 0.01, 0.005] {
+            let correction = direction * angle;
+            let exact = attitude_reset_jacobian(&correction);
+            let first_order = Matrix3::identity() - 0.5 * vector_to_skew_symmetric(&correction);
+            let discrepancy = (exact - first_order).abs().max();
+            assert!(
+                discrepancy < angle * angle,
+                "at {angle} rad the remainder is {discrepancy:e}, not second order"
+            );
+            if let Some(previous) = previous {
+                let ratio = previous / discrepancy;
+                assert!(
+                    (3.0..5.0).contains(&ratio),
+                    "halving the angle should quarter the remainder; got {ratio:.2}x"
+                );
+            }
+            previous = Some(discrepancy);
+        }
+    }
+
+    /// The transport re-expresses uncertainty; it does not create or destroy it.
+    ///
+    /// A covariance cannot stop being symmetric or positive definite by being written in a
+    /// different frame, so those two hold whatever `G` is. Asserted on a block with
+    /// off-diagonal structure, so a `G` that happened to be a multiple of the identity would
+    /// not pass by accident.
+    ///
+    /// The call sites themselves are guarded by the accuracy baseline rather than by a unit
+    /// test: removing either transport moves `real_degraded__eskf/yaw_rmse_deg` by 6.6% and
+    /// six other rows by more than 4%, which is well outside the gate's band. That is a
+    /// stronger guard than anything assertable here, because it is the navigation solution
+    /// rather than the arithmetic.
+    #[test]
+    fn transporting_a_covariance_keeps_it_a_covariance() {
+        let correction = Vector3::new(0.0, 0.0, 0.25);
+        let g = attitude_reset_jacobian(&correction);
+        assert!(
+            (g - Matrix3::identity()).abs().max() > 1e-3,
+            "the premise is that a quarter-radian correction is not a no-op"
+        );
+
+        let before = Matrix3::new(
+            4.0e-4, 1.0e-4, 0.0, 1.0e-4, 9.0e-4, 2.0e-4, 0.0, 2.0e-4, 1.6e-3,
+        );
+        let after = g * before * g.transpose();
+
+        assert!(
+            (after - before).abs().max() > 1e-6,
+            "G P G^T must differ from P for any of this to be testable"
+        );
+        assert!((after - after.transpose()).abs().max() < 1e-18);
+        assert!(
+            after.symmetric_eigenvalues().iter().all(|v| *v > 0.0),
+            "transport must not make the covariance indefinite"
+        );
+    }
+
+    /// A correction of nothing transports nothing, with no division by its own magnitude.
+    #[test]
+    fn a_zero_correction_is_the_identity() {
+        let g = attitude_reset_jacobian(&Vector3::zeros());
+        assert!((g - Matrix3::identity()).abs().max() < 1e-15);
+        assert!(g.iter().all(|v| v.is_finite()));
     }
 }

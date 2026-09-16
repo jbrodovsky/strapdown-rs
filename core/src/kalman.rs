@@ -948,17 +948,31 @@ impl NavigationFilter for UnscentedKalmanFilter {
         // The gain was formed against tangent-space attitude residuals, so its attitude rows
         // are a rotation vector and have to be *composed* onto the mean rather than added to
         // its Euler triple. Adding them is the same chart error as averaging them (#371).
-        let corrected_attitude = mean_attitude
-            * Rotation3::from_scaled_axis(Vector3::new(
-                correction[ATTITUDE_ROLL_INDEX],
-                correction[ATTITUDE_PITCH_INDEX],
-                correction[ATTITUDE_YAW_INDEX],
-            ));
+        let attitude_correction = Vector3::new(
+            correction[ATTITUDE_ROLL_INDEX],
+            correction[ATTITUDE_PITCH_INDEX],
+            correction[ATTITUDE_YAW_INDEX],
+        );
+        let corrected_attitude = mean_attitude * Rotation3::from_scaled_axis(attitude_correction);
         self.mean_state += correction;
         set_attitude_of(&mut self.mean_state, &corrected_attitude);
         // Report attitude on the same branch `predict` writes (#314).
         wrap_attitude_onto_principal_branch(&mut self.mean_state);
         self.covariance -= &k * &s * &k.transpose();
+        // Transport the covariance onto the tangent space of the attitude just composed on.
+        //
+        // This filter only joined the class of filters that need this with #395: before that
+        // it added the correction to an Euler triple and its covariance lived in the chart,
+        // so "the wrong tangent frame" was not yet the right description of what was wrong.
+        // Now that it composes `mean_attitude * exp(dtheta)` and builds residuals as
+        // `Log(R_mean^T R)`, the reset applies exactly as it does to the ESKF -- and the next
+        // `get_sigma_points` would otherwise spread points around the old frame (#398).
+        let reset = crate::linearize::attitude_reset_jacobian(&attitude_correction);
+        let mut transport = DMatrix::<f64>::identity(self.state_size, self.state_size);
+        transport
+            .view_mut((ATTITUDE_ROLL_INDEX, ATTITUDE_ROLL_INDEX), (3, 3))
+            .copy_from(&reset);
+        self.covariance = &transport * &self.covariance * transport.transpose();
         // Symmetrise, then jitter each diagonal entry in proportion to its own scale.
         // Adding an absolute `1e-9` here -- which this did until #373 -- put ~(201 m)^2 of
         // horizontal variance into a state whose position entries are radians, and the
@@ -1727,7 +1741,10 @@ impl NavigationFilter for ExtendedKalmanFilter {
 ///   where $q(\delta\theta) \approx [1, \frac{1}{2}\delta\theta_x, \frac{1}{2}\delta\theta_y, \frac{1}{2}\delta\theta_z]^T$
 /// - **Biases**: $b \leftarrow b + \delta b$ (simple addition)
 ///
-/// Then error state is reset: $\delta x \leftarrow 0$ and covariance is updated.
+/// Then the error state is reset to zero and the covariance is transported onto the tangent
+/// space of the attitude the injection just moved to -- $P \leftarrow G P G^\top$ with
+/// $G = J_r(\delta\theta)$ on the attitude rows and columns. Until #398 those two sentences
+/// described one step that happened and one that did not.
 ///
 /// # References
 ///
@@ -2090,7 +2107,7 @@ impl ErrorStateKalmanFilter {
     /// 1. Add position/velocity/bias errors directly to nominal state
     /// 2. Apply attitude error using quaternion multiplication (small angle approximation)
     /// 3. Reset error state to zero
-    /// 4. Update error covariance to account for the reset
+    /// 4. Transport the error covariance onto the new attitude's tangent space
     ///
     /// # Mathematical Details
     ///
@@ -2165,6 +2182,29 @@ impl ErrorStateKalmanFilter {
         // Normalize quaternion to maintain unit length
         let norm = self.nominal_quaternion.norm();
         self.nominal_quaternion /= norm;
+
+        // Transport the attitude covariance onto the tangent space of the attitude we just
+        // moved to. The correction above changed the linearisation point; `error_covariance`
+        // is expressed around the *old* one, so without this its attitude block describes a
+        // frame the mean has already left (#398).
+        //
+        // `P <- G P G^T` on the attitude rows and columns, with `G = J_r(delta_theta)`. This
+        // filter's error is right-trivialised -- `R = R_hat exp([delta_theta]x)`, which is
+        // what the `q (x) dq` composition above is -- so the reset matrix is the right
+        // Jacobian; see `attitude_reset_jacobian` for why it is that and not its inverse.
+        //
+        // The whole covariance is touched, not just the 3x3 diagonal block: the attitude's
+        // correlations with position, velocity and the biases are expressed in the same
+        // tangent frame and have to move with it. Transporting only the diagonal block would
+        // leave the filter's cross-terms describing one frame and its attitude variance
+        // another, which is a different inconsistency rather than a smaller one.
+        let reset = crate::linearize::attitude_reset_jacobian(&delta_theta);
+        let size = self.state_size();
+        let mut transport = DMatrix::<f64>::identity(size, size);
+        transport
+            .view_mut((ATTITUDE_ROLL_INDEX, ATTITUDE_ROLL_INDEX), (3, 3))
+            .copy_from(&reset);
+        self.error_covariance = &transport * &self.error_covariance * transport.transpose();
 
         // Bias error injection
         self.nominal_accel_bias[0] += self.error_state[9];
