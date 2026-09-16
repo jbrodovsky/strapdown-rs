@@ -1239,6 +1239,7 @@ pub struct GeoStateLayout {
     state_dim: usize,
     gravity_index: Option<usize>,
     magnetic_index: Option<usize>,
+    baro_index: Option<usize>,
 }
 
 impl Default for GeoStateLayout {
@@ -1253,6 +1254,7 @@ impl GeoStateLayout {
         state_dim: NAVIGATION_STATES,
         gravity_index: None,
         magnetic_index: None,
+        baro_index: None,
     };
 
     /// No map biases, on the particle filter's nine-state estimate.
@@ -1266,6 +1268,7 @@ impl GeoStateLayout {
         state_dim: PARTICLE_FILTER_STATES,
         gravity_index: None,
         magnetic_index: None,
+        baro_index: None,
     };
 
     /// A layout over a state of `state_dim` entries, with the biases at the given indices.
@@ -1285,7 +1288,31 @@ impl GeoStateLayout {
             state_dim,
             gravity_index,
             magnetic_index,
+            baro_index: None,
         }
+    }
+
+    /// The same layout, with a barometric bias at `index`.
+    ///
+    /// A builder rather than a fourth parameter on [`Self::new`], so the geophysical callers --
+    /// which are every existing one -- do not have to say "no barometer" to keep compiling.
+    ///
+    /// The barometric bias is not a map bias and this type's name is now narrower than what it
+    /// holds: it is the layout of *every* state past the navigation block, whatever put them
+    /// there. Renaming it belongs with the other two deferred renames on the 1.0 API-freeze
+    /// list, not in a change that adds a state.
+    #[must_use]
+    pub const fn with_baro_bias(self, index: usize) -> Self {
+        Self {
+            baro_index: Some(index),
+            ..self
+        }
+    }
+
+    /// Index of the barometric bias in the state vector, if the filter carries one.
+    #[must_use]
+    pub const fn baro_index(self) -> Option<usize> {
+        self.baro_index
     }
 
     /// Width of the state vector this layout describes.
@@ -1294,13 +1321,15 @@ impl GeoStateLayout {
         self.state_dim
     }
 
-    /// How many map-bias states the filter carries.
+    /// How many extra bias states the filter carries past the navigation block.
     #[must_use]
     pub const fn len(self) -> usize {
-        self.gravity_index.is_some() as usize + self.magnetic_index.is_some() as usize
+        self.gravity_index.is_some() as usize
+            + self.magnetic_index.is_some() as usize
+            + self.baro_index.is_some() as usize
     }
 
-    /// Whether the layout carries no map biases at all.
+    /// Whether the layout carries no extra bias states at all.
     #[must_use]
     pub const fn is_empty(self) -> bool {
         self.len() == 0
@@ -1483,6 +1512,20 @@ pub struct NavigationResult {
     pub magnetic_bias: Option<f64>,
     /// Covariance of [`NavigationResult::magnetic_bias`].
     pub magnetic_bias_cov: Option<f64>,
+    /// Estimated barometric altitude bias, metres, when the filter carries that state.
+    ///
+    /// `None` on a filter that models the barometer as unbiased, which is every filter before
+    /// #372 and any 15-state one after it. Same convention as the two geophysical pairs above,
+    /// and for the same reason: "this run did not estimate a barometric bias" and "this run
+    /// estimated a bias of exactly zero" are different facts.
+    ///
+    /// A barometer's reference pressure drifts by metres over an hour -- 1 hPa is about 8.3 m
+    /// -- and with no state for it that drift lands in the altitude estimate under a tight $R$.
+    /// That is what took three-sigma vertical containment to 0.40 on the reference recording
+    /// against an ideal of 0.9973.
+    pub baro_bias: Option<f64>,
+    /// Covariance of [`NavigationResult::baro_bias`], m^2.
+    pub baro_bias_cov: Option<f64>,
 }
 impl Default for NavigationResult {
     fn default() -> Self {
@@ -1525,6 +1568,8 @@ impl Default for NavigationResult {
             gravity_bias_cov: None,
             magnetic_bias: None,
             magnetic_bias_cov: None,
+            baro_bias: None,
+            baro_bias_cov: None,
         }
     }
 }
@@ -1691,6 +1736,8 @@ impl NavigationResult {
         write_optional_f64_field!("gravity_bias_cov", gravity_bias_cov);
         write_optional_f64_field!("magnetic_bias", magnetic_bias);
         write_optional_f64_field!("magnetic_bias_cov", magnetic_bias_cov);
+        write_optional_f64_field!("baro_bias", baro_bias);
+        write_optional_f64_field!("baro_bias_cov", baro_bias_cov);
 
         Ok(())
     }
@@ -1795,6 +1842,8 @@ impl NavigationResult {
             let gravity_bias_cov = read_optional_f64_field!("gravity_bias_cov");
             let magnetic_bias = read_optional_f64_field!("magnetic_bias");
             let magnetic_bias_cov = read_optional_f64_field!("magnetic_bias_cov");
+            let baro_bias = read_optional_f64_field!("baro_bias");
+            let baro_bias_cov = read_optional_f64_field!("baro_bias_cov");
 
             let mut records = Vec::with_capacity(n);
             for i in 0..n {
@@ -1841,6 +1890,8 @@ impl NavigationResult {
                     gravity_bias_cov: none_if_nan(gravity_bias_cov[i]),
                     magnetic_bias: none_if_nan(magnetic_bias[i]),
                     magnetic_bias_cov: none_if_nan(magnetic_bias_cov[i]),
+                    baro_bias: none_if_nan(baro_bias[i]),
+                    baro_bias_cov: none_if_nan(baro_bias_cov[i]),
                 });
             }
 
@@ -1940,6 +1991,14 @@ impl NavigationResult {
             .iter()
             .map(|r| r.magnetic_bias_cov.unwrap_or(f64::NAN))
             .collect();
+        let baro_bias: Vec<f64> = records
+            .iter()
+            .map(|r| r.baro_bias.unwrap_or(f64::NAN))
+            .collect();
+        let baro_bias_cov: Vec<f64> = records
+            .iter()
+            .map(|r| r.baro_bias_cov.unwrap_or(f64::NAN))
+            .collect();
 
         // Add variables and write data
         add_and_write!(file, "timestamp", timestamps);
@@ -1980,6 +2039,8 @@ impl NavigationResult {
         add_and_write!(file, "gravity_bias_cov", gravity_bias_cov);
         add_and_write!(file, "magnetic_bias", magnetic_bias);
         add_and_write!(file, "magnetic_bias_cov", magnetic_bias_cov);
+        add_and_write!(file, "baro_bias", baro_bias);
+        add_and_write!(file, "baro_bias_cov", baro_bias_cov);
 
         Ok(())
     }
@@ -2067,6 +2128,8 @@ impl NavigationResult {
         let gravity_bias_cov = read_optional_var!(file, "gravity_bias_cov", latitude.len());
         let magnetic_bias = read_optional_var!(file, "magnetic_bias", latitude.len());
         let magnetic_bias_cov = read_optional_var!(file, "magnetic_bias_cov", latitude.len());
+        let baro_bias = read_optional_var!(file, "baro_bias", latitude.len());
+        let baro_bias_cov = read_optional_var!(file, "baro_bias_cov", latitude.len());
 
         // Build records
         let mut records = Vec::with_capacity(n);
@@ -2114,6 +2177,8 @@ impl NavigationResult {
                 gravity_bias_cov: none_if_nan(gravity_bias_cov[i]),
                 magnetic_bias: none_if_nan(magnetic_bias[i]),
                 magnetic_bias_cov: none_if_nan(magnetic_bias_cov[i]),
+                baro_bias: none_if_nan(baro_bias[i]),
+                baro_bias_cov: none_if_nan(baro_bias_cov[i]),
             });
         }
 
@@ -2351,6 +2416,8 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>, GeoStateLayout)> for Na
         let gravity_bias_cov = geo_cov(layout.gravity_index());
         let magnetic_bias = geo_state(layout.magnetic_index());
         let magnetic_bias_cov = geo_cov(layout.magnetic_index());
+        let baro_bias = geo_state(layout.baro_index());
+        let baro_bias_cov = geo_cov(layout.baro_index());
         // let wmm_date: Date = Date::from_calendar_date(
         //     timestamp.year(),
         //     Month::try_from(timestamp.month() as u8).unwrap(),
@@ -2402,6 +2469,8 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>, GeoStateLayout)> for Na
             gravity_bias_cov,
             magnetic_bias,
             magnetic_bias_cov,
+            baro_bias,
+            baro_bias_cov,
         }
     }
 }
@@ -2471,6 +2540,8 @@ impl From<(&DateTime<Utc>, &UnscentedKalmanFilter)> for NavigationResult {
             gravity_bias_cov: None,
             magnetic_bias: None,
             magnetic_bias_cov: None,
+            baro_bias: None,
+            baro_bias_cov: None,
         }
     }
 }
@@ -2551,6 +2622,8 @@ impl From<(&DateTime<Utc>, &crate::kalman::ExtendedKalmanFilter)> for Navigation
             gravity_bias_cov: None,
             magnetic_bias: None,
             magnetic_bias_cov: None,
+            baro_bias: None,
+            baro_bias_cov: None,
         }
     }
 }
@@ -2619,6 +2692,8 @@ impl From<(&DateTime<Utc>, &StrapdownState)> for NavigationResult {
             gravity_bias_cov: None,
             magnetic_bias: None,
             magnetic_bias_cov: None,
+            baro_bias: None,
+            baro_bias_cov: None,
         }
     }
 }
@@ -2721,6 +2796,9 @@ impl NavigationResult {
         let gravity_bias_cov = gravity_index.map(|i| cov[(i, i)]);
         let magnetic_bias = magnetic_index.map(|i| mean[i]);
         let magnetic_bias_cov = magnetic_index.map(|i| cov[(i, i)]);
+        let baro_index = checked(layout.baro_index());
+        let baro_bias = baro_index.map(|i| mean[i]);
+        let baro_bias_cov = baro_index.map(|i| cov[(i, i)]);
 
         Self {
             latitude_longitude_cov: cov[(0, 1)],
@@ -2761,6 +2839,8 @@ impl NavigationResult {
             gravity_bias_cov,
             magnetic_bias,
             magnetic_bias_cov,
+            baro_bias,
+            baro_bias_cov,
         }
     }
 }
@@ -5908,6 +5988,8 @@ pub fn generate_synthetic(
             gravity_bias_cov: None,
             magnetic_bias: None,
             magnetic_bias_cov: None,
+            baro_bias: None,
+            baro_bias_cov: None,
         };
         truth_records.push(truth);
 
