@@ -62,18 +62,22 @@
 //!    still measure navigation on real data are the ones where the filter has to predict
 //!    between fixes -- `real_sparse_5s`, `real_outage_60s`, `real_degraded` -- and the
 //!    synthetic scenarios, which carry exact independent truth.
-//! 3. **The synthetic scenarios carry no magnetometer, and the yaw column says which filters
-//!    need one.** `generate_synthetic` models no magnetic field, so the only thing aiding
-//!    heading there is the GNSS velocity fix on a moving trajectory. That turns out to be
-//!    enough: the EKF holds 0.97 deg of yaw and the ESKF 1.03 deg on `syn_cruise_1hz`, while
-//!    the UKF sits at 108.3 deg -- worse than the 104 deg RMS of uniformly random yaw, so it
-//!    has no heading at all. The UKF figure is not an observability limit -- both of the
-//!    other filters see the same measurements -- it is #371: the UKF means its sigma-point
-//!    attitudes by summing Euler triples linearly, which is not the mean rotation. (Not #336,
-//!    which fixed the branch-cut half of that and is closed.) It is recorded and gated like
-//!    everything else, so fixing #371 will trip the improvement side and ask for a re-bless.
-//!    #369 will give these rows a magnetic field, and is sequenced after #375 for the reason
-//!    in caveat 6.
+//! 3. **The synthetic scenarios now carry a real magnetic field, and the yaw column says which
+//!    filters can use it.** `generate_synthetic` evaluates the World Magnetic Model at each
+//!    epoch's position and date and rotates it into the body frame through the truth attitude
+//!    (#369); before that it wrote nothing, and heading was observable only through the GNSS
+//!    velocity fix. With a 1 Hz heading aid the EKF holds 0.28 deg of yaw on `syn_cruise_1hz`,
+//!    the ESKF 0.20 deg and the UKF 2.01 deg -- the last down from 108.3 deg without one.
+//!
+//!    **The `syn_outage_60s__ukf` row is where that stops.** The magnetometer is not withheld
+//!    by the GNSS duty cycle, so that filter is handed a heading every second through the
+//!    coast, and still reads 72.68 deg of yaw; the ESKF on the identical stream reads
+//!    0.255 deg. Its position degraded from 235 to 809 m and its NEES from 6.82 to 44.67 when
+//!    the field was added -- a filter that now believes a wrong attitude tightly rather than
+//!    loosely. Not an observability limit and not the sensor: it is #371, the UKF's linear
+//!    mean over sigma-point Euler triples, which a magnetometer makes visible rather than
+//!    fixes. (Not #336, which fixed the branch-cut half of that and is closed.) Fixing #371
+//!    will trip the improvement side across most of that row and ask for a re-bless.
 //! 4. **The consistency metrics mean something different on the two sources.** On the synthetic
 //!    scenarios `npes_position` lands between 4.6 and 12.1 against an ideal of 3.0, which is a
 //!    real measurement of whether the filters believe the right thing. On the real-data
@@ -102,7 +106,8 @@
 //!    1 Hz by default, which left every `real_*` row bit-identical -- they were already there
 //!    -- and moved all five aided `syn_*` rows, almost entirely in the vertical channel
 //!    (horizontal RMSE on `syn_cruise_1hz` moved by under half a percent). Read the synthetic
-//!    vertical columns as a 1 Hz barometer's, not a 50 Hz one's.
+//!    vertical columns as a 1 Hz barometer's, not a 50 Hz one's, and the yaw columns as a
+//!    1 Hz magnetometer's.
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -423,6 +428,12 @@ const fn synthetic_config(duration_s: f64) -> SyntheticConfig {
         gnss_horizontal_noise_m: 3.0,
         gnss_vertical_noise_m: 5.0,
         baro_noise_std_pa: 30.0,
+        // A consumer magnetometer's own noise, and no hard iron -- the same values
+        // `SyntheticConfig`'s serde defaults carry, written out because this is a `const fn`
+        // and those are private. Zero hard iron is deliberate: it biases heading in a way no
+        // filter can observe, which would confound the yaw column #371 is read from.
+        mag_noise_std_ut: 0.5,
+        mag_hard_iron_std_ut: 0.0,
     }
 }
 

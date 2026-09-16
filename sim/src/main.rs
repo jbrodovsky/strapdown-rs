@@ -257,6 +257,21 @@ struct SyntheticArgs {
     #[arg(long, default_value_t = 50.0)]
     baro_noise_std_pa: f64,
 
+    /// Magnetometer noise standard deviation in microtesla, per axis.
+    ///
+    /// The default is a consumer three-axis magnetometer's own noise against a field of
+    /// roughly 50 uT.
+    #[arg(long, default_value_t = 0.5)]
+    mag_noise_std_ut: f64,
+
+    /// Magnetometer hard-iron bias standard deviation in microtesla, per axis.
+    ///
+    /// Drawn once per run and held constant, the way a hard iron offset behaves. Off by
+    /// default: it biases heading in a way no filter here can observe, so switching it on
+    /// makes the yaw column measure the bias rather than the filter.
+    #[arg(long, default_value_t = 0.0)]
+    mag_hard_iron_std_ut: f64,
+
     /// Emit the trajectory in the ENU convention rather than NED.
     ///
     /// The mirror image of `--enu` on the simulation subcommands, so that `syn --enu` output
@@ -1123,6 +1138,8 @@ fn run_synthetic(args: &SyntheticArgs) -> Result<(), Box<dyn Error>> {
         gnss_horizontal_noise_m: args.gnss_horizontal_noise_m,
         gnss_vertical_noise_m: args.gnss_vertical_noise_m,
         baro_noise_std_pa: args.baro_noise_std_pa,
+        mag_noise_std_ut: args.mag_noise_std_ut,
+        mag_hard_iron_std_ut: args.mag_hard_iron_std_ut,
     };
 
     let mut rng = StdRng::seed_from_u64(args.seed);

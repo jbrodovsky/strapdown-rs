@@ -52,16 +52,22 @@ rather than defects in the harness; the fifth is a defect, in the gate.
    **The real-data rows that still measure navigation are the ones where the filter has to
    predict between fixes** -- `real_sparse_5s`, `real_outage_60s`, `real_degraded` -- together
    with the `syn_*` scenarios and their exact independent truth.
-3. **The synthetic scenarios carry no magnetometer, and the yaw column says which filters need
-   one.** Nothing aids heading there but the GNSS velocity fix on a moving trajectory, which
-   turns out to be enough: the EKF holds 0.97 deg and the ESKF 1.03 deg on `syn_cruise_1hz`
-   while the UKF sits at 108.3 deg -- worse than the 104 deg RMS of uniformly random yaw, so
-   it has no heading at all. That gap is not observability -- all three see the same
-   measurements -- it is
-   [#371](https://github.com/jbrodovsky/strapdown-rs/issues/371): the UKF means its
-   sigma-point attitudes by summing Euler triples linearly, which is not the mean rotation. Modelling a
-   real field is tracked in
-   [#369](https://github.com/jbrodovsky/strapdown-rs/issues/369).
+3. **The synthetic scenarios now carry a real magnetic field, and the yaw column says which
+   filters can use it.** `generate_synthetic` evaluates the World Magnetic Model at each
+   epoch's position and date and rotates it into the body frame through the truth attitude
+   ([#369](https://github.com/jbrodovsky/strapdown-rs/issues/369)); before that it wrote
+   nothing, and heading was observable only through the GNSS velocity fix. With a 1 Hz heading
+   aid the EKF holds 0.28 deg of yaw on `syn_cruise_1hz`, the ESKF 0.20 deg and the UKF
+   2.01 deg -- the last down from 108.3 deg without one.
+
+   **The `syn_outage_60s__ukf` row is where that stops.** The magnetometer is not withheld by
+   the GNSS duty cycle, so that filter is handed a heading every second through the coast, and
+   still reads 72.68 deg of yaw; the ESKF on the identical stream reads 0.255 deg. Its position
+   degraded from 235 to 809 m and its NEES from 6.82 to 44.67 when the field was added -- a
+   filter that now believes a wrong attitude tightly rather than loosely. Not an observability
+   limit, and not the sensor: it is
+   [#371](https://github.com/jbrodovsky/strapdown-rs/issues/371), the UKF's linear mean over
+   sigma-point Euler triples, which a magnetometer makes visible rather than fixes.
 4. **The consistency columns mean different things on the two sources.** On the synthetic
    scenarios `npes` lands between 4.6 and 12.1 against an ideal of 3.0, which is a real
    measurement of whether a filter believes the right thing. On the real-data scenarios it reaches the
@@ -94,7 +100,8 @@ rather than defects in the harness; the fifth is a defect, in the gate.
    now scheduled at 1 Hz by default. Every `real_*` row came through bit-identical -- they were
    already at 1 Hz -- and all five aided `syn_*` rows moved, almost entirely in the vertical
    channel: horizontal RMSE on `syn_cruise_1hz` moved by under half a percent. Read the
-   synthetic vertical columns as a 1 Hz barometer's, not a 50 Hz one's.
+   synthetic vertical columns as a 1 Hz barometer's, not a 50 Hz one's, and the yaw
+   columns as a 1 Hz magnetometer's.
 
 ## The metrics
 
@@ -212,11 +219,13 @@ will tell you off; change the numbers by re-blessing.
   covariance floor is relative rather than absolute.
 - **`syn_cruise_1hz` is where the filters actually separate**, and no one of them wins. The
   ESKF leads on position and loses on velocity; the UKF trails on attitude for the reason in
-  caveat 3. These rows are scored against exact truth, so nothing here is circular.
+  caveat 3, though a 1 Hz magnetometer now closes most of that gap on this row (2.01 deg of
+  yaw against 108.3 without one). These rows are scored against exact truth, so nothing here
+  is circular.
 - **The outage rows are dominated by attitude, not by position.** 60 s of free inertial turns a
   fraction of a degree of tilt error into hundreds of metres. `syn_outage_60s__eskf` holds
-  0.20 deg of pitch and coasts to 24 m; the UKF, which does not hold its attitude through the
-  coast, reaches 235 m.
+  0.21 deg of pitch and coasts to 24 m; the UKF, which does not hold its attitude through the
+  coast even when a magnetometer is handing it a heading every second, reaches 809 m.
 - **The two consistency columns disagree with each other on real data, and that is the
   finding.** The UKF and EKF still report a flat 1.000 horizontal containment -- a covariance
   so conservative it cannot be wrong -- beside a vertical containment of 0.40 and 0.42, where
