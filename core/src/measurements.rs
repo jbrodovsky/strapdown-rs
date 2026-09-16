@@ -61,17 +61,39 @@ pub const MAG_YAW_NOISE: f64 = 0.2;
 /// `5.000000000000006` -- so this one squares to `5.000000000000001`, one ulp high, a relative
 /// change of two parts in 1e16.
 ///
-/// `core/tests/perf_baseline.rs` passes unchanged across that: every metric of every scenario
-/// stays inside its band, which is what #375's third acceptance criterion asks for. The
-/// numbers are **not** bit-identical, though. Re-blessing on top of this change moves
-/// `real_clean__ukf`'s `horizontal_cep50_m` from 3.88988 to 3.88791 -- five parts in 1e4, from
-/// an input perturbed by two parts in 1e16. That is twelve orders of amplification, and the
-/// mechanism is almost certainly the innovation gate: accepting or rejecting a fix is a
-/// *discrete* decision on a continuous statistic, so a hair's difference in $R$ flips one of
-/// them and the two runs separate from there. It corroborates #386 -- the same sensitivity is
-/// the reason a tail statistic like `horizontal_cep95_m` can differ 28% between platforms on
-/// an identical commit. The baseline is deliberately left un-blessed here: recording that
-/// diff would present numerical noise as a change.
+/// `core/tests/perf_baseline.rs` **passes** across that -- every metric of every scenario stays
+/// inside its band, which is #375's third acceptance criterion. What it does not do is stay
+/// still, and how far it moves is worth more than the refactor that produced it.
+///
+/// Re-blessing on top of this one-ulp change moves, on rows this change cannot otherwise
+/// touch:
+///
+/// | row / metric | before | after | move |
+/// |---|---:|---:|---:|
+/// | `syn_outage_60s__ukf` / `horizontal_cep50_m` | 1.51452 | 1.60339 | **+5.87%** |
+/// | `syn_outage_60s__ukf` / `horizontal_cep95_m` | 48.3301 | 50.8190 | **+5.15%** |
+/// | `syn_outage_60s__ukf` / `roll_rmse_deg` | 0.285313 | 0.294814 | +3.33% |
+/// | `syn_outage_60s__ukf` / `horizontal_rmse_m` | 27.1705 | 27.5218 | +1.29% |
+/// | `real_rbpf_slice__rbpf` / `nees_position` | 4.15e37 | 5.19e17 | 20 orders |
+///
+/// **Two parts in 1e16 of input becomes six parts in 1e2 of output.** Fourteen orders of
+/// amplification, on a metric the gate reads to a 10% band. The RBPF row is #385's collapsed
+/// cloud and is ungated, but the `syn_outage_60s__ukf` entries are gated, and a 5.9% move is
+/// well over half of what separates "unchanged" from "regressed".
+///
+/// The mechanism is almost certainly the innovation gate: accepting or rejecting a fix is a
+/// **discrete** decision on a continuous statistic, so a hair's difference in $R$ flips one of
+/// them and the two trajectories separate from there. Over 15,000 steps that is ample.
+///
+/// This corroborates #386 with a mechanism it did not have. A tail statistic differing 28%
+/// between Linux and Windows on an identical commit was written off as platform floating
+/// point; platform floating point is *exactly* this size of perturbation, and this measures
+/// what it does downstream. The gate's bands are not calibrated against that.
+///
+/// The baseline **is** re-blessed with this change rather than left alone. Leaving it would
+/// have been the tidier-looking choice -- it passes, so why record noise -- and it is wrong:
+/// the next change to re-bless inherits this movement and it is attributed to whatever that
+/// change happened to be. Recorded here, where the ulp is, it is attributable.
 ///
 /// # What the value is not
 ///
