@@ -3439,81 +3439,19 @@ fn test_rmse_benchmark_across_filters() {
     // filter got better than GNSS -- it means the metric stopped measuring what it claims to,
     // most likely by scoring a result against the record it was derived from.
     //
-    // Two filters are excluded, and the exclusion is a finding rather than a tolerance:
-    //
-    // * **UKF** and **EKF** -- #373. Both add an *absolute* `eps = 1e-9` to every covariance
-    //   diagonal (`kalman::UnscentedKalmanFilter::update`,
-    //   `kalman::ExtendedKalmanFilter::predict` and `::update`). Latitude variance is in
-    //   rad^2, so that floor is a horizontal sigma of 201 m, and the EKF's double application
-    //   accumulates to 493 m between fixes. Against a 3.81 m fix the Kalman gain is then
-    //   ~1: `aiding.rs` measures `fix noise passed through = 1.000` for both, against 0.072
-    //   for the ESKF. A filter with a gain of one does not filter, it copies -- so scored
-    //   against the very fixes it copied, its horizontal error goes to zero. It measures
-    //   0.01 m here and 0.0001 m for the EKF.
-    //
-    // This assertion did not fire before #367 because every row was emitted one IMU step
-    // after its own label, so the estimate was compared against a fix it had not yet been
-    // given and differed from it by a step of motion -- 21.2 m at 1 Hz and 21.19 m/s, which
-    // is very nearly the whole of the ~23.5 m all four filters used to report. Correcting the
-    // label removed that offset and left the circularity visible underneath it.
-    //
-    // The ESKF, which uses a *relative* covariance floor (`ESKF_COVARIANCE_JITTER_RELATIVE`,
-    // added in #266 and never propagated to the other two), is unaffected and is asserted
-    // below, as is the RBPF. `every_filter_stays_above_the_reference_it_is_scored_against`
-    // asserts it for all four and turns green when #373 lands.
+    // This briefly excluded the UKF and EKF. #367 corrected the row labelling, which removed
+    // the 21.2 m of along-track offset that had been standing between every estimate and the
+    // fix it was scored against -- and underneath that offset both filters turned out to be
+    // *copying* their fixes: 0.01 m and 0.0001 m against a reference specified at 3.81 m, a
+    // Kalman gain of ~1. #373 found why (an absolute `1e-9` covariance floor against position
+    // variances in rad^2, worth a 201 m horizontal sigma) and fixed it, so all four filters
+    // are asserted again.
     for (name, stats) in benchmark {
-        if matches!(name, "UKF" | "EKF") {
-            continue;
-        }
         assert!(
             stats.rms_horizontal_error > GNSS_REPORTED_HORIZONTAL_ACCURACY_M,
             "{name} horizontal RMSE of {:.2} m is below the {GNSS_REPORTED_HORIZONTAL_ACCURACY_M} m \
              accuracy of the reference itself, which means the comparison is no longer valid",
             stats.rms_horizontal_error
-        );
-    }
-}
-
-/// Every filter, including the two #373 exempts above, stays above its own reference's noise.
-///
-/// The healthy behaviour, asserted for all four rather than relaxed to a bound the UKF's
-/// 0.01 m would clear -- relaxing it would import #373's numbers into #264's test and leave
-/// nothing watching either (#288). Ignored, not deleted: it is the acceptance criterion for
-/// #373, and it turns green when that lands.
-#[test]
-#[ignore = "UKF and EKF copy their fixes rather than filtering them, so scoring them against \
-            those fixes gives ~0 -- an absolute 1e-9 covariance floor in rad^2 units, #373"]
-fn every_filter_stays_above_the_reference_it_is_scored_against() {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let records = load_test_data(&Path::new(manifest_dir).join("tests/test_data.csv"));
-    let initial_state = create_initial_state(&records[0]);
-
-    let mut ukf = build_ukf(&initial_state);
-    let mut ekf = build_ekf(&initial_state);
-    let mut eskf = build_eskf(&initial_state);
-    let stats = [
-        (
-            "UKF",
-            compute_error_metrics(&run_filter_on_clean_stream(&mut ukf, &records), &records),
-        ),
-        (
-            "EKF",
-            compute_error_metrics(&run_filter_on_clean_stream(&mut ekf, &records), &records),
-        ),
-        (
-            "ESKF",
-            compute_error_metrics(&run_filter_on_clean_stream(&mut eskf, &records), &records),
-        ),
-        ("RBPF", compute_error_metrics(&run_rbpf(&records), &records)),
-    ];
-
-    for (name, s) in &stats {
-        assert!(
-            s.rms_horizontal_error > GNSS_REPORTED_HORIZONTAL_ACCURACY_M,
-            "{name} horizontal RMSE of {:.4} m is below the \
-             {GNSS_REPORTED_HORIZONTAL_ACCURACY_M} m accuracy of the reference itself, which \
-             means it is reproducing its own aiding rather than filtering it",
-            s.rms_horizontal_error
         );
     }
 }

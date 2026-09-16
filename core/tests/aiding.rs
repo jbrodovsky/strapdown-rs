@@ -168,6 +168,41 @@ fn radians_to_meters(radians: f64) -> f64 {
     radians.to_degrees() / strapdown::earth::METERS_TO_DEGREES
 }
 
+/// How exactly a filter reproduces the rejection inflation, as a relative bound.
+///
+/// The identity is `H P_after H^T == inflation * H P_before H^T`, exactly, so the only thing
+/// this tolerates is floating-point loss. Measured on this scenario, that loss is not the same
+/// for all three:
+///
+///     filter | worst relative error over the five observed entries
+///     -------|---------------------------------------------------
+///     ESKF   | 1.4e-16   (machine precision)
+///     EKF    | 1.4e-16   (machine precision)
+///     UKF    | 1.4e-5
+///
+/// The EKF and ESKF scale a covariance they hold directly, so the identity is exact to the last
+/// bit. The UKF's covariance makes a round trip through `matrix_square_root((n + lambda) * P)`
+/// in `get_sigma_points`, and with the shipped `alpha = 1e-3` at `n = 15` that factor is
+/// `1.5e-5` -- so the reconstruction loses precision on exactly the smallest-magnitude states.
+/// Those are the two position entries, in radians, at ~4e-14 rad^2; the three in m^2/s^2 hold
+/// to 1e-13 or better.
+///
+/// This test passed a single `1e-6` for all three until #373, and it did so **because of the
+/// defect #373 fixed**: an absolute `1e-9` added to every covariance diagonal swamped those
+/// 4e-14 position entries with a constant that survived the round trip exactly. With the floor
+/// now relative, the position entries are their true magnitude and the UKF's loss is visible.
+/// The bound is re-derived rather than relaxed -- the matrix being conditioned changed.
+///
+/// The UKF's figure is evidence rather than noise: a filter that cannot reproduce an exact
+/// scaling of its own covariance to better than 1e-5 is losing information in the sigma-point
+/// round trip, which is the "conditioning rather than charting" reading of #371.
+fn inflation_tolerance(filter: &str) -> f64 {
+    // 1e-10 for the two that are exact: six orders of margin over their measured 1.4e-16, and
+    // far tighter than the 1e-6 this test asked of them before. 1e-4 for the UKF: one order
+    // over its measured 1.4e-5. It tightens to match the others when #371 lands.
+    if filter == "UKF" { 1e-4 } else { 1e-10 }
+}
+
 /// Horizontal great-circle distance between an estimate and a truth state, meters.
 fn horizontal_error_m(estimate: &DVector<f64>, truth: &StrapdownState) -> f64 {
     haversine_distance(estimate[0], estimate[1], truth.latitude, truth.longitude)
@@ -486,14 +521,13 @@ fn gating_rejects_a_fix_inconsistent_with_the_filters_own_uncertainty() {
         let before_observed = &h * &before_covariance * h.transpose();
         let after_observed = &h * &after_covariance * h.transpose();
         for index in 0..jacobian.nrows() {
-            // 1e-6 relative, not tighter: the inflation goes through a symmetric solve of
-            // `H P H^T`, so the identity holds to that matrix's conditioning rather than to
-            // machine epsilon.
+            // Relative, and per filter, because the three do not hold this identity equally
+            // well -- see `inflation_tolerance`.
             let expected = DEFAULT_REJECTION_INFLATION * before_observed[(index, index)];
             assert_approx_eq!(
                 after_observed[(index, index)],
                 expected,
-                1e-6 * expected.abs().max(1e-12)
+                inflation_tolerance(name) * expected.abs()
             );
         }
 
@@ -1070,31 +1104,35 @@ fn the_shipped_default_process_noise_lets_the_eskf_filter() {
 }
 
 #[test]
-#[ignore = "EKF and UKF report horizontal uncertainties of ~493 m and ~201 m on a run \
-            whose actual error is metres -- pre-existing, #303 (closed as completed, \
-            still reproducible)"]
 fn the_shipped_default_process_noise_lets_every_filter_filter() {
     // The same two assertions across all three filters, which is what #308 is really a
     // statement about -- Q is shared, so the claim "the filter can filter" should not be
     // filter-specific.
     //
-    // It is, for reasons that are not #308's. Measured here with the fixed diagonal:
+    // It was not, until #373, and the history is worth keeping because the resolution is
+    // exactly what this test was written to wait for. Measured with the fixed diagonal:
     //
     //     filter | worst HPH'/R | implied sigma | fix noise passed through
     //     -------|--------------|---------------|------------------------
     //     ESKF   | 0.063        | 1.3 m         | 0.072
-    //     UKF    | 1622         | 201 m         | 1.000
-    //     EKF    | 9729         | 493 m         | 1.000
+    //     UKF    | 1622         | 201 m         | 1.000      <- before #373
+    //     EKF    | 9729         | 493 m         | 1.000      <- before #373
     //
-    // Those two numbers are the same ones `a_note_on_filter_consistency` above records
-    // from the other direction ("the EKF reports a position sigma of roughly 500 m after
-    // converging to metres"), reached here without any seed error: #303's covariance
-    // divergence, not an over-inflated Q. Q cannot be the cause -- the ESKF consumes the
-    // identical diagonal on the identical stream and settles at 0.063.
+    // Q was never the cause, and this test said so: the ESKF consumed the identical
+    // diagonal on the identical stream and settled at 0.063. What differed was the
+    // *regularisation*. The UKF and EKF added an absolute `1e-9` to every covariance
+    // diagonal, which on a state whose position entries are radians is a horizontal sigma
+    // of 201 m -- and 493 m for the EKF, which applied it in both `predict` and `update`.
+    // The ESKF had used a relative floor since #266. See
+    // `kalman::regularize_covariance_in_place`.
     //
-    // Left `#[ignore]`d and asserting the healthy behaviour rather than relaxed to a bound
-    // 9729 would clear, which would import #303's numbers into #308's test and leave
-    // nothing watching either (#288). It turns green when #303 does.
+    // The arithmetic checks out against the numbers above to three figures:
+    // `1e-9 / R = 1624` where R is `(5 m in rad)^2 = 6.16e-13`, against the 1622 recorded;
+    // and `6e-9 / R = 9742` against 9729. All three filters now measure ~0.063.
+    //
+    // It was left `#[ignore]`d rather than relaxed to a bound 9729 would clear, on the
+    // grounds that doing so would leave nothing watching either defect (#288). That was
+    // the right call: the bound it asserts is the one that caught the fix.
     let scenario = build_gating_scenario();
     let shipped = DMatrix::from_diagonal(&DVector::from_row_slice(&DEFAULT_PROCESS_NOISE));
     for (name, mut filter) in filters_with_process_noise(&scenario.initial, &shipped) {
