@@ -42,6 +42,48 @@ use world_magnetic_model::uom::si::length::meter;
 /// #305 turned out to be about. Revisit it alongside per-record accuracy, not on its own.
 pub const MAG_YAW_NOISE: f64 = 0.2;
 
+/// Default one-sigma barometric altitude noise, **metres**, for
+/// [`RelativeAltitudeMeasurement::noise_std`].
+///
+/// # Why this is `sqrt(5)` and not `5`
+///
+/// Until #375 `RelativeAltitudeMeasurement::get_noise` returned `diag([5.0])` from a literal
+/// in the trait impl. That `5.0` is a **variance**, m^2 -- `get_noise` returns $R$, not a
+/// standard deviation -- so it is a one-sigma of 2.24 m, and the barometer was never being
+/// told it was good to 5 m. Every sibling model in this module stores a *standard deviation*
+/// and squares it (`GPSPositionMeasurement::vertical_noise_std`, `MAG_YAW_NOISE`), so giving
+/// this one a `noise_std` field and defaulting it to `5.0` would have loosened $R$ by
+/// **5x** without a line of the diff saying so. Defaulting to the square root keeps the
+/// variance where it was and puts the units in the name.
+///
+/// Not exactly where it was, and the residue is worth recording. **No `f64` squares to exactly
+/// `5.0`** -- the four neighbours either side land on `4.999999999999995` through
+/// `5.000000000000006` -- so this one squares to `5.000000000000001`, one ulp high, a relative
+/// change of two parts in 1e16.
+///
+/// `core/tests/perf_baseline.rs` passes unchanged across that: every metric of every scenario
+/// stays inside its band, which is what #375's third acceptance criterion asks for. The
+/// numbers are **not** bit-identical, though. Re-blessing on top of this change moves
+/// `real_clean__ukf`'s `horizontal_cep50_m` from 3.88988 to 3.88791 -- five parts in 1e4, from
+/// an input perturbed by two parts in 1e16. That is twelve orders of amplification, and the
+/// mechanism is almost certainly the innovation gate: accepting or rejecting a fix is a
+/// *discrete* decision on a continuous statistic, so a hair's difference in $R$ flips one of
+/// them and the two runs separate from there. It corroborates #386 -- the same sensitivity is
+/// the reason a tail statistic like `horizontal_cep95_m` can differ 28% between platforms on
+/// an identical commit. The baseline is deliberately left un-blessed here: recording that
+/// diff would present numerical noise as a change.
+///
+/// # What the value is not
+///
+/// It is not measured, and it is not per-record. The Sensor Logger format carries no pressure
+/// accuracy column, so nothing in a log can supply one; this is a default a caller overrides
+/// through [`crate::messages::GnssDegradationConfig::baro_noise_std_m`], which is what #375
+/// was filed to make possible. Whether 2.24 m is the *right* one-sigma for a phone barometer
+/// is a separate question from whether it can be changed, and it is #372's -- the vertical
+/// channel's three-sigma containment stalls near 0.45 on real data against an ideal of
+/// 0.9973, and $R$ here is one of the things that could be causing it.
+pub const BAROMETRIC_ALTITUDE_NOISE_M: f64 = 2.236_067_977_499_79;
+
 /// Date substituted when a record carries an unusable year/day-of-year pair.
 ///
 /// The declination lookup degrades rather than failing here: a wrong date shifts declination
@@ -422,7 +464,7 @@ impl MeasurementModel for GPSPositionAndVelocityMeasurement {
 }
 
 /// Relative altitude measurement (barometric)
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct RelativeAltitudeMeasurement {
     /// Barometric height change since the reference epoch, metres, positive up.
     pub relative_altitude: f64,
@@ -433,13 +475,32 @@ pub struct RelativeAltitudeMeasurement {
     /// The measurement handed to the filter is `relative_altitude + reference_altitude`, so this
     /// is what puts a relative barometer reading on the same datum as the state's altitude.
     pub reference_altitude: f64,
+    /// One-sigma altitude noise, metres. Squared to form $R$.
+    ///
+    /// A standard deviation, like every other `*_noise_std` in this module, and **not** the
+    /// `5.0` this model's `get_noise` used to return -- that was a variance. See
+    /// [`BAROMETRIC_ALTITUDE_NOISE_M`], which is the default
+    /// [`crate::messages::build_event_stream`] applies.
+    pub noise_std: f64,
+}
+
+impl Default for RelativeAltitudeMeasurement {
+    /// A barometer at the reference epoch with the default noise: no height change yet, no
+    /// datum offset, and [`BAROMETRIC_ALTITUDE_NOISE_M`] of uncertainty.
+    fn default() -> Self {
+        Self {
+            relative_altitude: 0.0,
+            reference_altitude: 0.0,
+            noise_std: BAROMETRIC_ALTITUDE_NOISE_M,
+        }
+    }
 }
 impl Display for RelativeAltitudeMeasurement {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "RelativeAltitudeMeasurement(rel_alt: {}, ref_alt: {})",
-            self.relative_altitude, self.reference_altitude
+            "RelativeAltitudeMeasurement(rel_alt: {}, ref_alt: {}, noise_std: {})",
+            self.relative_altitude, self.reference_altitude, self.noise_std
         )
     }
 }
@@ -460,7 +521,7 @@ impl MeasurementModel for RelativeAltitudeMeasurement {
         ]))
     }
     fn get_noise(&self) -> DMatrix<f64> {
-        DMatrix::from_diagonal(&DVector::from_vec(vec![5.0]))
+        DMatrix::from_diagonal(&DVector::from_vec(vec![self.noise_std.powi(2)]))
     }
     fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
         DVector::from_vec(vec![state[2]])
@@ -1411,6 +1472,7 @@ mod tests {
         let meas = RelativeAltitudeMeasurement {
             relative_altitude: -5.0,
             reference_altitude: 100.0,
+            ..Default::default()
         };
 
         // Dummy state for get_measurement (barometric altitude is state-independent)

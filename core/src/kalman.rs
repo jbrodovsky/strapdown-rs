@@ -2779,6 +2779,7 @@ mod tests {
         let alt_meas = RelativeAltitudeMeasurement {
             relative_altitude: 5.0,
             reference_altitude: 95.0,
+            ..Default::default()
         };
 
         ukf.update(&alt_meas).unwrap();
@@ -3420,6 +3421,7 @@ mod tests {
         let alt_meas = RelativeAltitudeMeasurement {
             relative_altitude: 5.0,
             reference_altitude: 95.0,
+            ..Default::default()
         };
 
         ekf.update(&alt_meas).unwrap();

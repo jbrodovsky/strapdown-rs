@@ -21,6 +21,7 @@ magnetometer_scheduler:   # when a magnetometer heading arrives; 1 Hz if omitted
   kind: fixed_interval
   interval_s: 1.0
   phase_s: 0.0
+baro_noise_std_m: 2.23606797749979   # barometer one-sigma, metres; this is the default
 seed: 42          # for reproducibility
 ```
 
@@ -89,6 +90,19 @@ scheduler:
 Every fix inside an ON window is delivered, and none inside an OFF window.
 
 ## The other two aiding channels
+
+### The barometer's noise
+
+`baro_noise_std_m` is the one-sigma barometric altitude uncertainty in **metres**, and it is
+the only aiding-noise knob a config file has: the Sensor Logger format carries no
+pressure-accuracy column, so unlike GNSS — whose noise comes from each record's
+`horizontal_accuracy` — nothing in a log can supply one. Set it to model a good barometer or a
+bad one.
+
+It is a *standard deviation*. The value it replaced lived in a trait impl as `diag([5.0])`,
+which is a **variance**, so the default here is its square root and the filter sees the same
+$R$ it always did. Setting `baro_noise_std_m: 5.0` is not the old behaviour — it is five times
+looser.
 
 `baro_scheduler` and `magnetometer_scheduler` take the same three kinds and the same fields,
 each with its own independent clock, so a GNSS outage, a barometer outage and a heading outage

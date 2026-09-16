@@ -2364,6 +2364,7 @@ mod tests {
         let baro = RelativeAltitudeMeasurement {
             relative_altitude: 0.0,
             reference_altitude: 100.0,
+            ..Default::default()
         };
         assert!(rbpf.update(&baro).unwrap().accepted);
     }
@@ -2773,6 +2774,7 @@ mod tests {
         let baro = RelativeAltitudeMeasurement {
             relative_altitude: 0.5,
             reference_altitude: 100.0,
+            ..Default::default()
         };
         let mag = MagnetometerYawMeasurement {
             mag_x: 20.0,

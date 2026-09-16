@@ -1579,6 +1579,7 @@ pub fn build_event_stream(
             let baro: RelativeAltitudeMeasurement = RelativeAltitudeMeasurement {
                 relative_altitude: r1.relative_altitude,
                 reference_altitude,
+                noise_std: cfg.baro_noise_std_m,
             };
             events.push(Event::Measurement {
                 meas: Box::new(baro),
