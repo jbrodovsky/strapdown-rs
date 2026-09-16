@@ -545,7 +545,27 @@ impl UnscentedKalmanFilter {
         let sqrt_p = matrix_square_root(&p)?;
         let mu = self.mean_state.clone();
         let mut pts = DMatrix::<f64>::zeros(self.state_size, 2 * self.state_size + 1);
-        pts.column_mut(0).copy_from(&mu);
+        // Sigma point 0 is canonicalised through the same `euler_angles()` round trip as
+        // every other column, and that is load-bearing rather than tidiness. `Rotation3`
+        // canonicalises pitch onto `[-pi/2, pi/2]`, so a mean carrying an equivalent
+        // non-principal triple -- which `InitialState` accepts, and which the constructor
+        // stores verbatim -- would leave column 0 in one representation and the other `2n`
+        // in the other. The two denote the *same rotation*, so the manifold arithmetic is
+        // unaffected, but a measurement model reads the yaw row directly, and
+        // `unwrap_attitude_onto_reference_branch` adds whole turns and cannot repair a
+        // half-turn-plus-reflection.
+        //
+        // Measured with an initial pitch of -3.0 rad and a covariance of 1e-10 (a true
+        // spread of 4e-8 rad): the sigma set came out with a **3.1416 rad** yaw spread and a
+        // 2.8584 rad pitch spread -- a fabricated half turn, handed to the heading update as
+        // if it were uncertainty. Reachable only on the first `get_sigma_points` after
+        // construction, because `predict` and `update` both write the mean back through
+        // `set_attitude_of` and so leave it canonical; that is one call with a wildly wrong
+        // covariance, at the one moment the filter has no history to absorb it.
+        let mut canonical_mean = mu.clone();
+        set_attitude_of(&mut canonical_mean, &attitude_of(&mu));
+        pts.column_mut(0).copy_from(&canonical_mean);
+        let mu = canonical_mean;
         // Attitude is perturbed on the manifold, every other state in the chart. The linear
         // `mu +/- column` is exactly right for a state whose difference is a vector and
         // wrong for the three that parameterise a rotation: adding a rotation vector to an
@@ -4085,6 +4105,74 @@ mod tests {
              filter's arithmetic avoids. Inputs inside a {CONE_HALF_ANGLE_DEG} deg cone, \
              chart mean {banked_chart} deg out"
         );
+    }
+
+    /// Every sigma point is in one Euler representation, including sigma point 0.
+    ///
+    /// `InitialState` accepts any roll/pitch/yaw and the constructor stores them verbatim,
+    /// but `Rotation3::euler_angles` canonicalises pitch onto `[-pi/2, pi/2]`. A mean carrying
+    /// an equivalent *non-principal* triple -- pitch -3.0 rad is the same rotation as pitch
+    /// -0.1416 with roll and yaw shifted by a half turn -- therefore has two spellings, and
+    /// `get_sigma_points` writes the perturbed columns through `euler_angles` while sigma
+    /// point 0 is a copy of the mean.
+    ///
+    /// When those spellings differ the manifold arithmetic is still correct, because it reads
+    /// the rows back as a rotation and a rotation does not care. A **measurement model** does:
+    /// `MagnetometerYawMeasurement` reads the yaw row straight out of the sigma point. Before
+    /// sigma point 0 was canonicalised too, the set below came out with a **3.1416 rad** yaw
+    /// spread and a 2.8584 rad pitch spread against a covariance whose true spread is 4e-8 --
+    /// a fabricated half turn, handed to the heading update as if it were uncertainty.
+    /// `unwrap_attitude_onto_reference_branch` cannot repair it: it adds whole turns, and this
+    /// is a half turn plus a reflection.
+    ///
+    /// Reachable only on the first call after construction -- `predict` and `update` both
+    /// write the mean back through `euler_angles` and so leave it canonical -- which is the
+    /// one moment the filter has no history to absorb a wildly wrong covariance.
+    #[test]
+    fn every_sigma_point_shares_one_euler_spelling_of_the_mean() {
+        /// A tight covariance, so any spread worth seeing is the defect and not the prior.
+        const TIGHT_VARIANCE: f64 = 1e-10;
+        /// `TIGHT_VARIANCE` scaled by the transform gives about 4e-8 rad; anything past this
+        /// is a fabricated branch, not a sigma point.
+        const MAX_HONEST_SPREAD_RAD: f64 = 1e-6;
+
+        for (label, pitch) in [("principal", 0.2_f64), ("non-principal", -3.0)] {
+            let initial_state = InitialState {
+                latitude: 40.0,
+                longitude: -75.0,
+                altitude: 100.0,
+                roll: 0.1,
+                pitch,
+                yaw: 0.3,
+                in_degrees: false,
+                ..Default::default()
+            };
+            let filter = UnscentedKalmanFilter::new(
+                &initial_state,
+                &[0.0; 6],
+                None,
+                vec![TIGHT_VARIANCE; 15],
+                DMatrix::from_diagonal(&DVector::from_vec(vec![1e-12; 15])),
+                1e-3,
+                2.0,
+                0.0,
+            );
+
+            let points = filter.get_sigma_points().expect("sigma points");
+            for row in ATTITUDE_STATE_INDICES {
+                let reference = points[(row, 0)];
+                for column in 1..points.ncols() {
+                    let spread = (points[(row, column)] - reference).abs();
+                    assert!(
+                        spread < MAX_HONEST_SPREAD_RAD,
+                        "{label} pitch: attitude row {row} of sigma point {column} sits \
+                         {spread} rad from sigma point 0, against a prior whose spread is \
+                         ~4e-8. That is a second Euler spelling of the same rotation, not \
+                         uncertainty."
+                    );
+                }
+            }
+        }
     }
 
     /// #336: a UKF seeded due south holds its heading instead of running away.
