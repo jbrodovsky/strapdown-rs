@@ -71,6 +71,7 @@
 
 - [Contributing](./development/contributing.md)
 - [Building and Testing](./development/building.md)
+- [Performance Baselines](./development/performance.md)
 - [Architecture](./development/architecture.md)
 - [Project Structure](./development/structure.md)
 

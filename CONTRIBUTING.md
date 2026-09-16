@@ -57,3 +57,28 @@ If a lint is genuinely wrong for this codebase, relax it once in `[workspace.lin
 the root `Cargo.toml` with a comment explaining why, rather than adding an `#[allow]` at the
 call site. `AGENTS.md` has the full policy, including which lints are already relaxed and on
 what grounds.
+
+### Performance baselines
+
+`core/tests/perf_baseline.rs` scores every filter over a fixed set of scenarios and compares
+the result against `core/tests/perf_baseline.json`, a checked-in record of what the navigation
+solution measured when it was last blessed. It runs as part of `cargo test --workspace
+--all-features`, so the three commands above already cover it -- there is no fourth command to
+remember. `cargo perf` runs it alone and prints the table.
+
+It fails in **both** directions. A metric more than 10% worse than its baseline is a
+regression. A metric more than 25% better is *also* a failure, and the message says to
+re-bless: an improvement that is not recorded is one the next change can silently undo.
+
+```bash
+UPDATE_PERF_BASELINE=1 cargo test -p strapdown-core --test perf_baseline
+# PowerShell:
+$env:UPDATE_PERF_BASELINE=1; cargo test -p strapdown-core --test perf_baseline
+```
+
+Review the diff before committing it -- every changed number is a claim about the navigation
+solution, and the pull request description should say which change produced it. Blessing
+preserves the per-metric `note`, `gated` and tolerance overrides already in the file, so
+annotating a number is not undone by the next re-bless. See the module documentation in
+`core/tests/perf_baseline.rs` for what these numbers do and do not measure, and
+`book/src/development/performance.md` for the current values.

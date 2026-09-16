@@ -51,3 +51,9 @@ docs = "doc --workspace --no-deps"
 # Needs `cargo install cargo-tarpaulin` first; it was never part of the pixi environment
 # either, despite `pixi run coverage` implying otherwise.
 coverage = "tarpaulin --workspace --timeout 600"
+# The navigation-accuracy regression gate (#328). Spelled `perf`, not `bench`: cargo silently
+# ignores an alias that shadows a built-in subcommand, which is the same trap that makes `doc`
+# above `docs`. `--nocapture` because the reason to run this by hand is to read the table it
+# prints. There is deliberately no bless alias -- a cargo alias cannot set an environment
+# variable, and a half-working one would be worse than none; the command is in CONTRIBUTING.md.
+perf = "test -p strapdown-core --test perf_baseline -- --nocapture"

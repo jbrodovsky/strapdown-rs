@@ -264,7 +264,10 @@ Potential improvements for the test suite:
    - Particle filter integration tests
    - Extended Kalman Filter (when implemented)
 
-3. **Performance benchmarks**:
+3. **Performance benchmarks**: *accuracy* regression is done -- `core/tests/perf_baseline.rs`
+   gates every filter against a checked-in baseline in both directions, and
+   [Performance Baselines](./performance.md) has the current numbers. What remains is the
+   *wall-clock* half, which the accuracy gate deliberately does not measure:
    - Execution time metrics
    - Memory usage tracking
    - Scalability tests

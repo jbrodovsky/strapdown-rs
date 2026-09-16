@@ -177,6 +177,7 @@ pub mod linearize;
 pub mod measurements;
 /// Event-stream construction and GNSS degradation scheduling.
 pub mod messages;
+pub mod metrics;
 pub mod particle;
 pub mod rbpf;
 pub mod sim;
