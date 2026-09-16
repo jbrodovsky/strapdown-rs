@@ -1388,6 +1388,36 @@ pub fn relative_altitude_jacobian(_state: &StrapdownState) -> DMatrix<f64> {
     h
 }
 
+/// Measurement Jacobian for a barometer whose bias the filter estimates, full width.
+///
+/// $h(\mathbf{x}) = alt + b$, so the row is a 1 in the altitude column and a 1 in the bias
+/// column, and everything else is zero.
+///
+/// # Why this returns the filter's full width
+///
+/// The same reason [`zaru_jacobian`] does, and it is load-bearing rather than stylistic. The
+/// other Jacobians in this module return nine columns and let
+/// `expand_measurement_jacobian` pad them on the right. Padding a nine-column row out to the
+/// filter's width puts a **zero** in the bias column, which is not an error and not detected:
+/// the bias would be unobservable, its gain identically zero and its covariance growing on
+/// process noise alone. That is #394's failure mode -- six states a filter carried, seeded and
+/// never estimated -- reached by a different route.
+///
+/// # Panics
+///
+/// Never: `bias_index` is validated against the state width by
+/// [`RelativeAltitudeMeasurement::require_bias_state`](crate::measurements::RelativeAltitudeMeasurement)
+/// before this is called, and `state_dim` comes from the state itself.
+#[must_use]
+pub fn relative_altitude_bias_jacobian(state_dim: usize, bias_index: usize) -> DMatrix<f64> {
+    let mut h = DMatrix::<f64>::zeros(1, state_dim.max(9));
+    h[(0, 2)] = 1.0; // d(z_alt)/d(alt)
+    if bias_index < h.ncols() {
+        h[(0, bias_index)] = 1.0; // d(z_alt)/d(baro bias)
+    }
+    h
+}
+
 /// Compute measurement Jacobian (H) for gravity anomaly measurement
 ///
 /// **Note**: This is a placeholder function that returns zeros. Geophysical measurements

@@ -517,6 +517,81 @@ pub struct RelativeAltitudeMeasurement {
     /// [`BAROMETRIC_ALTITUDE_NOISE_M`], which is the default
     /// [`crate::messages::build_event_stream`] applies.
     pub noise_std: f64,
+    /// Which state holds the barometric bias, if the filter carries one.
+    ///
+    /// `None` -- the default -- is the 15-state case: the barometer is treated as unbiased and
+    /// this model behaves exactly as it did before #372.
+    ///
+    /// # Why an explicit index rather than a convention
+    ///
+    /// Because the obvious convention is unsafe here, and this crate has already written down
+    /// why. A filter's state is a bare `DVector` with no labels, so "index 15, if the state is
+    /// at least 16 wide" would read a *gravity* map bias as a barometric one on any geonav run
+    /// -- the exact hazard `strapdown-geonav`'s `BiasState` doc describes for index 14. The
+    /// index travels with the measurement so that the thing which knows the filter's layout is
+    /// the thing that declares it.
+    ///
+    /// A `Some(index)` past the end of the state is an error, not a silent zero: see
+    /// [`Self::require_bias_state`]. That matters more than it looks. A bias column the filter
+    /// never observes is #394's failure mode -- `expand_measurement_jacobian` pads on the right
+    /// and would put a zero there with no complaint, leaving the state unobservable and the
+    /// covariance growing on process noise alone.
+    pub bias_index: Option<usize>,
+}
+
+impl RelativeAltitudeMeasurement {
+    /// The barometric bias this state carries, or zero when the model is running unbiased.
+    fn bias_of(&self, state: &DVector<f64>) -> f64 {
+        self.bias_index
+            .and_then(|index| state.get(index))
+            .copied()
+            .unwrap_or(0.0)
+    }
+
+    /// Reject a [`Self::bias_index`] that does not name a bias state.
+    ///
+    /// Two ways it can fail, and the second is the dangerous one:
+    ///
+    /// * the state is too short to reach the index; or
+    /// * the index lands **inside the navigation states**, at
+    ///   [`NAVIGATION_STATES`](crate::sim::NAVIGATION_STATES) or below. That is not a short
+    ///   read and nothing downstream would notice it: `bias_index: 2` makes the model predict
+    ///   `alt + alt` while `relative_altitude_bias_jacobian` writes a 1 into the altitude
+    ///   column twice, and `bias_index: 12` reads a **gyro bias** as a barometric one and
+    ///   drives the barometer's innovation into it. This field is `pub` and reaches the model
+    ///   from a deserialized
+    ///   [`GnssDegradationConfig`](crate::messages::GnssDegradationConfig), so the value is
+    ///   user input rather than a crate invariant, and it is checked as such.
+    ///
+    /// The lower bound is the same rule
+    /// [`NavigationResult`](crate::sim::NavigationResult)'s conversion already applies to the
+    /// geophysical indices: an extra state lives *after* the navigation block, never in it.
+    ///
+    /// # Errors
+    /// [`StrapdownError::DimensionMismatch`] if the state does not reach the index;
+    /// [`StrapdownError::InvalidConfiguration`] if the index names a navigation state.
+    fn require_bias_state(&self, state: &DVector<f64>) -> Result<(), StrapdownError> {
+        let Some(index) = self.bias_index else {
+            return Ok(());
+        };
+        if index < crate::sim::NAVIGATION_STATES {
+            return Err(StrapdownError::InvalidConfiguration {
+                field: "baro_bias_index",
+                reason: format!(
+                    "index {index} is inside the {} navigation states; a barometric bias lives                      after them, so this would read a navigation state as the barometer's bias",
+                    crate::sim::NAVIGATION_STATES
+                ),
+            });
+        }
+        if index >= state.len() {
+            return Err(StrapdownError::DimensionMismatch {
+                what: "barometric bias state index",
+                expected: index + 1,
+                got: state.len(),
+            });
+        }
+        Ok(())
+    }
 }
 
 impl Default for RelativeAltitudeMeasurement {
@@ -527,6 +602,7 @@ impl Default for RelativeAltitudeMeasurement {
             relative_altitude: 0.0,
             reference_altitude: 0.0,
             noise_std: BAROMETRIC_ALTITUDE_NOISE_M,
+            bias_index: None,
         }
     }
 }
@@ -549,8 +625,12 @@ impl MeasurementModel for RelativeAltitudeMeasurement {
     fn get_dimension(&self) -> usize {
         1
     }
-    fn get_measurement(&self, _state: &DVector<f64>) -> Result<DVector<f64>, StrapdownError> {
-        // Barometric altitude measurement is state-independent
+    fn get_measurement(&self, state: &DVector<f64>) -> Result<DVector<f64>, StrapdownError> {
+        // The reading itself is state-independent -- it is what the sensor said. The state is
+        // taken only to reject one too short to hold the bias this model was told to read, the
+        // way `ZaruMeasurement` does: this is the one `Result`-returning method every filter
+        // calls, so it is where a filter that cannot carry the bias gets told.
+        self.require_bias_state(state)?;
         Ok(DVector::from_vec(vec![
             self.relative_altitude + self.reference_altitude,
         ]))
@@ -559,12 +639,27 @@ impl MeasurementModel for RelativeAltitudeMeasurement {
         DMatrix::from_diagonal(&DVector::from_vec(vec![self.noise_std.powi(2)]))
     }
     fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
-        DVector::from_vec(vec![state[2]])
+        // A barometer reads the true altitude plus its own bias, so that is what the filter
+        // should expect to see. With no bias state this is `state[2]` exactly as before.
+        //
+        // No `Result` here, so a short state degrades to the unbiased prediction rather than
+        // indexing past the end; `get_measurement` and `get_jacobian` have already refused it.
+        DVector::from_vec(vec![state[2] + self.bias_of(state)])
     }
 
     fn get_jacobian(&self, state: &DVector<f64>) -> Result<DMatrix<f64>, StrapdownError> {
-        let nav_state = jacobian_state(state)?;
-        Ok(crate::linearize::relative_altitude_jacobian(&nav_state))
+        self.require_bias_state(state)?;
+        let Some(bias_index) = self.bias_index else {
+            let nav_state = jacobian_state(state)?;
+            return Ok(crate::linearize::relative_altitude_jacobian(&nav_state));
+        };
+        // Full width, deliberately, like `zaru_jacobian`. Returning nine columns and letting
+        // `expand_measurement_jacobian` pad would put a **zero** in the bias column and the
+        // state would be unobservable with nothing raised -- #394 exactly.
+        Ok(crate::linearize::relative_altitude_bias_jacobian(
+            state.len(),
+            bias_index,
+        ))
     }
     // fn get_sigma_points(&self, state_sigma_points: &DMatrix<f64>) -> DMatrix<f64> {
     //     let mut measurement_sigma_points = DMatrix::<f64>::zeros(self.get_dimension(), state_sigma_points.ncols());

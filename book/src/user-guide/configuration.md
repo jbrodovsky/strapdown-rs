@@ -104,6 +104,40 @@ which is a **variance**, so the default here is its square root and the filter s
 $R$ it always did. Setting `baro_noise_std_m: 5.0` is not the old behaviour — it is five times
 looser.
 
+### The barometer's bias
+
+A barometer does not read altitude, it reads pressure, and the reference pressure it is
+converted against drifts — roughly a hectopascal an hour, which is about 8.3 m. A filter that
+models the reading as unbiased has nowhere to put that drift except into altitude.
+
+`estimate_baro_bias` gives the filter a state for it. It belongs to the **`closed_loop`**
+section, not to the aiding config above, because it changes the filter rather than the sensor:
+
+```yaml
+closed_loop:
+  filter: ukf
+  estimate_baro_bias: true
+```
+
+or `--estimate-baro-bias` on the command line. The output then carries `baro_bias` and
+`baro_bias_cov` columns; without it both are empty, which is how a reader tells "no bias state"
+from "bias estimated at zero".
+
+Measured on `core/tests/test_data.csv`, switching it on moves the vertical channel in all
+three Kalman filters at once:
+
+| | 3σ containment | vertical bias | vertical RMSE |
+|---|---|---|---|
+| off | 0.40 | +0.40 m | 2.58 m |
+| on | 0.84 | −0.02 m | 1.41 m |
+
+Containment is the fraction of epochs whose true altitude lies inside the filter's own 3σ
+band, so its ideal is 0.9973. The three filters converge independently on a bias of about
+−0.6 m, which is the corroboration a single filter could not give.
+
+It is **off by default**: it widens the state vector by one, and that is a default to settle at
+the 1.0 API freeze rather than alongside the state itself.
+
 `baro_scheduler` and `magnetometer_scheduler` take the same three kinds and the same fields,
 each with its own independent clock, so a GNSS outage, a barometer outage and a heading outage
 can be configured separately or made to overlap. Neither channel is corrupted: `fault` governs

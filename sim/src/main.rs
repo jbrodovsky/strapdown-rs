@@ -395,6 +395,16 @@ struct ClosedLoopSimArgs {
     #[arg(long, default_value_t = 42)]
     seed: u64,
 
+    /// Estimate a barometric altitude bias as an extra filter state.
+    ///
+    /// A barometer's reference pressure drifts and a filter that models the reading as
+    /// unbiased pushes that drift into altitude. On the reference recording this takes
+    /// 3-sigma vertical containment from about 0.40 to 0.84 against an ideal of 0.9973 and
+    /// improves vertical RMSE by 45%, on all three filters. Off by default because it widens
+    /// the state vector by one. Adds a `baro_bias` column to the output.
+    #[arg(long)]
+    estimate_baro_bias: bool,
+
     /// Reject measurements whose NIS exceeds this chi-squared confidence level.
     ///
     /// Omitted, every measurement is accepted -- the behaviour of every release so
@@ -584,8 +594,42 @@ fn process_file(
 
             let filter_config = config.closed_loop.clone().unwrap_or_default();
 
-            let event_stream =
-                build_event_stream(&records, &config.gnss_degradation, config.is_enu)?;
+            // `ukf_alpha`/`beta`/`kappa` are read here rather than left at the constructor's
+            // defaults. This path ignored all three, so a config file setting `ukf_alpha` got
+            // the 1e-3 default silently -- the same shape of defect as #392, found while
+            // adding the flag below. The values are a no-op for a config that does not set
+            // them: `default_ukf_alpha`/`_beta`/`_kappa` are the constructor's own defaults.
+            let ukf_config = UkfConfig {
+                ukf_alpha: Some(filter_config.ukf_alpha),
+                ukf_beta: Some(filter_config.ukf_beta),
+                ukf_kappa: Some(filter_config.ukf_kappa),
+                estimate_baro_bias: filter_config.estimate_baro_bias,
+                is_enu: config.is_enu,
+                ..UkfConfig::default()
+            };
+            let ekf_config = EkfConfig {
+                estimate_baro_bias: filter_config.estimate_baro_bias,
+                is_enu: config.is_enu,
+                ..EkfConfig::default()
+            };
+            let eskf_config = EskfConfig {
+                estimate_baro_bias: filter_config.estimate_baro_bias,
+                is_enu: config.is_enu,
+                ..EskfConfig::default()
+            };
+
+            // Derived from the filter, not asked for a second time; see
+            // `run_single_closed_loop_simulation` for why (#372).
+            let gnss_degradation = strapdown::messages::GnssDegradationConfig {
+                baro_bias_index: match filter_config.filter {
+                    FilterType::Ukf => ukf_config.baro_bias_index(),
+                    FilterType::Ekf => ekf_config.baro_bias_index(),
+                    FilterType::Eskf => eskf_config.baro_bias_index(),
+                },
+                ..config.gnss_degradation.clone()
+            };
+
+            let event_stream = build_event_stream(&records, &gnss_degradation, config.is_enu)?;
             info!(
                 "Initialized event stream with {} events",
                 event_stream.events.len()
@@ -594,39 +638,21 @@ fn process_file(
 
             let results = match filter_config.filter {
                 FilterType::Ukf => {
-                    let mut ukf = initialize_ukf(
-                        &records[0].clone(),
-                        UkfConfig {
-                            is_enu: config.is_enu,
-                            ..UkfConfig::default()
-                        },
-                    )?;
+                    let mut ukf = initialize_ukf(&records[0].clone(), ukf_config)?;
                     info!("Initialized UKF");
                     ukf.set_innovation_gate(filter_config.innovation_gate);
                     ukf.set_gate_recovery(filter_config.gate_recovery);
                     run_closed_loop(&mut ukf, event_stream, None, Some(execution_limits))
                 }
                 FilterType::Ekf => {
-                    let mut ekf = initialize_ekf(
-                        &records[0].clone(),
-                        EkfConfig {
-                            is_enu: config.is_enu,
-                            ..EkfConfig::default()
-                        },
-                    )?;
+                    let mut ekf = initialize_ekf(&records[0].clone(), ekf_config)?;
                     info!("Initialized EKF");
                     ekf.set_innovation_gate(filter_config.innovation_gate);
                     ekf.set_gate_recovery(filter_config.gate_recovery);
                     run_closed_loop(&mut ekf, event_stream, None, Some(execution_limits))
                 }
                 FilterType::Eskf => {
-                    let mut eskf = initialize_eskf(
-                        &records[0].clone(),
-                        EskfConfig {
-                            is_enu: config.is_enu,
-                            ..EskfConfig::default()
-                        },
-                    )?;
+                    let mut eskf = initialize_eskf(&records[0].clone(), eskf_config)?;
                     info!("Initialized ESKF");
                     eskf.set_innovation_gate(filter_config.innovation_gate);
                     eskf.set_gate_recovery(filter_config.gate_recovery);
@@ -1031,13 +1057,46 @@ fn run_single_closed_loop_simulation(
     innovation_gate: Option<InnovationGate>,
     gate_recovery: GateRecovery,
     is_enu: bool,
+    estimate_baro_bias: bool,
 ) -> Result<(), Box<dyn Error>> {
     // Same full-window guard as the other entry points: the `initialize_*` helpers below see
     // only one record, which is not enough evidence in either direction (#296).
     check_declared_frame(records, is_enu)?;
 
+    let ukf_config = UkfConfig {
+        ukf_alpha: Some(ukf_alpha),
+        ukf_beta: Some(ukf_beta),
+        ukf_kappa: Some(ukf_kappa),
+        estimate_baro_bias,
+        is_enu,
+        ..Default::default()
+    };
+    let ekf_config = EkfConfig {
+        estimate_baro_bias,
+        is_enu,
+        ..EkfConfig::default()
+    };
+    let eskf_config = EskfConfig {
+        estimate_baro_bias,
+        is_enu,
+        ..EskfConfig::default()
+    };
+
+    // The barometer model has to be told which state holds its bias, and the answer is the
+    // filter's own. Deriving it here rather than asking for `baro_bias_index` to be set
+    // beside `estimate_baro_bias` keeps the two from disagreeing -- a wrong index reads a
+    // gyro bias as a barometric one (#372).
+    let gnss_degradation = strapdown::messages::GnssDegradationConfig {
+        baro_bias_index: match filter_type {
+            FilterType::Ukf => ukf_config.baro_bias_index(),
+            FilterType::Ekf => ekf_config.baro_bias_index(),
+            FilterType::Eskf => eskf_config.baro_bias_index(),
+        },
+        ..gnss_degradation.clone()
+    };
+
     // Build event stream from records and GNSS degradation config
-    let event_stream = build_event_stream(records, gnss_degradation, is_enu)?;
+    let event_stream = build_event_stream(records, &gnss_degradation, is_enu)?;
     info!(
         "Initialized event stream with {} events",
         event_stream.events.len()
@@ -1046,42 +1105,21 @@ fn run_single_closed_loop_simulation(
     // Initialize and run filter based on type
     let results = match filter_type {
         FilterType::Ukf => {
-            let mut ukf = initialize_ukf(
-                &records[0].clone(),
-                UkfConfig {
-                    ukf_alpha: Some(ukf_alpha),
-                    ukf_beta: Some(ukf_beta),
-                    ukf_kappa: Some(ukf_kappa),
-                    is_enu,
-                    ..Default::default()
-                },
-            )?;
+            let mut ukf = initialize_ukf(&records[0].clone(), ukf_config)?;
             info!("Initialized UKF");
             ukf.set_innovation_gate(innovation_gate);
             ukf.set_gate_recovery(gate_recovery);
             run_closed_loop(&mut ukf, event_stream, None, Some(execution_limits))
         }
         FilterType::Ekf => {
-            let mut ekf = initialize_ekf(
-                &records[0].clone(),
-                EkfConfig {
-                    is_enu,
-                    ..EkfConfig::default()
-                },
-            )?;
+            let mut ekf = initialize_ekf(&records[0].clone(), ekf_config)?;
             info!("Initialized EKF");
             ekf.set_innovation_gate(innovation_gate);
             ekf.set_gate_recovery(gate_recovery);
             run_closed_loop(&mut ekf, event_stream, None, Some(execution_limits))
         }
         FilterType::Eskf => {
-            let mut eskf = initialize_eskf(
-                &records[0].clone(),
-                EskfConfig {
-                    is_enu,
-                    ..EskfConfig::default()
-                },
-            )?;
+            let mut eskf = initialize_eskf(&records[0].clone(), eskf_config)?;
             info!("Initialized ESKF");
             eskf.set_innovation_gate(innovation_gate);
             eskf.set_gate_recovery(gate_recovery);
@@ -1355,6 +1393,7 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
             innovation_gate,
             gate_recovery,
             args.sim.enu,
+            args.estimate_baro_bias,
         ) {
             Ok(()) => {
                 // Success - result logging is handled by the helper function
@@ -1649,6 +1688,10 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                         ukf_beta: Some(args.ukf_beta),
                         ukf_kappa: Some(args.ukf_kappa),
                         imu_quality: strapdown::IMUQuality::default(),
+                        // Off on the geophysical path: this filter's extra states are map
+                        // biases, and #372's barometric state has not been measured against a
+                        // geo run. Turning it on here would change two things at once.
+                        estimate_baro_bias: false,
                         is_enu: args.sim.enu,
                     },
                 )?;

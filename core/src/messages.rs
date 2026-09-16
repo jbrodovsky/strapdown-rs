@@ -330,6 +330,18 @@ pub struct GnssDegradationConfig {
     #[serde(default = "default_baro_noise_std_m")]
     pub baro_noise_std_m: f64,
 
+    /// Which filter state holds the barometric bias, if the run's filter estimates one.
+    ///
+    /// `None` -- the default -- is the 15-state case and leaves the barometer modelled as
+    /// unbiased, exactly as before #372.
+    ///
+    /// An index rather than a flag, because a state vector carries no labels: "the last state"
+    /// is a gravity map bias on one run and a barometric bias on another. Whoever builds the
+    /// filter knows its layout and declares it here; a value the filter's state cannot reach is
+    /// rejected by `RelativeAltitudeMeasurement` rather than silently ignored.
+    #[serde(default)]
+    pub baro_bias_index: Option<usize>,
+
     /// Random number generator seed for deterministic tests and reproducibility.
     ///
     /// Use the same seed to repeat scenarios exactly; change it to get a new
@@ -351,6 +363,7 @@ impl Default for GnssDegradationConfig {
             baro_scheduler: default_aiding_scheduler(),
             magnetometer_scheduler: default_aiding_scheduler(),
             baro_noise_std_m: default_baro_noise_std_m(),
+            baro_bias_index: None,
             seed: default_seed(),
         }
     }
@@ -1274,6 +1287,7 @@ pub fn build_event_stream(
                 relative_altitude: r1.relative_altitude,
                 reference_altitude,
                 noise_std: cfg.baro_noise_std_m,
+                bias_index: cfg.baro_bias_index,
             };
             events.push(Event::Measurement {
                 meas: Box::new(baro),
