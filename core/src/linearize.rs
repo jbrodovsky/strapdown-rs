@@ -138,6 +138,85 @@ fn euler_rate_matrix(roll: f64, pitch: f64, yaw: f64) -> nalgebra::Matrix3<f64> 
     nalgebra::Matrix3::from_columns(&[(rz * ry) * Vector3::x(), rz * Vector3::y(), Vector3::z()])
 }
 
+/// How the IMU bias states enter the navigation states' transition Jacobian, $\partial x^+ /
+/// \partial b$.
+///
+/// Returns `(velocity_block, attitude_block)`: the 3x3 blocks belonging at rows 3..6 against
+/// columns 9..12, and rows 6..9 against columns 12..15, of a 15-state $F$.
+///
+/// # Why this exists
+///
+/// A 15-state filter that leaves these blocks zero does not have 15 states. With a
+/// block-diagonal $P_0$ and measurement models that observe navigation states only, a zero
+/// coupling block means `P[0..9, 9..15]` starts at zero and **can never become nonzero**, so
+/// the Kalman gain over the bias rows is identically zero and the bias estimate never leaves
+/// its seed. That was [`crate::kalman::ExtendedKalmanFilter`]'s state for the whole of its
+/// history (#394): measured over 299 predict/update steps, its `max |P[nav, bias]|` was
+/// **exactly 0.0** against the UKF's 4.3e-3, and its bias estimate was still all zeros.
+///
+/// The UKF needs none of this -- it gets the coupling for free, because a sigma point
+/// perturbed in a bias state mechanizes to a different navigation state. Only a filter that
+/// linearises has to supply it, and of the two that do, only the ESKF did.
+///
+/// # The two blocks
+///
+/// **Velocity.** Mechanization applies $C_b^n$ to the bias-corrected specific force, so
+/// $\dot v^n = C_b^n (f^b - b_a) + \ldots$ and
+///
+/// $$ \frac{\partial v^+}{\partial b_a} = -C_b^n \, \Delta t $$
+///
+/// Velocity is a navigation-frame vector under either parametrisation, so this block is the
+/// same matrix for both and needs no conversion.
+///
+/// **Attitude.** This is where the two filters genuinely differ, and it is not a sign.
+/// [`AttitudeParametrization::RotationVector`] here means the **navigation-frame**
+/// perturbation $\tilde C = (I + [\delta\theta\times]) C$ that the rest of
+/// [`transition_jacobian`] is written in. A body-frame rate perturbation reaches it through
+/// the attitude, so
+///
+/// $$ \frac{\partial \theta^+_n}{\partial b_g} = -C_b^n \, \Delta t $$
+///
+/// and for a state holding Euler angles the row converts out of rotation-vector space the
+/// same way [`transition_jacobian`]'s attitude block does, through $E(\Phi^+)^{-1}$:
+///
+/// $$ \frac{\partial \Phi^+}{\partial b_g} = -E(\Phi^+)^{-1} C_b^n \, \Delta t $$
+///
+/// **This is not the ESKF's `-I`.** `error_state_transition_jacobian` writes
+/// `f[(6,12)] = -dt` and so on, which is correct *there* because that matrix uses the
+/// **body-frame** error convention $\tilde C = C (I + [\delta\theta\times])$ -- documented at
+/// its velocity-attitude block -- under which $\delta\theta$ and $b_g$ live in the same frame
+/// and the coupling is the bare identity. Two different conventions, two different matrices,
+/// both right for their own filter. Transcribing one into the other would rotate the
+/// gyro-bias observability onto the wrong axes at any non-zero heading, which is #266's
+/// failure one block over.
+///
+/// Near gimbal lock $E$ is singular, and the rotation-vector form is kept -- wrong but
+/// bounded -- rather than inverting a near-singular matrix. Same policy, and same reason, as
+/// [`transition_jacobian`].
+#[must_use]
+pub fn bias_coupling_blocks(
+    state: &StrapdownState,
+    imu_gyro: &Vector3<f64>,
+    dt: f64,
+    attitude: AttitudeParametrization,
+) -> (nalgebra::Matrix3<f64>, nalgebra::Matrix3<f64>) {
+    let c_bn = *state.attitude.matrix();
+    let velocity_block = -c_bn * dt;
+
+    let attitude_block = if attitude == AttitudeParametrization::Euler {
+        let next_attitude = crate::attitude_update(state, *imu_gyro * dt, dt);
+        let next_rotation = Rotation3::from_matrix_unchecked(next_attitude);
+        let (next_roll, next_pitch, next_yaw) = next_rotation.euler_angles();
+        euler_rate_matrix(next_roll, next_pitch, next_yaw)
+            .try_inverse()
+            .map_or(velocity_block, |next_inverse| next_inverse * velocity_block)
+    } else {
+        velocity_block
+    };
+
+    (velocity_block, attitude_block)
+}
+
 /// How a Jacobian's attitude columns are parametrised.
 ///
 /// The two consumers of the transition Jacobian hold attitude differently, and the blocks
@@ -2233,6 +2312,124 @@ mod tests {
     /// "the sample attitude or IMU moved" as "the Jacobian is wrong"; check
     /// `frame_check_state` and `frame_check_imu` first. Using `|(∂ω_en/∂v_j) × f^n|` itself
     /// rather than the norm product would remove the saturation, at the cost of duplicating
+    /// [`bias_coupling_blocks`] agrees with finite differences of the mechanization it
+    /// linearises, at three attitudes including one well away from level.
+    ///
+    /// The oracle is `mechanize` itself, perturbed in the bias and differenced -- not a second
+    /// analytic expression, which would risk putting the thing under test inside its own
+    /// oracle.
+    ///
+    /// # Reading the tolerance
+    ///
+    /// The residual is **flat across four decades of step size** -- 6.011e-6 at `h = 1e-4` and
+    /// the same at `h = 1e-7` -- which is what says it is not truncation. It is this Jacobian's
+    /// own first-order-in-`dt` approximation, and it comes to about `3e-4` relative, of the
+    /// order of `|omega| dt`. Every other block in this matrix makes the same approximation.
+    ///
+    /// The bound is therefore relative to the block's own scale rather than absolute, and the
+    /// thing it would catch is a wrong *frame* or a wrong sign -- either of which lands at
+    /// order 1, not 3e-4. That is the failure mode worth guarding: the attitude block here is
+    /// `-E(Phi+)^-1 C_b^n` where the ESKF's is a bare `-I`, and transcribing one into the
+    /// other is a rotation, not a rounding error.
+    #[test]
+    fn bias_coupling_blocks_match_finite_differences_of_the_mechanization() {
+        /// Step size for the central difference. Any value in `[1e-7, 1e-4]` gives the same
+        /// answer; see the doc comment.
+        const STEP: f64 = 1e-6;
+        /// The first-order-in-`dt` residual measured at 3e-4 relative; this leaves an order of
+        /// headroom without admitting a sign or frame error, which would be order 1.
+        const MAX_RELATIVE_ERROR: f64 = 3e-3;
+
+        /// Mechanize one step against a given pair of biases, and return the 9-state result.
+        fn step(
+            base: &StrapdownState,
+            accel: Vector3<f64>,
+            gyro: Vector3<f64>,
+            accel_bias: Vector3<f64>,
+            gyro_bias: Vector3<f64>,
+            dt: f64,
+        ) -> [f64; 9] {
+            let mut state = *base;
+            let sample = crate::ImuSample {
+                delta_v: (accel - accel_bias) * dt,
+                delta_theta: (gyro - gyro_bias) * dt,
+                dt,
+            };
+            crate::mechanize(&mut state, &sample).expect("mechanization must succeed");
+            let (roll, pitch, yaw) = state.attitude.euler_angles();
+            [
+                state.latitude,
+                state.longitude,
+                state.altitude,
+                state.velocity_north,
+                state.velocity_east,
+                state.velocity_vertical,
+                roll,
+                pitch,
+                yaw,
+            ]
+        }
+
+        let dt = 0.02;
+        let accel = Vector3::new(0.3, -0.2, -9.7);
+        let gyro = Vector3::new(0.01, -0.02, 0.03);
+
+        for (label, roll, pitch, yaw) in [
+            ("level north", 0.0, 0.0, 0.0),
+            ("banked", 0.3, -0.2, 1.1),
+            ("steep", -0.5, 0.6, -2.0),
+        ] {
+            let base = StrapdownState {
+                latitude: 40.0_f64.to_radians(),
+                longitude: (-75.0_f64).to_radians(),
+                altitude: 120.0,
+                velocity_north: 12.0,
+                velocity_east: -4.0,
+                velocity_vertical: 0.5,
+                attitude: Rotation3::from_euler_angles(roll, pitch, yaw),
+                is_enu: false,
+            };
+            let (velocity_block, attitude_block) =
+                bias_coupling_blocks(&base, &gyro, dt, AttitudeParametrization::Euler);
+            let zero = Vector3::zeros();
+
+            for (block_name, block, first_row, perturb_gyro) in [
+                ("velocity/accel-bias", velocity_block, 3, false),
+                ("attitude/gyro-bias", attitude_block, 6, true),
+            ] {
+                let scale = block.abs().max();
+                for column in 0..3 {
+                    let mut up_bias = Vector3::zeros();
+                    up_bias[column] = STEP;
+                    let mut down_bias = Vector3::zeros();
+                    down_bias[column] = -STEP;
+                    let (up, down) = if perturb_gyro {
+                        (
+                            step(&base, accel, gyro, zero, up_bias, dt),
+                            step(&base, accel, gyro, zero, down_bias, dt),
+                        )
+                    } else {
+                        (
+                            step(&base, accel, gyro, up_bias, zero, dt),
+                            step(&base, accel, gyro, down_bias, zero, dt),
+                        )
+                    };
+                    for row in 0..3 {
+                        let numeric = (up[first_row + row] - down[first_row + row]) / (2.0 * STEP);
+                        let analytic = block[(row, column)];
+                        assert!(
+                            (numeric - analytic).abs() <= MAX_RELATIVE_ERROR * scale,
+                            "{label}, {block_name} block ({row}, {column}): analytic \
+                             {analytic}, finite difference {numeric}. A residual this size is \
+                             a wrong frame or a wrong sign, not the first-order-in-dt \
+                             approximation every block here makes."
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// the very expression under test inside its own oracle.
     #[test]
     fn transition_jacobian_velocity_columns_match_finite_differences_in_both_frames() {
