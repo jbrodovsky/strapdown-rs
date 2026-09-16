@@ -22,7 +22,7 @@
           "value": 0.424711
         },
         "horizontal_cep50_m": {
-          "value": 0.0000490514
+          "value": 4.90514e-05
         },
         "horizontal_cep95_m": {
           "value": 0.00018027
@@ -341,7 +341,9 @@
           "value": 2.01207
         },
         "horizontal_cep95_m": {
-          "value": 34.0153
+          "value": 34.0153,
+          "gated": false,
+          "note": "Not gated: this row's tail statistics are platform-dependent, because the tail IS the handful of epochs where the particle cloud collapses (#385). Measured on the same commit, Linux 34.02 m against Windows 24.33 m -- a 28.5% spread, wider than the improve band, so a Linux bless fails the Windows leg. The bulk statistics on this row agree across platforms to about 1% (horizontal_rmse_m +1.3%, containment_3sigma_horizontal +0.8%) and stay gated. horizontal_max_m is the same kind of statistic and currently sits at +4.7%, inside the band; it is worth watching rather than pre-emptively ungating. Re-gate this when #385 lands. Note also that the baseline is blessed on one platform and gated on three, with no cross-platform tolerance anywhere in judge() -- see #386."
         },
         "horizontal_max_m": {
           "value": 106.007

@@ -44,8 +44,8 @@
 //!
 //! # Reading the numbers
 //!
-//! Four caveats apply to every figure in the baseline, and none of them is a defect in this
-//! harness:
+//! Five caveats apply to every figure in the baseline. The first four are properties of the
+//! measurement rather than defects in this harness; the fifth is a defect, in the gate:
 //!
 //! 1. **Real-data metrics are scored against the GNSS fix, which is also the aiding source.**
 //!    They measure agreement with the aid, and cannot fall below the receiver's own 3.81 m
@@ -73,10 +73,21 @@
 //!    everything else, so fixing #371 will trip the improvement side and ask for a re-bless.
 //! 4. **The consistency metrics mean something different on the two sources.** On the synthetic
 //!    scenarios `npes_position` lands between 2.6 and 4.8 against an ideal of 3.0, which is a
-//!    real measurement of whether the filters believe the right thing. On the real-data scenarios it
-//!    reaches the hundreds, because caveat 2's 21 m offset enters the numerator while the
-//!    covariance in the denominator knows nothing about it. Those values are recorded as a
-//!    drift detector, not read as a consistency verdict.
+//!    real measurement of whether the filters believe the right thing. On the real-data
+//!    scenarios it still reaches the tens to hundreds. It used to be dominated by caveat 2's
+//!    21 m offset in the numerator; with #367 fixed, what remains is the covariance itself --
+//!    which is the finding, not an artefact. Those values are recorded as a drift detector,
+//!    not read as a consistency verdict, until #372 and #373 land.
+//! 5. **The baseline is blessed on one platform and gated on three.** `rust.yml` runs this
+//!    suite on Linux, macOS and Windows; nothing in [`judge`] knows that, and there is no
+//!    cross-platform tolerance floor anywhere in the gate. For most rows that is harmless --
+//!    the same commit agrees to about 1% across platforms. It is not harmless where a metric
+//!    is a *tail* statistic of something unstable: `real_rbpf_slice__rbpf`'s
+//!    `horizontal_cep95_m` measured 34.02 m on Linux and 24.33 m on Windows, a 28.5% spread
+//!    against a 25% improve band, so a Linux bless failed the Windows leg of a run that was
+//!    behaving identically. That metric is ungated, with the numbers in its note; the general
+//!    problem is #386. **This is the one caveat that is a defect** -- in the gate, not in the
+//!    navigation.
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -1063,6 +1074,11 @@ fn book_value(entry: Option<&BaselineMetric>) -> String {
     }
 }
 
+/// Strip carriage returns so a CRLF checkout compares equal to an LF one.
+fn normalize_newlines(text: &str) -> String {
+    text.replace("\r\n", "\n")
+}
+
 /// Render the book's three tables from the blessed baseline.
 ///
 /// Generated from the recorded file rather than from the live measurement, so the staleness
@@ -1183,10 +1199,17 @@ fn navigation_accuracy_matches_the_recorded_baseline() {
     // The book publishes these numbers, so a stale fragment is a wrong public claim. Checked
     // against the recorded file rather than the live measurement, so this is an exact
     // comparison of what was blessed and not a second re-measurement (#380).
+    //
+    // Line endings are normalised on both sides rather than compared byte for byte. The
+    // Windows runner's git checks a text file out with CRLF while `book_tables` joins with
+    // `\n`, so the first version of this check failed every Windows leg of the matrix on a
+    // file whose *content* was identical. `.gitattributes` now pins the committed bytes to
+    // LF, which fixes CI on its own; this normalisation is what stops a contributor who
+    // works on Windows from seeing the same spurious failure locally.
     let book = book_tables_path();
     let expected = book_tables(&baseline);
     match std::fs::read_to_string(&book) {
-        Ok(found) if found == expected => {}
+        Ok(found) if normalize_newlines(&found) == normalize_newlines(&expected) => {}
         Ok(_) => problems.push(format!(
             "BOOK      `{}` no longer matches the baseline it is generated from.",
             book.display()

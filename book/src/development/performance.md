@@ -22,9 +22,10 @@ commit the diff; `cargo perf` runs the suite and prints the table without writin
 [CONTRIBUTING.md](https://github.com/jbrodovsky/strapdown-rs/blob/main/CONTRIBUTING.md) has the
 workflow.
 
-## Read these four caveats first
+## Read these five caveats first
 
-The numbers are meaningless without them, and none of them is a defect in the harness.
+The numbers are meaningless without them. The first four are properties of the measurement
+rather than defects in the harness; the fifth is a defect, in the gate.
 
 1. **On the real-data scenarios, "truth" is the GNSS fix -- which is also the filters' aiding
    source.** They measure agreement with the aid, not independent accuracy, and cannot fall
@@ -66,6 +67,17 @@ The numbers are meaningless without them, and none of them is a defect in the ha
    hundreds, because caveat 2's offset enters the numerator while the covariance in the
    denominator models none of it. Those values are kept as a drift detector, not read as a
    consistency verdict.
+
+5. **The baseline is blessed on one platform and gated on three.** `rust.yml` runs this suite
+   on Linux, macOS and Windows, and nothing in the gate knows that -- there is no
+   cross-platform tolerance floor. For most rows it does not matter: the same commit agrees to
+   about 1% across platforms. It matters where a metric is a *tail* statistic of something
+   unstable. `real_rbpf_slice__rbpf`'s `horizontal_cep95_m` measured 34.02 m on Linux against
+   24.33 m on Windows -- a 28.5% spread against a 25% improve band -- so a Linux bless failed
+   the Windows leg of a run that was behaving identically. That metric is ungated with the
+   numbers recorded in its note; the general problem is
+   [#386](https://github.com/jbrodovsky/strapdown-rs/issues/386). Until it is fixed, **check a
+   Windows run before calling a re-bless done.**
 
 ## The metrics
 
