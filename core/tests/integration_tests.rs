@@ -130,7 +130,7 @@ use strapdown::sim::{
 use strapdown::stationary::{StationaryConfig, StationaryDetector};
 use strapdown::{
     IMUData, IMUQuality, ImuSample, InitialUncertainty, NavigationFilter, StrapdownError,
-    StrapdownState,
+    StrapdownState, wrap_to_pi,
 };
 
 use nalgebra::{DMatrix, DVector, Rotation3, Vector3};
@@ -507,22 +507,6 @@ fn assert_bias_estimates_bounded(results: &[NavigationResult], context: &str) {
                 results.len()
             );
         }
-    }
-}
-
-/// Wrap an angle into `[-pi, pi]`.
-///
-/// Attitude errors are only meaningful modulo a full turn: an estimate of +179 deg yaw
-/// against a -179 deg reference is 2 deg of error, not 358 deg. Without this the yaw RMSE
-/// on any trajectory that crosses the +/-180 deg branch cut is dominated by the cut rather
-/// than by the filter.
-fn wrap_to_pi(angle_rad: f64) -> f64 {
-    let two_pi = 2.0 * std::f64::consts::PI;
-    let wrapped = angle_rad.rem_euclid(two_pi);
-    if wrapped > std::f64::consts::PI {
-        wrapped - two_pi
-    } else {
-        wrapped
     }
 }
 
