@@ -1317,6 +1317,9 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
             scheduler: build_scheduler(&args.scheduler),
             fault: build_fault(&args.fault),
             seed: args.seed,
+            // The barometer and magnetometer schedules have no CLI flag; they take their
+            // 1 Hz default, overridable from a config file through serde.
+            ..Default::default()
         };
 
         info!("Using GNSS degradation config: {gnss_degradation:?}");
@@ -1546,6 +1549,9 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
             scheduler: build_scheduler(&args.scheduler),
             fault: build_fault(&args.fault),
             seed: args.seed,
+            // The barometer and magnetometer schedules have no CLI flag; they take their
+            // 1 Hz default, overridable from a config file through serde.
+            ..Default::default()
         };
 
         // This path runs a UKF or an EKF, whose states are the nine navigation states, the
@@ -1895,6 +1901,9 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
             scheduler: build_scheduler(&args.scheduler),
             fault: build_fault(&args.fault),
             seed: args.seed,
+            // The barometer and magnetometer schedules have no CLI flag; they take their
+            // 1 Hz default, overridable from a config file through serde.
+            ..Default::default()
         };
 
         #[cfg(feature = "geonav")]
@@ -2678,6 +2687,7 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
         scheduler,
         fault,
         seed,
+        ..Default::default()
     };
 
     // Geophysical navigation configuration

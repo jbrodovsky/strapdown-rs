@@ -2019,6 +2019,7 @@ mod tests {
             scheduler: GnssScheduler::PassThrough,
             fault: GnssFaultModel::None,
             seed: 42,
+            ..Default::default()
         };
         let geomap = Rc::new(create_test_gravity_map());
 
@@ -2043,6 +2044,7 @@ mod tests {
             scheduler: GnssScheduler::PassThrough,
             fault: GnssFaultModel::None,
             seed: 42,
+            ..Default::default()
         };
         let geomap = Rc::new(create_test_gravity_map());
 
@@ -2072,6 +2074,7 @@ mod tests {
             scheduler: GnssScheduler::PassThrough,
             fault: GnssFaultModel::None,
             seed: 42,
+            ..Default::default()
         };
         let geomap = Rc::new(create_test_gravity_map());
 
@@ -2114,6 +2117,7 @@ mod tests {
             scheduler: GnssScheduler::PassThrough,
             fault: GnssFaultModel::None,
             seed: 42,
+            ..Default::default()
         };
         let geomap = Rc::new(create_test_magnetic_map());
 
@@ -2774,6 +2778,7 @@ mod tests {
             scheduler: GnssScheduler::PassThrough,
             fault: GnssFaultModel::None,
             seed: 42,
+            ..Default::default()
         };
         let geomap = Rc::new(create_test_gravity_map());
 
@@ -2816,6 +2821,7 @@ mod tests {
             scheduler: GnssScheduler::PassThrough,
             fault: GnssFaultModel::None,
             seed: 42,
+            ..Default::default()
         };
         let geomap = Rc::new(create_test_gravity_map());
 

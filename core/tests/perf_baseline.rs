@@ -44,7 +44,7 @@
 //!
 //! # Reading the numbers
 //!
-//! Five caveats apply to every figure in the baseline. The first four are properties of the
+//! Six caveats apply to every figure in the baseline. All but the fifth are properties of the
 //! measurement rather than defects in this harness; the fifth is a defect, in the gate:
 //!
 //! 1. **Real-data metrics are scored against the GNSS fix, which is also the aiding source.**
@@ -65,19 +65,25 @@
 //! 3. **The synthetic scenarios carry no magnetometer, and the yaw column says which filters
 //!    need one.** `generate_synthetic` models no magnetic field, so the only thing aiding
 //!    heading there is the GNSS velocity fix on a moving trajectory. That turns out to be
-//!    enough: the EKF holds 0.97 deg of yaw and the ESKF 2.07 deg on `syn_cruise_1hz`, while
-//!    the UKF sits at 42.7 deg. The UKF figure is not an observability limit -- both of the
+//!    enough: the EKF holds 0.97 deg of yaw and the ESKF 1.03 deg on `syn_cruise_1hz`, while
+//!    the UKF sits at 108.3 deg -- worse than the 104 deg RMS of uniformly random yaw, so it
+//!    has no heading at all. The UKF figure is not an observability limit -- both of the
 //!    other filters see the same measurements -- it is #371: the UKF means its sigma-point
 //!    attitudes by summing Euler triples linearly, which is not the mean rotation. (Not #336,
 //!    which fixed the branch-cut half of that and is closed.) It is recorded and gated like
 //!    everything else, so fixing #371 will trip the improvement side and ask for a re-bless.
+//!    #369 will give these rows a magnetic field, and is sequenced after #375 for the reason
+//!    in caveat 6.
 //! 4. **The consistency metrics mean something different on the two sources.** On the synthetic
-//!    scenarios `npes_position` lands between 2.6 and 4.8 against an ideal of 3.0, which is a
+//!    scenarios `npes_position` lands between 4.6 and 12.1 against an ideal of 3.0, which is a
 //!    real measurement of whether the filters believe the right thing. On the real-data
 //!    scenarios it still reaches the tens to hundreds. It used to be dominated by caveat 2's
 //!    21 m offset in the numerator; with #367 fixed, what remains is the covariance itself --
-//!    which is the finding, not an artefact. Those values are recorded as a drift detector,
-//!    not read as a consistency verdict, until #372 and #373 land.
+//!    which is the finding, not an artefact. The synthetic figures roughly doubled when #375
+//!    scheduled the barometer, and the vertical columns say why: the error that shows up in a
+//!    normalised statistic is now a systematic altitude bias of -0.6 to -2.0 m that nothing
+//!    models. That is #372, measured rather than masked. These values are recorded as a drift
+//!    detector, not read as a consistency verdict, until #372 lands.
 //! 5. **The baseline is blessed on one platform and gated on three.** `rust.yml` runs this
 //!    suite on Linux, macOS and Windows; nothing in [`judge`] knows that, and there is no
 //!    cross-platform tolerance floor anywhere in the gate. For most rows that is harmless --
@@ -88,6 +94,15 @@
 //!    behaving identically. That metric is ungated, with the numbers in its note; the general
 //!    problem is #386. **This is the one caveat that is a defect** -- in the gate, not in the
 //!    navigation.
+//! 6. **The `syn_*` rows run at 50 Hz and the `real_*` rows at 1 Hz, and the aiding sensors no
+//!    longer follow that.** Until #375 the barometer and the magnetometer were emitted once
+//!    per record, outside the scheduler, so their update rate was the log's: 1 Hz on
+//!    `test_data.csv` and 50 Hz on the synthetic trajectories, where fifty pressure readings a
+//!    second each entered the filter as an independent fix. Both channels are now scheduled at
+//!    1 Hz by default, which left every `real_*` row bit-identical -- they were already there
+//!    -- and moved all five aided `syn_*` rows, almost entirely in the vertical channel
+//!    (horizontal RMSE on `syn_cruise_1hz` moved by under half a percent). Read the synthetic
+//!    vertical columns as a 1 Hz barometer's, not a 50 Hz one's.
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -214,6 +229,7 @@ fn scenarios() -> Vec<Scenario> {
         scheduler: GnssScheduler::PassThrough,
         fault: GnssFaultModel::None,
         seed: SEED,
+        ..Default::default()
     };
 
     // Canonical reference: the configuration every other real-data row is read against.
@@ -241,6 +257,7 @@ fn scenarios() -> Vec<Scenario> {
                 },
                 fault: GnssFaultModel::None,
                 seed: SEED,
+                ..Default::default()
             },
             estimator,
         });
@@ -261,6 +278,7 @@ fn scenarios() -> Vec<Scenario> {
             },
             fault: GnssFaultModel::None,
             seed: SEED,
+            ..Default::default()
         },
         estimator: Estimator::Eskf,
     });
@@ -283,6 +301,7 @@ fn scenarios() -> Vec<Scenario> {
                     r_scale: 1.0,
                 },
                 seed: SEED,
+                ..Default::default()
             },
             estimator,
         });
@@ -303,6 +322,7 @@ fn scenarios() -> Vec<Scenario> {
                 },
                 fault: GnssFaultModel::None,
                 seed: SEED,
+                ..Default::default()
             },
             estimator,
         });
@@ -322,6 +342,7 @@ fn scenarios() -> Vec<Scenario> {
                 },
                 fault: GnssFaultModel::None,
                 seed: SEED,
+                ..Default::default()
             },
             estimator,
         });

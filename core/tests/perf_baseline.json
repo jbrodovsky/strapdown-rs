@@ -521,55 +521,56 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 1.0355
+          "value": 1.03951
         },
         "containment_3sigma_horizontal": {
-          "value": 0.998767
+          "value": 0.998733
         },
         "containment_3sigma_vertical": {
-          "value": 0.852733
+          "value": 0.648133,
+          "note": "Down under #375. With the barometer scheduled at 1 Hz instead of firing on all fifty records a second, the vertical error is larger and carries a systematic bias the filter does not model, so the 3-sigma envelope no longer covers it. The horizontal containment on the same row is unchanged. This is the #372 measurement, taken without the 50 Hz aiding that used to hide it."
         },
         "horizontal_cep50_m": {
-          "value": 2.26226
+          "value": 2.27519
         },
         "horizontal_cep95_m": {
-          "value": 4.35501
+          "value": 4.35362
         },
         "horizontal_max_m": {
-          "value": 6.31298
+          "value": 6.31397
         },
         "horizontal_rmse_m": {
-          "value": 2.60083
+          "value": 2.60728
         },
         "nees_position": {
-          "value": 6.39446
+          "value": 12.0942
         },
         "npes_position": {
-          "value": 6.40581,
-          "note": "Up under #374, while every accuracy metric on the same row improved substantially (vertical RMSE ~0.83 to ~0.48 m, roll and pitch by 2-3x). Both directions are the same mechanism: this scenario runs at 50 Hz and was receiving 50x the intended process noise, so its covariance was inflated. Removing that improves the estimate and tightens the covariance, and a tighter covariance under an unchanged error is a larger normalised error. The consistency gap this exposes is #372's and #373's to close; it was previously hidden by the inflation."
+          "value": 12.1055,
+          "note": "Up under #375, entirely through the vertical channel: the horizontal columns on this row moved by less than half a percent, while `vertical_rmse_m` went ~0.5 to ~2.2-2.8 m and `vertical_bias_m` from about zero to -0.6 to -2.0 m. A normalised error takes that unmodelled bias into a covariance that did not grow to meet it. The gap is #372's to close; the 50 Hz barometer was masking it."
         },
         "pitch_rmse_deg": {
-          "value": 0.248185
+          "value": 0.250016
         },
         "roll_rmse_deg": {
-          "value": 0.293524,
-          "note": "0.96 deg, up from 0.12 before #373, and pitch with it. Same cause as the UKF's yaw row: with the fabricated 201 m horizontal sigma gone, position is no longer pinned to the fix, so attitude error is no longer absorbed there and is measured for the first time. Under a degree in absolute terms and the best of the three. Tracked with #372/#373's consistency work."
+          "value": 0.293729
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 0.586184
+          "value": 0.587807
         },
         "velocity_vertical_rmse_mps": {
-          "value": 0.25903
+          "value": 0.36183
         },
         "vertical_bias_m": {
-          "value": -0.182293
+          "value": -2.04545,
+          "note": "About zero before #375 and -0.6 to -2.0 m after it. This is the number that makes the case for #372's barometer bias state: at 50 Hz the aid was strong enough to crush a systematic altitude offset, and at the 1 Hz a real barometer logs at, it is what the vertical channel actually does. Nothing here models it."
         },
         "vertical_rmse_m": {
-          "value": 0.499845,
-          "note": "About a quarter worse than at the old 1e-4 altitude process noise, and the stated price of that retune: the old value bought this RMSE by reporting an uncertainty roughly half the actual error. Containment in the same row moved 0.88 -> 0.93 toward 0.9973. On the reference recording vertical RMSE did not pay this price at all -- it improved slightly. See VERTICAL_POSITION_PROCESS_NOISE_M2 in core/src/sim.rs."
+          "value": 2.81711,
+          "note": "Roughly 4x worse than at a 50 Hz barometer, and the honest price of #375 scheduling it. `generate_synthetic` fills `relative_altitude` on every record, so before #375 this 50 Hz scenario received fifty pressure readings a second, each entering as an independent fix; averaging fifty samples cuts the effective noise about sevenfold and pinned altitude to the truth. At the 1 Hz the reference recording actually logs, it does not. Note `vertical_bias_m` on the same row moved from about zero to -0.6 to -2.0 m: what is left is a systematic offset, not noise, and an unmodelled offset under a tight R is exactly #372. The real-data rows did not move at all -- they were already 1 Hz."
         },
         "yaw_rmse_deg": {
-          "value": 0.961345
+          "value": 0.965122
         }
       }
     },
@@ -579,54 +580,56 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 1.1138
+          "value": 1.1158
         },
         "containment_3sigma_horizontal": {
-          "value": 0.999367
+          "value": 0.9993
         },
         "containment_3sigma_vertical": {
-          "value": 0.885467
+          "value": 0.789467,
+          "note": "Down under #375. With the barometer scheduled at 1 Hz instead of firing on all fifty records a second, the vertical error is larger and carries a systematic bias the filter does not model, so the 3-sigma envelope no longer covers it. The horizontal containment on the same row is unchanged. This is the #372 measurement, taken without the 50 Hz aiding that used to hide it."
         },
         "horizontal_cep50_m": {
-          "value": 2.24852
+          "value": 2.25288
         },
         "horizontal_cep95_m": {
-          "value": 4.47572
+          "value": 4.45837
         },
         "horizontal_max_m": {
-          "value": 6.90932
+          "value": 6.91263
         },
         "horizontal_rmse_m": {
-          "value": 2.64737
+          "value": 2.64569
         },
         "nees_position": {
-          "value": 5.87319
+          "value": 7.94509
         },
         "npes_position": {
-          "value": 5.87682,
-          "note": "Up under #374, while every accuracy metric on the same row improved substantially (vertical RMSE ~0.83 to ~0.48 m, roll and pitch by 2-3x). Both directions are the same mechanism: this scenario runs at 50 Hz and was receiving 50x the intended process noise, so its covariance was inflated. Removing that improves the estimate and tightens the covariance, and a tighter covariance under an unchanged error is a larger normalised error. The consistency gap this exposes is #372's and #373's to close; it was previously hidden by the inflation."
+          "value": 7.94941,
+          "note": "Up under #375, entirely through the vertical channel: the horizontal columns on this row moved by less than half a percent, while `vertical_rmse_m` went ~0.5 to ~2.2-2.8 m and `vertical_bias_m` from about zero to -0.6 to -2.0 m. A normalised error takes that unmodelled bias into a covariance that did not grow to meet it. The gap is #372's to close; the 50 Hz barometer was masking it."
         },
         "pitch_rmse_deg": {
-          "value": 0.264559
+          "value": 0.263931
         },
         "roll_rmse_deg": {
-          "value": 0.337131
+          "value": 0.336226
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 0.593004
+          "value": 0.591799
         },
         "velocity_vertical_rmse_mps": {
-          "value": 0.0917479
+          "value": 0.188718
         },
         "vertical_bias_m": {
-          "value": 0.0338366
+          "value": -0.854135,
+          "note": "About zero before #375 and -0.6 to -2.0 m after it. This is the number that makes the case for #372's barometer bias state: at 50 Hz the aid was strong enough to crush a systematic altitude offset, and at the 1 Hz a real barometer logs at, it is what the vertical channel actually does. Nothing here models it."
         },
         "vertical_rmse_m": {
-          "value": 0.459696,
-          "note": "About a quarter worse than at the old 1e-4 altitude process noise, and the stated price of that retune: the old value bought this RMSE by reporting an uncertainty roughly half the actual error. Containment in the same row moved 0.88 -> 0.93 toward 0.9973. On the reference recording vertical RMSE did not pay this price at all -- it improved slightly. See VERTICAL_POSITION_PROCESS_NOISE_M2 in core/src/sim.rs."
+          "value": 2.22919,
+          "note": "Roughly 4x worse than at a 50 Hz barometer, and the honest price of #375 scheduling it. `generate_synthetic` fills `relative_altitude` on every record, so before #375 this 50 Hz scenario received fifty pressure readings a second, each entering as an independent fix; averaging fifty samples cuts the effective noise about sevenfold and pinned altitude to the truth. At the 1 Hz the reference recording actually logs, it does not. Note `vertical_bias_m` on the same row moved from about zero to -0.6 to -2.0 m: what is left is a systematic offset, not noise, and an unmodelled offset under a tight R is exactly #372. The real-data rows did not move at all -- they were already 1 Hz."
         },
         "yaw_rmse_deg": {
-          "value": 1.02808
+          "value": 1.0307
         }
       }
     },
@@ -636,56 +639,57 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 96.5606
+          "value": 108.281
         },
         "containment_3sigma_horizontal": {
-          "value": 0.998367
+          "value": 0.996667
         },
         "containment_3sigma_vertical": {
-          "value": 0.8826
+          "value": 0.8302,
+          "note": "Down under #375. With the barometer scheduled at 1 Hz instead of firing on all fifty records a second, the vertical error is larger and carries a systematic bias the filter does not model, so the 3-sigma envelope no longer covers it. The horizontal containment on the same row is unchanged. This is the #372 measurement, taken without the 50 Hz aiding that used to hide it."
         },
         "horizontal_cep50_m": {
-          "value": 2.28564
+          "value": 2.2743
         },
         "horizontal_cep95_m": {
-          "value": 4.72203
+          "value": 4.6959
         },
         "horizontal_max_m": {
-          "value": 8.33639
+          "value": 9.87271
         },
         "horizontal_rmse_m": {
-          "value": 2.7418
+          "value": 2.75302
         },
         "nees_position": {
-          "value": 5.94348
+          "value": 7.15048
         },
         "npes_position": {
-          "value": 5.9633,
-          "note": "Up under #374, while every accuracy metric on the same row improved substantially (vertical RMSE ~0.83 to ~0.48 m, roll and pitch by 2-3x). Both directions are the same mechanism: this scenario runs at 50 Hz and was receiving 50x the intended process noise, so its covariance was inflated. Removing that improves the estimate and tightens the covariance, and a tighter covariance under an unchanged error is a larger normalised error. The consistency gap this exposes is #372's and #373's to close; it was previously hidden by the inflation."
+          "value": 7.13077,
+          "note": "Up under #375, entirely through the vertical channel: the horizontal columns on this row moved by less than half a percent, while `vertical_rmse_m` went ~0.5 to ~2.2-2.8 m and `vertical_bias_m` from about zero to -0.6 to -2.0 m. A normalised error takes that unmodelled bias into a covariance that did not grow to meet it. The gap is #372's to close; the 50 Hz barometer was masking it."
         },
         "pitch_rmse_deg": {
-          "value": 0.585489,
-          "note": "0.51 -> 0.64 deg across the vertical process-noise retune. Small and real; the ESKF and EKF pitch in the same scenario did not move. Sits well inside the gravity-observability bound that core/tests/integration_tests.rs asserts separately."
+          "value": 0.555558
         },
         "roll_rmse_deg": {
-          "value": 0.854069
+          "value": 0.890662
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 0.756379
+          "value": 0.758665
         },
         "velocity_vertical_rmse_mps": {
-          "value": 0.229822
+          "value": 0.252577
         },
         "vertical_bias_m": {
-          "value": 0.0720809
+          "value": -0.645052,
+          "note": "About zero before #375 and -0.6 to -2.0 m after it. This is the number that makes the case for #372's barometer bias state: at 50 Hz the aid was strong enough to crush a systematic altitude offset, and at the 1 Hz a real barometer logs at, it is what the vertical channel actually does. Nothing here models it."
         },
         "vertical_rmse_m": {
-          "value": 0.495973,
-          "note": "About a quarter worse than at the old 1e-4 altitude process noise, and the stated price of that retune: the old value bought this RMSE by reporting an uncertainty roughly half the actual error. Containment in the same row moved 0.88 -> 0.93 toward 0.9973. On the reference recording vertical RMSE did not pay this price at all -- it improved slightly. See VERTICAL_POSITION_PROCESS_NOISE_M2 in core/src/sim.rs."
+          "value": 2.22342,
+          "note": "Roughly 4x worse than at a 50 Hz barometer, and the honest price of #375 scheduling it. `generate_synthetic` fills `relative_altitude` on every record, so before #375 this 50 Hz scenario received fifty pressure readings a second, each entering as an independent fix; averaging fifty samples cuts the effective noise about sevenfold and pinned altitude to the truth. At the 1 Hz the reference recording actually logs, it does not. Note `vertical_bias_m` on the same row moved from about zero to -0.6 to -2.0 m: what is left is a systematic offset, not noise, and an unmodelled offset under a tight R is exactly #372. The real-data rows did not move at all -- they were already 1 Hz."
         },
         "yaw_rmse_deg": {
-          "value": 96.5552,
-          "note": "89.79 deg, up from 42.66 before #373 -- and this row has no magnetometer, so yaw is observable only through the GNSS velocity fix. The EKF reaches 1.33 deg on the identical stream. The regression is not a tuning loss: removing the absolute 1e-9 covariance floor stopped this filter pinning its position to each fix, and what had been masking the sigma-point attitude defect was exactly that pinning. Swept over alpha at 1e-3, 1e-2, 1e-1, 0.5 and 1.0, yaw reads 89.8, 90.5, 90.1, 96.5 and 108.3 deg -- so widening the sigma-point spread makes it worse and the tiny `n + lambda` scaling is NOT the cause. That refutes the conditioning hypothesis and leaves #371's original diagnosis, the linear Euler mean over sigma-point attitudes, as the live one."
+          "value": 108.276,
+          "note": "108.3 deg, from 96.6 before #375 and 42.7 before #373 -- and this row still has no magnetometer, so yaw is observable only through the GNSS velocity fix. The EKF reaches 0.97 deg on the identical stream. Not a tuning loss and not this change's doing: an alpha sweep at 1e-3, 1e-2, 1e-1, 0.5 and 1.0 reads 89.8, 90.5, 90.1, 96.5 and 108.3 deg, so widening the sigma-point spread makes it worse and the tiny `n + lambda` scaling is NOT the cause. That refutes the conditioning hypothesis and leaves #371's original diagnosis, the linear Euler mean over sigma-point attitudes, as the live one. Uniformly random yaw is about 104 deg RMS, so this filter has no heading at all."
         }
       }
     },
@@ -751,55 +755,56 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 1.09531
+          "value": 1.12505
         },
         "containment_3sigma_horizontal": {
           "value": 0.996967
         },
         "containment_3sigma_vertical": {
-          "value": 0.8774
+          "value": 0.866067
         },
         "horizontal_cep50_m": {
-          "value": 1.45106
+          "value": 1.61706
         },
         "horizontal_cep95_m": {
-          "value": 29.4394
+          "value": 55.5227
         },
         "horizontal_max_m": {
-          "value": 50.1755,
+          "value": 134.59,
           "regress_fraction": 0.25,
           "note": "As `real_outage_60s__eskf`: a single sample at the end of a coast."
         },
         "horizontal_rmse_m": {
-          "value": 12.1679
+          "value": 24.2001,
+          "note": "Worse under #375, which is the same vertical story as the `syn_cruise_1hz` rows and, on this scenario, a compounding one: through a 60 s GNSS outage the barometer is the only aiding source there is, so dropping it from 50 Hz to 1 Hz removes almost all of it. Roll and pitch degrade with it, and horizontal dead reckoning follows the attitude. 24 m of horizontal error over a 60 s free-inertial coast on consumer-grade IMU is a realistic figure; the 12 m it replaces was flattered by a barometer no hardware runs at."
         },
         "nees_position": {
-          "value": 4.6822
+          "value": 4.63702
         },
         "npes_position": {
-          "value": 4.68162
+          "value": 4.63855
         },
         "pitch_rmse_deg": {
-          "value": 0.162674
+          "value": 0.20374
         },
         "roll_rmse_deg": {
-          "value": 0.170534
+          "value": 0.281622
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 0.690532
+          "value": 1.3738
         },
         "velocity_vertical_rmse_mps": {
-          "value": 0.0930417
+          "value": 0.160306
         },
         "vertical_bias_m": {
-          "value": 0.0311129
+          "value": -0.710502
         },
         "vertical_rmse_m": {
-          "value": 0.460565,
-          "note": "About a quarter worse than at the old 1e-4 altitude process noise, and the stated price of that retune: the old value bought this RMSE by reporting an uncertainty roughly half the actual error. Containment in the same row moved 0.88 -> 0.93 toward 0.9973. On the reference recording vertical RMSE did not pay this price at all -- it improved slightly. See VERTICAL_POSITION_PROCESS_NOISE_M2 in core/src/sim.rs."
+          "value": 1.81186,
+          "note": "Worse under #375, which is the same vertical story as the `syn_cruise_1hz` rows and, on this scenario, a compounding one: through a 60 s GNSS outage the barometer is the only aiding source there is, so dropping it from 50 Hz to 1 Hz removes almost all of it. Roll and pitch degrade with it, and horizontal dead reckoning follows the attitude. 24 m of horizontal error over a 60 s free-inertial coast on consumer-grade IMU is a realistic figure; the 12 m it replaces was flattered by a barometer no hardware runs at."
         },
         "yaw_rmse_deg": {
-          "value": 1.06976
+          "value": 1.07034
         }
       }
     },
@@ -809,62 +814,62 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 95.4205
+          "value": 89.6536
         },
         "containment_3sigma_horizontal": {
-          "value": 0.911733
+          "value": 0.988933
         },
         "containment_3sigma_vertical": {
-          "value": 0.8492
+          "value": 0.848933
         },
         "horizontal_cep50_m": {
-          "value": 5.41847
+          "value": 2.25475
         },
         "horizontal_cep95_m": {
-          "value": 3152.24,
-          "note": "Worse after the vertical process-noise retune (was 221.67 m / 412.96 m / 13.62 m/s / 0.59 m/s / 3.51 deg at the old 1e-4). Recorded, not endorsed. This row does not respond monotonically to that knob -- across a four-decade sweep the horizontal RMSE runs 222, 174, 267, 344 m while the yaw error runs 105, 98, 21, 34 deg, so position gets worse exactly where attitude gets five times better. That is #371 -- a linear Euler mean over sigma-point attitudes -- coasting a 60 s GNSS outage, and it bounces under any perturbation. Read `syn_outage_60s__eskf`, which is monotone, for what the retune did."
+          "value": 650.316,
+          "note": "650 m, down from 3,152. See `horizontal_rmse_m` on this row: scheduling the barometer at 1 Hz took the whole distribution down, not just its centre."
         },
         "horizontal_max_m": {
-          "value": 3756.86,
+          "value": 1497.62,
           "regress_fraction": 0.25,
           "note": "As `real_outage_60s__eskf`: a single sample at the end of a coast."
         },
         "horizontal_rmse_m": {
-          "value": 857.982,
-          "note": "858 m, up from 251. A 60 s free-inertial coast is where process noise matters most, and #374 cut what this 50 Hz scenario receives by 50x -- it had been given a full second of random walk every 20 ms. With an honest Q the filter is far more confident through the coast, so the attitude error it coasts on is no longer masked by an inflated covariance. The ESKF's equivalent row *improved* over the same change, 20.07 m to 12.17 m, which is what a filter with sound attitude does here. The difference between them is #371: this row's yaw went 24.8 to 95.2 deg while the ESKF's stayed near 1 deg."
+          "value": 235.141,
+          "note": "235 m, down from 858 -- the largest single improvement in this bless, and the reason #375 had to land before #369. A 50 Hz barometer through a 60 s free-inertial coast was actively destabilising this filter: `horizontal_cep95_m` fell 3,152 to 650 m, `horizontal_max_m` 3,757 to 1,498 m, `nees_position` 18.45 to 6.82 and `containment_3sigma_horizontal` 0.912 to 0.989 against an ideal of 0.9973, all on the same change. Still far worse than the ESKF's equivalent row, which is #371."
         },
         "nees_position": {
-          "value": 18.4517,
-          "note": "18.45 against `npes_position`'s 15.12, a ratio of 1.22 -- the largest in the matrix. Same mechanism as `real_outage_60s__eskf`: a free-inertial coast correlates the position error and the diagonal-only form cannot see it."
+          "value": 6.8222,
+          "note": "6.82 against `npes_position`'s 6.54, a ratio of 1.04 -- down from 1.22 before #375, when this was the largest gap in the matrix. A free-inertial coast correlates the position error and the diagonal-only form cannot see it; with the coast better controlled there is less correlation for it to miss."
         },
         "npes_position": {
-          "value": 15.1238
+          "value": 6.54237
         },
         "pitch_rmse_deg": {
-          "value": 4.4764
+          "value": 7.07453
         },
         "roll_rmse_deg": {
-          "value": 5.05743,
-          "note": "Worse after the vertical process-noise retune (was 221.67 m / 412.96 m / 13.62 m/s / 0.59 m/s / 3.51 deg at the old 1e-4). Recorded, not endorsed. This row does not respond monotonically to that knob -- across a four-decade sweep the horizontal RMSE runs 222, 174, 267, 344 m while the yaw error runs 105, 98, 21, 34 deg, so position gets worse exactly where attitude gets five times better. That is #371 -- a linear Euler mean over sigma-point attitudes -- coasting a 60 s GNSS outage, and it bounces under any perturbation. Read `syn_outage_60s__eskf`, which is monotone, for what the retune did."
+          "value": 8.39307,
+          "note": "Worse under #375, which is the same vertical story as the `syn_cruise_1hz` rows and, on this scenario, a compounding one: through a 60 s GNSS outage the barometer is the only aiding source there is, so dropping it from 50 Hz to 1 Hz removes almost all of it. Roll and pitch degrade with it, and horizontal dead reckoning follows the attitude. 24 m of horizontal error over a 60 s free-inertial coast on consumer-grade IMU is a realistic figure; the 12 m it replaces was flattered by a barometer no hardware runs at."
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 34.8954,
-          "note": "Worse after the vertical process-noise retune (was 221.67 m / 412.96 m / 13.62 m/s / 0.59 m/s / 3.51 deg at the old 1e-4). Recorded, not endorsed. This row does not respond monotonically to that knob -- across a four-decade sweep the horizontal RMSE runs 222, 174, 267, 344 m while the yaw error runs 105, 98, 21, 34 deg, so position gets worse exactly where attitude gets five times better. That is #371 -- a linear Euler mean over sigma-point attitudes -- coasting a 60 s GNSS outage, and it bounces under any perturbation. Read `syn_outage_60s__eskf`, which is monotone, for what the retune did."
+          "value": 22.1683,
+          "note": "22.2 m/s, down from 34.9. Improved with the rest of this row under #375; still a number with no navigation in it, on a filter with no heading (#371)."
         },
         "velocity_vertical_rmse_mps": {
-          "value": 0.433937,
-          "note": "Worse after the vertical process-noise retune (was 221.67 m / 412.96 m / 13.62 m/s / 0.59 m/s / 3.51 deg at the old 1e-4). Recorded, not endorsed. This row does not respond monotonically to that knob -- across a four-decade sweep the horizontal RMSE runs 222, 174, 267, 344 m while the yaw error runs 105, 98, 21, 34 deg, so position gets worse exactly where attitude gets five times better. That is #371 -- a linear Euler mean over sigma-point attitudes -- coasting a 60 s GNSS outage, and it bounces under any perturbation. Read `syn_outage_60s__eskf`, which is monotone, for what the retune did."
+          "value": 1.75529,
+          "note": "Worse under #375, which is the same vertical story as the `syn_cruise_1hz` rows and, on this scenario, a compounding one: through a 60 s GNSS outage the barometer is the only aiding source there is, so dropping it from 50 Hz to 1 Hz removes almost all of it. Roll and pitch degrade with it, and horizontal dead reckoning follows the attitude. 24 m of horizontal error over a 60 s free-inertial coast on consumer-grade IMU is a realistic figure; the 12 m it replaces was flattered by a barometer no hardware runs at."
         },
         "vertical_bias_m": {
-          "value": -0.0632119
+          "value": -1.18669
         },
         "vertical_rmse_m": {
-          "value": 0.612836,
-          "note": "About a quarter worse than at the old 1e-4 altitude process noise, and the stated price of that retune: the old value bought this RMSE by reporting an uncertainty roughly half the actual error. Containment in the same row moved 0.88 -> 0.93 toward 0.9973. On the reference recording vertical RMSE did not pay this price at all -- it improved slightly. See VERTICAL_POSITION_PROCESS_NOISE_M2 in core/src/sim.rs."
+          "value": 3.08462,
+          "note": "Worse under #375, which is the same vertical story as the `syn_cruise_1hz` rows and, on this scenario, a compounding one: through a 60 s GNSS outage the barometer is the only aiding source there is, so dropping it from 50 Hz to 1 Hz removes almost all of it. Roll and pitch degrade with it, and horizontal dead reckoning follows the attitude. 24 m of horizontal error over a 60 s free-inertial coast on consumer-grade IMU is a realistic figure; the 12 m it replaces was flattered by a barometer no hardware runs at."
         },
         "yaw_rmse_deg": {
-          "value": 95.1897,
-          "note": "95.2 deg, up from 24.8. Same cause as the horizontal row above and as this scenario's sibling at `syn_cruise_1hz__ukf`: #371's linear Euler mean over sigma-point attitudes, now unmasked twice over -- once by #373 removing the covariance floor that pinned position, and again by #374 removing 50x of process noise that was hiding the drift. Uniformly random yaw would be about 104 deg RMS, so this filter has essentially no heading through the coast."
+          "value": 89.0,
+          "note": "89.0 deg, from 95.2. Uniformly random yaw is about 104 deg RMS, so this filter has essentially no heading through the coast either way -- #371's linear Euler mean over sigma-point attitudes. The synthetic trajectories carry no magnetic field yet (#369), so nothing aids heading here but the GNSS velocity fix, which the outage withdraws."
         }
       }
     }
