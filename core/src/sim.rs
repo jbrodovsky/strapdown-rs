@@ -3359,7 +3359,7 @@ pub struct UkfConfig {
     /// IMU grade the initial bias covariance is derived from when
     /// `imu_biases_covariance` is not given.
     ///
-    /// [`IMUQuality::initial_bias_covariance`] turns the grade's bias instability into the
+    /// [`crate::IMUQuality::initial_bias_covariance`] turns the grade's bias instability into the
     /// six-entry diagonal, so a filter opens believing its biases to within about one
     /// instability of zero. Before this field the three constructors each hard-coded a
     /// different answer and none of them modelled any hardware -- see that method for the
@@ -3451,21 +3451,36 @@ pub fn initialize_ukf(
     // mode `book/src/user-guide/configuration.md` calls "the single most common way to get a
     // wrong result out of the simulator".
     covariance_diagonal.extend(match config.imu_biases_covariance {
-        Some(imu_cov) => imu_cov,
+        Some(imu_cov) => {
+            // Length-checked here, like the EKF and ESKF already do. Without it a malformed
+            // vector could still pass the whole-diagonal check below whenever `other_states`
+            // made the total come out right, sliding an extra-state variance into a bias slot
+            // instead of returning `InvalidConfiguration`.
+            require_config(
+                imu_cov.len() == 6,
+                "imu_biases_covariance",
+                format!("expected 6 elements, got {}", imu_cov.len()),
+            )?;
+            imu_cov
+        }
         // Derived from the IMU grade, not a constant. See
         // `IMUQuality::initial_bias_covariance`: the `1e-3` this replaces was a gyro-bias
         // sigma of 1.81 deg/s against a consumer part's 0.028, and the ESKF's own hard-coded
         // answer disagreed with it by five orders of magnitude.
         None => config.imu_quality.initial_bias_covariance().to_vec(),
     });
-    // Zero, not `1e-3`. `1e-3` is this block's *covariance*, just above, and it had been
-    // copied into the estimate: the filter opened by asserting a 1 mrad/s rate bias on every
-    // gyroscope axis and a 1 mm/s^2 bias on every accelerometer axis, as a point estimate
-    // rather than an uncertainty, and subtracted it from every sample. 1e-3 rad/s is
-    // 0.057 deg/s, and that is exactly the rate at which the UKF's attitude walked away from
-    // `dead_reckoning` on an IMU-only stream. `initialize_ekf` and `initialize_eskf` both
-    // write `vec![0.0; 6]` here against the same `vec![1e-3; 6]` covariance; the UKF was the
-    // only one of the three that did not (#392).
+    // Zero, and the history is worth keeping because it is the defect this whole block
+    // exists to not repeat. This used to read `vec![1e-3; 6]` -- the *covariance* that the
+    // line above used to carry, copied down into the estimate. The filter opened by asserting
+    // a 1 mrad/s rate bias on every gyroscope axis and a 1 mm/s^2 bias on every accelerometer
+    // axis, as a point estimate rather than an uncertainty, and subtracted it from every
+    // sample. 1e-3 rad/s is 0.057 deg/s, and that is exactly the rate at which the UKF's
+    // attitude walked away from `dead_reckoning` on an IMU-only stream. `initialize_ekf` and
+    // `initialize_eskf` both wrote `vec![0.0; 6]` here; the UKF was the only one of the three
+    // that did not (#392).
+    //
+    // The `1e-3` is gone from both places now -- the covariance above is derived from the IMU
+    // grade (#393) -- so this comment describes what was fixed rather than what is there.
     let imu_biases = config.imu_biases.unwrap_or_else(|| vec![0.0; 6]);
     // extend the covariance diagonal if other states are provided
     let other_states = match config.other_states {
@@ -3536,7 +3551,12 @@ pub struct EkfConfig {
     /// Defaults to zero on all six -- an uncertainty about the biases, never a claim about
     /// them. See [`UkfConfig::imu_biases`] for why that is worth stating (#392).
     pub imu_biases: Option<Vec<f64>>,
-    /// Optional IMU bias covariance (6 elements).
+    /// Optional initial IMU bias covariance diagonal, 6 elements in the same order.
+    ///
+    /// Defaults to [`crate::IMUQuality::initial_bias_covariance`] for [`Self::imu_quality`].
+    /// Read **independently** of [`Self::imu_biases`]: setting one without the other used to
+    /// discard this silently on this constructor, which is #392 on the one filter it was not
+    /// fixed on.
     pub imu_biases_covariance: Option<Vec<f64>>,
     /// Optional process noise diagonal (9 or 15 elements, matching `use_biases`).
     pub process_noise_diagonal: Option<Vec<f64>>,
@@ -3545,7 +3565,7 @@ pub struct EkfConfig {
     /// IMU grade the initial bias covariance is derived from when
     /// `imu_biases_covariance` is not given.
     ///
-    /// [`IMUQuality::initial_bias_covariance`] turns the grade's bias instability into the
+    /// [`crate::IMUQuality::initial_bias_covariance`] turns the grade's bias instability into the
     /// six-entry diagonal, so a filter opens believing its biases to within about one
     /// instability of zero. Before this field the three constructors each hard-coded a
     /// different answer and none of them modelled any hardware -- see that method for the
@@ -3688,26 +3708,31 @@ pub fn initialize_ekf(
 
     // Add IMU bias covariance if using biases
     let imu_biases_vec = if use_biases {
+        // The estimate and its uncertainty are two independent settings, read independently.
+        // This arm used to read the covariance only when an estimate was also supplied, so a
+        // caller who set `imu_biases_covariance` and left `imu_biases` at `None` -- wanting a
+        // custom uncertainty about a zero bias, which is the ordinary case -- had it
+        // **silently discarded** for the grade default. That is #392's defect exactly, on the
+        // one constructor it was not fixed on: the UKF and ESKF both read it unconditionally.
+        covariance_diagonal.extend(match imu_biases_covariance {
+            Some(imu_cov) => {
+                require_config(
+                    imu_cov.len() == 6,
+                    "imu_biases_covariance",
+                    format!("expected 6 elements, got {}", imu_cov.len()),
+                )?;
+                imu_cov
+            }
+            None => imu_quality.initial_bias_covariance().to_vec(),
+        });
         if let Some(biases) = imu_biases {
             require_config(
                 biases.len() == 6,
                 "imu_biases",
                 format!("expected 6 elements, got {}", biases.len()),
             )?;
-            covariance_diagonal.extend(match imu_biases_covariance {
-                Some(imu_cov) => {
-                    require_config(
-                        imu_cov.len() == 6,
-                        "imu_biases_covariance",
-                        format!("expected 6 elements, got {}", imu_cov.len()),
-                    )?;
-                    imu_cov
-                }
-                None => imu_quality.initial_bias_covariance().to_vec(),
-            });
             biases
         } else {
-            covariance_diagonal.extend(imu_quality.initial_bias_covariance());
             vec![0.0; 6]
         }
     } else {
@@ -3755,7 +3780,7 @@ pub struct EskfConfig {
     /// IMU grade the initial bias covariance is derived from when
     /// `imu_biases_covariance` is not given.
     ///
-    /// [`IMUQuality::initial_bias_covariance`] turns the grade's bias instability into the
+    /// [`crate::IMUQuality::initial_bias_covariance`] turns the grade's bias instability into the
     /// six-entry diagonal, so a filter opens believing its biases to within about one
     /// instability of zero. Before this field the three constructors each hard-coded a
     /// different answer and none of them modelled any hardware -- see that method for the
@@ -7587,7 +7612,7 @@ mod tests {
     ///   on the line above, copied down -- where the other two seeded zero. A UKF built
     ///   without explicit biases opened by asserting a 1 mrad/s rate bias on every gyroscope
     ///   axis and subtracting it from every sample.
-    /// * **The covariance (#371).** The UKF and EKF opened at `1e-3` for all six entries
+    /// * **The covariance (#393).** The UKF and EKF opened at `1e-3` for all six entries
     ///   while the ESKF used `1e-6`/`1e-8` -- five orders of magnitude apart on the gyro
     ///   block, and none of the three a model of any hardware. `1e-3` is a gyro-bias sigma of
     ///   1.81 deg/s against the 0.028 deg/s a `Consumer`-grade part actually has.
@@ -7684,6 +7709,97 @@ mod tests {
                     );
                 }
             }
+        }
+
+        // And the covariance is read **independently of the estimate** by all three.
+        //
+        // This is the case the first version of this test did not cover, because it only ever
+        // built configs with `..Default::default()`. `initialize_ekf` read
+        // `imu_biases_covariance` only inside its `if let Some(imu_biases)` arm, so a caller
+        // who set a covariance and left the estimate at `None` -- a custom uncertainty about a
+        // zero bias, the ordinary case -- had it silently replaced by the grade default. The
+        // UKF and ESKF both honoured it. That is #392's defect surviving on the one
+        // constructor it was not fixed on, and a test that pins the three against each other
+        // has to exercise the setting independently or it pins nothing.
+        let custom = vec![7e-4, 7e-4, 7e-4, 9e-8, 9e-8, 9e-8];
+        let ukf = initialize_ukf(
+            &record,
+            UkfConfig {
+                imu_biases_covariance: Some(custom.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let ekf = initialize_ekf(
+            &record,
+            EkfConfig {
+                imu_biases_covariance: Some(custom.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let eskf = initialize_eskf(
+            &record,
+            EskfConfig {
+                imu_biases_covariance: Some(custom.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for (name, filter) in [
+            ("UKF", ukf.get_certainty()),
+            ("EKF", ekf.get_certainty()),
+            ("ESKF", eskf.get_certainty()),
+        ] {
+            for (offset, index) in BIAS_STATE_INDICES.enumerate() {
+                assert_approx_eq!(filter[(index, index)], custom[offset], 1e-18);
+            }
+            let _ = name;
+        }
+
+        // A malformed covariance is rejected by all three, not quietly absorbed. The UKF had
+        // no length check at all, so with `other_states` making the whole diagonal come out
+        // the right length a short vector would have slid an extra-state variance into a bias
+        // slot.
+        for (name, result) in [
+            (
+                "UKF",
+                initialize_ukf(
+                    &record,
+                    UkfConfig {
+                        imu_biases_covariance: Some(vec![1e-4; 5]),
+                        ..Default::default()
+                    },
+                )
+                .err(),
+            ),
+            (
+                "EKF",
+                initialize_ekf(
+                    &record,
+                    EkfConfig {
+                        imu_biases_covariance: Some(vec![1e-4; 5]),
+                        ..Default::default()
+                    },
+                )
+                .err(),
+            ),
+            (
+                "ESKF",
+                initialize_eskf(
+                    &record,
+                    EskfConfig {
+                        imu_biases_covariance: Some(vec![1e-4; 5]),
+                        ..Default::default()
+                    },
+                )
+                .err(),
+            ),
+        ] {
+            assert!(
+                result.is_some(),
+                "{name} accepted a five-element bias covariance instead of rejecting it"
+            );
         }
 
         // The derivation itself, so the constants above cannot all drift together: a
