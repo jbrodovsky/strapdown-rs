@@ -3182,11 +3182,32 @@ pub fn run_closed_loop<F: NavigationFilter>(
     // Only the barometric bias is reachable this way: map biases still need
     // `run_closed_loop_with_geo`, because the filter cannot say which of its extra states is
     // a gravity anomaly and which a magnetic one.
-    let layout = match filter.baro_bias_index() {
-        Some(index) => {
-            ExtraStateLayout::new(filter.get_estimate().len(), None, None).with_baro_bias(index)
+    let layout = if let Some(index) = filter.baro_bias_index() {
+        ExtraStateLayout::new(filter.get_estimate().len(), None, None).with_baro_bias(index)
+    } else {
+        // Narrower than the fifteen Kalman states means no IMU-bias block, and that width is
+        // fully describable without knowing what any extra state *means* -- there are none.
+        // A nine-state filter is publicly constructible and documented: `EkfConfig::use_biases`
+        // is a `pub` field, `initialize_ekf` honours it, and `test_initialize_ekf_default_9state`
+        // asserts the nine-state result. Taking `ExtraStateLayout::NONE` for it hardcoded
+        // fifteen and panicked on the initial row with "State vector must have 15 elements;
+        // got 9", before a single event was processed. `From` routes a sub-fifteen layout to
+        // the particle-shaped conversion, which is exactly the right shape here.
+        //
+        // *Wider* than fifteen with no barometric-bias index is the opposite case and must
+        // keep failing: those extra states are geophysical, the filter cannot say which is a
+        // gravity anomaly and which a magnetic one, and writing them out unlabelled would put
+        // a milligal figure in a nanotesla column. `run_closed_loop_with_geo` is the entry
+        // point that takes the layout from the caller. Widening the derivation to cover this
+        // case turns a loud refusal into a silently mislabelled solution, which
+        // `plain_closed_loop_still_rejects_a_geophysical_filter` exists to prevent -- and did,
+        // when this fix was first written too broadly.
+        let width = filter.get_estimate().len();
+        if width < NAVIGATION_STATES {
+            ExtraStateLayout::new(width, None, None)
+        } else {
+            ExtraStateLayout::NONE
         }
-        None => ExtraStateLayout::NONE,
     };
     run_closed_loop_with_geo(filter, stream, health_limits, execution_limits, layout)
 }
@@ -5578,7 +5599,14 @@ pub struct GeophysicalConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gravity_resolution: Option<GeoResolution>,
 
-    /// Gravity measurement bias (mGal)
+    /// Gravity measurement bias (mGal).
+    ///
+    /// **Read only on the CLI path** (`--gravity-bias`, `sim/src/main.rs:1693`). The
+    /// configuration-file path never reads it: closed-loop mode rejects a `[geophysical]`
+    /// section outright, and the particle-filter arm takes only the resolutions, the noise
+    /// standard deviations and `geo_interval_s`. Setting it in a config file is silently
+    /// ignored. Kept rather than removed because shipped and user configuration files set it,
+    /// and dropping the field would turn a silently-ignored value into a parse error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gravity_bias: Option<f64>,
 
@@ -5595,7 +5623,10 @@ pub struct GeophysicalConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub magnetic_resolution: Option<GeoResolution>,
 
-    /// Magnetic measurement bias (nT)
+    /// Magnetic measurement bias (nT).
+    ///
+    /// Config-path-inert in exactly the way
+    /// [`gravity_bias`](GeophysicalConfig::gravity_bias) is; see its note.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub magnetic_bias: Option<f64>,
 

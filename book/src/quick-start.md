@@ -87,26 +87,41 @@ timestamp,latitude,longitude,altitude,velocity_north,velocity_east,velocity_down
 For more complex scenarios, use TOML configuration files:
 
 ```toml
-# config.toml
-[simulation]
-mode = "closed-loop"
-filter = "ekf"
+# config.toml -- a whole `SimulationConfig`. `mode` is the only required field.
+mode = "closed-loop"          # dead-reckoning | open-loop | closed-loop | particle-filter | synthetic
+input = "data/trajectory.csv"
+output = "results/navigation.csv"
+seed = 42
+is_enu = false                # NED is the default; Sensor Logger exports need `true`
 
-[data]
-input_file = "data/trajectory.csv"
-output_file = "results/navigation.csv"
+[logging]
+level = "info"
 
-[gnss]
-enabled = true
-dropout_probability = 0.1
-update_rate = 1.0
+[closed_loop]
+filter = "eskf"               # eskf (default) | ukf | ekf
 
-[filter]
-use_biases = true
-initial_position_uncertainty = 10.0
-initial_velocity_uncertainty = 1.0
-initial_attitude_uncertainty = 0.1
+[aiding]
+seed = 42
+
+[aiding.scheduler]            # when GNSS fixes arrive
+kind = "fixed_interval"
+interval_s = 5.0
+phase_s = 0.0
+
+[aiding.fault]                # how they are corrupted
+kind = "none"
 ```
+
+Run it with the config alone — `--config` supplies the whole run, so a subcommand and its
+`-i`/`-o`/`--filter` arguments are ignored when it is present:
+
+```bash
+strapdown-sim --config config.toml
+```
+
+`core/tests/example_configs.rs` parses every file under `examples/configs/` and asserts it
+deserializes into the scenario it describes, because every field has a default: a misspelled
+section is dropped silently and the run simulates nothing.
 
 Run with:
 ```bash

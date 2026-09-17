@@ -36,7 +36,9 @@ The core library implementing strapdown INS algorithms and simulation framework:
 
 ### 2. `strapdown-sim` (/sim)
 Command-line tool for running INS simulations with GNSS degradation:
-- Modes: open-loop (dead reckoning), closed-loop with UKF, or particle filter
+- Modes: `dr` (dead reckoning), `cl` (closed loop -- ESKF by default, UKF and EKF by
+  `--filter`), `pf` (particle filter), `syn` (synthetic trajectory). `ol` exists but is
+  **not implemented**: it writes no output
 - GNSS fault simulation: dropouts, reduced update rates, measurement corruption, bias injection
 - Input: CSV files with IMU and GNSS measurements (Sensor Logger format)
 - Output: **the CLI writes CSV only.** Every path through `strapdown-sim` ends in

@@ -20,6 +20,7 @@
 //! Compared through `serde_json::Value` rather than `PartialEq`, because these types do not
 //! derive it and the value diff names the offending field.
 
+use strapdown::NavigationFilter;
 use strapdown::engine::InsEngineConfig;
 use strapdown::messages::AidingConfig;
 use strapdown::sim::{
@@ -160,5 +161,101 @@ fn the_barometric_bias_state_is_on_by_default() {
         from_empty_section.estimate_baro_bias,
         "a `[closed_loop]` section that does not mention `estimate_baro_bias` must get the \
          same `true` the Rust API gets -- this is the exact divergence that shipped once"
+    );
+}
+
+/// A nine-state filter must survive the documented runner.
+///
+/// `EkfConfig::use_biases` is a `pub` field and `initialize_ekf` honours it, so a caller can
+/// build an EKF with no IMU-bias block -- `test_initialize_ekf_default_9state` in `sim.rs`
+/// asserts exactly that shape. `run_closed_loop` then chose `ExtraStateLayout::NONE`, whose
+/// width is a hardcoded fifteen, and the conversion to `NavigationResult` aborted on the very
+/// first row with `State vector must have 15 elements; got 9` -- before a single event was
+/// processed, by panic, in a crate whose lint policy denies panics in library code.
+///
+/// The branch that closed the other two reachable panics missed this one because it is reached
+/// only through a configuration nothing in `strapdown-sim` sets: `use_biases` has no CLI flag
+/// and appears in no shipped config, so only a library caller finds it. A published crate has
+/// library callers.
+#[test]
+fn the_documented_runner_accepts_a_nine_state_filter() {
+    let record = strapdown::sim::TestDataRecord::default();
+
+    let mut config = strapdown::sim::EkfConfig::default();
+    config.use_biases = false;
+    let mut ekf = strapdown::sim::initialize_ekf(&record, config)
+        .expect("a nine-state EKF is a supported configuration");
+
+    assert_eq!(
+        ekf.get_estimate().len(),
+        9,
+        "this test is only meaningful against a nine-state filter"
+    );
+
+    let stream = strapdown::messages::build_event_stream(
+        std::slice::from_ref(&record),
+        &strapdown::messages::AidingConfig::default(),
+        false,
+    )
+    .expect("a single record is enough to build a stream");
+
+    let results = strapdown::sim::run_closed_loop(&mut ekf, stream, None, None)
+        .expect("the documented runner must accept a filter the library can build");
+
+    assert!(
+        !results.is_empty(),
+        "the runner returned no rows for a nine-state filter"
+    );
+}
+
+/// ...and the opposite case must still be refused.
+///
+/// The first attempt at the fix above derived the width from the filter unconditionally, which
+/// also accepted a *wider* filter -- one carrying geophysical bias states. The plain runner
+/// cannot label those: the filter cannot say which extra state is a gravity anomaly and which
+/// a magnetic one, so an unlabelled solution would put a milligal figure in a nanotesla column.
+/// `run_closed_loop_with_geo` is the entry point that takes the layout from the caller.
+///
+/// `geonav/tests/geo_closed_loop.rs::plain_closed_loop_still_rejects_a_geophysical_filter`
+/// caught that, but it lives in a crate behind a feature flag. This keeps the two halves of the
+/// invariant next to each other: narrower than fifteen is describable, wider is not.
+#[test]
+fn a_wider_filter_without_a_baro_index_is_still_refused() {
+    let record = strapdown::sim::TestDataRecord::default();
+
+    let mut config = strapdown::sim::UkfConfig::default();
+    // A sixteenth state with no `baro_bias_index` set: exactly the shape a geophysical filter
+    // has when handed to the plain runner by a caller who forgot the layout.
+    config.other_states = Some(vec![0.0]);
+    config.other_states_covariance = Some(vec![1.0]);
+    // The extra state widens the filter, so the process-noise diagonal has to match it.
+    let mut process_noise = strapdown::sim::DEFAULT_PROCESS_NOISE_DENSITY.to_vec();
+    process_noise.push(1e-6);
+    config.process_noise_diagonal = Some(process_noise);
+    let mut ukf = strapdown::sim::initialize_ukf(&record, config)
+        .expect("a sixteen-state UKF is constructible");
+
+    assert_eq!(ukf.get_estimate().len(), 16);
+    assert!(
+        ukf.baro_bias_index().is_none(),
+        "this test is only meaningful when the extra state is unlabelled"
+    );
+
+    let stream = strapdown::messages::build_event_stream(
+        std::slice::from_ref(&record),
+        &strapdown::messages::AidingConfig::default(),
+        false,
+    )
+    .expect("a single record is enough to build a stream");
+
+    let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = strapdown::sim::run_closed_loop(&mut ukf, stream, None, None);
+    }))
+    .is_err();
+
+    assert!(
+        refused,
+        "the plain runner accepted a filter with unlabelled extra states; it would have \
+         written the gravity bias into the wrong column rather than refusing"
     );
 }

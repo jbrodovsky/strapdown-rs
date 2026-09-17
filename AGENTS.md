@@ -26,7 +26,10 @@ Plain Cargo, no environment manager. `rust-toolchain.toml` pins the toolchain an
 - `cargo docs`: build the API docs with KaTeX (aliased, because cargo ignores an alias that
   shadows a built-in subcommand such as `doc`).
 - `cargo coverage`: coverage; needs `cargo install cargo-tarpaulin` first.
-- Example run: `./target/release/strapdown-sim -i input.csv -o output.csv open-loop`.
+- Example run: `./target/release/strapdown-sim dr -i input.csv -o output.csv`. The
+  subcommand comes first -- `-i` before it is rejected -- and there is no `open-loop`
+  subcommand: the modes are `dr`, `ol`, `cl`, `pf`, `config` and `syn`. Use `dr` for dead
+  reckoning; `ol` is not implemented and writes no output.
 
 ## Coding Style & Naming Conventions
 - Rust formatting via rustfmt (4-space indentation); keep functions focused and small.
