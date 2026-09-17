@@ -4191,16 +4191,20 @@ pub fn initialize_eskf(
     };
 
     // Build IMU biases
-    let imu_biases = match imu_biases {
+    // `try_into` rather than `require_config` + a `Vec`: `ErrorStateKalmanFilter::new` takes
+    // `&[f64; 6]`, so the length stops being a checked precondition and becomes the type. The
+    // conversion is the check.
+    let imu_biases: [f64; 6] = match imu_biases {
         Some(biases) => {
-            require_config(
-                biases.len() == 6,
-                "imu_biases",
-                format!("expected 6 elements, got {}", biases.len()),
-            )?;
+            let length = biases.len();
             biases
+                .try_into()
+                .map_err(|_| StrapdownError::InvalidConfiguration {
+                    field: "imu_biases",
+                    reason: format!("expected 6 elements, got {length}"),
+                })?
         }
-        None => vec![0.0; 6],
+        None => [0.0; 6],
     };
 
     // Build error covariance diagonal.
@@ -4656,6 +4660,11 @@ pub mod health {
             }
         }
 
+        /// Narrowest state [`HealthMonitor::check`] can read: three position and three
+        /// velocity components. Every filter in this crate is at least nine wide, so this is a
+        /// guard against a caller's mistake rather than a limit anything here runs into.
+        pub(crate) const MINIMUM_MONITORED_STATE: usize = 6;
+
         /// Call after **every event** (predict or update). Provide the optional NIS whenever the
         /// event was a measurement update -- of any sensor, not only GNSS.
         ///
@@ -4669,6 +4678,20 @@ pub mod health {
             p: &nalgebra::DMatrix<f64>,
             maybe_nis_pos: Option<f64>,
         ) -> Result<()> {
+            // 0) Width. Everything below reads `x[0..=5]`, and `x` is a slice rather than a
+            // fixed-size array because a state is 9, 15 or 16 wide depending on the filter.
+            // Without this guard a short slice panics here, inside a `pub fn`, in a crate that
+            // denies `panic`/`unwrap`/`expect` in library code -- and clippy does not flag
+            // slice indexing, so nothing else catches it.
+            if x.len() < Self::MINIMUM_MONITORED_STATE {
+                bail!(
+                    "Health check needs at least {} states \
+                     (position and velocity); got {}",
+                    Self::MINIMUM_MONITORED_STATE,
+                    x.len()
+                );
+            }
+
             // 1) Finite checks
             if !x.iter().all(|v| v.is_finite()) {
                 bail!("Non-finite state detected");
@@ -8230,6 +8253,35 @@ mod tests {
 
         let result = monitor.check(&state, &cov, None);
         assert!(result.is_ok());
+    }
+
+    /// A state too short to read returns an error rather than panicking.
+    ///
+    /// `check` takes `&[f64]` -- it has to, since a state is 9, 15 or 16 wide depending on the
+    /// filter -- and then reads `x[0..=5]`. Nothing made that a precondition: clippy does not
+    /// flag slice indexing, so the crate's deny-level `panic`/`unwrap`/`expect` policy did not
+    /// reach it, and the panic sat in a `pub fn`.
+    ///
+    /// Five elements is the interesting length: it clears position and the first two velocity
+    /// components, so it reaches `x[5]` and no earlier read.
+    #[test]
+    fn a_state_too_short_to_monitor_is_an_error_not_a_panic() {
+        let mut monitor = HealthMonitor::new(HealthLimits::default());
+        let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 5]));
+
+        for width in 0..HealthMonitor::MINIMUM_MONITORED_STATE {
+            let state = vec![0.0; width];
+            let result = monitor.check(&state, &cov, None);
+            assert!(
+                result.is_err(),
+                "a {width}-element state was accepted; it would have panicked on x[{}]",
+                HealthMonitor::MINIMUM_MONITORED_STATE - 1
+            );
+        }
+
+        // ...and the narrowest acceptable state still works.
+        let state = vec![0.5, 0.5, 100.0, 10.0, 5.0, 0.0];
+        assert!(monitor.check(&state, &cov, None).is_ok());
     }
 
     #[test]

@@ -2035,7 +2035,7 @@ impl ErrorStateKalmanFilter {
     /// ```
     pub fn new(
         initial_state: &InitialState,
-        imu_biases: &[f64],
+        imu_biases: &[f64; 6],
         error_covariance_diagonal: Vec<f64>,
         process_noise: DMatrix<f64>,
     ) -> Self {
