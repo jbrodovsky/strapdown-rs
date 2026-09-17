@@ -159,8 +159,8 @@ pub struct RbpfConfig {
     ///
     /// Like the position term the predict step scales it by `sqrt(dt)`, so the variance it
     /// contributes grows linearly in elapsed time and is independent of the log's sample
-    /// rate. This said `std * dt` until #374 -- and this doc said so for longer than the code
-    /// did.
+    /// rate. The predict step scaled it by `dt` rather than `sqrt(dt)` until #374 -- and this
+    /// doc went on saying so for longer than the code did.
     pub velocity_process_noise_std_mps: f64,
     /// Attitude random-walk scale, **rad per root-second**, applied uniformly to the three
     /// attitude error states and scaled by `sqrt(dt)` in the predict step, as above.
@@ -177,11 +177,14 @@ pub struct RbpfConfig {
     /// Process-noise standard deviation for the extra states, **in the state's own units per
     /// root-second**, applied uniformly as a random walk.
     ///
-    /// Unlike every other block here it is applied as a per-particle draw on the mean rather
-    /// than through the conditional covariance, because these states are estimated by
-    /// importance weighting rather than analytically -- see the note at the draw in
-    /// `predict_sample` and #382. The variance it contributes to the reported estimate is
-    /// `std^2 * elapsed_seconds`, independent of sample rate.
+    /// Like the position block -- and unlike the velocity and attitude blocks, which enter
+    /// through the conditional covariance `q_l` -- it is applied as a per-particle draw. The
+    /// reason differs: position is the sampled partition and is *meant* to be drawn, whereas
+    /// these states sit in the linear partition by address only and are estimated by
+    /// importance weighting rather than analytically, so a `q_l` entry for them would never
+    /// be read -- see the note at the draw in `predict_sample` and #382. The variance it
+    /// contributes to the reported estimate is `std^2 * elapsed_seconds`, independent of
+    /// sample rate.
     pub extra_state_process_noise_std: f64,
     /// Seed for the filter's random number generator, which draws the initial
     /// particle spread, the per-step process noise and the resampling indices. Runs
@@ -419,9 +422,8 @@ impl RaoBlackwellizedParticleFilter {
         //
         // Left as it is deliberately. The ESKF's half of #349 was a chain rule away
         // (`body_rotation_vector_to_euler_jacobian`); this half needs the particle cloud's
-        // attitude representation designed rather than a call swapped, and it belongs with
-        // the rest of the RBPF work (#382) rather than riding along with a measurement-side
-        // contract fix.
+        // attitude representation designed rather than a call swapped, so it stays on #349
+        // rather than riding along with a measurement-side contract fix.
         let f = state_transition_jacobian(&self.nominal, &rates.accel, &rates.gyro, dt);
         let linear_dim = LINEAR_STATE_DIM_BASE + self.config.extra_state_dim;
 
@@ -590,10 +592,12 @@ impl RaoBlackwellizedParticleFilter {
                     //
                     // What is true is asymptotic: `predict` is exactly the identity on these
                     // states without it, `maybe_resample` clones particles with no jitter,
-                    // `recenter_errors` shifts the cloud without widening it, and
-                    // `inflate_particle_spread` is multiplicative and so cannot manufacture
-                    // spread from none. Spread can therefore only decay, and this draw is the
-                    // only thing that regenerates it.
+                    // and `recenter_errors` shifts the cloud without widening it.
+                    // `inflate_particle_spread` does widen it -- gate rejection scales every
+                    // deviation from the mean by `sqrt(factor)` -- but multiplicatively, so it
+                    // can only grow a spread that is still non-zero, and only when a fix is
+                    // rejected. This draw is the filter's one unconditional source of extra-
+                    // state spread, and the only mechanism that can restore it from zero.
                     let noise = normal.sample(&mut self.rng)
                         * self.config.extra_state_process_noise_std
                         * root_dt;
@@ -1806,10 +1810,20 @@ mod tests {
     /// The `q_l` entry was removed because `linear_cov`'s extra block is *unreachable*: no
     /// Kalman gain touches those rows, so anything written there is never read. That argument
     /// is a proof about the code, and proofs about code rot. This pins the invariant it
-    /// depends on -- the (extra, base) cross-block stays exactly zero through propagation and
-    /// through a linear update -- so the day someone routes a non-zero extra column into
-    /// `update_linear_state`, this fails and the comment at the draw tells them what to do
-    /// about it: move the noise back into `q_l`, do not add it alongside.
+    /// depends on: that no `h` reaching `update_linear_state` has a non-zero extra-state
+    /// column. Two assertions are needed to cover that, because either one alone has a blind
+    /// spot:
+    ///
+    /// - the (extra, base) cross-block stays exactly zero, which catches an `h` observing an
+    ///   extra state *together with* a Kalman state; but
+    /// - an `h` observing an extra state and nothing else leaves those cross terms at zero
+    ///   while still reading `linear_cov[(extra, extra)]` through `s` and shrinking it through
+    ///   `(I - K H)`. So the extra diagonal is captured before the update and required to come
+    ///   through it bit-identical.
+    ///
+    /// Either failing means someone has routed a non-zero extra column into
+    /// `update_linear_state`, and the comment at the draw says what to do about it: move the
+    /// noise back into `q_l`, do not add it alongside.
     #[test]
     fn the_extra_states_stay_decoupled_from_the_kalman_block() {
         let mut rbpf = rbpf_with_extra_states(2, 4242);
@@ -1820,6 +1834,15 @@ mod tests {
         for _ in 0..8 {
             rbpf.predict(&imu, 0.05).unwrap();
         }
+        let width = rbpf.particles[0].linear_cov.nrows();
+        assert!(
+            width > LINEAR_STATE_DIM_BASE,
+            "no extra states, so the loops below would assert nothing"
+        );
+        let before_update: Vec<f64> = (LINEAR_STATE_DIM_BASE..width)
+            .map(|extra| rbpf.particles[0].linear_cov[(extra, extra)])
+            .collect();
+
         rbpf.update(&GPSPositionAndVelocityMeasurement {
             latitude: 0.7_f64.to_degrees(),
             longitude: (-1.3_f64).to_degrees(),
@@ -1833,11 +1856,7 @@ mod tests {
         .unwrap();
 
         let covariance = &rbpf.particles[0].linear_cov;
-        assert!(
-            covariance.nrows() > LINEAR_STATE_DIM_BASE,
-            "no extra states, so the loop below would assert nothing"
-        );
-        for extra in LINEAR_STATE_DIM_BASE..covariance.nrows() {
+        for extra in LINEAR_STATE_DIM_BASE..width {
             for base in 0..LINEAR_STATE_DIM_BASE {
                 assert!(
                     covariance[(extra, base)] == 0.0 && covariance[(base, extra)] == 0.0,
@@ -1847,6 +1866,16 @@ mod tests {
                     covariance[(extra, base)]
                 );
             }
+        }
+        for (extra, before) in (LINEAR_STATE_DIM_BASE..width).zip(before_update) {
+            let after = covariance[(extra, extra)];
+            assert!(
+                after == before,
+                "linear_cov[({extra},{extra})] went {before:e} -> {after:e} across the linear \
+                 update. `h` has acquired a non-zero extra-state column, so the Kalman \
+                 recursion now reads that entry even though the cross-block above is still \
+                 zero -- #382's premise that it is unreachable no longer holds"
+            );
         }
     }
 

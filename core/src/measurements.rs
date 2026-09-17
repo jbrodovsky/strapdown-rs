@@ -272,10 +272,9 @@ pub trait MeasurementModel: Any {
     /// ensemble gate, while propagating its linear state with the nav-frame rotation-vector
     /// transition Jacobian. That mismatch is #349's open half; the obvious one-line fix
     /// **diverges** the filter (twenty consecutive NIS exceedances, last NIS 214.8), so it
-    /// needs the cloud's attitude representation designed rather than a call swapped, and it
-    /// is tracked with the rest of the RBPF work (#382). Until then, do not read the
-    /// paragraph above as a guarantee that every filter in this crate converts -- three do
-    /// and one does not.
+    /// needs the cloud's attitude representation designed rather than a call swapped, and
+    /// #349 stays open for it. Until then, do not read the paragraph above as a guarantee
+    /// that every filter in this crate converts -- three do and one does not.
     ///
     /// Two consequences for an implementor:
     ///

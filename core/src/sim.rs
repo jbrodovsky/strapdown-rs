@@ -5060,16 +5060,25 @@ pub struct ParticleFilterConfig {
     /// `sqrt(dt)`; see [`crate::rbpf::RbpfConfig::position_process_noise_std_m`].
     #[serde(default = "default_position_process_noise_std_m")]
     pub position_process_noise_std_m: Vec<f64>,
-    /// Velocity process noise standard deviation (m/s).
+    /// Velocity random-walk rate in m/s per sqrt(s) -- the key name keeps its `_mps` for
+    /// compatibility with existing configuration files, and the value is unchanged at a 1 s
+    /// step. The per-step standard deviation is this times `sqrt(dt)`; see
+    /// [`crate::rbpf::RbpfConfig::velocity_process_noise_std_mps`].
     #[serde(default = "default_velocity_process_noise_std_mps")]
     pub velocity_process_noise_std_mps: f64,
-    /// Attitude process noise standard deviation (rad).
+    /// Attitude random-walk rate in rad per sqrt(s) -- the key name keeps its `_rad` for
+    /// compatibility with existing configuration files, and the value is unchanged at a 1 s
+    /// step. The per-step standard deviation is this times `sqrt(dt)`; see
+    /// [`crate::rbpf::RbpfConfig::attitude_process_noise_std_rad`].
     #[serde(default = "default_attitude_process_noise_std_rad")]
     pub attitude_process_noise_std_rad: f64,
     /// Initial standard deviation for geophysical bias states.
     #[serde(default = "default_geo_bias_init_std")]
     pub geo_bias_init_std: f64,
-    /// Random-walk process noise standard deviation for geophysical bias states.
+    /// Random-walk rate for the geophysical bias states, in the bias's own units per
+    /// sqrt(s): the variance it accumulates is `std^2 * elapsed_seconds`, independent of
+    /// the log's sample rate. Supplies
+    /// [`crate::rbpf::RbpfConfig::extra_state_process_noise_std`].
     #[serde(default = "default_geo_bias_process_noise_std")]
     pub geo_bias_process_noise_std: f64,
     /// Apply zero-vertical-velocity pseudo-measurement.
