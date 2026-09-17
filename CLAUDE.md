@@ -79,8 +79,14 @@ cargo coverage
 
 ### Lint & Format
 ```bash
-# Run clippy exactly as CI does (warnings are errors)
+# Lint the wide configuration (warnings are errors)
 cargo lint
+
+# ...and the narrow one. CI lints BOTH, and `cargo lint` alone is not CI parity: a call site
+# that exists only under --all-features can orphan an import that --no-default-features then
+# reports as dead. Run both before pushing.
+cargo lint-min
+cargo test-min
 
 # Apply the clippy fixes it can
 cargo lint-fix
@@ -264,8 +270,14 @@ is the whole setup.
   untracked in #335 for the same reason
 
 ### Lint Policy
-Lints are **enforced at `deny`**, workspace-wide, not warn-level. `cargo lint` and the
-blocking CI job both run `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
+Lints are **enforced at `deny`**, workspace-wide, not warn-level. `cargo lint` and one of the
+blocking CI jobs run `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
+
+**That is only half the gate.** A second blocking job runs
+`cargo clippy -p strapdown-core --all-targets --no-default-features -- -D warnings`, and the
+two configurations disagree: an item used only behind a feature gate is live in one and dead
+in the other. `cargo lint-min` is that second configuration, and `cargo test-min` its test
+counterpart; run both alongside `cargo lint` before pushing.
 - `clippy::pedantic`, `clippy::nursery`, `missing_docs`, `missing_debug_implementations`,
   `unreachable_pub`, `rust_2018_idioms`
 - Zero-panic policy in library code: `unwrap_used`, `expect_used`, `panic` are denied. Return a

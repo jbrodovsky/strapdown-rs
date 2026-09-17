@@ -44,7 +44,18 @@ rustdocflags = ["--html-in-header", "katex-header.html"]
 # purpose: cargo refuses to let an alias shadow a built-in subcommand and silently ignores it,
 # so `doc` is spelled `docs` here.
 [alias]
+# `lint` is not the whole gate. CI lints TWO feature configurations, and this one only
+# covers the wider of them -- so a call site that exists only under `--all-features` can
+# orphan an import that `--no-default-features` then reports as dead, and `cargo lint` stays
+# silent. That is not hypothetical: typing the compute layer onto `StrapdownError` at the
+# v1.0 freeze left `bail!` used only inside `#[cfg(feature = "netcdf")]`, and the
+# no-default-features job went red on `unused_imports` after `cargo lint` passed.
+#
+# Run BOTH before pushing. `lint-min` is the cheaper of the two and catches this class.
 lint = "clippy --workspace --all-targets --all-features -- -D warnings"
+lint-min = "clippy -p strapdown-core --all-targets --no-default-features -- -D warnings"
+# The matching test configuration, which `cargo test --workspace --all-features` also misses.
+test-min = "test -p strapdown-core --no-default-features"
 lint-fix = "clippy --workspace --all-targets --all-features --fix --allow-dirty -- -D warnings"
 fmt-check = "fmt --all -- --check"
 docs = "doc --workspace --no-deps"
