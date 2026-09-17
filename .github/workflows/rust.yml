@@ -138,6 +138,18 @@ jobs:
   # comparing each pull request's public API against the released one, which is the question
   # worth asking after a 1.0 and is meaningless before it.
   #
+  # What it does and does not catch, measured by running it on this branch against `main`
+  # (`--baseline-rev main`, 151 s, "5 major and 0 minor checks failed"). It found every
+  # struct-level break and named them exactly: the three removed or renamed types, the two
+  # renamed public fields, and the eleven structs marked `#[non_exhaustive]`.
+  #
+  # It found **none of the function-signature changes** in the same diff --
+  # `ErrorStateKalmanFilter::new` moving from `&[f64]` to `&[f64; 6]`, and the four compute-layer
+  # returns moving from `anyhow::Result` to `Result<_, StrapdownError>`. Those are real breaks
+  # that a caller feels at compile time. So a green run here means "no struct-level break was
+  # detected", not "no breaking change": it is a floor, not a proof, and a signature change
+  # still needs a human to notice it.
+  #
   # `continue-on-error` while the repo builds a track record: the tool reports findings this
   # project has never triaged, and a new gate that blocks on its first unknown output gets
   # switched off rather than read. Flip it once a release cycle has gone by with the output
