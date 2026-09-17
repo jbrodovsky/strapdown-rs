@@ -358,9 +358,11 @@ struct GeophysicalArgs {
     #[arg(long, requires = "geo")]
     magnetic_map_file: Option<PathBuf>,
 
-    /// Geophysical measurement frequency (seconds)
-    #[arg(long, requires = "geo")]
-    geo_frequency_s: Option<f64>,
+    /// Seconds between geophysical measurements -- an interval, not a frequency.
+    ///
+    /// `alias` keeps the old `--geo-frequency-s` spelling working.
+    #[arg(long, alias = "geo-frequency-s", requires = "geo")]
+    geo_interval_s: Option<f64>,
 }
 
 /// Empty stub when geonav feature is disabled
@@ -698,7 +700,7 @@ fn process_file(
             info!("Running particle filter simulation");
 
             #[cfg(feature = "geonav")]
-            let (gravity_map, magnetic_map, geo_frequency_s, gravity_noise_std, magnetic_noise_std) = {
+            let (gravity_map, magnetic_map, geo_interval_s, gravity_noise_std, magnetic_noise_std) = {
                 if let Some(geo_cfg) = &config.geophysical {
                     let gravity_map = if let Some(res) = geo_cfg.gravity_resolution {
                         let map_path = match &geo_cfg.gravity_map_file {
@@ -727,7 +729,7 @@ fn process_file(
                     (
                         gravity_map,
                         magnetic_map,
-                        geo_cfg.geo_frequency_s,
+                        geo_cfg.geo_interval_s,
                         geo_cfg.gravity_noise_std.unwrap_or(100.0),
                         geo_cfg.magnetic_noise_std.unwrap_or(150.0),
                     )
@@ -760,7 +762,7 @@ fn process_file(
                     gravity_map.as_ref().map(|_| gravity_noise_std),
                     magnetic_map.clone(),
                     magnetic_map.as_ref().map(|_| magnetic_noise_std),
-                    geo_frequency_s,
+                    geo_interval_s,
                     geo_bias_layout,
                 )?
             } else {
@@ -1637,7 +1639,7 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
             } else {
                 None
             },
-            args.geo.geo_frequency_s,
+            args.geo.geo_interval_s,
             geo_bias_layout,
         )?;
         info!("Built event stream with {} events", events.events.len());
@@ -2032,7 +2034,7 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
                 gravity_map.as_ref().map(|_| args.geo.gravity_noise_std),
                 magnetic_map.clone(),
                 magnetic_map.as_ref().map(|_| args.geo.magnetic_noise_std),
-                args.geo.geo_frequency_s,
+                args.geo.geo_interval_s,
                 geo_bias_layout,
             )?
         } else {
@@ -2770,7 +2772,7 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
             println!("Disabling geophysical navigation.");
             None
         } else {
-            let geo_frequency_s = prompt_geo_measurement_frequency();
+            let geo_interval_s = prompt_geo_measurement_frequency();
 
             let (gravity_resolution, gravity_bias, gravity_noise_std, gravity_map_file) =
                 gravity_config.map_or((None, None, None, None), |(res, bias, noise, map)| {
@@ -2792,7 +2794,7 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
                 built.magnetic_bias = magnetic_bias;
                 built.magnetic_noise_std = magnetic_noise_std;
                 built.magnetic_map_file = magnetic_map_file;
-                built.geo_frequency_s = geo_frequency_s;
+                built.geo_interval_s = geo_interval_s;
                 built
             })
         }

@@ -381,10 +381,11 @@ pub enum IMUQuality {
 impl IMUQuality {
     /// Typical gyro bias instability for the given IMU quality, in **radians per hour**.
     ///
-    /// Note the `_dph` suffix is a misnomer inherited from the grade table, which quotes
-    /// degrees per hour: the returned value is converted to radians. A consumer-grade figure
-    /// of 100 deg/h comes back as ~1.745 rad/h, so a caller needing rad/s must divide by 3600.
-    pub const fn gyro_bias_instability_dph(&self) -> f64 {
+    /// Called `gyro_bias_instability_dph` until the v1.0 freeze, where the `_dph` suffix was a
+    /// misnomer inherited from the grade table: that table quotes degrees per hour, but the
+    /// value returned here is converted to radians. A consumer-grade figure of 100 deg/h comes
+    /// back as ~1.745 rad/h, so a caller needing rad/s must divide by 3600.
+    pub const fn gyro_bias_instability_rad_per_hour(&self) -> f64 {
         match self {
             Self::Consumer => 100.0_f64.to_radians(),
             Self::Industrial => 50.0_f64.to_radians(),
@@ -452,9 +453,9 @@ impl IMUQuality {
     #[must_use]
     pub fn initial_bias_covariance(&self) -> [f64; 6] {
         let accelerometer = self.accel_bias_instability_mps2().powi(2);
-        // `gyro_bias_instability_dph` returns radians per *hour* despite its name; the state
+        // `gyro_bias_instability_rad_per_hour` returns radians per *hour* despite its name; the state
         // carries a rate bias in radians per second.
-        let gyroscope = (self.gyro_bias_instability_dph() / SECONDS_PER_HOUR).powi(2);
+        let gyroscope = (self.gyro_bias_instability_rad_per_hour() / SECONDS_PER_HOUR).powi(2);
         [
             accelerometer,
             accelerometer,
@@ -573,7 +574,7 @@ impl IMUQuality {
     )]
     #[must_use]
     pub fn gyro_process_noise(&self) -> Matrix3<f64> {
-        Matrix3::<f64>::identity() * self.gyro_bias_instability_dph().powi(2)
+        Matrix3::<f64>::identity() * self.gyro_bias_instability_rad_per_hour().powi(2)
     }
 
     /// Squared accelerometer bias instability.
@@ -612,7 +613,7 @@ impl IMUQuality {
     /// | 3-5, velocity | `uncertainty`, widened by [`Self::accel_velocity_random_walk`] over one initialisation interval | m²/s² |
     /// | 6-8, attitude | [`Self::gyro_angle_random_walk`] over the same interval, plus the levelling error an unknown accelerometer bias implies | rad² |
     /// | 9-11, accel bias | [`Self::accel_bias_instability_mps2`] | (m/s²)² |
-    /// | 12-14, gyro bias | [`Self::gyro_bias_instability_dph`] | (rad/s)² |
+    /// | 12-14, gyro bias | [`Self::gyro_bias_instability_rad_per_hour`] | (rad/s)² |
     ///
     /// **Position.** The filter carries latitude and longitude in radians, so a metric
     /// uncertainty becomes an angular variance through the meridian and transverse radii of
@@ -635,7 +636,7 @@ impl IMUQuality {
     ///
     /// **Biases.** The turn-on value of a bias state is unknown to within the grade's own
     /// bias instability, so the variance is that instability squared. Note the unit
-    /// conversion on the gyro: [`Self::gyro_bias_instability_dph`] returns radians per
+    /// conversion on the gyro: [`Self::gyro_bias_instability_rad_per_hour`] returns radians per
     /// *hour* despite its name, while the filter's gyro bias state is in radians per
     /// *second*.
     ///
@@ -730,9 +731,10 @@ impl IMUQuality {
             + levelling_variance;
 
         let accel_bias_variance = self.accel_bias_instability_mps2().powi(2);
-        // `gyro_bias_instability_dph` returns radians per hour despite the name; the filter's
+        // `gyro_bias_instability_rad_per_hour` returns radians per hour despite the name; the filter's
         // gyro bias state is radians per second.
-        let gyro_bias_variance = (self.gyro_bias_instability_dph() / SECONDS_PER_HOUR).powi(2);
+        let gyro_bias_variance =
+            (self.gyro_bias_instability_rad_per_hour() / SECONDS_PER_HOUR).powi(2);
 
         Ok([
             latitude_variance,
@@ -2349,7 +2351,7 @@ mod tests {
 
             let expected_accel = quality.accel_bias_instability_mps2().powi(2);
             // Radians per hour from the accessor, radians per second in the filter state.
-            let expected_gyro = (quality.gyro_bias_instability_dph() / 3600.0).powi(2);
+            let expected_gyro = (quality.gyro_bias_instability_rad_per_hour() / 3600.0).powi(2);
             for axis in 0..3 {
                 assert_approx_eq!(covariance[9 + axis], expected_accel, expected_accel * 1e-12);
                 assert_approx_eq!(covariance[12 + axis], expected_gyro, expected_gyro * 1e-12);
@@ -2676,7 +2678,7 @@ mod tests {
         let quality = super::IMUQuality::Consumer;
         assert_eq!(
             quality.gyro_process_noise()[(0, 0)],
-            quality.gyro_bias_instability_dph().powi(2)
+            quality.gyro_bias_instability_rad_per_hour().powi(2)
         );
         assert_eq!(
             quality.accel_process_noise()[(0, 0)],
@@ -2684,10 +2686,10 @@ mod tests {
         );
     }
 
-    /// `gyro_bias_instability_dph` returns radians per hour despite the `_dph` suffix.
+    /// `gyro_bias_instability_rad_per_hour` returns radians per hour despite the `_dph` suffix.
     #[test]
     fn gyro_bias_instability_is_radians_per_hour() {
-        let consumer = super::IMUQuality::Consumer.gyro_bias_instability_dph();
+        let consumer = super::IMUQuality::Consumer.gyro_bias_instability_rad_per_hour();
         assert!((consumer - 100.0_f64.to_radians()).abs() < 1e-15);
         assert!((consumer - 1.7453292519943295).abs() < 1e-15);
         // A caller needing rad/s divides by 3600.

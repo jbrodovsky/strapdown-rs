@@ -33,7 +33,7 @@ magnetic_noise_std = 150.0
 # magnetic_map_file will be auto-detected if not specified
 
 # Measurement interval in seconds -- a period, not a frequency.
-geo_frequency_s = 1.0
+geo_interval_s = 1.0
 
 [aiding]
 seed = 42

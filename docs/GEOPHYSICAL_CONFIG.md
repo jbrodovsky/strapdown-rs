@@ -86,7 +86,7 @@ magnetic_noise_std = 150.0
 magnetic_map_file = "path/to/magnetic_map.nc"  # Optional
 
 # Measurement interval in seconds -- a period, not a frequency.
-geo_frequency_s = 1.0
+geo_interval_s = 1.0
 ```
 
 ## Resolution Options

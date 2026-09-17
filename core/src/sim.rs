@@ -5542,10 +5542,20 @@ pub struct GeophysicalConfig {
     pub magnetic_map_file: Option<String>,
 
     // Common configuration
-    /// Frequency in seconds for geophysical measurements
-    /// Applies to both measurement types if both are enabled
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub geo_frequency_s: Option<f64>,
+    /// Interval in **seconds between** geophysical measurements, applying to both measurement
+    /// types when both are enabled.
+    ///
+    /// A period, not a frequency, despite the name it carried until the v1.0 freeze:
+    /// `geonav`'s scheduler adds it to the time of the last measurement
+    /// (`next_geo_time += interval`), so a larger value means *fewer* measurements.
+    /// `#[serde(alias = "geo_frequency_s")]` keeps every configuration file written under the
+    /// old name parsing -- the nine recipes under `conf/` among them -- so do not drop it.
+    #[serde(
+        default,
+        alias = "geo_frequency_s",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub geo_interval_s: Option<f64>,
 }
 
 // ==================== Synthetic Trajectory Generation ====================
@@ -6048,12 +6058,13 @@ pub fn generate_synthetic(
         Vector3::new(rng.sample(dist), rng.sample(dist), rng.sample(dist))
     };
     let gyro_bias = {
-        // `gyro_bias_instability_dph` is radians per *hour* despite its name, and this bias is
+        // `gyro_bias_instability_rad_per_hour` is radians per *hour* despite its name, and this bias is
         // added straight to `perfect_imu.gyro`, which is radians per second. Without the
         // conversion a consumer-grade run injects ~1.745 rad/s -- 100 deg/s -- of constant
         // gyro bias. The accelerometer block above needs no equivalent conversion because
         // `accel_bias_instability_mps2` is already in the units its sample is added to.
-        let sigma = config.imu_quality.gyro_bias_instability_dph() / crate::SECONDS_PER_HOUR;
+        let sigma =
+            config.imu_quality.gyro_bias_instability_rad_per_hour() / crate::SECONDS_PER_HOUR;
         let dist = Normal::new(0.0_f64, sigma).unwrap_or_else(|_| {
             log::warn!(
                 "gyro bias instability {sigma} is not a usable standard deviation; using 1e-9"
@@ -6368,7 +6379,7 @@ mod tests {
         // is the grade's bias instability in rad/s, and per-sample angle random walk scaled to
         // the sample rate. With the bug the bias alone is ~1.745 rad/s, which overruns this by
         // more than two orders of magnitude.
-        let bias_sigma_rps = quality.gyro_bias_instability_dph() / crate::SECONDS_PER_HOUR;
+        let bias_sigma_rps = quality.gyro_bias_instability_rad_per_hour() / crate::SECONDS_PER_HOUR;
         let arw_sigma_rps = quality.gyro_angle_random_walk()
             * (config.sample_rate_hz / crate::SECONDS_PER_HOUR).sqrt();
         let earth_rate_rps = 7.292_115e-5;
