@@ -247,6 +247,84 @@ fn euler_rate_matrix_inverse(roll: f64, pitch: f64, yaw: f64) -> Option<nalgebra
     (inverse.abs().max() <= MAX_EULER_RATE_AMPLIFICATION).then_some(inverse)
 }
 
+/// $\partial \Phi / \partial \delta\theta^b$: how an Euler-angle triple responds to a
+/// **body**-frame rotation-vector perturbation.
+///
+/// This is the conversion between the two charts that matter to a measurement update, and it
+/// is the answer to #349. Every `get_jacobian` in this crate writes its attitude columns
+/// against the Euler angles [`StrapdownState`] stores. The
+/// [`ErrorStateKalmanFilter`](crate::kalman::ErrorStateKalmanFilter) does not hold Euler
+/// angles: its error state is a body-frame rotation vector, injected as
+/// $q_{\text{nom}} \otimes \delta q$. Handing it an Euler-chart row unconverted is not a
+/// small-angle approximation, it is the wrong matrix, and the chain rule
+///
+/// $$ \frac{\partial h}{\partial \delta\theta^b}
+///    = \frac{\partial h}{\partial \Phi} \cdot \frac{\partial \Phi}{\partial \delta\theta^b} $$
+///
+/// is what fixes it.
+///
+/// # How wrong, measured
+///
+/// On `core/tests/test_data.csv` -- a phone logging from a vehicle mount, lying on its side,
+/// with $|\phi|$ a median 85.5 degrees and $|\theta|$ a median 1.5 -- the magnetometer's
+/// true sensitivity of Euler yaw to a body-frame attitude error is
+///
+/// | column | `magnetometer_yaw_jacobian` says | actual |
+/// |---|---:|---:|
+/// | $\partial\psi/\partial\delta\theta^b_x$ | 0 | 0, exactly, at every attitude |
+/// | $\partial\psi/\partial\delta\theta^b_y$ | 0 | **up to 1.03** |
+/// | $\partial\psi/\partial\delta\theta^b_z$ | **1** | **-0.147 to +0.273** |
+///
+/// Almost all of the sensitivity sits in the column the Euler row calls zero. The closed form
+/// says why: the bottom row of this matrix is
+/// $[\,0,\; \sin\phi/\cos\theta,\; \cos\phi/\cos\theta\,]$, which at $\phi = 85.5°$ is
+/// $[0,\ 0.997,\ 0.0785]$ rather than $[0, 0, 1]$. It is the identity only at zero roll.
+///
+/// # Construction
+///
+/// $\omega^b = (C_b^n)^\top \omega^n$, so $E_b(\Phi) = (C_b^n)^\top E(\Phi)$ and therefore
+/// $E_b^{-1} = E^{-1} C_b^n$. Built from [`euler_rate_matrix_inverse`] rather than from
+/// fresh trigonometry, so the two charts cannot drift apart.
+///
+/// The amplification guard is then re-applied **to the product**, not inherited from
+/// $E^{-1}$. $C_b^n$ is orthogonal, so it cannot change the matrix norm -- but it does
+/// redistribute entries, and the bound is on the largest entry rather than on the norm. At
+/// 89.5 degrees of pitch $E^{-1}$ passes at 100 and the product comes out at **109.5**, so
+/// inheriting the check would have admitted a matrix past the threshold it advertises.
+/// Checking the thing actually returned is the same lesson `euler_rate_matrix_inverse`'s own
+/// docs draw about `try_inverse`: test the quantity that matters, not a proxy for it.
+///
+/// # Returns
+///
+/// `None` at gimbal lock, where the Euler chart stops being a chart and no finite matrix is
+/// the right answer. Callers fall back to differencing the expected measurement directly.
+///
+/// # Example
+///
+/// ```rust
+/// use strapdown::linearize::body_rotation_vector_to_euler_jacobian;
+///
+/// // Level: the two charts agree, so this is the identity.
+/// let level = body_rotation_vector_to_euler_jacobian(0.0, 0.0, 0.7).unwrap();
+/// assert!((level - nalgebra::Matrix3::identity()).abs().max() < 1e-12);
+///
+/// // Rolled onto its side, as the reference recording is: yaw now answers to the body
+/// // *pitch* axis, not the body yaw axis.
+/// let rolled = body_rotation_vector_to_euler_jacobian(85.5_f64.to_radians(), 0.0, 0.0).unwrap();
+/// assert!((rolled[(2, 1)] - 85.5_f64.to_radians().sin()).abs() < 1e-12);
+/// assert!((rolled[(2, 2)] - 85.5_f64.to_radians().cos()).abs() < 1e-12);
+/// ```
+#[must_use]
+pub fn body_rotation_vector_to_euler_jacobian(
+    roll: f64,
+    pitch: f64,
+    yaw: f64,
+) -> Option<nalgebra::Matrix3<f64>> {
+    let inverse = euler_rate_matrix_inverse(roll, pitch, yaw)?;
+    let body = inverse * Rotation3::from_euler_angles(roll, pitch, yaw).matrix();
+    (body.abs().max() <= MAX_EULER_RATE_AMPLIFICATION).then_some(body)
+}
+
 /// How a Jacobian's attitude columns are parametrised.
 ///
 /// The two consumers of the transition Jacobian hold attitude differently, and the blocks
