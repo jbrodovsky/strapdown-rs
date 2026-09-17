@@ -276,16 +276,19 @@ const fn default_aiding_scheduler() -> MeasurementScheduler {
 /// use strapdown::messages::{AidingConfig, MeasurementScheduler, GnssFaultModel};
 ///
 /// // Deliver GNSS every 10 seconds, with AR(1)-degraded accuracy.
-/// let cfg = AidingConfig {
-///     scheduler: MeasurementScheduler::FixedInterval { interval_s: 10.0, phase_s: 0.0 },
-///     fault: GnssFaultModel::Degraded {
-///         rho_pos: 0.99,
-///         sigma_pos_m: 3.0,
-///         rho_vel: 0.95,
-///         sigma_vel_mps: 0.3,
-///         r_scale: 5.0,
-///     },
-///     ..Default::default()
+/// //
+/// // `AidingConfig` is `#[non_exhaustive]`: it can gain a field in any 1.x release without
+/// // that being a breaking change, so it is built from `default()` rather than written as a
+/// // struct literal. Everything not set here keeps its default -- including the barometer
+/// // and magnetometer schedules.
+/// let mut cfg = AidingConfig::default();
+/// cfg.scheduler = MeasurementScheduler::FixedInterval { interval_s: 10.0, phase_s: 0.0 };
+/// cfg.fault = GnssFaultModel::Degraded {
+///     rho_pos: 0.99,
+///     sigma_pos_m: 3.0,
+///     rho_vel: 0.95,
+///     sigma_vel_mps: 0.3,
+///     r_scale: 5.0,
 /// };
 /// ```
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1148,14 +1151,12 @@ fn duty_cycle_is_on(elapsed_s: f64, on_s: f64, off_s: f64, start_phase_s: f64) -
 ///
 /// # fn main() -> Result<(), strapdown::StrapdownError> {
 /// let records = vec![TestDataRecord::default(); 10]; // load or generate your test data
-/// let cfg = AidingConfig {
-///     scheduler: MeasurementScheduler::FixedInterval { interval_s: 10.0, phase_s: 0.0 },
-///     fault: GnssFaultModel::Degraded {
-///         rho_pos: 0.99, sigma_pos_m: 3.0,
-///         rho_vel: 0.95, sigma_vel_mps: 0.3,
-///         r_scale: 5.0,
-///     },
-///     ..Default::default()
+/// let mut cfg = AidingConfig::default();
+/// cfg.scheduler = MeasurementScheduler::FixedInterval { interval_s: 10.0, phase_s: 0.0 };
+/// cfg.fault = GnssFaultModel::Degraded {
+///     rho_pos: 0.99, sigma_pos_m: 3.0,
+///     rho_vel: 0.95, sigma_vel_mps: 0.3,
+///     r_scale: 5.0,
 /// };
 /// let events = build_event_stream(&records, &cfg, false)?; // false = NED
 /// // feed into your event-driven filter loop

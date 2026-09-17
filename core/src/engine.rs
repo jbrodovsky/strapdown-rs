@@ -183,10 +183,10 @@ const DEFAULT_INITIAL_COVARIANCE: [f64; FULL_STATE_DIMENSION] = [
 /// use strapdown::kalman::InitialState;
 ///
 /// # fn main() -> Result<(), strapdown::StrapdownError> {
-/// let config = InsEngineConfig {
-///     lever_arm: [2.0, 0.0, -1.0],
-///     ..InsEngineConfig::default()
-/// };
+/// // `InsEngineConfig` is `#[non_exhaustive]`, so it is built from `default()` and
+/// // adjusted rather than written as a struct literal.
+/// let mut config = InsEngineConfig::default();
+/// config.lever_arm = [2.0, 0.0, -1.0];
 /// let engine = InsEngine::builder()
 ///     .with_config(config)
 ///     .with_initial_state(InitialState::new(

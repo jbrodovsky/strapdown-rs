@@ -4147,8 +4147,9 @@ impl EskfConfig {
 ///     // ... other fields ...
 ///     ..Default::default()
 /// };
-/// // `EskfConfig::default()` is NED; pass `EskfConfig { is_enu: true, ..Default::default() }`
-/// // for a Sensor Logger export.
+/// // `EskfConfig::default()` is NED. For a Sensor Logger export, take the default and set
+/// // `is_enu = true` -- `EskfConfig` is `#[non_exhaustive]`, so a struct literal will not
+/// // compile outside this crate.
 /// let eskf = initialize_eskf(&initial_pose, EskfConfig::default()).unwrap();
 /// ```
 pub fn initialize_eskf(
