@@ -307,7 +307,7 @@ const DEFAULT_PROCESS_NOISE_DENSITY: [f64; 15] = [
 ];
 ```
 
-The altitude entry keeps its own constant, `VERTICAL_POSITION_PROCESS_NOISE_M2`, rather
+The altitude entry keeps its own constant, `VERTICAL_POSITION_PROCESS_NOISE_M2_PER_S`, rather
 than being spelled as `POSITION_PROCESS_NOISE_M_PER_ROOT_S` squared -- though since #328 that is
 exactly what it evaluates to, `1e-2 m^2/s`, a 10 cm standard deviation per root-second.
 

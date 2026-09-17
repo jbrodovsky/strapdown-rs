@@ -119,7 +119,7 @@ The integration tests use real data collected from the Sensor Logger mobile appl
 
 #### Test Suite
 
-`core/tests/integration_tests.rs` holds 22 tests, not the handful this page used to walk
+`core/tests/integration_tests.rs` holds 23 tests, not the handful this page used to walk
 through one by one. That walkthrough transcribed each test's thresholds into prose, and the
 prose then drifted from the constants -- it was still quoting a 30 m horizontal limit long after
 the code moved to 40 m. So this section names the groups and the constants and points at the

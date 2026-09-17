@@ -65,17 +65,24 @@ Example:
 2025-12-01 14:30:50.789 [INFO] - Results written to output.csv
 ```
 
-## Environment Variable Override
+## `RUST_LOG` is not read
 
-You can also control logging using the `RUST_LOG` environment variable, which follows the `env_logger` syntax. Command-line options take precedence over environment variables.
+This page used to document `RUST_LOG` as an override that `--log-level` took precedence over.
+It is not an override and there is nothing to take precedence over: **`RUST_LOG` has no effect
+at all.**
 
-```bash
-# Set log level via environment variable
-RUST_LOG=debug strapdown-sim cl -i input.csv -o output.csv
+`init_logger` (`sim/src/common.rs`) builds the logger with `env_logger::Builder::new()` and
+`builder.filter_level(level)`. `Builder::new()` does not consult the environment -- only
+`from_env` and `from_default_env` do -- and nothing in the crate calls `parse_env`. Verified:
 
-# Module-specific logging
-RUST_LOG=strapdown=debug,strapdown_sim=trace strapdown-sim cl -i input.csv -o output.csv
+```console
+$ RUST_LOG=off strapdown-sim dr -i input.csv -o output.csv
+2026-09-17 23:45:46.856 [INFO] - Running in Dead Reckoning mode with input: input.csv
 ```
+
+`--log-level` is the only control, and because `filter_level` sets one global level there are
+no per-module directives either -- `RUST_LOG=strapdown=debug,strapdown_sim=trace` has no
+equivalent here.
 
 ## Using Logging in Code
 

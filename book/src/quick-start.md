@@ -47,7 +47,7 @@ integrates at 2 g (#296).
 
 ### 3. Run a Simulation
 
-**Dead Reckoning (Open-Loop)**:
+**Dead Reckoning** (`dr`; `ol` is a different, unimplemented mode):
 ```bash
 strapdown-sim dr -i data/input.csv -o results/output.csv
 ```
