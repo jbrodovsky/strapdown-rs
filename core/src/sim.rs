@@ -1226,7 +1226,8 @@ pub struct NEDCovariance {
     /// Variance of the gyroscope z-axis bias estimate.
     pub gyro_bias_z_cov: f64,
 }
-/// Where a filter carries its geophysical map-bias states, for labelling the solution.
+/// Where a filter carries its extra states -- geophysical map biases, a barometric bias, or
+/// both -- for labelling the solution.
 ///
 /// A state vector cannot describe this on its own: a 16-element state is gravity-only or
 /// magnetic-only depending on which maps the run was given, and reading the wrong label off it
@@ -1304,10 +1305,9 @@ impl ExtraStateLayout {
     /// A builder rather than a fourth parameter on [`Self::new`], so the geophysical callers --
     /// which are every existing one -- do not have to say "no barometer" to keep compiling.
     ///
-    /// The barometric bias is not a map bias and this type's name is now narrower than what it
-    /// holds: it is the layout of *every* state past the navigation block, whatever put them
-    /// there. Renaming it belongs with the other two deferred renames on the 1.0 API-freeze
-    /// list, not in a change that adds a state.
+    /// The barometric bias is not a map bias, which is why this type is called
+    /// `ExtraStateLayout` rather than `GeoStateLayout` as of the v1.0 freeze: it is the layout
+    /// of *every* state past the navigation block, whatever put them there.
     #[must_use]
     pub const fn with_baro_bias(self, index: usize) -> Self {
         Self {
@@ -4500,7 +4500,8 @@ pub mod execution {
         /// # Returns
         ///
         /// * `Ok(())` if execution is within limits
-        /// * `Err(...)` with a descriptive message if any timeout has been exceeded
+        /// * [`StrapdownError::Timeout`] naming which budget was exceeded, by how much, and
+        ///   the `context` string, if any timeout has been exceeded
         ///
         /// # Example
         ///
@@ -4513,10 +4514,11 @@ pub mod execution {
         /// monitor.check("data processing")?;
         /// // ... do work ...
         /// monitor.mark_progress();
-        /// # Ok::<(), anyhow::Error>(())
+        /// # Ok::<(), strapdown::error::StrapdownError>(())
         /// ```
         /// # Errors
-        /// If the wall-clock budget or the no-progress budget has been exceeded.
+        /// [`StrapdownError::Timeout`] if the wall-clock budget or the no-progress budget has
+        /// been exceeded.
         pub fn check(&self, context: &str) -> Result<(), StrapdownError> {
             self.check_at(context, Instant::now())
         }
@@ -4685,9 +4687,14 @@ pub mod health {
         /// event was a measurement update -- of any sensor, not only GNSS.
         ///
         /// # Errors
-        /// If the state has left the configured physical bounds, the covariance diagonal has
-        /// grown past its limit, or a supplied NIS exceeds its gate -- i.e. the filter has
-        /// diverged and later results would be meaningless.
+        /// [`StrapdownError::DimensionMismatch`] if the state is shorter than
+        /// `MINIMUM_MONITORED_STATE` (6): the monitor reads position and velocity, so a state
+        /// that cannot supply them cannot be checked at all, and silently passing one would
+        /// report a healthy filter it never looked at.
+        ///
+        /// Otherwise, if the state has left the configured physical bounds, the covariance
+        /// diagonal has grown past its limit, or a supplied NIS exceeds its gate -- i.e. the
+        /// filter has diverged and later results would be meaningless.
         pub fn check(
             &mut self,
             x: &[f64], // your mean_state slice
@@ -5039,11 +5046,18 @@ pub enum ParticleFilterType {
 }
 
 /// Closed-loop specific configuration
+///
+/// `#[serde(default)]` sits on the **container**, not on the individual fields, so every field
+/// a config file omits is filled from [`ClosedLoopConfig::default()`] below. A field-level
+/// `#[serde(default)]` would instead fill from the *field type's* `Default` -- `false` for a
+/// `bool` -- which is how `estimate_baro_bias` came to read `true` through the Rust API and
+/// `false` through a `[closed_loop]` section that did not mention it. `core/tests/
+/// config_serde_defaults.rs` holds the two forms to the same answer.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
 #[non_exhaustive]
 pub struct ClosedLoopConfig {
     /// Filter type; defaults to the 15-state ESKF.
-    #[serde(default)]
     pub filter: FilterType,
     /// UKF alpha parameter (spread of sigma points)
     #[serde(default = "default_ukf_alpha")]
@@ -5108,7 +5122,6 @@ pub struct ClosedLoopConfig {
     /// a direct caller a sixteenth state that nothing reads.
     ///
     /// Not available on the geophysical path, whose extra states are map biases.
-    #[serde(default)]
     pub estimate_baro_bias: bool,
 }
 
