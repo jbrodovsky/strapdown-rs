@@ -284,9 +284,15 @@ fn euler_rate_matrix_inverse(roll: f64, pitch: f64, yaw: f64) -> Option<nalgebra
 ///
 /// $\omega^b = (C_b^n)^\top \omega^n$, so $E_b(\Phi) = (C_b^n)^\top E(\Phi)$ and therefore
 /// $E_b^{-1} = E^{-1} C_b^n$. Built from [`euler_rate_matrix_inverse`] rather than from
-/// fresh trigonometry, so the two charts cannot drift apart and the gimbal-lock guard is
-/// shared: $C_b^n$ is orthogonal, so it moves no entry by more than $\sqrt 3$ and bounding
-/// $E^{-1}$ bounds this.
+/// fresh trigonometry, so the two charts cannot drift apart.
+///
+/// The amplification guard is then re-applied **to the product**, not inherited from
+/// $E^{-1}$. $C_b^n$ is orthogonal, so it cannot change the matrix norm -- but it does
+/// redistribute entries, and the bound is on the largest entry rather than on the norm. At
+/// 89.5 degrees of pitch $E^{-1}$ passes at 100 and the product comes out at **109.5**, so
+/// inheriting the check would have admitted a matrix past the threshold it advertises.
+/// Checking the thing actually returned is the same lesson `euler_rate_matrix_inverse`'s own
+/// docs draw about `try_inverse`: test the quantity that matters, not a proxy for it.
 ///
 /// # Returns
 ///
@@ -315,7 +321,8 @@ pub fn body_rotation_vector_to_euler_jacobian(
     yaw: f64,
 ) -> Option<nalgebra::Matrix3<f64>> {
     let inverse = euler_rate_matrix_inverse(roll, pitch, yaw)?;
-    Some(inverse * Rotation3::from_euler_angles(roll, pitch, yaw).matrix())
+    let body = inverse * Rotation3::from_euler_angles(roll, pitch, yaw).matrix();
+    (body.abs().max() <= MAX_EULER_RATE_AMPLIFICATION).then_some(body)
 }
 
 /// How a Jacobian's attitude columns are parametrised.

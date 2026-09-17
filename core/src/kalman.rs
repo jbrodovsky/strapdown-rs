@@ -2228,6 +2228,26 @@ impl ErrorStateKalmanFilter {
     /// the residual as `z - h(x)` while taking `H = dh/dx`. Differentiating
     /// the innovation would flip the sign of every column that `z` does not
     /// share (e.g. yaw), destabilising the very channel being corrected.
+    ///
+    /// # Test-only since #349
+    ///
+    /// `update` computed this on every attitude-dependent measurement until
+    /// `body_rotation_vector_to_euler_jacobian` replaced it with the analytic
+    /// chain rule -- one 3x3 multiply against three model evaluations, and with
+    /// no need for the "is the analytic block zero?" test whose premise was
+    /// false for `ZaruMeasurement`.
+    ///
+    /// It is kept, and compiled only under `cfg(test)`, because it is the
+    /// **oracle** the analytic form is checked against: it perturbs the nominal
+    /// quaternion directly and does no chart arithmetic at all, so agreement
+    /// between the two is an independent derivation rather than a restatement.
+    /// See `the_analytic_chart_conversion_matches_differencing_the_model`.
+    ///
+    /// It is deliberately *not* the gimbal-lock fallback. See `update`: at 90
+    /// degrees of pitch a branch switch makes this O(pi/EPS) -- 3.3e8 measured
+    /// -- which is not a derivative, so the attitude columns are zeroed there
+    /// instead.
+    #[cfg(test)]
     pub(crate) fn attitude_error_jacobian<M: MeasurementModel + ?Sized>(
         measurement: &M,
         nominal_quaternion_wxyz: &nalgebra::Vector4<f64>,
@@ -2529,10 +2549,28 @@ impl NavigationFilter for ErrorStateKalmanFilter {
         // into the body frame. The analytic form needs no such test, so the exception goes
         // with it, and it costs one 3x3 multiply instead of three model evaluations.
         //
-        // Finite differences remain the fallback at gimbal lock, where the Euler chart stops
-        // being a chart and no finite conversion matrix is the right answer. They stay
-        // bounded there because they difference finite rotations rather than inverting a
-        // singular matrix, and they are also the oracle the analytic form is tested against.
+        // At gimbal lock the attitude columns are **zeroed**, not approximated. The Euler
+        // chart stops being a chart there, and no finite matrix is the right answer:
+        //
+        //   pitch        80     89    89.9   89.99  89.999      90
+        //   |dh/dtheta|  5.50  54.7    547   5,474  54,727   3.3e8
+        //
+        // Those are the finite differences of `attitude_error_jacobian`, which an earlier
+        // revision of this used as the fallback and whose comment called them bounded. They
+        // are finite but not bounded in any useful sense: at exactly 90 degrees an
+        // arbitrarily small body-frame perturbation can switch the Euler branch and swing yaw
+        // by ~pi, so the quotient is O(pi/EPS) rather than a derivative. Feeding a 3e8 row
+        // into the gain is worse than declining to correct attitude at all.
+        //
+        // Zeroing is that decline. For a model whose only sensitivity is attitude -- the
+        // magnetometer -- `H` becomes all zeros, so the gain is zero and the update is a
+        // no-op, which is the honest outcome for a yaw measurement taken where yaw is not
+        // observable. A model with other columns keeps them. The rejection path is safe too:
+        // `inflate_observed` cannot solve a singular observed block and documents leaving the
+        // covariance unchanged.
+        //
+        // `MAX_EULER_RATE_AMPLIFICATION` puts the threshold at about 89.45 degrees of pitch,
+        // which no gated trajectory reaches; this is a defensive path, not a hot one.
         let attitude_chart = crate::linearize::body_rotation_vector_to_euler_jacobian(
             nominal_state_vec[ATTITUDE_ROLL_INDEX],
             nominal_state_vec[ATTITUDE_PITCH_INDEX],
@@ -2544,12 +2582,7 @@ impl NavigationFilter for ErrorStateKalmanFilter {
                 .view_mut((0, 6), (meas_dim, 3))
                 .copy_from(&converted);
         } else {
-            let h_att = Self::attitude_error_jacobian(
-                measurement,
-                &self.nominal_quaternion,
-                &nominal_state_vec,
-            );
-            h_error.view_mut((0, 6), (meas_dim, 3)).copy_from(&h_att);
+            h_error.view_mut((0, 6), (meas_dim, 3)).fill(0.0);
         }
 
         // Innovation covariance: S = H * P * H^T + R
@@ -5572,6 +5605,66 @@ mod attitude_chart_tests {
         // zero, 0.0785 on the axis it calls one.
         assert!((chart[(2, 1)] - 0.997).abs() < 1e-3, "{}", chart[(2, 1)]);
         assert!((chart[(2, 2)] - 0.0785).abs() < 1e-3, "{}", chart[(2, 2)]);
+    }
+
+    /// At gimbal lock the conversion is refused rather than approximated.
+    ///
+    /// The finite differences an earlier revision used as the fallback are finite but not
+    /// bounded: at exactly 90 degrees of pitch a branch switch makes them O(pi/EPS). Measured
+    /// on the magnetometer's expected measurement:
+    ///
+    /// | pitch | 80 | 89 | 89.9 | 89.99 | 89.999 | 90 |
+    /// |---|---:|---:|---:|---:|---:|---:|
+    /// | `max dh/dtheta` | 5.50 | 54.7 | 547 | 5,474 | 54,727 | **3.3e8** |
+    ///
+    /// So this asserts two things: the chart is refused where it stops meaning anything, and
+    /// it is *not* refused anywhere a vehicle actually flies.
+    #[test]
+    fn the_chart_is_refused_at_gimbal_lock_and_nowhere_a_vehicle_goes() {
+        use crate::linearize::body_rotation_vector_to_euler_jacobian as chart;
+
+        // Refused where the Euler chart degenerates.
+        for pitch_deg in [89.5_f64, 89.9, 90.0, -90.0] {
+            assert!(
+                chart(0.3, pitch_deg.to_radians(), 0.7).is_none(),
+                "{pitch_deg} deg of pitch must be refused, not approximated"
+            );
+        }
+
+        // Available everywhere else, including the reference recording's own posture --
+        // 85.5 degrees of *roll*, which is not gimbal lock and must not be mistaken for it.
+        for (roll_deg, pitch_deg) in [(0.0_f64, 0.0_f64), (85.5, 1.5), (0.0, 89.0), (179.0, -60.0)]
+        {
+            assert!(
+                chart(roll_deg.to_radians(), pitch_deg.to_radians(), 0.4).is_some(),
+                "roll {roll_deg} pitch {pitch_deg} is ordinary attitude and must convert"
+            );
+        }
+
+        // And the refusal reaches the filter as a zeroed attitude block, so a magnetometer
+        // update there is a no-op rather than a 3e8 gain.
+        let (roll, pitch, yaw) = (0.3, std::f64::consts::FRAC_PI_2, 0.7);
+        let state = state_at(roll, pitch, yaw);
+        let magnetometer = MagnetometerYawMeasurement {
+            mag_x: 21.0,
+            mag_y: -4.0,
+            mag_z: -43.0,
+            noise_std: 0.2,
+            apply_declination: false,
+            year: 2024,
+            day_of_year: 1,
+            is_enu: false,
+        };
+        let differenced = ErrorStateKalmanFilter::attitude_error_jacobian(
+            &magnetometer,
+            &quaternion_wxyz(roll, pitch, yaw),
+            &state,
+        );
+        assert!(
+            differenced.abs().max() > 1e6,
+            "the premise: differencing really does blow up here, {:e}",
+            differenced.abs().max()
+        );
     }
 
     /// `ZaruMeasurement` is why the old skip condition was wrong, and how little it cost.
