@@ -2100,6 +2100,31 @@ impl ErrorStateKalmanFilter {
         self.error_covariance.nrows()
     }
 
+    /// `P <- G P G^T` on the attitude rows and columns, after a correction of `delta_theta`.
+    ///
+    /// Separate from [`Self::inject_error_state`] on purpose, and called **after** the Joseph
+    /// covariance update rather than with the injection. The two do not commute once the
+    /// attitude block has cross-covariances: the gain is formed from the prior `P`, so the
+    /// Joseph form has to consume that same `P`, and only the posterior it produces is
+    /// transported. Folding the transport into the injection -- which runs first -- fed the
+    /// Joseph expression a `G P G^T` prior it had not computed a gain for, and then left the
+    /// posterior untransported, which is the opposite of the intended order.
+    ///
+    /// The whole covariance is touched, not just the 3x3 diagonal block: attitude's
+    /// correlations with position, velocity and the biases live in the same tangent frame and
+    /// move with it. Transporting only the diagonal block would leave the cross-terms
+    /// describing one frame and the attitude variance another -- a different inconsistency
+    /// rather than a smaller one.
+    fn transport_attitude_covariance(&mut self, delta_theta: &Vector3<f64>) {
+        let reset = crate::linearize::attitude_reset_jacobian(delta_theta);
+        let size = self.state_size();
+        let mut transport = DMatrix::<f64>::identity(size, size);
+        transport
+            .view_mut((ATTITUDE_ROLL_INDEX, ATTITUDE_ROLL_INDEX), (3, 3))
+            .copy_from(&reset);
+        self.error_covariance = &transport * &self.error_covariance * transport.transpose();
+    }
+
     /// Inject error state into nominal state and reset error state to zero
     ///
     /// This is the key operation that distinguishes ESKF from full-state EKF.
@@ -2147,21 +2172,26 @@ impl ErrorStateKalmanFilter {
         self.nominal_velocity_east += self.error_state[4];
         self.nominal_velocity_vertical += self.error_state[5];
 
-        // Attitude error injection using quaternion multiplication
-        // Small angle approximation: q(δθ) ≈ [1, δθ/2]^T
+        // Attitude error injection: q_nominal (x) Exp(delta_theta), exactly.
+        //
+        // This used the first-order quaternion `[1, delta_theta/2]`, normalised. That is not
+        // `Exp(delta_theta)`: normalising `[1, v/2]` gives a rotation of
+        // `2*atan(|v|/2)` about `v/|v|`, which is 2% short of `|v|` at a half-radian
+        // correction. The approximation was harmless while nothing else depended on *which*
+        // rotation was applied -- but the covariance transport does, because it is evaluated
+        // at `delta_theta`. Rather than evaluate the reset at the rotation the approximation
+        // happens to produce, inject the rotation the error state actually names (#398).
+        //
+        // It also makes this filter's injection identical in form to the UKF's
+        // `Rotation3::from_scaled_axis`, so the two really do share the right-trivialised
+        // convention the reset assumes rather than merely being described as sharing it.
         let delta_theta = Vector3::new(
             self.error_state[6],
             self.error_state[7],
             self.error_state[8],
         );
-
-        // Create error quaternion from small angle vector
-        let delta_q = nalgebra::Vector4::new(
-            1.0,
-            delta_theta[0] * 0.5,
-            delta_theta[1] * 0.5,
-            delta_theta[2] * 0.5,
-        );
+        let exact = UnitQuaternion::from_scaled_axis(delta_theta);
+        let delta_q = nalgebra::Vector4::new(exact.w, exact.i, exact.j, exact.k);
 
         // Quaternion multiplication: q_new = q_nominal ⊗ q_error
         let w = self.nominal_quaternion[0];
@@ -2183,28 +2213,10 @@ impl ErrorStateKalmanFilter {
         let norm = self.nominal_quaternion.norm();
         self.nominal_quaternion /= norm;
 
-        // Transport the attitude covariance onto the tangent space of the attitude we just
-        // moved to. The correction above changed the linearisation point; `error_covariance`
-        // is expressed around the *old* one, so without this its attitude block describes a
-        // frame the mean has already left (#398).
-        //
-        // `P <- G P G^T` on the attitude rows and columns, with `G = J_r(delta_theta)`. This
-        // filter's error is right-trivialised -- `R = R_hat exp([delta_theta]x)`, which is
-        // what the `q (x) dq` composition above is -- so the reset matrix is the right
-        // Jacobian; see `attitude_reset_jacobian` for why it is that and not its inverse.
-        //
-        // The whole covariance is touched, not just the 3x3 diagonal block: the attitude's
-        // correlations with position, velocity and the biases are expressed in the same
-        // tangent frame and have to move with it. Transporting only the diagonal block would
-        // leave the filter's cross-terms describing one frame and its attitude variance
-        // another, which is a different inconsistency rather than a smaller one.
-        let reset = crate::linearize::attitude_reset_jacobian(&delta_theta);
-        let size = self.state_size();
-        let mut transport = DMatrix::<f64>::identity(size, size);
-        transport
-            .view_mut((ATTITUDE_ROLL_INDEX, ATTITUDE_ROLL_INDEX), (3, 3))
-            .copy_from(&reset);
-        self.error_covariance = &transport * &self.error_covariance * transport.transpose();
+        // The covariance transport that belongs with this injection is **not** here; see
+        // `transport_attitude_covariance` and its caller in `update`. It has to run after the
+        // measurement update, not before, because the gain was formed from the pre-transport
+        // covariance and the Joseph form has to consume the same one.
 
         // Bias error injection
         self.nominal_accel_bias[0] += self.error_state[9];
@@ -2655,14 +2667,30 @@ impl NavigationFilter for ErrorStateKalmanFilter {
         self.error_state = &k * &innovation;
 
         // Inject error state into nominal state and reset
+        // Captured before injection, which zeroes the error state. This is the rotation the
+        // nominal attitude is about to absorb, and so the one the covariance transport below
+        // has to be evaluated at.
+        let delta_theta = Vector3::new(
+            self.error_state[ATTITUDE_ROLL_INDEX],
+            self.error_state[ATTITUDE_PITCH_INDEX],
+            self.error_state[ATTITUDE_YAW_INDEX],
+        );
         self.inject_error_state();
 
         // Error covariance update (Joseph form for numerical stability):
         // P = (I - K*H)*P*(I - K*H)^T + K*R*K^T
+        //
+        // `self.error_covariance` is still the prior here: `inject_error_state` moves the
+        // nominal state and does not touch the covariance, so the Joseph form consumes the
+        // same `P` the gain was computed from.
         let i_kh = DMatrix::identity(self.state_size(), self.state_size()) - &k * &h_error;
         let r = measurement.get_noise();
         self.error_covariance =
             &i_kh * &self.error_covariance * i_kh.transpose() + &k * r * k.transpose();
+
+        // Only now, on the posterior, transport onto the tangent space of the attitude the
+        // injection moved to (#398). Order matters: see `transport_attitude_covariance`.
+        self.transport_attitude_covariance(&delta_theta);
 
         self.regularize_covariance();
         Ok(outcome)
