@@ -50,7 +50,14 @@ use std::io::{self, Read, Write};
 use std::path::Path;
 use std::time::{Duration as StdDuration, Instant};
 
-use anyhow::{Result, bail};
+use anyhow::Result;
+// `bail!` survives in exactly two places, both `#[cfg(feature = "netcdf")]`: the empty-record
+// guards in `to_netcdf`. The v1.0 freeze moved the compute layer -- the two runners and the two
+// monitors -- onto `StrapdownError`, leaving anyhow where `core/src/error.rs` says it belongs,
+// at file I/O. So the import has to carry the same gate as its only users, or a
+// `--no-default-features` build fails on `unused_imports` under `-D warnings`.
+#[cfg(feature = "netcdf")]
+use anyhow::bail;
 
 use crate::StrapdownError;
 use chrono::{DateTime, Datelike, Duration, Utc};
