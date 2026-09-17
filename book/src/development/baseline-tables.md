@@ -6,7 +6,7 @@ overwrites this file, and the gate fails if it is stale. See #380. -->
 | scenario | samples | horiz RMSE (m) | CEP50 (m) | CEP95 (m) | horiz max (m) | vert RMSE (m) | vert bias (m) | horiz vel RMSE (m/s) | vert vel RMSE (m/s) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | `real_clean__ukf` | 5,366 | 4.772 | 3.891 | 8.023 | 23.653 | 2.577 | 0.398 | 1.131 | 0.520 |
-| `real_clean__ekf` | 5,366 | 4.511 | 3.652 | 7.551 | 23.867 | 2.696 | 0.391 | 1.134 | 0.628 |
+| `real_clean__ekf` | 5,366 | 4.775 | 3.887 | 8.008 | 23.982 | 2.570 | 0.392 | 1.131 | 0.537 |
 | `real_clean__eskf` | 5,366 | 4.757 | 3.889 | 7.981 | 23.458 | 2.577 | 0.392 | 1.109 | 0.529 |
 | `real_sparse_5s__ukf` | 5,366 | 9.056 | 5.656 | 14.512 | 122.794 | 5.554 | 0.912 | 2.854 | 0.640 |
 | `real_sparse_5s__eskf` | 5,366 | 9.053 | 5.632 | 14.408 | 125.497 | 5.574 | 0.898 | 2.848 | 0.662 |
@@ -26,7 +26,7 @@ overwrites this file, and the gate fails if it is stale. See #380. -->
 | scenario | samples | roll RMSE (deg) | pitch RMSE (deg) | yaw RMSE (deg) | geodesic RMSE (deg) |
 |---|---:|---:|---:|---:|---:|
 | `real_clean__ukf` | 5,366 | 3.422 | 2.844 | 24.589 | 24.974 |
-| `real_clean__ekf` | 5,366 | 4.976 | 3.348 | 22.381 | 23.108 |
+| `real_clean__ekf` | 5,366 | 3.340 | 2.899 | 22.346 | 22.764 |
 | `real_clean__eskf` | 5,366 | 3.315 | 2.974 | 24.242 | 24.630 |
 | `real_sparse_5s__ukf` | 5,366 | 3.798 | 3.162 | 19.059 | 19.692 |
 | `real_sparse_5s__eskf` | 5,366 | 3.775 | 3.237 | 18.989 | 19.630 |
@@ -46,15 +46,15 @@ overwrites this file, and the gate fails if it is stale. See #380. -->
 | scenario | samples | nees (ideal 3.0) | npes, diagonal only | 3-sigma horiz (ideal 0.9973) | 3-sigma vert (ideal 0.9973) |
 |---|---:|---:|---:|---:|---:|
 | `real_clean__ukf` | 5,366 | 62.355 | 62.224 | 0.526 | 0.403 |
-| `real_clean__ekf` | 5,366 | 56.513 | 56.317 | 0.565 | 0.410 |
+| `real_clean__ekf` | 5,366 | 62.276 | 62.138 | 0.527 | 0.394 |
 | `real_clean__eskf` | 5,366 | 62.249 | 62.131 | 0.528 | 0.399 |
 | `real_sparse_5s__ukf` | 5,366 | 71.451 | 70.948 | 0.645 | 0.170 |
 | `real_sparse_5s__eskf` | 5,366 | 72.014 | 71.359 | 0.647 | 0.170 |
 | `real_outage_60s__eskf` | 5,366 | 77.315 | 68.423 | 0.601 | 0.340 |
 | `real_degraded__ukf` | 5,366 | 4,987.240 | 4,986.370 | 0.081 | 0.128 |
-| `real_degraded__eskf` | 5,366 | 4,988.130 | 4,987.290 | 0.081 | 0.128 |
+| `real_degraded__eskf` | 5,366 | 4,988.140 | 4,987.300 | 0.081 | 0.128 |
 | `syn_cruise_1hz__ukf` | 15,000 | 7.258 | 7.261 | 0.996 | 0.826 |
-| `syn_cruise_1hz__ekf` | 15,000 | 7.260 | 7.263 | 0.996 | 0.826 |
+| `syn_cruise_1hz__ekf` | 15,000 | 7.259 | 7.263 | 0.996 | 0.826 |
 | `syn_cruise_1hz__eskf` | 15,000 | 7.041 | 7.044 | 0.995 | 0.835 |
 | `syn_outage_60s__ukf` | 15,000 | 4.207 | 4.206 | 0.997 | 0.901 |
 | `syn_outage_60s__eskf` | 15,000 | 3.863 | 3.867 | 0.997 | 0.925 |

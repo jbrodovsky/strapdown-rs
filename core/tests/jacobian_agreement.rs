@@ -30,9 +30,11 @@
 //!    quadratic Coriolis term (#325); the attitude rows then had the same latitude dependence
 //!    missing from Groves 5.46 that #317 had filled in for 5.54 (#339). Each was ~5e-7 to
 //!    3e-5 against an analytic zero, well inside the 1e-4 this file used to allow. Filling
-//!    them in is what let the tolerance move to a *derived* 6e-5 -- see `MAX_DISAGREEMENT` --
-//!    where every contribution is named and computed rather than being an unexamined budget:
-//!    one second-order averaging term and one deliberately-omitted half-step (#338).
+//!    them in is what let the tolerance become *derived* -- see `MAX_DISAGREEMENT` -- where
+//!    every contribution is named and computed rather than being an unexamined budget. It was
+//!    6e-5 while the position rows' half-step (#338) was still deliberately omitted and had
+//!    to be budgeted for; that term is now carried, so the budget is the one second-order
+//!    averaging term that remains and the bound is **2e-5**.
 
 use nalgebra::{Rotation3, Vector3};
 use strapdown::linearize::{

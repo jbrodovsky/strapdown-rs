@@ -255,6 +255,37 @@ fn euler_rate_matrix_inverse(roll: f64, pitch: f64, yaw: f64) -> Option<nalgebra
 /// $1/\theta$ terms in the closed form from dividing by zero.
 const MIN_RESET_ANGLE_RAD: f64 = 1e-8;
 
+/// The per-row factor `rate * 0.5 * dt` in the position rows' trapezoidal half-step (#338).
+///
+/// `position_update` integrates each position row over the **propagated** velocity, so the
+/// row picks up its velocity row's dependences scaled by this:
+///
+/// ```text
+///     f[(row, c)] += position_half_step(state, dt)[row] * (f[(3 + row, c)] - I[(3 + row, c)])
+/// ```
+///
+/// Exposed, and named, because **three** places need the identical factor and they cannot
+/// share a loop: [`state_transition_jacobian`] and [`error_state_transition_jacobian`] apply
+/// it to the matrices they build, and
+/// [`ExtendedKalmanFilter::predict`](crate::kalman::ExtendedKalmanFilter) applies it to the
+/// bias columns of the *widened* matrix, which do not exist yet when the 9x9 is built. A
+/// fourth copy of `0.5 * dt / (R_N + h)` is how the three drift apart.
+///
+/// The rates are the same ones the position rows' velocity columns are assigned from: the
+/// north and east rows convert metres per second into radians per second through the
+/// principal radii, and the altitude row is a pure sign, because altitude is metres in both
+/// frames while `velocity_vertical` is positive down in NED.
+#[must_use]
+pub fn position_half_step(state: &StrapdownState, dt: f64) -> [f64; 3] {
+    let (r_n, r_e, _) = earth::principal_radii(&state.latitude.to_degrees(), &state.altitude);
+    let cos_lat = state.latitude.cos();
+    [
+        0.5 * dt / (r_n + state.altitude),
+        0.5 * dt / ((r_e + state.altitude) * cos_lat),
+        0.5 * dt * if state.is_enu { 1.0 } else { -1.0 },
+    ]
+}
+
 /// The covariance reset that follows injecting an attitude correction, $J_r(\delta\theta)$.
 ///
 /// # What this is for
@@ -803,11 +834,12 @@ fn transition_jacobian(
     // This runs **after** the velocity and attitude blocks because it reads the finished
     // velocity rows; ordering it earlier would silently pick up a half-built `f`.
     //
-    // It is the largest remaining disagreement in the matrix: the attitude columns were
-    // modelled as exactly zero, against ~3e-5 for altitude-vs-attitude on
-    // `jacobian_agreement`'s state and ~9.2e-11 on rows 0 and 1 at `frame_check_state` --
-    // absolutely smaller but 3.2% and 3.7% of the largest non-identity entry in those rows,
-    // where altitude's is 0.7% of its.
+    // Before this loop existed it was the largest disagreement in the matrix -- all figures
+    // here are **pre-fix**: the attitude columns were modelled as exactly zero, against
+    // ~3e-5 for altitude-vs-attitude on `jacobian_agreement`'s state and ~9.2e-11 on rows 0
+    // and 1 at `frame_check_state`, absolutely smaller but 3.2% and 3.7% of the largest
+    // non-identity entry in those rows where altitude's was 0.7% of its. It is now carried
+    // rather than residual, which is why `MAX_DISAGREEMENT` drops from 6e-5 to 2e-5.
     //
     // It is applied to all three rows at once, and to `error_state_transition_jacobian` in
     // the same change, because the consistency argument was the only thing left standing
@@ -825,14 +857,8 @@ fn transition_jacobian(
     //     with it                  0.0031   0.0166   0.0026
     //
     // Two better, one worse, all hundredths of a metre against a posterior sigma of 0.894 m.
-    let position_rates = [
-        1.0 / (r_n + alt),
-        1.0 / ((r_e + alt) * cos_lat),
-        if state.is_enu { 1.0 } else { -1.0 },
-    ];
     let columns = f.ncols();
-    for (row, rate) in position_rates.iter().enumerate() {
-        let half_step = rate * 0.5 * dt;
+    for (row, half_step) in position_half_step(state, dt).iter().enumerate() {
         for column in 0..columns {
             let identity = f64::from(u8::from(3 + row == column));
             let departure = f[(3 + row, column)] - identity;
@@ -1365,17 +1391,14 @@ pub fn error_state_transition_jacobian(
     // from the velocity row is what keeps the entries assigned above -- which are already the
     // completed trapezoid for the identity part -- from being doubled.
     //
-    // It reaches further here than in the full-state form: the ESKF's velocity rows carry
-    // gyro- and accelerometer-bias columns, so the position rows now couple to the biases at
-    // half a step too, where before they were exactly zero.
-    let position_rates = [
-        1.0 / r_n,
-        1.0 / (r_e * lat.cos()),
-        if state.is_enu { 1.0 } else { -1.0 },
-    ];
+    // It reaches further here than in the 9x9 full-state form: this matrix already carries the
+    // **accelerometer**-bias block on its velocity rows (`-C_b^n dt`, columns 9..12), so the
+    // position rows now couple to accelerometer bias at half a step, where before they were
+    // exactly zero. The gyro-bias columns 12..15 stay zero here and should: gyro bias enters
+    // the *attitude* rows, not the velocity rows, so there is no one-step path from it to
+    // position for this term to halve.
     let columns = f.ncols();
-    for (row, rate) in position_rates.iter().enumerate() {
-        let half_step = rate * 0.5 * dt;
+    for (row, half_step) in position_half_step(state, dt).iter().enumerate() {
         for column in 0..columns {
             let identity = f64::from(u8::from(3 + row == column));
             let departure = f[(3 + row, column)] - identity;
@@ -4017,29 +4040,135 @@ mod half_step_tests {
         let gyro = Vector3::new(0.01, -0.02, 0.03);
         let f = error_state_transition_jacobian(&state, &accel, &gyro, DT);
 
-        // The altitude row's rate is -1 in NED, so its half-step is exactly -0.5*dt.
-        let half_step = -0.5 * DT;
-        for column in [6, 7, 8, 9, 10, 11, 12, 13, 14] {
-            let expected = half_step * f[(5, column)];
-            assert!(
-                (f[(2, column)] - expected).abs() < 1e-18,
-                "column {column}: f[(2,{column})] = {:e} against {:e}",
-                f[(2, column)],
-                expected
-            );
+        // **All three rows**, not just altitude. Rows 0 and 1 carry the identical term at
+        // ~1e-10, which is four orders under `jacobian_agreement`'s 2e-5 gate -- so deleting
+        // either of their loops would sail through every other test in the tree. That is
+        // exactly why they are pinned here rather than left to the finite-difference sweep.
+        let half_steps = position_half_step(&state, DT);
+        for row in 0..3 {
+            for column in 0..15 {
+                let identity = f64::from(u8::from(3 + row == column));
+                let expected_departure = half_steps[row] * (f[(3 + row, column)] - identity);
+                // Reconstruct what the row would hold without the half-step, so the
+                // assertion is about the term rather than about the whole entry.
+                let without = match (row, column) {
+                    (0, 3) => {
+                        DT / crate::earth::principal_radii(
+                            &state.latitude.to_degrees(),
+                            &state.altitude,
+                        )
+                        .0
+                    }
+                    (1, 4) => {
+                        DT / (crate::earth::principal_radii(
+                            &state.latitude.to_degrees(),
+                            &state.altitude,
+                        )
+                        .1 * state.latitude.cos())
+                    }
+                    (2, 5) => {
+                        if state.is_enu {
+                            DT
+                        } else {
+                            -DT
+                        }
+                    }
+                    _ if row == column => 1.0,
+                    _ => 0.0,
+                };
+                assert!(
+                    (f[(row, column)] - (without + expected_departure)).abs() < 1e-18,
+                    "row {row} column {column}: {:e} against {:e}",
+                    f[(row, column)],
+                    without + expected_departure
+                );
+            }
         }
 
-        // And it is not vacuous: the accelerometer columns of the velocity row are the
-        // largest thing there, so the altitude row now carries a real bias coupling.
+        // And none of the three is vacuous: each must carry a non-zero attitude coupling it
+        // did not have before, at a magnitude the row can actually notice.
+        for (row, floor) in [(0_usize, 1e-13), (1, 1e-13), (2, 1e-9)] {
+            let worst = (6..9).map(|c| f[(row, c)].abs()).fold(0.0_f64, f64::max);
+            assert!(
+                worst > floor,
+                "position row {row} should couple to attitude; worst attitude column {worst:e}"
+            );
+        }
+        // The accelerometer columns of the velocity row are the largest thing there, so the
+        // altitude row carries a real bias coupling too.
         assert!(
             f[(2, 9)].abs() > 1e-6,
             "the altitude row should couple to accelerometer bias, got {:e}",
             f[(2, 9)]
         );
+        // Gyro bias reaches attitude, not velocity, so it stays exactly zero here.
+        for column in 12..15 {
+            assert!(
+                f[(2, column)] == 0.0,
+                "gyro-bias column {column} has no one-step path to position, got {:e}",
+                f[(2, column)]
+            );
+        }
+    }
+
+    /// The EKF's *widened* matrix, which is where the 9x9 form cannot reach.
+    ///
+    /// `transition_jacobian` applies the half-step to every column it has -- and it has only
+    /// nine. The EKF copies that 9x9 into a 15x15 and adds the bias blocks afterwards, so the
+    /// position rows' bias columns are built after the half-step has already run. They were
+    /// left at exactly zero, which is #394's failure mode on a different block: a coupling
+    /// `F` cannot create is one `P` never develops.
+    #[test]
+    fn the_ekfs_widened_matrix_carries_the_half_step_into_its_bias_columns() {
+        use crate::kalman::{ExtendedKalmanFilter, InitialState};
+        use crate::{ImuSample, InputModel, NavigationFilter};
+
+        const DT: f64 = 0.5;
+        let initial = InitialState {
+            latitude: 51.5,
+            longitude: -0.12,
+            altitude: 2400.0,
+            northward_velocity: 120.0,
+            eastward_velocity: -45.0,
+            vertical_velocity: 3.0,
+            roll: 0.2,
+            pitch: -0.35,
+            yaw: 1.1,
+            in_degrees: false,
+            is_enu: false,
+        };
+        let mut ekf = ExtendedKalmanFilter::new(
+            &initial,
+            &[0.0; 6],
+            vec![1e-6; 15],
+            DMatrix::from_diagonal(&DVector::from_vec(vec![1e-9; 15])),
+            true,
+        );
+        let before = ekf.get_certainty();
+        let sample = ImuSample {
+            delta_v: Vector3::new(0.4, -0.2, 9.7) * DT,
+            delta_theta: Vector3::new(0.01, -0.02, 0.03) * DT,
+            dt: DT,
+        };
+        ekf.predict(&sample as &dyn InputModel, DT)
+            .expect("predict");
+        let after = ekf.get_certainty();
+
+        // The position/accelerometer-bias cross-covariance must become non-zero in one step.
+        // With a diagonal prior it can only get there through F, so this is the block under
+        // test and nothing else.
+        let worst = (0..3)
+            .flat_map(|row| (9..12).map(move |column| (row, column)))
+            .map(|(row, column)| after[(row, column)].abs())
+            .fold(0.0_f64, f64::max);
         assert!(
-            f[(2, 6)].abs() > 1e-9,
-            "the altitude row should couple to attitude, got {:e}",
-            f[(2, 6)]
+            before.view((0, 9), (3, 3)).iter().all(|v| *v == 0.0),
+            "the prior is diagonal, so any cross-covariance below came from F"
+        );
+        assert!(
+            worst > 0.0,
+            "position/accelerometer-bias cross-covariance is still exactly zero after a \
+             predict; the widened matrix is missing the half-step"
         );
     }
 }
