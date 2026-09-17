@@ -104,6 +104,14 @@ nursery = { level = "deny", priority = -1 }
 # #254's zero-panic policy, now enforced. The 49 library call sites these named are
 # gone; `StrapdownError` gives every one of them somewhere to return to. Tests are
 # exempted in `clippy.toml`, so these point only at library code.
+# In direct tension with `#[non_exhaustive]`, which the v1.0 API freeze put on every
+# configuration type so that adding a field in 1.x is not a major bump. The lint exists to
+# push construction toward a struct literal; `#[non_exhaustive]` forbids that literal from
+# any other crate, so the two cannot both be satisfied and the lint is simply wrong here --
+# it fires on the only construction form the attribute permits. Relaxed once, workspace-wide
+# and with this reason, rather than with a scattered call-site `#[allow]` at each of the ~35
+# sites (see AGENTS.md on how lints are relaxed in this project).
+field_reassign_with_default = "allow"
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"

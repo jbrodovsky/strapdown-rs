@@ -1450,6 +1450,7 @@ const fn none_if_nan(value: f64) -> Option<f64> {
     reason = "the only `unsafe` here is `Mmap::map` on a file handle; it relies on no invariant of this record"
 )]
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct NavigationResult {
     /// Timestamp corresponding to the state
     pub timestamp: DateTime<Utc>,
@@ -3498,6 +3499,7 @@ pub fn print_ukf(ukf: &UnscentedKalmanFilter, record: &TestDataRecord) {
 /// This struct groups together optional parameters for initializing an Unscented Kalman Filter,
 /// reducing the number of function arguments and making it easier to specify custom configurations.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct UkfConfig {
     /// Optional vector of f64 representing the initial attitude covariance (default is a small value).
     pub attitude_covariance: Option<Vec<f64>>,
@@ -3774,6 +3776,7 @@ impl UkfConfig {
 /// give `use_biases: false` and silently demote every caller from the 15-state EKF to the
 /// 9-state one -- a retune disguised as a struct literal.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct EkfConfig {
     /// Optional initial attitude covariance (3 elements, rad^2).
     pub attitude_covariance: Option<Vec<f64>>,
@@ -4046,6 +4049,7 @@ impl EkfConfig {
 /// [`Self::process_noise_diagonal`] or `imu_biases_covariance` handed in alongside it is
 /// sized to sixteen and **not** fifteen; read [`Self::baro_bias_index`] for where it lands.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct EskfConfig {
     /// Optional initial attitude error covariance (3 elements, rad^2).
     pub attitude_covariance: Option<Vec<f64>>,
@@ -4990,6 +4994,7 @@ pub enum ParticleFilterType {
 
 /// Closed-loop specific configuration
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ClosedLoopConfig {
     /// Filter type; defaults to the 15-state ESKF.
     #[serde(default)]
@@ -5069,6 +5074,7 @@ impl Default for ClosedLoopConfig {
 
 /// Particle filter configuration (RBPF defaults).
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ParticleFilterConfig {
     /// Number of particles in the filter.
     #[serde(default = "default_num_particles")]
@@ -5254,6 +5260,7 @@ impl Default for LoggingConfig {
 
 /// Unified simulation configuration supporting all modes
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct SimulationConfig {
     /// Input CSV file path (relative or absolute)
     #[serde(default = "default_input")]
@@ -5497,6 +5504,7 @@ pub enum GeoResolution {
 
 /// Geophysical measurement configuration for geonav simulations
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct GeophysicalConfig {
     // Gravity measurement configuration (all optional)
     /// Gravity map resolution (None = gravity not used)
@@ -5759,6 +5767,7 @@ fn magnetic_field_nav_ut(
 /// initial kinematic state. The trajectory propagates at constant nav-frame
 /// velocity with constant body angular velocity.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct SyntheticConfig {
     /// Output CSV file path
     pub output: String,
@@ -5807,6 +5816,39 @@ pub struct SyntheticConfig {
     #[serde(default = "default_mag_hard_iron_std_ut")]
     pub mag_hard_iron_std_ut: f64,
 }
+
+/// Every field's serde default, as a `Default` impl.
+///
+/// It was the one configuration type in the crate without one, which stopped mattering the
+/// moment [`SyntheticConfig`] became `#[non_exhaustive]` at the v1.0 freeze: a
+/// `#[non_exhaustive]` struct cannot be built from a struct literal outside its own crate, so
+/// without a `Default` (or another constructor) it would be **impossible to construct at all**
+/// from `strapdown-sim`, from the gated benchmarks, or by any user of the library.
+///
+/// The two fields serde treats as required get the only sensible standalone values: an empty
+/// `output` path, and the 300 s the CLI's `--duration-s` already defaults to.
+impl Default for SyntheticConfig {
+    fn default() -> Self {
+        Self {
+            output: String::new(),
+            initial_state: SyntheticInitialState::default(),
+            duration_s: DEFAULT_SYNTHETIC_DURATION_S,
+            sample_rate_hz: default_sample_rate_hz(),
+            imu_quality: crate::IMUQuality::default(),
+            seed: default_seed(),
+            no_noise: false,
+            gnss_horizontal_noise_m: default_gnss_horizontal_noise_m(),
+            gnss_vertical_noise_m: default_gnss_vertical_noise_m(),
+            baro_noise_std_pa: default_baro_noise_std_pa(),
+            mag_noise_std_ut: default_mag_noise_std_ut(),
+            mag_hard_iron_std_ut: default_mag_hard_iron_std_ut(),
+        }
+    }
+}
+
+/// Default synthetic trajectory length, seconds -- the same value `strapdown-sim syn`'s
+/// `--duration-s` flag carries, so the library and the CLI agree.
+const DEFAULT_SYNTHETIC_DURATION_S: f64 = 300.0;
 
 impl SyntheticConfig {
     /// Write config to a file, choosing format by extension (.json, .yaml, .yml, .toml)

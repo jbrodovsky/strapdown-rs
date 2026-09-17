@@ -2017,11 +2017,12 @@ mod tests {
     /// of `build_event_stream` carried the identical defect, so it gets the identical test.
     #[test]
     fn empty_records_are_an_error_not_a_panic() {
-        let config = AidingConfig {
-            scheduler: MeasurementScheduler::PassThrough,
-            fault: GnssFaultModel::None,
-            seed: 42,
-            ..Default::default()
+        let config = {
+            let mut built = AidingConfig::default();
+            built.scheduler = MeasurementScheduler::PassThrough;
+            built.fault = GnssFaultModel::None;
+            built.seed = 42;
+            built
         };
         let geomap = Rc::new(create_test_gravity_map());
 
@@ -2042,11 +2043,12 @@ mod tests {
     #[test]
     fn single_record_yields_a_stream_with_no_events() {
         let records = create_test_records();
-        let config = AidingConfig {
-            scheduler: MeasurementScheduler::PassThrough,
-            fault: GnssFaultModel::None,
-            seed: 42,
-            ..Default::default()
+        let config = {
+            let mut built = AidingConfig::default();
+            built.scheduler = MeasurementScheduler::PassThrough;
+            built.fault = GnssFaultModel::None;
+            built.seed = 42;
+            built
         };
         let geomap = Rc::new(create_test_gravity_map());
 
@@ -2072,11 +2074,12 @@ mod tests {
     #[test]
     fn test_build_event_stream() {
         let records = create_test_records();
-        let config = AidingConfig {
-            scheduler: MeasurementScheduler::PassThrough,
-            fault: GnssFaultModel::None,
-            seed: 42,
-            ..Default::default()
+        let config = {
+            let mut built = AidingConfig::default();
+            built.scheduler = MeasurementScheduler::PassThrough;
+            built.fault = GnssFaultModel::None;
+            built.seed = 42;
+            built
         };
         let geomap = Rc::new(create_test_gravity_map());
 
@@ -2115,11 +2118,12 @@ mod tests {
     #[test]
     fn test_build_event_stream_magnetic() {
         let records = create_test_records();
-        let config = AidingConfig {
-            scheduler: MeasurementScheduler::PassThrough,
-            fault: GnssFaultModel::None,
-            seed: 42,
-            ..Default::default()
+        let config = {
+            let mut built = AidingConfig::default();
+            built.scheduler = MeasurementScheduler::PassThrough;
+            built.fault = GnssFaultModel::None;
+            built.seed = 42;
+            built
         };
         let geomap = Rc::new(create_test_magnetic_map());
 
@@ -2776,11 +2780,12 @@ mod tests {
     #[test]
     fn test_build_event_stream_custom_noise() {
         let records = create_test_records();
-        let config = AidingConfig {
-            scheduler: MeasurementScheduler::PassThrough,
-            fault: GnssFaultModel::None,
-            seed: 42,
-            ..Default::default()
+        let config = {
+            let mut built = AidingConfig::default();
+            built.scheduler = MeasurementScheduler::PassThrough;
+            built.fault = GnssFaultModel::None;
+            built.seed = 42;
+            built
         };
         let geomap = Rc::new(create_test_gravity_map());
 
@@ -2819,11 +2824,12 @@ mod tests {
     #[test]
     fn test_build_event_stream_with_frequency() {
         let records = create_test_records();
-        let config = AidingConfig {
-            scheduler: MeasurementScheduler::PassThrough,
-            fault: GnssFaultModel::None,
-            seed: 42,
-            ..Default::default()
+        let config = {
+            let mut built = AidingConfig::default();
+            built.scheduler = MeasurementScheduler::PassThrough;
+            built.fault = GnssFaultModel::None;
+            built.seed = 42;
+            built
         };
         let geomap = Rc::new(create_test_gravity_map());
 

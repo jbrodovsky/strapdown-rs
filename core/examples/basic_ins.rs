@@ -62,9 +62,10 @@ fn main() -> Result<(), StrapdownError> {
     // NED, no antenna lever arm. `InsEngineConfig::default()` is NED already; naming it here
     // is documentation rather than necessity.
     let mut engine = InsEngine::builder()
-        .with_config(InsEngineConfig {
-            is_enu: false,
-            ..InsEngineConfig::default()
+        .with_config({
+            let mut built = InsEngineConfig::default();
+            built.is_enu = false;
+            built
         })
         .with_initial_state(initial_state)
         .build()?;

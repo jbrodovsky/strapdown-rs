@@ -591,34 +591,38 @@ fn process_file(
             // the 1e-3 default silently -- the same shape of defect as #392, found while
             // adding the flag below. The values are a no-op for a config that does not set
             // them: `default_ukf_alpha`/`_beta`/`_kappa` are the constructor's own defaults.
-            let ukf_config = UkfConfig {
-                ukf_alpha: Some(filter_config.ukf_alpha),
-                ukf_beta: Some(filter_config.ukf_beta),
-                ukf_kappa: Some(filter_config.ukf_kappa),
-                estimate_baro_bias: filter_config.estimate_baro_bias,
-                is_enu: config.is_enu,
-                ..UkfConfig::default()
+            let ukf_config = {
+                let mut built = UkfConfig::default();
+                built.ukf_alpha = Some(filter_config.ukf_alpha);
+                built.ukf_beta = Some(filter_config.ukf_beta);
+                built.ukf_kappa = Some(filter_config.ukf_kappa);
+                built.estimate_baro_bias = filter_config.estimate_baro_bias;
+                built.is_enu = config.is_enu;
+                built
             };
-            let ekf_config = EkfConfig {
-                estimate_baro_bias: filter_config.estimate_baro_bias,
-                is_enu: config.is_enu,
-                ..EkfConfig::default()
+            let ekf_config = {
+                let mut built = EkfConfig::default();
+                built.estimate_baro_bias = filter_config.estimate_baro_bias;
+                built.is_enu = config.is_enu;
+                built
             };
-            let eskf_config = EskfConfig {
-                estimate_baro_bias: filter_config.estimate_baro_bias,
-                is_enu: config.is_enu,
-                ..EskfConfig::default()
+            let eskf_config = {
+                let mut built = EskfConfig::default();
+                built.estimate_baro_bias = filter_config.estimate_baro_bias;
+                built.is_enu = config.is_enu;
+                built
             };
 
             // Derived from the filter, not asked for a second time; see
             // `run_single_closed_loop_simulation` for why (#372).
-            let aiding = strapdown::messages::AidingConfig {
-                baro_bias_index: match filter_config.filter {
+            let aiding = {
+                let mut built = config.aiding.clone();
+                built.baro_bias_index = match filter_config.filter {
                     FilterType::Ukf => ukf_config.baro_bias_index(),
                     FilterType::Ekf => ekf_config.baro_bias_index(),
                     FilterType::Eskf => eskf_config.baro_bias_index(),
-                },
-                ..config.aiding.clone()
+                };
+                built
             };
 
             let event_stream = build_event_stream(&records, &aiding, config.is_enu)?;
@@ -829,33 +833,31 @@ fn process_file(
             });
             #[cfg(not(feature = "geonav"))]
             let geo_layout = ExtraStateLayout::PARTICLE_NONE;
-            let mut rbpf = RaoBlackwellizedParticleFilter::new(
-                nominal,
-                RbpfConfig {
-                    num_particles: pf_cfg.num_particles,
-                    position_init_std_m,
-                    velocity_init_std_mps: pf_cfg.velocity_init_std_mps,
-                    attitude_init_std_rad: pf_cfg.attitude_init_std_rad,
-                    position_process_noise_std_m,
-                    velocity_process_noise_std_mps: pf_cfg.velocity_process_noise_std_mps,
-                    attitude_process_noise_std_rad: pf_cfg.attitude_process_noise_std_rad,
-                    extra_state_dim: geo_bias_dim,
-                    extra_state_init_std: if geo_bias_dim > 0 {
-                        pf_cfg.geo_bias_init_std
-                    } else {
-                        0.0
-                    },
-                    extra_state_process_noise_std: if geo_bias_dim > 0 {
-                        pf_cfg.geo_bias_process_noise_std
-                    } else {
-                        0.0
-                    },
-                    seed: config.seed,
-                    zero_vertical_velocity: pf_cfg.zero_vertical_velocity,
-                    zero_vertical_velocity_std_mps: pf_cfg.zero_vertical_velocity_std_mps,
-                    ..rbpf_defaults
-                },
-            )?;
+            let mut rbpf = RaoBlackwellizedParticleFilter::new(nominal, {
+                let mut built = RbpfConfig::default();
+                built.num_particles = pf_cfg.num_particles;
+                built.position_init_std_m = position_init_std_m;
+                built.velocity_init_std_mps = pf_cfg.velocity_init_std_mps;
+                built.attitude_init_std_rad = pf_cfg.attitude_init_std_rad;
+                built.position_process_noise_std_m = position_process_noise_std_m;
+                built.velocity_process_noise_std_mps = pf_cfg.velocity_process_noise_std_mps;
+                built.attitude_process_noise_std_rad = pf_cfg.attitude_process_noise_std_rad;
+                built.extra_state_dim = geo_bias_dim;
+                built.extra_state_init_std = if geo_bias_dim > 0 {
+                    pf_cfg.geo_bias_init_std
+                } else {
+                    0.0
+                };
+                built.extra_state_process_noise_std = if geo_bias_dim > 0 {
+                    pf_cfg.geo_bias_process_noise_std
+                } else {
+                    0.0
+                };
+                built.seed = config.seed;
+                built.zero_vertical_velocity = pf_cfg.zero_vertical_velocity;
+                built.zero_vertical_velocity_std_mps = pf_cfg.zero_vertical_velocity_std_mps;
+                built
+            })?;
 
             // Geophysical measurements ride the same event stream as every other
             // measurement type, so there is no separate geo path here.
@@ -1054,36 +1056,40 @@ fn run_single_closed_loop_simulation(
     // only one record, which is not enough evidence in either direction (#296).
     check_declared_frame(records, is_enu)?;
 
-    let ukf_config = UkfConfig {
-        ukf_alpha: Some(ukf_alpha),
-        ukf_beta: Some(ukf_beta),
-        ukf_kappa: Some(ukf_kappa),
-        estimate_baro_bias,
-        is_enu,
-        ..Default::default()
+    let ukf_config = {
+        let mut built = UkfConfig::default();
+        built.ukf_alpha = Some(ukf_alpha);
+        built.ukf_beta = Some(ukf_beta);
+        built.ukf_kappa = Some(ukf_kappa);
+        built.estimate_baro_bias = estimate_baro_bias;
+        built.is_enu = is_enu;
+        built
     };
-    let ekf_config = EkfConfig {
-        estimate_baro_bias,
-        is_enu,
-        ..EkfConfig::default()
+    let ekf_config = {
+        let mut built = EkfConfig::default();
+        built.estimate_baro_bias = estimate_baro_bias;
+        built.is_enu = is_enu;
+        built
     };
-    let eskf_config = EskfConfig {
-        estimate_baro_bias,
-        is_enu,
-        ..EskfConfig::default()
+    let eskf_config = {
+        let mut built = EskfConfig::default();
+        built.estimate_baro_bias = estimate_baro_bias;
+        built.is_enu = is_enu;
+        built
     };
 
     // The barometer model has to be told which state holds its bias, and the answer is the
     // filter's own. Deriving it here rather than asking for `baro_bias_index` to be set
     // beside `estimate_baro_bias` keeps the two from disagreeing -- a wrong index reads a
     // gyro bias as a barometric one (#372).
-    let aiding = strapdown::messages::AidingConfig {
-        baro_bias_index: match filter_type {
+    let aiding = {
+        let mut built = aiding.clone();
+        built.baro_bias_index = match filter_type {
             FilterType::Ukf => ukf_config.baro_bias_index(),
             FilterType::Ekf => ekf_config.baro_bias_index(),
             FilterType::Eskf => eskf_config.baro_bias_index(),
-        },
-        ..aiding.clone()
+        };
+        built
     };
 
     // Build event stream from records and GNSS degradation config
@@ -1142,9 +1148,10 @@ fn run_synthetic(args: &SyntheticArgs) -> Result<(), Box<dyn Error>> {
         validate_output_path(parent)?;
     }
 
-    let config = SyntheticConfig {
-        output: args.output.to_string_lossy().into_owned(),
-        initial_state: SyntheticInitialState {
+    let config = {
+        let mut built = SyntheticConfig::default();
+        built.output = args.output.to_string_lossy().into_owned();
+        built.initial_state = SyntheticInitialState {
             latitude_deg: args.latitude_deg,
             longitude_deg: args.longitude_deg,
             altitude_m: args.altitude_m,
@@ -1158,17 +1165,18 @@ fn run_synthetic(args: &SyntheticArgs) -> Result<(), Box<dyn Error>> {
             angular_velocity_y_dps: args.angular_velocity_y_dps,
             angular_velocity_z_dps: args.angular_velocity_z_dps,
             is_enu: args.enu,
-        },
-        duration_s: args.duration_s,
-        sample_rate_hz: args.sample_rate_hz,
-        imu_quality: args.imu_grade,
-        seed: args.seed,
-        no_noise: args.no_noise,
-        gnss_horizontal_noise_m: args.gnss_horizontal_noise_m,
-        gnss_vertical_noise_m: args.gnss_vertical_noise_m,
-        baro_noise_std_pa: args.baro_noise_std_pa,
-        mag_noise_std_ut: args.mag_noise_std_ut,
-        mag_hard_iron_std_ut: args.mag_hard_iron_std_ut,
+        };
+        built.duration_s = args.duration_s;
+        built.sample_rate_hz = args.sample_rate_hz;
+        built.imu_quality = args.imu_grade;
+        built.seed = args.seed;
+        built.no_noise = args.no_noise;
+        built.gnss_horizontal_noise_m = args.gnss_horizontal_noise_m;
+        built.gnss_vertical_noise_m = args.gnss_vertical_noise_m;
+        built.baro_noise_std_pa = args.baro_noise_std_pa;
+        built.mag_noise_std_ut = args.mag_noise_std_ut;
+        built.mag_hard_iron_std_ut = args.mag_hard_iron_std_ut;
+        built
     };
 
     let mut rng = StdRng::seed_from_u64(args.seed);
@@ -1359,13 +1367,14 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
         };
 
         // Build GNSS degradation config from CLI args
-        let aiding = strapdown::messages::AidingConfig {
-            scheduler: build_scheduler(&args.scheduler),
-            fault: build_fault(&args.fault),
-            seed: args.seed,
+        let aiding = {
             // The barometer and magnetometer schedules have no CLI flag; they take their
             // 1 Hz default, overridable from a config file through serde.
-            ..Default::default()
+            let mut built = strapdown::messages::AidingConfig::default();
+            built.scheduler = build_scheduler(&args.scheduler);
+            built.fault = build_fault(&args.fault);
+            built.seed = args.seed;
+            built
         };
 
         info!("Using GNSS degradation config: {aiding:?}");
@@ -1592,13 +1601,14 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
         };
 
         // Build GNSS degradation config from CLI args
-        let aiding = strapdown::messages::AidingConfig {
-            scheduler: build_scheduler(&args.scheduler),
-            fault: build_fault(&args.fault),
-            seed: args.seed,
+        let aiding = {
             // The barometer and magnetometer schedules have no CLI flag; they take their
             // 1 Hz default, overridable from a config file through serde.
-            ..Default::default()
+            let mut built = strapdown::messages::AidingConfig::default();
+            built.scheduler = build_scheduler(&args.scheduler);
+            built.fault = build_fault(&args.fault);
+            built.seed = args.seed;
+            built
         };
 
         // This path runs a UKF or an EKF, whose states are the nine navigation states, the
@@ -1666,26 +1676,25 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                     geo_noise_stds.push(args.geo.magnetic_noise_std);
                 }
 
-                let mut ukf = initialize_ukf(
-                    &records[0].clone(),
-                    UkfConfig {
-                        attitude_covariance: None,
-                        imu_biases: None,
-                        imu_biases_covariance: None,
-                        other_states: Some(geo_biases),
-                        other_states_covariance: Some(geo_noise_stds),
-                        process_noise_diagonal: Some(process_noise),
-                        ukf_alpha: Some(args.ukf_alpha),
-                        ukf_beta: Some(args.ukf_beta),
-                        ukf_kappa: Some(args.ukf_kappa),
-                        imu_quality: strapdown::IMUQuality::default(),
-                        // Off on the geophysical path: this filter's extra states are map
-                        // biases, and #372's barometric state has not been measured against a
-                        // geo run. Turning it on here would change two things at once.
-                        estimate_baro_bias: false,
-                        is_enu: args.sim.enu,
-                    },
-                )?;
+                let mut ukf = initialize_ukf(&records[0].clone(), {
+                    let mut built = UkfConfig::default();
+                    built.attitude_covariance = None;
+                    built.imu_biases = None;
+                    built.imu_biases_covariance = None;
+                    built.other_states = Some(geo_biases);
+                    built.other_states_covariance = Some(geo_noise_stds);
+                    built.process_noise_diagonal = Some(process_noise);
+                    built.ukf_alpha = Some(args.ukf_alpha);
+                    built.ukf_beta = Some(args.ukf_beta);
+                    built.ukf_kappa = Some(args.ukf_kappa);
+                    built.imu_quality = strapdown::IMUQuality::default();
+                    // Off on the geophysical path: this filter's extra states are map
+                    // biases, and #372's barometric state has not been measured against a
+                    // geo run. Turning it on here would change two things at once.
+                    built.estimate_baro_bias = false;
+                    built.is_enu = args.sim.enu;
+                    built
+                })?;
                 info!(
                     "Initialized UKF with state dimension {} (base: 9, geo: {})",
                     ukf.get_estimate().len(),
@@ -1953,13 +1962,14 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
             Err(e) => return Err(e),
         };
 
-        let aiding = strapdown::messages::AidingConfig {
-            scheduler: build_scheduler(&args.scheduler),
-            fault: build_fault(&args.fault),
-            seed: args.seed,
+        let aiding = {
             // The barometer and magnetometer schedules have no CLI flag; they take their
             // 1 Hz default, overridable from a config file through serde.
-            ..Default::default()
+            let mut built = strapdown::messages::AidingConfig::default();
+            built.scheduler = build_scheduler(&args.scheduler);
+            built.fault = build_fault(&args.fault);
+            built.seed = args.seed;
+            built
         };
 
         #[cfg(feature = "geonav")]
@@ -2077,33 +2087,31 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
             args.process_noise_std_m[2],
         );
 
-        let config = RbpfConfig {
-            num_particles: args.num_particles,
-            position_init_std_m: Vector3::new(
-                args.position_std,
-                args.position_std,
-                args.position_std,
-            ),
-            velocity_init_std_mps: args.velocity_std,
-            attitude_init_std_rad: args.attitude_std,
-            position_process_noise_std_m: process_noise_std_m,
-            velocity_process_noise_std_mps: args.velocity_process_noise_std_mps,
-            attitude_process_noise_std_rad: args.attitude_process_noise_std_rad,
-            extra_state_dim: geo_bias_dim,
-            extra_state_init_std: if geo_bias_dim > 0 {
+        let config = {
+            let mut built = RbpfConfig::default();
+            built.num_particles = args.num_particles;
+            built.position_init_std_m =
+                Vector3::new(args.position_std, args.position_std, args.position_std);
+            built.velocity_init_std_mps = args.velocity_std;
+            built.attitude_init_std_rad = args.attitude_std;
+            built.position_process_noise_std_m = process_noise_std_m;
+            built.velocity_process_noise_std_mps = args.velocity_process_noise_std_mps;
+            built.attitude_process_noise_std_rad = args.attitude_process_noise_std_rad;
+            built.extra_state_dim = geo_bias_dim;
+            built.extra_state_init_std = if geo_bias_dim > 0 {
                 args.geo_bias_init_std
             } else {
                 0.0
-            },
-            extra_state_process_noise_std: if geo_bias_dim > 0 {
+            };
+            built.extra_state_process_noise_std = if geo_bias_dim > 0 {
                 args.geo_bias_process_noise_std
             } else {
                 0.0
-            },
-            seed: args.seed,
-            zero_vertical_velocity: args.zero_vertical_velocity,
-            zero_vertical_velocity_std_mps: args.zero_vertical_velocity_std_mps,
-            ..RbpfConfig::default()
+            };
+            built.seed = args.seed;
+            built.zero_vertical_velocity = args.zero_vertical_velocity;
+            built.zero_vertical_velocity_std_mps = args.zero_vertical_velocity_std_mps;
+            built
         };
 
         // `ParticleFilterType` has a single variant today (#259 removed the two that were
@@ -2718,9 +2726,10 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
     // Mode-specific configuration
     let closed_loop = if matches!(mode, SimulationMode::ClosedLoop) {
         let filter = prompt_filter_type();
-        let closed_loop_cfg = strapdown::sim::ClosedLoopConfig {
-            filter,
-            ..Default::default()
+        let closed_loop_cfg = {
+            let mut built = strapdown::sim::ClosedLoopConfig::default();
+            built.filter = filter;
+            built
         };
         Some(closed_loop_cfg)
     } else {
@@ -2739,11 +2748,12 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
     let scheduler = prompt_measurement_scheduler();
     let fault = prompt_gnss_fault_model();
 
-    let aiding = strapdown::messages::AidingConfig {
-        scheduler,
-        fault,
-        seed,
-        ..Default::default()
+    let aiding = {
+        let mut built = strapdown::messages::AidingConfig::default();
+        built.scheduler = scheduler;
+        built.fault = fault;
+        built.seed = seed;
+        built
     };
 
     // Geophysical navigation configuration
@@ -2772,16 +2782,18 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
                     (Some(res), bias, noise, map)
                 });
 
-            Some(strapdown::sim::GeophysicalConfig {
-                gravity_resolution,
-                gravity_bias,
-                gravity_noise_std,
-                gravity_map_file,
-                magnetic_resolution,
-                magnetic_bias,
-                magnetic_noise_std,
-                magnetic_map_file,
-                geo_frequency_s,
+            Some({
+                let mut built = strapdown::sim::GeophysicalConfig::default();
+                built.gravity_resolution = gravity_resolution;
+                built.gravity_bias = gravity_bias;
+                built.gravity_noise_std = gravity_noise_std;
+                built.gravity_map_file = gravity_map_file;
+                built.magnetic_resolution = magnetic_resolution;
+                built.magnetic_bias = magnetic_bias;
+                built.magnetic_noise_std = magnetic_noise_std;
+                built.magnetic_map_file = magnetic_map_file;
+                built.geo_frequency_s = geo_frequency_s;
+                built
             })
         }
     } else {
@@ -2789,21 +2801,23 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
     };
 
     // Build the complete configuration
-    let config = SimulationConfig {
-        input: input_path,
-        output: output_path,
-        mode,
-        seed,
-        is_enu,
-        parallel,
-        generate_plot: false,
-        execution_limits,
-        logging,
-        closed_loop,
-        particle_filter,
-        geophysical,
-        aiding,
-        synthetic: None,
+    let config = {
+        let mut built = SimulationConfig::default();
+        built.input = input_path;
+        built.output = output_path;
+        built.mode = mode;
+        built.seed = seed;
+        built.is_enu = is_enu;
+        built.parallel = parallel;
+        built.generate_plot = false;
+        built.execution_limits = execution_limits;
+        built.logging = logging;
+        built.closed_loop = closed_loop;
+        built.particle_filter = particle_filter;
+        built.geophysical = geophysical;
+        built.aiding = aiding;
+        built.synthetic = None;
+        built
     };
 
     // validate output location exists and write to file using appropriate format based on file extension

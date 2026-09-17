@@ -109,6 +109,7 @@ const MAX_LEVER_ARM_M: f64 = 100.0;
 /// crate's default process noise.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+#[non_exhaustive]
 pub struct InsEngineConfig {
     /// Local-level frame convention: `false` (the default) is NED, `true` is ENU.
     pub is_enu: bool,

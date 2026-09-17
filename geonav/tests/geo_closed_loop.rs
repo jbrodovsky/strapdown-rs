@@ -161,27 +161,24 @@ fn with_magnetometer(records: Vec<TestDataRecord>) -> Vec<TestDataRecord> {
 }
 
 fn passthrough_config() -> AidingConfig {
-    AidingConfig {
-        scheduler: MeasurementScheduler::PassThrough,
-        fault: GnssFaultModel::None,
-        ..Default::default()
-    }
+    let mut built = AidingConfig::default();
+    built.scheduler = MeasurementScheduler::PassThrough;
+    built.fault = GnssFaultModel::None;
+    built
 }
 
 /// A geophysically aided UKF carrying one bias state, tuned as the CLI tunes it.
 fn aided_ukf(first: &TestDataRecord) -> strapdown::kalman::UnscentedKalmanFilter {
     let mut process_noise: Vec<f64> = DEFAULT_PROCESS_NOISE_DENSITY.into();
     process_noise.push(1e-9);
-    initialize_ukf(
-        first,
-        UkfConfig {
-            other_states: Some(vec![0.0]),
-            other_states_covariance: Some(vec![100.0]),
-            process_noise_diagonal: Some(process_noise),
-            is_enu: true,
-            ..Default::default()
-        },
-    )
+    initialize_ukf(first, {
+        let mut built = UkfConfig::default();
+        built.other_states = Some(vec![0.0]);
+        built.other_states_covariance = Some(vec![100.0]);
+        built.process_noise_diagonal = Some(process_noise);
+        built.is_enu = true;
+        built
+    })
     .expect("a geophysically aided UKF must initialise")
 }
 
@@ -606,17 +603,15 @@ fn gravity_aided_particle_filter_labels_its_bias_state() {
         attitude: first.attitude(),
         is_enu: true,
     };
-    let mut rbpf = RaoBlackwellizedParticleFilter::new(
-        nominal,
-        RbpfConfig {
-            num_particles: 200,
-            extra_state_dim: layout.len(),
-            extra_state_init_std: 10.0,
-            extra_state_process_noise_std: 0.1,
-            seed: 42,
-            ..RbpfConfig::default()
-        },
-    )
+    let mut rbpf = RaoBlackwellizedParticleFilter::new(nominal, {
+        let mut built = RbpfConfig::default();
+        built.num_particles = 200;
+        built.extra_state_dim = layout.len();
+        built.extra_state_init_std = 10.0;
+        built.extra_state_process_noise_std = 0.1;
+        built.seed = 42;
+        built
+    })
     .expect("the aided RBPF must initialise");
 
     let start_time = events.start_time;

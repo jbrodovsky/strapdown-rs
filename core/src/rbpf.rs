@@ -108,6 +108,7 @@ fn position_std_to_state_units(
 
 /// RBPF configuration parameters.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct RbpfConfig {
     /// Number of particles in the cloud; fixed for the life of the filter.
     pub num_particles: usize,

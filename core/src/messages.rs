@@ -289,6 +289,7 @@ const fn default_aiding_scheduler() -> MeasurementScheduler {
 /// };
 /// ```
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct AidingConfig {
     /// Scheduler that determines when GNSS measurements are emitted
     /// (e.g., pass-through, fixed interval, or duty-cycled).
