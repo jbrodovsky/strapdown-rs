@@ -22,7 +22,13 @@ file, a hardware driver, or a generator:
 
 ```rust,ignore
 let mut engine = InsEngine::builder()
-    .with_config(InsEngineConfig { is_enu: false, ..InsEngineConfig::default() })
+    // `InsEngineConfig` is `#[non_exhaustive]`, so neither a struct literal nor `..default()`
+    // compiles outside `strapdown-core`. Start from `default()` and assign.
+    .with_config({
+        let mut config = InsEngineConfig::default();
+        config.is_enu = false;
+        config
+    })
     .with_initial_state(initial_state)
     .build()?;
 

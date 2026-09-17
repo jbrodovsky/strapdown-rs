@@ -37,7 +37,7 @@ Sensor Logger exports are **ENU**: at rest the device reports `+g` along its up 
 `-g` along a down axis. For those, add `--enu` (or `is_enu = true` in a config file):
 
 ```bash
-strapdown-sim closed-loop --enu -i data/sensor_logger.csv -o results/output.csv
+strapdown-sim cl --enu -i data/sensor_logger.csv -o results/output.csv
 ```
 
 You will not get this wrong silently. The tool checks the declared frame against the leading
@@ -49,27 +49,27 @@ integrates at 2 g (#296).
 
 **Dead Reckoning (Open-Loop)**:
 ```bash
-strapdown-sim open-loop -i data/input.csv -o results/output.csv
+strapdown-sim dr -i data/input.csv -o results/output.csv
 ```
 
 **Closed-Loop (15-state ESKF, the default)**:
 ```bash
-strapdown-sim closed-loop -i data/input.csv -o results/output.csv
+strapdown-sim cl -i data/input.csv -o results/output.csv
 ```
 
 **Closed-Loop with EKF**:
 ```bash
-strapdown-sim closed-loop -i data/input.csv -o results/output.csv --filter ekf
+strapdown-sim cl -i data/input.csv -o results/output.csv --filter ekf
 ```
 
 **Closed-Loop with UKF**:
 ```bash
-strapdown-sim closed-loop -i data/input.csv -o results/output.csv --filter ukf
+strapdown-sim cl -i data/input.csv -o results/output.csv --filter ukf
 ```
 
 **Particle Filter**:
 ```bash
-strapdown-sim particle-filter -i data/input.csv -o results/output.csv --particles 100
+strapdown-sim pf -i data/input.csv -o results/output.csv --num-particles 100
 ```
 
 ### 4. View Results

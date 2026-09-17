@@ -1410,7 +1410,8 @@ fn observed_field_nt(record: &TestDataRecord) -> f64 {
 /// * `gravity_noise_std` - Standard deviation for gravity measurement noise (if `gravity_map` is Some)
 /// * `magnetic_map` - Optional magnetic map for measurements
 /// * `magnetic_noise_std` - Standard deviation for magnetic measurement noise (if `magnetic_map` is Some)
-/// * `geo_interval_s` - Frequency in seconds for geophysical measurements (None for every available measurement)
+/// * `geo_interval_s` - Seconds *between* geophysical measurements, so a larger value means
+///   fewer of them (None for every available measurement)
 /// * `bias_layout` - Where the filter that will consume this stream carries its map-bias
 ///   states, or `None` when it carries none. This is not inferable from the maps: loading a
 ///   gravity map says a gravity *measurement* is available, not that the filter estimating

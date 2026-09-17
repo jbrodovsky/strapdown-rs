@@ -12,8 +12,10 @@
 # Promoted to a full simulation config at the v1.0 freeze. `--config` parses a
 # `SimulationConfig`, so a bare aiding document could not be passed to it -- it failed
 # with `missing field `mode``. The scenario itself is unchanged, just nested under
-# `aiding:`. `input`/`output` are omitted deliberately: they default to input.csv and
-# output.csv, and `-i`/`-o` on the command line override whatever is here.
+# `aiding:`. `input`/`output` are omitted, so they default to input.csv and output.csv in
+# the working directory. `--config` supplies the whole run and the subcommand's `-i`/`-o`
+# are ignored alongside it, so point this at your own data by adding `input:`/`output:`
+# here rather than on the command line.
 mode: closed-loop
 aiding:
   scheduler:

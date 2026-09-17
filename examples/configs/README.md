@@ -27,9 +27,18 @@ Inside `aiding`:
 and magnetometer too, so the name no longer fitted. The old spelling still parses
 (`#[serde(alias)]`), so existing config files keep working.
 
-`input` and `output` may be omitted: they default to `input.csv` and `output.csv`, and `-i`/`-o`
-on the command line override whatever the file says. None of the scenario files here sets them,
-so each one runs against whatever input you point it at.
+None of these files sets `is_enu`, so each one declares the **NED** default. Sensor Logger
+exports are ENU, and `--enu` is ignored alongside `--config` like every other subcommand
+argument, so add `is_enu: true` to the file when running one of these against Sensor Logger
+data. The frame is checked rather than guessed: declaring the wrong one is rejected up front
+with an `InvalidConfiguration` naming what to set, not silently mechanized at 2 g.
+
+`input` and `output` may be omitted, in which case they are `input.csv` and `output.csv` in the
+working directory. **`--config` supplies the entire run**, so the subcommand and its `-i`/`-o`
+and `--seed` arguments are ignored when it is present -- the CLI says as much in
+`--help` ("ignored if --config is provided"). None of the scenario files here sets `input` or
+`output`, so point a scenario at your own data by adding those two keys to the file (or copying
+it), not by passing paths on the command line.
 
 See the [User Guide](../../docs/USER_GUIDE.md) for detailed documentation.
 
@@ -44,7 +53,7 @@ See the [User Guide](../../docs/USER_GUIDE.md) for detailed documentation.
 No GNSS degradation - all measurements pass through unchanged. Use this as a reference for comparing degraded scenarios.
 
 ```bash
-strapdown-sim cl -i input.csv -o baseline.csv --config baseline.yaml
+strapdown-sim --config baseline.yaml
 ```
 
 ---
@@ -122,27 +131,42 @@ Combines duty-cycled availability with hard spoofing.
 ### Command Line
 
 ```bash
-# Using a config file
-strapdown-sim cl -i data/input.csv -o results/output.csv \
-  --config examples/configs/degraded_5s.yaml
+# Using a config file. `input` and `output` come from the file; a subcommand and its
+# arguments would be ignored here, so none is given.
+strapdown-sim --config examples/configs/degraded_5s.yaml
+```
 
-# Override seed for different realization
-strapdown-sim cl -i data/input.csv -o results/output.csv \
-  --config examples/configs/degraded_5s.yaml \
-  --seed 123
+To run a scenario against your own data, or with a different seed, set it in the file --
+`--seed` on the command line is ignored alongside `--config` just as `-i`/`-o` are:
+
+```yaml
+input: data/input.csv
+output: results/degraded_5s.csv
+aiding:
+  seed: 123
 ```
 
 ### Batch Processing
 
+Because `--config` ignores `-i`/`-o`, a batch has to vary the paths *in the file*. Write a
+copy per scenario and run that:
+
 ```bash
 #!/bin/bash
-# Run all scenarios
+# Run all scenarios, each against data/input.csv and into its own output file.
+mkdir -p results .scenarios
 for config in examples/configs/*.yaml; do
   name=$(basename "$config" .yaml)
-  strapdown-sim cl -i data/input.csv -o "results/${name}.csv" \
-    --config "$config"
+  { cat "$config"
+    echo "input: data/input.csv"
+    echo "output: results/${name}.csv"
+  } > ".scenarios/${name}.yaml"
+  strapdown-sim --config ".scenarios/${name}.yaml"
 done
 ```
+
+Passing `-o "results/${name}.csv"` instead would be silently ignored and every scenario would
+write to the same `output.csv`.
 
 ---
 

@@ -2012,8 +2012,20 @@ impl ErrorStateKalmanFilter {
     ///
     /// * `initial_state` - Initial navigation state (position, velocity, attitude)
     /// * `imu_biases` - Initial IMU bias estimates [`b_ax`, `b_ay`, `b_az`, `b_gx`, `b_gy`, `b_gz`]
-    /// * `error_covariance_diagonal` - Initial error state uncertainty (15 diagonal elements)
-    /// * `process_noise` - Process noise covariance matrix Q (15x15)
+    /// * `error_covariance_diagonal` - Initial error state uncertainty, one element per error
+    ///   state. **Fifteen or sixteen**: fifteen for the usual position/velocity/attitude and
+    ///   six IMU biases, sixteen when the filter carries a barometric bias as its sixteenth
+    ///   state. The filter's width is taken from this vector's length, so it is what decides
+    ///   which one this is -- there is no separate flag.
+    /// * `process_noise` - Process noise covariance matrix Q, square and the same width as
+    ///   `error_covariance_diagonal` (15x15 or 16x16)
+    ///
+    /// A caller building the sixteen-state form directly must also tell the barometer model
+    /// which state to read, via
+    /// [`AidingConfig::baro_bias_index`](crate::messages::AidingConfig); without it the extra
+    /// state is never observed and sits at its prior.
+    /// [`initialize_eskf`](crate::sim::initialize_eskf) does both from one
+    /// `estimate_baro_bias` flag and is the easier route.
     ///
     /// # Returns
     ///

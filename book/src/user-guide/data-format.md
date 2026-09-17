@@ -132,10 +132,10 @@ To test alternative processing methods and navigation algorithms under degraded 
 
 ```bash
 # Run closed-loop simulation with input data
-strapdown-sim closed-loop -i data/input/trajectory.csv -o results/output.csv
+strapdown-sim cl -i data/input/trajectory.csv -o results/output.csv
 
 # Test with degraded GNSS
-strapdown-sim closed-loop -i data/degraded/trajectory.csv -o results/degraded_output.csv
+strapdown-sim cl -i data/degraded/trajectory.csv -o results/degraded_output.csv
 ```
 
 ## Data Collection

@@ -100,8 +100,11 @@ cargo fmt-check
 
 ### Running Simulations
 ```bash
-# Open-loop (dead reckoning). The subcommand comes first: `-i` before it is rejected.
-./target/release/strapdown-sim ol -i input.csv -o output.csv
+# Dead reckoning. The subcommand comes first: `-i` before it is rejected.
+# `dr` is the dead-reckoning command. `ol` is a separate, **unimplemented** subcommand:
+# `run_open_loop` validates its paths, writes nothing and prints "Open-loop mode is not yet
+# fully implemented". Do not reach for `ol` expecting a result.
+./target/release/strapdown-sim dr -i input.csv -o output.csv
 
 # Closed-loop with a duty-cycled GNSS outage and AR(1) degradation.
 # `--sched` is passthrough|fixed|duty and `--fault` is none|degraded|slowbias|hijack.

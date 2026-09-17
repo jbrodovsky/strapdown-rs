@@ -17,27 +17,27 @@ The `strapdown-sim` executable supports the following logging options:
 
 #### Basic usage with default settings (info level to stderr):
 ```bash
-strapdown-sim closed-loop -i input.csv -o output.csv
+strapdown-sim cl -i input.csv -o output.csv
 ```
 
 #### Set log level to debug:
 ```bash
-strapdown-sim closed-loop -i input.csv -o output.csv --log-level debug
+strapdown-sim cl -i input.csv -o output.csv --log-level debug
 ```
 
 #### Write logs to a file:
 ```bash
-strapdown-sim closed-loop -i input.csv -o output.csv --log-file simulation.log
+strapdown-sim cl -i input.csv -o output.csv --log-file simulation.log
 ```
 
 #### Combine log level and file output:
 ```bash
-strapdown-sim closed-loop -i input.csv -o output.csv --log-level debug --log-file debug.log
+strapdown-sim cl -i input.csv -o output.csv --log-level debug --log-file debug.log
 ```
 
 #### Disable logging:
 ```bash
-strapdown-sim closed-loop -i input.csv -o output.csv --log-level off
+strapdown-sim cl -i input.csv -o output.csv --log-level off
 ```
 
 ## Log Levels
@@ -71,10 +71,10 @@ You can also control logging using the `RUST_LOG` environment variable, which fo
 
 ```bash
 # Set log level via environment variable
-RUST_LOG=debug strapdown-sim closed-loop -i input.csv -o output.csv
+RUST_LOG=debug strapdown-sim cl -i input.csv -o output.csv
 
 # Module-specific logging
-RUST_LOG=strapdown=debug,strapdown_sim=trace strapdown-sim closed-loop -i input.csv -o output.csv
+RUST_LOG=strapdown=debug,strapdown_sim=trace strapdown-sim cl -i input.csv -o output.csv
 ```
 
 ## Using Logging in Code

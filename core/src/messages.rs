@@ -266,9 +266,10 @@ const fn default_aiding_scheduler() -> MeasurementScheduler {
 /// - `seed`: Seed for the internal random number generator, ensuring runs are
 ///   reproducible for debugging and A/B comparisons.
 ///
-/// The name is now narrower than the contents -- it schedules three sensors and degrades one.
-/// Renaming it, and [`MeasurementScheduler`] with it, is on the 1.0 API-freeze list rather than done
-/// here, so that a mechanical 112-site rename does not ride along with a behaviour change.
+/// The name says what it is: configuration for every *aiding* channel, not just GNSS. It was
+/// `GnssDegradationConfig` until the v1.0 freeze, by which point it scheduled three sensors and
+/// degraded one. `#[serde(alias = "gnss_degradation")]` on the field keeps existing config
+/// files parsing.
 ///
 /// ## Example
 ///

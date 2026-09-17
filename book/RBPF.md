@@ -452,12 +452,17 @@ fn test_rbpf_closed_loop_on_real_data() {
         Some(42),    // Seed
     );
 
-    // Build event stream with passthrough GNSS
-    let cfg = AidingConfig {
-        scheduler: MeasurementScheduler::PassThrough,
-        fault_model: GnssFaultModel::None,
-    };
-    let stream = build_event_stream(&records, &cfg).expect("records must not be empty");
+    // Build event stream with passthrough GNSS.
+    //
+    // `AidingConfig` is `#[non_exhaustive]`, so it is built from `default()` rather than
+    // written as a struct literal; everything not set keeps its default, including the
+    // barometer and magnetometer schedules. The fault field is `fault`, and
+    // `build_event_stream` takes the navigation frame explicitly -- `false` is NED.
+    let mut cfg = AidingConfig::default();
+    cfg.scheduler = MeasurementScheduler::PassThrough;
+    cfg.fault = GnssFaultModel::None;
+    let stream =
+        build_event_stream(&records, &cfg, false).expect("records must not be empty");
 
     // Run closed-loop
     let results = run_closed_loop(&mut rbpf, stream, None, None)

@@ -5,29 +5,42 @@ their measurements are delivered and, for GNSS, **how** they are corrupted. It i
 document, and it can be written as YAML, JSON or TOML — the format is chosen by the file
 extension.
 
+`--config` parses a whole `SimulationConfig`, so the aiding scenario is **nested under
+`aiding:`** and the document must set `mode`. A bare aiding fragment is rejected with
+``missing field `mode` `` rather than half-loaded:
+
 ```yaml
-scheduler:        # when GNSS fixes arrive
-  kind: duty_cycle
-  on_s: 120.0
-  off_s: 30.0
-  start_phase_s: 0.0
-fault:            # how they are corrupted
-  kind: none
-baro_scheduler:           # when barometric altitude arrives; 1 Hz if omitted
-  kind: fixed_interval
-  interval_s: 1.0
-  phase_s: 0.0
-magnetometer_scheduler:   # when a magnetometer heading arrives; 1 Hz if omitted
-  kind: fixed_interval
-  interval_s: 1.0
-  phase_s: 0.0
-baro_noise_std_m: 2.23606797749979   # barometer one-sigma, metres; this is the default
-seed: 42          # for reproducibility
+mode: closed-loop   # required; `ol`, `dr`, `cl`, `pf` and `syn` are the run modes
+input: data/input.csv
+output: results/output.csv
+is_enu: false       # NED is the default; Sensor Logger exports need `true`
+
+aiding:
+  scheduler:        # when GNSS fixes arrive
+    kind: duty_cycle
+    on_s: 120.0
+    off_s: 30.0
+    start_phase_s: 0.0
+  fault:            # how they are corrupted
+    kind: none
+  baro_scheduler:           # when barometric altitude arrives; 1 Hz if omitted
+    kind: fixed_interval
+    interval_s: 1.0
+    phase_s: 0.0
+  magnetometer_scheduler:   # when a magnetometer heading arrives; 1 Hz if omitted
+    kind: fixed_interval
+    interval_s: 1.0
+    phase_s: 0.0
+  baro_noise_std_m: 2.23606797749979   # barometer one-sigma, metres; this is the default
+  seed: 42          # for reproducibility
 ```
 
 ```bash
-strapdown-sim -i input.csv -o output.csv closed-loop --config scenario.yaml
+strapdown-sim --config scenario.yaml
 ```
+
+`--config` supplies the entire run, so a subcommand and its arguments — `-i`, `-o`, `--enu`,
+`--seed` — are **ignored** when it is present. Set them in the file, as above.
 
 ## Names must be exact
 
@@ -119,7 +132,9 @@ closed_loop:
   estimate_baro_bias: true
 ```
 
-or `--estimate-baro-bias` on the command line. The output then carries `baro_bias` and
+It is **on by default** as of the v1.0 freeze, so this section only needs writing to turn it
+*off* (`estimate_baro_bias: false`, or `--no-estimate-baro-bias` on the command line when not
+using `--config`). The output carries `baro_bias` and
 `baro_bias_cov` columns; without it both are empty, which is how a reader tells "no bias state"
 from "bias estimated at zero".
 
@@ -135,8 +150,10 @@ Containment is the fraction of epochs whose true altitude lies inside the filter
 band, so its ideal is 0.9973. The three filters converge independently on a bias of about
 −0.6 m, which is the corroboration a single filter could not give.
 
-It is **off by default**: it widens the state vector by one, and that is a default to settle at
-the 1.0 API freeze rather than alongside the state itself.
+The one measured case that gets worse is an AR(1)-degraded GNSS position fault, where the bias
+state is unidentifiable — it is aided by a second source that is itself biased, so it absorbs
+the GNSS fault instead of the barometer's drift, and vertical RMSE rises about 30%. That is
+tracked as issue #410; `--no-estimate-baro-bias` turns the state off for such a run.
 
 `baro_scheduler` and `magnetometer_scheduler` take the same three kinds and the same fields,
 each with its own independent clock, so a GNSS outage, a barometer outage and a heading outage

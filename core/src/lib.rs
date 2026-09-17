@@ -730,8 +730,8 @@ impl IMUQuality {
             + levelling_variance;
 
         let accel_bias_variance = self.accel_bias_instability_mps2().powi(2);
-        // `gyro_bias_instability_rad_per_hour` returns radians per hour despite the name; the filter's
-        // gyro bias state is radians per second.
+        // The accessor is radians per *hour*; the filter's gyro bias state is radians per
+        // *second*.
         let gyro_bias_variance =
             (self.gyro_bias_instability_rad_per_hour() / SECONDS_PER_HOUR).powi(2);
 
