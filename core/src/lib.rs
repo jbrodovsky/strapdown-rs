@@ -453,8 +453,8 @@ impl IMUQuality {
     #[must_use]
     pub fn initial_bias_covariance(&self) -> [f64; 6] {
         let accelerometer = self.accel_bias_instability_mps2().powi(2);
-        // `gyro_bias_instability_rad_per_hour` returns radians per *hour* despite its name; the state
-        // carries a rate bias in radians per second.
+        // The accessor is radians per *hour*; the state carries a rate bias in radians per
+        // *second*, so the hour-to-second conversion is not optional.
         let gyroscope = (self.gyro_bias_instability_rad_per_hour() / SECONDS_PER_HOUR).powi(2);
         [
             accelerometer,
@@ -636,9 +636,8 @@ impl IMUQuality {
     ///
     /// **Biases.** The turn-on value of a bias state is unknown to within the grade's own
     /// bias instability, so the variance is that instability squared. Note the unit
-    /// conversion on the gyro: [`Self::gyro_bias_instability_rad_per_hour`] returns radians per
-    /// *hour* despite its name, while the filter's gyro bias state is in radians per
-    /// *second*.
+    /// conversion on the gyro: [`Self::gyro_bias_instability_rad_per_hour`] is radians per
+    /// *hour*, while the filter's gyro bias state is in radians per *second*.
     ///
     /// # Limits
     ///
@@ -2686,7 +2685,7 @@ mod tests {
         );
     }
 
-    /// `gyro_bias_instability_rad_per_hour` returns radians per hour despite the `_dph` suffix.
+    /// The grade table quotes degrees per hour; the accessor returns radians per hour.
     #[test]
     fn gyro_bias_instability_is_radians_per_hour() {
         let consumer = super::IMUQuality::Consumer.gyro_bias_instability_rad_per_hour();

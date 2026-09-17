@@ -6111,8 +6111,8 @@ pub fn generate_synthetic(
         Vector3::new(rng.sample(dist), rng.sample(dist), rng.sample(dist))
     };
     let gyro_bias = {
-        // `gyro_bias_instability_rad_per_hour` is radians per *hour* despite its name, and this bias is
-        // added straight to `perfect_imu.gyro`, which is radians per second. Without the
+        // The accessor returns radians per *hour*, and this bias is added straight to
+        // `perfect_imu.gyro`, which is radians per *second*. Without the
         // conversion a consumer-grade run injects ~1.745 rad/s -- 100 deg/s -- of constant
         // gyro bias. The accelerometer block above needs no equivalent conversion because
         // `accel_bias_instability_mps2` is already in the units its sample is added to.
@@ -6395,8 +6395,8 @@ pub fn generate_synthetic(
 #[cfg(test)]
 mod tests {
 
-    /// The synthetic gyro bias is drawn in the accessor's own units, which are radians per
-    /// *hour* despite the `_dph` name, and then added to a rad/s gyro reading. Without the
+    /// The synthetic gyro bias is drawn in the accessor's own units, radians per *hour*, and
+    /// then added to a rad/s gyro reading. Without the
     /// conversion a stationary consumer-grade run carries ~1.745 rad/s -- 100 deg/s -- of
     /// constant bias, which is not a consumer IMU, it is a spinning one.
     ///
