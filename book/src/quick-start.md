@@ -52,7 +52,7 @@ integrates at 2 g (#296).
 strapdown-sim dr -i data/input.csv -o results/output.csv
 ```
 
-**Closed-Loop (15-state ESKF, the default)**:
+**Closed-Loop (16-state ESKF, the default)**:
 ```bash
 strapdown-sim cl -i data/input.csv -o results/output.csv
 ```

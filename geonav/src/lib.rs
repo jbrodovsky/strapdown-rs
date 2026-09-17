@@ -1405,7 +1405,8 @@ fn observed_field_nt(record: &TestDataRecord) -> f64 {
 ///
 /// # Arguments
 /// * `records` - Vector of test data records
-/// * `cfg` - GNSS degradation configuration
+/// * `cfg` - Aiding configuration: the GNSS schedule and fault model, plus the barometer
+///   and magnetometer schedules
 /// * `gravity_map` - Optional gravity map for measurements
 /// * `gravity_noise_std` - Standard deviation for gravity measurement noise (if `gravity_map` is Some)
 /// * `magnetic_map` - Optional magnetic map for measurements

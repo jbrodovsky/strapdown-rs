@@ -10,36 +10,17 @@ level = "info"
 [closed_loop]
 filter = "ukf"
 
-[gnss_degradation]
+[aiding]
 seed = 42
 
-[gnss_degradation.scheduler]
+[aiding.scheduler]
 kind = "pass_through"
 
-[gnss_degradation.fault]
+[aiding.fault]
 kind = "none"
 
-[gnss_degradation.magnetometer]
-enabled = false
-reference_field_ned = [
-    25.0,
-    0.0,
-    40.0,
-]
-hard_iron_offset = [
-    0.0,
-    0.0,
-    0.0,
-]
-soft_iron_matrix = [
-    1.0,
-    0.0,
-    0.0,
-    0.0,
-    1.0,
-    0.0,
-    0.0,
-    0.0,
-    1.0,
-]
-noise_std = 5.0
+# The `[gnss_degradation.magnetometer]` table that used to sit here was removed at the v1.0
+# freeze: `reference_field_ned`, `hard_iron_offset`, `soft_iron_matrix` and `noise_std` match
+# no field on `AidingConfig` and never did, in any version, so serde discarded the whole table
+# silently. The magnetometer channel is scheduled by `magnetometer_scheduler` (1 Hz by
+# default); there is no switch that turns it off, so `enabled = false` was never honoured.

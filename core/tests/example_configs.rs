@@ -22,7 +22,7 @@
 
 use std::path::{Path, PathBuf};
 
-use strapdown::messages::{GnssFaultModel, MeasurementScheduler};
+use strapdown::messages::{AidingConfig, GnssFaultModel, MeasurementScheduler};
 use strapdown::sim::SimulationConfig;
 
 /// Scenario configs live at the top level of `examples/configs/`.
@@ -149,5 +149,87 @@ fn every_example_config_deserializes_into_what_it_describes() {
         "{} example config problem(s):\n  {}",
         failures.len(),
         failures.join("\n  ")
+    );
+}
+
+/// The `gnss_degradation` alias is the compatibility guarantee, so something must exercise it.
+///
+/// `SimulationConfig::aiding` was `gnss_degradation` until the v1.0 freeze and carries
+/// `#[serde(alias = "gnss_degradation")]` so that configuration files written under the old
+/// name keep parsing -- the fifteen recipes under `conf/` among them, which no test loads.
+///
+/// Until this test, nothing checked it. The two shipped examples that still used the old
+/// spelling were migrated to `[aiding]` in the same commit as this test, which would have left
+/// the alias entirely uncovered: a future rename could have dropped it and every test would
+/// still have passed while every existing user config silently lost its whole aiding section.
+///
+/// Both spellings must produce the same scenario, and the old one must not be *silently*
+/// dropped -- which is the failure mode, since `SimulationConfig` has no
+/// `deny_unknown_fields` and `aiding` has a default.
+#[test]
+fn the_old_gnss_degradation_spelling_still_parses() {
+    let old_spelling = r"
+mode: closed-loop
+gnss_degradation:
+  scheduler:
+    kind: duty_cycle
+    on_s: 30.0
+    off_s: 60.0
+    start_phase_s: 0.0
+  fault:
+    kind: slow_bias
+    drift_n_mps: 0.5
+    drift_e_mps: 0.25
+    q_bias: 0.0
+    rotate_omega_rps: 0.0
+  seed: 7
+";
+
+    let config: SimulationConfig =
+        serde_yaml::from_str(old_spelling).expect("the `gnss_degradation` alias must still parse");
+
+    assert_eq!(
+        scheduler_variant(&config.aiding.scheduler),
+        "DutyCycle",
+        "the aliased section deserialized into a default pass-through scheduler, which means \
+         the alias was dropped and the section silently ignored"
+    );
+    assert_eq!(
+        fault_variant(&config.aiding.fault),
+        "SlowBias",
+        "the aliased section's fault model was silently dropped"
+    );
+    assert_eq!(
+        config.aiding.seed, 7,
+        "the aliased section's seed was silently dropped"
+    );
+
+    // And the new spelling gives the same thing, so the alias is not a second code path.
+    let new_spelling = old_spelling.replace("gnss_degradation:", "aiding:");
+    let renamed: SimulationConfig =
+        serde_yaml::from_str(&new_spelling).expect("the `aiding` spelling must parse");
+    assert_eq!(
+        scheduler_variant(&renamed.aiding.scheduler),
+        scheduler_variant(&config.aiding.scheduler),
+        "the two spellings must produce the same scheduler"
+    );
+}
+
+/// A plain `AidingConfig` document, so the type's own defaults are pinned independently of
+/// whichever `SimulationConfig` happens to embed it.
+#[test]
+fn an_empty_aiding_section_schedules_the_other_two_channels() {
+    let aiding: AidingConfig =
+        serde_yaml::from_str("{}").expect("an empty aiding section must deserialize");
+
+    assert_eq!(
+        scheduler_variant(&aiding.baro_scheduler),
+        "FixedInterval",
+        "the barometer defaults to a 1 Hz fixed interval, not to pass-through"
+    );
+    assert_eq!(
+        scheduler_variant(&aiding.magnetometer_scheduler),
+        "FixedInterval",
+        "the magnetometer defaults to a 1 Hz fixed interval, not to pass-through"
     );
 }

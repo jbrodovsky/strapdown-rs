@@ -39,8 +39,11 @@ Command-line tool for running INS simulations with GNSS degradation:
 - Modes: open-loop (dead reckoning), closed-loop with UKF, or particle filter
 - GNSS fault simulation: dropouts, reduced update rates, measurement corruption, bias injection
 - Input: CSV files with IMU and GNSS measurements (Sensor Logger format)
-- Output: Navigation solutions as CSV, HDF5, NetCDF or MCAP (there is **no** Parquet writer;
-  `sim/src/common.rs` rejects the extension rather than filling it with CSV)
+- Output: **the CLI writes CSV only.** Every path through `strapdown-sim` ends in
+  `NavigationResult::to_csv`, and `OUTPUT_FILE_EXTENSIONS` in `sim/src/common.rs` is `["csv"]`,
+  so any other extension is rejected rather than filled with CSV. `to_hdf5`, `to_netcdf` and
+  `to_mcap` exist as **library** writers on `NavigationResult`, reachable from Rust but not
+  from this binary. There is no Parquet writer at all
 - Configuration: TOML/YAML/JSON scenario files or command-line arguments
 - Built-in logging: Use `--log-level` and `--log-file` flags (see LOGGING.md for details)
 
@@ -152,10 +155,12 @@ The Free Core implementation must achieve the following capabilities:
    - Command-line interface with config file support and argument overrides
 
 5. **Output Formats**:
-   - CSV, HDF5, NetCDF and MCAP export for analysis in Python/MATLAB/R
-   - Parquet is deliberately **not** supported: `NavigationResult::to_csv` is the only
-     flat-file writer, and `sim/src/common.rs` refuses `.parquet` rather than naming a file
-     Parquet and filling it with CSV. The four formats above already serve the stated purpose
+   - CSV, HDF5, NetCDF and MCAP export for analysis in Python/MATLAB/R. **These are
+     `NavigationResult` methods, not CLI output modes**: `strapdown-sim` writes CSV and
+     rejects every other extension, so reaching the other three means calling `to_hdf5`,
+     `to_netcdf` or `to_mcap` from Rust
+   - Parquet is deliberately **not** supported at either layer: `sim/src/common.rs` refuses
+     `.parquet` rather than naming a file Parquet and filling it with CSV
    - Navigation solution time series with position, velocity, attitude estimates
 
 6. **Python Integration**:

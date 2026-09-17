@@ -10,7 +10,7 @@ extension.
 ``missing field `mode` `` rather than half-loaded:
 
 ```yaml
-mode: closed-loop   # required; `ol`, `dr`, `cl`, `pf` and `syn` are the run modes
+mode: closed-loop   # required -- see the mode table below
 input: data/input.csv
 output: results/output.csv
 is_enu: false       # NED is the default; Sensor Logger exports need `true`
@@ -42,6 +42,18 @@ strapdown-sim --config scenario.yaml
 `--config` supplies the entire run, so a subcommand and its arguments — `-i`, `-o`, `--enu`,
 `--seed` — are **ignored** when it is present. Set them in the file, as above.
 
+**`mode` does not take the CLI subcommand names.** The subcommands are abbreviations; the
+config spellings are the `SimulationMode` variant names in kebab-case, and anything else is
+rejected as an unknown variant:
+
+| `mode:` in a config | CLI subcommand |
+|---|---|
+| `dead-reckoning` | `dr` |
+| `open-loop` | `ol` (not implemented -- writes no output) |
+| `closed-loop` | `cl` |
+| `particle-filter` | `pf` |
+| `synthetic` | `syn` |
+
 ## Names must be exact
 
 Every field has a default, so a misspelled `kind` **does not error**. The section is silently
@@ -66,6 +78,12 @@ mistake: it parses each one and asserts the result is the scenario the file desc
 than a silently-defaulted pass-through.
 
 ## Schedulers
+
+Every snippet in this section is a **fragment of the `aiding:` block**, shown unindented
+for readability. Copying one to the root of a config file leaves `aiding.scheduler` and
+`aiding.fault` at their defaults, and the unknown root key is ignored — a scenario that
+looks configured and runs with no degradation at all.
+
 
 ### `pass_through`
 
@@ -178,6 +196,12 @@ magnetometer_scheduler:
 There are no CLI flags for these two; they are configurable from a file only.
 
 ## Fault models
+
+Every snippet in this section is a **fragment of the `aiding:` block**, shown unindented
+for readability. Copying one to the root of a config file leaves `aiding.scheduler` and
+`aiding.fault` at their defaults, and the unknown root key is ignored — a scenario that
+looks configured and runs with no degradation at all.
+
 
 Faults corrupt the content of a fix; the scheduler decides whether it arrives at all. The two
 compose, so a duty cycle can deliver degraded fixes during its ON windows.

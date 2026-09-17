@@ -206,8 +206,10 @@ strapdown-sim cl --filter ukf --input data.csv --output results.csv
 # Run with the ESKF (the default; omitting --filter selects it)
 strapdown-sim cl --filter eskf --input data.csv --output results.csv
 
-# With GNSS degradation config
-strapdown-sim cl --filter ekf --config gnss_config.toml --input data.csv --output results.csv
+# With a scenario config. `--config` supplies the whole run, so `--filter`, `--input` and
+# `--output` are ignored alongside it -- set `closed_loop.filter`, `input` and `output`
+# inside the file and invoke the config on its own.
+strapdown-sim --config gnss_config.toml
 
 # View available options
 strapdown-sim cl --help

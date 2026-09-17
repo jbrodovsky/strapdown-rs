@@ -141,7 +141,7 @@ jobs:
   # What it does and does not catch, measured by running it on this branch against `main`
   # (`--baseline-rev main`, 151 s, "5 major and 0 minor checks failed"). It found every
   # struct-level break and named them exactly: the three removed or renamed types, the two
-  # renamed public fields, and the eleven structs marked `#[non_exhaustive]`.
+  # renamed public fields, and the twelve structs marked `#[non_exhaustive]`.
   #
   # It found **none of the function-signature changes** in the same diff --
   # `ErrorStateKalmanFilter::new` moving from `&[f64]` to `&[f64; 6]`, and the four compute-layer

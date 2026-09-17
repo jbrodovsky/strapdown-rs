@@ -591,6 +591,21 @@ fn process_file(
             // do this; closed loop is the default mode and needs it more, not less (#296).
             check_declared_frame(&records, config.is_enu)?;
 
+            // A `[geophysical]` section reaches this arm and is never read: only the
+            // particle-filter arm below builds maps from it, and only `--geo` on the command
+            // line reaches the geophysical closed-loop runner. Before the v1.0 freeze that was
+            // a silent wrong answer -- `examples/configs/geonav_example.toml` declares
+            // `mode = "closed-loop"` with gravity and magnetic maps, parses cleanly, and ran an
+            // ordinary non-geophysical simulation while reporting success. Refusing is the same
+            // choice `mode` itself makes: a loud failure beats a run that looks configured and
+            // silently ignores half its configuration.
+            if config.geophysical.is_some() {
+                return Err(
+                    "a [geophysical] section is not supported in closed-loop mode from a config                      file: the geophysical runner is reachable only through `--geo` on the                      command line, or from `mode = \"particle-filter\"`. Running this config                      would silently ignore the maps and produce an ordinary non-geophysical                      result. Use `strapdown-sim cl --geo ...`, or switch this file to                      `mode = \"particle-filter\"`."
+                        .into(),
+                );
+            }
+
             let filter_config = config.closed_loop.clone().unwrap_or_default();
 
             // `ukf_alpha`/`beta`/`kappa` are read here rather than left at the constructor's
@@ -1099,7 +1114,7 @@ fn run_single_closed_loop_simulation(
         built
     };
 
-    // Build event stream from records and GNSS degradation config
+    // Build event stream from records and the aiding config
     let event_stream = build_event_stream(records, &aiding, is_enu)?;
     info!(
         "Initialized event stream with {} events",
@@ -1373,7 +1388,7 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
             Err(e) => return Err(e),
         };
 
-        // Build GNSS degradation config from CLI args
+        // Build the aiding config from CLI args
         let aiding = {
             // The barometer and magnetometer schedules have no CLI flag; they take their
             // 1 Hz default, overridable from a config file through serde.
@@ -1384,7 +1399,7 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
             built
         };
 
-        info!("Using GNSS degradation config: {aiding:?}");
+        info!("Using aiding config: {aiding:?}");
         let output_file = resolve_output_path(&args.sim.output, input_file, &csv_files)?;
 
         // Run simulation using the common helper function
@@ -1607,7 +1622,7 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
             None
         };
 
-        // Build GNSS degradation config from CLI args
+        // Build the aiding config from CLI args
         let aiding = {
             // The barometer and magnetometer schedules have no CLI flag; they take their
             // 1 Hz default, overridable from a config file through serde.
@@ -2684,14 +2699,14 @@ fn prompt_magnetic_config() -> Option<GeoMeasurementConfig> {
 }
 
 /// Prompt for geophysical measurement frequency
-fn prompt_geo_measurement_frequency() -> Option<f64> {
-    println!("\nGeophysical measurement frequency (seconds) [auto]: ");
+fn prompt_geo_measurement_interval() -> Option<f64> {
+    println!("\nSeconds between geophysical measurements [auto]: ");
 
     match read_user_input() {
         Some(input) if !input.is_empty() => match input.parse::<f64>() {
-            Ok(freq) if freq > 0.0 => Some(freq),
+            Ok(interval) if interval > 0.0 => Some(interval),
             Ok(_) => {
-                println!("Frequency must be positive. Using auto.");
+                println!("Interval must be positive. Using auto.");
                 None
             }
             Err(_) => {
@@ -2751,7 +2766,7 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
         None
     };
 
-    // GNSS degradation configuration
+    // Aiding configuration
     let scheduler = prompt_measurement_scheduler();
     let fault = prompt_gnss_fault_model();
 
@@ -2777,7 +2792,7 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
             println!("Disabling geophysical navigation.");
             None
         } else {
-            let geo_interval_s = prompt_geo_measurement_frequency();
+            let geo_interval_s = prompt_geo_measurement_interval();
 
             let (gravity_resolution, gravity_bias, gravity_noise_std, gravity_map_file) =
                 gravity_config.map_or((None, None, None, None), |(res, bias, noise, map)| {

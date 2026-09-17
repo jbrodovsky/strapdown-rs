@@ -245,7 +245,8 @@ const fn default_aiding_scheduler() -> MeasurementScheduler {
     }
 }
 
-/// Configuration container for GNSS degradation in simulation.
+/// Configuration for every aiding channel in a simulation: when GNSS, barometer and
+/// magnetometer measurements are delivered, and how GNSS is corrupted.
 ///
 /// This ties together a [`MeasurementScheduler`] (which controls *when* GNSS fixes
 /// are delivered), a [`GnssFaultModel`] (which controls *what* corruption is
@@ -1075,7 +1076,7 @@ fn duty_cycle_is_on(elapsed_s: f64, on_s: f64, off_s: f64, start_phase_s: f64) -
 /// # Arguments
 /// - `records`: Source telemetry, ordered by time, providing IMU and GNSS-like
 ///   fields (lat/lon/alt/speed/bearing/accuracies).
-/// - `cfg`: GNSS degradation configuration combining a scheduler (*when*) and a
+/// - `cfg`: aiding configuration combining a scheduler (*when*) and a
 ///   fault model (*what*), plus a seed for deterministic noise and a scheduler each
 ///   for the barometer and the magnetometer.
 /// - `is_enu`: the local-level frame the filter consuming this stream works in -- `true` for
