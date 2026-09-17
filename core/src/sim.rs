@@ -3167,7 +3167,7 @@ pub fn run_closed_loop<F: NavigationFilter>(
     stream: EventStream,
     health_limits: Option<HealthLimits>,
     execution_limits: Option<ExecutionLimits>,
-) -> anyhow::Result<Vec<NavigationResult>> {
+) -> Result<Vec<NavigationResult>, StrapdownError> {
     // `ExtraStateLayout::NONE` is fifteen wide, and the conversion into `NavigationResult`
     // asserts the state matches it. A filter estimating a barometric bias is sixteen, so
     // taking the layout from the filter is what keeps this -- the documented runner -- working
@@ -3211,7 +3211,7 @@ pub fn run_closed_loop_with_geo<F: NavigationFilter>(
     health_limits: Option<HealthLimits>,
     execution_limits: Option<ExecutionLimits>,
     layout: ExtraStateLayout,
-) -> anyhow::Result<Vec<NavigationResult>> {
+) -> Result<Vec<NavigationResult>, StrapdownError> {
     let start_time = stream.start_time;
     let mut results: Vec<NavigationResult> = Vec::with_capacity(stream.events.len());
     let total = stream.events.len();
@@ -3322,7 +3322,7 @@ pub fn run_closed_loop_with_geo<F: NavigationFilter>(
                 let cov = filter.get_certainty();
                 if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
                     log::error!("Health fail after propagate at {ts} (#{i}): {e}");
-                    bail!(e);
+                    return Err(e);
                 }
             }
             Event::Measurement { meas, .. } => {
@@ -3340,17 +3340,18 @@ pub fn run_closed_loop_with_geo<F: NavigationFilter>(
                         consecutive_rejections += 1;
                         log::warn!("Measurement rejected at {ts} (#{i}): {e}");
                         if consecutive_rejections > MAX_CONSECUTIVE_REJECTIONS {
-                            bail!(
-                                "aborting: {consecutive_rejections} consecutive measurements \
-                                 rejected, most recently at {ts} (#{i}): {e}"
-                            );
+                            return Err(StrapdownError::FilterDiverged {
+                                consecutive_rejections,
+                                limit: MAX_CONSECUTIVE_REJECTIONS,
+                                detail: format!("most recently at {ts} (#{i}): {e}"),
+                            });
                         }
                         // State is unchanged, so the health check has nothing new to judge.
                         continue;
                     }
                     Err(e) => {
                         log::error!("Filter update failed at {ts} (#{i}): {e}");
-                        bail!(e);
+                        return Err(e);
                     }
                 };
                 if !outcome.accepted {
@@ -3378,7 +3379,7 @@ pub fn run_closed_loop_with_geo<F: NavigationFilter>(
                 // reject every fix of a diverged run without ever saying so.
                 if let Err(e) = monitor.check(mean.as_slice(), &cov, Some(outcome.nis)) {
                     log::error!("Health fail after measurement update at {ts} (#{i}): {e}");
-                    bail!(e);
+                    return Err(e);
                 }
             }
         }
@@ -4365,7 +4366,7 @@ pub fn print_sim_status<F: NavigationFilter>(filter: &F) {
 pub mod execution {
     use super::{
         DEFAULT_MAX_NO_PROGRESS_S, DEFAULT_MAX_WALL_CLOCK_RATIO, DEFAULT_MAX_WALL_CLOCK_S, Debug,
-        Deserialize, Instant, Result, Serialize, StdDuration, bail, f64,
+        Deserialize, Instant, Serialize, StdDuration, StrapdownError, f64,
     };
 
     /// Configuration for execution timeout limits in simulations.
@@ -4509,28 +4510,31 @@ pub mod execution {
         /// ```
         /// # Errors
         /// If the wall-clock budget or the no-progress budget has been exceeded.
-        pub fn check(&self, context: &str) -> Result<()> {
+        pub fn check(&self, context: &str) -> Result<(), StrapdownError> {
             self.check_at(context, Instant::now())
         }
 
         /// [`Self::check`] against an explicit instant. See [`Self::new_at`].
-        pub(crate) fn check_at(&self, context: &str, now: Instant) -> Result<()> {
+        pub(crate) fn check_at(&self, context: &str, now: Instant) -> Result<(), StrapdownError> {
             if let Some(max_wall_clock) = self.max_wall_clock
                 && now.duration_since(self.start_time) > max_wall_clock
             {
-                bail!(
-                    "Execution timeout ({context}): exceeded wall-clock limit of {:.2} s",
-                    max_wall_clock.as_secs_f64()
-                );
+                return Err(StrapdownError::Timeout {
+                    context: context.to_owned(),
+                    what: "wall clock",
+                    elapsed_s: now.duration_since(self.start_time).as_secs_f64(),
+                    limit_s: max_wall_clock.as_secs_f64(),
+                });
             }
             if let Some(max_no_progress) = self.max_no_progress {
                 let since_progress = now.duration_since(self.last_progress);
                 if since_progress > max_no_progress {
-                    bail!(
-                        "Execution timeout ({context}): no progress for {:.2} s (limit {:.2} s)",
-                        since_progress.as_secs_f64(),
-                        max_no_progress.as_secs_f64()
-                    );
+                    return Err(StrapdownError::Timeout {
+                        context: context.to_owned(),
+                        what: "time without progress",
+                        elapsed_s: since_progress.as_secs_f64(),
+                        limit_s: max_no_progress.as_secs_f64(),
+                    });
                 }
             }
             Ok(())
@@ -4588,7 +4592,7 @@ pub mod execution {
 /// This is the circuit breaker behind the per-update gating in [`crate::gating`]: gating rejects
 /// individual measurements, the monitor gives up on the whole trajectory.
 pub mod health {
-    use super::{Debug, Result, bail, f64};
+    use super::{Debug, StrapdownError, f64};
 
     /// Bounds a filter estimate must stay inside for [`HealthMonitor`] to consider it healthy.
     ///
@@ -4682,27 +4686,30 @@ pub mod health {
             x: &[f64], // your mean_state slice
             p: &nalgebra::DMatrix<f64>,
             maybe_nis_pos: Option<f64>,
-        ) -> Result<()> {
+        ) -> Result<(), StrapdownError> {
             // 0) Width. Everything below reads `x[0..=5]`, and `x` is a slice rather than a
             // fixed-size array because a state is 9, 15 or 16 wide depending on the filter.
             // Without this guard a short slice panics here, inside a `pub fn`, in a crate that
             // denies `panic`/`unwrap`/`expect` in library code -- and clippy does not flag
             // slice indexing, so nothing else catches it.
             if x.len() < Self::MINIMUM_MONITORED_STATE {
-                bail!(
-                    "Health check needs at least {} states \
-                     (position and velocity); got {}",
-                    Self::MINIMUM_MONITORED_STATE,
-                    x.len()
-                );
+                return Err(StrapdownError::DimensionMismatch {
+                    what: "health-monitored state (position and velocity)",
+                    expected: Self::MINIMUM_MONITORED_STATE,
+                    got: x.len(),
+                });
             }
 
             // 1) Finite checks
             if !x.iter().all(|v| v.is_finite()) {
-                bail!("Non-finite state detected");
+                return Err(StrapdownError::NonFinite {
+                    what: "filter state",
+                });
             }
             if !p.iter().all(|v| v.is_finite()) {
-                bail!("Non-finite covariance detected");
+                return Err(StrapdownError::NonFinite {
+                    what: "filter covariance",
+                });
             }
 
             // 2) Basic bounds (lat, lon, alt)
@@ -4710,13 +4717,28 @@ pub mod health {
             let lon = x[1];
             let alt = x[2];
             if lat < self.limits.lat_rad.0 || lat > self.limits.lat_rad.1 {
-                bail!("Latitude out of range: {lat}");
+                return Err(StrapdownError::OutOfRange {
+                    what: "latitude",
+                    value: lat,
+                    min: self.limits.lat_rad.0,
+                    max: self.limits.lat_rad.1,
+                });
             }
             if lon < self.limits.lon_rad.0 || lon > self.limits.lon_rad.1 {
-                bail!("Longitude out of range: {lon}");
+                return Err(StrapdownError::OutOfRange {
+                    what: "longitude",
+                    value: lon,
+                    min: self.limits.lon_rad.0,
+                    max: self.limits.lon_rad.1,
+                });
             }
             if alt < self.limits.alt_m.0 || alt > self.limits.alt_m.1 {
-                bail!("Altitude out of range: {alt} m");
+                return Err(StrapdownError::OutOfRange {
+                    what: "altitude",
+                    value: alt,
+                    min: self.limits.alt_m.0,
+                    max: self.limits.alt_m.1,
+                });
             }
 
             // 3) Speed sanity (assumes NED velocities at indices 3..=5, true for every
@@ -4727,7 +4749,12 @@ pub mod health {
             // "no speed to check" and silently wave the divergence through.
             let speed = x[3].hypot(x[4]).hypot(x[5]);
             if speed > self.limits.speed_mps_max {
-                bail!("Speed exceeded: {speed:.2} m/s");
+                return Err(StrapdownError::OutOfRange {
+                    what: "speed",
+                    value: speed,
+                    min: 0.0,
+                    max: self.limits.speed_mps_max,
+                });
             }
 
             // 4) Covariance sanity: diagonals only. A condition-number check was considered
@@ -4741,28 +4768,39 @@ pub mod health {
             // matrix inverse, which this function cannot afford to run on every
             // predict/update.
             for i in 0..p.nrows().min(p.ncols()) {
-                if p[(i, i)].is_sign_negative() {
-                    bail!("Negative variance on diagonal: idx={i}, val={}", p[(i, i)]);
-                }
-                if p[(i, i)] > self.limits.cov_diag_max {
-                    bail!("Variance too large on diagonal idx={i}: {}", p[(i, i)]);
+                if p[(i, i)].is_sign_negative() || p[(i, i)] > self.limits.cov_diag_max {
+                    return Err(StrapdownError::CovarianceDiagonal {
+                        index: i,
+                        value: p[(i, i)],
+                        min: 0.0,
+                        max: self.limits.cov_diag_max,
+                    });
                 }
             }
 
             // 5) GNSS gating streak (if a NIS was computed at update time)
             if let Some(nis_pos) = maybe_nis_pos {
-                if !nis_pos.is_finite() || nis_pos.is_sign_negative() {
-                    bail!("Invalid NIS value: {nis_pos}");
+                if !nis_pos.is_finite() {
+                    return Err(StrapdownError::NonFinite {
+                        what: "position NIS",
+                    });
+                }
+                if nis_pos.is_sign_negative() {
+                    return Err(StrapdownError::OutOfRange {
+                        what: "position NIS",
+                        value: nis_pos,
+                        min: 0.0,
+                        max: f64::INFINITY,
+                    });
                 }
                 if nis_pos > self.limits.nis_pos_max {
                     self.consec_nis_pos_fail += 1;
                     if self.consec_nis_pos_fail >= self.limits.nis_pos_consec_fail {
-                        bail!(
-                            "Consecutive NIS exceedances: {} (> {}), last NIS={}",
-                            self.consec_nis_pos_fail,
-                            self.limits.nis_pos_consec_fail,
-                            nis_pos
-                        );
+                        return Err(StrapdownError::FilterDiverged {
+                            consecutive_rejections: self.consec_nis_pos_fail,
+                            limit: self.limits.nis_pos_consec_fail,
+                            detail: format!("last NIS {nis_pos}"),
+                        });
                     }
                 } else {
                     self.consec_nis_pos_fail = 0;

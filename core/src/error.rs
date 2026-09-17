@@ -12,6 +12,14 @@
 //! chaining is genuinely more useful than a fixed enum; `StrapdownError` converts into
 //! `anyhow::Error` automatically, so `?` composes across the boundary.
 //!
+//! That boundary is where the code actually sits as of the v1.0 API freeze. Until then it
+//! described an intent rather than a fact: `run_closed_loop`, `run_closed_loop_with_geo`,
+//! `HealthMonitor::check` and `ExecutionMonitor::check` are the compute layer, not file I/O,
+//! and all four returned `anyhow::Result` while `dead_reckoning` and
+//! [`NavigationFilter`](crate::NavigationFilter)'s `predict`/`update` beside them were
+//! already typed. A caller could not ask *why* a run aborted without matching on a string.
+//! Their signatures are frozen by the tag, so they were typed here or never.
+//!
 //! # Recoverable versus fatal
 //!
 //! The distinction that matters operationally is [`StrapdownError::is_recoverable`]: a
@@ -173,6 +181,63 @@ pub enum StrapdownError {
         /// What went wrong.
         detail: String,
     },
+
+    // --- Run monitoring. Fatal: the run is abandoned. ---
+    /// A covariance diagonal entry left the range a healthy filter keeps it in.
+    ///
+    /// Separate from [`Self::OutOfRange`] because the **index** is the useful half: knowing
+    /// that some variance went negative says the filter broke, knowing *which* state says
+    /// where. `OutOfRange::what` is a `&'static str` and cannot carry it.
+    #[error("covariance diagonal [{index}] = {value} is outside [{min}, {max}]")]
+    CovarianceDiagonal {
+        /// Index on the covariance diagonal.
+        index: usize,
+        /// The offending variance.
+        value: f64,
+        /// Inclusive lower bound.
+        min: f64,
+        /// Inclusive upper bound.
+        max: f64,
+    },
+
+    /// A filter rejected enough consecutive measurements to be considered diverged.
+    ///
+    /// One rejected fix is ordinary and is not this; a run of them means the filter's
+    /// covariance no longer describes its error, and later results are meaningless.
+    /// `detail` carries whatever identifies the most recent rejection -- the normalised
+    /// innovation squared when a NIS streak tripped it, or the rejecting error and its
+    /// timestamp when a run of unusable measurements did. The two callers have different
+    /// things to say and neither could supply the other's number.
+    #[error(
+        "filter diverged: {consecutive_rejections} consecutive rejections (limit {limit}); {detail}"
+    )]
+    FilterDiverged {
+        /// How many consecutive measurements were rejected.
+        consecutive_rejections: usize,
+        /// The limit that was passed.
+        limit: usize,
+        /// What identifies the most recent rejection.
+        detail: String,
+    },
+
+    /// A run passed one of its execution limits.
+    ///
+    /// `context` is a `String` rather than a `&'static str` because it is supplied by the
+    /// caller describing what it was doing, unlike the library-chosen constants every other
+    /// variant carries.
+    #[error(
+        "execution timeout ({context}): {what} reached {elapsed_s:.2} s against a limit of {limit_s:.2} s"
+    )]
+    Timeout {
+        /// What the caller was doing when the limit was reached.
+        context: String,
+        /// Which limit: wall clock, or time without progress.
+        what: &'static str,
+        /// Elapsed seconds measured.
+        elapsed_s: f64,
+        /// The configured limit, in seconds.
+        limit_s: f64,
+    },
 }
 
 impl StrapdownError {
@@ -216,6 +281,45 @@ impl StrapdownError {
 #[cfg(test)]
 mod tests {
     use super::StrapdownError;
+
+    /// The run-monitoring variants are fatal, and say so here rather than by omission.
+    ///
+    /// `is_recoverable` is an allow-list, so a new variant is fatal by default -- which is
+    /// right for all three of these but is a property of the list's shape rather than a
+    /// decision anyone recorded. A variant that ought to be recoverable would be silently
+    /// wrong, and nothing else would notice.
+    #[test]
+    fn run_monitoring_failures_are_fatal() {
+        assert!(
+            !StrapdownError::CovarianceDiagonal {
+                index: 3,
+                value: -1.0,
+                min: 0.0,
+                max: 1e12,
+            }
+            .is_recoverable(),
+            "a negative variance means the covariance is no longer a covariance"
+        );
+        assert!(
+            !StrapdownError::FilterDiverged {
+                consecutive_rejections: 21,
+                limit: 20,
+                detail: "last NIS 214.8".to_owned(),
+            }
+            .is_recoverable(),
+            "a rejection streak means the covariance no longer describes the error"
+        );
+        assert!(
+            !StrapdownError::Timeout {
+                context: "closed loop".to_owned(),
+                what: "wall clock",
+                elapsed_s: 61.0,
+                limit_s: 60.0,
+            }
+            .is_recoverable(),
+            "a run that passed its limit has no partial result worth continuing from"
+        );
+    }
 
     #[test]
     fn measurement_failures_are_recoverable() {
