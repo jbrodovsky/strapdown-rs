@@ -258,13 +258,24 @@ pub trait MeasurementModel: Any {
     /// | **body**-frame rotation vector | [`ErrorStateKalmanFilter`](crate::kalman::ErrorStateKalmanFilter)'s error state, injected as $q \otimes \delta q$ |
     /// | **nav**-frame rotation vector | [`linearize::apply_eskf_correction`](crate::linearize::apply_eskf_correction) and `transition_jacobian`'s `RotationVector` |
     ///
-    /// A filter in one of the other two converts, rather than asking models to write their
-    /// Jacobians in its own coordinates:
+    /// A filter in one of the other two is expected to convert, rather than asking models to
+    /// write their Jacobians in its own coordinates:
     /// [`linearize::body_rotation_vector_to_euler_jacobian`](crate::linearize::body_rotation_vector_to_euler_jacobian)
     /// is the conversion the ESKF applies, and it is the identity only at zero roll. On
     /// `core/tests/test_data.csv` -- recorded with the device on its side -- the two charts
     /// disagree by *order one* on where the magnetometer's yaw sensitivity lives, so this is
     /// not a nicety.
+    ///
+    /// **One filter does not yet hold up its end, and saying so is part of the contract.**
+    /// [`RaoBlackwellizedParticleFilter`](crate::rbpf::RaoBlackwellizedParticleFilter)
+    /// consumes these Jacobians unconverted, in both its linear attitude update and its
+    /// ensemble gate, while propagating its linear state with the nav-frame rotation-vector
+    /// transition Jacobian. That mismatch is #349's open half; the obvious one-line fix
+    /// **diverges** the filter (twenty consecutive NIS exceedances, last NIS 214.8), so it
+    /// needs the cloud's attitude representation designed rather than a call swapped, and it
+    /// is tracked with the rest of the RBPF work (#382). Until then, do not read the
+    /// paragraph above as a guarantee that every filter in this crate converts -- three do
+    /// and one does not.
     ///
     /// Two consequences for an implementor:
     ///
