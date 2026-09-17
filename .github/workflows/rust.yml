@@ -124,3 +124,79 @@ jobs:
 
       - name: Build strapdown-geonav
         run: cargo build -p strapdown-geonav --locked
+
+  # Semver gate for the published API. Advisory, and inert until v1.0.0 is tagged.
+  #
+  # The obvious wiring -- `cargo semver-checks` with its default registry baseline -- would be
+  # a green tick that checks nothing. It compares against the last version on crates.io, which
+  # is 0.5.0 against a declared 1.0.0; under a major bump every breaking change is permitted,
+  # so the tool would pass whatever the diff did. Worse than absent, because it reads as
+  # covered.
+  #
+  # So the baseline is the newest release tag instead, and the job skips itself when there is
+  # none. Today there is none and this does nothing; the moment v1.0.0 is tagged it starts
+  # comparing each pull request's public API against the released one, which is the question
+  # worth asking after a 1.0 and is meaningless before it.
+  #
+  # What it does and does not catch, measured by running it on this branch against `main`
+  # (`--baseline-rev main`, 151 s, "5 major and 0 minor checks failed"). It found every
+  # struct-level break and named them exactly: the three removed or renamed types, the two
+  # renamed public fields, and the twelve structs marked `#[non_exhaustive]`.
+  #
+  # It found **none of the function-signature changes** in the same diff --
+  # `ErrorStateKalmanFilter::new` moving from `&[f64]` to `&[f64; 6]`, and the four compute-layer
+  # returns moving from `anyhow::Result` to `Result<_, StrapdownError>`. Those are real breaks
+  # that a caller feels at compile time. So a green run here means "no struct-level break was
+  # detected", not "no breaking change": it is a floor, not a proof, and a signature change
+  # still needs a human to notice it.
+  #
+  # `continue-on-error` while the repo builds a track record: the tool reports findings this
+  # project has never triaged, and a new gate that blocks on its first unknown output gets
+  # switched off rather than read. Flip it once a release cycle has gone by with the output
+  # understood -- that is a deliberate decision, not an oversight.
+  #
+  # The tool is pinned rather than taken from the action, which resolves the latest release at
+  # run time: `pedantic`-style churn in what a linter reports is exactly the reproducibility
+  # problem the toolchain pin above exists to avoid.
+  #
+  # 0.49.0 specifically, and not the newest. cargo-semver-checks 0.50.0 requires rustc 1.93
+  # while this project pins 1.91, so installing the latest fails outright:
+  #
+  #     error: cannot install package `cargo-semver-checks 0.50.0`, it requires rustc 1.93 or
+  #     newer, while the currently active rustc version is 1.91.1
+  #     `cargo-semver-checks 0.49.0` supports rustc 1.91
+  #
+  # Raise this pin together with the MSRV, not before it.
+  semver:
+    name: Semver (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@1.91
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Find the newest release tag
+        id: baseline
+        run: |
+          tag="$(git tag --list 'v*' --sort=-v:refname | head -n 1)"
+          if [ -z "$tag" ]; then
+            echo "No v* tag yet, so there is no released API to compare against." >> "$GITHUB_STEP_SUMMARY"
+            echo "found=" >> "$GITHUB_OUTPUT"
+          else
+            echo "Comparing the public API against \`$tag\`." >> "$GITHUB_STEP_SUMMARY"
+            echo "found=$tag" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install cargo-semver-checks
+        if: steps.baseline.outputs.found != ''
+        run: cargo install cargo-semver-checks --version 0.49.0 --locked
+
+      - name: Check strapdown-core
+        if: steps.baseline.outputs.found != ''
+        continue-on-error: true
+        run: cargo semver-checks --package strapdown-core --baseline-rev "${{ steps.baseline.outputs.found }}"

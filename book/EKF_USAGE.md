@@ -125,13 +125,11 @@ let ekf = initialize_ekf(&initial_pose, EkfConfig::default());
 
 // A Sensor Logger recording is ENU, so say so -- a `TestDataRecord` carries no frame
 // tag, and declaring the wrong one is rejected rather than integrated at 2 g.
-let ekf_enu = initialize_ekf(
-    &initial_pose,
-    EkfConfig {
-        is_enu: true,
-        ..EkfConfig::default()
-    },
-);
+// `EkfConfig` is `#[non_exhaustive]`: outside `strapdown-core` it can be neither written as a
+// struct literal nor updated with `..default()`, so it is built from `default()` and assigned.
+let mut enu_config = EkfConfig::default();
+enu_config.is_enu = true;
+let ekf_enu = initialize_ekf(&initial_pose, enu_config);
 ```
 
 ## Measurement Types
@@ -200,19 +198,21 @@ The EKF is now fully integrated into the simulator and can be used via command l
 
 ```bash
 # Run closed-loop simulation with EKF (linearized Jacobians)
-strapdown-sim closed-loop --filter ekf --input data.csv --output results.csv
+strapdown-sim cl --filter ekf --input data.csv --output results.csv
 
 # Run with UKF (sigma point propagation)
-strapdown-sim closed-loop --filter ukf --input data.csv --output results.csv
+strapdown-sim cl --filter ukf --input data.csv --output results.csv
 
 # Run with the ESKF (the default; omitting --filter selects it)
-strapdown-sim closed-loop --filter eskf --input data.csv --output results.csv
+strapdown-sim cl --filter eskf --input data.csv --output results.csv
 
-# With GNSS degradation config
-strapdown-sim closed-loop --filter ekf --config gnss_config.toml --input data.csv --output results.csv
+# With a scenario config. `--config` supplies the whole run, so `--filter`, `--input` and
+# `--output` are ignored alongside it -- set `closed_loop.filter`, `input` and `output`
+# inside the file and invoke the config on its own.
+strapdown-sim --config gnss_config.toml
 
 # View available options
-strapdown-sim closed-loop --help
+strapdown-sim cl --help
 ```
 
 The `--filter` option accepts `eskf`, `ukf` or `ekf`. Since #258 the default is `eskf`, the
@@ -307,7 +307,7 @@ const DEFAULT_PROCESS_NOISE_DENSITY: [f64; 15] = [
 ];
 ```
 
-The altitude entry keeps its own constant, `VERTICAL_POSITION_PROCESS_NOISE_M2`, rather
+The altitude entry keeps its own constant, `VERTICAL_POSITION_PROCESS_NOISE_M2_PER_S`, rather
 than being spelled as `POSITION_PROCESS_NOISE_M_PER_ROOT_S` squared -- though since #328 that is
 exactly what it evaluates to, `1e-2 m^2/s`, a 10 cm standard deviation per root-second.
 

@@ -74,40 +74,44 @@ The geophysical configuration section in the generated TOML file looks like this
 ```toml
 [geophysical]
 # Gravity anomaly measurements
-gravity_resolution = "OneMinute"
+gravity_resolution = "one_minute"
 gravity_bias = 0.0
 gravity_noise_std = 100.0
 gravity_map_file = "path/to/gravity_map.nc"  # Optional
 
 # Magnetic anomaly measurements
-magnetic_resolution = "OneMinute"
+magnetic_resolution = "one_minute"
 magnetic_bias = 0.0
 magnetic_noise_std = 150.0
 magnetic_map_file = "path/to/magnetic_map.nc"  # Optional
 
-# Measurement frequency (seconds)
-geo_frequency_s = 1.0
+# Measurement interval in seconds -- a period, not a frequency.
+geo_interval_s = 1.0
 ```
 
 ## Resolution Options
 
-Available map resolutions (higher numbers = finer resolution):
+Available map resolutions, finest last. **The config file and the command line spell these
+differently** -- a config file takes the `snake_case` form and `--gravity-resolution` /
+`--magnetic-resolution` take the `kebab-case` one:
 
-1. One Degree (1°)
-2. Thirty Minutes (30')
-3. Twenty Minutes (20')
-4. Fifteen Minutes (15')
-5. Ten Minutes (10')
-6. Six Minutes (6')
-7. Five Minutes (5')
-8. Four Minutes (4')
-9. Three Minutes (3')
-10. Two Minutes (2')
-11. **One Minute (1')** - Default
-12. Thirty Seconds (30")
-13. Fifteen Seconds (15")
-14. Three Seconds (3")
-15. One Second (1")
+| Resolution | In a config file | On the command line |
+|---|---|---|
+| One Degree (1°) | `"one_degree"` | `one-degree` |
+| Thirty Minutes (30') | `"thirty_minutes"` | `thirty-minutes` |
+| Twenty Minutes (20') | `"twenty_minutes"` | `twenty-minutes` |
+| Fifteen Minutes (15') | `"fifteen_minutes"` | `fifteen-minutes` |
+| Ten Minutes (10') | `"ten_minutes"` | `ten-minutes` |
+| Six Minutes (6') | `"six_minutes"` | `six-minutes` |
+| Five Minutes (5') | `"five_minutes"` | `five-minutes` |
+| Four Minutes (4') | `"four_minutes"` | `four-minutes` |
+| Three Minutes (3') | `"three_minutes"` | `three-minutes` |
+| Two Minutes (2') | `"two_minutes"` | `two-minutes` |
+| **One Minute (1')** - default | `"one_minute"` | `one-minute` |
+| Thirty Seconds (30") | `"thirty_seconds"` | `thirty-seconds` |
+| Fifteen Seconds (15") | `"fifteen_seconds"` | `fifteen-seconds` |
+| Three Seconds (3") | `"three_seconds"` | `three-seconds` |
+| One Second (1") | `"one_second"` | `one-second` |
 
 ## Default Values
 

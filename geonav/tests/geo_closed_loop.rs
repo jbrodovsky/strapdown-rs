@@ -36,10 +36,10 @@ use geonav::{
 };
 use nalgebra::{DMatrix, DVector};
 use strapdown::kalman::ExtendedKalmanFilter;
-use strapdown::messages::{Event, GnssDegradationConfig, GnssFaultModel, GnssScheduler};
+use strapdown::messages::{AidingConfig, Event, GnssFaultModel, MeasurementScheduler};
 use strapdown::rbpf::{RaoBlackwellizedParticleFilter, RbpfConfig};
 use strapdown::sim::{
-    DEFAULT_PROCESS_NOISE_DENSITY, GeoStateLayout, NavigationResult, TestDataRecord, UkfConfig,
+    DEFAULT_PROCESS_NOISE_DENSITY, ExtraStateLayout, NavigationResult, TestDataRecord, UkfConfig,
     initialize_ukf, run_closed_loop, run_closed_loop_with_geo,
 };
 use strapdown::{NavigationFilter, StrapdownState};
@@ -160,28 +160,25 @@ fn with_magnetometer(records: Vec<TestDataRecord>) -> Vec<TestDataRecord> {
         .collect()
 }
 
-fn passthrough_config() -> GnssDegradationConfig {
-    GnssDegradationConfig {
-        scheduler: GnssScheduler::PassThrough,
-        fault: GnssFaultModel::None,
-        ..Default::default()
-    }
+fn passthrough_config() -> AidingConfig {
+    let mut built = AidingConfig::default();
+    built.scheduler = MeasurementScheduler::PassThrough;
+    built.fault = GnssFaultModel::None;
+    built
 }
 
 /// A geophysically aided UKF carrying one bias state, tuned as the CLI tunes it.
 fn aided_ukf(first: &TestDataRecord) -> strapdown::kalman::UnscentedKalmanFilter {
     let mut process_noise: Vec<f64> = DEFAULT_PROCESS_NOISE_DENSITY.into();
     process_noise.push(1e-9);
-    initialize_ukf(
-        first,
-        UkfConfig {
-            other_states: Some(vec![0.0]),
-            other_states_covariance: Some(vec![100.0]),
-            process_noise_diagonal: Some(process_noise),
-            is_enu: true,
-            ..Default::default()
-        },
-    )
+    initialize_ukf(first, {
+        let mut built = UkfConfig::default();
+        built.other_states = Some(vec![0.0]);
+        built.other_states_covariance = Some(vec![100.0]);
+        built.process_noise_diagonal = Some(process_noise);
+        built.is_enu = true;
+        built
+    })
     .expect("a geophysically aided UKF must initialise")
 }
 
@@ -244,15 +241,15 @@ fn assert_bias_is_estimated(biases: &[f64], covariances: &[f64], name: &str) {
 
 /// The bias layout for a gravity-only run, in both the forms a geophysical run needs.
 ///
-/// `GeoBiasLayout` tells the measurement models where the bias lives; `GeoStateLayout` tells
+/// `GeoBiasLayout` tells the measurement models where the bias lives; `ExtraStateLayout` tells
 /// `NavigationResult` the same thing on the `core` side of the dependency edge. Derived from
 /// the first rather than declared twice, exactly as `run_geo_closed_loop_cli` does it, so the
 /// placement has one source of truth.
-fn gravity_only_layouts() -> (GeoBiasLayout, GeoStateLayout) {
+fn gravity_only_layouts() -> (GeoBiasLayout, ExtraStateLayout) {
     let bias = GeoBiasLayout::appended(NAVIGATION_AND_IMU_BIAS_STATE_DIM, true, false)
         .expect("a gravity-only layout over the 15-state Kalman vector must be valid")
         .expect("asking for a gravity bias must yield a layout");
-    let state = GeoStateLayout::new(
+    let state = ExtraStateLayout::new(
         bias.state_dim(),
         bias.gravity_bias().map(|b| b.index),
         bias.magnetic_bias().map(|b| b.index),
@@ -261,11 +258,11 @@ fn gravity_only_layouts() -> (GeoBiasLayout, GeoStateLayout) {
 }
 
 /// The same pair for a magnetic-only run.
-fn magnetic_only_layouts() -> (GeoBiasLayout, GeoStateLayout) {
+fn magnetic_only_layouts() -> (GeoBiasLayout, ExtraStateLayout) {
     let bias = GeoBiasLayout::appended(NAVIGATION_AND_IMU_BIAS_STATE_DIM, false, true)
         .expect("a magnetic-only layout over the 15-state Kalman vector must be valid")
         .expect("asking for a magnetic bias must yield a layout");
-    let state = GeoStateLayout::new(
+    let state = ExtraStateLayout::new(
         bias.state_dim(),
         bias.gravity_bias().map(|b| b.index),
         bias.magnetic_bias().map(|b| b.index),
@@ -521,11 +518,11 @@ fn magnetic_only_ekf_estimates_its_bias_state() {
 /// [`NAVIGATION_STATE_DIM`] as the base, which is what `sim` passes for an RBPF run, so the
 /// bias lands at index 9 rather than 15. Everything downstream -- where the measurement reads
 /// its bias from, which column the conversion files it in -- follows from that one number.
-fn gravity_only_particle_layouts() -> (GeoBiasLayout, GeoStateLayout) {
+fn gravity_only_particle_layouts() -> (GeoBiasLayout, ExtraStateLayout) {
     let bias = GeoBiasLayout::appended(NAVIGATION_STATE_DIM, true, false)
         .expect("a gravity-only layout over the 9-state particle vector must be valid")
         .expect("asking for a gravity bias must yield a layout");
-    let state = GeoStateLayout::new(
+    let state = ExtraStateLayout::new(
         bias.state_dim(),
         bias.gravity_bias().map(|b| b.index),
         bias.magnetic_bias().map(|b| b.index),
@@ -606,17 +603,15 @@ fn gravity_aided_particle_filter_labels_its_bias_state() {
         attitude: first.attitude(),
         is_enu: true,
     };
-    let mut rbpf = RaoBlackwellizedParticleFilter::new(
-        nominal,
-        RbpfConfig {
-            num_particles: 200,
-            extra_state_dim: layout.len(),
-            extra_state_init_std: 10.0,
-            extra_state_process_noise_std: 0.1,
-            seed: 42,
-            ..RbpfConfig::default()
-        },
-    )
+    let mut rbpf = RaoBlackwellizedParticleFilter::new(nominal, {
+        let mut built = RbpfConfig::default();
+        built.num_particles = 200;
+        built.extra_state_dim = layout.len();
+        built.extra_state_init_std = 10.0;
+        built.extra_state_process_noise_std = 0.1;
+        built.seed = 42;
+        built
+    })
     .expect("the aided RBPF must initialise");
 
     let start_time = events.start_time;

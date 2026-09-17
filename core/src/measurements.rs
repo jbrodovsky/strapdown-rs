@@ -112,7 +112,7 @@ pub const MAG_YAW_NOISE: f64 = 0.2;
 ///
 /// It is not measured, and it is not per-record. The Sensor Logger format carries no pressure
 /// accuracy column, so nothing in a log can supply one; this is a default a caller overrides
-/// through [`crate::messages::GnssDegradationConfig::baro_noise_std_m`], which is what #375
+/// through [`crate::messages::AidingConfig::baro_noise_std_m`], which is what #375
 /// was filed to make possible. Whether 2.24 m is the *right* one-sigma for a phone barometer
 /// is a separate question from whether it can be changed, and it is #372's -- the vertical
 /// channel's three-sigma containment stalls near 0.45 on real data against an ideal of
@@ -606,7 +606,7 @@ impl RelativeAltitudeMeasurement {
     ///   column twice, and `bias_index: 12` reads a **gyro bias** as a barometric one and
     ///   drives the barometer's innovation into it. This field is `pub` and reaches the model
     ///   from a deserialized
-    ///   [`GnssDegradationConfig`](crate::messages::GnssDegradationConfig), so the value is
+    ///   [`AidingConfig`](crate::messages::AidingConfig), so the value is
     ///   user input rather than a crate invariant, and it is checked as such.
     ///
     /// The lower bound is the same rule

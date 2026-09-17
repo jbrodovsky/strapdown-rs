@@ -36,11 +36,17 @@ The core library implementing strapdown INS algorithms and simulation framework:
 
 ### 2. `strapdown-sim` (/sim)
 Command-line tool for running INS simulations with GNSS degradation:
-- Modes: open-loop (dead reckoning), closed-loop with UKF, or particle filter
+- Modes: `dr` (dead reckoning), `cl` (closed loop -- ESKF by default, UKF and EKF by
+  `--filter`), `pf` (particle filter), `syn` (synthetic trajectory). `ol` exists but is
+  **not implemented**: it writes no output
 - GNSS fault simulation: dropouts, reduced update rates, measurement corruption, bias injection
 - Input: CSV files with IMU and GNSS measurements (Sensor Logger format)
-- Output: Navigation solutions as CSV/Parquet
-- Configuration: YAML/JSON scenario files or command-line arguments
+- Output: **the CLI writes CSV only.** Every path through `strapdown-sim` ends in
+  `NavigationResult::to_csv`, and `OUTPUT_FILE_EXTENSIONS` in `sim/src/common.rs` is `["csv"]`,
+  so any other extension is rejected rather than filled with CSV. `to_hdf5`, `to_netcdf` and
+  `to_mcap` exist as **library** writers on `NavigationResult`, reachable from Rust but not
+  from this binary. There is no Parquet writer at all
+- Configuration: TOML/YAML/JSON scenario files or command-line arguments
 - Built-in logging: Use `--log-level` and `--log-file` flags (see LOGGING.md for details)
 
 **Free Core scope**: Basic GNSS degradation (outages, noise, reduced availability)
@@ -78,8 +84,14 @@ cargo coverage
 
 ### Lint & Format
 ```bash
-# Run clippy exactly as CI does (warnings are errors)
+# Lint the wide configuration (warnings are errors)
 cargo lint
+
+# ...and the narrow one. CI lints BOTH, and `cargo lint` alone is not CI parity: a call site
+# that exists only under --all-features can orphan an import that --no-default-features then
+# reports as dead. Run both before pushing.
+cargo lint-min
+cargo test-min
 
 # Apply the clippy fixes it can
 cargo lint-fix
@@ -93,14 +105,18 @@ cargo fmt-check
 
 ### Running Simulations
 ```bash
-# Open-loop (dead reckoning)
-./target/release/strapdown-sim -i input.csv -o output.csv open-loop
+# Dead reckoning. The subcommand comes first: `-i` before it is rejected.
+# `dr` is the dead-reckoning command. `ol` is a separate, **unimplemented** subcommand:
+# `run_open_loop` validates its paths, writes nothing and prints "Open-loop mode is not yet
+# fully implemented". Do not reach for `ol` expecting a result.
+./target/release/strapdown-sim dr -i input.csv -o output.csv
 
-# Closed-loop with GNSS degradation
-./target/release/strapdown-sim -i input.csv -o output.csv closed-loop \
+# Closed-loop with a duty-cycled GNSS outage and AR(1) degradation.
+# `--sched` is passthrough|fixed|duty and `--fault` is none|degraded|slowbias|hijack.
+./target/release/strapdown-sim cl -i input.csv -o output.csv \
   --seed 42 \
-  --dropout-start-s 100.0 --dropout-duration-s 50.0 \
-  --fault-type bias --fault-magnitude 10.0
+  --sched duty --on-s 100.0 --off-s 50.0 \
+  --fault degraded --sigma-pos-m 10.0
 
 # Geophysical navigation (the geonav-sim binary was folded into strapdown-sim;
 # build with `cargo build --release -p strapdown-sim --features geonav`)
@@ -137,11 +153,16 @@ The Free Core implementation must achieve the following capabilities:
    - Measurement corruption and bias injection
 
 4. **Configuration-Driven**:
-   - YAML/JSON scenario files describing: trajectory/data path, sensor parameters, noise models, degradation events, filter configuration, output format
+   - TOML/YAML/JSON scenario files describing: trajectory/data path, sensor parameters, noise models, degradation events, filter configuration, output format
    - Command-line interface with config file support and argument overrides
 
 5. **Output Formats**:
-   - CSV and Parquet export for analysis in Python/MATLAB/R
+   - CSV, HDF5, NetCDF and MCAP export for analysis in Python/MATLAB/R. **These are
+     `NavigationResult` methods, not CLI output modes**: `strapdown-sim` writes CSV and
+     rejects every other extension, so reaching the other three means calling `to_hdf5`,
+     `to_netcdf` or `to_mcap` from Rust
+   - Parquet is deliberately **not** supported at either layer: `sim/src/common.rs` refuses
+     `.parquet` rather than naming a file Parquet and filling it with CSV
    - Navigation solution time series with position, velocity, attitude estimates
 
 6. **Python Integration**:
@@ -259,8 +280,14 @@ is the whole setup.
   untracked in #335 for the same reason
 
 ### Lint Policy
-Lints are **enforced at `deny`**, workspace-wide, not warn-level. `cargo lint` and the
-blocking CI job both run `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
+Lints are **enforced at `deny`**, workspace-wide, not warn-level. `cargo lint` and one of the
+blocking CI jobs run `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
+
+**That is only half the gate.** A second blocking job runs
+`cargo clippy -p strapdown-core --all-targets --no-default-features -- -D warnings`, and the
+two configurations disagree: an item used only behind a feature gate is live in one and dead
+in the other. `cargo lint-min` is that second configuration, and `cargo test-min` its test
+counterpart; run both alongside `cargo lint` before pushing.
 - `clippy::pedantic`, `clippy::nursery`, `missing_docs`, `missing_debug_implementations`,
   `unreachable_pub`, `rust_2018_idioms`
 - Zero-panic policy in library code: `unwrap_used`, `expect_used`, `panic` are denied. Return a

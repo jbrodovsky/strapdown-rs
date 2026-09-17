@@ -109,6 +109,7 @@ const MAX_LEVER_ARM_M: f64 = 100.0;
 /// crate's default process noise.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+#[non_exhaustive]
 pub struct InsEngineConfig {
     /// Local-level frame convention: `false` (the default) is NED, `true` is ENU.
     pub is_enu: bool,
@@ -182,10 +183,10 @@ const DEFAULT_INITIAL_COVARIANCE: [f64; FULL_STATE_DIMENSION] = [
 /// use strapdown::kalman::InitialState;
 ///
 /// # fn main() -> Result<(), strapdown::StrapdownError> {
-/// let config = InsEngineConfig {
-///     lever_arm: [2.0, 0.0, -1.0],
-///     ..InsEngineConfig::default()
-/// };
+/// // `InsEngineConfig` is `#[non_exhaustive]`, so it is built from `default()` and
+/// // adjusted rather than written as a struct literal.
+/// let mut config = InsEngineConfig::default();
+/// config.lever_arm = [2.0, 0.0, -1.0];
 /// let engine = InsEngine::builder()
 ///     .with_config(config)
 ///     .with_initial_state(InitialState::new(

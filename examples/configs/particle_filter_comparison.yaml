@@ -6,28 +6,38 @@
 # Use case: Research on filter algorithm comparison, especially
 # for non-Gaussian measurement distributions.
 #
-# To run comparison:
-#   # UKF
-#   strapdown-sim -i input.csv -o ukf_result.csv closed-loop \
-#     --config particle_filter_comparison.yaml
+# To run the comparison, note that `--config` supplies the whole run: the subcommand and
+# its arguments -- `-i`, `-o`, `--num-particles` -- are ignored alongside it, and the filter
+# is chosen by this file's `mode` field. So the comparison is two files, not two commands:
 #
-#   # Particle Filter
-#   strapdown-sim -i input.csv -o pf_result.csv particle-filter \
-#     --config particle_filter_comparison.yaml \
-#     --num-particles 200
+#   cp particle_filter_comparison.yaml pf.yaml
+#   # edit pf.yaml:  mode: particle-filter   (and add `particle_filter:` options)
+#   # edit each file's `output:` so the two runs do not overwrite each other
+#
+#   strapdown-sim --config particle_filter_comparison.yaml   # closed-loop, per `mode` below
+#   strapdown-sim --config pf.yaml                           # particle filter
 #
 # Expected behavior: Both filters should track well during GNSS
 # availability. Particle filter may show better robustness to
 # non-Gaussian errors but with higher computational cost.
-scheduler:
-  kind: fixed_interval
-  interval_s: 5.0
-  phase_s: 0.0
-fault:
-  kind: degraded
-  rho_pos: 0.99
-  sigma_pos_m: 5.0      # Larger position errors for visible difference
-  rho_vel: 0.95
-  sigma_vel_mps: 0.5
-  r_scale: 5.0
-seed: 42
+# Promoted to a full simulation config at the v1.0 freeze. `--config` parses a
+# `SimulationConfig`, so a bare aiding document could not be passed to it -- it failed
+# with `missing field `mode``. The scenario itself is unchanged, just nested under
+# `aiding:`. `input`/`output` are omitted, so they default to input.csv and output.csv in
+# the working directory. `--config` supplies the whole run and the subcommand's `-i`/`-o`
+# are ignored alongside it, so point this at your own data by adding `input:`/`output:`
+# here rather than on the command line.
+mode: closed-loop
+aiding:
+  scheduler:
+    kind: fixed_interval
+    interval_s: 5.0
+    phase_s: 0.0
+  fault:
+    kind: degraded
+    rho_pos: 0.99
+    sigma_pos_m: 5.0      # Larger position errors for visible difference
+    rho_vel: 0.95
+    sigma_vel_mps: 0.5
+    r_scale: 5.0
+  seed: 42

@@ -108,6 +108,7 @@ fn position_std_to_state_units(
 
 /// RBPF configuration parameters.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct RbpfConfig {
     /// Number of particles in the cloud; fixed for the life of the filter.
     pub num_particles: usize,
@@ -743,7 +744,7 @@ impl RaoBlackwellizedParticleFilter {
     /// [`crate::sim::NavigationResult::from_particle_filter`] wrote rows whose geophysical
     /// columns were empty for a run that had estimated them. Pair this with
     /// [`crate::sim::NavigationResult::from_particle_filter_with_geo`], which is told by a
-    /// [`GeoStateLayout`](crate::sim::GeoStateLayout) which extra state is which; the vector
+    /// [`ExtraStateLayout`](crate::sim::ExtraStateLayout) which extra state is which; the vector
     /// itself cannot say, since a ten-element estimate is gravity-only or magnetic-only
     /// depending on the run's flags.
     ///

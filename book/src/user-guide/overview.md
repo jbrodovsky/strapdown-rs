@@ -36,18 +36,24 @@ If you're familiar with INS and want to jump in:
 
 Strapdown-rs supports three main simulation modes:
 
-### Open-Loop (Dead Reckoning)
+### Dead Reckoning (`dr`)
 
 Pure inertial navigation without corrections. Useful for:
 - Understanding INS error growth
 - Baseline comparisons
 - Testing IMU data quality
 
+Note that dead reckoning is `dr`, not `ol`. The `ol` subcommand is a separate *feed-forward*
+mode -- its own help describes a Kalman filter estimating and applying corrections, so it
+consumes GNSS and is not "without corrections" -- and it is **not implemented**: it validates
+its paths, writes no output and prints "Open-loop mode is not yet fully implemented".
+
 See: [Open-Loop Mode](./open-loop.md)
 
 ### Closed-Loop (Kalman Filtering)
 
-INS with GNSS corrections using EKF or UKF. Best for:
+INS with GNSS corrections using the ESKF (the default), UKF or EKF, selected with
+`--filter`. Best for:
 - Realistic navigation scenarios
 - GNSS degradation studies
 - Production-like simulations
@@ -67,10 +73,13 @@ See: [Particle Filter Mode](./particle-filter.md)
 
 The library provides multiple filter implementations:
 
+- **Error-State Kalman Filter (ESKF)**: multiplicative attitude error. **The default for `cl`.**
 - **Extended Kalman Filter (EKF)**: Fast, efficient, works well for mildly nonlinear systems
 - **Unscented Kalman Filter (UKF)**: Better accuracy for nonlinear systems, 2-3x slower
-- **Particle Filter**: Handles non-Gaussian distributions, computationally intensive
-- **Rao-Blackwellized Particle Filter (RBPF)**: Hybrid approach combining particles and EKF
+- **Rao-Blackwellized Particle Filter (RBPF)**: position as particles, the remaining states as
+  per-particle Kalman filters. The only particle filter implementation -- `ParticleFilterType`
+  has this one variant, and `particle.rs` is a module of building blocks rather than a filter
+  that can be selected on its own
 
 Learn more: [Navigation Filters](../filters/kalman.md)
 

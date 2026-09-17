@@ -125,17 +125,17 @@ let data = load_test_data("path/to/data.csv")?;
 To test alternative processing methods and navigation algorithms under degraded conditions:
 
 1. Design your navigation algorithm to leverage the available data in the input files
-2. Configure your experiment's `GnssDegradationConfiguration` to match the specific characteristics of the degraded condition you want to simulate
+2. Configure your experiment's `AidingConfig` to match the specific characteristics of the degraded condition you want to simulate
 3. Process your experiment accordingly
 
 ### Example Usage
 
 ```bash
 # Run closed-loop simulation with input data
-strapdown-sim closed-loop -i data/input/trajectory.csv -o results/output.csv
+strapdown-sim cl -i data/input/trajectory.csv -o results/output.csv
 
 # Test with degraded GNSS
-strapdown-sim closed-loop -i data/degraded/trajectory.csv -o results/degraded_output.csv
+strapdown-sim cl -i data/degraded/trajectory.csv -o results/degraded_output.csv
 ```
 
 ## Data Collection

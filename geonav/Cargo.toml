@@ -3,6 +3,7 @@ name = "strapdown-geonav"
 description = "Experimental geophysical anomaly navigation (gravity and magnetic map aiding) for strapdown inertial navigation systems."
 readme = "README.md"
 keywords = ["navigation", "geophysical", "gravity", "magnetic", "anomaly"]
+categories = ["aerospace", "science", "simulation"]
 documentation = "https://docs.rs/strapdown-geonav/"
 
 # Experimental crate: published alongside the v1.0 release but deliberately

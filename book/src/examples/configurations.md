@@ -5,9 +5,11 @@ Ready-to-run scenario files live in
 For the schema itself — every field, and the naming pitfall that silently disables a scenario
 — see [Configuration Files](../user-guide/configuration.md).
 
+`--config` supplies the whole run, so the subcommand's `-i`/`-o` are ignored alongside it —
+set `input:` and `output:` inside the file instead:
+
 ```bash
-strapdown-sim -i data/input.csv -o results/output.csv closed-loop \
-  --config examples/configs/simple_dropout.yaml
+strapdown-sim --config examples/configs/simple_dropout.yaml
 ```
 
 ## Baseline
@@ -66,9 +68,16 @@ vocabulary rather than the config schema's.
 
 ## Running the set
 
+Because `--config` ignores `-i`/`-o`, a batch varies the paths *in the file*:
+
 ```bash
+mkdir -p results .scenarios
 for config in examples/configs/*.yaml; do
   name=$(basename "$config" .yaml)
-  strapdown-sim -i data/input.csv -o "results/${name}.csv" closed-loop --config "$config"
+  { cat "$config"
+    echo "input: data/input.csv"
+    echo "output: results/${name}.csv"
+  } > ".scenarios/${name}.yaml"
+  strapdown-sim --config ".scenarios/${name}.yaml"
 done
 ```

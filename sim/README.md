@@ -23,20 +23,23 @@ cargo install strapdown-sim
 ## Usage
 
 ```sh
-# Dead reckoning
-strapdown-sim -i input.csv -o output.csv open-loop
+# Dead reckoning. The subcommand comes first -- `-i` before it is rejected.
+# (`ol` is a separate subcommand and is not yet implemented: it writes no output.)
+strapdown-sim dr -i input.csv -o output.csv
 
-# Closed loop with a GNSS outage
-strapdown-sim -i input.csv -o output.csv closed-loop \
-  --seed 42 --dropout-start-s 100.0 --dropout-duration-s 50.0
+# Closed loop with a duty-cycled GNSS outage: 100 s of fixes, then 50 s without.
+strapdown-sim cl -i input.csv -o output.csv \
+  --seed 42 --sched duty --on-s 100.0 --off-s 50.0
 
 # Generate a synthetic trajectory
 strapdown-sim syn -o synthetic.csv --duration-s 600 --seed 42
 ```
 
 Scenarios can also be described in a TOML/JSON/YAML file and run with
-`--config`. See the [documentation](https://www.strapdown.rs) for the full
-configuration schema.
+`strapdown-sim --config scenario.toml`. `--config` supplies the whole run, so the
+subcommand and its arguments are ignored when it is present -- set `input` and
+`output` inside the file rather than passing `-i`/`-o`. See the
+[documentation](https://www.strapdown.rs) for the full configuration schema.
 
 ## Experimental features
 

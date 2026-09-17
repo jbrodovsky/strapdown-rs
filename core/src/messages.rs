@@ -32,26 +32,26 @@ use crate::{IMUData, StrapdownError};
 /// - `DutyCycle` → Alternate between ON and OFF windows of fixed length,
 ///   simulating periodic outages.
 ///
-/// See also [`GnssDegradationConfig`] for how this is combined with a
+/// See also [`AidingConfig`] for how this is combined with a
 /// [`GnssFaultModel`] and a random seed.
 ///
 /// ## Examples
 ///
 /// ```
-/// use strapdown::messages::GnssScheduler;
+/// use strapdown::messages::MeasurementScheduler;
 ///
 /// // Keep all GNSS fixes (no scheduling)
-/// let sched = GnssScheduler::PassThrough;
+/// let sched = MeasurementScheduler::PassThrough;
 ///
 /// // Deliver a GNSS fix every 10 seconds, starting at t=0
-/// let sched = GnssScheduler::FixedInterval { interval_s: 10.0, phase_s: 0.0 };
+/// let sched = MeasurementScheduler::FixedInterval { interval_s: 10.0, phase_s: 0.0 };
 ///
 /// // Alternate 5 s ON, 15 s OFF, starting in ON state at t=0
-/// let sched = GnssScheduler::DutyCycle { on_s: 5.0, off_s: 15.0, start_phase_s: 0.0 };
+/// let sched = MeasurementScheduler::DutyCycle { on_s: 5.0, off_s: 15.0, start_phase_s: 0.0 };
 /// ```
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum GnssScheduler {
+pub enum MeasurementScheduler {
     /// Pass every GNSS fix through to the filter with no rate reduction.
     ///
     /// Useful as a baseline when you want to test only fault injection without
@@ -90,7 +90,7 @@ pub enum GnssScheduler {
 
 /// Models how GNSS measurement *content* is corrupted before it reaches the filter.
 ///
-/// This is complementary to [`GnssScheduler`], which decides *when* GNSS
+/// This is complementary to [`MeasurementScheduler`], which decides *when* GNSS
 /// updates are delivered. `GnssFaultModel` decides *what* corruption to apply
 /// to each delivered measurement. Together, they allow you to simulate a wide
 /// range of denial, jamming, or spoofing conditions.
@@ -227,7 +227,7 @@ const fn default_seed() -> u64 {
 
 /// Default emission schedule for the barometer and the magnetometer: one measurement per second.
 ///
-/// Not [`GnssScheduler::PassThrough`], which is what these two channels effectively had before
+/// Not [`MeasurementScheduler::PassThrough`], which is what these two channels effectively had before
 /// they were scheduled at all. A barometer and a magnetometer are aiding sources like any
 /// other, and emitting one per record ties their update rate to the *log's* rate rather than
 /// to the sensor's. On a 1 Hz recording that happens to be right; on the 50 Hz synthetic
@@ -238,16 +238,17 @@ const fn default_seed() -> u64 {
 /// One per second matches the rate the reference recording logs these channels at, so it is
 /// also the schedule under which every baseline number in `core/tests/perf_baseline.json` that
 /// was measured on real data was measured.
-const fn default_aiding_scheduler() -> GnssScheduler {
-    GnssScheduler::FixedInterval {
+const fn default_aiding_scheduler() -> MeasurementScheduler {
+    MeasurementScheduler::FixedInterval {
         interval_s: 1.0,
         phase_s: 0.0,
     }
 }
 
-/// Configuration container for GNSS degradation in simulation.
+/// Configuration for every aiding channel in a simulation: when GNSS, barometer and
+/// magnetometer measurements are delivered, and how GNSS is corrupted.
 ///
-/// This ties together a [`GnssScheduler`] (which controls *when* GNSS fixes
+/// This ties together a [`MeasurementScheduler`] (which controls *when* GNSS fixes
 /// are delivered), a [`GnssFaultModel`] (which controls *what* corruption is
 /// applied to each fix), and a random seed for reproducibility.
 ///
@@ -266,34 +267,39 @@ const fn default_aiding_scheduler() -> GnssScheduler {
 /// - `seed`: Seed for the internal random number generator, ensuring runs are
 ///   reproducible for debugging and A/B comparisons.
 ///
-/// The name is now narrower than the contents -- it schedules three sensors and degrades one.
-/// Renaming it, and [`GnssScheduler`] with it, is on the 1.0 API-freeze list rather than done
-/// here, so that a mechanical 112-site rename does not ride along with a behaviour change.
+/// The name says what it is: configuration for every *aiding* channel, not just GNSS. It was
+/// `GnssDegradationConfig` until the v1.0 freeze, by which point it scheduled three sensors and
+/// degraded one. `#[serde(alias = "gnss_degradation")]` on the field keeps existing config
+/// files parsing.
 ///
 /// ## Example
 ///
 /// ```
-/// use strapdown::messages::{GnssDegradationConfig, GnssScheduler, GnssFaultModel};
+/// use strapdown::messages::{AidingConfig, MeasurementScheduler, GnssFaultModel};
 ///
 /// // Deliver GNSS every 10 seconds, with AR(1)-degraded accuracy.
-/// let cfg = GnssDegradationConfig {
-///     scheduler: GnssScheduler::FixedInterval { interval_s: 10.0, phase_s: 0.0 },
-///     fault: GnssFaultModel::Degraded {
-///         rho_pos: 0.99,
-///         sigma_pos_m: 3.0,
-///         rho_vel: 0.95,
-///         sigma_vel_mps: 0.3,
-///         r_scale: 5.0,
-///     },
-///     ..Default::default()
+/// //
+/// // `AidingConfig` is `#[non_exhaustive]`: it can gain a field in any 1.x release without
+/// // that being a breaking change, so it is built from `default()` rather than written as a
+/// // struct literal. Everything not set here keeps its default -- including the barometer
+/// // and magnetometer schedules.
+/// let mut cfg = AidingConfig::default();
+/// cfg.scheduler = MeasurementScheduler::FixedInterval { interval_s: 10.0, phase_s: 0.0 };
+/// cfg.fault = GnssFaultModel::Degraded {
+///     rho_pos: 0.99,
+///     sigma_pos_m: 3.0,
+///     rho_vel: 0.95,
+///     sigma_vel_mps: 0.3,
+///     r_scale: 5.0,
 /// };
 /// ```
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct GnssDegradationConfig {
+#[non_exhaustive]
+pub struct AidingConfig {
     /// Scheduler that determines when GNSS measurements are emitted
     /// (e.g., pass-through, fixed interval, or duty-cycled).
     #[serde(default)]
-    pub scheduler: GnssScheduler,
+    pub scheduler: MeasurementScheduler,
 
     /// Fault model that corrupts the contents of each emitted GNSS measurement
     /// (e.g., degraded wander, slow bias drift, hijack).
@@ -303,19 +309,19 @@ pub struct GnssDegradationConfig {
     /// Scheduler that determines when barometric altitude measurements are emitted.
     ///
     /// Defaults to one per second (see [`default_aiding_scheduler`]), *not* to
-    /// [`GnssScheduler::PassThrough`]. [`GnssScheduler::DutyCycle`] gives a barometer outage
+    /// [`MeasurementScheduler::PassThrough`]. [`MeasurementScheduler::DutyCycle`] gives a barometer outage
     /// the same way it gives a GNSS one.
     #[serde(default = "default_aiding_scheduler")]
-    pub baro_scheduler: GnssScheduler,
+    pub baro_scheduler: MeasurementScheduler,
 
     /// Scheduler that determines when magnetometer heading measurements are emitted.
     ///
     /// Defaults to one per second (see [`default_aiding_scheduler`]), *not* to
-    /// [`GnssScheduler::PassThrough`]. The heading a magnetometer yields is derived from a
+    /// [`MeasurementScheduler::PassThrough`]. The heading a magnetometer yields is derived from a
     /// field vector, so re-reading it faster than the field changes adds no information while
     /// adding weight.
     #[serde(default = "default_aiding_scheduler")]
-    pub magnetometer_scheduler: GnssScheduler,
+    pub magnetometer_scheduler: MeasurementScheduler,
 
     /// One-sigma barometric altitude noise, metres, applied to every
     /// [`RelativeAltitudeMeasurement`] this module builds.
@@ -350,15 +356,15 @@ pub struct GnssDegradationConfig {
     pub seed: u64,
 }
 
-/// Serde default for [`GnssDegradationConfig::baro_noise_std_m`].
+/// Serde default for [`AidingConfig::baro_noise_std_m`].
 const fn default_baro_noise_std_m() -> f64 {
     BAROMETRIC_ALTITUDE_NOISE_M
 }
 
-impl Default for GnssDegradationConfig {
+impl Default for AidingConfig {
     fn default() -> Self {
         Self {
-            scheduler: GnssScheduler::default(),
+            scheduler: MeasurementScheduler::default(),
             fault: GnssFaultModel::default(),
             baro_scheduler: default_aiding_scheduler(),
             magnetometer_scheduler: default_aiding_scheduler(),
@@ -369,7 +375,7 @@ impl Default for GnssDegradationConfig {
     }
 }
 
-impl GnssDegradationConfig {
+impl AidingConfig {
     /// Write the configuration to a JSON file (pretty-printed).
     /// # Errors
     /// If the file cannot be created or written, or the records cannot be
@@ -465,7 +471,7 @@ impl GnssDegradationConfig {
 ///
 /// Events represent sensor updates or other observations that occur during
 /// playback of recorded data. The event stream is built by combining raw
-/// logged records with a [`GnssDegradationConfig`] (for GNSS scheduling and
+/// logged records with a [`AidingConfig`] (for GNSS scheduling and
 /// fault injection), and then fed to the UKF loop.
 ///
 /// Each variant bundles both the measurement itself and the elapsed simulation
@@ -944,20 +950,20 @@ pub fn apply_fault(
 /// against a whole-second window drops or gains a fix depending on rounding.
 const DUTY_CYCLE_EPSILON_S: f64 = 1e-9;
 
-/// Slack on a [`GnssScheduler::FixedInterval`] comparison, for the same reason
+/// Slack on a [`MeasurementScheduler::FixedInterval`] comparison, for the same reason
 /// [`DUTY_CYCLE_EPSILON_S`] exists: an elapsed time built from integer milliseconds is not
 /// exactly the multiple of `interval_s` it is meant to be, and a bare `>=` would drop a fix
 /// on a record that is a rounding error early.
 const SCHEDULE_EPSILON_S: f64 = 1e-9;
 
-/// The emission clock a [`GnssScheduler`] starts from, before any record is seen.
+/// The emission clock a [`MeasurementScheduler`] starts from, before any record is seen.
 ///
-/// Only [`GnssScheduler::FixedInterval`] carries state between records; the other two variants
+/// Only [`MeasurementScheduler::FixedInterval`] carries state between records; the other two variants
 /// decide from `elapsed_s` alone and their initial value is never read.
-const fn initial_emit_time(scheduler: &GnssScheduler) -> f64 {
+const fn initial_emit_time(scheduler: &MeasurementScheduler) -> f64 {
     match *scheduler {
-        GnssScheduler::FixedInterval { phase_s, .. } => phase_s,
-        GnssScheduler::PassThrough | GnssScheduler::DutyCycle { .. } => 0.0,
+        MeasurementScheduler::FixedInterval { phase_s, .. } => phase_s,
+        MeasurementScheduler::PassThrough | MeasurementScheduler::DutyCycle { .. } => 0.0,
     }
 }
 
@@ -979,10 +985,10 @@ const fn initial_emit_time(scheduler: &GnssScheduler) -> f64 {
 /// baseline never saw it, because `test_data.csv` is spaced at exactly 1.000 s and the
 /// synthetic trajectories at exactly 0.02 s; a Sensor Logger export with a dropped sample is
 /// not.
-fn should_emit(scheduler: &GnssScheduler, elapsed_s: f64, next_emit_time: &mut f64) -> bool {
+fn should_emit(scheduler: &MeasurementScheduler, elapsed_s: f64, next_emit_time: &mut f64) -> bool {
     match *scheduler {
-        GnssScheduler::PassThrough => true,
-        GnssScheduler::FixedInterval { interval_s, .. } => {
+        MeasurementScheduler::PassThrough => true,
+        MeasurementScheduler::FixedInterval { interval_s, .. } => {
             if elapsed_s + SCHEDULE_EPSILON_S >= *next_emit_time {
                 // Step to the first tick strictly after this record, so a gap in the log
                 // cannot leave the clock behind and let the next record through early. A
@@ -1001,7 +1007,7 @@ fn should_emit(scheduler: &GnssScheduler, elapsed_s: f64, next_emit_time: &mut f
                 false
             }
         }
-        GnssScheduler::DutyCycle {
+        MeasurementScheduler::DutyCycle {
             on_s,
             off_s,
             start_phase_s,
@@ -1009,7 +1015,7 @@ fn should_emit(scheduler: &GnssScheduler, elapsed_s: f64, next_emit_time: &mut f
     }
 }
 
-/// Whether a [`GnssScheduler::DutyCycle`] is inside an ON window at `elapsed_s`.
+/// Whether a [`MeasurementScheduler::DutyCycle`] is inside an ON window at `elapsed_s`.
 ///
 /// The timeline is `start_phase_s` of initial ON, then `off_s` OFF and `on_s` ON repeating,
 /// which is what "initial phase offset before the first ON/OFF toggle" describes: the first
@@ -1050,8 +1056,8 @@ fn duty_cycle_is_on(elapsed_s: f64, on_s: f64, off_s: f64, start_phase_s: f64) -
 ///    would otherwise have been (it is independently gated by the scheduler and by its
 ///    own `NaN` check over the fix columns). The next IMU event's `dt_s` still spans only
 ///    one record interval rather than absorbing the skipped one.
-/// 3. Uses the provided [`GnssDegradationConfig`] to decide *when* to emit GNSS
-///    (via the [`GnssScheduler`]) and *how* to corrupt that GNSS fix
+/// 3. Uses the provided [`AidingConfig`] to decide *when* to emit GNSS
+///    (via the [`MeasurementScheduler`]) and *how* to corrupt that GNSS fix
 ///    (via the [`GnssFaultModel`], applied by [`apply_fault`]).
 /// 4. Appends each emitted GNSS fix as an [`Event::Measurement`] carrying a
 ///    [`GPSPositionAndVelocityMeasurement`], with the same `elapsed_s` as the IMU step.
@@ -1070,7 +1076,7 @@ fn duty_cycle_is_on(elapsed_s: f64, on_s: f64, off_s: f64, start_phase_s: f64) -
 /// # Arguments
 /// - `records`: Source telemetry, ordered by time, providing IMU and GNSS-like
 ///   fields (lat/lon/alt/speed/bearing/accuracies).
-/// - `cfg`: GNSS degradation configuration combining a scheduler (*when*) and a
+/// - `cfg`: aiding configuration combining a scheduler (*when*) and a
 ///   fault model (*what*), plus a seed for deterministic noise and a scheduler each
 ///   for the barometer and the magnetometer.
 /// - `is_enu`: the local-level frame the filter consuming this stream works in -- `true` for
@@ -1079,7 +1085,7 @@ fn duty_cycle_is_on(elapsed_s: f64, on_s: f64, off_s: f64, start_phase_s: f64) -
 ///   in the two conventions, not merely a different sign, so a mismatch drives yaw to a
 ///   reflection of the truth rather than weakening the aid (#305). It is a parameter rather
 ///   than a field on `cfg` deliberately: `strapdown-sim` already carries the frame at the top
-///   level of its own configuration, and a second copy inside `GnssDegradationConfig` would
+///   level of its own configuration, and a second copy inside `AidingConfig` would
 ///   be a second source of truth for one physical fact -- which is how the reflection went
 ///   unnoticed in the first place. This mirrors [`crate::sim::dead_reckoning`], which took
 ///   the same argument for the same reason in #296.
@@ -1090,10 +1096,10 @@ fn duty_cycle_is_on(elapsed_s: f64, on_s: f64, off_s: f64, start_phase_s: f64) -
 /// under `# Errors` below.
 ///
 /// # Scheduling semantics
-/// - [`GnssScheduler::PassThrough`]: emit a GNSS event at every record step.
-/// - [`GnssScheduler::FixedInterval`]: emit when `elapsed_s >= next_emit_time`,
+/// - [`MeasurementScheduler::PassThrough`]: emit a GNSS event at every record step.
+/// - [`MeasurementScheduler::FixedInterval`]: emit when `elapsed_s >= next_emit_time`,
 ///   then advance `next_emit_time += interval_s` (with initial `phase_s`).
-/// - [`GnssScheduler::DutyCycle`]: emit at every record step that falls inside an ON
+/// - [`MeasurementScheduler::DutyCycle`]: emit at every record step that falls inside an ON
 ///   window. The timeline is `start_phase_s` of initial ON, then `off_s` OFF and `on_s` ON
 ///   repeating. See `duty_cycle_is_on`.
 ///
@@ -1142,19 +1148,17 @@ fn duty_cycle_is_on(elapsed_s: f64, on_s: f64, off_s: f64, start_phase_s: f64) -
 ///
 /// # Example
 /// ```
-/// use strapdown::messages::{build_event_stream, GnssDegradationConfig, GnssScheduler, GnssFaultModel};
+/// use strapdown::messages::{build_event_stream, AidingConfig, MeasurementScheduler, GnssFaultModel};
 /// use strapdown::sim::TestDataRecord;
 ///
 /// # fn main() -> Result<(), strapdown::StrapdownError> {
 /// let records = vec![TestDataRecord::default(); 10]; // load or generate your test data
-/// let cfg = GnssDegradationConfig {
-///     scheduler: GnssScheduler::FixedInterval { interval_s: 10.0, phase_s: 0.0 },
-///     fault: GnssFaultModel::Degraded {
-///         rho_pos: 0.99, sigma_pos_m: 3.0,
-///         rho_vel: 0.95, sigma_vel_mps: 0.3,
-///         r_scale: 5.0,
-///     },
-///     ..Default::default()
+/// let mut cfg = AidingConfig::default();
+/// cfg.scheduler = MeasurementScheduler::FixedInterval { interval_s: 10.0, phase_s: 0.0 };
+/// cfg.fault = GnssFaultModel::Degraded {
+///     rho_pos: 0.99, sigma_pos_m: 3.0,
+///     rho_vel: 0.95, sigma_vel_mps: 0.3,
+///     r_scale: 5.0,
 /// };
 /// let events = build_event_stream(&records, &cfg, false)?; // false = NED
 /// // feed into your event-driven filter loop
@@ -1163,7 +1167,7 @@ fn duty_cycle_is_on(elapsed_s: f64, on_s: f64, off_s: f64, start_phase_s: f64) -
 /// ```
 pub fn build_event_stream(
     records: &[TestDataRecord],
-    cfg: &GnssDegradationConfig,
+    cfg: &AidingConfig,
     is_enu: bool,
 ) -> Result<EventStream, StrapdownError> {
     // The first record is load-bearing twice over -- it fixes the epoch the elapsed clock is
@@ -1413,7 +1417,7 @@ mod tests {
     /// unparseable rows rather than failing -- must not abort the process.
     #[test]
     fn empty_records_are_an_error_not_a_panic() {
-        let err = build_event_stream(&[], &GnssDegradationConfig::default(), false).unwrap_err();
+        let err = build_event_stream(&[], &AidingConfig::default(), false).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -1429,8 +1433,7 @@ mod tests {
     #[test]
     fn single_record_yields_a_stream_with_no_events() {
         let records = create_test_records(1, 0.1);
-        let stream =
-            build_event_stream(&records, &GnssDegradationConfig::default(), false).unwrap();
+        let stream = build_event_stream(&records, &AidingConfig::default(), false).unwrap();
         assert_eq!(stream.start_time, records[0].time);
         assert!(
             stream.events.is_empty(),
@@ -1441,8 +1444,8 @@ mod tests {
     #[test]
     fn test_passthrough_scheduler() {
         let records = create_test_records(10, 0.1); // 10 records, 0.1s apart
-        let config = GnssDegradationConfig {
-            scheduler: GnssScheduler::PassThrough,
+        let config = AidingConfig {
+            scheduler: MeasurementScheduler::PassThrough,
             fault: GnssFaultModel::None,
             ..Default::default()
         };
@@ -1481,8 +1484,8 @@ mod tests {
     #[test]
     fn test_fixed_interval_scheduler() {
         let records = create_test_records(20, 0.1); // 20 records, 0.1s apart
-        let config = GnssDegradationConfig {
-            scheduler: GnssScheduler::FixedInterval {
+        let config = AidingConfig {
+            scheduler: MeasurementScheduler::FixedInterval {
                 interval_s: 0.5,
                 phase_s: 0.0,
             },
@@ -1520,8 +1523,8 @@ mod tests {
             format!("Expected 60 records, found: {}", records.len())
         );
 
-        let config = GnssDegradationConfig {
-            scheduler: GnssScheduler::DutyCycle {
+        let config = AidingConfig {
+            scheduler: MeasurementScheduler::DutyCycle {
                 on_s: 1.0,
                 off_s: 1.0,
                 start_phase_s: 0.0,
@@ -1569,8 +1572,7 @@ mod tests {
     fn aiding_channels_fire_at_their_own_rate_not_the_logs() {
         for (count, interval_s, imu_events) in [(11, 1.0, 10), (101, 0.1, 100), (501, 0.02, 500)] {
             let records = create_test_records(count, interval_s);
-            let stream =
-                build_event_stream(&records, &GnssDegradationConfig::default(), false).unwrap();
+            let stream = build_event_stream(&records, &AidingConfig::default(), false).unwrap();
 
             let imu = stream
                 .events
@@ -1632,8 +1634,7 @@ mod tests {
             record.time = base_time + chrono::Duration::milliseconds((offset * 1000.0) as i64);
         }
 
-        let stream =
-            build_event_stream(&records, &GnssDegradationConfig::default(), false).unwrap();
+        let stream = build_event_stream(&records, &AidingConfig::default(), false).unwrap();
         let times = times_of::<RelativeAltitudeMeasurement>(&stream);
 
         for pair in times.windows(2) {
@@ -1660,8 +1661,7 @@ mod tests {
     #[test]
     fn the_default_schedule_is_a_no_op_on_a_one_hertz_log() {
         let records = create_test_records(600, 1.0);
-        let stream =
-            build_event_stream(&records, &GnssDegradationConfig::default(), false).unwrap();
+        let stream = build_event_stream(&records, &AidingConfig::default(), false).unwrap();
         assert_eq!(count_of::<RelativeAltitudeMeasurement>(&stream), 599);
         assert_eq!(count_of::<MagnetometerYawMeasurement>(&stream), 599);
     }
@@ -1670,16 +1670,16 @@ mod tests {
     #[test]
     fn each_aiding_channel_keeps_its_own_emission_clock() {
         let records = create_test_records(1001, 0.02); // 20 s at 50 Hz
-        let config = GnssDegradationConfig {
-            scheduler: GnssScheduler::FixedInterval {
+        let config = AidingConfig {
+            scheduler: MeasurementScheduler::FixedInterval {
                 interval_s: 10.0,
                 phase_s: 0.0,
             },
-            baro_scheduler: GnssScheduler::FixedInterval {
+            baro_scheduler: MeasurementScheduler::FixedInterval {
                 interval_s: 2.0,
                 phase_s: 0.0,
             },
-            magnetometer_scheduler: GnssScheduler::PassThrough,
+            magnetometer_scheduler: MeasurementScheduler::PassThrough,
             ..Default::default()
         };
         let stream = build_event_stream(&records, &config, false).unwrap();
@@ -1713,8 +1713,8 @@ mod tests {
         //    `5.0` was an `R` entry -- a variance -- so the default `noise_std` is its square
         //    root, and squaring it must land back on 5.0. No `f64` squares to exactly 5.0, so
         //    this is the ulp the round trip costs, not a tolerance for a retune.
-        let stream = build_event_stream(&records, &GnssDegradationConfig::default(), false)
-            .expect("default stream");
+        let stream =
+            build_event_stream(&records, &AidingConfig::default(), false).expect("default stream");
         let baro = first_of::<RelativeAltitudeMeasurement>(&stream)
             .expect("a default config emits barometric altitude");
         assert_approx_eq!(baro.noise_std, BAROMETRIC_ALTITUDE_NOISE_M, 1e-15);
@@ -1725,7 +1725,7 @@ mod tests {
         for noise_std in [0.1_f64, 25.0] {
             let stream = build_event_stream(
                 &records,
-                &GnssDegradationConfig {
+                &AidingConfig {
                     baro_noise_std_m: noise_std,
                     ..Default::default()
                 },
@@ -1742,8 +1742,8 @@ mod tests {
     #[test]
     fn an_aiding_channel_can_be_duty_cycled_into_an_outage() {
         let records = create_test_records(101, 1.0); // 100 s at 1 Hz
-        let config = GnssDegradationConfig {
-            magnetometer_scheduler: GnssScheduler::DutyCycle {
+        let config = AidingConfig {
+            magnetometer_scheduler: MeasurementScheduler::DutyCycle {
                 on_s: 20.0,
                 off_s: 10.0,
                 start_phase_s: 20.0,
@@ -1787,8 +1787,8 @@ mod tests {
     fn test_duty_cycle_emits_throughout_on_window() {
         // 1 Hz for 100 s, 20 s ON then 10 s OFF, no initial phase.
         let records = create_test_records(100, 1.0);
-        let config = GnssDegradationConfig {
-            scheduler: GnssScheduler::DutyCycle {
+        let config = AidingConfig {
+            scheduler: MeasurementScheduler::DutyCycle {
                 on_s: 20.0,
                 off_s: 10.0,
                 start_phase_s: 20.0,
@@ -1845,8 +1845,8 @@ mod tests {
     fn test_duty_cycle_with_degenerate_cycle_passes_fixes_through() {
         let records = create_test_records(20, 1.0);
         for (on_s, off_s) in [(0.0, 0.0), (-5.0, 0.0)] {
-            let config = GnssDegradationConfig {
-                scheduler: GnssScheduler::DutyCycle {
+            let config = AidingConfig {
+                scheduler: MeasurementScheduler::DutyCycle {
                     on_s,
                     off_s,
                     start_phase_s: 0.0,
@@ -1871,8 +1871,8 @@ mod tests {
     #[test]
     fn test_degraded_fault_model() {
         let records = create_test_records(10, 0.1);
-        let config = GnssDegradationConfig {
-            scheduler: GnssScheduler::PassThrough,
+        let config = AidingConfig {
+            scheduler: MeasurementScheduler::PassThrough,
             fault: GnssFaultModel::Degraded {
                 rho_pos: 0.99,
                 sigma_pos_m: 3.0,
@@ -1982,8 +1982,8 @@ mod tests {
         let offset_n = 50.0;
         let offset_e = 30.0;
 
-        let config = GnssDegradationConfig {
-            scheduler: GnssScheduler::PassThrough,
+        let config = AidingConfig {
+            scheduler: MeasurementScheduler::PassThrough,
             fault: GnssFaultModel::Hijack {
                 offset_n_m: offset_n,
                 offset_e_m: offset_e,
@@ -2032,8 +2032,8 @@ mod tests {
         // Note: Due to commented code in apply_fault for Combo, this is a minimal test
         let records = create_test_records(10, 0.1);
 
-        let config = GnssDegradationConfig {
-            scheduler: GnssScheduler::PassThrough,
+        let config = AidingConfig {
+            scheduler: MeasurementScheduler::PassThrough,
             fault: GnssFaultModel::Combo(vec![GnssFaultModel::None, GnssFaultModel::None]),
             ..Default::default()
         };
@@ -2069,8 +2069,8 @@ mod tests {
     fn test_slow_bias_fault_with_rotation() {
         // Test slow bias fault with rotation (rotate_omega_rps != 0.0)
         let records = create_test_records(10, 0.1);
-        let config = GnssDegradationConfig {
-            scheduler: GnssScheduler::PassThrough,
+        let config = AidingConfig {
+            scheduler: MeasurementScheduler::PassThrough,
             fault: GnssFaultModel::SlowBias {
                 drift_n_mps: 1.0,
                 drift_e_mps: 0.5,
@@ -2097,8 +2097,8 @@ mod tests {
     fn test_slow_bias_fault_with_q_bias() {
         // Test slow bias fault with q_bias > 0.0
         let records = create_test_records(10, 0.1);
-        let config = GnssDegradationConfig {
-            scheduler: GnssScheduler::PassThrough,
+        let config = AidingConfig {
+            scheduler: MeasurementScheduler::PassThrough,
             fault: GnssFaultModel::SlowBias {
                 drift_n_mps: 0.0,
                 drift_e_mps: 0.0,
@@ -2195,8 +2195,8 @@ mod tests {
             },
         ];
 
-        let config = GnssDegradationConfig {
-            scheduler: GnssScheduler::PassThrough,
+        let config = AidingConfig {
+            scheduler: MeasurementScheduler::PassThrough,
             fault: GnssFaultModel::None,
             ..Default::default()
         };
@@ -2219,8 +2219,8 @@ mod tests {
     fn test_duty_cycle_scheduler_toggles() {
         // Test DutyCycle scheduler to ensure it toggles states
         let records = create_test_records(20, 0.1);
-        let config = GnssDegradationConfig {
-            scheduler: GnssScheduler::DutyCycle {
+        let config = AidingConfig {
+            scheduler: MeasurementScheduler::DutyCycle {
                 on_s: 0.5,
                 off_s: 0.5,
                 start_phase_s: 0.0,
@@ -2239,9 +2239,9 @@ mod serialization_tests {
     use super::*;
     use tempfile::NamedTempFile;
 
-    fn sample_cfg() -> GnssDegradationConfig {
-        GnssDegradationConfig {
-            scheduler: GnssScheduler::PassThrough,
+    fn sample_cfg() -> AidingConfig {
+        AidingConfig {
+            scheduler: MeasurementScheduler::PassThrough,
             fault: GnssFaultModel::Degraded {
                 rho_pos: 0.99,
                 sigma_pos_m: 3.0,
@@ -2259,7 +2259,7 @@ mod serialization_tests {
         let f = NamedTempFile::new().unwrap();
         let path = f.path().with_extension("json");
         cfg.to_json(&path).unwrap();
-        let loaded = GnssDegradationConfig::from_json(&path).unwrap();
+        let loaded = AidingConfig::from_json(&path).unwrap();
         assert_eq!(cfg.seed, loaded.seed);
     }
 
@@ -2269,7 +2269,7 @@ mod serialization_tests {
         let f = NamedTempFile::new().unwrap();
         let path = f.path().with_extension("yaml");
         cfg.to_yaml(&path).unwrap();
-        let loaded = GnssDegradationConfig::from_yaml(&path).unwrap();
+        let loaded = AidingConfig::from_yaml(&path).unwrap();
         assert_eq!(cfg.seed, loaded.seed);
     }
 
@@ -2279,7 +2279,7 @@ mod serialization_tests {
         let f = NamedTempFile::new().unwrap();
         let path = f.path().with_extension("toml");
         cfg.to_toml(&path).unwrap();
-        let loaded = GnssDegradationConfig::from_toml(&path).unwrap();
+        let loaded = AidingConfig::from_toml(&path).unwrap();
         assert_eq!(cfg.seed, loaded.seed);
     }
 
@@ -2289,7 +2289,7 @@ mod serialization_tests {
         let f = NamedTempFile::new().unwrap();
         let path = f.path().with_extension("json");
         cfg.to_file(&path).unwrap();
-        let loaded = GnssDegradationConfig::from_file(&path).unwrap();
+        let loaded = AidingConfig::from_file(&path).unwrap();
         assert_eq!(cfg.seed, loaded.seed);
     }
 }

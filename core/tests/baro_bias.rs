@@ -30,9 +30,7 @@
 use nalgebra::DVector;
 use strapdown::NavigationFilter;
 use strapdown::measurements::{MeasurementModel, RelativeAltitudeMeasurement};
-use strapdown::messages::{
-    GnssDegradationConfig, GnssFaultModel, GnssScheduler, build_event_stream,
-};
+use strapdown::messages::{AidingConfig, GnssFaultModel, MeasurementScheduler, build_event_stream};
 use strapdown::sim::{
     EkfConfig, EskfConfig, INITIAL_BARO_BIAS_VARIANCE_M2, TestDataRecord, UkfConfig,
     initialize_ekf, initialize_eskf, initialize_ukf,
@@ -76,16 +74,17 @@ fn check<F: NavigationFilter>(name: &str, filter: &mut F, records: &[TestDataRec
     );
     let stream = build_event_stream(
         records,
-        &GnssDegradationConfig {
-            scheduler: GnssScheduler::PassThrough,
-            fault: GnssFaultModel::None,
-            baro_bias_index: Some(BARO_INDEX),
-            ..Default::default()
+        &{
+            let mut built = AidingConfig::default();
+            built.scheduler = MeasurementScheduler::PassThrough;
+            built.fault = GnssFaultModel::None;
+            built.baro_bias_index = Some(BARO_INDEX);
+            built
         },
         REAL_DATA_IS_ENU,
     )
     .expect("event stream");
-    // Deliberately the plain runner, not `run_closed_loop_with_geo`. `GeoStateLayout::NONE`
+    // Deliberately the plain runner, not `run_closed_loop_with_geo`. `ExtraStateLayout::NONE`
     // is fifteen wide and the conversion into `NavigationResult` asserts the state matches,
     // so before #372 wired `NavigationFilter::baro_bias_index` through, this call panicked on
     // every filter carrying the state -- a `pub` config flag that broke the documented runner.
@@ -137,20 +136,23 @@ fn check<F: NavigationFilter>(name: &str, filter: &mut F, records: &[TestDataRec
 fn every_filter_actually_estimates_the_barometric_bias() {
     let records = records();
 
-    let ukf_config = UkfConfig {
-        is_enu: REAL_DATA_IS_ENU,
-        estimate_baro_bias: true,
-        ..UkfConfig::default()
+    let ukf_config = {
+        let mut built = UkfConfig::default();
+        built.is_enu = REAL_DATA_IS_ENU;
+        built.estimate_baro_bias = true;
+        built
     };
-    let ekf_config = EkfConfig {
-        is_enu: REAL_DATA_IS_ENU,
-        estimate_baro_bias: true,
-        ..EkfConfig::default()
+    let ekf_config = {
+        let mut built = EkfConfig::default();
+        built.is_enu = REAL_DATA_IS_ENU;
+        built.estimate_baro_bias = true;
+        built
     };
-    let eskf_config = EskfConfig {
-        is_enu: REAL_DATA_IS_ENU,
-        estimate_baro_bias: true,
-        ..EskfConfig::default()
+    let eskf_config = {
+        let mut built = EskfConfig::default();
+        built.is_enu = REAL_DATA_IS_ENU;
+        built.estimate_baro_bias = true;
+        built
     };
     // The index this file drives the measurement at has to be the one each constructor
     // actually used, or the assertions below would be reading a gyro bias.
@@ -203,21 +205,17 @@ fn the_barometers_jacobian_carries_a_non_zero_bias_column() {
 #[test]
 fn the_state_is_absent_unless_asked_for() {
     let records = records();
-    let ukf = initialize_ukf(
-        &records[0],
-        UkfConfig {
-            is_enu: REAL_DATA_IS_ENU,
-            ..UkfConfig::default()
-        },
-    )
+    let ukf = initialize_ukf(&records[0], {
+        let mut built = UkfConfig::default();
+        built.is_enu = REAL_DATA_IS_ENU;
+        built
+    })
     .expect("UKF");
-    let eskf = initialize_eskf(
-        &records[0],
-        EskfConfig {
-            is_enu: REAL_DATA_IS_ENU,
-            ..EskfConfig::default()
-        },
-    )
+    let eskf = initialize_eskf(&records[0], {
+        let mut built = EskfConfig::default();
+        built.is_enu = REAL_DATA_IS_ENU;
+        built
+    })
     .expect("ESKF");
     assert_eq!(ukf.get_estimate().len(), 15);
     assert_eq!(eskf.get_estimate().len(), 15);
@@ -227,7 +225,7 @@ fn the_state_is_absent_unless_asked_for() {
 
 #[test]
 fn an_index_inside_the_navigation_states_is_rejected() {
-    // `bias_index` reaches this model from a deserialized `GnssDegradationConfig`, so it is
+    // `bias_index` reaches this model from a deserialized `AidingConfig`, so it is
     // user input. Before this check, an in-range but wrong index was accepted silently:
     // `2` made the model predict `alt + alt`, and `12` drove the barometer's innovation into
     // a **gyro bias**. Neither is a short read, so nothing downstream would have noticed.
@@ -265,14 +263,12 @@ fn the_plain_filter_to_result_conversion_carries_the_bias() {
     // so the "the state vector cannot say which extra state is which" reasoning that justifies
     // `None` for the *map* biases does not reach this one.
     let records = records();
-    let mut ukf = initialize_ukf(
-        &records[0],
-        UkfConfig {
-            is_enu: REAL_DATA_IS_ENU,
-            estimate_baro_bias: true,
-            ..UkfConfig::default()
-        },
-    )
+    let mut ukf = initialize_ukf(&records[0], {
+        let mut built = UkfConfig::default();
+        built.is_enu = REAL_DATA_IS_ENU;
+        built.estimate_baro_bias = true;
+        built
+    })
     .expect("UKF");
     check("UKF", &mut ukf, &records);
 
@@ -288,13 +284,11 @@ fn the_plain_filter_to_result_conversion_carries_the_bias() {
     );
 
     // And a filter without the state still reports nothing rather than zero.
-    let plain = initialize_ukf(
-        &records[0],
-        UkfConfig {
-            is_enu: REAL_DATA_IS_ENU,
-            ..UkfConfig::default()
-        },
-    )
+    let plain = initialize_ukf(&records[0], {
+        let mut built = UkfConfig::default();
+        built.is_enu = REAL_DATA_IS_ENU;
+        built
+    })
     .expect("UKF");
     let row = strapdown::sim::NavigationResult::from((&records[0].time, &plain));
     assert_eq!(row.baro_bias, None);

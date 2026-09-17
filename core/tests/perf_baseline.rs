@@ -156,13 +156,12 @@ use std::path::{Path, PathBuf};
 use nalgebra::Rotation3;
 use serde::{Deserialize, Serialize};
 
-use strapdown::messages::{
-    GnssDegradationConfig, GnssFaultModel, GnssScheduler, build_event_stream,
-};
+use strapdown::NavigationFilter;
+use strapdown::messages::{AidingConfig, GnssFaultModel, MeasurementScheduler, build_event_stream};
 use strapdown::metrics::{AccuracyMetrics, MetricDirection, MetricId, MetricOptions, TruthSample};
 use strapdown::rbpf::{RaoBlackwellizedParticleFilter, RbpfConfig};
 use strapdown::sim::{
-    EkfConfig, EskfConfig, GeoStateLayout, NavigationResult, SyntheticConfig,
+    EkfConfig, EskfConfig, ExtraStateLayout, NAVIGATION_STATES, NavigationResult, SyntheticConfig,
     SyntheticInitialState, TestDataRecord, UkfConfig, dead_reckoning, generate_synthetic,
     initialize_ekf, initialize_eskf, initialize_ukf, run_closed_loop, run_closed_loop_with_geo,
 };
@@ -259,7 +258,7 @@ struct Scenario {
     /// Which trajectory to run over.
     source: Source,
     /// GNSS scheduling and fault model.
-    gnss: GnssDegradationConfig,
+    gnss: AidingConfig,
     /// Which estimator to drive.
     estimator: Estimator,
 }
@@ -271,11 +270,12 @@ struct Scenario {
 fn scenarios() -> Vec<Scenario> {
     let mut out = Vec::new();
 
-    let clean = || GnssDegradationConfig {
-        scheduler: GnssScheduler::PassThrough,
-        fault: GnssFaultModel::None,
-        seed: SEED,
-        ..Default::default()
+    let clean = || {
+        let mut built = AidingConfig::default();
+        built.scheduler = MeasurementScheduler::PassThrough;
+        built.fault = GnssFaultModel::None;
+        built.seed = SEED;
+        built
     };
 
     // Canonical reference: the configuration every other real-data row is read against.
@@ -296,14 +296,15 @@ fn scenarios() -> Vec<Scenario> {
             id: format!("real_sparse_5s__{}", estimator.key()),
             description: "test_data.csv, GNSS every 5 s, no fault".to_string(),
             source: Source::Real,
-            gnss: GnssDegradationConfig {
-                scheduler: GnssScheduler::FixedInterval {
+            gnss: {
+                let mut built = AidingConfig::default();
+                built.scheduler = MeasurementScheduler::FixedInterval {
                     interval_s: 5.0,
                     phase_s: 0.0,
-                },
-                fault: GnssFaultModel::None,
-                seed: SEED,
-                ..Default::default()
+                };
+                built.fault = GnssFaultModel::None;
+                built.seed = SEED;
+                built
             },
             estimator,
         });
@@ -316,15 +317,16 @@ fn scenarios() -> Vec<Scenario> {
         id: "real_outage_60s__eskf".to_string(),
         description: "test_data.csv, 120 s of GNSS then a 60 s outage, repeating".to_string(),
         source: Source::Real,
-        gnss: GnssDegradationConfig {
-            scheduler: GnssScheduler::DutyCycle {
+        gnss: {
+            let mut built = AidingConfig::default();
+            built.scheduler = MeasurementScheduler::DutyCycle {
                 on_s: 120.0,
                 off_s: 60.0,
                 start_phase_s: 0.0,
-            },
-            fault: GnssFaultModel::None,
-            seed: SEED,
-            ..Default::default()
+            };
+            built.fault = GnssFaultModel::None;
+            built.seed = SEED;
+            built
         },
         estimator: Estimator::Eskf,
     });
@@ -337,17 +339,18 @@ fn scenarios() -> Vec<Scenario> {
             description: "test_data.csv, GNSS every epoch, AR(1) position and velocity fault"
                 .to_string(),
             source: Source::Real,
-            gnss: GnssDegradationConfig {
-                scheduler: GnssScheduler::PassThrough,
-                fault: GnssFaultModel::Degraded {
+            gnss: {
+                let mut built = AidingConfig::default();
+                built.scheduler = MeasurementScheduler::PassThrough;
+                built.fault = GnssFaultModel::Degraded {
                     rho_pos: 0.98,
                     sigma_pos_m: 3.0,
                     rho_vel: 0.98,
                     sigma_vel_mps: 0.3,
                     r_scale: 1.0,
-                },
-                seed: SEED,
-                ..Default::default()
+                };
+                built.seed = SEED;
+                built
             },
             estimator,
         });
@@ -361,14 +364,15 @@ fn scenarios() -> Vec<Scenario> {
             description: "synthetic 300 s at 50 Hz, GNSS every 1 s, scored against exact truth"
                 .to_string(),
             source: Source::Synthetic,
-            gnss: GnssDegradationConfig {
-                scheduler: GnssScheduler::FixedInterval {
+            gnss: {
+                let mut built = AidingConfig::default();
+                built.scheduler = MeasurementScheduler::FixedInterval {
                     interval_s: 1.0,
                     phase_s: 0.0,
-                },
-                fault: GnssFaultModel::None,
-                seed: SEED,
-                ..Default::default()
+                };
+                built.fault = GnssFaultModel::None;
+                built.seed = SEED;
+                built
             },
             estimator,
         });
@@ -380,15 +384,16 @@ fn scenarios() -> Vec<Scenario> {
             id: format!("syn_outage_60s__{}", estimator.key()),
             description: "synthetic 300 s at 50 Hz, 60 s of GNSS then 60 s of outage".to_string(),
             source: Source::Synthetic,
-            gnss: GnssDegradationConfig {
-                scheduler: GnssScheduler::DutyCycle {
+            gnss: {
+                let mut built = AidingConfig::default();
+                built.scheduler = MeasurementScheduler::DutyCycle {
                     on_s: 60.0,
                     off_s: 60.0,
                     start_phase_s: 0.0,
-                },
-                fault: GnssFaultModel::None,
-                seed: SEED,
-                ..Default::default()
+                };
+                built.fault = GnssFaultModel::None;
+                built.seed = SEED;
+                built
             },
             estimator,
         });
@@ -442,40 +447,43 @@ fn baseline_path() -> PathBuf {
 /// timestamp of the event *before* the one it has already applied, so a solution carries one
 /// propagation step of along-track offset. At 50 m/s that is 1 m at 50 Hz and 5 m at 10 Hz,
 /// and the point of these rows is to resolve filter error of a few metres.
-const fn synthetic_config(duration_s: f64) -> SyntheticConfig {
-    SyntheticConfig {
-        output: String::new(),
-        initial_state: SyntheticInitialState {
-            latitude_deg: 40.0,
-            longitude_deg: -75.0,
-            altitude_m: 200.0,
-            // Off-axis, so both horizontal channels carry signal rather than one being zero.
-            velocity_north_mps: 40.0,
-            velocity_east_mps: 30.0,
-            velocity_down_mps: 0.0,
-            roll_deg: 0.0,
-            pitch_deg: 0.0,
-            yaw_deg: 36.869_897_645_844_02,
-            angular_velocity_x_dps: 0.0,
-            angular_velocity_y_dps: 0.0,
-            angular_velocity_z_dps: 0.0,
-            is_enu: false,
-        },
-        duration_s,
-        sample_rate_hz: 50.0,
-        imu_quality: IMUQuality::Consumer,
-        seed: SEED,
-        no_noise: false,
-        gnss_horizontal_noise_m: 3.0,
-        gnss_vertical_noise_m: 5.0,
-        baro_noise_std_pa: 30.0,
-        // A consumer magnetometer's own noise, and no hard iron -- the same values
-        // `SyntheticConfig`'s serde defaults carry, written out because this is a `const fn`
-        // and those are private. Zero hard iron is deliberate: it biases heading in a way no
-        // filter can observe, which would confound the yaw column #371 is read from.
-        mag_noise_std_ut: 0.5,
-        mag_hard_iron_std_ut: 0.0,
-    }
+fn synthetic_config(duration_s: f64) -> SyntheticConfig {
+    // Not a `const fn` any more: `SyntheticConfig` is `#[non_exhaustive]` as of the v1.0 API
+    // freeze, so it cannot be built from a struct literal outside its own crate, and
+    // `Default::default()` is not const.
+    let mut built = SyntheticConfig::default();
+    built.output = String::new();
+    built.initial_state = SyntheticInitialState {
+        latitude_deg: 40.0,
+        longitude_deg: -75.0,
+        altitude_m: 200.0,
+        // Off-axis, so both horizontal channels carry signal rather than one being zero.
+        velocity_north_mps: 40.0,
+        velocity_east_mps: 30.0,
+        velocity_down_mps: 0.0,
+        roll_deg: 0.0,
+        pitch_deg: 0.0,
+        yaw_deg: 36.869_897_645_844_02,
+        angular_velocity_x_dps: 0.0,
+        angular_velocity_y_dps: 0.0,
+        angular_velocity_z_dps: 0.0,
+        is_enu: false,
+    };
+    built.duration_s = duration_s;
+    built.sample_rate_hz = 50.0;
+    built.imu_quality = IMUQuality::Consumer;
+    built.seed = SEED;
+    built.no_noise = false;
+    built.gnss_horizontal_noise_m = 3.0;
+    built.gnss_vertical_noise_m = 5.0;
+    built.baro_noise_std_pa = 30.0;
+    // A consumer magnetometer's own noise, and no hard iron -- the same values
+    // `SyntheticConfig`'s serde defaults carry, written out because this used to be a
+    // `const fn` and those are private. Zero hard iron is deliberate: it biases heading in a
+    // way no filter can observe, which would confound the yaw column #371 is read from.
+    built.mag_noise_std_ut = 0.5;
+    built.mag_hard_iron_std_ut = 0.0;
+    built
 }
 
 /// The sensor records and reference truth a scenario is run over and scored against.
@@ -554,63 +562,89 @@ fn solve(scenario: &Scenario, trajectory: &Trajectory) -> Vec<NavigationResult> 
         return dead_reckoning(records, is_enu).expect("dead reckoning must run");
     }
 
-    let stream = build_event_stream(records, &scenario.gnss, is_enu)
+    // The gate measures the **shipped** configuration, so the three Kalman filters run with
+    // `estimate_baro_bias` on, as `ClosedLoopConfig::default()` does since the v1.0 freeze.
+    //
+    // The index has to be set here, before the stream is built, because that is where the
+    // barometer's measurement model is told which state to read -- and a filter that carries
+    // the state without the model pointing at it estimates nothing (#394). The barometric bias
+    // sits immediately after the IMU bias block, so it lands at `NAVIGATION_STATES`; the
+    // assertion in each arm below checks that against what the filter itself reports, so this
+    // is a derived constant rather than a guess.
+    let mut aiding = scenario.gnss.clone();
+    if matches!(
+        scenario.estimator,
+        Estimator::Ukf | Estimator::Ekf | Estimator::Eskf
+    ) {
+        aiding.baro_bias_index = Some(NAVIGATION_STATES);
+    }
+    let stream = build_event_stream(records, &aiding, is_enu)
         .expect("event stream construction must succeed");
     let first = &records[0];
 
     match scenario.estimator {
         Estimator::Ukf => {
-            let mut filter = initialize_ukf(
-                first,
-                UkfConfig {
-                    is_enu,
-                    ..UkfConfig::default()
-                },
-            )
+            let mut filter = initialize_ukf(first, {
+                let mut built = UkfConfig::default();
+                built.is_enu = is_enu;
+                built.estimate_baro_bias = true;
+                built
+            })
             .expect("UKF initialization");
+            assert_eq!(
+                filter.baro_bias_index(),
+                Some(NAVIGATION_STATES),
+                "the barometric bias moved; the index handed to the event stream above is stale"
+            );
             run_closed_loop(&mut filter, stream, None, None).expect("UKF closed loop")
         }
         Estimator::Ekf => {
-            let mut filter = initialize_ekf(
-                first,
-                EkfConfig {
-                    is_enu,
-                    ..EkfConfig::default()
-                },
-            )
+            let mut filter = initialize_ekf(first, {
+                let mut built = EkfConfig::default();
+                built.is_enu = is_enu;
+                built.estimate_baro_bias = true;
+                built
+            })
             .expect("EKF initialization");
+            assert_eq!(
+                filter.baro_bias_index(),
+                Some(NAVIGATION_STATES),
+                "the barometric bias moved; the index handed to the event stream above is stale"
+            );
             run_closed_loop(&mut filter, stream, None, None).expect("EKF closed loop")
         }
         Estimator::Eskf => {
-            let mut filter = initialize_eskf(
-                first,
-                EskfConfig {
-                    is_enu,
-                    ..EskfConfig::default()
-                },
-            )
+            let mut filter = initialize_eskf(first, {
+                let mut built = EskfConfig::default();
+                built.is_enu = is_enu;
+                built.estimate_baro_bias = true;
+                built
+            })
             .expect("ESKF initialization");
+            assert_eq!(
+                filter.baro_bias_index(),
+                Some(NAVIGATION_STATES),
+                "the barometric bias moved; the index handed to the event stream above is stale"
+            );
             run_closed_loop(&mut filter, stream, None, None).expect("ESKF closed loop")
         }
         Estimator::Rbpf => {
-            // Through the shared runner, not a hand-rolled loop: `GeoStateLayout::PARTICLE_NONE`
+            // Through the shared runner, not a hand-rolled loop: `ExtraStateLayout::PARTICLE_NONE`
             // now dispatches to the particle constructor inside `NavigationResult`'s four-tuple
             // `From`, which is what makes `run_closed_loop_with_geo` usable here.
-            let mut filter = RaoBlackwellizedParticleFilter::new(
-                nominal_state(first, is_enu),
-                RbpfConfig {
-                    num_particles: RBPF_PARTICLES,
-                    seed: SEED,
-                    ..RbpfConfig::default()
-                },
-            )
+            let mut filter = RaoBlackwellizedParticleFilter::new(nominal_state(first, is_enu), {
+                let mut built = RbpfConfig::default();
+                built.num_particles = RBPF_PARTICLES;
+                built.seed = SEED;
+                built
+            })
             .expect("RBPF construction");
             run_closed_loop_with_geo(
                 &mut filter,
                 stream,
                 None,
                 None,
-                GeoStateLayout::PARTICLE_NONE,
+                ExtraStateLayout::PARTICLE_NONE,
             )
             .expect("RBPF closed loop")
         }

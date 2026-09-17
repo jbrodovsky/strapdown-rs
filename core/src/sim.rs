@@ -50,7 +50,14 @@ use std::io::{self, Read, Write};
 use std::path::Path;
 use std::time::{Duration as StdDuration, Instant};
 
-use anyhow::{Result, bail};
+use anyhow::Result;
+// `bail!` survives in exactly two places, both `#[cfg(feature = "netcdf")]`: the empty-record
+// guards in `to_netcdf`. The v1.0 freeze moved the compute layer -- the two runners and the two
+// monitors -- onto `StrapdownError`, leaving anyhow where `core/src/error.rs` says it belongs,
+// at file I/O. So the import has to carry the same gate as its only users, or a
+// `--no-default-features` build fails on `unused_imports` under `-D warnings`.
+#[cfg(feature = "netcdf")]
+use anyhow::bail;
 
 use crate::StrapdownError;
 use chrono::{DateTime, Datelike, Duration, Utc};
@@ -64,7 +71,7 @@ use crate::NavigationFilter;
 use crate::earth::{METERS_TO_DEGREES, METERS_TO_RADIANS, principal_radii};
 use crate::gating::{GateRecovery, InnovationGate};
 use crate::kalman::{InitialState, UnscentedKalmanFilter};
-use crate::messages::{Event, EventStream, GnssFaultModel, GnssScheduler};
+use crate::messages::{Event, EventStream, GnssFaultModel, MeasurementScheduler};
 
 use crate::{IMUData, ImuSample, StrapdownState, mechanize};
 use health::HealthMonitor;
@@ -1219,7 +1226,8 @@ pub struct NEDCovariance {
     /// Variance of the gyroscope z-axis bias estimate.
     pub gyro_bias_z_cov: f64,
 }
-/// Where a filter carries its geophysical map-bias states, for labelling the solution.
+/// Where a filter carries its extra states -- geophysical map biases, a barometric bias, or
+/// both -- for labelling the solution.
 ///
 /// A state vector cannot describe this on its own: a 16-element state is gravity-only or
 /// magnetic-only depending on which maps the run was given, and reading the wrong label off it
@@ -1232,23 +1240,23 @@ pub struct NEDCovariance {
 /// the dependency edge, which cannot name that type. `strapdown-sim` builds one from the other
 /// so there is a single source of truth for the placement.
 ///
-/// [`GeoStateLayout::NONE`] is the ordinary, non-geophysical case and is what
+/// [`ExtraStateLayout::NONE`] is the ordinary, non-geophysical case and is what
 /// [`run_closed_loop`] uses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct GeoStateLayout {
+pub struct ExtraStateLayout {
     state_dim: usize,
     gravity_index: Option<usize>,
     magnetic_index: Option<usize>,
     baro_index: Option<usize>,
 }
 
-impl Default for GeoStateLayout {
+impl Default for ExtraStateLayout {
     fn default() -> Self {
         Self::NONE
     }
 }
 
-impl GeoStateLayout {
+impl ExtraStateLayout {
     /// No geophysical states: the fifteen-element solution every other path produces.
     pub const NONE: Self = Self {
         state_dim: NAVIGATION_STATES,
@@ -1297,10 +1305,9 @@ impl GeoStateLayout {
     /// A builder rather than a fourth parameter on [`Self::new`], so the geophysical callers --
     /// which are every existing one -- do not have to say "no barometer" to keep compiling.
     ///
-    /// The barometric bias is not a map bias and this type's name is now narrower than what it
-    /// holds: it is the layout of *every* state past the navigation block, whatever put them
-    /// there. Renaming it belongs with the other two deferred renames on the 1.0 API-freeze
-    /// list, not in a change that adds a state.
+    /// The barometric bias is not a map bias, which is why this type is called
+    /// `ExtraStateLayout` rather than `GeoStateLayout` as of the v1.0 freeze: it is the layout
+    /// of *every* state past the navigation block, whatever put them there.
     #[must_use]
     pub const fn with_baro_bias(self, index: usize) -> Self {
         Self {
@@ -1450,6 +1457,7 @@ const fn none_if_nan(value: f64) -> Option<f64> {
     reason = "the only `unsafe` here is `Mmap::map` on a file handle; it relies on no invariant of this record"
 )]
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct NavigationResult {
     /// Timestamp corresponding to the state
     pub timestamp: DateTime<Utc>,
@@ -1457,7 +1465,7 @@ pub struct NavigationResult {
     /// Latitude in **degrees** (WGS84).
     ///
     /// Every constructor converts on the way in -- see the `state[0].to_degrees()` in the
-    /// `From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>, GeoStateLayout)>` impl below --
+    /// `From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>, ExtraStateLayout)>` impl below --
     /// while [`Self::latitude_cov`] is the raw filter variance and stays in rad^2. The two
     /// fields are deliberately in different units; anything scoring a position error against
     /// its covariance has to convert the error to radians rather than the variance to degrees.
@@ -2388,13 +2396,13 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>)> for NavigationResult {
     /// assembly and the integration tests for no reachable failure.
     ///
     /// A filter carrying geophysical bias states is longer than 15 and must go through the
-    /// [`GeoStateLayout`] form below, which knows what those extra states are; this one would
+    /// [`ExtraStateLayout`] form below, which knows what those extra states are; this one would
     /// otherwise reject it. That was the regression: the geophysical closed loop built a 16-state filter
     /// and died here on its first result, for every filter and every map.
     fn from(
         (timestamp, state, covariance): (&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>),
     ) -> Self {
-        Self::from((timestamp, state, covariance, GeoStateLayout::NONE))
+        Self::from((timestamp, state, covariance, ExtraStateLayout::NONE))
     }
 }
 
@@ -2403,11 +2411,11 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>)> for NavigationResult {
 ///
 /// The layout has to be supplied because the state vector cannot describe itself: a
 /// 16-element state is gravity-only or magnetic-only depending on the run's flags. See
-/// [`GeoStateLayout`].
+/// [`ExtraStateLayout`].
 ///
 /// A layout narrower than [`NAVIGATION_STATES`] is a particle layout and is forwarded to
 /// [`NavigationResult::from_particle_filter_with_geo`], which is what lets
-/// [`run_closed_loop_with_geo`] drive a particle filter at [`GeoStateLayout::PARTICLE_NONE`].
+/// [`run_closed_loop_with_geo`] drive a particle filter at [`ExtraStateLayout::PARTICLE_NONE`].
 ///
 /// That is the no-extra-states particle path and only that path. A particle layout carrying
 /// map biases is ten or eleven wide, while the runner reads its estimate through
@@ -2417,7 +2425,14 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>)> for NavigationResult {
 /// Such a layout still reaches the width assertion in the particle constructor and fails it,
 /// by design rather than by running off the end of the vector. Geophysical particle runs
 /// therefore keep their own event loop.
-impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>, GeoStateLayout)> for NavigationResult {
+impl
+    From<(
+        &DateTime<Utc>,
+        &DVector<f64>,
+        &DMatrix<f64>,
+        ExtraStateLayout,
+    )> for NavigationResult
+{
     /// # Panics
     /// If the state length or covariance shape disagrees with `layout.state_dim()`, or if a
     /// declared bias index falls outside the state. Same reasoning as the three-tuple form:
@@ -2428,13 +2443,13 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>, GeoStateLayout)> for Na
             &DateTime<Utc>,
             &DVector<f64>,
             &DMatrix<f64>,
-            GeoStateLayout,
+            ExtraStateLayout,
         ),
     ) -> Self {
         let expected = layout.state_dim();
         // A layout narrower than the fifteen Kalman states describes a particle estimate,
         // which carries no IMU-bias block. Without this dispatch the width assertion below
-        // passes for `GeoStateLayout::PARTICLE_NONE` -- nine states, nine given -- and the
+        // passes for `ExtraStateLayout::PARTICLE_NONE` -- nine states, nine given -- and the
         // bias reads at `state[9]..state[14]` then index off the end. That made
         // `run_closed_loop_with_geo` unusable for the plain particle layout, which is why
         // every particle event loop in this workspace is a hand-rolled copy of the others.
@@ -2557,7 +2572,7 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>, GeoStateLayout)> for Na
 ///
 /// A filter carrying *geophysical* bias states has them past index 14, and this conversion
 /// leaves [`NavigationResult`]'s two map columns `None` rather than reading them: it is handed
-/// a filter, not a [`GeoStateLayout`], and the state vector cannot say which of its extra
+/// a filter, not a [`ExtraStateLayout`], and the state vector cannot say which of its extra
 /// states is gravity and which is magnetic. Geophysical runs therefore go through
 /// [`run_closed_loop_with_geo`], which carries the layout.
 ///
@@ -2621,7 +2636,7 @@ impl From<(&DateTime<Utc>, &UnscentedKalmanFilter)> for NavigationResult {
 ///
 /// A filter carrying *geophysical* bias states has them past index 14, and this conversion
 /// leaves [`NavigationResult`]'s two map columns `None` rather than reading them: it is handed
-/// a filter, not a [`GeoStateLayout`], and the state vector cannot say which of its extra
+/// a filter, not a [`ExtraStateLayout`], and the state vector cannot say which of its extra
 /// states is gravity and which is magnetic. Geophysical runs therefore go through
 /// [`run_closed_loop_with_geo`], which carries the layout.
 ///
@@ -2798,9 +2813,9 @@ impl NavigationResult {
         mean: &DVector<f64>,
         cov: &DMatrix<f64>,
     ) -> Self {
-        // Not [`GeoStateLayout::NONE`]: that one is fifteen states wide, because it describes
+        // Not [`ExtraStateLayout::NONE`]: that one is fifteen states wide, because it describes
         // the Kalman filters' unaided shape. An unaided particle estimate is nine.
-        Self::from_particle_filter_with_geo(timestamp, mean, cov, GeoStateLayout::PARTICLE_NONE)
+        Self::from_particle_filter_with_geo(timestamp, mean, cov, ExtraStateLayout::PARTICLE_NONE)
     }
 
     /// [`Self::from_particle_filter`] for a cloud that carries geophysical bias states.
@@ -2834,7 +2849,7 @@ impl NavigationResult {
         timestamp: &DateTime<Utc>,
         mean: &DVector<f64>,
         cov: &DMatrix<f64>,
-        layout: GeoStateLayout,
+        layout: ExtraStateLayout,
     ) -> Self {
         let expected = layout.state_dim();
         assert_eq!(
@@ -3159,19 +3174,40 @@ pub fn run_closed_loop<F: NavigationFilter>(
     stream: EventStream,
     health_limits: Option<HealthLimits>,
     execution_limits: Option<ExecutionLimits>,
-) -> anyhow::Result<Vec<NavigationResult>> {
-    // `GeoStateLayout::NONE` is fifteen wide, and the conversion into `NavigationResult`
+) -> Result<Vec<NavigationResult>, StrapdownError> {
+    // `ExtraStateLayout::NONE` is fifteen wide, and the conversion into `NavigationResult`
     // asserts the state matches it. A filter estimating a barometric bias is sixteen, so
     // taking the layout from the filter is what keeps this -- the documented runner -- working
     // when `estimate_baro_bias` is on, instead of panicking deep in a `From` impl (#372).
     // Only the barometric bias is reachable this way: map biases still need
     // `run_closed_loop_with_geo`, because the filter cannot say which of its extra states is
     // a gravity anomaly and which a magnetic one.
-    let layout = match filter.baro_bias_index() {
-        Some(index) => {
-            GeoStateLayout::new(filter.get_estimate().len(), None, None).with_baro_bias(index)
+    let layout = if let Some(index) = filter.baro_bias_index() {
+        ExtraStateLayout::new(filter.get_estimate().len(), None, None).with_baro_bias(index)
+    } else {
+        // Narrower than the fifteen Kalman states means no IMU-bias block, and that width is
+        // fully describable without knowing what any extra state *means* -- there are none.
+        // A nine-state filter is publicly constructible and documented: `EkfConfig::use_biases`
+        // is a `pub` field, `initialize_ekf` honours it, and `test_initialize_ekf_default_9state`
+        // asserts the nine-state result. Taking `ExtraStateLayout::NONE` for it hardcoded
+        // fifteen and panicked on the initial row with "State vector must have 15 elements;
+        // got 9", before a single event was processed. `From` routes a sub-fifteen layout to
+        // the particle-shaped conversion, which is exactly the right shape here.
+        //
+        // *Wider* than fifteen with no barometric-bias index is the opposite case and must
+        // keep failing: those extra states are geophysical, the filter cannot say which is a
+        // gravity anomaly and which a magnetic one, and writing them out unlabelled would put
+        // a milligal figure in a nanotesla column. `run_closed_loop_with_geo` is the entry
+        // point that takes the layout from the caller. Widening the derivation to cover this
+        // case turns a loud refusal into a silently mislabelled solution, which
+        // `plain_closed_loop_still_rejects_a_geophysical_filter` exists to prevent -- and did,
+        // when this fix was first written too broadly.
+        let width = filter.get_estimate().len();
+        if width < NAVIGATION_STATES {
+            ExtraStateLayout::new(width, None, None)
+        } else {
+            ExtraStateLayout::NONE
         }
-        None => GeoStateLayout::NONE,
     };
     run_closed_loop_with_geo(filter, stream, health_limits, execution_limits, layout)
 }
@@ -3202,8 +3238,8 @@ pub fn run_closed_loop_with_geo<F: NavigationFilter>(
     stream: EventStream,
     health_limits: Option<HealthLimits>,
     execution_limits: Option<ExecutionLimits>,
-    layout: GeoStateLayout,
-) -> anyhow::Result<Vec<NavigationResult>> {
+    layout: ExtraStateLayout,
+) -> Result<Vec<NavigationResult>, StrapdownError> {
     let start_time = stream.start_time;
     let mut results: Vec<NavigationResult> = Vec::with_capacity(stream.events.len());
     let total = stream.events.len();
@@ -3314,7 +3350,7 @@ pub fn run_closed_loop_with_geo<F: NavigationFilter>(
                 let cov = filter.get_certainty();
                 if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
                     log::error!("Health fail after propagate at {ts} (#{i}): {e}");
-                    bail!(e);
+                    return Err(e);
                 }
             }
             Event::Measurement { meas, .. } => {
@@ -3332,17 +3368,18 @@ pub fn run_closed_loop_with_geo<F: NavigationFilter>(
                         consecutive_rejections += 1;
                         log::warn!("Measurement rejected at {ts} (#{i}): {e}");
                         if consecutive_rejections > MAX_CONSECUTIVE_REJECTIONS {
-                            bail!(
-                                "aborting: {consecutive_rejections} consecutive measurements \
-                                 rejected, most recently at {ts} (#{i}): {e}"
-                            );
+                            return Err(StrapdownError::FilterDiverged {
+                                consecutive_rejections,
+                                limit: MAX_CONSECUTIVE_REJECTIONS,
+                                detail: format!("most recently at {ts} (#{i}): {e}"),
+                            });
                         }
                         // State is unchanged, so the health check has nothing new to judge.
                         continue;
                     }
                     Err(e) => {
                         log::error!("Filter update failed at {ts} (#{i}): {e}");
-                        bail!(e);
+                        return Err(e);
                     }
                 };
                 if !outcome.accepted {
@@ -3370,7 +3407,7 @@ pub fn run_closed_loop_with_geo<F: NavigationFilter>(
                 // reject every fix of a diverged run without ever saying so.
                 if let Err(e) = monitor.check(mean.as_slice(), &cov, Some(outcome.nis)) {
                     log::error!("Health fail after measurement update at {ts} (#{i}): {e}");
-                    bail!(e);
+                    return Err(e);
                 }
             }
         }
@@ -3491,6 +3528,7 @@ pub fn print_ukf(ukf: &UnscentedKalmanFilter, record: &TestDataRecord) {
 /// This struct groups together optional parameters for initializing an Unscented Kalman Filter,
 /// reducing the number of function arguments and making it easier to specify custom configurations.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct UkfConfig {
     /// Optional vector of f64 representing the initial attitude covariance (default is a small value).
     pub attitude_covariance: Option<Vec<f64>>,
@@ -3730,7 +3768,7 @@ pub fn initialize_ukf(
     );
     // This function sized the state, so it is the one thing that knows where the bias landed.
     // Telling the filter is what lets `run_closed_loop` label the column without being handed
-    // a `GeoStateLayout` (#372).
+    // a `ExtraStateLayout` (#372).
     filter.set_baro_bias_index(baro_bias_index)?;
     Ok(filter)
 }
@@ -3740,8 +3778,8 @@ impl UkfConfig {
     ///
     /// One source of truth for the index, because three places need it and they must agree:
     /// the filter's state layout, the
-    /// [`GnssDegradationConfig::baro_bias_index`](crate::messages::GnssDegradationConfig)
-    /// that tells the measurement which state to read, and the [`GeoStateLayout`] that labels
+    /// [`AidingConfig::baro_bias_index`](crate::messages::AidingConfig)
+    /// that tells the measurement which state to read, and the [`ExtraStateLayout`] that labels
     /// it on the way out. A caller computing `15 + n` by hand in each of those is how the two
     /// drift apart, and a measurement pointed at the wrong state reads a *map* bias as a
     /// barometric one -- which is the hazard `strapdown-geonav`'s `BiasState` documentation
@@ -3767,6 +3805,7 @@ impl UkfConfig {
 /// give `use_biases: false` and silently demote every caller from the 15-state EKF to the
 /// 9-state one -- a retune disguised as a struct literal.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct EkfConfig {
     /// Optional initial attitude covariance (3 elements, rad^2).
     pub attitude_covariance: Option<Vec<f64>>,
@@ -4039,6 +4078,7 @@ impl EkfConfig {
 /// [`Self::process_noise_diagonal`] or `imu_biases_covariance` handed in alongside it is
 /// sized to sixteen and **not** fifteen; read [`Self::baro_bias_index`] for where it lands.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct EskfConfig {
     /// Optional initial attitude error covariance (3 elements, rad^2).
     pub attitude_covariance: Option<Vec<f64>>,
@@ -4136,8 +4176,9 @@ impl EskfConfig {
 ///     // ... other fields ...
 ///     ..Default::default()
 /// };
-/// // `EskfConfig::default()` is NED; pass `EskfConfig { is_enu: true, ..Default::default() }`
-/// // for a Sensor Logger export.
+/// // `EskfConfig::default()` is NED. For a Sensor Logger export, take the default and set
+/// // `is_enu = true` -- `EskfConfig` is `#[non_exhaustive]`, so a struct literal will not
+/// // compile outside this crate.
 /// let eskf = initialize_eskf(&initial_pose, EskfConfig::default()).unwrap();
 /// ```
 pub fn initialize_eskf(
@@ -4184,16 +4225,20 @@ pub fn initialize_eskf(
     };
 
     // Build IMU biases
-    let imu_biases = match imu_biases {
+    // `try_into` rather than `require_config` + a `Vec`: `ErrorStateKalmanFilter::new` takes
+    // `&[f64; 6]`, so the length stops being a checked precondition and becomes the type. The
+    // conversion is the check.
+    let imu_biases: [f64; 6] = match imu_biases {
         Some(biases) => {
-            require_config(
-                biases.len() == 6,
-                "imu_biases",
-                format!("expected 6 elements, got {}", biases.len()),
-            )?;
+            let length = biases.len();
             biases
+                .try_into()
+                .map_err(|_| StrapdownError::InvalidConfiguration {
+                    field: "imu_biases",
+                    reason: format!("expected 6 elements, got {length}"),
+                })?
         }
-        None => vec![0.0; 6],
+        None => [0.0; 6],
     };
 
     // Build error covariance diagonal.
@@ -4349,7 +4394,7 @@ pub fn print_sim_status<F: NavigationFilter>(filter: &F) {
 pub mod execution {
     use super::{
         DEFAULT_MAX_NO_PROGRESS_S, DEFAULT_MAX_WALL_CLOCK_RATIO, DEFAULT_MAX_WALL_CLOCK_S, Debug,
-        Deserialize, Instant, Result, Serialize, StdDuration, bail, f64,
+        Deserialize, Instant, Serialize, StdDuration, StrapdownError, f64,
     };
 
     /// Configuration for execution timeout limits in simulations.
@@ -4476,7 +4521,8 @@ pub mod execution {
         /// # Returns
         ///
         /// * `Ok(())` if execution is within limits
-        /// * `Err(...)` with a descriptive message if any timeout has been exceeded
+        /// * [`StrapdownError::Timeout`] naming which budget was exceeded, by how much, and
+        ///   the `context` string, if any timeout has been exceeded
         ///
         /// # Example
         ///
@@ -4489,32 +4535,36 @@ pub mod execution {
         /// monitor.check("data processing")?;
         /// // ... do work ...
         /// monitor.mark_progress();
-        /// # Ok::<(), anyhow::Error>(())
+        /// # Ok::<(), strapdown::error::StrapdownError>(())
         /// ```
         /// # Errors
-        /// If the wall-clock budget or the no-progress budget has been exceeded.
-        pub fn check(&self, context: &str) -> Result<()> {
+        /// [`StrapdownError::Timeout`] if the wall-clock budget or the no-progress budget has
+        /// been exceeded.
+        pub fn check(&self, context: &str) -> Result<(), StrapdownError> {
             self.check_at(context, Instant::now())
         }
 
         /// [`Self::check`] against an explicit instant. See [`Self::new_at`].
-        pub(crate) fn check_at(&self, context: &str, now: Instant) -> Result<()> {
+        pub(crate) fn check_at(&self, context: &str, now: Instant) -> Result<(), StrapdownError> {
             if let Some(max_wall_clock) = self.max_wall_clock
                 && now.duration_since(self.start_time) > max_wall_clock
             {
-                bail!(
-                    "Execution timeout ({context}): exceeded wall-clock limit of {:.2} s",
-                    max_wall_clock.as_secs_f64()
-                );
+                return Err(StrapdownError::Timeout {
+                    context: context.to_owned(),
+                    what: "wall clock",
+                    elapsed_s: now.duration_since(self.start_time).as_secs_f64(),
+                    limit_s: max_wall_clock.as_secs_f64(),
+                });
             }
             if let Some(max_no_progress) = self.max_no_progress {
                 let since_progress = now.duration_since(self.last_progress);
                 if since_progress > max_no_progress {
-                    bail!(
-                        "Execution timeout ({context}): no progress for {:.2} s (limit {:.2} s)",
-                        since_progress.as_secs_f64(),
-                        max_no_progress.as_secs_f64()
-                    );
+                    return Err(StrapdownError::Timeout {
+                        context: context.to_owned(),
+                        what: "time without progress",
+                        elapsed_s: since_progress.as_secs_f64(),
+                        limit_s: max_no_progress.as_secs_f64(),
+                    });
                 }
             }
             Ok(())
@@ -4572,7 +4622,7 @@ pub mod execution {
 /// This is the circuit breaker behind the per-update gating in [`crate::gating`]: gating rejects
 /// individual measurements, the monitor gives up on the whole trajectory.
 pub mod health {
-    use super::{Debug, Result, bail, f64};
+    use super::{Debug, StrapdownError, f64};
 
     /// Bounds a filter estimate must stay inside for [`HealthMonitor`] to consider it healthy.
     ///
@@ -4649,25 +4699,52 @@ pub mod health {
             }
         }
 
+        /// Narrowest state [`HealthMonitor::check`] can read: three position and three
+        /// velocity components. Every filter in this crate is at least nine wide, so this is a
+        /// guard against a caller's mistake rather than a limit anything here runs into.
+        pub(crate) const MINIMUM_MONITORED_STATE: usize = 6;
+
         /// Call after **every event** (predict or update). Provide the optional NIS whenever the
         /// event was a measurement update -- of any sensor, not only GNSS.
         ///
         /// # Errors
-        /// If the state has left the configured physical bounds, the covariance diagonal has
-        /// grown past its limit, or a supplied NIS exceeds its gate -- i.e. the filter has
-        /// diverged and later results would be meaningless.
+        /// [`StrapdownError::DimensionMismatch`] if the state is shorter than
+        /// `MINIMUM_MONITORED_STATE` (6): the monitor reads position and velocity, so a state
+        /// that cannot supply them cannot be checked at all, and silently passing one would
+        /// report a healthy filter it never looked at.
+        ///
+        /// Otherwise, if the state has left the configured physical bounds, the covariance
+        /// diagonal has grown past its limit, or a supplied NIS exceeds its gate -- i.e. the
+        /// filter has diverged and later results would be meaningless.
         pub fn check(
             &mut self,
             x: &[f64], // your mean_state slice
             p: &nalgebra::DMatrix<f64>,
             maybe_nis_pos: Option<f64>,
-        ) -> Result<()> {
+        ) -> Result<(), StrapdownError> {
+            // 0) Width. Everything below reads `x[0..=5]`, and `x` is a slice rather than a
+            // fixed-size array because a state is 9, 15 or 16 wide depending on the filter.
+            // Without this guard a short slice panics here, inside a `pub fn`, in a crate that
+            // denies `panic`/`unwrap`/`expect` in library code -- and clippy does not flag
+            // slice indexing, so nothing else catches it.
+            if x.len() < Self::MINIMUM_MONITORED_STATE {
+                return Err(StrapdownError::DimensionMismatch {
+                    what: "health-monitored state (position and velocity)",
+                    expected: Self::MINIMUM_MONITORED_STATE,
+                    got: x.len(),
+                });
+            }
+
             // 1) Finite checks
             if !x.iter().all(|v| v.is_finite()) {
-                bail!("Non-finite state detected");
+                return Err(StrapdownError::NonFinite {
+                    what: "filter state",
+                });
             }
             if !p.iter().all(|v| v.is_finite()) {
-                bail!("Non-finite covariance detected");
+                return Err(StrapdownError::NonFinite {
+                    what: "filter covariance",
+                });
             }
 
             // 2) Basic bounds (lat, lon, alt)
@@ -4675,13 +4752,28 @@ pub mod health {
             let lon = x[1];
             let alt = x[2];
             if lat < self.limits.lat_rad.0 || lat > self.limits.lat_rad.1 {
-                bail!("Latitude out of range: {lat}");
+                return Err(StrapdownError::OutOfRange {
+                    what: "latitude",
+                    value: lat,
+                    min: self.limits.lat_rad.0,
+                    max: self.limits.lat_rad.1,
+                });
             }
             if lon < self.limits.lon_rad.0 || lon > self.limits.lon_rad.1 {
-                bail!("Longitude out of range: {lon}");
+                return Err(StrapdownError::OutOfRange {
+                    what: "longitude",
+                    value: lon,
+                    min: self.limits.lon_rad.0,
+                    max: self.limits.lon_rad.1,
+                });
             }
             if alt < self.limits.alt_m.0 || alt > self.limits.alt_m.1 {
-                bail!("Altitude out of range: {alt} m");
+                return Err(StrapdownError::OutOfRange {
+                    what: "altitude",
+                    value: alt,
+                    min: self.limits.alt_m.0,
+                    max: self.limits.alt_m.1,
+                });
             }
 
             // 3) Speed sanity (assumes NED velocities at indices 3..=5, true for every
@@ -4692,7 +4784,12 @@ pub mod health {
             // "no speed to check" and silently wave the divergence through.
             let speed = x[3].hypot(x[4]).hypot(x[5]);
             if speed > self.limits.speed_mps_max {
-                bail!("Speed exceeded: {speed:.2} m/s");
+                return Err(StrapdownError::OutOfRange {
+                    what: "speed",
+                    value: speed,
+                    min: 0.0,
+                    max: self.limits.speed_mps_max,
+                });
             }
 
             // 4) Covariance sanity: diagonals only. A condition-number check was considered
@@ -4706,28 +4803,39 @@ pub mod health {
             // matrix inverse, which this function cannot afford to run on every
             // predict/update.
             for i in 0..p.nrows().min(p.ncols()) {
-                if p[(i, i)].is_sign_negative() {
-                    bail!("Negative variance on diagonal: idx={i}, val={}", p[(i, i)]);
-                }
-                if p[(i, i)] > self.limits.cov_diag_max {
-                    bail!("Variance too large on diagonal idx={i}: {}", p[(i, i)]);
+                if p[(i, i)].is_sign_negative() || p[(i, i)] > self.limits.cov_diag_max {
+                    return Err(StrapdownError::CovarianceDiagonal {
+                        index: i,
+                        value: p[(i, i)],
+                        min: 0.0,
+                        max: self.limits.cov_diag_max,
+                    });
                 }
             }
 
             // 5) GNSS gating streak (if a NIS was computed at update time)
             if let Some(nis_pos) = maybe_nis_pos {
-                if !nis_pos.is_finite() || nis_pos.is_sign_negative() {
-                    bail!("Invalid NIS value: {nis_pos}");
+                if !nis_pos.is_finite() {
+                    return Err(StrapdownError::NonFinite {
+                        what: "position NIS",
+                    });
+                }
+                if nis_pos.is_sign_negative() {
+                    return Err(StrapdownError::OutOfRange {
+                        what: "position NIS",
+                        value: nis_pos,
+                        min: 0.0,
+                        max: f64::INFINITY,
+                    });
                 }
                 if nis_pos > self.limits.nis_pos_max {
                     self.consec_nis_pos_fail += 1;
                     if self.consec_nis_pos_fail >= self.limits.nis_pos_consec_fail {
-                        bail!(
-                            "Consecutive NIS exceedances: {} (> {}), last NIS={}",
-                            self.consec_nis_pos_fail,
-                            self.limits.nis_pos_consec_fail,
-                            nis_pos
-                        );
+                        return Err(StrapdownError::FilterDiverged {
+                            consecutive_rejections: self.consec_nis_pos_fail,
+                            limit: self.limits.nis_pos_consec_fail,
+                            detail: format!("last NIS {nis_pos}"),
+                        });
                     }
                 } else {
                     self.consec_nis_pos_fail = 0;
@@ -4745,11 +4853,11 @@ pub mod health {
 #[derive(Copy, Clone, Debug)]
 #[cfg_attr(feature = "clap", derive(ValueEnum))]
 pub enum SchedKind {
-    /// Deliver every GNSS fix unchanged ([`GnssScheduler::PassThrough`]).
+    /// Deliver every GNSS fix unchanged ([`MeasurementScheduler::PassThrough`]).
     Passthrough,
-    /// Deliver a fix every `interval_s` seconds ([`GnssScheduler::FixedInterval`]).
+    /// Deliver a fix every `interval_s` seconds ([`MeasurementScheduler::FixedInterval`]).
     Fixed,
-    /// Alternate `on_s`/`off_s` availability windows ([`GnssScheduler::DutyCycle`]).
+    /// Alternate `on_s`/`off_s` availability windows ([`MeasurementScheduler::DutyCycle`]).
     Duty,
 }
 
@@ -4852,14 +4960,14 @@ pub struct FaultArgs {
 }
 
 /// Build GNSS scheduler from CLI arguments
-pub const fn build_scheduler(a: &SchedulerArgs) -> GnssScheduler {
+pub const fn build_scheduler(a: &SchedulerArgs) -> MeasurementScheduler {
     match a.sched {
-        SchedKind::Passthrough => GnssScheduler::PassThrough,
-        SchedKind::Fixed => GnssScheduler::FixedInterval {
+        SchedKind::Passthrough => MeasurementScheduler::PassThrough,
+        SchedKind::Fixed => MeasurementScheduler::FixedInterval {
             interval_s: a.interval_s,
             phase_s: a.phase_s,
         },
-        SchedKind::Duty => GnssScheduler::DutyCycle {
+        SchedKind::Duty => MeasurementScheduler::DutyCycle {
             on_s: a.on_s,
             off_s: a.off_s,
             start_phase_s: a.duty_phase_s,
@@ -4959,10 +5067,18 @@ pub enum ParticleFilterType {
 }
 
 /// Closed-loop specific configuration
+///
+/// `#[serde(default)]` sits on the **container**, not on the individual fields, so every field
+/// a config file omits is filled from [`ClosedLoopConfig::default()`] below. A field-level
+/// `#[serde(default)]` would instead fill from the *field type's* `Default` -- `false` for a
+/// `bool` -- which is how `estimate_baro_bias` came to read `true` through the Rust API and
+/// `false` through a `[closed_loop]` section that did not mention it. `core/tests/
+/// config_serde_defaults.rs` holds the two forms to the same answer.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+#[non_exhaustive]
 pub struct ClosedLoopConfig {
     /// Filter type; defaults to the 15-state ESKF.
-    #[serde(default)]
     pub filter: FilterType,
     /// UKF alpha parameter (spread of sigma points)
     #[serde(default = "default_ukf_alpha")]
@@ -5012,14 +5128,21 @@ pub struct ClosedLoopConfig {
     /// an ideal of 0.9973, removes a systematic 0.4 m offset and improves vertical RMSE by
     /// 45%, in all three Kalman filters.
     ///
-    /// `false` by default, because it widens the state vector by one and that is a default to
-    /// change at the 1.0 API freeze rather than alongside the state itself. Turning it on also
-    /// tells the barometer model which state to read; see
-    /// [`GnssDegradationConfig::baro_bias_index`](crate::messages::GnssDegradationConfig),
+    /// **`true` by default as of the 1.0 API freeze**, which is the change the previous
+    /// default's note promised. The state was held off by default when it landed so that it
+    /// arrived separately from the decision to switch it on; the measurements above are that
+    /// decision, and no measured case got worse -- position NEES moves *toward* its ideal of
+    /// 3.0 on synthetic data, where the truth is exact.
+    ///
+    /// Turning it on also tells the barometer model which state to read; see
+    /// [`AidingConfig::baro_bias_index`](crate::messages::AidingConfig),
     /// which `strapdown-sim` derives from this rather than making it a second thing to set.
+    /// A library caller building a filter directly must set that index themselves: without it
+    /// the barometer observes nothing and the extra state sits at its prior, which is why the
+    /// `UkfConfig`/`EkfConfig`/`EskfConfig` defaults stay `false` -- flipping those would hand
+    /// a direct caller a sixteenth state that nothing reads.
     ///
     /// Not available on the geophysical path, whose extra states are map biases.
-    #[serde(default)]
     pub estimate_baro_bias: bool,
 }
 
@@ -5032,13 +5155,14 @@ impl Default for ClosedLoopConfig {
             ukf_kappa: default_ukf_kappa(),
             innovation_gate: None,
             gate_recovery: GateRecovery::default(),
-            estimate_baro_bias: false,
+            estimate_baro_bias: true,
         }
     }
 }
 
 /// Particle filter configuration (RBPF defaults).
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ParticleFilterConfig {
     /// Number of particles in the filter.
     #[serde(default = "default_num_particles")]
@@ -5224,6 +5348,7 @@ impl Default for LoggingConfig {
 
 /// Unified simulation configuration supporting all modes
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct SimulationConfig {
     /// Input CSV file path (relative or absolute)
     #[serde(default = "default_input")]
@@ -5266,9 +5391,17 @@ pub struct SimulationConfig {
     /// Geophysical measurement configuration (optional, requires --features geonav)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub geophysical: Option<GeophysicalConfig>,
-    /// GNSS degradation configuration (scheduler + fault model)
-    #[serde(default)]
-    pub gnss_degradation: crate::messages::GnssDegradationConfig,
+    /// Aiding-measurement configuration: the GNSS, barometer and magnetometer schedules, the
+    /// GNSS fault model, and the barometer's noise and bias-state index.
+    ///
+    /// `#[serde(alias = "gnss_degradation")]` keeps every configuration file written before
+    /// this field was renamed parsing unchanged. The old name described the type when it
+    /// scheduled GNSS alone; it now carries `baro_scheduler`, `magnetometer_scheduler`,
+    /// `baro_noise_std_m` and `baro_bias_index` as well, and only GNSS has a fault model at
+    /// all. The alias is load-bearing -- the fifteen recipes under `conf/` all spell the old
+    /// name -- so do not drop it.
+    #[serde(default, alias = "gnss_degradation")]
+    pub aiding: crate::messages::AidingConfig,
     /// Synthetic trajectory configuration (only used if mode is Synthetic)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub synthetic: Option<SyntheticConfig>,
@@ -5301,7 +5434,7 @@ impl Default for SimulationConfig {
             closed_loop: Some(ClosedLoopConfig::default()),
             particle_filter: None,
             geophysical: None,
-            gnss_degradation: crate::messages::GnssDegradationConfig::default(),
+            aiding: crate::messages::AidingConfig::default(),
             synthetic: None,
         }
     }
@@ -5459,13 +5592,21 @@ pub enum GeoResolution {
 
 /// Geophysical measurement configuration for geonav simulations
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct GeophysicalConfig {
     // Gravity measurement configuration (all optional)
     /// Gravity map resolution (None = gravity not used)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gravity_resolution: Option<GeoResolution>,
 
-    /// Gravity measurement bias (mGal)
+    /// Gravity measurement bias (mGal).
+    ///
+    /// **Read only on the CLI path** (`--gravity-bias`, `sim/src/main.rs:1693`). The
+    /// configuration-file path never reads it: closed-loop mode rejects a `[geophysical]`
+    /// section outright, and the particle-filter arm takes only the resolutions, the noise
+    /// standard deviations and `geo_interval_s`. Setting it in a config file is silently
+    /// ignored. Kept rather than removed because shipped and user configuration files set it,
+    /// and dropping the field would turn a silently-ignored value into a parse error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gravity_bias: Option<f64>,
 
@@ -5482,7 +5623,10 @@ pub struct GeophysicalConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub magnetic_resolution: Option<GeoResolution>,
 
-    /// Magnetic measurement bias (nT)
+    /// Magnetic measurement bias (nT).
+    ///
+    /// Config-path-inert in exactly the way
+    /// [`gravity_bias`](GeophysicalConfig::gravity_bias) is; see its note.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub magnetic_bias: Option<f64>,
 
@@ -5495,185 +5639,20 @@ pub struct GeophysicalConfig {
     pub magnetic_map_file: Option<String>,
 
     // Common configuration
-    /// Frequency in seconds for geophysical measurements
-    /// Applies to both measurement types if both are enabled
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub geo_frequency_s: Option<f64>,
-}
-
-const fn default_gravity_noise_std() -> f64 {
-    100.0
-}
-
-const fn default_magnetic_noise_std() -> f64 {
-    150.0
-}
-
-impl GeophysicalConfig {
-    /// Get default gravity noise std if not set
-    pub fn get_gravity_noise_std(&self) -> f64 {
-        self.gravity_noise_std
-            .unwrap_or_else(default_gravity_noise_std)
-    }
-
-    /// Get default magnetic noise std if not set
-    pub fn get_magnetic_noise_std(&self) -> f64 {
-        self.magnetic_noise_std
-            .unwrap_or_else(default_magnetic_noise_std)
-    }
-
-    /// Get gravity bias with default of 0.0
-    pub fn get_gravity_bias(&self) -> f64 {
-        self.gravity_bias.unwrap_or(0.0)
-    }
-
-    /// Get magnetic bias with default of 0.0
-    pub fn get_magnetic_bias(&self) -> f64 {
-        self.magnetic_bias.unwrap_or(0.0)
-    }
-}
-
-/// Unified geophysical navigation simulation configuration
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct GeonavSimulationConfig {
-    /// Input CSV file path (relative or absolute)
-    pub input: String,
-    /// Output CSV file path (relative or absolute)
-    pub output: String,
-    /// Filter type; defaults to the 15-state ESKF.
-    #[serde(default)]
-    pub filter: FilterType,
-    /// Random number generator seed
-    #[serde(default = "default_seed")]
-    pub seed: u64,
-    /// Run simulations in parallel when processing multiple files
-    #[serde(default)]
-    pub parallel: bool,
-    /// Generate performance plot comparing navigation output to GPS measurements
-    #[serde(default)]
-    pub generate_plot: bool,
-    /// Logging configuration
-    #[serde(default)]
-    pub logging: LoggingConfig,
-    /// Geophysical measurement configuration
-    #[serde(default)]
-    pub geophysical: GeophysicalConfig,
-    /// GNSS degradation configuration (scheduler + fault model)
-    #[serde(default)]
-    pub gnss_degradation: crate::messages::GnssDegradationConfig,
-}
-
-impl Default for GeonavSimulationConfig {
-    fn default() -> Self {
-        Self {
-            input: "input.csv".to_string(),
-            output: "output.csv".to_string(),
-            filter: FilterType::default(),
-            seed: default_seed(),
-            parallel: false,
-            generate_plot: false,
-            logging: LoggingConfig::default(),
-            geophysical: GeophysicalConfig::default(),
-            gnss_degradation: crate::messages::GnssDegradationConfig::default(),
-        }
-    }
-}
-impl GeonavSimulationConfig {
-    /// Write the configuration to a JSON file (pretty-printed)
-    /// # Errors
-    /// If the file cannot be created or written, or the records cannot be
-    /// serialised as JSON.
-    pub fn to_json<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
-        let file = std::fs::File::create(path)?;
-        serde_json::to_writer_pretty(file, self).map_err(io::Error::other)
-    }
-
-    /// Read the configuration from a JSON file
-    /// # Errors
-    /// If the file cannot be read, or its contents are not valid JSON.
-    pub fn from_json<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        let file = std::fs::File::open(path)?;
-        serde_json::from_reader(file).map_err(io::Error::other)
-    }
-
-    /// Write the configuration as YAML
-    /// # Errors
-    /// If the file cannot be created or written, or the records cannot be
-    /// serialised as YAML.
-    pub fn to_yaml<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
-        let mut file = std::fs::File::create(path)?;
-        let s = serde_yaml::to_string(self).map_err(io::Error::other)?;
-        file.write_all(s.as_bytes())
-    }
-
-    /// Read the configuration from YAML
-    /// # Errors
-    /// If the file cannot be read, or its contents are not valid YAML.
-    pub fn from_yaml<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        let file = std::fs::File::open(path)?;
-        serde_yaml::from_reader(file).map_err(io::Error::other)
-    }
-
-    /// Write the configuration as TOML
-    /// # Errors
-    /// If the file cannot be created or written, or the records cannot be
-    /// serialised as TOML.
-    pub fn to_toml<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
-        let mut file = std::fs::File::create(path)?;
-        let s = toml::to_string_pretty(self).map_err(io::Error::other)?;
-        file.write_all(s.as_bytes())
-    }
-
-    /// Read the configuration from TOML
-    /// # Errors
-    /// If the file cannot be read, or its contents are not valid TOML.
-    pub fn from_toml<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        let mut s = String::new();
-        let mut file = std::fs::File::open(path)?;
-        file.read_to_string(&mut s)?;
-        toml::from_str(&s).map_err(io::Error::other)
-    }
-
-    /// Generic write: choose format by file extension (.json/.yaml/.yml/.toml)
-    /// # Errors
-    /// If the file cannot be created or written, or the records cannot be
-    /// serialised as the inferred format.
-    pub fn to_file<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
-        let p = path.as_ref();
-        let ext = p
-            .extension()
-            .and_then(|s| s.to_str())
-            .map(str::to_lowercase);
-        match ext.as_deref() {
-            Some("json") => self.to_json(p),
-            Some("yaml" | "yml") => self.to_yaml(p),
-            Some("toml") => self.to_toml(p),
-            _ => Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "unsupported file extension (expected .json, .yaml, .yml, or .toml)",
-            )),
-        }
-    }
-
-    /// Generic read: choose format by file extension (.json/.yaml/.yml/.toml)
-    /// # Errors
-    /// If the file cannot be read, or its contents are not valid the inferred format.
-    pub fn from_file<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        let p = path.as_ref();
-        let ext = p
-            .extension()
-            .and_then(|s| s.to_str())
-            .map(str::to_lowercase);
-        match ext.as_deref() {
-            Some("json") => Self::from_json(p),
-            Some("yaml" | "yml") => Self::from_yaml(p),
-            Some("toml") => Self::from_toml(p),
-            _ => Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "unsupported file extension (expected .json, .yaml, .yml, or .toml)",
-            )),
-        }
-    }
+    /// Interval in **seconds between** geophysical measurements, applying to both measurement
+    /// types when both are enabled.
+    ///
+    /// A period, not a frequency, despite the name it carried until the v1.0 freeze:
+    /// `geonav`'s scheduler adds it to the time of the last measurement
+    /// (`next_geo_time += interval`), so a larger value means *fewer* measurements.
+    /// `#[serde(alias = "geo_frequency_s")]` keeps every configuration file written under the
+    /// old name parsing -- the nine recipes under `conf/` among them -- so do not drop it.
+    #[serde(
+        default,
+        alias = "geo_frequency_s",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub geo_interval_s: Option<f64>,
 }
 
 // ==================== Synthetic Trajectory Generation ====================
@@ -5896,6 +5875,7 @@ fn magnetic_field_nav_ut(
 /// initial kinematic state. The trajectory propagates at constant nav-frame
 /// velocity with constant body angular velocity.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct SyntheticConfig {
     /// Output CSV file path
     pub output: String,
@@ -5944,6 +5924,39 @@ pub struct SyntheticConfig {
     #[serde(default = "default_mag_hard_iron_std_ut")]
     pub mag_hard_iron_std_ut: f64,
 }
+
+/// Every field's serde default, as a `Default` impl.
+///
+/// It was the one configuration type in the crate without one, which stopped mattering the
+/// moment [`SyntheticConfig`] became `#[non_exhaustive]` at the v1.0 freeze: a
+/// `#[non_exhaustive]` struct cannot be built from a struct literal outside its own crate, so
+/// without a `Default` (or another constructor) it would be **impossible to construct at all**
+/// from `strapdown-sim`, from the gated benchmarks, or by any user of the library.
+///
+/// The two fields serde treats as required get the only sensible standalone values: an empty
+/// `output` path, and the 300 s the CLI's `--duration-s` already defaults to.
+impl Default for SyntheticConfig {
+    fn default() -> Self {
+        Self {
+            output: String::new(),
+            initial_state: SyntheticInitialState::default(),
+            duration_s: DEFAULT_SYNTHETIC_DURATION_S,
+            sample_rate_hz: default_sample_rate_hz(),
+            imu_quality: crate::IMUQuality::default(),
+            seed: default_seed(),
+            no_noise: false,
+            gnss_horizontal_noise_m: default_gnss_horizontal_noise_m(),
+            gnss_vertical_noise_m: default_gnss_vertical_noise_m(),
+            baro_noise_std_pa: default_baro_noise_std_pa(),
+            mag_noise_std_ut: default_mag_noise_std_ut(),
+            mag_hard_iron_std_ut: default_mag_hard_iron_std_ut(),
+        }
+    }
+}
+
+/// Default synthetic trajectory length, seconds -- the same value `strapdown-sim syn`'s
+/// `--duration-s` flag carries, so the library and the CLI agree.
+const DEFAULT_SYNTHETIC_DURATION_S: f64 = 300.0;
 
 impl SyntheticConfig {
     /// Write config to a file, choosing format by extension (.json, .yaml, .yml, .toml)
@@ -6142,12 +6155,13 @@ pub fn generate_synthetic(
         Vector3::new(rng.sample(dist), rng.sample(dist), rng.sample(dist))
     };
     let gyro_bias = {
-        // `gyro_bias_instability_dph` is radians per *hour* despite its name, and this bias is
-        // added straight to `perfect_imu.gyro`, which is radians per second. Without the
+        // The accessor returns radians per *hour*, and this bias is added straight to
+        // `perfect_imu.gyro`, which is radians per *second*. Without the
         // conversion a consumer-grade run injects ~1.745 rad/s -- 100 deg/s -- of constant
         // gyro bias. The accelerometer block above needs no equivalent conversion because
         // `accel_bias_instability_mps2` is already in the units its sample is added to.
-        let sigma = config.imu_quality.gyro_bias_instability_dph() / crate::SECONDS_PER_HOUR;
+        let sigma =
+            config.imu_quality.gyro_bias_instability_rad_per_hour() / crate::SECONDS_PER_HOUR;
         let dist = Normal::new(0.0_f64, sigma).unwrap_or_else(|_| {
             log::warn!(
                 "gyro bias instability {sigma} is not a usable standard deviation; using 1e-9"
@@ -6425,8 +6439,8 @@ pub fn generate_synthetic(
 #[cfg(test)]
 mod tests {
 
-    /// The synthetic gyro bias is drawn in the accessor's own units, which are radians per
-    /// *hour* despite the `_dph` name, and then added to a rad/s gyro reading. Without the
+    /// The synthetic gyro bias is drawn in the accessor's own units, radians per *hour*, and
+    /// then added to a rad/s gyro reading. Without the
     /// conversion a stationary consumer-grade run carries ~1.745 rad/s -- 100 deg/s -- of
     /// constant bias, which is not a consumer IMU, it is a spinning one.
     ///
@@ -6462,7 +6476,7 @@ mod tests {
         // is the grade's bias instability in rad/s, and per-sample angle random walk scaled to
         // the sample rate. With the bug the bias alone is ~1.745 rad/s, which overruns this by
         // more than two orders of magnitude.
-        let bias_sigma_rps = quality.gyro_bias_instability_dph() / crate::SECONDS_PER_HOUR;
+        let bias_sigma_rps = quality.gyro_bias_instability_rad_per_hour() / crate::SECONDS_PER_HOUR;
         let arw_sigma_rps = quality.gyro_angle_random_walk()
             * (config.sample_rate_hz / crate::SECONDS_PER_HOUR).sqrt();
         let earth_rate_rps = 7.292_115e-5;
@@ -8206,8 +8220,16 @@ mod tests {
         let monitor = ExecutionMonitor::new_at(&limits, 1.0, t0);
 
         let result = monitor.check_at("test", at(t0, 20));
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("no progress"));
+        // Matched on the variant, not on the message. Until the v1.0 freeze these monitors
+        // returned `anyhow::Result` and a test had no choice but to grep the string -- which
+        // is the practice the typed errors exist to remove, so the test should not keep it.
+        assert!(matches!(
+            result,
+            Err(StrapdownError::Timeout {
+                what: "time without progress",
+                ..
+            })
+        ));
     }
 
     /// The no-progress timeout must fire strictly after the limit, not at or before it.
@@ -8265,8 +8287,13 @@ mod tests {
         let monitor = ExecutionMonitor::new_at(&limits, 1.0, t0);
 
         let result = monitor.check_at("test", at(t0, 20));
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("wall-clock limit"));
+        assert!(matches!(
+            result,
+            Err(StrapdownError::Timeout {
+                what: "wall clock",
+                ..
+            })
+        ));
     }
 
     /// The wall-clock timeout is absolute: `mark_progress` must not defer it.
@@ -8390,6 +8417,35 @@ mod tests {
 
         let result = monitor.check(&state, &cov, None);
         assert!(result.is_ok());
+    }
+
+    /// A state too short to read returns an error rather than panicking.
+    ///
+    /// `check` takes `&[f64]` -- it has to, since a state is 9, 15 or 16 wide depending on the
+    /// filter -- and then reads `x[0..=5]`. Nothing made that a precondition: clippy does not
+    /// flag slice indexing, so the crate's deny-level `panic`/`unwrap`/`expect` policy did not
+    /// reach it, and the panic sat in a `pub fn`.
+    ///
+    /// Five elements is the interesting length: it clears position and the first two velocity
+    /// components, so it reaches `x[5]` and no earlier read.
+    #[test]
+    fn a_state_too_short_to_monitor_is_an_error_not_a_panic() {
+        let mut monitor = HealthMonitor::new(HealthLimits::default());
+        let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 5]));
+
+        for width in 0..HealthMonitor::MINIMUM_MONITORED_STATE {
+            let state = vec![0.0; width];
+            let result = monitor.check(&state, &cov, None);
+            assert!(
+                result.is_err(),
+                "a {width}-element state was accepted; it would have panicked on x[{}]",
+                HealthMonitor::MINIMUM_MONITORED_STATE - 1
+            );
+        }
+
+        // ...and the narrowest acceptable state still works.
+        let state = vec![0.5, 0.5, 100.0, 10.0, 5.0, 0.0];
+        assert!(monitor.check(&state, &cov, None).is_ok());
     }
 
     #[test]
@@ -8543,8 +8599,10 @@ mod tests {
         let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
 
         let result = monitor.check(&state, &cov, None);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Speed exceeded"));
+        assert!(matches!(
+            result,
+            Err(StrapdownError::OutOfRange { what: "speed", .. })
+        ));
     }
 
     /// A naive `vn*vn + ve*ve + vd*vd` sum of squares overflows to infinity for a merely
@@ -8578,8 +8636,10 @@ mod tests {
         let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
 
         let result = monitor.check(&state, &cov, None);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Speed exceeded"));
+        assert!(matches!(
+            result,
+            Err(StrapdownError::OutOfRange { what: "speed", .. })
+        ));
     }
 
     #[test]
@@ -8652,7 +8712,7 @@ mod tests {
             duty_phase_s: 0.0,
         };
         let scheduler = build_scheduler(&args);
-        matches!(scheduler, GnssScheduler::PassThrough);
+        matches!(scheduler, MeasurementScheduler::PassThrough);
     }
 
     #[test]
@@ -8666,7 +8726,7 @@ mod tests {
             duty_phase_s: 0.0,
         };
         let scheduler = build_scheduler(&args);
-        if let GnssScheduler::FixedInterval {
+        if let MeasurementScheduler::FixedInterval {
             interval_s,
             phase_s,
         } = scheduler
@@ -8689,7 +8749,7 @@ mod tests {
             duty_phase_s: 2.0,
         };
         let scheduler = build_scheduler(&args);
-        if let GnssScheduler::DutyCycle {
+        if let MeasurementScheduler::DutyCycle {
             on_s,
             off_s,
             start_phase_s,
@@ -9368,7 +9428,7 @@ mod tests {
     fn particle_filter_conversion_labels_its_geophysical_states() {
         let timestamp = Utc::now();
         // Nine navigation states, then gravity, then magnetic -- the order
-        // `GeoStateLayout` fixes and `geonav`'s `build_event_stream` counts back from.
+        // `ExtraStateLayout` fixes and `geonav`'s `build_event_stream` counts back from.
         let mean = DVector::from_vec(vec![
             0.7, -1.3, 100.0, 1.0, 2.0, 3.0, 0.1, 0.2, 0.3, 12.5, -40.0,
         ]);
@@ -9378,7 +9438,7 @@ mod tests {
         }
         // Nine navigation states wide plus the two biases, gravity at 9 and magnetic at 10 --
         // the placement `GeoBiasLayout::appended` gives an RBPF run.
-        let layout = GeoStateLayout::new(11, Some(9), Some(10));
+        let layout = ExtraStateLayout::new(11, Some(9), Some(10));
 
         let result =
             NavigationResult::from_particle_filter_with_geo(&timestamp, &mean, &cov, layout);
@@ -9430,7 +9490,7 @@ mod tests {
             &timestamp,
             &mean,
             &cov,
-            GeoStateLayout::new(10, None, Some(9)),
+            ExtraStateLayout::new(10, None, Some(9)),
         );
         assert_eq!(
             magnetic_only.gravity_bias, None,
@@ -9444,7 +9504,7 @@ mod tests {
             &timestamp,
             &mean,
             &cov,
-            GeoStateLayout::new(10, Some(9), None),
+            ExtraStateLayout::new(10, Some(9), None),
         );
         assert_approx_eq!(gravity_only.gravity_bias.unwrap(), -40.0, 1e-12);
         assert_eq!(gravity_only.magnetic_bias, None);
@@ -9483,7 +9543,7 @@ mod tests {
     /// A particle-width layout goes through the particle constructor, not off the end.
     ///
     /// The four-tuple `From` asserts the state is `layout.state_dim()` wide -- nine, for
-    /// [`GeoStateLayout::PARTICLE_NONE`], which a particle estimate satisfies -- and then used
+    /// [`ExtraStateLayout::PARTICLE_NONE`], which a particle estimate satisfies -- and then used
     /// to read `state[9]..state[14]` for the IMU-bias block a particle filter does not have.
     /// The width assertion passed and the indexing panicked, which is why every particle event
     /// loop in this workspace is hand-rolled rather than going through
@@ -9496,7 +9556,7 @@ mod tests {
         let cov = DMatrix::<f64>::identity(PARTICLE_FILTER_STATES, PARTICLE_FILTER_STATES) * 0.25;
 
         let through_from =
-            NavigationResult::from((&timestamp, &mean, &cov, GeoStateLayout::PARTICLE_NONE));
+            NavigationResult::from((&timestamp, &mean, &cov, ExtraStateLayout::PARTICLE_NONE));
         let through_constructor = NavigationResult::from_particle_filter(&timestamp, &mean, &cov);
 
         assert_eq!(through_from.latitude, through_constructor.latitude);
@@ -9513,19 +9573,19 @@ mod tests {
 
     /// The unaided layouts differ by filter, and it is the width that differs.
     ///
-    /// [`GeoStateLayout::NONE`] describes the Kalman filters' unaided shape and is fifteen
+    /// [`ExtraStateLayout::NONE`] describes the Kalman filters' unaided shape and is fifteen
     /// wide. Handing it to the particle conversion would fail on the first row of every
-    /// ordinary particle run, which is why [`GeoStateLayout::PARTICLE_NONE`] exists.
+    /// ordinary particle run, which is why [`ExtraStateLayout::PARTICLE_NONE`] exists.
     #[test]
     fn unaided_layouts_carry_each_filter_s_own_width() {
-        assert_eq!(GeoStateLayout::NONE.state_dim(), NAVIGATION_STATES);
+        assert_eq!(ExtraStateLayout::NONE.state_dim(), NAVIGATION_STATES);
         assert_eq!(
-            GeoStateLayout::PARTICLE_NONE.state_dim(),
+            ExtraStateLayout::PARTICLE_NONE.state_dim(),
             PARTICLE_FILTER_STATES
         );
-        assert!(GeoStateLayout::PARTICLE_NONE.is_empty());
-        assert_eq!(GeoStateLayout::PARTICLE_NONE.gravity_index(), None);
-        assert_eq!(GeoStateLayout::PARTICLE_NONE.magnetic_index(), None);
+        assert!(ExtraStateLayout::PARTICLE_NONE.is_empty());
+        assert_eq!(ExtraStateLayout::PARTICLE_NONE.gravity_index(), None);
+        assert_eq!(ExtraStateLayout::PARTICLE_NONE.magnetic_index(), None);
     }
 
     /// A bias index inside the navigation states is refused rather than read.
@@ -9544,7 +9604,7 @@ mod tests {
             &timestamp,
             &mean,
             &cov,
-            GeoStateLayout::new(10, Some(8), None),
+            ExtraStateLayout::new(10, Some(8), None),
         );
     }
 

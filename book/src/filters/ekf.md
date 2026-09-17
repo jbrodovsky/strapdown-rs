@@ -203,7 +203,7 @@ derives a whole $P_0$ diagonal from an IMU grade and a reported fix accuracy.
 2. **Tune conservatively**: Start with larger uncertainties and reduce
 3. **Monitor innovation**: Check measurement residuals for divergence
 4. **Use 15-state** for long-duration missions or low-quality IMUs
-5. **Validate with dead reckoning**: Compare against open-loop results
+5. **Validate with dead reckoning**: Compare against the `dr` subcommand's results
 6. **Write position uncertainties in metres** and convert once -- see
    [Units on the covariance diagonals](#units-on-the-covariance-diagonals)
 

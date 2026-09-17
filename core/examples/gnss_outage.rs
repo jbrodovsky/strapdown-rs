@@ -58,9 +58,10 @@ const START_ALTITUDE_M: f64 = 12.0;
 
 fn main() -> Result<(), StrapdownError> {
     let mut engine = InsEngine::builder()
-        .with_config(InsEngineConfig {
-            is_enu: false,
-            ..InsEngineConfig::default()
+        .with_config({
+            let mut built = InsEngineConfig::default();
+            built.is_enu = false;
+            built
         })
         .with_initial_state(InitialState::new(
             START_LATITUDE_DEG,

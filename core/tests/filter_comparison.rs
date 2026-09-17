@@ -388,15 +388,13 @@ fn all_filters_from(
         (
             "RBPF",
             Box::new(
-                RaoBlackwellizedParticleFilter::new(
-                    nominal,
-                    RbpfConfig {
-                        num_particles: RBPF_PARTICLES,
-                        position_init_std_m: Vector3::new(10.0, 10.0, 5.0),
-                        seed: RBPF_SEED,
-                        ..RbpfConfig::default()
-                    },
-                )
+                RaoBlackwellizedParticleFilter::new(nominal, {
+                    let mut built = RbpfConfig::default();
+                    built.num_particles = RBPF_PARTICLES;
+                    built.position_init_std_m = Vector3::new(10.0, 10.0, 5.0);
+                    built.seed = RBPF_SEED;
+                    built
+                })
                 .unwrap(),
             ),
         ),

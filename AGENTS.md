@@ -1,6 +1,6 @@
 # Repository Guidelines
 
-When asked to execute on an issue or new high-level feature request, ask the user if this should be completed on the current branch or to create a new branch. This project is still in pre-1.0 development, so breaking changes may be introduced at any time and backwards compatibility need not be maintained.
+When asked to execute on an issue or new high-level feature request, ask the user if this should be completed on the current branch or to create a new branch. This project is at 1.0, so `strapdown-core` and `strapdown-sim` follow semantic versioning: a breaking change to a `pub` item needs a major bump and cannot ride along with a fix. `strapdown-geonav` is deliberately held at 0.x (see `geonav/Cargo.toml`) and its API may still move. When a change would break a published API, say so and propose the additive form instead.
 
 ## Project Structure & Module Organization
 This is a Cargo workspace with three crates.
@@ -18,12 +18,18 @@ Plain Cargo, no environment manager. `rust-toolchain.toml` pins the toolchain an
 - `cargo build --workspace --release`: build all crates.
 - `cargo test --workspace`: run all tests.
 - `cargo test --package strapdown-core`: test a single crate.
-- `cargo lint`: run clippy exactly as CI does; `cargo lint-fix` applies what it can.
+- `cargo lint`: clippy over the workspace with all features; `cargo lint-fix` applies what
+  it can. **Not CI parity on its own** -- see the gates section below.
+- `cargo lint-min` / `cargo test-min`: the `-p strapdown-core --no-default-features`
+  configuration CI also gates on, which `cargo lint` cannot see.
 - `cargo fmt --all`: run rustfmt; `cargo fmt-check` checks without writing.
 - `cargo docs`: build the API docs with KaTeX (aliased, because cargo ignores an alias that
   shadows a built-in subcommand such as `doc`).
 - `cargo coverage`: coverage; needs `cargo install cargo-tarpaulin` first.
-- Example run: `./target/release/strapdown-sim -i input.csv -o output.csv open-loop`.
+- Example run: `./target/release/strapdown-sim dr -i input.csv -o output.csv`. The
+  subcommand comes first -- `-i` before it is rejected -- and there is no `open-loop`
+  subcommand: the modes are `dr`, `ol`, `cl`, `pf`, `config` and `syn`. Use `dr` for dead
+  reckoning; `ol` is not implemented and writes no output.
 
 ## Coding Style & Naming Conventions
 - Rust formatting via rustfmt (4-space indentation); keep functions focused and small.
@@ -33,10 +39,17 @@ Plain Cargo, no environment manager. `rust-toolchain.toml` pins the toolchain an
 
 ## Code Quality Gates
 
-These are **enforced**, not advisory. `cargo lint` and the blocking CI job both run
+These are **enforced**, not advisory. `cargo lint` and one blocking CI job run
 `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and every lint level
-in `[workspace.lints]` is `deny`, so a plain `cargo build` fails the same way CI does. Run
-`cargo lint` and `cargo fmt-check` before pushing; there is no warning-level grace period.
+in `[workspace.lints]` is `deny`, so a plain `cargo build` fails the same way CI does.
+
+**`cargo lint` is half the gate.** A second blocking job lints
+`-p strapdown-core --all-targets --no-default-features`, and the two configurations disagree
+about what is dead: an item used only behind a feature gate is live under `--all-features` and
+orphaned without it. That is `cargo lint-min`, with `cargo test-min` as its test counterpart.
+
+Run `cargo lint`, `cargo lint-min` and `cargo fmt-check` before pushing; there is no
+warning-level grace period.
 
 **What is on** (`Cargo.toml`, `[workspace.lints]`):
 - `clippy::pedantic` and `clippy::nursery`, both at `deny`.

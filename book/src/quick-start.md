@@ -37,7 +37,7 @@ Sensor Logger exports are **ENU**: at rest the device reports `+g` along its up 
 `-g` along a down axis. For those, add `--enu` (or `is_enu = true` in a config file):
 
 ```bash
-strapdown-sim closed-loop --enu -i data/sensor_logger.csv -o results/output.csv
+strapdown-sim cl --enu -i data/sensor_logger.csv -o results/output.csv
 ```
 
 You will not get this wrong silently. The tool checks the declared frame against the leading
@@ -47,29 +47,29 @@ integrates at 2 g (#296).
 
 ### 3. Run a Simulation
 
-**Dead Reckoning (Open-Loop)**:
+**Dead Reckoning** (`dr`; `ol` is a different, unimplemented mode):
 ```bash
-strapdown-sim open-loop -i data/input.csv -o results/output.csv
+strapdown-sim dr -i data/input.csv -o results/output.csv
 ```
 
-**Closed-Loop (15-state ESKF, the default)**:
+**Closed-Loop (16-state ESKF, the default)**:
 ```bash
-strapdown-sim closed-loop -i data/input.csv -o results/output.csv
+strapdown-sim cl -i data/input.csv -o results/output.csv
 ```
 
 **Closed-Loop with EKF**:
 ```bash
-strapdown-sim closed-loop -i data/input.csv -o results/output.csv --filter ekf
+strapdown-sim cl -i data/input.csv -o results/output.csv --filter ekf
 ```
 
 **Closed-Loop with UKF**:
 ```bash
-strapdown-sim closed-loop -i data/input.csv -o results/output.csv --filter ukf
+strapdown-sim cl -i data/input.csv -o results/output.csv --filter ukf
 ```
 
 **Particle Filter**:
 ```bash
-strapdown-sim particle-filter -i data/input.csv -o results/output.csv --particles 100
+strapdown-sim pf -i data/input.csv -o results/output.csv --num-particles 100
 ```
 
 ### 4. View Results
@@ -87,26 +87,41 @@ timestamp,latitude,longitude,altitude,velocity_north,velocity_east,velocity_down
 For more complex scenarios, use TOML configuration files:
 
 ```toml
-# config.toml
-[simulation]
-mode = "closed-loop"
-filter = "ekf"
+# config.toml -- a whole `SimulationConfig`. `mode` is the only required field.
+mode = "closed-loop"          # dead-reckoning | open-loop | closed-loop | particle-filter | synthetic
+input = "data/trajectory.csv"
+output = "results/navigation.csv"
+seed = 42
+is_enu = false                # NED is the default; Sensor Logger exports need `true`
 
-[data]
-input_file = "data/trajectory.csv"
-output_file = "results/navigation.csv"
+[logging]
+level = "info"
 
-[gnss]
-enabled = true
-dropout_probability = 0.1
-update_rate = 1.0
+[closed_loop]
+filter = "eskf"               # eskf (default) | ukf | ekf
 
-[filter]
-use_biases = true
-initial_position_uncertainty = 10.0
-initial_velocity_uncertainty = 1.0
-initial_attitude_uncertainty = 0.1
+[aiding]
+seed = 42
+
+[aiding.scheduler]            # when GNSS fixes arrive
+kind = "fixed_interval"
+interval_s = 5.0
+phase_s = 0.0
+
+[aiding.fault]                # how they are corrupted
+kind = "none"
 ```
+
+Run it with the config alone — `--config` supplies the whole run, so a subcommand and its
+`-i`/`-o`/`--filter` arguments are ignored when it is present:
+
+```bash
+strapdown-sim --config config.toml
+```
+
+`core/tests/example_configs.rs` parses every file under `examples/configs/` and asserts it
+deserializes into the scenario it describes, because every field has a default: a misspelled
+section is dropped silently and the run simulates nothing.
 
 Run with:
 ```bash

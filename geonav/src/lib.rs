@@ -44,7 +44,7 @@ use strapdown::measurements::{
     GPSPositionAndVelocityMeasurement, MeasurementModel, RelativeAltitudeMeasurement,
 };
 use strapdown::messages::{
-    Event, EventStream, FaultState, GnssDegradationConfig, GnssScheduler, apply_fault,
+    AidingConfig, Event, EventStream, FaultState, MeasurementScheduler, apply_fault,
 };
 use strapdown::sim::TestDataRecord;
 use strapdown::{IMUData, StrapdownState};
@@ -1405,12 +1405,14 @@ fn observed_field_nt(record: &TestDataRecord) -> f64 {
 ///
 /// # Arguments
 /// * `records` - Vector of test data records
-/// * `cfg` - GNSS degradation configuration
+/// * `cfg` - Aiding configuration: the GNSS schedule and fault model, plus the barometer
+///   and magnetometer schedules
 /// * `gravity_map` - Optional gravity map for measurements
 /// * `gravity_noise_std` - Standard deviation for gravity measurement noise (if `gravity_map` is Some)
 /// * `magnetic_map` - Optional magnetic map for measurements
 /// * `magnetic_noise_std` - Standard deviation for magnetic measurement noise (if `magnetic_map` is Some)
-/// * `geo_frequency_s` - Frequency in seconds for geophysical measurements (None for every available measurement)
+/// * `geo_interval_s` - Seconds *between* geophysical measurements, so a larger value means
+///   fewer of them (None for every available measurement)
 /// * `bias_layout` - Where the filter that will consume this stream carries its map-bias
 ///   states, or `None` when it carries none. This is not inferable from the maps: loading a
 ///   gravity map says a gravity *measurement* is available, not that the filter estimating
@@ -1433,12 +1435,12 @@ fn observed_field_nt(record: &TestDataRecord) -> f64 {
 )]
 pub fn build_event_stream(
     records: &[TestDataRecord],
-    cfg: &GnssDegradationConfig,
+    cfg: &AidingConfig,
     gravity_map: Option<Rc<GeoMap>>,
     gravity_noise_std: Option<f64>,
     magnetic_map: Option<Rc<GeoMap>>,
     magnetic_noise_std: Option<f64>,
-    geo_frequency_s: Option<f64>,
+    geo_interval_s: Option<f64>,
     bias_layout: Option<GeoBiasLayout>,
 ) -> Result<EventStream, StrapdownError> {
     // The first record fixes both the epoch the elapsed clock counts from and the datum the
@@ -1467,9 +1469,9 @@ pub fn build_event_stream(
 
     // Scheduler state
     let mut next_emit_time = match cfg.scheduler {
-        GnssScheduler::PassThrough => 0.0,
-        GnssScheduler::FixedInterval { phase_s, .. } => phase_s,
-        GnssScheduler::DutyCycle { start_phase_s, .. } => start_phase_s,
+        MeasurementScheduler::PassThrough => 0.0,
+        MeasurementScheduler::FixedInterval { phase_s, .. } => phase_s,
+        MeasurementScheduler::DutyCycle { start_phase_s, .. } => start_phase_s,
     };
     let mut duty_on = true;
 
@@ -1502,8 +1504,8 @@ pub fn build_event_stream(
         }
         // Decide if GNSS should be emitted at t1
         let should_emit = match cfg.scheduler {
-            GnssScheduler::PassThrough => true,
-            GnssScheduler::FixedInterval { interval_s, .. } => {
+            MeasurementScheduler::PassThrough => true,
+            MeasurementScheduler::FixedInterval { interval_s, .. } => {
                 if *t1 + 1e-9 >= next_emit_time {
                     next_emit_time += interval_s;
                     true
@@ -1511,7 +1513,7 @@ pub fn build_event_stream(
                     false
                 }
             }
-            GnssScheduler::DutyCycle { on_s, off_s, .. } => {
+            MeasurementScheduler::DutyCycle { on_s, off_s, .. } => {
                 let window = if duty_on { on_s } else { off_s };
                 if *t1 + 1e-9 >= next_emit_time {
                     duty_on = !duty_on;
@@ -1593,7 +1595,7 @@ pub fn build_event_stream(
         let magnetic_present = magnetic.iter().all(|v| !v.is_nan());
 
         // Determine if we should emit a geophysical measurement at this time
-        let should_emit_geo = match geo_frequency_s {
+        let should_emit_geo = match geo_interval_s {
             Some(freq) => {
                 if *t1 + 1e-9 >= next_geo_time {
                     next_geo_time += freq;
@@ -1707,7 +1709,7 @@ mod tests {
     use nalgebra::{DMatrix, DVector};
     use std::rc::Rc;
     use strapdown::earth::GP;
-    use strapdown::messages::{GnssDegradationConfig, GnssFaultModel, GnssScheduler};
+    use strapdown::messages::{AidingConfig, GnssFaultModel, MeasurementScheduler};
     use strapdown::sim::TestDataRecord;
 
     /// Helper function to create a simple test gravity map
@@ -2017,11 +2019,12 @@ mod tests {
     /// of `build_event_stream` carried the identical defect, so it gets the identical test.
     #[test]
     fn empty_records_are_an_error_not_a_panic() {
-        let config = GnssDegradationConfig {
-            scheduler: GnssScheduler::PassThrough,
-            fault: GnssFaultModel::None,
-            seed: 42,
-            ..Default::default()
+        let config = {
+            let mut built = AidingConfig::default();
+            built.scheduler = MeasurementScheduler::PassThrough;
+            built.fault = GnssFaultModel::None;
+            built.seed = 42;
+            built
         };
         let geomap = Rc::new(create_test_gravity_map());
 
@@ -2042,11 +2045,12 @@ mod tests {
     #[test]
     fn single_record_yields_a_stream_with_no_events() {
         let records = create_test_records();
-        let config = GnssDegradationConfig {
-            scheduler: GnssScheduler::PassThrough,
-            fault: GnssFaultModel::None,
-            seed: 42,
-            ..Default::default()
+        let config = {
+            let mut built = AidingConfig::default();
+            built.scheduler = MeasurementScheduler::PassThrough;
+            built.fault = GnssFaultModel::None;
+            built.seed = 42;
+            built
         };
         let geomap = Rc::new(create_test_gravity_map());
 
@@ -2072,11 +2076,12 @@ mod tests {
     #[test]
     fn test_build_event_stream() {
         let records = create_test_records();
-        let config = GnssDegradationConfig {
-            scheduler: GnssScheduler::PassThrough,
-            fault: GnssFaultModel::None,
-            seed: 42,
-            ..Default::default()
+        let config = {
+            let mut built = AidingConfig::default();
+            built.scheduler = MeasurementScheduler::PassThrough;
+            built.fault = GnssFaultModel::None;
+            built.seed = 42;
+            built
         };
         let geomap = Rc::new(create_test_gravity_map());
 
@@ -2115,11 +2120,12 @@ mod tests {
     #[test]
     fn test_build_event_stream_magnetic() {
         let records = create_test_records();
-        let config = GnssDegradationConfig {
-            scheduler: GnssScheduler::PassThrough,
-            fault: GnssFaultModel::None,
-            seed: 42,
-            ..Default::default()
+        let config = {
+            let mut built = AidingConfig::default();
+            built.scheduler = MeasurementScheduler::PassThrough;
+            built.fault = GnssFaultModel::None;
+            built.seed = 42;
+            built
         };
         let geomap = Rc::new(create_test_magnetic_map());
 
@@ -2607,7 +2613,7 @@ mod tests {
 
         let stream = build_event_stream(
             &records,
-            &GnssDegradationConfig::default(),
+            &AidingConfig::default(),
             None,
             None,
             Some(Rc::new(create_test_magnetic_map())),
@@ -2646,7 +2652,7 @@ mod tests {
     #[test]
     fn test_event_stream_without_a_layout_declares_no_bias() {
         let records = create_test_records();
-        let config = GnssDegradationConfig::default();
+        let config = AidingConfig::default();
         let gravity = Rc::new(create_test_gravity_map());
         let magnetic = Rc::new(create_test_magnetic_map());
 
@@ -2776,11 +2782,12 @@ mod tests {
     #[test]
     fn test_build_event_stream_custom_noise() {
         let records = create_test_records();
-        let config = GnssDegradationConfig {
-            scheduler: GnssScheduler::PassThrough,
-            fault: GnssFaultModel::None,
-            seed: 42,
-            ..Default::default()
+        let config = {
+            let mut built = AidingConfig::default();
+            built.scheduler = MeasurementScheduler::PassThrough;
+            built.fault = GnssFaultModel::None;
+            built.seed = 42;
+            built
         };
         let geomap = Rc::new(create_test_gravity_map());
 
@@ -2819,11 +2826,12 @@ mod tests {
     #[test]
     fn test_build_event_stream_with_frequency() {
         let records = create_test_records();
-        let config = GnssDegradationConfig {
-            scheduler: GnssScheduler::PassThrough,
-            fault: GnssFaultModel::None,
-            seed: 42,
-            ..Default::default()
+        let config = {
+            let mut built = AidingConfig::default();
+            built.scheduler = MeasurementScheduler::PassThrough;
+            built.fault = GnssFaultModel::None;
+            built.seed = 42;
+            built
         };
         let geomap = Rc::new(create_test_gravity_map());
 

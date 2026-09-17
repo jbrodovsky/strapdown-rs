@@ -128,7 +128,7 @@ use strapdown::kalman::{
 use strapdown::measurements::MAG_YAW_NOISE;
 use strapdown::measurements::{MagnetometerYawMeasurement, MeasurementModel, ZuptMeasurement};
 use strapdown::messages::{
-    Event, GnssDegradationConfig, GnssFaultModel, GnssScheduler, build_event_stream,
+    AidingConfig, Event, GnssFaultModel, MeasurementScheduler, build_event_stream,
 };
 use strapdown::rbpf::{RaoBlackwellizedParticleFilter, RbpfConfig};
 // `DEFAULT_PROCESS_NOISE_DENSITY` is imported, not copied. This file used to keep its own array of
@@ -1029,7 +1029,7 @@ const RBPF_DEGRADED_PARTICLES: usize = 5000;
 
 fn run_rbpf_with_cfg(
     records: &[TestDataRecord],
-    cfg: &GnssDegradationConfig,
+    cfg: &AidingConfig,
     rbpf_config: RbpfConfig,
 ) -> Vec<NavigationResult> {
     let stream = build_event_stream(records, cfg, TEST_DATA_IS_ENU).unwrap();
@@ -1083,20 +1083,18 @@ fn run_rbpf_with_cfg(
 }
 
 fn run_rbpf(records: &[TestDataRecord]) -> Vec<NavigationResult> {
-    let cfg = GnssDegradationConfig {
-        scheduler: GnssScheduler::PassThrough,
-        fault: GnssFaultModel::None,
-        ..Default::default()
+    let cfg = {
+        let mut built = AidingConfig::default();
+        built.scheduler = MeasurementScheduler::PassThrough;
+        built.fault = GnssFaultModel::None;
+        built
     };
-    run_rbpf_with_cfg(
-        records,
-        &cfg,
-        RbpfConfig {
-            num_particles: RBPF_PARTICLES,
-            seed: 42,
-            ..RbpfConfig::default()
-        },
-    )
+    run_rbpf_with_cfg(records, &cfg, {
+        let mut built = RbpfConfig::default();
+        built.num_particles = RBPF_PARTICLES;
+        built.seed = 42;
+        built
+    })
 }
 
 /// Test dead reckoning on real data to establish baseline
@@ -1312,10 +1310,11 @@ fn test_ukf_closed_loop_on_real_data() {
     );
 
     // Create event stream with passthrough scheduler (all GNSS measurements used)
-    let cfg = GnssDegradationConfig {
-        scheduler: GnssScheduler::PassThrough,
-        fault: GnssFaultModel::None,
-        ..Default::default()
+    let cfg = {
+        let mut built = AidingConfig::default();
+        built.scheduler = MeasurementScheduler::PassThrough;
+        built.fault = GnssFaultModel::None;
+        built
     };
 
     let stream = build_event_stream(&records, &cfg, TEST_DATA_IS_ENU).unwrap();
@@ -1468,13 +1467,14 @@ fn test_ukf_with_degraded_gnss() {
     );
 
     // Create event stream with periodic scheduler (e.g., every 5 seconds)
-    let cfg = GnssDegradationConfig {
-        scheduler: GnssScheduler::FixedInterval {
+    let cfg = {
+        let mut built = AidingConfig::default();
+        built.scheduler = MeasurementScheduler::FixedInterval {
             interval_s: 5.0,
             phase_s: 0.0,
-        },
-        fault: GnssFaultModel::None,
-        ..Default::default()
+        };
+        built.fault = GnssFaultModel::None;
+        built
     };
 
     let stream = build_event_stream(&records, &cfg, TEST_DATA_IS_ENU).unwrap();
@@ -1567,12 +1567,13 @@ fn test_ukf_outperforms_dead_reckoning() {
         0.0,
     );
 
-    let scheduler = GnssScheduler::PassThrough;
+    let scheduler = MeasurementScheduler::PassThrough;
     let fault_model = GnssFaultModel::None;
-    let cfg = GnssDegradationConfig {
-        scheduler,
-        fault: fault_model,
-        ..Default::default()
+    let cfg = {
+        let mut built = AidingConfig::default();
+        built.scheduler = scheduler;
+        built.fault = fault_model;
+        built
     };
     let stream = build_event_stream(&records, &cfg, TEST_DATA_IS_ENU).unwrap();
 
@@ -1656,10 +1657,11 @@ fn test_ekf_closed_loop_on_real_data() {
     );
 
     // Create event stream with passthrough scheduler (all GNSS measurements used)
-    let cfg = GnssDegradationConfig {
-        scheduler: GnssScheduler::PassThrough,
-        fault: GnssFaultModel::None,
-        ..Default::default()
+    let cfg = {
+        let mut built = AidingConfig::default();
+        built.scheduler = MeasurementScheduler::PassThrough;
+        built.fault = GnssFaultModel::None;
+        built
     };
 
     let stream = build_event_stream(&records, &cfg, TEST_DATA_IS_ENU).unwrap();
@@ -1814,13 +1816,14 @@ fn test_ekf_with_degraded_gnss() {
     );
 
     // Create event stream with periodic scheduler (e.g., every 5 seconds)
-    let cfg = GnssDegradationConfig {
-        scheduler: GnssScheduler::FixedInterval {
+    let cfg = {
+        let mut built = AidingConfig::default();
+        built.scheduler = MeasurementScheduler::FixedInterval {
             interval_s: 5.0,
             phase_s: 0.0,
-        },
-        fault: GnssFaultModel::None,
-        ..Default::default()
+        };
+        built.fault = GnssFaultModel::None;
+        built
     };
 
     let stream = build_event_stream(&records, &cfg, TEST_DATA_IS_ENU).unwrap();
@@ -1957,12 +1960,13 @@ fn test_ekf_outperforms_dead_reckoning() {
         true, // 15-state
     );
 
-    let scheduler = GnssScheduler::PassThrough;
+    let scheduler = MeasurementScheduler::PassThrough;
     let fault_model = GnssFaultModel::None;
-    let cfg = GnssDegradationConfig {
-        scheduler,
-        fault: fault_model,
-        ..Default::default()
+    let cfg = {
+        let mut built = AidingConfig::default();
+        built.scheduler = scheduler;
+        built.fault = fault_model;
+        built
     };
     let stream = build_event_stream(&records, &cfg, TEST_DATA_IS_ENU).unwrap();
 
@@ -2044,10 +2048,11 @@ fn test_eskf_closed_loop_on_real_data() {
     );
 
     // Create event stream with passthrough scheduler (all GNSS measurements used)
-    let cfg = GnssDegradationConfig {
-        scheduler: GnssScheduler::PassThrough,
-        fault: GnssFaultModel::None,
-        ..Default::default()
+    let cfg = {
+        let mut built = AidingConfig::default();
+        built.scheduler = MeasurementScheduler::PassThrough;
+        built.fault = GnssFaultModel::None;
+        built
     };
 
     let stream = build_event_stream(&records, &cfg, TEST_DATA_IS_ENU).unwrap();
@@ -2213,13 +2218,14 @@ fn test_eskf_with_degraded_gnss() {
     );
 
     // Create event stream with periodic scheduler (e.g., every 5 seconds)
-    let cfg = GnssDegradationConfig {
-        scheduler: GnssScheduler::FixedInterval {
+    let cfg = {
+        let mut built = AidingConfig::default();
+        built.scheduler = MeasurementScheduler::FixedInterval {
             interval_s: 2.0,
             phase_s: 0.0,
-        },
-        fault: GnssFaultModel::None,
-        ..Default::default()
+        };
+        built.fault = GnssFaultModel::None;
+        built
     };
 
     let stream = build_event_stream(&records, &cfg, TEST_DATA_IS_ENU).unwrap();
@@ -2328,10 +2334,11 @@ fn test_eskf_outperforms_dead_reckoning() {
         process_noise,
     );
 
-    let cfg = GnssDegradationConfig {
-        scheduler: GnssScheduler::PassThrough,
-        fault: GnssFaultModel::None,
-        ..Default::default()
+    let cfg = {
+        let mut built = AidingConfig::default();
+        built.scheduler = MeasurementScheduler::PassThrough;
+        built.fault = GnssFaultModel::None;
+        built
     };
     let stream = build_event_stream(&records, &cfg, TEST_DATA_IS_ENU).unwrap();
 
@@ -2441,10 +2448,11 @@ fn test_eskf_output_stays_valid_across_full_run() {
     );
 
     // Use passthrough GNSS to help constrain the solution
-    let cfg = GnssDegradationConfig {
-        scheduler: GnssScheduler::PassThrough,
-        fault: GnssFaultModel::None,
-        ..Default::default()
+    let cfg = {
+        let mut built = AidingConfig::default();
+        built.scheduler = MeasurementScheduler::PassThrough;
+        built.fault = GnssFaultModel::None;
+        built
     };
 
     let stream = build_event_stream(&records, &cfg, TEST_DATA_IS_ENU).unwrap();
@@ -2595,19 +2603,18 @@ fn test_eskf_default_initialization_on_real_data() {
     // Every option left at its default, with only the frame set: exactly what
     // `strapdown-sim cl --enu` passes. Note the CLI's default is NED since #296; `--enu` is
     // what a Sensor Logger recording like this one needs.
-    let mut eskf = initialize_eskf(
-        &records[0],
-        EskfConfig {
-            is_enu: IS_ENU_TEST_DATA,
-            ..EskfConfig::default()
-        },
-    )
+    let mut eskf = initialize_eskf(&records[0], {
+        let mut built = EskfConfig::default();
+        built.is_enu = IS_ENU_TEST_DATA;
+        built
+    })
     .expect("the default ESKF initialisation must succeed on real data");
 
-    let cfg = GnssDegradationConfig {
-        scheduler: GnssScheduler::PassThrough,
-        fault: GnssFaultModel::None,
-        ..Default::default()
+    let cfg = {
+        let mut built = AidingConfig::default();
+        built.scheduler = MeasurementScheduler::PassThrough;
+        built.fault = GnssFaultModel::None;
+        built
     };
     let results = run_closed_loop(
         &mut eskf,
@@ -2730,10 +2737,11 @@ fn test_filter_comparison() {
     );
 
     let initial_state = create_initial_state(&records[0]);
-    let cfg = GnssDegradationConfig {
-        scheduler: GnssScheduler::PassThrough,
-        fault: GnssFaultModel::None,
-        ..Default::default()
+    let cfg = {
+        let mut built = AidingConfig::default();
+        built.scheduler = MeasurementScheduler::PassThrough;
+        built.fault = GnssFaultModel::None;
+        built
     };
 
     // Run UKF
@@ -2912,36 +2920,34 @@ fn test_rbpf_with_degraded_gnss() {
         "Test data should contain at least one record"
     );
 
-    let cfg = GnssDegradationConfig {
-        scheduler: GnssScheduler::FixedInterval {
+    let cfg = {
+        let mut built = AidingConfig::default();
+        built.scheduler = MeasurementScheduler::FixedInterval {
             interval_s: 5.0,
             phase_s: 0.0,
-        },
-        fault: GnssFaultModel::Degraded {
+        };
+        built.fault = GnssFaultModel::Degraded {
             rho_pos: 0.99,
             sigma_pos_m: 3.0,
             rho_vel: 0.95,
             sigma_vel_mps: 0.3,
             r_scale: 5.0,
-        },
-        ..Default::default()
+        };
+        built
     };
 
-    let results = run_rbpf_with_cfg(
-        &records,
-        &cfg,
-        RbpfConfig {
-            num_particles: RBPF_DEGRADED_PARTICLES,
-            seed: 42,
-            // Proposal matched to the fault scale: the AR(1) wander
-            // (sigma_pos_m 3.0, quasi-bias ±20 m) over 5 s fixes starves the
-            // default 1 m proposal cloud (see #267). Explicit here rather
-            // than in the default: a wider default proposal measurably
-            // degrades clean stationary tracking.
-            position_process_noise_std_m: Vector3::new(3.0, 3.0, 3.0),
-            ..RbpfConfig::default()
-        },
-    );
+    let results = run_rbpf_with_cfg(&records, &cfg, {
+        let mut built = RbpfConfig::default();
+        built.num_particles = RBPF_DEGRADED_PARTICLES;
+        built.seed = 42;
+        // Proposal matched to the fault scale: the AR(1) wander
+        // (sigma_pos_m 3.0, quasi-bias ±20 m) over 5 s fixes starves the
+        // default 1 m proposal cloud (see #267). Explicit here rather
+        // than in the default: a wider default proposal measurably
+        // degrades clean stationary tracking.
+        built.position_process_noise_std_m = Vector3::new(3.0, 3.0, 3.0);
+        built
+    });
     assert!(!results.is_empty(), "RBPF should produce results");
 
     let stats = compute_error_metrics(&results, &records);
@@ -3033,7 +3039,7 @@ fn test_filter_output_length_matches_input() {
     let initial_covariance = DEFAULT_INITIAL_COVARIANCE.to_vec();
     let process_noise =
         DMatrix::from_diagonal(&DVector::from_vec(DEFAULT_PROCESS_NOISE_DENSITY.to_vec()));
-    let degradation = GnssDegradationConfig::default();
+    let degradation = AidingConfig::default();
 
     // Test UKF
     let mut ukf = UnscentedKalmanFilter::new(
@@ -3114,10 +3120,11 @@ fn run_filter_on_clean_stream<F: NavigationFilter>(
     filter: &mut F,
     records: &[TestDataRecord],
 ) -> Vec<NavigationResult> {
-    let cfg = GnssDegradationConfig {
-        scheduler: GnssScheduler::PassThrough,
-        fault: GnssFaultModel::None,
-        ..Default::default()
+    let cfg = {
+        let mut built = AidingConfig::default();
+        built.scheduler = MeasurementScheduler::PassThrough;
+        built.fault = GnssFaultModel::None;
+        built
     };
     let stream = build_event_stream(records, &cfg, TEST_DATA_IS_ENU).unwrap();
     run_closed_loop(filter, stream, None, None)
@@ -3640,14 +3647,15 @@ fn test_full_lifecycle_through_ins_engine() {
         "lifecycle test needs the full recording"
     );
 
-    let config = InsEngineConfig {
-        is_enu: true,
+    let config = {
+        let mut built = InsEngineConfig::default();
+        built.is_enu = true;
         // A plausible vehicle geometry: antenna 1.5 m forward of the IMU and 1 m above it.
         // Non-zero so the lever-arm path is actually exercised rather than short-circuited.
-        lever_arm: [1.5, 0.0, 1.0],
-        process_noise_diagonal: Some(ESKF_PROCESS_NOISE.to_vec()),
-        initial_covariance_diagonal: Some(ESKF_INITIAL_COVARIANCE.to_vec()),
-        ..InsEngineConfig::default()
+        built.lever_arm = [1.5, 0.0, 1.0];
+        built.process_noise_diagonal = Some(ESKF_PROCESS_NOISE.to_vec());
+        built.initial_covariance_diagonal = Some(ESKF_INITIAL_COVARIANCE.to_vec());
+        built
     };
 
     let mut engine = InsEngine::builder()
@@ -3860,14 +3868,15 @@ fn test_eskf_recovers_from_gnss_outage() {
     let initial_state = create_initial_state(&records[0]);
     let mut eskf = build_eskf(&initial_state);
 
-    let cfg = GnssDegradationConfig {
-        scheduler: GnssScheduler::DutyCycle {
+    let cfg = {
+        let mut built = AidingConfig::default();
+        built.scheduler = MeasurementScheduler::DutyCycle {
             on_s: ON_S,
             off_s: OFF_S,
             start_phase_s: ON_S,
-        },
-        fault: GnssFaultModel::None,
-        ..Default::default()
+        };
+        built.fault = GnssFaultModel::None;
+        built
     };
     let stream = build_event_stream(&records, &cfg, TEST_DATA_IS_ENU).unwrap();
     let results = run_closed_loop(&mut eskf, stream, None, None)
@@ -4061,7 +4070,7 @@ fn gating_through_the_closed_loop_no_longer_cascades() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let records = load_test_data(&Path::new(manifest_dir).join("tests/test_data.csv"));
     let initial_state = create_initial_state(&records[0]);
-    let degradation = GnssDegradationConfig::default();
+    let degradation = AidingConfig::default();
 
     let mut summaries = Vec::new();
     for gate in [
@@ -4230,10 +4239,11 @@ fn test_eskf_auto_covariance_initialization_on_real_data() {
         );
     }
 
-    let cfg = GnssDegradationConfig {
-        scheduler: GnssScheduler::PassThrough,
-        fault: GnssFaultModel::None,
-        ..Default::default()
+    let cfg = {
+        let mut built = AidingConfig::default();
+        built.scheduler = MeasurementScheduler::PassThrough;
+        built.fault = GnssFaultModel::None;
+        built
     };
     let results = run_closed_loop(
         &mut eskf,

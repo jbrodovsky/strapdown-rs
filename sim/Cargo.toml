@@ -5,6 +5,7 @@ description = "Command-line simulator for strapdown inertial navigation: dead re
 readme = "README.md"
 keywords = ["strapdown", "inertial", "navigation", "simulation", "GNSS"]
 categories = ["command-line-utilities", "aerospace", "simulation"]
+documentation = "https://docs.rs/strapdown-sim/"
 
 authors.workspace = true
 edition.workspace = true

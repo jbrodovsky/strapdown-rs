@@ -578,8 +578,9 @@ pub fn gyrocompassing(
 fn predicted_heading_uncertainty(quality: IMUQuality, cos_latitude: f64) -> f64 {
     const SECONDS_PER_HOUR: f64 = 3600.0;
     let earth_rate_per_hour = earth::RATE * SECONDS_PER_HOUR;
-    // `gyro_bias_instability_dph` is named for degrees per hour but returns radians per hour.
-    quality.gyro_bias_instability_dph() / (earth_rate_per_hour * cos_latitude)
+    // Both rates are per *hour* here, so they divide directly: `earth::RATE` is scaled up to
+    // the hour above, and the accessor is already radians per hour.
+    quality.gyro_bias_instability_rad_per_hour() / (earth_rate_per_hour * cos_latitude)
 }
 
 /// Estimate heading from horizontal velocity: course over ground.
