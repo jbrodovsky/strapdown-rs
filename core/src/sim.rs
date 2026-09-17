@@ -8169,8 +8169,16 @@ mod tests {
         let monitor = ExecutionMonitor::new_at(&limits, 1.0, t0);
 
         let result = monitor.check_at("test", at(t0, 20));
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("no progress"));
+        // Matched on the variant, not on the message. Until the v1.0 freeze these monitors
+        // returned `anyhow::Result` and a test had no choice but to grep the string -- which
+        // is the practice the typed errors exist to remove, so the test should not keep it.
+        assert!(matches!(
+            result,
+            Err(StrapdownError::Timeout {
+                what: "time without progress",
+                ..
+            })
+        ));
     }
 
     /// The no-progress timeout must fire strictly after the limit, not at or before it.
@@ -8228,8 +8236,13 @@ mod tests {
         let monitor = ExecutionMonitor::new_at(&limits, 1.0, t0);
 
         let result = monitor.check_at("test", at(t0, 20));
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("wall-clock limit"));
+        assert!(matches!(
+            result,
+            Err(StrapdownError::Timeout {
+                what: "wall clock",
+                ..
+            })
+        ));
     }
 
     /// The wall-clock timeout is absolute: `mark_progress` must not defer it.
@@ -8535,8 +8548,10 @@ mod tests {
         let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
 
         let result = monitor.check(&state, &cov, None);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Speed exceeded"));
+        assert!(matches!(
+            result,
+            Err(StrapdownError::OutOfRange { what: "speed", .. })
+        ));
     }
 
     /// A naive `vn*vn + ve*ve + vd*vd` sum of squares overflows to infinity for a merely
@@ -8570,8 +8585,10 @@ mod tests {
         let cov = DMatrix::from_diagonal(&DVector::from_vec(vec![1e-6; 15]));
 
         let result = monitor.check(&state, &cov, None);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Speed exceeded"));
+        assert!(matches!(
+            result,
+            Err(StrapdownError::OutOfRange { what: "speed", .. })
+        ));
     }
 
     #[test]
