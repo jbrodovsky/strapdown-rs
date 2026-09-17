@@ -156,11 +156,12 @@ use std::path::{Path, PathBuf};
 use nalgebra::Rotation3;
 use serde::{Deserialize, Serialize};
 
+use strapdown::NavigationFilter;
 use strapdown::messages::{AidingConfig, GnssFaultModel, MeasurementScheduler, build_event_stream};
 use strapdown::metrics::{AccuracyMetrics, MetricDirection, MetricId, MetricOptions, TruthSample};
 use strapdown::rbpf::{RaoBlackwellizedParticleFilter, RbpfConfig};
 use strapdown::sim::{
-    EkfConfig, EskfConfig, ExtraStateLayout, NavigationResult, SyntheticConfig,
+    EkfConfig, EskfConfig, ExtraStateLayout, NAVIGATION_STATES, NavigationResult, SyntheticConfig,
     SyntheticInitialState, TestDataRecord, UkfConfig, dead_reckoning, generate_synthetic,
     initialize_ekf, initialize_eskf, initialize_ukf, run_closed_loop, run_closed_loop_with_geo,
 };
@@ -561,7 +562,23 @@ fn solve(scenario: &Scenario, trajectory: &Trajectory) -> Vec<NavigationResult> 
         return dead_reckoning(records, is_enu).expect("dead reckoning must run");
     }
 
-    let stream = build_event_stream(records, &scenario.gnss, is_enu)
+    // The gate measures the **shipped** configuration, so the three Kalman filters run with
+    // `estimate_baro_bias` on, as `ClosedLoopConfig::default()` does since the v1.0 freeze.
+    //
+    // The index has to be set here, before the stream is built, because that is where the
+    // barometer's measurement model is told which state to read -- and a filter that carries
+    // the state without the model pointing at it estimates nothing (#394). The barometric bias
+    // sits immediately after the IMU bias block, so it lands at `NAVIGATION_STATES`; the
+    // assertion in each arm below checks that against what the filter itself reports, so this
+    // is a derived constant rather than a guess.
+    let mut aiding = scenario.gnss.clone();
+    if matches!(
+        scenario.estimator,
+        Estimator::Ukf | Estimator::Ekf | Estimator::Eskf
+    ) {
+        aiding.baro_bias_index = Some(NAVIGATION_STATES);
+    }
+    let stream = build_event_stream(records, &aiding, is_enu)
         .expect("event stream construction must succeed");
     let first = &records[0];
 
@@ -570,27 +587,45 @@ fn solve(scenario: &Scenario, trajectory: &Trajectory) -> Vec<NavigationResult> 
             let mut filter = initialize_ukf(first, {
                 let mut built = UkfConfig::default();
                 built.is_enu = is_enu;
+                built.estimate_baro_bias = true;
                 built
             })
             .expect("UKF initialization");
+            assert_eq!(
+                filter.baro_bias_index(),
+                Some(NAVIGATION_STATES),
+                "the barometric bias moved; the index handed to the event stream above is stale"
+            );
             run_closed_loop(&mut filter, stream, None, None).expect("UKF closed loop")
         }
         Estimator::Ekf => {
             let mut filter = initialize_ekf(first, {
                 let mut built = EkfConfig::default();
                 built.is_enu = is_enu;
+                built.estimate_baro_bias = true;
                 built
             })
             .expect("EKF initialization");
+            assert_eq!(
+                filter.baro_bias_index(),
+                Some(NAVIGATION_STATES),
+                "the barometric bias moved; the index handed to the event stream above is stale"
+            );
             run_closed_loop(&mut filter, stream, None, None).expect("EKF closed loop")
         }
         Estimator::Eskf => {
             let mut filter = initialize_eskf(first, {
                 let mut built = EskfConfig::default();
                 built.is_enu = is_enu;
+                built.estimate_baro_bias = true;
                 built
             })
             .expect("ESKF initialization");
+            assert_eq!(
+                filter.baro_bias_index(),
+                Some(NAVIGATION_STATES),
+                "the barometric bias moved; the index handed to the event stream above is stale"
+            );
             run_closed_loop(&mut filter, stream, None, None).expect("ESKF closed loop")
         }
         Estimator::Rbpf => {

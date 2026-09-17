@@ -5048,11 +5048,19 @@ pub struct ClosedLoopConfig {
     /// an ideal of 0.9973, removes a systematic 0.4 m offset and improves vertical RMSE by
     /// 45%, in all three Kalman filters.
     ///
-    /// `false` by default, because it widens the state vector by one and that is a default to
-    /// change at the 1.0 API freeze rather than alongside the state itself. Turning it on also
-    /// tells the barometer model which state to read; see
+    /// **`true` by default as of the 1.0 API freeze**, which is the change the previous
+    /// default's note promised. The state was held off by default when it landed so that it
+    /// arrived separately from the decision to switch it on; the measurements above are that
+    /// decision, and no measured case got worse -- position NEES moves *toward* its ideal of
+    /// 3.0 on synthetic data, where the truth is exact.
+    ///
+    /// Turning it on also tells the barometer model which state to read; see
     /// [`AidingConfig::baro_bias_index`](crate::messages::AidingConfig),
     /// which `strapdown-sim` derives from this rather than making it a second thing to set.
+    /// A library caller building a filter directly must set that index themselves: without it
+    /// the barometer observes nothing and the extra state sits at its prior, which is why the
+    /// `UkfConfig`/`EkfConfig`/`EskfConfig` defaults stay `false` -- flipping those would hand
+    /// a direct caller a sixteenth state that nothing reads.
     ///
     /// Not available on the geophysical path, whose extra states are map biases.
     #[serde(default)]
@@ -5068,7 +5076,7 @@ impl Default for ClosedLoopConfig {
             ukf_kappa: default_ukf_kappa(),
             innovation_gate: None,
             gate_recovery: GateRecovery::default(),
-            estimate_baro_bias: false,
+            estimate_baro_bias: true,
         }
     }
 }

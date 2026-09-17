@@ -402,9 +402,14 @@ struct ClosedLoopSimArgs {
     /// A barometer's reference pressure drifts and a filter that models the reading as
     /// unbiased pushes that drift into altitude. On the reference recording this takes
     /// 3-sigma vertical containment from about 0.40 to 0.84 against an ideal of 0.9973 and
-    /// improves vertical RMSE by 45%, on all three filters. Off by default because it widens
-    /// the state vector by one. Adds a `baro_bias` column to the output.
-    #[arg(long)]
+    /// improves vertical RMSE by 45%, on all three filters. Adds a `baro_bias` column to the
+    /// output.
+    ///
+    /// **On by default as of 1.0** -- pass `--no-estimate-baro-bias` to turn it off. The flag
+    /// is spelled negatively because the default is now on; the old `--estimate-baro-bias`
+    /// is gone rather than kept as a no-op, so a script that passes it fails loudly instead of
+    /// quietly meaning nothing.
+    #[arg(long = "no-estimate-baro-bias", action = clap::ArgAction::SetFalse)]
     estimate_baro_bias: bool,
 
     /// Reject measurements whose NIS exceeds this chi-squared confidence level.
