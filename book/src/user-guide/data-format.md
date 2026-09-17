@@ -125,7 +125,7 @@ let data = load_test_data("path/to/data.csv")?;
 To test alternative processing methods and navigation algorithms under degraded conditions:
 
 1. Design your navigation algorithm to leverage the available data in the input files
-2. Configure your experiment's `GnssDegradationConfiguration` to match the specific characteristics of the degraded condition you want to simulate
+2. Configure your experiment's `AidingConfig` to match the specific characteristics of the degraded condition you want to simulate
 3. Process your experiment accordingly
 
 ### Example Usage

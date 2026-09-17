@@ -64,7 +64,7 @@ use crate::NavigationFilter;
 use crate::earth::{METERS_TO_DEGREES, METERS_TO_RADIANS, principal_radii};
 use crate::gating::{GateRecovery, InnovationGate};
 use crate::kalman::{InitialState, UnscentedKalmanFilter};
-use crate::messages::{Event, EventStream, GnssFaultModel, GnssScheduler};
+use crate::messages::{Event, EventStream, GnssFaultModel, MeasurementScheduler};
 
 use crate::{IMUData, ImuSample, StrapdownState, mechanize};
 use health::HealthMonitor;
@@ -1232,23 +1232,23 @@ pub struct NEDCovariance {
 /// the dependency edge, which cannot name that type. `strapdown-sim` builds one from the other
 /// so there is a single source of truth for the placement.
 ///
-/// [`GeoStateLayout::NONE`] is the ordinary, non-geophysical case and is what
+/// [`ExtraStateLayout::NONE`] is the ordinary, non-geophysical case and is what
 /// [`run_closed_loop`] uses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct GeoStateLayout {
+pub struct ExtraStateLayout {
     state_dim: usize,
     gravity_index: Option<usize>,
     magnetic_index: Option<usize>,
     baro_index: Option<usize>,
 }
 
-impl Default for GeoStateLayout {
+impl Default for ExtraStateLayout {
     fn default() -> Self {
         Self::NONE
     }
 }
 
-impl GeoStateLayout {
+impl ExtraStateLayout {
     /// No geophysical states: the fifteen-element solution every other path produces.
     pub const NONE: Self = Self {
         state_dim: NAVIGATION_STATES,
@@ -1457,7 +1457,7 @@ pub struct NavigationResult {
     /// Latitude in **degrees** (WGS84).
     ///
     /// Every constructor converts on the way in -- see the `state[0].to_degrees()` in the
-    /// `From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>, GeoStateLayout)>` impl below --
+    /// `From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>, ExtraStateLayout)>` impl below --
     /// while [`Self::latitude_cov`] is the raw filter variance and stays in rad^2. The two
     /// fields are deliberately in different units; anything scoring a position error against
     /// its covariance has to convert the error to radians rather than the variance to degrees.
@@ -2388,13 +2388,13 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>)> for NavigationResult {
     /// assembly and the integration tests for no reachable failure.
     ///
     /// A filter carrying geophysical bias states is longer than 15 and must go through the
-    /// [`GeoStateLayout`] form below, which knows what those extra states are; this one would
+    /// [`ExtraStateLayout`] form below, which knows what those extra states are; this one would
     /// otherwise reject it. That was the regression: the geophysical closed loop built a 16-state filter
     /// and died here on its first result, for every filter and every map.
     fn from(
         (timestamp, state, covariance): (&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>),
     ) -> Self {
-        Self::from((timestamp, state, covariance, GeoStateLayout::NONE))
+        Self::from((timestamp, state, covariance, ExtraStateLayout::NONE))
     }
 }
 
@@ -2403,11 +2403,11 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>)> for NavigationResult {
 ///
 /// The layout has to be supplied because the state vector cannot describe itself: a
 /// 16-element state is gravity-only or magnetic-only depending on the run's flags. See
-/// [`GeoStateLayout`].
+/// [`ExtraStateLayout`].
 ///
 /// A layout narrower than [`NAVIGATION_STATES`] is a particle layout and is forwarded to
 /// [`NavigationResult::from_particle_filter_with_geo`], which is what lets
-/// [`run_closed_loop_with_geo`] drive a particle filter at [`GeoStateLayout::PARTICLE_NONE`].
+/// [`run_closed_loop_with_geo`] drive a particle filter at [`ExtraStateLayout::PARTICLE_NONE`].
 ///
 /// That is the no-extra-states particle path and only that path. A particle layout carrying
 /// map biases is ten or eleven wide, while the runner reads its estimate through
@@ -2417,7 +2417,14 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>)> for NavigationResult {
 /// Such a layout still reaches the width assertion in the particle constructor and fails it,
 /// by design rather than by running off the end of the vector. Geophysical particle runs
 /// therefore keep their own event loop.
-impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>, GeoStateLayout)> for NavigationResult {
+impl
+    From<(
+        &DateTime<Utc>,
+        &DVector<f64>,
+        &DMatrix<f64>,
+        ExtraStateLayout,
+    )> for NavigationResult
+{
     /// # Panics
     /// If the state length or covariance shape disagrees with `layout.state_dim()`, or if a
     /// declared bias index falls outside the state. Same reasoning as the three-tuple form:
@@ -2428,13 +2435,13 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>, GeoStateLayout)> for Na
             &DateTime<Utc>,
             &DVector<f64>,
             &DMatrix<f64>,
-            GeoStateLayout,
+            ExtraStateLayout,
         ),
     ) -> Self {
         let expected = layout.state_dim();
         // A layout narrower than the fifteen Kalman states describes a particle estimate,
         // which carries no IMU-bias block. Without this dispatch the width assertion below
-        // passes for `GeoStateLayout::PARTICLE_NONE` -- nine states, nine given -- and the
+        // passes for `ExtraStateLayout::PARTICLE_NONE` -- nine states, nine given -- and the
         // bias reads at `state[9]..state[14]` then index off the end. That made
         // `run_closed_loop_with_geo` unusable for the plain particle layout, which is why
         // every particle event loop in this workspace is a hand-rolled copy of the others.
@@ -2557,7 +2564,7 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>, GeoStateLayout)> for Na
 ///
 /// A filter carrying *geophysical* bias states has them past index 14, and this conversion
 /// leaves [`NavigationResult`]'s two map columns `None` rather than reading them: it is handed
-/// a filter, not a [`GeoStateLayout`], and the state vector cannot say which of its extra
+/// a filter, not a [`ExtraStateLayout`], and the state vector cannot say which of its extra
 /// states is gravity and which is magnetic. Geophysical runs therefore go through
 /// [`run_closed_loop_with_geo`], which carries the layout.
 ///
@@ -2621,7 +2628,7 @@ impl From<(&DateTime<Utc>, &UnscentedKalmanFilter)> for NavigationResult {
 ///
 /// A filter carrying *geophysical* bias states has them past index 14, and this conversion
 /// leaves [`NavigationResult`]'s two map columns `None` rather than reading them: it is handed
-/// a filter, not a [`GeoStateLayout`], and the state vector cannot say which of its extra
+/// a filter, not a [`ExtraStateLayout`], and the state vector cannot say which of its extra
 /// states is gravity and which is magnetic. Geophysical runs therefore go through
 /// [`run_closed_loop_with_geo`], which carries the layout.
 ///
@@ -2798,9 +2805,9 @@ impl NavigationResult {
         mean: &DVector<f64>,
         cov: &DMatrix<f64>,
     ) -> Self {
-        // Not [`GeoStateLayout::NONE`]: that one is fifteen states wide, because it describes
+        // Not [`ExtraStateLayout::NONE`]: that one is fifteen states wide, because it describes
         // the Kalman filters' unaided shape. An unaided particle estimate is nine.
-        Self::from_particle_filter_with_geo(timestamp, mean, cov, GeoStateLayout::PARTICLE_NONE)
+        Self::from_particle_filter_with_geo(timestamp, mean, cov, ExtraStateLayout::PARTICLE_NONE)
     }
 
     /// [`Self::from_particle_filter`] for a cloud that carries geophysical bias states.
@@ -2834,7 +2841,7 @@ impl NavigationResult {
         timestamp: &DateTime<Utc>,
         mean: &DVector<f64>,
         cov: &DMatrix<f64>,
-        layout: GeoStateLayout,
+        layout: ExtraStateLayout,
     ) -> Self {
         let expected = layout.state_dim();
         assert_eq!(
@@ -3160,7 +3167,7 @@ pub fn run_closed_loop<F: NavigationFilter>(
     health_limits: Option<HealthLimits>,
     execution_limits: Option<ExecutionLimits>,
 ) -> anyhow::Result<Vec<NavigationResult>> {
-    // `GeoStateLayout::NONE` is fifteen wide, and the conversion into `NavigationResult`
+    // `ExtraStateLayout::NONE` is fifteen wide, and the conversion into `NavigationResult`
     // asserts the state matches it. A filter estimating a barometric bias is sixteen, so
     // taking the layout from the filter is what keeps this -- the documented runner -- working
     // when `estimate_baro_bias` is on, instead of panicking deep in a `From` impl (#372).
@@ -3169,9 +3176,9 @@ pub fn run_closed_loop<F: NavigationFilter>(
     // a gravity anomaly and which a magnetic one.
     let layout = match filter.baro_bias_index() {
         Some(index) => {
-            GeoStateLayout::new(filter.get_estimate().len(), None, None).with_baro_bias(index)
+            ExtraStateLayout::new(filter.get_estimate().len(), None, None).with_baro_bias(index)
         }
-        None => GeoStateLayout::NONE,
+        None => ExtraStateLayout::NONE,
     };
     run_closed_loop_with_geo(filter, stream, health_limits, execution_limits, layout)
 }
@@ -3202,7 +3209,7 @@ pub fn run_closed_loop_with_geo<F: NavigationFilter>(
     stream: EventStream,
     health_limits: Option<HealthLimits>,
     execution_limits: Option<ExecutionLimits>,
-    layout: GeoStateLayout,
+    layout: ExtraStateLayout,
 ) -> anyhow::Result<Vec<NavigationResult>> {
     let start_time = stream.start_time;
     let mut results: Vec<NavigationResult> = Vec::with_capacity(stream.events.len());
@@ -3730,7 +3737,7 @@ pub fn initialize_ukf(
     );
     // This function sized the state, so it is the one thing that knows where the bias landed.
     // Telling the filter is what lets `run_closed_loop` label the column without being handed
-    // a `GeoStateLayout` (#372).
+    // a `ExtraStateLayout` (#372).
     filter.set_baro_bias_index(baro_bias_index)?;
     Ok(filter)
 }
@@ -3740,8 +3747,8 @@ impl UkfConfig {
     ///
     /// One source of truth for the index, because three places need it and they must agree:
     /// the filter's state layout, the
-    /// [`GnssDegradationConfig::baro_bias_index`](crate::messages::GnssDegradationConfig)
-    /// that tells the measurement which state to read, and the [`GeoStateLayout`] that labels
+    /// [`AidingConfig::baro_bias_index`](crate::messages::AidingConfig)
+    /// that tells the measurement which state to read, and the [`ExtraStateLayout`] that labels
     /// it on the way out. A caller computing `15 + n` by hand in each of those is how the two
     /// drift apart, and a measurement pointed at the wrong state reads a *map* bias as a
     /// barometric one -- which is the hazard `strapdown-geonav`'s `BiasState` documentation
@@ -4745,11 +4752,11 @@ pub mod health {
 #[derive(Copy, Clone, Debug)]
 #[cfg_attr(feature = "clap", derive(ValueEnum))]
 pub enum SchedKind {
-    /// Deliver every GNSS fix unchanged ([`GnssScheduler::PassThrough`]).
+    /// Deliver every GNSS fix unchanged ([`MeasurementScheduler::PassThrough`]).
     Passthrough,
-    /// Deliver a fix every `interval_s` seconds ([`GnssScheduler::FixedInterval`]).
+    /// Deliver a fix every `interval_s` seconds ([`MeasurementScheduler::FixedInterval`]).
     Fixed,
-    /// Alternate `on_s`/`off_s` availability windows ([`GnssScheduler::DutyCycle`]).
+    /// Alternate `on_s`/`off_s` availability windows ([`MeasurementScheduler::DutyCycle`]).
     Duty,
 }
 
@@ -4852,14 +4859,14 @@ pub struct FaultArgs {
 }
 
 /// Build GNSS scheduler from CLI arguments
-pub const fn build_scheduler(a: &SchedulerArgs) -> GnssScheduler {
+pub const fn build_scheduler(a: &SchedulerArgs) -> MeasurementScheduler {
     match a.sched {
-        SchedKind::Passthrough => GnssScheduler::PassThrough,
-        SchedKind::Fixed => GnssScheduler::FixedInterval {
+        SchedKind::Passthrough => MeasurementScheduler::PassThrough,
+        SchedKind::Fixed => MeasurementScheduler::FixedInterval {
             interval_s: a.interval_s,
             phase_s: a.phase_s,
         },
-        SchedKind::Duty => GnssScheduler::DutyCycle {
+        SchedKind::Duty => MeasurementScheduler::DutyCycle {
             on_s: a.on_s,
             off_s: a.off_s,
             start_phase_s: a.duty_phase_s,
@@ -5015,7 +5022,7 @@ pub struct ClosedLoopConfig {
     /// `false` by default, because it widens the state vector by one and that is a default to
     /// change at the 1.0 API freeze rather than alongside the state itself. Turning it on also
     /// tells the barometer model which state to read; see
-    /// [`GnssDegradationConfig::baro_bias_index`](crate::messages::GnssDegradationConfig),
+    /// [`AidingConfig::baro_bias_index`](crate::messages::AidingConfig),
     /// which `strapdown-sim` derives from this rather than making it a second thing to set.
     ///
     /// Not available on the geophysical path, whose extra states are map biases.
@@ -5266,9 +5273,17 @@ pub struct SimulationConfig {
     /// Geophysical measurement configuration (optional, requires --features geonav)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub geophysical: Option<GeophysicalConfig>,
-    /// GNSS degradation configuration (scheduler + fault model)
-    #[serde(default)]
-    pub gnss_degradation: crate::messages::GnssDegradationConfig,
+    /// Aiding-measurement configuration: the GNSS, barometer and magnetometer schedules, the
+    /// GNSS fault model, and the barometer's noise and bias-state index.
+    ///
+    /// `#[serde(alias = "gnss_degradation")]` keeps every configuration file written before
+    /// this field was renamed parsing unchanged. The old name described the type when it
+    /// scheduled GNSS alone; it now carries `baro_scheduler`, `magnetometer_scheduler`,
+    /// `baro_noise_std_m` and `baro_bias_index` as well, and only GNSS has a fault model at
+    /// all. The alias is load-bearing -- the fifteen recipes under `conf/` all spell the old
+    /// name -- so do not drop it.
+    #[serde(default, alias = "gnss_degradation")]
+    pub aiding: crate::messages::AidingConfig,
     /// Synthetic trajectory configuration (only used if mode is Synthetic)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub synthetic: Option<SyntheticConfig>,
@@ -5301,7 +5316,7 @@ impl Default for SimulationConfig {
             closed_loop: Some(ClosedLoopConfig::default()),
             particle_filter: None,
             geophysical: None,
-            gnss_degradation: crate::messages::GnssDegradationConfig::default(),
+            aiding: crate::messages::AidingConfig::default(),
             synthetic: None,
         }
     }
@@ -5558,9 +5573,17 @@ pub struct GeonavSimulationConfig {
     /// Geophysical measurement configuration
     #[serde(default)]
     pub geophysical: GeophysicalConfig,
-    /// GNSS degradation configuration (scheduler + fault model)
-    #[serde(default)]
-    pub gnss_degradation: crate::messages::GnssDegradationConfig,
+    /// Aiding-measurement configuration: the GNSS, barometer and magnetometer schedules, the
+    /// GNSS fault model, and the barometer's noise and bias-state index.
+    ///
+    /// `#[serde(alias = "gnss_degradation")]` keeps every configuration file written before
+    /// this field was renamed parsing unchanged. The old name described the type when it
+    /// scheduled GNSS alone; it now carries `baro_scheduler`, `magnetometer_scheduler`,
+    /// `baro_noise_std_m` and `baro_bias_index` as well, and only GNSS has a fault model at
+    /// all. The alias is load-bearing -- the fifteen recipes under `conf/` all spell the old
+    /// name -- so do not drop it.
+    #[serde(default, alias = "gnss_degradation")]
+    pub aiding: crate::messages::AidingConfig,
 }
 
 impl Default for GeonavSimulationConfig {
@@ -5574,7 +5597,7 @@ impl Default for GeonavSimulationConfig {
             generate_plot: false,
             logging: LoggingConfig::default(),
             geophysical: GeophysicalConfig::default(),
-            gnss_degradation: crate::messages::GnssDegradationConfig::default(),
+            aiding: crate::messages::AidingConfig::default(),
         }
     }
 }
@@ -8652,7 +8675,7 @@ mod tests {
             duty_phase_s: 0.0,
         };
         let scheduler = build_scheduler(&args);
-        matches!(scheduler, GnssScheduler::PassThrough);
+        matches!(scheduler, MeasurementScheduler::PassThrough);
     }
 
     #[test]
@@ -8666,7 +8689,7 @@ mod tests {
             duty_phase_s: 0.0,
         };
         let scheduler = build_scheduler(&args);
-        if let GnssScheduler::FixedInterval {
+        if let MeasurementScheduler::FixedInterval {
             interval_s,
             phase_s,
         } = scheduler
@@ -8689,7 +8712,7 @@ mod tests {
             duty_phase_s: 2.0,
         };
         let scheduler = build_scheduler(&args);
-        if let GnssScheduler::DutyCycle {
+        if let MeasurementScheduler::DutyCycle {
             on_s,
             off_s,
             start_phase_s,
@@ -9368,7 +9391,7 @@ mod tests {
     fn particle_filter_conversion_labels_its_geophysical_states() {
         let timestamp = Utc::now();
         // Nine navigation states, then gravity, then magnetic -- the order
-        // `GeoStateLayout` fixes and `geonav`'s `build_event_stream` counts back from.
+        // `ExtraStateLayout` fixes and `geonav`'s `build_event_stream` counts back from.
         let mean = DVector::from_vec(vec![
             0.7, -1.3, 100.0, 1.0, 2.0, 3.0, 0.1, 0.2, 0.3, 12.5, -40.0,
         ]);
@@ -9378,7 +9401,7 @@ mod tests {
         }
         // Nine navigation states wide plus the two biases, gravity at 9 and magnetic at 10 --
         // the placement `GeoBiasLayout::appended` gives an RBPF run.
-        let layout = GeoStateLayout::new(11, Some(9), Some(10));
+        let layout = ExtraStateLayout::new(11, Some(9), Some(10));
 
         let result =
             NavigationResult::from_particle_filter_with_geo(&timestamp, &mean, &cov, layout);
@@ -9430,7 +9453,7 @@ mod tests {
             &timestamp,
             &mean,
             &cov,
-            GeoStateLayout::new(10, None, Some(9)),
+            ExtraStateLayout::new(10, None, Some(9)),
         );
         assert_eq!(
             magnetic_only.gravity_bias, None,
@@ -9444,7 +9467,7 @@ mod tests {
             &timestamp,
             &mean,
             &cov,
-            GeoStateLayout::new(10, Some(9), None),
+            ExtraStateLayout::new(10, Some(9), None),
         );
         assert_approx_eq!(gravity_only.gravity_bias.unwrap(), -40.0, 1e-12);
         assert_eq!(gravity_only.magnetic_bias, None);
@@ -9483,7 +9506,7 @@ mod tests {
     /// A particle-width layout goes through the particle constructor, not off the end.
     ///
     /// The four-tuple `From` asserts the state is `layout.state_dim()` wide -- nine, for
-    /// [`GeoStateLayout::PARTICLE_NONE`], which a particle estimate satisfies -- and then used
+    /// [`ExtraStateLayout::PARTICLE_NONE`], which a particle estimate satisfies -- and then used
     /// to read `state[9]..state[14]` for the IMU-bias block a particle filter does not have.
     /// The width assertion passed and the indexing panicked, which is why every particle event
     /// loop in this workspace is hand-rolled rather than going through
@@ -9496,7 +9519,7 @@ mod tests {
         let cov = DMatrix::<f64>::identity(PARTICLE_FILTER_STATES, PARTICLE_FILTER_STATES) * 0.25;
 
         let through_from =
-            NavigationResult::from((&timestamp, &mean, &cov, GeoStateLayout::PARTICLE_NONE));
+            NavigationResult::from((&timestamp, &mean, &cov, ExtraStateLayout::PARTICLE_NONE));
         let through_constructor = NavigationResult::from_particle_filter(&timestamp, &mean, &cov);
 
         assert_eq!(through_from.latitude, through_constructor.latitude);
@@ -9513,19 +9536,19 @@ mod tests {
 
     /// The unaided layouts differ by filter, and it is the width that differs.
     ///
-    /// [`GeoStateLayout::NONE`] describes the Kalman filters' unaided shape and is fifteen
+    /// [`ExtraStateLayout::NONE`] describes the Kalman filters' unaided shape and is fifteen
     /// wide. Handing it to the particle conversion would fail on the first row of every
-    /// ordinary particle run, which is why [`GeoStateLayout::PARTICLE_NONE`] exists.
+    /// ordinary particle run, which is why [`ExtraStateLayout::PARTICLE_NONE`] exists.
     #[test]
     fn unaided_layouts_carry_each_filter_s_own_width() {
-        assert_eq!(GeoStateLayout::NONE.state_dim(), NAVIGATION_STATES);
+        assert_eq!(ExtraStateLayout::NONE.state_dim(), NAVIGATION_STATES);
         assert_eq!(
-            GeoStateLayout::PARTICLE_NONE.state_dim(),
+            ExtraStateLayout::PARTICLE_NONE.state_dim(),
             PARTICLE_FILTER_STATES
         );
-        assert!(GeoStateLayout::PARTICLE_NONE.is_empty());
-        assert_eq!(GeoStateLayout::PARTICLE_NONE.gravity_index(), None);
-        assert_eq!(GeoStateLayout::PARTICLE_NONE.magnetic_index(), None);
+        assert!(ExtraStateLayout::PARTICLE_NONE.is_empty());
+        assert_eq!(ExtraStateLayout::PARTICLE_NONE.gravity_index(), None);
+        assert_eq!(ExtraStateLayout::PARTICLE_NONE.magnetic_index(), None);
     }
 
     /// A bias index inside the navigation states is refused rather than read.
@@ -9544,7 +9567,7 @@ mod tests {
             &timestamp,
             &mean,
             &cov,
-            GeoStateLayout::new(10, Some(8), None),
+            ExtraStateLayout::new(10, Some(8), None),
         );
     }
 

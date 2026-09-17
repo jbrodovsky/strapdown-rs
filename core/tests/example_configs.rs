@@ -11,23 +11,23 @@
 //!
 //! These files are the worked examples the README and the mdBook point users at, and they are
 //! the first thing anyone runs. Nothing else in the test suite loaded them, so the names drifted
-//! out of sync with [`GnssScheduler`] and [`GnssFaultModel`] unnoticed: at the time this test
+//! out of sync with [`MeasurementScheduler`] and [`GnssFaultModel`] unnoticed: at the time this test
 //! was written eight of them named variants that do not exist (`duty`, `passthrough`,
 //! `slowbias`), and failed on the user's machine rather than in CI.
 //!
-//! Parsing alone is not enough of a check. Every field of [`GnssDegradationConfig`] has a
+//! Parsing alone is not enough of a check. Every field of [`AidingConfig`] has a
 //! default, so a file whose `scheduler` section is misspelled deserializes happily into a
 //! pass-through config and silently simulates nothing. The variant assertions below are what
 //! make a misspelling fail.
 
 use std::path::{Path, PathBuf};
 
-use strapdown::messages::{GnssDegradationConfig, GnssFaultModel, GnssScheduler};
+use strapdown::messages::{AidingConfig, GnssFaultModel, MeasurementScheduler};
 
 /// Scenario configs live at the top level of `examples/configs/`.
 ///
 /// The `json/` subdirectory is deliberately excluded: those files are `{name, args}` CLI
-/// invocation presets, not [`GnssDegradationConfig`] documents, and they use the *CLI's*
+/// invocation presets, not [`AidingConfig`] documents, and they use the *CLI's*
 /// vocabulary (`--sched duty`) rather than the config schema's (`kind: duty_cycle`).
 fn example_config_paths() -> Vec<PathBuf> {
     // `CARGO_MANIFEST_DIR` is the `core/` crate; the examples live at the workspace root.
@@ -81,11 +81,11 @@ fn declared_variants(text: &str) -> (&'static str, &'static str) {
     (scheduler, fault)
 }
 
-const fn scheduler_variant(scheduler: &GnssScheduler) -> &'static str {
+const fn scheduler_variant(scheduler: &MeasurementScheduler) -> &'static str {
     match scheduler {
-        GnssScheduler::PassThrough => "PassThrough",
-        GnssScheduler::FixedInterval { .. } => "FixedInterval",
-        GnssScheduler::DutyCycle { .. } => "DutyCycle",
+        MeasurementScheduler::PassThrough => "PassThrough",
+        MeasurementScheduler::FixedInterval { .. } => "FixedInterval",
+        MeasurementScheduler::DutyCycle { .. } => "DutyCycle",
     }
 }
 
@@ -107,7 +107,7 @@ fn every_example_config_deserializes_into_what_it_describes() {
         let name = path.file_name().unwrap_or_default().to_string_lossy();
         let text = std::fs::read_to_string(&path).expect("config should be readable");
 
-        let config = match GnssDegradationConfig::from_file(&path) {
+        let config = match AidingConfig::from_file(&path) {
             Ok(config) => config,
             Err(error) => {
                 failures.push(format!("{name}: failed to parse: {error}"));

@@ -156,13 +156,11 @@ use std::path::{Path, PathBuf};
 use nalgebra::Rotation3;
 use serde::{Deserialize, Serialize};
 
-use strapdown::messages::{
-    GnssDegradationConfig, GnssFaultModel, GnssScheduler, build_event_stream,
-};
+use strapdown::messages::{AidingConfig, GnssFaultModel, MeasurementScheduler, build_event_stream};
 use strapdown::metrics::{AccuracyMetrics, MetricDirection, MetricId, MetricOptions, TruthSample};
 use strapdown::rbpf::{RaoBlackwellizedParticleFilter, RbpfConfig};
 use strapdown::sim::{
-    EkfConfig, EskfConfig, GeoStateLayout, NavigationResult, SyntheticConfig,
+    EkfConfig, EskfConfig, ExtraStateLayout, NavigationResult, SyntheticConfig,
     SyntheticInitialState, TestDataRecord, UkfConfig, dead_reckoning, generate_synthetic,
     initialize_ekf, initialize_eskf, initialize_ukf, run_closed_loop, run_closed_loop_with_geo,
 };
@@ -259,7 +257,7 @@ struct Scenario {
     /// Which trajectory to run over.
     source: Source,
     /// GNSS scheduling and fault model.
-    gnss: GnssDegradationConfig,
+    gnss: AidingConfig,
     /// Which estimator to drive.
     estimator: Estimator,
 }
@@ -271,8 +269,8 @@ struct Scenario {
 fn scenarios() -> Vec<Scenario> {
     let mut out = Vec::new();
 
-    let clean = || GnssDegradationConfig {
-        scheduler: GnssScheduler::PassThrough,
+    let clean = || AidingConfig {
+        scheduler: MeasurementScheduler::PassThrough,
         fault: GnssFaultModel::None,
         seed: SEED,
         ..Default::default()
@@ -296,8 +294,8 @@ fn scenarios() -> Vec<Scenario> {
             id: format!("real_sparse_5s__{}", estimator.key()),
             description: "test_data.csv, GNSS every 5 s, no fault".to_string(),
             source: Source::Real,
-            gnss: GnssDegradationConfig {
-                scheduler: GnssScheduler::FixedInterval {
+            gnss: AidingConfig {
+                scheduler: MeasurementScheduler::FixedInterval {
                     interval_s: 5.0,
                     phase_s: 0.0,
                 },
@@ -316,8 +314,8 @@ fn scenarios() -> Vec<Scenario> {
         id: "real_outage_60s__eskf".to_string(),
         description: "test_data.csv, 120 s of GNSS then a 60 s outage, repeating".to_string(),
         source: Source::Real,
-        gnss: GnssDegradationConfig {
-            scheduler: GnssScheduler::DutyCycle {
+        gnss: AidingConfig {
+            scheduler: MeasurementScheduler::DutyCycle {
                 on_s: 120.0,
                 off_s: 60.0,
                 start_phase_s: 0.0,
@@ -337,8 +335,8 @@ fn scenarios() -> Vec<Scenario> {
             description: "test_data.csv, GNSS every epoch, AR(1) position and velocity fault"
                 .to_string(),
             source: Source::Real,
-            gnss: GnssDegradationConfig {
-                scheduler: GnssScheduler::PassThrough,
+            gnss: AidingConfig {
+                scheduler: MeasurementScheduler::PassThrough,
                 fault: GnssFaultModel::Degraded {
                     rho_pos: 0.98,
                     sigma_pos_m: 3.0,
@@ -361,8 +359,8 @@ fn scenarios() -> Vec<Scenario> {
             description: "synthetic 300 s at 50 Hz, GNSS every 1 s, scored against exact truth"
                 .to_string(),
             source: Source::Synthetic,
-            gnss: GnssDegradationConfig {
-                scheduler: GnssScheduler::FixedInterval {
+            gnss: AidingConfig {
+                scheduler: MeasurementScheduler::FixedInterval {
                     interval_s: 1.0,
                     phase_s: 0.0,
                 },
@@ -380,8 +378,8 @@ fn scenarios() -> Vec<Scenario> {
             id: format!("syn_outage_60s__{}", estimator.key()),
             description: "synthetic 300 s at 50 Hz, 60 s of GNSS then 60 s of outage".to_string(),
             source: Source::Synthetic,
-            gnss: GnssDegradationConfig {
-                scheduler: GnssScheduler::DutyCycle {
+            gnss: AidingConfig {
+                scheduler: MeasurementScheduler::DutyCycle {
                     on_s: 60.0,
                     off_s: 60.0,
                     start_phase_s: 0.0,
@@ -593,7 +591,7 @@ fn solve(scenario: &Scenario, trajectory: &Trajectory) -> Vec<NavigationResult> 
             run_closed_loop(&mut filter, stream, None, None).expect("ESKF closed loop")
         }
         Estimator::Rbpf => {
-            // Through the shared runner, not a hand-rolled loop: `GeoStateLayout::PARTICLE_NONE`
+            // Through the shared runner, not a hand-rolled loop: `ExtraStateLayout::PARTICLE_NONE`
             // now dispatches to the particle constructor inside `NavigationResult`'s four-tuple
             // `From`, which is what makes `run_closed_loop_with_geo` usable here.
             let mut filter = RaoBlackwellizedParticleFilter::new(
@@ -610,7 +608,7 @@ fn solve(scenario: &Scenario, trajectory: &Trajectory) -> Vec<NavigationResult> 
                 stream,
                 None,
                 None,
-                GeoStateLayout::PARTICLE_NONE,
+                ExtraStateLayout::PARTICLE_NONE,
             )
             .expect("RBPF closed loop")
         }

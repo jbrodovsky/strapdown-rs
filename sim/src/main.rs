@@ -34,7 +34,7 @@ use rayon::prelude::*;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use strapdown::messages::{Event, EventStream, GnssScheduler, build_event_stream};
+use strapdown::messages::{Event, EventStream, MeasurementScheduler, build_event_stream};
 use strapdown::rbpf::{RaoBlackwellizedParticleFilter, RbpfConfig};
 
 // Geophysical navigation imports (feature-gated)
@@ -65,8 +65,8 @@ use strapdown::sim::{
     DEFAULT_INITIAL_POSITION_UNCERTAINTY_M, DEFAULT_PROCESS_NOISE_DENSITY, GeoResolution,
 };
 use strapdown::sim::{
-    EkfConfig, EskfConfig, ExecutionLimits, ExecutionMonitor, FaultArgs, FilterType,
-    GeoStateLayout, NavigationResult, ParticleFilterType, SchedulerArgs, SimulationConfig,
+    EkfConfig, EskfConfig, ExecutionLimits, ExecutionMonitor, ExtraStateLayout, FaultArgs,
+    FilterType, NavigationResult, ParticleFilterType, SchedulerArgs, SimulationConfig,
     SimulationMode, SyntheticConfig, TestDataRecord, UkfConfig, build_fault, build_scheduler,
     check_declared_frame, dead_reckoning, generate_synthetic, initialize_ekf, initialize_eskf,
     initialize_ukf, run_closed_loop,
@@ -620,16 +620,16 @@ fn process_file(
 
             // Derived from the filter, not asked for a second time; see
             // `run_single_closed_loop_simulation` for why (#372).
-            let gnss_degradation = strapdown::messages::GnssDegradationConfig {
+            let aiding = strapdown::messages::AidingConfig {
                 baro_bias_index: match filter_config.filter {
                     FilterType::Ukf => ukf_config.baro_bias_index(),
                     FilterType::Ekf => ekf_config.baro_bias_index(),
                     FilterType::Eskf => eskf_config.baro_bias_index(),
                 },
-                ..config.gnss_degradation.clone()
+                ..config.aiding.clone()
             };
 
-            let event_stream = build_event_stream(&records, &gnss_degradation, config.is_enu)?;
+            let event_stream = build_event_stream(&records, &aiding, config.is_enu)?;
             info!(
                 "Initialized event stream with {} events",
                 event_stream.events.len()
@@ -759,7 +759,7 @@ fn process_file(
             let event_stream = if gravity_map.is_some() || magnetic_map.is_some() {
                 geo_build_event_stream(
                     &records,
-                    &config.gnss_degradation,
+                    &config.aiding,
                     gravity_map.clone(),
                     gravity_map.as_ref().map(|_| gravity_noise_std),
                     magnetic_map.clone(),
@@ -768,12 +768,11 @@ fn process_file(
                     geo_bias_layout,
                 )?
             } else {
-                build_event_stream(&records, &config.gnss_degradation, config.is_enu)?
+                build_event_stream(&records, &config.aiding, config.is_enu)?
             };
 
             #[cfg(not(feature = "geonav"))]
-            let event_stream =
-                build_event_stream(&records, &config.gnss_degradation, config.is_enu)?;
+            let event_stream = build_event_stream(&records, &config.aiding, config.is_enu)?;
 
             // The particle filter builds its nominal state here rather than through
             // `initialize_*`, so it has to run the frame guard itself.
@@ -829,15 +828,15 @@ fn process_file(
             // `PARTICLE_NONE` and not `NONE`: this filter's estimate is nine states, not the
             // Kalman filters' fifteen.
             #[cfg(feature = "geonav")]
-            let geo_layout = geo_bias_layout.map_or(GeoStateLayout::PARTICLE_NONE, |layout| {
-                GeoStateLayout::new(
+            let geo_layout = geo_bias_layout.map_or(ExtraStateLayout::PARTICLE_NONE, |layout| {
+                ExtraStateLayout::new(
                     layout.state_dim(),
                     layout.gravity_bias().map(|bias| bias.index),
                     layout.magnetic_bias().map(|bias| bias.index),
                 )
             });
             #[cfg(not(feature = "geonav"))]
-            let geo_layout = GeoStateLayout::PARTICLE_NONE;
+            let geo_layout = ExtraStateLayout::PARTICLE_NONE;
             let mut rbpf = RaoBlackwellizedParticleFilter::new(
                 nominal,
                 RbpfConfig {
@@ -1048,7 +1047,7 @@ fn run_from_config(
 fn run_single_closed_loop_simulation(
     filter_type: FilterType,
     records: &[TestDataRecord],
-    gnss_degradation: &strapdown::messages::GnssDegradationConfig,
+    aiding: &strapdown::messages::AidingConfig,
     output_file: &Path,
     execution_limits: ExecutionLimits,
     ukf_alpha: f64,
@@ -1086,17 +1085,17 @@ fn run_single_closed_loop_simulation(
     // filter's own. Deriving it here rather than asking for `baro_bias_index` to be set
     // beside `estimate_baro_bias` keeps the two from disagreeing -- a wrong index reads a
     // gyro bias as a barometric one (#372).
-    let gnss_degradation = strapdown::messages::GnssDegradationConfig {
+    let aiding = strapdown::messages::AidingConfig {
         baro_bias_index: match filter_type {
             FilterType::Ukf => ukf_config.baro_bias_index(),
             FilterType::Ekf => ekf_config.baro_bias_index(),
             FilterType::Eskf => eskf_config.baro_bias_index(),
         },
-        ..gnss_degradation.clone()
+        ..aiding.clone()
     };
 
     // Build event stream from records and GNSS degradation config
-    let event_stream = build_event_stream(records, &gnss_degradation, is_enu)?;
+    let event_stream = build_event_stream(records, &aiding, is_enu)?;
     info!(
         "Initialized event stream with {} events",
         event_stream.events.len()
@@ -1368,7 +1367,7 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
         };
 
         // Build GNSS degradation config from CLI args
-        let gnss_degradation = strapdown::messages::GnssDegradationConfig {
+        let aiding = strapdown::messages::AidingConfig {
             scheduler: build_scheduler(&args.scheduler),
             fault: build_fault(&args.fault),
             seed: args.seed,
@@ -1377,14 +1376,14 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
             ..Default::default()
         };
 
-        info!("Using GNSS degradation config: {gnss_degradation:?}");
+        info!("Using GNSS degradation config: {aiding:?}");
         let output_file = resolve_output_path(&args.sim.output, input_file, &csv_files)?;
 
         // Run simulation using the common helper function
         match run_single_closed_loop_simulation(
             args.filter,
             &records,
-            &gnss_degradation,
+            &aiding,
             &output_file,
             execution_limits.clone(),
             args.ukf_alpha,
@@ -1601,7 +1600,7 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
         };
 
         // Build GNSS degradation config from CLI args
-        let gnss_degradation = strapdown::messages::GnssDegradationConfig {
+        let aiding = strapdown::messages::AidingConfig {
             scheduler: build_scheduler(&args.scheduler),
             fault: build_fault(&args.fault),
             seed: args.seed,
@@ -1623,7 +1622,7 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
         // Build event stream with geophysical measurements
         let events = geo_build_event_stream(
             &records,
-            &gnss_degradation,
+            &aiding,
             gravity_map.clone(),
             if gravity_map.is_some() {
                 Some(args.geo.gravity_noise_std)
@@ -1648,8 +1647,8 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
         // cannot name `GeoBiasLayout`. Derived from that layout rather than rebuilt from the
         // map flags, so where the biases live is decided once: a filter that put them
         // somewhere other than the end would move both together.
-        let geo_layout = geo_bias_layout.map_or(GeoStateLayout::NONE, |layout| {
-            GeoStateLayout::new(
+        let geo_layout = geo_bias_layout.map_or(ExtraStateLayout::NONE, |layout| {
+            ExtraStateLayout::new(
                 layout.state_dim(),
                 layout.gravity_bias().map(|bias| bias.index),
                 layout.magnetic_bias().map(|bias| bias.index),
@@ -1854,7 +1853,7 @@ fn run_rbpf_event_loop(
     rbpf: &mut RaoBlackwellizedParticleFilter,
     event_stream: EventStream,
     execution_limits: &ExecutionLimits,
-    geo_layout: GeoStateLayout,
+    geo_layout: ExtraStateLayout,
 ) -> Result<Vec<NavigationResult>, Box<dyn Error>> {
     let start_time = event_stream.start_time;
     let mut results = Vec::with_capacity(event_stream.events.len());
@@ -1962,7 +1961,7 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
             Err(e) => return Err(e),
         };
 
-        let gnss_degradation = strapdown::messages::GnssDegradationConfig {
+        let aiding = strapdown::messages::AidingConfig {
             scheduler: build_scheduler(&args.scheduler),
             fault: build_fault(&args.fault),
             seed: args.seed,
@@ -2011,7 +2010,7 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
         };
 
         #[cfg(not(feature = "geonav"))]
-        let event_stream = build_event_stream(&records, &gnss_degradation, args.sim.enu)?;
+        let event_stream = build_event_stream(&records, &aiding, args.sim.enu)?;
 
         // As above: one layout drives both the measurements' declaration and the filter's
         // extra states. This path also builds an RBPF, so the base is the navigation states.
@@ -2026,7 +2025,7 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
         let event_stream = if args.geo.geo {
             geo_build_event_stream(
                 &records,
-                &gnss_degradation,
+                &aiding,
                 gravity_map.clone(),
                 gravity_map.as_ref().map(|_| args.geo.gravity_noise_std),
                 magnetic_map.clone(),
@@ -2035,7 +2034,7 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
                 geo_bias_layout,
             )?
         } else {
-            build_event_stream(&records, &gnss_degradation, args.sim.enu)?
+            build_event_stream(&records, &aiding, args.sim.enu)?
         };
 
         #[cfg(feature = "geonav")]
@@ -2050,15 +2049,15 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
         // `PARTICLE_NONE` and not `NONE`: this filter's estimate is nine states, not the
         // Kalman filters' fifteen.
         #[cfg(feature = "geonav")]
-        let geo_layout = geo_bias_layout.map_or(GeoStateLayout::PARTICLE_NONE, |layout| {
-            GeoStateLayout::new(
+        let geo_layout = geo_bias_layout.map_or(ExtraStateLayout::PARTICLE_NONE, |layout| {
+            ExtraStateLayout::new(
                 layout.state_dim(),
                 layout.gravity_bias().map(|bias| bias.index),
                 layout.magnetic_bias().map(|bias| bias.index),
             )
         });
         #[cfg(not(feature = "geonav"))]
-        let geo_layout = GeoStateLayout::PARTICLE_NONE;
+        let geo_layout = ExtraStateLayout::PARTICLE_NONE;
 
         check_declared_frame(&records, args.sim.enu)?;
         let first = &records[0];
@@ -2200,7 +2199,7 @@ fn prompt_seed() -> u64 {
 }
 
 /// Prompt for GNSS scheduler configuration
-fn prompt_gnss_scheduler() -> GnssScheduler {
+fn prompt_measurement_scheduler() -> MeasurementScheduler {
     loop {
         println!(
             "Would you like to add a GNSS scheduler to simulate periodic denial or jamming?\n\
@@ -2211,7 +2210,7 @@ fn prompt_gnss_scheduler() -> GnssScheduler {
         );
         if let Some(input) = read_user_input() {
             match input.as_str() {
-                "1" => return GnssScheduler::PassThrough,
+                "1" => return MeasurementScheduler::PassThrough,
                 "2" => return prompt_fixed_interval_scheduler(),
                 "3" => return prompt_duty_cycle_scheduler(),
                 _ => println!("Error: Invalid selection. Please enter 1, 2, 3, or q.\n"),
@@ -2221,7 +2220,7 @@ fn prompt_gnss_scheduler() -> GnssScheduler {
 }
 
 /// Prompt for Fixed Interval scheduler parameters
-fn prompt_fixed_interval_scheduler() -> GnssScheduler {
+fn prompt_fixed_interval_scheduler() -> MeasurementScheduler {
     let interval_s = loop {
         println!("Enter the interval between measurements in seconds (or 'q' to quit):");
         if let Some(input) = read_user_input() {
@@ -2243,14 +2242,14 @@ fn prompt_fixed_interval_scheduler() -> GnssScheduler {
         }
     };
 
-    GnssScheduler::FixedInterval {
+    MeasurementScheduler::FixedInterval {
         interval_s,
         phase_s,
     }
 }
 
 /// Prompt for Duty Cycle scheduler parameters
-fn prompt_duty_cycle_scheduler() -> GnssScheduler {
+fn prompt_duty_cycle_scheduler() -> MeasurementScheduler {
     let on_s = loop {
         println!("Enter the ON duration in seconds (or 'q' to quit):");
         if let Some(input) = read_user_input() {
@@ -2282,7 +2281,7 @@ fn prompt_duty_cycle_scheduler() -> GnssScheduler {
         }
     };
 
-    GnssScheduler::DutyCycle {
+    MeasurementScheduler::DutyCycle {
         on_s,
         off_s,
         start_phase_s,
@@ -2745,10 +2744,10 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
     };
 
     // GNSS degradation configuration
-    let scheduler = prompt_gnss_scheduler();
+    let scheduler = prompt_measurement_scheduler();
     let fault = prompt_gnss_fault_model();
 
-    let gnss_degradation = strapdown::messages::GnssDegradationConfig {
+    let aiding = strapdown::messages::AidingConfig {
         scheduler,
         fault,
         seed,
@@ -2811,7 +2810,7 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
         closed_loop,
         particle_filter,
         geophysical,
-        gnss_degradation,
+        aiding,
         synthetic: None,
     };
 
@@ -2913,21 +2912,21 @@ mod tests {
     }
 
     #[test]
-    fn test_gnss_scheduler_variants() {
-        let passthrough = GnssScheduler::PassThrough;
-        let fixed = GnssScheduler::FixedInterval {
+    fn test_measurement_scheduler_variants() {
+        let passthrough = MeasurementScheduler::PassThrough;
+        let fixed = MeasurementScheduler::FixedInterval {
             interval_s: 1.0,
             phase_s: 0.0,
         };
-        let duty = GnssScheduler::DutyCycle {
+        let duty = MeasurementScheduler::DutyCycle {
             on_s: 10.0,
             off_s: 10.0,
             start_phase_s: 0.0,
         };
 
-        assert!(matches!(passthrough, GnssScheduler::PassThrough));
-        assert!(matches!(fixed, GnssScheduler::FixedInterval { .. }));
-        assert!(matches!(duty, GnssScheduler::DutyCycle { .. }));
+        assert!(matches!(passthrough, MeasurementScheduler::PassThrough));
+        assert!(matches!(fixed, MeasurementScheduler::FixedInterval { .. }));
+        assert!(matches!(duty, MeasurementScheduler::DutyCycle { .. }));
     }
 
     #[test]

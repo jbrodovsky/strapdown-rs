@@ -36,7 +36,7 @@ dropped and the run proceeds with no degradation at all — a scenario that look
 and simulated nothing. This is the single most common way to get a wrong result out of the
 simulator.
 
-Config files use the names of the `GnssScheduler` and `GnssFaultModel` variants:
+Config files use the names of the `MeasurementScheduler` and `GnssFaultModel` variants:
 
 | Section | Valid `kind` values |
 |---|---|

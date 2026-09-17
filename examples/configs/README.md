@@ -182,7 +182,7 @@ baro_scheduler:
 
 > **Config files and CLI flags use different names for the same thing.** In a config file the
 > scheduler kinds are `pass_through`, `fixed_interval` and `duty_cycle`, matching the
-> `GnssScheduler` variants. The equivalent CLI flags are `--sched passthrough|fixed|duty`, and
+> `MeasurementScheduler` variants. The equivalent CLI flags are `--sched passthrough|fixed|duty`, and
 > the duty phase is `--duty-phase-s` rather than `--phase-s`. A misspelled `kind` does not
 > error: every field has a default, so the section is silently dropped and the run proceeds
 > with no degradation at all. `core/tests/example_configs.rs` guards the files in this

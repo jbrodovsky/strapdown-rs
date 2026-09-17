@@ -453,8 +453,8 @@ fn test_rbpf_closed_loop_on_real_data() {
     );
 
     // Build event stream with passthrough GNSS
-    let cfg = GnssDegradationConfig {
-        scheduler: GnssScheduler::PassThrough,
+    let cfg = AidingConfig {
+        scheduler: MeasurementScheduler::PassThrough,
         fault_model: GnssFaultModel::None,
     };
     let stream = build_event_stream(&records, &cfg).expect("records must not be empty");

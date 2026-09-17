@@ -44,7 +44,7 @@ use strapdown::measurements::{
     GPSPositionAndVelocityMeasurement, MeasurementModel, RelativeAltitudeMeasurement,
 };
 use strapdown::messages::{
-    Event, EventStream, FaultState, GnssDegradationConfig, GnssScheduler, apply_fault,
+    AidingConfig, Event, EventStream, FaultState, MeasurementScheduler, apply_fault,
 };
 use strapdown::sim::TestDataRecord;
 use strapdown::{IMUData, StrapdownState};
@@ -1433,7 +1433,7 @@ fn observed_field_nt(record: &TestDataRecord) -> f64 {
 )]
 pub fn build_event_stream(
     records: &[TestDataRecord],
-    cfg: &GnssDegradationConfig,
+    cfg: &AidingConfig,
     gravity_map: Option<Rc<GeoMap>>,
     gravity_noise_std: Option<f64>,
     magnetic_map: Option<Rc<GeoMap>>,
@@ -1467,9 +1467,9 @@ pub fn build_event_stream(
 
     // Scheduler state
     let mut next_emit_time = match cfg.scheduler {
-        GnssScheduler::PassThrough => 0.0,
-        GnssScheduler::FixedInterval { phase_s, .. } => phase_s,
-        GnssScheduler::DutyCycle { start_phase_s, .. } => start_phase_s,
+        MeasurementScheduler::PassThrough => 0.0,
+        MeasurementScheduler::FixedInterval { phase_s, .. } => phase_s,
+        MeasurementScheduler::DutyCycle { start_phase_s, .. } => start_phase_s,
     };
     let mut duty_on = true;
 
@@ -1502,8 +1502,8 @@ pub fn build_event_stream(
         }
         // Decide if GNSS should be emitted at t1
         let should_emit = match cfg.scheduler {
-            GnssScheduler::PassThrough => true,
-            GnssScheduler::FixedInterval { interval_s, .. } => {
+            MeasurementScheduler::PassThrough => true,
+            MeasurementScheduler::FixedInterval { interval_s, .. } => {
                 if *t1 + 1e-9 >= next_emit_time {
                     next_emit_time += interval_s;
                     true
@@ -1511,7 +1511,7 @@ pub fn build_event_stream(
                     false
                 }
             }
-            GnssScheduler::DutyCycle { on_s, off_s, .. } => {
+            MeasurementScheduler::DutyCycle { on_s, off_s, .. } => {
                 let window = if duty_on { on_s } else { off_s };
                 if *t1 + 1e-9 >= next_emit_time {
                     duty_on = !duty_on;
@@ -1707,7 +1707,7 @@ mod tests {
     use nalgebra::{DMatrix, DVector};
     use std::rc::Rc;
     use strapdown::earth::GP;
-    use strapdown::messages::{GnssDegradationConfig, GnssFaultModel, GnssScheduler};
+    use strapdown::messages::{AidingConfig, GnssFaultModel, MeasurementScheduler};
     use strapdown::sim::TestDataRecord;
 
     /// Helper function to create a simple test gravity map
@@ -2017,8 +2017,8 @@ mod tests {
     /// of `build_event_stream` carried the identical defect, so it gets the identical test.
     #[test]
     fn empty_records_are_an_error_not_a_panic() {
-        let config = GnssDegradationConfig {
-            scheduler: GnssScheduler::PassThrough,
+        let config = AidingConfig {
+            scheduler: MeasurementScheduler::PassThrough,
             fault: GnssFaultModel::None,
             seed: 42,
             ..Default::default()
@@ -2042,8 +2042,8 @@ mod tests {
     #[test]
     fn single_record_yields_a_stream_with_no_events() {
         let records = create_test_records();
-        let config = GnssDegradationConfig {
-            scheduler: GnssScheduler::PassThrough,
+        let config = AidingConfig {
+            scheduler: MeasurementScheduler::PassThrough,
             fault: GnssFaultModel::None,
             seed: 42,
             ..Default::default()
@@ -2072,8 +2072,8 @@ mod tests {
     #[test]
     fn test_build_event_stream() {
         let records = create_test_records();
-        let config = GnssDegradationConfig {
-            scheduler: GnssScheduler::PassThrough,
+        let config = AidingConfig {
+            scheduler: MeasurementScheduler::PassThrough,
             fault: GnssFaultModel::None,
             seed: 42,
             ..Default::default()
@@ -2115,8 +2115,8 @@ mod tests {
     #[test]
     fn test_build_event_stream_magnetic() {
         let records = create_test_records();
-        let config = GnssDegradationConfig {
-            scheduler: GnssScheduler::PassThrough,
+        let config = AidingConfig {
+            scheduler: MeasurementScheduler::PassThrough,
             fault: GnssFaultModel::None,
             seed: 42,
             ..Default::default()
@@ -2607,7 +2607,7 @@ mod tests {
 
         let stream = build_event_stream(
             &records,
-            &GnssDegradationConfig::default(),
+            &AidingConfig::default(),
             None,
             None,
             Some(Rc::new(create_test_magnetic_map())),
@@ -2646,7 +2646,7 @@ mod tests {
     #[test]
     fn test_event_stream_without_a_layout_declares_no_bias() {
         let records = create_test_records();
-        let config = GnssDegradationConfig::default();
+        let config = AidingConfig::default();
         let gravity = Rc::new(create_test_gravity_map());
         let magnetic = Rc::new(create_test_magnetic_map());
 
@@ -2776,8 +2776,8 @@ mod tests {
     #[test]
     fn test_build_event_stream_custom_noise() {
         let records = create_test_records();
-        let config = GnssDegradationConfig {
-            scheduler: GnssScheduler::PassThrough,
+        let config = AidingConfig {
+            scheduler: MeasurementScheduler::PassThrough,
             fault: GnssFaultModel::None,
             seed: 42,
             ..Default::default()
@@ -2819,8 +2819,8 @@ mod tests {
     #[test]
     fn test_build_event_stream_with_frequency() {
         let records = create_test_records();
-        let config = GnssDegradationConfig {
-            scheduler: GnssScheduler::PassThrough,
+        let config = AidingConfig {
+            scheduler: MeasurementScheduler::PassThrough,
             fault: GnssFaultModel::None,
             seed: 42,
             ..Default::default()

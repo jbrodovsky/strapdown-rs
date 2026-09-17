@@ -30,9 +30,7 @@
 use nalgebra::DVector;
 use strapdown::NavigationFilter;
 use strapdown::measurements::{MeasurementModel, RelativeAltitudeMeasurement};
-use strapdown::messages::{
-    GnssDegradationConfig, GnssFaultModel, GnssScheduler, build_event_stream,
-};
+use strapdown::messages::{AidingConfig, GnssFaultModel, MeasurementScheduler, build_event_stream};
 use strapdown::sim::{
     EkfConfig, EskfConfig, INITIAL_BARO_BIAS_VARIANCE_M2, TestDataRecord, UkfConfig,
     initialize_ekf, initialize_eskf, initialize_ukf,
@@ -76,8 +74,8 @@ fn check<F: NavigationFilter>(name: &str, filter: &mut F, records: &[TestDataRec
     );
     let stream = build_event_stream(
         records,
-        &GnssDegradationConfig {
-            scheduler: GnssScheduler::PassThrough,
+        &AidingConfig {
+            scheduler: MeasurementScheduler::PassThrough,
             fault: GnssFaultModel::None,
             baro_bias_index: Some(BARO_INDEX),
             ..Default::default()
@@ -85,7 +83,7 @@ fn check<F: NavigationFilter>(name: &str, filter: &mut F, records: &[TestDataRec
         REAL_DATA_IS_ENU,
     )
     .expect("event stream");
-    // Deliberately the plain runner, not `run_closed_loop_with_geo`. `GeoStateLayout::NONE`
+    // Deliberately the plain runner, not `run_closed_loop_with_geo`. `ExtraStateLayout::NONE`
     // is fifteen wide and the conversion into `NavigationResult` asserts the state matches,
     // so before #372 wired `NavigationFilter::baro_bias_index` through, this call panicked on
     // every filter carrying the state -- a `pub` config flag that broke the documented runner.
@@ -227,7 +225,7 @@ fn the_state_is_absent_unless_asked_for() {
 
 #[test]
 fn an_index_inside_the_navigation_states_is_rejected() {
-    // `bias_index` reaches this model from a deserialized `GnssDegradationConfig`, so it is
+    // `bias_index` reaches this model from a deserialized `AidingConfig`, so it is
     // user input. Before this check, an in-range but wrong index was accepted silently:
     // `2` made the model predict `alt + alt`, and `12` drove the barometer's innovation into
     // a **gyro bias**. Neither is a short read, so nothing downstream would have noticed.
