@@ -154,13 +154,16 @@ pub struct RbpfConfig {
     /// configuration. Kept at 1 here because a wider default proposal measurably
     /// degrades clean stationary tracking.
     pub position_process_noise_std_m: Vector3<f64>,
-    /// Velocity random-walk scale (m/s per second of sample period), applied
-    /// uniformly to the three velocity error states. Like the position term, the
-    /// predict step scales it by the IMU sample interval (`vel_noise = std * dt`).
+    /// Velocity random-walk scale, **m/s per root-second**, applied uniformly to the three
+    /// velocity error states.
+    ///
+    /// Like the position term the predict step scales it by `sqrt(dt)`, so the variance it
+    /// contributes grows linearly in elapsed time and is independent of the log's sample
+    /// rate. This said `std * dt` until #374 -- and this doc said so for longer than the code
+    /// did.
     pub velocity_process_noise_std_mps: f64,
-    /// Attitude random-walk scale (rad per second of sample period), applied
-    /// uniformly to the three attitude error states and likewise scaled by the IMU
-    /// sample interval in the predict step.
+    /// Attitude random-walk scale, **rad per root-second**, applied uniformly to the three
+    /// attitude error states and scaled by `sqrt(dt)` in the predict step, as above.
     pub attitude_process_noise_std_rad: f64,
     /// Additional linear states appended after velocity/attitude (e.g., map bias states).
     ///
@@ -171,7 +174,14 @@ pub struct RbpfConfig {
     pub extra_state_dim: usize,
     /// Initial standard deviation for extra states (applied uniformly).
     pub extra_state_init_std: f64,
-    /// Process noise standard deviation for extra states (random walk, applied uniformly).
+    /// Process-noise standard deviation for the extra states, **in the state's own units per
+    /// root-second**, applied uniformly as a random walk.
+    ///
+    /// Unlike every other block here it is applied as a per-particle draw on the mean rather
+    /// than through the conditional covariance, because these states are estimated by
+    /// importance weighting rather than analytically -- see the note at the draw in
+    /// `predict_sample` and #382. The variance it contributes to the reported estimate is
+    /// `std^2 * elapsed_seconds`, independent of sample rate.
     pub extra_state_process_noise_std: f64,
     /// Seed for the filter's random number generator, which draws the initial
     /// particle spread, the per-step process noise and the resampling indices. Runs
@@ -456,11 +466,36 @@ impl RaoBlackwellizedParticleFilter {
         // `sqrt(dt)`, so each config entry is a standard deviation per root-second and every
         // block's variance grows linearly in elapsed time.
         //
-        // Still open, deliberately: the extra-state noise enters twice, once through `q_l`
-        // here and again as a direct per-particle draw on the mean further down. Both are now
-        // scaled consistently, but whether both should exist at all is #382 -- it is a
-        // question about what the extra states are for, not about units, so it is not settled
-        // here.
+        // Settled by #382: the extra states take their process noise as a per-particle draw
+        // on the mean below, and get no entry in `q_l` at all.
+        //
+        // The entry that used to be here was not a second application of the noise. It was a
+        // **dead write**. Despite living in the linear container the extra states are not
+        // Rao-Blackwellised: `f_nl_full` has zero columns over them and `f_ll_full` is the
+        // identity there, so `linear_cov`'s (extra, base) cross-block is identically zero
+        // forever and the coupling gain `l` has zero extra rows. Every `h` handed to
+        // `update_linear_state` -- velocity, yaw, GPS position+velocity, the zero-vertical-
+        // velocity constraint -- likewise has zero extra columns, so the Kalman gain's extra
+        // rows are zero and `(I - k h) P` leaves that block untouched. And the reported
+        // covariance is not `linear_cov` at all: `weighted_moments` summarises the *cloud*,
+        // never `E_i[linear_cov]`. `particles` is private and nothing outside this file names
+        // `.linear_cov`. So a value written here reached no gain, no innovation covariance,
+        // no gate and no output. Removing it is bit-identical.
+        //
+        // Removing it also closes a narrow poisoning path: that block was guarded only on
+        // `extra_state_dim > 0`, while the draw below is additionally guarded on
+        // `std > 0.0`, which is false for NaN. A NaN process noise therefore wrote NaN into
+        // `linear_cov`, and annihilation by structural zeros is exact only for finite
+        // entries -- `0.0 * NaN` is NaN, so it propagated into `n` and poisoned every
+        // particle's position noise.
+        //
+        // **If an extra state ever acquires a real analytic measurement path** -- an `h` with
+        // a non-zero extra column routed into `update_linear_state` -- its noise must MOVE
+        // back here, replacing the draw, not be added alongside it. Note what that block
+        // would otherwise inherit: `p_new[(i, i)] += 1e-9` below runs over the whole
+        // diagonal, extras included, so the block is not frozen, it creeps at 1e-9 per step
+        // (1e-7/s at 100 Hz) -- a rate set by a conditioning constant rather than by any
+        // configuration. A plausible-looking wrong number is a worse trap than a static one.
         let root_dt = dt.sqrt();
         let pos_noise = position_std_to_state_units(
             &self.config.position_process_noise_std_m,
@@ -478,12 +513,6 @@ impl RaoBlackwellizedParticleFilter {
         for i in 0..3 {
             q_l[(i, i)] = vel_noise.powi(2);
             q_l[(i + 3, i + 3)] = att_noise.powi(2);
-        }
-        if self.config.extra_state_dim > 0 {
-            let extra_noise = self.config.extra_state_process_noise_std * root_dt;
-            for i in 0..self.config.extra_state_dim {
-                q_l[(LINEAR_STATE_DIM_BASE + i, LINEAR_STATE_DIM_BASE + i)] = extra_noise.powi(2);
-            }
         }
 
         // Propagate nominal state with strapdown mechanization.
@@ -537,7 +566,34 @@ impl RaoBlackwellizedParticleFilter {
             if self.config.extra_state_dim > 0 && self.config.extra_state_process_noise_std > 0.0 {
                 for i in 0..self.config.extra_state_dim {
                     let idx = LINEAR_STATE_DIM_BASE + i;
-                    // Second application of the same noise; see the note above and #382.
+                    // The extra states' only process noise, and deliberately a draw onto the
+                    // mean rather than a `q_l` entry (#382, acceptance criterion 4 -- this
+                    // reason is not inferable from the code).
+                    //
+                    // These states are not Rao-Blackwellised despite their address. No Kalman
+                    // gain reaches their rows, so a `q_l` entry lands in a block of
+                    // `linear_cov` that nothing reads, while the reported variance comes from
+                    // `weighted_moments` -- from the cloud. Putting the noise on the mean is
+                    // the only form in which it reaches anything observable: a geophysical
+                    // model has no downcast arm in `update_with`, so it falls through to
+                    // `update_weights_generic`, which scores each particle through
+                    // `particle_state_vector_full`, where the particle's OWN extra state
+                    // enters its residual and therefore its weight.
+                    //
+                    // **What this is, and is not.** It is a random-walk drift model for a map
+                    // bias. It is *not* a roughening step holding the cloud up, and the
+                    // sizing says so: at the shipped defaults the spread comes overwhelmingly
+                    // from `extra_state_init_std` (1.0) rather than from this draw (1e-3 per
+                    // root-second), which would need ~1e6 s of trajectory to contribute as
+                    // much variance as the initialiser hands over at t = 0. Do not rely on it
+                    // to prevent particle collapse.
+                    //
+                    // What is true is asymptotic: `predict` is exactly the identity on these
+                    // states without it, `maybe_resample` clones particles with no jitter,
+                    // `recenter_errors` shifts the cloud without widening it, and
+                    // `inflate_particle_spread` is multiplicative and so cannot manufacture
+                    // spread from none. Spread can therefore only decay, and this draw is the
+                    // only thing that regenerates it.
                     let noise = normal.sample(&mut self.rng)
                         * self.config.extra_state_process_noise_std
                         * root_dt;
@@ -1613,6 +1669,185 @@ mod tests {
             root_mean_square(ground.iter().map(|v| v[1])),
             root_mean_square(ground.iter().map(|v| v[2])),
         )
+    }
+
+    /// Propagate a cloud carrying one extra state and report the weighted spread of it.
+    ///
+    /// `extra_state_init_std` is zero on purpose: the per-particle draw in `predict_sample`
+    /// is then the *only* thing that can move the particles apart in that dimension, so the
+    /// variance this returns is attributable to it and to nothing else.
+    fn propagated_extra_state_variance(steps: usize, dt: f64, process_std: f64) -> f64 {
+        let gravity = earth::gravity(&SPREAD_TEST_LATITUDE_DEG, &SPREAD_TEST_ALTITUDE_M);
+        let mut rbpf = RaoBlackwellizedParticleFilter::new(
+            spread_test_nominal_state(),
+            RbpfConfig {
+                num_particles: 20_000,
+                extra_state_dim: 1,
+                extra_state_init_std: 0.0,
+                extra_state_process_noise_std: process_std,
+                position_process_noise_std_m: Vector3::new(1e-9, 1e-9, 1e-9),
+                velocity_process_noise_std_mps: 0.0,
+                attitude_process_noise_std_rad: 0.0,
+                zero_vertical_velocity: false,
+                seed: 382,
+                ..RbpfConfig::default()
+            },
+        )
+        .unwrap();
+        let imu = IMUData {
+            accel: Vector3::new(0.0, 0.0, gravity),
+            gyro: Vector3::zeros(),
+        };
+        for _ in 0..steps {
+            rbpf.predict(&imu, dt).unwrap();
+        }
+        let (_, covariance) = rbpf.estimate_with_extra_states();
+        covariance[(
+            crate::sim::PARTICLE_FILTER_STATES,
+            crate::sim::PARTICLE_FILTER_STATES,
+        )]
+    }
+
+    /// The extra-state process noise is applied **once**, and through the cloud (#382).
+    ///
+    /// This is the assertion that separates the two readings #382 could not choose between,
+    /// and it had to be written from scratch: before it, `strapdown-core` had no test that
+    /// ran `predict` with `extra_state_dim > 0` at all -- every extra-state test mutated
+    /// particles by hand, and the one gated RBPF scenario runs at `extra_state_dim: 0`, so
+    /// the deleted `q_l` line never executed anywhere the suite could see it.
+    ///
+    /// The reported variance must be `std^2 * elapsed`, not `2 std^2 * elapsed` (which is
+    /// what a live second application would give) and not zero.
+    #[test]
+    fn rbpf_extra_state_process_noise_is_applied_once_through_the_cloud() {
+        const STD: f64 = 0.5;
+        const ELAPSED_S: f64 = 4.0;
+
+        let measured = propagated_extra_state_variance(400, ELAPSED_S / 400.0, STD);
+        let expected = STD * STD * ELAPSED_S;
+
+        assert!(
+            (measured - expected).abs() / expected < 0.1,
+            "extra-state variance {measured:.6} against an expected {expected:.6}; \
+             {:.2}x -- 2x would mean the noise is applied twice, 0 that it is applied never",
+            measured / expected
+        );
+    }
+
+    /// The removed write stays removed.
+    ///
+    /// Deleting the `q_l` entry is bit-identical -- that is the whole argument for deleting
+    /// it -- so no accuracy test can notice if it comes back. This can: `linear_cov`'s extra
+    /// diagonal must not accumulate process noise, because nothing would ever read it if it
+    /// did. Without this, a future change could silently restore the dead write and every
+    /// other test in the tree would stay green.
+    ///
+    /// The `1e-9` tolerance is not slack: `p_new[(i, i)] += 1e-9` runs over the whole
+    /// diagonal, extras included, so the block creeps by exactly that per step from the
+    /// conditioning jitter. The bound is `steps * 1e-9` plus a little, and the quantity it
+    /// excludes -- `std^2 * elapsed` = 1.0 here -- is nine orders larger.
+    #[test]
+    fn the_extra_states_take_no_entry_in_the_conditional_covariance() {
+        const STEPS: usize = 400;
+        let gravity = earth::gravity(&SPREAD_TEST_LATITUDE_DEG, &SPREAD_TEST_ALTITUDE_M);
+        let mut rbpf = RaoBlackwellizedParticleFilter::new(
+            spread_test_nominal_state(),
+            RbpfConfig {
+                num_particles: 64,
+                extra_state_dim: 1,
+                extra_state_init_std: 0.0,
+                extra_state_process_noise_std: 0.5,
+                zero_vertical_velocity: false,
+                seed: 382,
+                ..RbpfConfig::default()
+            },
+        )
+        .unwrap();
+        let imu = IMUData {
+            accel: Vector3::new(0.0, 0.0, gravity),
+            gyro: Vector3::zeros(),
+        };
+        for _ in 0..STEPS {
+            rbpf.predict(&imu, 0.01).unwrap();
+        }
+
+        let extra = LINEAR_STATE_DIM_BASE;
+        let accumulated = rbpf.particles[0].linear_cov[(extra, extra)];
+        let jitter_ceiling = STEPS as f64 * 1e-9 * 1.5;
+        assert!(
+            accumulated < jitter_ceiling,
+            "linear_cov[({extra},{extra})] reached {accumulated:e} against a jitter ceiling \
+             of {jitter_ceiling:e}; the dead `q_l` entry has been restored -- it would have \
+             accumulated std^2 * elapsed = 1.0 here, and nothing reads it (#382)"
+        );
+    }
+
+    /// ...and it scales with elapsed time rather than with sample count (#374, #382).
+    ///
+    /// The property `rbpf_process_noise_depends_on_elapsed_time_not_sample_rate` pins for the
+    /// position block, which the extra states never had. A decade of sample rate must not
+    /// change the answer.
+    #[test]
+    fn rbpf_extra_state_noise_depends_on_elapsed_time_not_sample_rate() {
+        const STD: f64 = 0.5;
+
+        let fast = propagated_extra_state_variance(400, 0.01, STD);
+        let slow = propagated_extra_state_variance(40, 0.1, STD);
+
+        assert!(
+            (fast - slow).abs() / fast < 0.1,
+            "4 s of propagation gave {fast:.6} at 100 Hz and {slow:.6} at 10 Hz; a ratio \
+             away from 1 means the variance is a function of the log's sample rate"
+        );
+    }
+
+    /// The structural claim the whole of #382 rests on, asserted rather than argued.
+    ///
+    /// The `q_l` entry was removed because `linear_cov`'s extra block is *unreachable*: no
+    /// Kalman gain touches those rows, so anything written there is never read. That argument
+    /// is a proof about the code, and proofs about code rot. This pins the invariant it
+    /// depends on -- the (extra, base) cross-block stays exactly zero through propagation and
+    /// through a linear update -- so the day someone routes a non-zero extra column into
+    /// `update_linear_state`, this fails and the comment at the draw tells them what to do
+    /// about it: move the noise back into `q_l`, do not add it alongside.
+    #[test]
+    fn the_extra_states_stay_decoupled_from_the_kalman_block() {
+        let mut rbpf = rbpf_with_extra_states(2, 4242);
+        let imu = IMUData {
+            accel: Vector3::new(0.0, 0.0, earth::gravity(&40.1, &100.0)),
+            gyro: Vector3::new(0.01, -0.02, 0.03),
+        };
+        for _ in 0..8 {
+            rbpf.predict(&imu, 0.05).unwrap();
+        }
+        rbpf.update(&GPSPositionAndVelocityMeasurement {
+            latitude: 0.7_f64.to_degrees(),
+            longitude: (-1.3_f64).to_degrees(),
+            altitude: 100.0,
+            northward_velocity: 0.1,
+            eastward_velocity: -0.2,
+            horizontal_noise_std: 3.0,
+            vertical_noise_std: 5.0,
+            velocity_noise_std: 0.3,
+        })
+        .unwrap();
+
+        let covariance = &rbpf.particles[0].linear_cov;
+        assert!(
+            covariance.nrows() > LINEAR_STATE_DIM_BASE,
+            "no extra states, so the loop below would assert nothing"
+        );
+        for extra in LINEAR_STATE_DIM_BASE..covariance.nrows() {
+            for base in 0..LINEAR_STATE_DIM_BASE {
+                assert!(
+                    covariance[(extra, base)] == 0.0 && covariance[(base, extra)] == 0.0,
+                    "linear_cov[({extra},{base})] = {:e} -- the extra states have acquired a \
+                     cross-covariance with the Kalman block, so #382's premise that their \
+                     covariance entry is unreachable no longer holds",
+                    covariance[(extra, base)]
+                );
+            }
+        }
     }
 
     /// A heading measurement must actually reach the attitude states (#341).
