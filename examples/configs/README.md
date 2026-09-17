@@ -1,16 +1,35 @@
 # Example Configuration Files
 
-This directory contains example GNSS degradation configuration files for use with `strapdown-sim`. These scenarios demonstrate the various GNSS denial and degradation modes supported by the simulation.
+This directory contains example scenario configuration files for use with `strapdown-sim`. Each one is a complete `SimulationConfig` document: until the v1.0 freeze most were bare aiding fragments, which `--config` could not accept at all -- it parses a `SimulationConfig` and rejected them with ``missing field `mode` ``. These scenarios demonstrate the various GNSS denial and degradation modes supported by the simulation.
 
 ## Configuration File Format
 
-All configurations use YAML format and contain these sections:
+Each file is a `SimulationConfig`. `mode` is the only field without a default, and the aiding
+settings live under an **`aiding`** block:
+
+```yaml
+mode: closed-loop
+aiding:
+  scheduler: { kind: pass_through }
+  fault: { kind: none }
+  seed: 42
+```
+
+Inside `aiding`:
 - **scheduler**: Controls when GNSS measurements are available
 - **fault**: Controls how GNSS measurements are corrupted
 - **baro_scheduler**, **magnetometer_scheduler**: the same scheduling for the other two aiding
   channels, each on its own clock. Both default to `fixed_interval` at 1 Hz when omitted, so
   none of the files here sets them; neither channel is ever corrupted.
 - **seed**: Random seed for reproducibility
+
+`aiding` was called `gnss_degradation` before the v1.0 freeze -- it now carries the barometer
+and magnetometer too, so the name no longer fitted. The old spelling still parses
+(`#[serde(alias)]`), so existing config files keep working.
+
+`input` and `output` may be omitted: they default to `input.csv` and `output.csv`, and `-i`/`-o`
+on the command line override whatever the file says. None of the scenario files here sets them,
+so each one runs against whatever input you point it at.
 
 See the [User Guide](../../docs/USER_GUIDE.md) for detailed documentation.
 
@@ -25,7 +44,7 @@ See the [User Guide](../../docs/USER_GUIDE.md) for detailed documentation.
 No GNSS degradation - all measurements pass through unchanged. Use this as a reference for comparing degraded scenarios.
 
 ```bash
-strapdown-sim -i input.csv -o baseline.csv closed-loop --config baseline.yaml
+strapdown-sim cl -i input.csv -o baseline.csv --config baseline.yaml
 ```
 
 ---
@@ -104,11 +123,11 @@ Combines duty-cycled availability with hard spoofing.
 
 ```bash
 # Using a config file
-strapdown-sim -i data/input.csv -o results/output.csv closed-loop \
+strapdown-sim cl -i data/input.csv -o results/output.csv \
   --config examples/configs/degraded_5s.yaml
 
 # Override seed for different realization
-strapdown-sim -i data/input.csv -o results/output.csv closed-loop \
+strapdown-sim cl -i data/input.csv -o results/output.csv \
   --config examples/configs/degraded_5s.yaml \
   --seed 123
 ```
@@ -120,7 +139,7 @@ strapdown-sim -i data/input.csv -o results/output.csv closed-loop \
 # Run all scenarios
 for config in examples/configs/*.yaml; do
   name=$(basename "$config" .yaml)
-  strapdown-sim -i data/input.csv -o "results/${name}.csv" closed-loop \
+  strapdown-sim cl -i data/input.csv -o "results/${name}.csv" \
     --config "$config"
 done
 ```
@@ -146,6 +165,8 @@ To create a custom scenario:
 3. Save with a `.yaml`, `.json`, or `.toml` extension
 
 ### Scheduler Options
+
+These all sit under the `aiding:` block shown above.
 
 ```yaml
 # All measurements pass through
@@ -189,6 +210,8 @@ baro_scheduler:
 > directory against exactly that.
 
 ### Fault Model Options
+
+These all sit under the `aiding:` block shown above.
 
 ```yaml
 # No corruption

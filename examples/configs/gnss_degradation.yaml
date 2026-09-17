@@ -1,12 +1,19 @@
-scheduler:
-  kind: fixed_interval
-  interval_s: 10.0
-  phase_s: 0.0
-fault:
-  kind: degraded
-  rho_pos: 0.99
-  sigma_pos_m: 3.0
-  rho_vel: 0.95
-  sigma_vel_mps: 0.3
-  r_scale: 5.0
-seed: 42
+# Promoted to a full simulation config at the v1.0 freeze. `--config` parses a
+# `SimulationConfig`, so a bare aiding document could not be passed to it -- it failed
+# with `missing field `mode``. The scenario itself is unchanged, just nested under
+# `aiding:`. `input`/`output` are omitted deliberately: they default to input.csv and
+# output.csv, and `-i`/`-o` on the command line override whatever is here.
+mode: closed-loop
+aiding:
+  scheduler:
+    kind: fixed_interval
+    interval_s: 10.0
+    phase_s: 0.0
+  fault:
+    kind: degraded
+    rho_pos: 0.99
+    sigma_pos_m: 3.0
+    rho_vel: 0.95
+    sigma_vel_mps: 0.3
+    r_scale: 5.0
+  seed: 42

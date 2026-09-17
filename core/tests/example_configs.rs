@@ -22,7 +22,8 @@
 
 use std::path::{Path, PathBuf};
 
-use strapdown::messages::{AidingConfig, GnssFaultModel, MeasurementScheduler};
+use strapdown::messages::{GnssFaultModel, MeasurementScheduler};
+use strapdown::sim::SimulationConfig;
 
 /// Scenario configs live at the top level of `examples/configs/`.
 ///
@@ -107,7 +108,15 @@ fn every_example_config_deserializes_into_what_it_describes() {
         let name = path.file_name().unwrap_or_default().to_string_lossy();
         let text = std::fs::read_to_string(&path).expect("config should be readable");
 
-        let config = match AidingConfig::from_file(&path) {
+        // Parsed as a `SimulationConfig`, which is what `--config` actually feeds them to
+        // (`sim/src/main.rs`), NOT as a bare `AidingConfig`. That distinction is the whole
+        // point: until the v1.0 freeze this test parsed every file as an `AidingConfig`, so a
+        // file that was really a full simulation config -- `geonav_example.toml` -- parsed to
+        // all-defaults, declared no scheduler or fault, and passed trivially while being
+        // broken six ways (`mode = "ClosedLoop"`, `filter = "Ukf"`, two `"OneMinute"`
+        // resolutions, and `type =` where the tag key is `kind`). Running it produced
+        // `unknown variant `ClosedLoop``. Parsing as the type the CLI uses is what catches it.
+        let config = match SimulationConfig::from_file(&path) {
             Ok(config) => config,
             Err(error) => {
                 failures.push(format!("{name}: failed to parse: {error}"));
@@ -116,8 +125,8 @@ fn every_example_config_deserializes_into_what_it_describes() {
         };
 
         let (expected_scheduler, expected_fault) = declared_variants(&text);
-        let actual_scheduler = scheduler_variant(&config.scheduler);
-        let actual_fault = fault_variant(&config.fault);
+        let actual_scheduler = scheduler_variant(&config.aiding.scheduler);
+        let actual_fault = fault_variant(&config.aiding.fault);
 
         // `Combo` wraps other faults, so its file mentions their names too; accept it for any
         // declared fault rather than trying to guess which of them is the outer one.
