@@ -496,11 +496,11 @@ struct ParticleFilterSimArgs {
     #[arg(long, value_delimiter = ',', num_args = 3, default_value = "1,1,1")]
     process_noise_std_m: Vec<f64>,
 
-    /// Velocity process noise standard deviation (m/s).
+    /// Velocity random-walk rate (m/s per sqrt(s); unchanged at a 1 s step).
     #[arg(long, default_value_t = 1e-3)]
     velocity_process_noise_std_mps: f64,
 
-    /// Attitude process noise standard deviation (rad).
+    /// Attitude random-walk rate (rad per sqrt(s); unchanged at a 1 s step).
     #[arg(long, default_value_t = 0.01)]
     attitude_process_noise_std_rad: f64,
 
@@ -528,7 +528,7 @@ struct ParticleFilterSimArgs {
     #[arg(long, default_value_t = 1.0)]
     geo_bias_init_std: f64,
 
-    /// Random-walk process noise standard deviation for geophysical bias states.
+    /// Random-walk rate for geophysical bias states (bias units per sqrt(s)).
     #[arg(long, default_value_t = 1e-3)]
     geo_bias_process_noise_std: f64,
 }
