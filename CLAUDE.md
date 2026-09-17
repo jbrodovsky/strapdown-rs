@@ -39,8 +39,9 @@ Command-line tool for running INS simulations with GNSS degradation:
 - Modes: open-loop (dead reckoning), closed-loop with UKF, or particle filter
 - GNSS fault simulation: dropouts, reduced update rates, measurement corruption, bias injection
 - Input: CSV files with IMU and GNSS measurements (Sensor Logger format)
-- Output: Navigation solutions as CSV/Parquet
-- Configuration: YAML/JSON scenario files or command-line arguments
+- Output: Navigation solutions as CSV, HDF5, NetCDF or MCAP (there is **no** Parquet writer;
+  `sim/src/common.rs` rejects the extension rather than filling it with CSV)
+- Configuration: TOML/YAML/JSON scenario files or command-line arguments
 - Built-in logging: Use `--log-level` and `--log-file` flags (see LOGGING.md for details)
 
 **Free Core scope**: Basic GNSS degradation (outages, noise, reduced availability)
@@ -93,14 +94,15 @@ cargo fmt-check
 
 ### Running Simulations
 ```bash
-# Open-loop (dead reckoning)
-./target/release/strapdown-sim -i input.csv -o output.csv open-loop
+# Open-loop (dead reckoning). The subcommand comes first: `-i` before it is rejected.
+./target/release/strapdown-sim ol -i input.csv -o output.csv
 
-# Closed-loop with GNSS degradation
-./target/release/strapdown-sim -i input.csv -o output.csv closed-loop \
+# Closed-loop with a duty-cycled GNSS outage and AR(1) degradation.
+# `--sched` is passthrough|fixed|duty and `--fault` is none|degraded|slowbias|hijack.
+./target/release/strapdown-sim cl -i input.csv -o output.csv \
   --seed 42 \
-  --dropout-start-s 100.0 --dropout-duration-s 50.0 \
-  --fault-type bias --fault-magnitude 10.0
+  --sched duty --on-s 100.0 --off-s 50.0 \
+  --fault degraded --sigma-pos-m 10.0
 
 # Geophysical navigation (the geonav-sim binary was folded into strapdown-sim;
 # build with `cargo build --release -p strapdown-sim --features geonav`)
@@ -137,11 +139,14 @@ The Free Core implementation must achieve the following capabilities:
    - Measurement corruption and bias injection
 
 4. **Configuration-Driven**:
-   - YAML/JSON scenario files describing: trajectory/data path, sensor parameters, noise models, degradation events, filter configuration, output format
+   - TOML/YAML/JSON scenario files describing: trajectory/data path, sensor parameters, noise models, degradation events, filter configuration, output format
    - Command-line interface with config file support and argument overrides
 
 5. **Output Formats**:
-   - CSV and Parquet export for analysis in Python/MATLAB/R
+   - CSV, HDF5, NetCDF and MCAP export for analysis in Python/MATLAB/R
+   - Parquet is deliberately **not** supported: `NavigationResult::to_csv` is the only
+     flat-file writer, and `sim/src/common.rs` refuses `.parquet` rather than naming a file
+     Parquet and filling it with CSV. The four formats above already serve the stated purpose
    - Navigation solution time series with position, velocity, attitude estimates
 
 6. **Python Integration**:

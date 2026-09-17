@@ -23,12 +23,12 @@ cargo install strapdown-sim
 ## Usage
 
 ```sh
-# Dead reckoning
-strapdown-sim -i input.csv -o output.csv open-loop
+# Dead reckoning. The subcommand comes first -- `-i` before it is rejected.
+strapdown-sim ol -i input.csv -o output.csv
 
-# Closed loop with a GNSS outage
-strapdown-sim -i input.csv -o output.csv closed-loop \
-  --seed 42 --dropout-start-s 100.0 --dropout-duration-s 50.0
+# Closed loop with a duty-cycled GNSS outage: 100 s of fixes, then 50 s without.
+strapdown-sim cl -i input.csv -o output.csv \
+  --seed 42 --sched duty --on-s 100.0 --off-s 50.0
 
 # Generate a synthetic trajectory
 strapdown-sim syn -o synthetic.csv --duration-s 600 --seed 42

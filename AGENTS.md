@@ -1,6 +1,6 @@
 # Repository Guidelines
 
-When asked to execute on an issue or new high-level feature request, ask the user if this should be completed on the current branch or to create a new branch. This project is still in pre-1.0 development, so breaking changes may be introduced at any time and backwards compatibility need not be maintained.
+When asked to execute on an issue or new high-level feature request, ask the user if this should be completed on the current branch or to create a new branch. This project is at 1.0, so `strapdown-core` and `strapdown-sim` follow semantic versioning: a breaking change to a `pub` item needs a major bump and cannot ride along with a fix. `strapdown-geonav` is deliberately held at 0.x (see `geonav/Cargo.toml`) and its API may still move. When a change would break a published API, say so and propose the additive form instead.
 
 ## Project Structure & Module Organization
 This is a Cargo workspace with three crates.
