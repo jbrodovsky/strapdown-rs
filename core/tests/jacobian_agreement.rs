@@ -30,9 +30,11 @@
 //!    quadratic Coriolis term (#325); the attitude rows then had the same latitude dependence
 //!    missing from Groves 5.46 that #317 had filled in for 5.54 (#339). Each was ~5e-7 to
 //!    3e-5 against an analytic zero, well inside the 1e-4 this file used to allow. Filling
-//!    them in is what let the tolerance move to a *derived* 6e-5 -- see `MAX_DISAGREEMENT` --
-//!    where every contribution is named and computed rather than being an unexamined budget:
-//!    one second-order averaging term and one deliberately-omitted half-step (#338).
+//!    them in is what let the tolerance become *derived* -- see `MAX_DISAGREEMENT` -- where
+//!    every contribution is named and computed rather than being an unexamined budget. It was
+//!    6e-5 while the position rows' half-step (#338) was still deliberately omitted and had
+//!    to be budgeted for; that term is now carried, so the budget is the one second-order
+//!    averaging term that remains and the bound is **2e-5**.
 
 use nalgebra::{Rotation3, Vector3};
 use strapdown::linearize::{
@@ -157,40 +159,48 @@ fn worst_disagreement(analytic: &nalgebra::DMatrix<f64>, state: &StrapdownState)
 ///
 /// for the sample IMU below.
 ///
-/// **Second contribution: the position rows' half-step, deliberately omitted (#338).**
+/// **The second contribution is gone: the position rows' half-step landed (#338).**
 /// `position_update` integrates each position row trapezoidally over the *propagated*
-/// velocity, so the true `f[(row, c)]` contains `0.5 * dt * f[(3 + row, c)]` which a
-/// first-order Jacobian does not carry. That is computable from the analytic matrix's own
-/// row 5 rather than measured from the residual:
+/// velocity, so the true `f[(row, c)]` contains `0.5 * dt * f[(3 + row, c)]`, which the
+/// Jacobian did not carry. That was the larger half of this budget:
 ///
 /// ```text
 ///     max_c 0.5 * dt * |f[(5, c)]| = 0.5 * 0.01 * 6.897e-3 = 3.45e-5
 /// ```
 ///
-/// the maximum being the roll column in ENU. Summing the two, since the worst entry may take
-/// either: `1.84e-5 + 3.45e-5 = 5.3e-5`, and 6e-5 clears it.
+/// the maximum being the roll column in ENU. `transition_jacobian` and
+/// `error_state_transition_jacobian` now both apply it to all three position rows, so the
+/// term is no longer a residual and no longer enters the bound.
 ///
-/// This is a *derived* bound and not the observed residual rounded up (#288): both terms come
-/// from the sample IMU and from the Jacobian's own entries, and the half-step prediction is
-/// exact -- 2.970e-5 predicted against 2.975e-5 measured for `∂alt/∂pitch` in NED, and
-/// -3.449e-5 against -3.451e-5 for `∂alt/∂roll` in ENU. It was 1e-4, loose enough to have
-/// accepted the missing Coriolis position terms (3.0e-5) indefinitely. If the mechanization's
-/// integration order changes, or #338 lands, recompute from the expressions above rather than
-/// fitting the number to whatever comes out.
+/// **So the budget is the first contribution alone: 1.84e-5, and 2e-5 clears it.** This was
+/// 6e-5, derived as `1.84e-5 + 3.45e-5 = 5.3e-5` rounded up, and this doc said in as many
+/// words that when #338 landed the number was to be recomputed from the expressions above
+/// rather than fitted to whatever came out (#288). It has been: the surviving expression is
+/// the 5.47 attitude-averaging term, unchanged.
 ///
-/// **Both contributions are now second order, and #339 is why that is worth stating.** The
+/// The measurement confirms the derivation rather than setting it. The worst residual is now
+/// **1.122e-5**, and -- the part worth checking -- it has moved to `d(v_n)/d(yaw)`, a
+/// *velocity* row. Under the old bound the worst entry was `∂alt/∂roll` at 3.45e-5, exactly
+/// the half-step. The one the budget still predicts is the one left, which is what says the
+/// remaining residual is the term the formula describes and not something unmodelled.
+///
+/// The half-step prediction was exact before it landed -- 2.970e-5 predicted against 2.975e-5
+/// measured for `∂alt/∂pitch` in NED, -3.449e-5 against -3.451e-5 for `∂alt/∂roll` in ENU --
+/// which is why it could be subtracted from the budget by derivation rather than by
+/// re-measuring the whole matrix.
+///
+/// **Both contributions were second order, and #339 is why that is worth stating.** The
 /// attitude rows' position columns used to be exactly zero against a genuine *first-order*
 /// term of ~5.4e-7 -- the same latitude dependence #317 gave the velocity rows out of Groves
 /// 5.54, applied to 5.46. Two orders below the bound, so it never set it, but it scaled with
-/// `dt` where everything else here scales with `dt^2`, and fixing #338 alone would have
-/// driven the residual down toward something the formula above does not predict. It is fixed,
-/// and the two expressions are now the whole budget: the worst entry is `∂alt/∂roll` in ENU
-/// at 3.45e-5, exactly the half-step, and the attitude rows' position columns agree to 8.7e-11
-/// in this sweep -- see `linearize`'s
+/// `dt` where everything else here scales with `dt^2`, and fixing #338 with it still outstanding
+/// would have driven the residual toward something the formula above does not predict. It was
+/// fixed first, and the attitude rows' position columns agree to 8.7e-11 in this sweep -- see
+/// `linearize`'s
 /// `transition_jacobian_attitude_rows_position_columns_match_finite_differences_in_both_frames`
 /// and `euler_jacobian_converts_the_attitude_rows_non_attitude_columns`, which pin them at
 /// their own derived bounds rather than against this file's much looser one.
-const MAX_DISAGREEMENT: f64 = 6e-5;
+const MAX_DISAGREEMENT: f64 = 2e-5;
 
 #[test]
 fn euler_jacobian_matches_the_mechanization_in_both_frames() {

@@ -1460,6 +1460,28 @@ impl NavigationFilter for ExtendedKalmanFilter {
             f_ext
                 .view_mut((6, 12), (3, 3))
                 .copy_from(&attitude_bias_block);
+
+            // The position rows' trapezoidal half-step, on the columns that did not exist
+            // when the 9x9 was built (#338).
+            //
+            // `transition_jacobian` applies the half-step to every column it has, but it has
+            // only nine: the bias columns are added *here*, after the copy above. Without
+            // this loop `f_ext[0..3, 9..15]` stays exactly zero while the mechanization does
+            // propagate accelerometer bias into position within one step -- through
+            // `velocity_bias_block` and then the trapezoid. That is #394's failure mode on a
+            // different block: a coupling `F` cannot create is one `P` never develops, so the
+            // position/bias cross-covariance stays at whatever it was seeded with and the
+            // gain over those states never reflects this path.
+            //
+            // Only the accelerometer columns are touched. Gyro bias reaches attitude, not
+            // velocity, so there is no one-step velocity-row dependence for the half-step to
+            // halve; columns 12..15 of the position rows stay zero, correctly.
+            let half_step = crate::linearize::position_half_step(&state, corrected_sample.dt);
+            for (row, half_step) in half_step.iter().enumerate() {
+                for column in 0..3 {
+                    f_ext[(row, 9 + column)] += half_step * velocity_bias_block[(row, column)];
+                }
+            }
             f_ext
         } else if self.state_size > 9 {
             // Handle augmented states without biases (should not happen, but be defensive)
