@@ -44,8 +44,9 @@
 //!
 //! # Reading the numbers
 //!
-//! Six caveats apply to every figure in the baseline. All but the fifth are properties of the
-//! measurement rather than defects in this harness; the fifth is a defect, in the gate:
+//! Seven caveats apply to every figure in the baseline. All but the fifth and seventh are
+//! properties of the measurement rather than defects in this harness; the fifth is a defect in
+//! the gate and the seventh was a defect in the UKF, now fixed:
 //!
 //! 1. **Real-data metrics are scored against the GNSS fix, which is also the aiding source.**
 //!    They measure agreement with the aid, and cannot fall below the receiver's own 3.81 m
@@ -150,6 +151,150 @@
 //!    collapse, and that is now fixed -- the cloud is roughened after resampling and no epoch
 //!    reports a collapsed sigma. Whether the 28.5% spread went with it is **unmeasured**: this
 //!    was blessed on Linux, which is the gap itself. Do not read the fix as closing #386.
+//!
+//!
+//!    **The spread is now measured, on all three legs of one run** (#413's CI, at the old
+//!    `alpha`). The largest, as `Cross-platform accuracy spread` printed it:
+//!
+//!    | spread | scenario / metric | macOS | Linux | Windows |
+//!    |---:|---|---:|---:|---:|
+//!    | 10.79% | `real_rbpf_slice__rbpf/horizontal_cep50_m` | 1.82705 | 1.82705 | 1.64916 |
+//!    | 8.61% | `real_rbpf_slice__rbpf/horizontal_cep95_m` | 29.2597 | 29.2597 | 26.9394 |
+//!    | 4.70% | `syn_outage_60s__ukf/horizontal_cep50_m` | 1.64422 | 1.62557 | 1.57045 |
+//!    | 2.87% | `syn_outage_60s__ukf/roll_rmse_deg` | 0.27204 | 0.27475 | 0.26708 |
+//!    | 2.39% | `syn_outage_60s__ukf/yaw_rmse_deg` | 0.22314 | 0.22687 | 0.22158 |
+//!
+//!    Two things fall straight out of it. **#385's fix did shrink the spread it was blamed
+//!    for**: `real_rbpf_slice__rbpf/horizontal_cep95_m` was 28.5% Linux-vs-Windows in #386 and
+//!    is 8.61% here, which is the measurement the note above called missing. And **it is
+//!    Windows against the other two, not three-way scatter** -- macOS and Linux agree to
+//!    eleven significant figures on the RBPF rows -- which is the signature of a libm
+//!    differing by an ulp, not of anything about the navigation.
+//!
+//!    The UKF rows in that table are caveat 7 measured a second way: they are the same rows,
+//!    in the same order, at about half the magnitude of the one-ulp response recorded there.
+//!    So caveat 7's fix predicted they would collapse and the RBPF rows would not, since the
+//!    RBPF never amplified a one-ulp perturbation in the first place.
+//!
+//!    **That prediction was recorded before the run and the run confirmed it.** Same job, same
+//!    three platforms, on the commit that raised `alpha`:
+//!
+//!    | scenario / metric | before | after |
+//!    |---|---:|---:|
+//!    | `syn_outage_60s__ukf/horizontal_cep50_m` | 4.70% | **0%** |
+//!    | `syn_outage_60s__ukf/roll_rmse_deg` | 2.87% | **0%** |
+//!    | `syn_outage_60s__ukf/yaw_rmse_deg` | 2.39% | **0%** |
+//!    | `syn_outage_60s__ukf/attitude_geodesic_rmse_deg` | 2.06% | **0%** |
+//!    | `syn_outage_60s__ukf/velocity_horizontal_rmse_mps` | 1.76% | **0%** |
+//!    | `real_rbpf_slice__rbpf/horizontal_cep50_m` | 10.79% | 10.79% |
+//!    | `real_rbpf_slice__rbpf/horizontal_cep95_m` | 8.61% | 8.61% |
+//!
+//!    Every `syn_*__ukf` row now agrees across macOS, Linux and Windows to seven or eight
+//!    significant figures, and every RBPF row is unchanged to the digit. So caveat 7 was not
+//!    only the mechanism behind the baseline's drift, it was the mechanism behind most of this
+//!    caveat as well.
+//!
+//!    **What is left of #386 is one scenario, and it is not floating-point noise.** After the
+//!    fix, `real_rbpf_slice__rbpf` holds every entry above 0% and nothing else in the suite
+//!    exceeds it. The obvious next move is a tolerance -- global, or per-metric the way
+//!    `npes_position` already is on that row. **Both are wrong, because the number is not
+//!    understood.**
+//!
+//!    Three one-ulp perturbations, each applied on *every* call, which is what a libm
+//!    differing in its last bit actually is:
+//!
+//!    | perturbation | worst of 236 metrics |
+//!    |---|---:|
+//!    | every Gaussian draw in the RBPF | 1.28e-6 % |
+//!    | every particle weight, after `exp`, at both update sites | 3.09e-7 % |
+//!    | one WGS84 constant (caveat 7's ensemble) | 1.0e-6 % |
+//!
+//!    The RBPF moves by about one part in $10^8$ under any of them, and
+//!    `horizontal_cep50_m` -- the metric carrying the 10.79% spread -- is the most responsive
+//!    of them at 1.28e-6 %. **The RBPF is not an amplifier**, which is the opposite of the UKF
+//!    in caveat 7, and it means the residual spread cannot be a last-bit effect.
+//!
+//!    The platform pattern says the same thing. macOS and Linux agree to **eight significant
+//!    figures** on that metric -- 1.8270500842991202 against 1.8270500951744402 -- across
+//!    *different CPU architectures*, while Windows, same architecture as Linux, sits 10% away
+//!    at 1.6491552684081328. That rules out CPU architecture, SIMD width and runtime feature
+//!    dispatch, all of which would separate ARM from x86 rather than Windows from everyone.
+//!
+//!    So a 10% discrepancy on one platform and one scenario, demonstrably larger than an ulp,
+//!    is a **defect to diagnose rather than a band to widen**. Sizing any tolerance around it
+//!    would be fitting a threshold to an unexplained number, which is #288. Diagnose it by
+//!    emitting the sorted error series behind `horizontal_cep50_m` from each leg -- the
+//!    `PERF_EMIT_MEASURED` plumbing is most of the way there -- to see whether one sample moved
+//!    a long way or every sample moved a little, and by checking that `test_data.csv` parses
+//!    identically on Windows before blaming the filter.
+//!
+//!    What has changed in the gate: the baseline now records `blessed_on`, and an
+//!    improve-side failure on a different platform says so instead of instructing a re-bless
+//!    that would break the other two legs. Every matrix leg writes its raw numbers through
+//!    `PERF_EMIT_MEASURED` and the advisory `Cross-platform accuracy spread` job prints the
+//!    per-metric spread. **The tolerance floor itself is still unset, on purpose** -- it has
+//!    to come from that job's output rather than from an estimate, which is the whole of
+//!    #386's argument.
+//! 7. **A one-ulp change to anything upstream used to move these numbers by percents, and the
+//!    cause was the UKF's own sigma-point weights.** #399 recorded that adding a `pub fn`
+//!    nobody calls moved 59 gated metrics, one by 4.86%, and proposed the innovation gate as
+//!    the mechanism: a continuous statistic turned into a discrete accept/reject, one flipped
+//!    decision separating two trajectories.
+//!
+//!    **Both halves of that were wrong, and the measurements are worth keeping.**
+//!
+//!    *The gate was refuted by census.* Gating is opt-in (`ClosedLoopConfig::innovation_gate`
+//!    defaults to `None`) and `solve` below never installs one, so across a full run of this
+//!    suite all **137,876** calls to `GatePolicy::decide` took the "no gate installed" branch.
+//!    There was never an accept/reject decision to flip. Every other discrete branch in the
+//!    filter path was saturated on one side too: 98,786 of 98,786 sigma-point factorizations
+//!    took plain Cholesky with no jitter and no eigenvalue fallback, not one of 394,740
+//!    IMU-bias clamp opportunities bound, and the Euler-rate inverse was admitted on all
+//!    106,518. There is no discrete decision anywhere in this suite for a last bit to flip.
+//!
+//!    *The codegen story did not reproduce.* A dead `pub fn` added to `linearize.rs` -- the
+//!    issue's own experiment, with the symbol confirmed present in the rlib -- leaves all 236
+//!    metrics **bit-identical**, twice, instrumented and not. That is what Rust's IEEE
+//!    semantics predict: without fast-math LLVM may not reassociate or contract
+//!    floating-point, so changing what surrounds a function cannot change what it computes.
+//!
+//!    *What did reproduce is the amplification, from the data side.* Perturbing
+//!    `earth::EQUATORIAL_RADIUS` by **one ulp** -- a relative $1.5\times10^{-16}$ -- moved 170
+//!    of 236 metrics, the worst (`syn_outage_60s__ukf/horizontal_cep50_m`) by **9.77%**
+//!    against a 10% band. Taken over six independent one-ulp perturbations of WGS84 constants,
+//!    the worst response per estimator was:
+//!
+//!    | estimator | worst response to one ulp |
+//!    |---|---:|
+//!    | **UKF** | **9.77%** |
+//!    | RBPF | 1.0e-6 % |
+//!    | dead reckoning | 1.7e-10 % |
+//!    | EKF | 3.8e-11 % |
+//!    | ESKF | 3.3e-11 % |
+//!
+//!    Eleven orders of magnitude, on the same scenarios. That rules out "a 60 s coast
+//!    compounds a last bit", because `syn_outage_60s__eskf` coasts identically and sits at
+//!    3.3e-11 %. The UKF is the only estimator here that forms a weighted sigma-point mean,
+//!    and at the `alpha = 1e-3` this crate shipped that mean was
+//!    $-999{,}999\,x_0 + \sum 31{,}250\,x_i$ for a 16-state filter: every term about $10^6$
+//!    times the answer, six of `f64`'s sixteen digits spent on cancellation per step. End to
+//!    end, one ulp of initial latitude moved a 180 s solution's final position by **1.76 m**.
+//!
+//!    *Fixed by raising `alpha` to `0.1`*, which takes that 1.76 m to **0.18 mm** and the
+//!    worst metric response to **0.0003%** -- and improves accuracy slightly while doing it,
+//!    the largest move being `syn_outage_60s__ukf/yaw_rmse_deg` 2.08% better.
+//!    `equilibrated_chol_sqrt` landed alongside it and is worth a further factor of 2; the
+//!    covariance really does reach a condition number of $5\times10^{14}$ from mixing radians
+//!    with metres, and that really is almost irrelevant, because Cholesky is backward stable.
+//!    `core/tests/ukf_conditioning.rs` guards both ends.
+//!
+//!    **The control-build technique this issue introduced is still the right habit**, and is
+//!    now cheap insurance rather than a necessity. When a bless moves rows the change cannot
+//!    reach, build a *control* -- the new code compiled but not called -- bless that, and diff
+//!    the real change against it rather than against the parent commit. On #394 that reduced
+//!    "seven scenarios moved" to the two the change can actually touch. It is only valid if it
+//!    neutralises **every** call site: a first attempt at #398's control missed the UKF's
+//!    transport and reported half the moved metrics.
 //! 6. **The `syn_*` rows run at 50 Hz and the `real_*` rows at 1 Hz, and the aiding sensors no
 //!    longer follow that.** Until #375 the barometer and the magnetometer were emitted once
 //!    per record, outside the scheduler, so their update rate was the log's: 1 Hz on
@@ -180,6 +325,24 @@ use strapdown::{IMUQuality, StrapdownState};
 
 /// Environment variable that switches this test from gating to recording.
 const UPDATE_ENV: &str = "UPDATE_PERF_BASELINE";
+
+/// Environment variable naming a file to write this run's measured metrics to.
+///
+/// Set by the CI matrix so every platform's numbers are collected as an artifact and the
+/// cross-platform spread can be *measured* rather than assumed. Independent of the gate: the
+/// file is written whether the comparison passes or fails, because a failing platform's
+/// numbers are exactly the ones worth having.
+const EMIT_ENV: &str = "PERF_EMIT_MEASURED";
+
+/// The platform a baseline was blessed on, and the one this run is executing on.
+///
+/// `std::env::consts::OS` rather than the full target triple: the spread #386 measures is
+/// between operating systems' libm implementations, and the triple would make two Linux
+/// runners on different architectures look like different platforms when the question is
+/// whether a Linux bless holds on Windows.
+const fn platform() -> &'static str {
+    std::env::consts::OS
+}
 
 /// Schema version of `perf_baseline.json`. Bump it when the file's shape changes.
 const SCHEMA_VERSION: u32 = 3;
@@ -701,6 +864,17 @@ struct BaselineFile {
     note: String,
     /// Bands applied to any metric that does not override them.
     default_tolerance: Tolerance,
+    /// Operating system the recorded numbers were measured on.
+    ///
+    /// `rust.yml` gates this suite on Linux, macOS and Windows, and a bless happens on one of
+    /// them. Without this field a failing leg cannot tell "the navigation changed" from "you
+    /// are not on the platform this was measured on", and the improve-side message told every
+    /// contributor the former (#386).
+    ///
+    /// `Option`, so a baseline written before this field still loads; the message says which
+    /// case it is in rather than assuming.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    blessed_on: Option<String>,
     /// One entry per scenario id, sorted so a diff is stable.
     scenarios: BTreeMap<String, BaselineScenario>,
 }
@@ -834,7 +1008,53 @@ fn render_baseline(
             },
             |p| p.default_tolerance,
         ),
+        // The blessing platform is whoever is running right now -- that is what a bless *is*.
+        blessed_on: Some(platform().to_string()),
         scenarios,
+    }
+}
+
+/// Write this run's measured metrics to the path in [`EMIT_ENV`], if it is set.
+///
+/// One flat object per scenario id, so the three platforms' files can be compared by a job
+/// that knows nothing about this crate. Unrounded: the whole point is to see differences the
+/// gate's six significant figures might hide.
+///
+/// Errors are reported and not fatal. This runs inside the gating test, and a CI step that
+/// cannot write an artifact should not turn a green navigation result red.
+fn emit_measured(measured: &[(Scenario, AccuracyMetrics)]) {
+    let Some(path) = std::env::var_os(EMIT_ENV) else {
+        return;
+    };
+    let path = PathBuf::from(path);
+
+    let mut out: BTreeMap<String, BTreeMap<String, Option<f64>>> = BTreeMap::new();
+    for (scenario, metrics) in measured {
+        let mut row = BTreeMap::new();
+        for (id, value) in metrics.iter() {
+            row.insert(id.key().to_string(), value);
+        }
+        out.insert(scenario.id.clone(), row);
+    }
+
+    let document = serde_json::json!({
+        "platform": platform(),
+        "scenarios": out,
+    });
+
+    match serde_json::to_string_pretty(&document) {
+        Ok(text) => match std::fs::write(&path, text + "\n") {
+            Ok(()) => println!(
+                "Wrote measured metrics for `{}` to {} (working directory {}). A relative \
+                 path lands in the *package* root, not the workspace root -- `cargo test -p` \
+                 sets it there.",
+                platform(),
+                path.display(),
+                std::env::current_dir().unwrap_or_default().display()
+            ),
+            Err(e) => println!("could not write {} ({e}); continuing", path.display()),
+        },
+        Err(e) => println!("could not serialise measured metrics ({e}); continuing"),
     }
 }
 
@@ -981,6 +1201,7 @@ fn compare(measured: &[(Scenario, AccuracyMetrics)], baseline: &BaselineFile) ->
                 value,
                 entry,
                 baseline.default_tolerance,
+                baseline.blessed_on.as_deref(),
             ));
         }
     }
@@ -1001,6 +1222,7 @@ fn check_metric(
     measured: Option<f64>,
     entry: &BaselineMetric,
     default: Tolerance,
+    blessed_on: Option<&str>,
 ) -> Vec<String> {
     match (entry.value, measured) {
         (None, None) => Vec::new(),
@@ -1032,14 +1254,43 @@ fn check_metric(
                 )],
                 Verdict::Improved => vec![format!(
                     "IMPROVED  `{scenario_id}` / `{}`: {now:.6} {unit} against a baseline of \
-                     {was:.6} {unit} ({dir}). This is better than the band allows, so the \
-                     baseline is stale -- re-bless it.",
+                     {was:.6} {unit} ({dir}). This is better than the band allows.{}",
                     id.key(),
+                    improvement_advice(blessed_on),
                     unit = unit_suffix(id),
                     dir = describe(id),
                 )],
             }
         }
+    }
+}
+
+/// What to do about a metric that improved past its band.
+///
+/// #386: this used to say "the baseline is stale -- re-bless it", unconditionally. That is the
+/// wrong instruction when the real cause is that the run is on a different platform from the
+/// blessing, because re-blessing here would then break the other two legs -- which is exactly
+/// how the failure it was written for actually arose. `real_rbpf_slice__rbpf`'s
+/// `horizontal_cep95_m` measured 34.02 m on Linux against 24.33 m on Windows on the same
+/// commit, and the Windows leg was told its baseline was stale.
+fn improvement_advice(blessed_on: Option<&str>) -> String {
+    match blessed_on {
+        Some(blessed) if blessed != platform() => format!(
+            " This run is on `{}` and the baseline was blessed on `{blessed}`, so the cause \
+             may be the platform rather than the navigation. Check the same metric on \
+             `{blessed}` before re-blessing: a re-bless here would move the value away from \
+             the platform the other legs are measured against. If it moved on `{blessed}` too, \
+             the baseline is genuinely stale.",
+            platform()
+        ),
+        Some(_) => " This run is on the platform the baseline was blessed on, so the baseline \
+             is stale -- re-bless it."
+            .to_string(),
+        // A baseline written before #386 added the field. Say so rather than guessing.
+        None => " The baseline records no blessing platform, so whether this is staleness or a \
+             cross-platform difference cannot be told apart from here. Re-bless on the \
+             platform CI reports, and the next bless will record it."
+            .to_string(),
     }
 }
 
@@ -1255,6 +1506,7 @@ fn book_tables(baseline: &BaselineFile) -> String {
 fn navigation_accuracy_matches_the_recorded_baseline() {
     let measured = measure_all();
     println!("{}", markdown_table(&measured));
+    emit_measured(&measured);
 
     let path = baseline_path();
     let existing: Option<BaselineFile> = if path.exists() {
@@ -1353,6 +1605,81 @@ fn navigation_accuracy_matches_the_recorded_baseline() {
 #[cfg(test)]
 mod gate_tests {
     use super::*;
+
+    /// The improve-side message must not blame the baseline when the platform differs.
+    ///
+    /// #386, acceptance criterion 2. The old message said "the baseline is stale -- re-bless
+    /// it" unconditionally, which is the wrong instruction on a leg that is not the blessing
+    /// platform: re-blessing there moves the value away from the other two legs. That is not a
+    /// hypothetical -- it is how the Windows leg failed on a commit behaving identically to
+    /// Linux.
+    #[test]
+    fn the_improve_message_distinguishes_staleness_from_a_platform_difference() {
+        let elsewhere = if platform() == "linux" {
+            "windows"
+        } else {
+            "linux"
+        };
+
+        let cross = improvement_advice(Some(elsewhere));
+        assert!(
+            cross.contains(elsewhere) && cross.contains(platform()),
+            "a cross-platform improvement must name both platforms, got: {cross}"
+        );
+        assert!(
+            !cross.contains("baseline is stale -- re-bless it"),
+            "a cross-platform improvement must not instruct an unconditional re-bless,              got: {cross}"
+        );
+
+        let same = improvement_advice(Some(platform()));
+        assert!(
+            same.contains("re-bless"),
+            "on the blessing platform the advice is still to re-bless, got: {same}"
+        );
+
+        // A baseline predating the field must say it cannot tell, rather than guessing.
+        let unknown = improvement_advice(None);
+        assert!(
+            unknown.contains("no blessing platform"),
+            "an unrecorded blessing platform must be reported as such, got: {unknown}"
+        );
+    }
+
+    /// A bless records the platform it ran on, so the message above has something to compare.
+    ///
+    /// This asserts the field is **present**, not that it matches the runner. The first
+    /// version asserted equality, which turned macOS and Windows red by construction -- the
+    /// baseline is blessed on Linux, so two of three legs could never agree. That is the exact
+    /// failure #386 exists to fix, committed inside the fix for it. A baseline blessed
+    /// elsewhere is the normal case, and is what `improvement_advice` is for.
+    #[test]
+    fn a_blessed_baseline_records_its_platform() {
+        let path = baseline_path();
+        let text = std::fs::read_to_string(&path).expect("baseline file must be readable");
+        let baseline: BaselineFile =
+            serde_json::from_str(&text).expect("baseline must deserialize");
+
+        let blessed = baseline.blessed_on.as_deref().unwrap_or_else(|| {
+            panic!(
+                "the checked-in baseline records no `blessed_on`. Re-bless it -- without that \
+                 field a failing leg cannot tell a navigation change from a platform \
+                 difference, which is #386."
+            )
+        });
+        assert!(
+            !blessed.trim().is_empty(),
+            "`blessed_on` is present but names no platform"
+        );
+
+        if blessed != platform() {
+            println!(
+                "note: this baseline was blessed on `{blessed}` and this run is on `{}`. That \
+                 is the expected case, not an error -- see the `Cross-platform accuracy \
+                 spread` job for how far the two actually differ.",
+                platform()
+            );
+        }
+    }
 
     /// Every metric shows up in exactly one of the book's tables.
     ///

@@ -291,8 +291,9 @@ const ATTITUDE_YAW_INDEX: usize = ATTITUDE_STATE_INDICES.start + 2;
 /// same condition the linearisation already needs.
 ///
 /// It is deliberately *not* a circular mean. The UKF's sigma-point weights are not convex
-/// -- with `alpha = 1e-3` and `n = 15`, `w_0` is about -1e6 against `w_i` of about +3e4 --
-/// and `atan2(sum w sin, sum w cos)` is not meaningful for weights that can be large and
+/// -- at the shipped `alpha = 0.1` and `n = 16`, `w_0` is `-99` against `w_i` of `+3.125`,
+/// and `w_0` is negative for every `alpha` below 1 -- and
+/// `atan2(sum w sin, sum w cos)` is not meaningful for weights that can be large and
 /// negative. Unwrapping onto a reference and then taking the ordinary weighted sum keeps
 /// the unscented transform's own arithmetic intact; the RBPF, whose weights *are* convex,
 /// uses [`rbpf::circular_mean`](crate::rbpf) instead.
@@ -302,11 +303,18 @@ const ATTITUDE_YAW_INDEX: usize = ATTITUDE_STATE_INDICES.start + 2;
 /// The obvious spelling is `state = reference + wrap_to_pi(state - reference)`, and it is
 /// wrong in a way that only shows up over a long run: when no wrap is needed that round trip
 /// through a subtraction and an addition still costs an ulp or two, and the UKF's mean is not
-/// a place where ulps stay small. `mu_bar` is `w_0 * x_0 + sum w_i * x_i` with `w_0` about
-/// -1e6, so a 1-ulp nudge to a sigma point moves the mean by ~1e-10 -- which then seeds the
-/// next sigma set, and compounds. Rewriting every angle that way moved this suite's *northbound*
-/// UKF yaw, where nothing straddles the cut and the fix should do nothing at all, by 0.09 rad
-/// over 1500 steps.
+/// a place where ulps stay small. `mu_bar` is `w_0 * x_0 + sum w_i * x_i`, and the terms are
+/// `|w_0|` times the answer, so a 1-ulp nudge to a sigma point moves the mean by roughly
+/// `|w_0|` ulps -- which then seeds the next sigma set, and compounds.
+///
+/// The measurement below was taken when `alpha` defaulted to `1e-3`, where `w_0` was about
+/// `-1e6` and a 1-ulp nudge therefore moved the mean by ~1e-10: rewriting every angle that
+/// way moved this suite's *northbound* UKF yaw, where nothing straddles the cut and the fix
+/// should do nothing at all, by **0.09 rad over 1500 steps**. The default is now `0.1`
+/// (`w_0 = -99`, so ~1e-14 per nudge, see
+/// [`sim::default_ukf_alpha`](crate::sim)'s note and #399), which shrinks the penalty by four
+/// orders but does not remove it -- `w_0` is still two orders above unity, and this routine
+/// costs nothing.
 ///
 /// Adding the whole turns instead makes the no-wrap case exactly identity --
 /// [`wrap_to_pi`] returns an in-range input untouched, so `turns` is a literal `0.0` and the
@@ -359,17 +367,24 @@ fn set_attitude_of(state: &mut DVector<f64>, attitude: &Rotation3<f64>) {
 ///
 /// They compute the same quantity and only one of them is usable at this filter's weights.
 /// `Rotation3::scaled_axis` recovers the angle from the matrix trace -- an `acos` evaluated
-/// within an ulp of 1 for a small rotation, where its derivative is unbounded. The measured
-/// sigma-point attitude spread here is about `1.2e-7` rad (`alpha = 1e-3` places the points
-/// at `0.0039` sigma), and at that magnitude it returns roughly 1.5% relative error. The
-/// scaled transform's weights are large and cancelling -- `w_i` is about `+3.3e4` against a
-/// `w_0` of about `-1.0e6` -- so that error does not stay small: it becomes about `6e-5` rad
-/// of fabricated rotation per step, which is 0.17 deg/s at 50 Hz, the same order as the gyro
-/// bias the filter is trying to estimate.
-///
+/// within an ulp of 1 for a small rotation, where its derivative is unbounded.
 /// `UnitQuaternion::from_rotation_matrix` goes through the quaternion's vector part instead,
-/// which is linear in the angle near identity. On the identical sum that lands at `3.7e-12`
-/// rad -- sixteen million times smaller, and the zero it should be.
+/// which is linear in the angle near identity.
+///
+/// Both routes measured on the same small rotation, at each `alpha`, with `n = 16`:
+///
+/// | `alpha` | point placement | spread | `scaled_axis` | quaternion | fabricated rad/step |
+/// |---|---|---:|---:|---:|---:|
+/// | `1e-3` (the old default) | 0.0039 sigma | 1.2e-7 rad | 6.6e-3 | 4.7e-10 | 7.9e-4 |
+/// | **`0.1` (shipped)** | 0.4 sigma | 1.2e-5 rad | 1.8e-6 | **7.1e-12** | 2.2e-9 |
+///
+/// The last column is the fabricated rotation the weighted sum produces per step from an
+/// error that does not cancel. At the old default it was `7.9e-4` rad per step -- 2.3 deg/s
+/// at 50 Hz, an order *above* the gyro bias the filter is trying to estimate. Raising
+/// `alpha` (#399) takes it to `2.2e-9`, and the quaternion route takes it to nothing at all.
+///
+/// So the quaternion route is no longer load-bearing the way it was, and it stays: it is six
+/// orders more accurate than the alternative at the shipped spread, for the same work.
 fn attitude_tangent(reference: &Rotation3<f64>, point: &Rotation3<f64>) -> Vector3<f64> {
     UnitQuaternion::from_rotation_matrix(&(reference.transpose() * point)).scaled_axis()
 }
@@ -1001,8 +1016,9 @@ impl NavigationFilter for UnscentedKalmanFilter {
     /// took the *linear* weighted mean of the sigma points' Euler angles, which
     /// `euler_angles` had each canonicalised onto `[-pi, pi]` independently; sigma points
     /// straddling the cut at `+/-pi` -- which is what a southerly heading gives -- were
-    /// therefore averaged across it. With the UKF's non-convex mean weights (`alpha = 1e-3`,
-    /// `n = 15`, so `w_0` is about -1e6 against `w_i` of about +3e4) that average does not
+    /// therefore averaged across it. With the UKF's non-convex mean weights as they were then
+    /// (`alpha = 1e-3`, `n = 15`, so `w_0` about -1e6 against `w_i` about +3e4; the default is
+    /// `alpha = 0.1` since #399, where `w_0` is -99) that average does not
     /// merely land between the points, it extrapolates away from them: seeded due south,
     /// this filter reached a reported pitch of 5.7 rad and a yaw of 8e5 rad within three
     /// samples, and wrapping afterwards would only have renamed it (#336).
@@ -4324,10 +4340,12 @@ mod tests {
     /// #371: averaging sigma-point attitudes in the Euler chart puts the mean nowhere near
     /// the points, and shrinking the spread does not help.
     ///
-    /// The numbers are the whole argument. With this filter's own weights -- `n = 15`,
-    /// `alpha = 1e-3`, so `w_0` is about `-1.0e6` against `w_i` of about `+3.3e4`, summing to
-    /// exactly 1 -- 31 rotations all lying inside a **0.24 degree** cone average, in the
-    /// chart, to a point **34 degrees outside** it. That is 140 times the spread of the
+    /// The numbers are the whole argument. With the weights this filter carried when #371 was
+    /// diagnosed -- `n = 15`, `alpha = 1e-3`, so `w_0` about `-1.0e6` against `w_i` about
+    /// `+3.3e4`, summing to exactly 1 -- 31 rotations all lying inside a **0.24 degree** cone
+    /// average, in the chart, to a point **34 degrees outside** it. (`alpha` now defaults to
+    /// `0.1` for unrelated numerical reasons, #399; this test sets its own `ALPHA` so the
+    /// record stands.) That is 140 times the spread of the
     /// inputs, from a set whose members are indistinguishable by eye.
     ///
     /// A second-order error would fall as the square of the spread. This one does not fall at

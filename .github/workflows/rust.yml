@@ -65,8 +65,83 @@ jobs:
       - name: Lint
         run: cargo clippy -p strapdown-core --all-targets --no-default-features --locked -- -D warnings
 
+      # `PERF_EMIT_MEASURED` makes the accuracy suite write this platform's raw numbers
+      # alongside gating on them. That is what turns #386 from an argument into a measurement:
+      # the suite already ran on all three legs, but nothing ever collected what each one saw,
+      # so the cross-platform spread could only be discovered by a leg going red.
       - name: Test
         run: cargo test -p strapdown-core --no-default-features --locked
+        env:
+          # Absolute, because `cargo test -p <pkg>` runs the test binary with its working
+          # directory at the *package* root. A relative path here lands in `core/` and the
+          # upload below, which runs at the workspace root, finds nothing -- which is exactly
+          # what happened on the first run of this job.
+          PERF_EMIT_MEASURED: ${{ github.workspace }}/measured-${{ matrix.os }}.json
+
+      # `always()`: a leg that failed the accuracy gate is the one whose numbers are most worth
+      # having. Without this the artifact appears only when nothing was wrong with it.
+      - name: Upload measured accuracy metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: measured-${{ matrix.os }}
+          path: measured-${{ matrix.os }}.json
+          if-no-files-found: warn
+
+  # What the three legs above actually measured, side by side.
+  #
+  # #386: `perf_baseline.json` records one value per metric and `rust.yml` gates it on three
+  # platforms, so two of them are asserting "this is what Linux measured". The spread was
+  # invisible until a leg went red -- `real_rbpf_slice__rbpf`'s `horizontal_cep95_m` read
+  # 34.02 m on Linux against 24.33 m on Windows, a 28.5% difference on a commit that was
+  # behaving identically.
+  #
+  # Advisory on purpose. Its job is to *report* the spread so a tolerance can be set from data
+  # rather than from a guess; making it blocking before anyone has seen its output would gate
+  # on a number nobody has measured, which is the mistake it exists to correct.
+  platform-spread:
+    name: Cross-platform accuracy spread (advisory)
+    runs-on: ubuntu-latest
+    needs: minimal
+    if: always()
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: measured-*
+          merge-multiple: true
+
+      - name: Report the spread
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(measured-*.json)
+          if [ ${#files[@]} -lt 2 ]; then
+            echo "Only ${#files[@]} platform file(s); nothing to compare."
+            exit 0
+          fi
+          echo "Comparing: ${files[*]}"
+          jq -s '
+            [ .[] | .platform as $p | .scenarios | to_entries[]
+              | .key as $s | .value | to_entries[]
+              | select(.value != null)
+              | {scenario: $s, metric: .key, platform: $p, value: .value} ]
+            | group_by(.scenario + "/" + .metric)
+            | map(select(length > 1))
+            | map({
+                key: (.[0].scenario + " / " + .[0].metric),
+                lo: (map(.value) | min),
+                hi: (map(.value) | max),
+                values: (map({(.platform): .value}) | add)
+              })
+            | map(. + {spread_pct: (if (.lo | fabs) > 0 then ((.hi - .lo) / (.lo | fabs) * 100) else 0 end)})
+            | sort_by(-.spread_pct)
+            | .[:25][]
+            | "\(.spread_pct | . * 100 | round / 100)%  \(.key)  \(.values)"
+          ' -r measured-*.json || {
+            echo "comparison failed; the raw files are attached as artifacts"
+            exit 0
+          }
 
   # Full workspace, all features. Builds libhdf5, libnetcdf, zlib and freetype from source
   # (see the `static` features in core/ and geonav/), so it needs cmake and a C/C++ compiler
