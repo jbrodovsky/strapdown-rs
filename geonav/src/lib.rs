@@ -30,7 +30,7 @@ use std::rc::Rc;
 use anyhow::Result;
 use chrono::Datelike;
 use log::debug;
-use nalgebra::{DMatrix, DVector, Vector3};
+use nalgebra::{DMatrix, DVector};
 use strapdown::StrapdownError;
 use world_magnetic_model::GeomagneticField;
 use world_magnetic_model::time::Date;
@@ -39,15 +39,11 @@ use world_magnetic_model::uom::si::f32::{Angle, Length};
 use world_magnetic_model::uom::si::length::meter;
 use world_magnetic_model::uom::si::magnetic_flux_density::nanotesla;
 
+use strapdown::StrapdownState;
 use strapdown::earth::gravity_anomaly;
-use strapdown::measurements::{
-    GPSPositionAndVelocityMeasurement, MeasurementModel, RelativeAltitudeMeasurement,
-};
-use strapdown::messages::{
-    AidingConfig, Event, EventStream, FaultState, MeasurementScheduler, apply_fault,
-};
+use strapdown::measurements::MeasurementModel;
+use strapdown::messages::{AidingConfig, Event, EventStream};
 use strapdown::sim::TestDataRecord;
-use strapdown::{IMUData, StrapdownState};
 
 /// Conversion factor from radians to degrees (180/π)
 const RAD_TO_DEG: f64 = 180.0 / std::f64::consts::PI;
@@ -1397,6 +1393,37 @@ fn observed_field_nt(record: &TestDataRecord) -> f64 {
         * MICROTESLA_TO_NANOTESLA
 }
 
+/// The geophysical half of a `--geo` event stream: which maps aid it, how noisy they are,
+/// how often they are read, and where the filter keeps their bias states.
+///
+/// A struct rather than six positional parameters, which is the shape `clippy.toml`'s
+/// `too-many-arguments-threshold` asks for and the same move #296 made on `initialize_ekf`
+/// and `initialize_eskf`. It also removes a real hazard: `gravity_noise_std` and
+/// `magnetic_noise_std` are both `Option<f64>` and were adjacent, so transposing them was a
+/// silent unit error -- milligal into a nanotesla slot.
+///
+/// Not `#[non_exhaustive]`, deliberately. That attribute buys the ability to add a field
+/// without a major version bump, and `geonav` is held at 0.x precisely so its API can move
+/// (see `geonav/Cargo.toml`), so it would be cost without the benefit.
+#[derive(Clone, Debug, Default)]
+pub struct GeophysicalAiding {
+    /// Gravity anomaly map, or `None` for a run with no gravity aiding.
+    pub gravity_map: Option<Rc<GeoMap>>,
+    /// Gravity measurement noise, milligal. Defaults to 100.0 when `None`.
+    pub gravity_noise_std: Option<f64>,
+    /// Magnetic anomaly map, or `None` for a run with no magnetic aiding.
+    pub magnetic_map: Option<Rc<GeoMap>>,
+    /// Magnetic measurement noise, nanotesla. Defaults to 150.0 when `None`.
+    pub magnetic_noise_std: Option<f64>,
+    /// Seconds *between* geophysical measurements, so a larger value means fewer of them.
+    /// `None` emits one for every record that carries the data.
+    pub interval_s: Option<f64>,
+    /// Where the filter consuming this stream keeps its map-bias states, or `None` when it
+    /// keeps none. Not inferable from the maps: loading a gravity map says a gravity
+    /// *measurement* is available, not that the filter has a state to absorb its bias.
+    pub bias_layout: Option<GeoBiasLayout>,
+}
+
 /// Builds and initializes an event stream that also contains geophysical measurements
 ///
 /// This function builds a generic geophysical measurement model and adds it to the event stream.
@@ -1427,204 +1454,100 @@ fn observed_field_nt(record: &TestDataRecord) -> f64 {
 /// and yields an empty event list, so the boundary is emptiness, not "fewer than two". This
 /// mirrors [`strapdown::messages::build_event_stream`], which this function shadows with
 /// geophysical measurements added.
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "the `Rc<GeoMap>` handles are stored by the measurements this builds; cloning an \
-              `Rc` is a refcount bump, so taking them by value is cheaper than borrowing and \
-              cloning internally"
-)]
 pub fn build_event_stream(
     records: &[TestDataRecord],
     cfg: &AidingConfig,
-    gravity_map: Option<Rc<GeoMap>>,
-    gravity_noise_std: Option<f64>,
-    magnetic_map: Option<Rc<GeoMap>>,
-    magnetic_noise_std: Option<f64>,
-    geo_interval_s: Option<f64>,
-    bias_layout: Option<GeoBiasLayout>,
+    is_enu: bool,
+    geophysical: &GeophysicalAiding,
 ) -> Result<EventStream, StrapdownError> {
-    // The first record fixes both the epoch the elapsed clock counts from and the datum the
-    // relative-altitude measurements are referenced to, so an empty slice is rejected here
-    // rather than indexed into. Kept identical to the core copy on purpose (#311).
-    let first = records
-        .first()
-        .ok_or_else(|| StrapdownError::InvalidConfiguration {
-            field: "event stream records",
-            reason: "cannot build an event stream from zero records: the first record supplies \
-                     the stream's start time and the relative-altitude reference"
-                .to_owned(),
-        })?;
+    // Everything that is not geophysical comes from `strapdown::messages::build_event_stream`.
+    //
+    // This function used to reimplement it -- the elapsed clock, the GNSS schedule, the fault
+    // model, the barometer, the IMU events -- and the two had diverged in three ways, all of
+    // which changed what a `--geo` run actually simulated (#411):
+    //
+    // * `DutyCycle` emitted **one** fix per ON window instead of every fix during it, because
+    //   the copy here toggled a `duty_on` flag on each emit and returned it, rather than
+    //   deriving the window from the elapsed clock. `--sched duty --on-s 100 --off-s 50`
+    //   delivered a fix every 150 s rather than for 100 s out of every 150.
+    // * `start_phase_s` was destructured away with `..` and never applied.
+    // * The barometer was emitted on **every record**, ignoring `cfg.baro_scheduler`
+    //   entirely -- 50 updates a second on a 50 Hz log against the 1 Hz every other path
+    //   uses -- and no magnetometer update was ever emitted at all.
+    //
+    // Delegating rather than re-fixing is the point: a second copy of a scheduler is a second
+    // copy of every future scheduler bug. `the_two_builders_agree_on_every_non_geophysical_event`
+    // holds them equal.
+    let mut stream = strapdown::messages::build_event_stream(records, cfg, is_enu)?;
+
+    // `build_event_stream` has already rejected an empty slice, so this cannot fail; it is
+    // written as a `let ... else` rather than an index so that stays true if that changes.
+    let Some(first) = records.first() else {
+        return Ok(stream);
+    };
     let start_time = first.time;
+
     // Whether a bias is *declared* comes from the layout the caller passed, not from which
     // maps were loaded. The two used to be the same expression, which is how a stream could
     // promise bias states a filter did not carry.
-    let gravity_bias = bias_layout.and_then(|layout| layout.gravity_bias());
-    let magnetic_bias = bias_layout.and_then(|layout| layout.magnetic_bias());
-    let records_with_elapsed: Vec<(f64, &TestDataRecord)> = records
-        .iter()
-        .map(|r| ((r.time - start_time).num_milliseconds() as f64 / 1000.0, r))
-        .collect();
-    let mut events = Vec::with_capacity(records_with_elapsed.len() * 2);
-    let mut st = FaultState::new(cfg.seed);
+    let gravity_bias = geophysical
+        .bias_layout
+        .and_then(|layout| layout.gravity_bias());
+    let magnetic_bias = geophysical
+        .bias_layout
+        .and_then(|layout| layout.magnetic_bias());
+    let geo_interval_s = geophysical.interval_s;
+    let gravity_map = geophysical.gravity_map.as_ref();
+    let magnetic_map = geophysical.magnetic_map.as_ref();
+    let gravity_noise_std = geophysical.gravity_noise_std;
+    let magnetic_noise_std = geophysical.magnetic_noise_std;
 
-    // Scheduler state
-    let mut next_emit_time = match cfg.scheduler {
-        MeasurementScheduler::PassThrough => 0.0,
-        MeasurementScheduler::FixedInterval { phase_s, .. } => phase_s,
-        MeasurementScheduler::DutyCycle { start_phase_s, .. } => start_phase_s,
-    };
-    let mut duty_on = true;
-
-    // Geophysical measurement scheduling state
+    let mut geophysical: Vec<Event> = Vec::new();
     let mut next_geo_time = 0.0;
-    // Through preprocessing we assert that the first record must have a NED position
-    // but it may or may not have IMU or other such measurements.
-    let reference_altitude = first.altitude;
-    for w in records_with_elapsed.windows(2) {
-        let (t0, _) = (&w[0].0, &w[0].1);
-        let (t1, r1) = (&w[1].0, &w[1].1);
-        let dt = t1 - t0;
 
-        // Build IMU event at t1 only if accel and gyro components are present
-        let imu_components = [
-            r1.acc_x, r1.acc_y, r1.acc_z, r1.gyro_x, r1.gyro_y, r1.gyro_z,
-        ];
-        let imu_present = imu_components.iter().all(|v| !v.is_nan());
-        if imu_present {
-            let imu = IMUData {
-                accel: Vector3::new(r1.acc_x, r1.acc_y, r1.acc_z),
-                gyro: Vector3::new(r1.gyro_x, r1.gyro_y, r1.gyro_z),
-                // add other fields as your UKF expects
-            };
-            events.push(Event::Imu {
-                dt_s: dt,
-                imu,
-                elapsed_s: *t1,
-            });
-        }
-        // Decide if GNSS should be emitted at t1
-        let should_emit = match cfg.scheduler {
-            MeasurementScheduler::PassThrough => true,
-            MeasurementScheduler::FixedInterval { interval_s, .. } => {
-                if *t1 + 1e-9 >= next_emit_time {
-                    next_emit_time += interval_s;
-                    true
-                } else {
-                    false
-                }
-            }
-            MeasurementScheduler::DutyCycle { on_s, off_s, .. } => {
-                let window = if duty_on { on_s } else { off_s };
-                if *t1 + 1e-9 >= next_emit_time {
-                    duty_on = !duty_on;
-                    next_emit_time += window;
-                    duty_on // only emit when toggling into ON
-                } else {
-                    false
-                }
-            }
-        };
+    for window in records.windows(2) {
+        let r1 = &window[1];
+        let t1 = (r1.time - start_time).num_milliseconds() as f64 / 1000.0;
 
-        if should_emit {
-            // Only create GNSS event when the core GNSS values are present
-            let gnss_required = [r1.latitude, r1.longitude, r1.altitude, r1.speed, r1.bearing];
-            let gnss_present = gnss_required.iter().all(|v| !v.is_nan());
-            if gnss_present {
-                // Truth-like GNSS from r1
-                let lat = r1.latitude;
-                let lon = r1.longitude;
-                let alt = r1.altitude;
-                let bearing_rad = r1.bearing.to_radians();
-                let vn = r1.speed * bearing_rad.cos();
-                let ve = r1.speed * bearing_rad.sin();
-
-                // Use your provided accuracies (adjust if these are variances vs std).
-                // If an accuracy is missing (NaN), substitute a conservative default
-                // to avoid propagating NaN into the measurement noise.
-                let horiz_std = if r1.horizontal_accuracy.is_nan() {
-                    1000.0
-                } else {
-                    r1.horizontal_accuracy.max(1e-3)
-                };
-                let vert_std = if r1.vertical_accuracy.is_nan() {
-                    20.0
-                } else {
-                    r1.vertical_accuracy.max(1e-3)
-                };
-                let vel_std = if r1.speed_accuracy.is_nan() {
-                    100.0
-                } else {
-                    r1.speed_accuracy.max(0.1)
-                };
-
-                let (lat_c, lon_c, alt_c, vn_c, ve_c, horiz_c, vel_c) = apply_fault(
-                    &cfg.fault, &mut st, *t1, dt, lat, lon, alt, vn, ve, horiz_std, vel_std,
-                );
-
-                let meas = GPSPositionAndVelocityMeasurement {
-                    latitude: lat_c,
-                    longitude: lon_c,
-                    altitude: alt_c,
-                    northward_velocity: vn_c,
-                    eastward_velocity: ve_c,
-                    horizontal_noise_std: horiz_c,
-                    vertical_noise_std: vert_std, // pass-through here; you can also degrade it if desired
-                    velocity_noise_std: vel_c,
-                };
-                events.push(Event::Measurement {
-                    meas: Box::new(meas),
-                    elapsed_s: *t1,
-                });
-            }
-        }
-        if !r1.relative_altitude.is_nan() {
-            let baro: RelativeAltitudeMeasurement = RelativeAltitudeMeasurement {
-                relative_altitude: r1.relative_altitude,
-                reference_altitude,
-                noise_std: cfg.baro_noise_std_m,
-                bias_index: cfg.baro_bias_index,
-            };
-            events.push(Event::Measurement {
-                meas: Box::new(baro),
-                elapsed_s: *t1,
-            });
-        }
         let gravity = [r1.grav_x, r1.grav_y, r1.grav_z];
         let magnetic = [r1.mag_x, r1.mag_y, r1.mag_z];
         let gravity_present = gravity.iter().all(|v| !v.is_nan());
         let magnetic_present = magnetic.iter().all(|v| !v.is_nan());
 
-        // Determine if we should emit a geophysical measurement at this time
+        // The geophysical channel keeps its own clock, on the same footing as the three in
+        // the core builder: an interval in seconds *between* measurements, `None` meaning
+        // every record that carries one.
         let should_emit_geo = match geo_interval_s {
-            Some(freq) => {
-                if *t1 + 1e-9 >= next_geo_time {
-                    next_geo_time += freq;
+            Some(interval) => {
+                if t1 + 1e-9 >= next_geo_time {
+                    next_geo_time += interval;
                     true
                 } else {
                     false
                 }
             }
-            None => true, // Emit for every available measurement if no frequency specified
+            None => true,
         };
+        if !should_emit_geo {
+            continue;
+        }
 
-        // Create geophysical measurements based on loaded maps
-        if should_emit_geo {
-            // Bind the maps in the condition rather than testing `is_some()` and then
-            // unwrapping: the availability test and the value then cannot drift apart.
-            // `Option<&Rc<GeoMap>>` is `Copy`, so each branch may use these freely.
-            let available_gravity = gravity_map.as_ref().filter(|_| gravity_present);
-            let available_magnetic = magnetic_map.as_ref().filter(|_| magnetic_present);
+        // Bind the maps in the condition rather than testing `is_some()` and then
+        // unwrapping: the availability test and the value then cannot drift apart.
+        // `Option<&Rc<GeoMap>>` is `Copy`, so each branch may use these freely.
+        let available_gravity = gravity_map.filter(|_| gravity_present);
+        let available_magnetic = magnetic_map.filter(|_| magnetic_present);
 
-            if let (Some(g_map), Some(m_map)) = (available_gravity, available_magnetic) {
-                // Both maps available: emit a single combined 2D measurement
-                let observed_gravity =
-                    (r1.grav_x.powi(2) + r1.grav_y.powi(2) + r1.grav_z.powi(2)).sqrt();
-                let datetime = r1.time;
-                let observed_magnetic = observed_field_nt(r1);
-                let meas = CombinedGeophysicalMeasurement {
+        let observed_gravity = (r1.grav_x.powi(2) + r1.grav_y.powi(2) + r1.grav_z.powi(2)).sqrt();
+        let datetime = r1.time;
+
+        let measurement: Option<Box<dyn MeasurementModel>> =
+            match (available_gravity, available_magnetic) {
+                // Both maps available: emit a single combined 2D measurement.
+                (Some(g_map), Some(m_map)) => Some(Box::new(CombinedGeophysicalMeasurement {
                     gravity: GravityMeasurement {
                         map: g_map.clone(),
-                        noise_std: gravity_noise_std.unwrap_or(100.0),
+                        noise_std: gravity_noise_std.unwrap_or(DEFAULT_GRAVITY_NOISE_MGAL),
                         gravity_observed: observed_gravity,
                         latitude: f64::NAN,
                         altitude: f64::NAN,
@@ -1634,8 +1557,8 @@ pub fn build_event_stream(
                     },
                     magnetic: MagneticAnomalyMeasurement {
                         map: m_map.clone(),
-                        noise_std: magnetic_noise_std.unwrap_or(150.0),
-                        mag_obs: observed_magnetic,
+                        noise_std: magnetic_noise_std.unwrap_or(DEFAULT_MAGNETIC_NOISE_NT),
+                        mag_obs: observed_field_nt(r1),
                         latitude: f64::NAN,
                         longitude: f64::NAN,
                         altitude: f64::NAN,
@@ -1643,52 +1566,84 @@ pub fn build_event_stream(
                         day: datetime.ordinal() as u16,
                         bias: magnetic_bias,
                     },
-                };
-                events.push(Event::Measurement {
-                    meas: Box::new(meas),
-                    elapsed_s: *t1,
-                });
-            } else if let Some(g_map) = available_gravity {
-                // Gravity-only
-                let observed_gravity =
-                    (r1.grav_x.powi(2) + r1.grav_y.powi(2) + r1.grav_z.powi(2)).sqrt();
-                let meas = GravityMeasurement {
+                })),
+                (Some(g_map), None) => Some(Box::new(GravityMeasurement {
                     map: g_map.clone(),
-                    noise_std: gravity_noise_std.unwrap_or(100.0),
+                    noise_std: gravity_noise_std.unwrap_or(DEFAULT_GRAVITY_NOISE_MGAL),
                     gravity_observed: observed_gravity,
                     latitude: f64::NAN,
                     altitude: f64::NAN,
                     north_velocity: f64::NAN,
                     east_velocity: f64::NAN,
                     bias: gravity_bias,
-                };
-                events.push(Event::Measurement {
-                    meas: Box::new(meas),
-                    elapsed_s: *t1,
-                });
-            } else if let Some(m_map) = available_magnetic {
-                // Magnetic-only
-                let datetime = r1.time;
-                let observed_magnetic = observed_field_nt(r1);
-                let meas = MagneticAnomalyMeasurement {
+                })),
+                (None, Some(m_map)) => Some(Box::new(MagneticAnomalyMeasurement {
                     map: m_map.clone(),
-                    noise_std: magnetic_noise_std.unwrap_or(150.0),
-                    mag_obs: observed_magnetic,
+                    noise_std: magnetic_noise_std.unwrap_or(DEFAULT_MAGNETIC_NOISE_NT),
+                    mag_obs: observed_field_nt(r1),
                     latitude: f64::NAN,
                     longitude: f64::NAN,
                     altitude: f64::NAN,
                     year: datetime.year(),
                     day: datetime.ordinal() as u16,
                     bias: magnetic_bias,
-                };
-                events.push(Event::Measurement {
-                    meas: Box::new(meas),
-                    elapsed_s: *t1,
-                });
-            }
+                })),
+                (None, None) => None,
+            };
+
+        if let Some(meas) = measurement {
+            geophysical.push(Event::Measurement {
+                meas,
+                elapsed_s: t1,
+            });
         }
     }
-    Ok(EventStream { start_time, events })
+
+    stream.events = merge_by_elapsed(std::mem::take(&mut stream.events), geophysical);
+    Ok(stream)
+}
+
+/// Default gravity-measurement noise, milligal, when the caller names none.
+const DEFAULT_GRAVITY_NOISE_MGAL: f64 = 100.0;
+
+/// Default magnetic-anomaly measurement noise, nanotesla, when the caller names none.
+const DEFAULT_MAGNETIC_NOISE_NT: f64 = 150.0;
+
+/// Elapsed time of an event, whichever variant it is.
+const fn elapsed_of(event: &Event) -> f64 {
+    match event {
+        Event::Imu { elapsed_s, .. } | Event::Measurement { elapsed_s, .. } => *elapsed_s,
+    }
+}
+
+/// Interleave the geophysical events into the core stream by elapsed time.
+///
+/// Both inputs are already sorted, so this is a merge rather than a sort, and it is **stable
+/// with the geophysical event last at an equal timestamp**. That ordering is the one the
+/// hand-rolled builder produced -- IMU, then GNSS, then barometer, then the geophysical
+/// measurement -- and a filter that updates in event order would otherwise see the map
+/// measurement applied before the GNSS fix at the same instant.
+fn merge_by_elapsed(core: Vec<Event>, geophysical: Vec<Event>) -> Vec<Event> {
+    let mut merged = Vec::with_capacity(core.len() + geophysical.len());
+    let mut core = core.into_iter().peekable();
+    let mut geophysical = geophysical.into_iter().peekable();
+
+    loop {
+        match (core.peek(), geophysical.peek()) {
+            (Some(c), Some(g)) => {
+                // `<=` keeps the geophysical event second at a tie.
+                if elapsed_of(c) <= elapsed_of(g) {
+                    merged.push(core.next().unwrap_or_else(|| unreachable!("peeked")));
+                } else {
+                    merged.push(geophysical.next().unwrap_or_else(|| unreachable!("peeked")));
+                }
+            }
+            (Some(_), None) => merged.extend(core.by_ref()),
+            (None, Some(_)) => merged.extend(geophysical.by_ref()),
+            (None, None) => break,
+        }
+    }
+    merged
 }
 // NOTE: `geo_closed_loop_ukf`, `geo_closed_loop_ekf` and `geo_closed_loop_rbpf` were
 // removed in favour of `strapdown::sim::run_closed_loop`.
@@ -2028,8 +1983,20 @@ mod tests {
         };
         let geomap = Rc::new(create_test_gravity_map());
 
-        let err = build_event_stream(&[], &config, Some(geomap), None, None, None, None, None)
-            .expect_err("an empty record slice cannot produce a stream");
+        let err = build_event_stream(
+            &[],
+            &config,
+            false,
+            &GeophysicalAiding {
+                gravity_map: Some(geomap),
+                gravity_noise_std: None,
+                magnetic_map: None,
+                magnetic_noise_std: None,
+                interval_s: None,
+                bias_layout: None,
+            },
+        )
+        .expect_err("an empty record slice cannot produce a stream");
         assert!(
             matches!(
                 err,
@@ -2057,12 +2024,15 @@ mod tests {
         let event_stream = build_event_stream(
             &records[..1],
             &config,
-            Some(geomap),
-            None,
-            None,
-            None,
-            None,
-            None,
+            false,
+            &GeophysicalAiding {
+                gravity_map: Some(geomap),
+                gravity_noise_std: None,
+                magnetic_map: None,
+                magnetic_noise_std: None,
+                interval_s: None,
+                bias_layout: None,
+            },
         )
         .unwrap();
 
@@ -2088,12 +2058,15 @@ mod tests {
         let event_stream = build_event_stream(
             &records,
             &config,
-            Some(geomap),
-            None,
-            None,
-            None,
-            None,
-            None,
+            false,
+            &GeophysicalAiding {
+                gravity_map: Some(geomap),
+                gravity_noise_std: None,
+                magnetic_map: None,
+                magnetic_noise_std: None,
+                interval_s: None,
+                bias_layout: None,
+            },
         )
         .unwrap();
 
@@ -2132,12 +2105,15 @@ mod tests {
         let event_stream = build_event_stream(
             &records,
             &config,
-            None,
-            None,
-            Some(geomap),
-            None,
-            None,
-            None,
+            false,
+            &GeophysicalAiding {
+                gravity_map: None,
+                gravity_noise_std: None,
+                magnetic_map: Some(geomap),
+                magnetic_noise_std: None,
+                interval_s: None,
+                bias_layout: None,
+            },
         )
         .unwrap();
 
@@ -2614,12 +2590,15 @@ mod tests {
         let stream = build_event_stream(
             &records,
             &AidingConfig::default(),
-            None,
-            None,
-            Some(Rc::new(create_test_magnetic_map())),
-            None,
-            None,
-            None,
+            false,
+            &GeophysicalAiding {
+                gravity_map: None,
+                gravity_noise_std: None,
+                magnetic_map: Some(Rc::new(create_test_magnetic_map())),
+                magnetic_noise_std: None,
+                interval_s: None,
+                bias_layout: None,
+            },
         )
         .unwrap();
 
@@ -2659,12 +2638,15 @@ mod tests {
         let no_bias = build_event_stream(
             &records,
             &config,
-            Some(Rc::clone(&gravity)),
-            None,
-            Some(Rc::clone(&magnetic)),
-            None,
-            None,
-            None,
+            false,
+            &GeophysicalAiding {
+                gravity_map: Some(Rc::clone(&gravity)),
+                gravity_noise_std: None,
+                magnetic_map: Some(Rc::clone(&magnetic)),
+                magnetic_noise_std: None,
+                interval_s: None,
+                bias_layout: None,
+            },
         )
         .unwrap();
         let mut combined_seen = 0;
@@ -2691,12 +2673,15 @@ mod tests {
         let with_bias = build_event_stream(
             &records,
             &config,
-            Some(gravity),
-            None,
-            Some(magnetic),
-            None,
-            None,
-            Some(layout),
+            false,
+            &GeophysicalAiding {
+                gravity_map: Some(gravity),
+                gravity_noise_std: None,
+                magnetic_map: Some(magnetic),
+                magnetic_noise_std: None,
+                interval_s: None,
+                bias_layout: Some(layout),
+            },
         )
         .unwrap();
         for event in &with_bias.events {
@@ -2795,12 +2780,15 @@ mod tests {
         let event_stream = build_event_stream(
             &records,
             &config,
-            Some(geomap),
-            Some(25.0),
-            None,
-            None,
-            None,
-            None,
+            false,
+            &GeophysicalAiding {
+                gravity_map: Some(geomap),
+                gravity_noise_std: Some(25.0),
+                magnetic_map: None,
+                magnetic_noise_std: None,
+                interval_s: None,
+                bias_layout: None,
+            },
         )
         .unwrap();
 
@@ -2839,12 +2827,15 @@ mod tests {
         let event_stream = build_event_stream(
             &records,
             &config,
-            Some(geomap.clone()),
-            Some(25.0),
-            None,
-            None,
-            Some(2.0),
-            None,
+            false,
+            &GeophysicalAiding {
+                gravity_map: Some(geomap.clone()),
+                gravity_noise_std: Some(25.0),
+                magnetic_map: None,
+                magnetic_noise_std: None,
+                interval_s: Some(2.0),
+                bias_layout: None,
+            },
         )
         .unwrap();
 
@@ -2865,12 +2856,15 @@ mod tests {
         let event_stream_no_limit = build_event_stream(
             &records,
             &config,
-            Some(geomap),
-            Some(25.0),
-            None,
-            None,
-            None,
-            None,
+            false,
+            &GeophysicalAiding {
+                gravity_map: Some(geomap),
+                gravity_noise_std: Some(25.0),
+                magnetic_map: None,
+                magnetic_noise_std: None,
+                interval_s: None,
+                bias_layout: None,
+            },
         )
         .unwrap();
 
