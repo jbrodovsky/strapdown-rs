@@ -123,8 +123,25 @@ rather than defects in the harness; the fifth is a defect, in the gate.
    24.33 m on Windows -- a 28.5% spread against a 25% improve band -- so a Linux bless failed
    the Windows leg of a run that was behaving identically. That metric is ungated with the
    numbers recorded in its note; the general problem is
-   [#386](https://github.com/jbrodovsky/strapdown-rs/issues/386). Until it is fixed, **check a
-   Windows run before calling a re-bless done.**
+   [#386](https://github.com/jbrodovsky/strapdown-rs/issues/386).
+
+   **Two parts of that are now closed.** The baseline records the operating system it was
+   blessed on (`blessed_on`), and the improve-side failure no longer tells a contributor their
+   baseline is stale when the run is simply on a different platform -- it names both platforms
+   and says to check the blessing one first. Re-blessing on the wrong leg was the specific
+   damage the old message caused.
+
+   **The tolerance floor is deliberately not set yet, because nobody has measured it.** Every
+   matrix leg now writes its raw numbers with `PERF_EMIT_MEASURED` and uploads them, and the
+   advisory `Cross-platform accuracy spread` job prints the per-metric spread across all three.
+   Setting a floor before reading that output would be gating on a guess, which is the mistake
+   #386 exists to correct. Read the job's table, then set the floor from it.
+
+   Note also that the 28.5% figure above predates
+   [#385](https://github.com/jbrodovsky/strapdown-rs/issues/385). That row's tail *was* the
+   epochs where the particle cloud collapsed, and it no longer collapses, so the spread may
+   already be much smaller. It has not been re-measured. Until then, **check a Windows run
+   before calling a re-bless done.**
 6. **The `syn_*` rows run at 50 Hz and the `real_*` rows at 1 Hz, and the aiding sensors no
    longer follow that.** Until
    [#375](https://github.com/jbrodovsky/strapdown-rs/issues/375) the barometer and the
