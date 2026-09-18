@@ -214,6 +214,27 @@ pub struct RbpfConfig {
     pub zero_vertical_velocity: bool,
     /// Standard deviation for the zero-vertical-velocity pseudo-measurement.
     pub zero_vertical_velocity_std_mps: f64,
+
+    /// Roughening coefficient applied to the position cloud after a resample, as a
+    /// fraction of the cloud's own pre-resample extent. `0.0` disables it.
+    ///
+    /// Resampling clones particles *exactly*: the survivors are bit-identical copies of
+    /// their ancestors. When the weights degenerate onto one particle -- which on the
+    /// reference recording happens on roughly one update in thirty, with an effective
+    /// sample size of **1.0** -- the whole cloud becomes 500 copies of a single point and
+    /// the reported position covariance drops to the float noise around zero. #385 measured
+    /// horizontal sigmas of four *nanometres* against a GNSS fix specified at 3.81 m.
+    ///
+    /// Roughening is the standard repair (Gordon, Salmond & Smith 1993, §II-D): after
+    /// resampling, jitter each particle by a Gaussian whose width is
+    /// `K * E * N^(-1/d)`, where `E` is the cloud's extent along that axis, `N` the
+    /// particle count and `d` the dimension of the sampled partition (3, for position).
+    /// The `N^(-1/d)` factor is what makes it vanish as the cloud is better resolved.
+    ///
+    /// `E` is measured **before** the resample, deliberately. Afterwards the extent is the
+    /// zero this is meant to repair, so scaling by it would jitter by nothing at exactly
+    /// the moment jitter is needed.
+    pub roughening_factor: f64,
 }
 
 impl Default for RbpfConfig {
@@ -235,9 +256,17 @@ impl Default for RbpfConfig {
             recenter_after_update: true,
             zero_vertical_velocity: true,
             zero_vertical_velocity_std_mps: 0.1,
+            roughening_factor: DEFAULT_ROUGHENING_FACTOR,
         }
     }
 }
+
+/// Gordon, Salmond & Smith's roughening coefficient, as a fraction of the cloud extent.
+///
+/// The 1993 paper tunes `K` per problem and uses 0.2 for its examples. That value is kept
+/// here: on the gated `real_rbpf_slice__rbpf` scenario it is what stops the cloud collapsing
+/// without measurably widening the epochs that were never degenerate.
+const DEFAULT_ROUGHENING_FACTOR: f64 = 0.2;
 
 /// RBPF particle state (position error + linear state).
 #[derive(Clone, Debug)]
@@ -1312,6 +1341,10 @@ impl RaoBlackwellizedParticleFilter {
             return;
         }
 
+        // Measured before the resample: afterwards the extent along a collapsed axis is the
+        // zero this is here to repair. See `RbpfConfig::roughening_factor`.
+        let extent = self.position_extent();
+
         let weights: Vec<f64> = self.particles.iter().map(|p| p.weight).collect();
         let indices = match self.config.resampling_strategy {
             ParticleResamplingStrategy::Multinomial => {
@@ -1335,6 +1368,64 @@ impl RaoBlackwellizedParticleFilter {
             new_particles.push(particle);
         }
         self.particles = new_particles;
+
+        self.roughen(&extent);
+    }
+
+    /// Per-axis extent of the position cloud: the spread the roughening jitter is scaled by.
+    ///
+    /// Max-minus-min rather than a standard deviation, following Gordon, Salmond & Smith, and
+    /// because it is the quantity that goes to exactly zero when every particle is a copy of
+    /// one ancestor -- which is the state being detected.
+    fn position_extent(&self) -> Vector3<f64> {
+        let mut lo = Vector3::repeat(f64::INFINITY);
+        let mut hi = Vector3::repeat(f64::NEG_INFINITY);
+        for particle in &self.particles {
+            for axis in 0..POSITION_STATE_DIM {
+                lo[axis] = lo[axis].min(particle.position_error[axis]);
+                hi[axis] = hi[axis].max(particle.position_error[axis]);
+            }
+        }
+        let mut extent = Vector3::zeros();
+        for axis in 0..POSITION_STATE_DIM {
+            let span = hi[axis] - lo[axis];
+            // A non-finite particle would poison every axis; leave the extent at zero and
+            // let the health monitor report the real problem rather than jittering by NaN.
+            extent[axis] = if span.is_finite() { span } else { 0.0 };
+        }
+        extent
+    }
+
+    /// Jitter the resampled cloud so that duplicated particles stop being identical.
+    ///
+    /// `sigma = K * extent * N^(-1/d)` per axis, drawn independently. A zero `extent` on an
+    /// axis leaves that axis alone: there is no spread to scale, which happens only when the
+    /// cloud was already a single point along it before resampling, and inventing a width
+    /// there would be fabricating uncertainty rather than preserving it.
+    fn roughen(&mut self, extent: &Vector3<f64>) {
+        let factor = self.config.roughening_factor;
+        if factor <= 0.0 {
+            return;
+        }
+        let count = self.particles.len();
+        if count == 0 {
+            return;
+        }
+
+        // `d` is the dimension of the partition the particles actually sample -- position --
+        // not the full state. The linear partition is Rao-Blackwellised, carried by
+        // `linear_cov` rather than by cloud spread, so it is neither counted here nor
+        // jittered below.
+        let scale = (count as f64).powf(-1.0 / POSITION_STATE_DIM as f64);
+        let normal = crate::normal_with_std(1.0);
+        for particle in &mut self.particles {
+            for axis in 0..POSITION_STATE_DIM {
+                let sigma = factor * extent[axis] * scale;
+                if sigma > 0.0 {
+                    particle.position_error[axis] += sigma * normal.sample(&mut self.rng);
+                }
+            }
+        }
     }
 }
 

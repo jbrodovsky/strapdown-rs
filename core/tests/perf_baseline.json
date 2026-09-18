@@ -354,58 +354,58 @@
       "discarded_channel_samples": 0,
       "metrics": {
         "attitude_geodesic_rmse_deg": {
-          "value": 20.7449
+          "value": 20.79
         },
         "containment_3sigma_horizontal": {
-          "value": 0.79
+          "value": 0.80625
         },
         "containment_3sigma_vertical": {
-          "value": 0.625833
+          "value": 0.64
         },
         "horizontal_cep50_m": {
-          "value": 1.82501
+          "value": 1.82705
         },
         "horizontal_cep95_m": {
-          "value": 33.2893,
+          "value": 29.2597,
           "gated": false,
-          "note": "Not gated: this row's tail statistics are platform-dependent, because the tail IS the handful of epochs where the particle cloud collapses (#385). Measured on the same commit, Linux 34.02 m against Windows 24.33 m -- a 28.5% spread, wider than the improve band, so a Linux bless fails the Windows leg. The bulk statistics on this row agree across platforms to about 1% (horizontal_rmse_m +1.3%, containment_3sigma_horizontal +0.8%) and stay gated. horizontal_max_m is the same kind of statistic and currently sits at +4.7%, inside the band; it is worth watching rather than pre-emptively ungating. Re-gate this when #385 lands. Note also that the baseline is blessed on one platform and gated on three, with no cross-platform tolerance anywhere in judge() -- see #386."
+          "note": "Not gated. The recorded reason was that this row's tail statistics are platform-dependent *because the tail was the handful of epochs where the particle cloud collapsed* (#385): Linux 34.02 m against Windows 24.33 m on the same commit, a 28.5% spread against a 25% improve band. That mechanism is now gone -- the cloud no longer collapses, and this value moved 33.29 -> 29.26 m with the fix. Whether the platform spread went with it has NOT been measured: this branch was blessed on Linux only, which is exactly the gap #386 is about. Re-measure across the three platforms before gating it again."
         },
         "horizontal_max_m": {
-          "value": 118.789
+          "value": 113.231
         },
         "horizontal_rmse_m": {
-          "value": 17.5604
+          "value": 16.7509
         },
         "nees_position": {
-          "value": 1.99856e+17,
+          "value": 5961.3,
           "gated": false,
-          "note": "Not gated, for the same reason as `npes_position` on this row: both are dominated by the RBPF covariance collapse (#385), not by navigation accuracy. 17 of 1,200 epochs report a horizontal sigma of nanometres, and no normalised error survives a near-zero denominator. Deliberately quoting no ratio between the two: the figure is an artefact of the collapse and of how the inverse is formed, not a measurement. It read 2.4e17 while `nees` used `try_inverse` and 4.1e37 once that became a Cholesky solve -- twenty orders, from a change that left the other 239 metrics in this file bit-identical. Re-gate when #385 lands, and expect the value to move again until then."
+          "note": "Not gated, for the same reason as `npes_position` on this row. #385's collapse moved it 1.99856e17 -> 5,961.3 -- the 1e17 was a near-zero denominator, not a navigation figure. The residual is the RBPF's accuracy, not its covariance; see the note on `npes_position`."
         },
         "npes_position": {
-          "value": 105567.0,
+          "value": 3432.9,
           "gated": false,
-          "note": "Not gated: dominated by an RBPF covariance collapse, not by navigation accuracy. 17 of 1,200 epochs report a horizontal sigma below 1 mm -- the smallest is 4.2 nm -- so this mean of e^2/P is set by a near-zero denominator on ~1.4% of rows. Exposed rather than caused by #367: before it, every row was sampled one IMU step late, after `predict` had re-inflated the cloud, which hid the collapse and recorded 183.5 here. Tracked in #385. `containment_3sigma_horizontal` on this row is unaffected and stays gated."
+          "note": "Not gated, and no longer for the reason it used to be. Until #385 this row was dominated by an RBPF covariance collapse: 42 of 3,597 update epochs reported a horizontal sigma below a millimetre, the smallest 4.95 nm, so the mean of e^2/P was set by a near-zero denominator. Roughening the resampled cloud removed that (0 epochs below a millimetre; smallest reported sigma now 0.12 m) and moved this figure 105,567 -> 3,432.9. What remains is not a covariance defect but an accuracy one: the filter reports a median 1.83 m sigma while achieving 16.75 m horizontal RMSE, and would need about 9.7 m to be consistent. It cannot get there by widening the cloud -- sweeping `position_process_noise_std_m` from 1 m to 16 m per root-second only moves the median sigma 1.83 -> 4.37 m, because a 1 Hz GNSS fix at 3.81 m pulls the posterior back every second. The RBPF is simply making errors four times larger than the fixes it is given. Gating waits on #386: this row's statistics are platform-dependent and the gate still has no cross-platform tolerance."
         },
         "pitch_rmse_deg": {
-          "value": 3.15044
+          "value": 3.14229
         },
         "roll_rmse_deg": {
-          "value": 2.83262
+          "value": 2.82793
         },
         "velocity_horizontal_rmse_mps": {
-          "value": 2.22056
+          "value": 2.21109
         },
         "velocity_vertical_rmse_mps": {
-          "value": 1.06527
+          "value": 1.06662
         },
         "vertical_bias_m": {
-          "value": -2.2513
+          "value": -2.25807
         },
         "vertical_rmse_m": {
-          "value": 2.84724
+          "value": 2.85071
         },
         "yaw_rmse_deg": {
-          "value": 20.3135
+          "value": 20.3623
         }
       }
     },

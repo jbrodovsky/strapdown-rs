@@ -129,6 +129,12 @@
 //!    normalised statistic is now a systematic altitude bias of -0.6 to -2.0 m that nothing
 //!    models. That is #372, measured rather than masked. These values are recorded as a drift
 //!    detector, not read as a consistency verdict, until #372 lands.
+//!
+//!    #372 has since landed and #385's collapse is fixed, which moved the RBPF row's
+//!    `npes_position` 105,567 -> 3,432.9 and its `nees_position` 1.99856e17 -> 5,961.3. Those
+//!    were never navigation figures -- they were near-zero denominators. What is left on that
+//!    row is a genuine accuracy gap rather than a covariance one: 16.75 m horizontal RMSE
+//!    against a 1 Hz GNSS fix specified at 3.81 m.
 //! 5. **The baseline is blessed on one platform and gated on three.** `rust.yml` runs this
 //!    suite on Linux, macOS and Windows; nothing in [`judge`] knows that, and there is no
 //!    cross-platform tolerance floor anywhere in the gate. For most rows that is harmless --
@@ -139,6 +145,11 @@
 //!    behaving identically. That metric is ungated, with the numbers in its note; the general
 //!    problem is #386. **This is the one caveat that is a defect** -- in the gate, not in the
 //!    navigation.
+//!
+//!    The *instability* that made that row's tail platform-dependent was #385's covariance
+//!    collapse, and that is now fixed -- the cloud is roughened after resampling and no epoch
+//!    reports a collapsed sigma. Whether the 28.5% spread went with it is **unmeasured**: this
+//!    was blessed on Linux, which is the gap itself. Do not read the fix as closing #386.
 //! 6. **The `syn_*` rows run at 50 Hz and the `real_*` rows at 1 Hz, and the aiding sensors no
 //!    longer follow that.** Until #375 the barometer and the magnetometer were emitted once
 //!    per record, outside the scheduler, so their update rate was the log's: 1 Hz on
