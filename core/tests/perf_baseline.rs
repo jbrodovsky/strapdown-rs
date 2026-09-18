@@ -150,6 +150,14 @@
 //!    collapse, and that is now fixed -- the cloud is roughened after resampling and no epoch
 //!    reports a collapsed sigma. Whether the 28.5% spread went with it is **unmeasured**: this
 //!    was blessed on Linux, which is the gap itself. Do not read the fix as closing #386.
+//!
+//!    What has changed in the gate: the baseline now records `blessed_on`, and an
+//!    improve-side failure on a different platform says so instead of instructing a re-bless
+//!    that would break the other two legs. Every matrix leg writes its raw numbers through
+//!    `PERF_EMIT_MEASURED` and the advisory `Cross-platform accuracy spread` job prints the
+//!    per-metric spread. **The tolerance floor itself is still unset, on purpose** -- it has
+//!    to come from that job's output rather than from an estimate, which is the whole of
+//!    #386's argument.
 //! 6. **The `syn_*` rows run at 50 Hz and the `real_*` rows at 1 Hz, and the aiding sensors no
 //!    longer follow that.** Until #375 the barometer and the magnetometer were emitted once
 //!    per record, outside the scheduler, so their update rate was the log's: 1 Hz on
@@ -180,6 +188,24 @@ use strapdown::{IMUQuality, StrapdownState};
 
 /// Environment variable that switches this test from gating to recording.
 const UPDATE_ENV: &str = "UPDATE_PERF_BASELINE";
+
+/// Environment variable naming a file to write this run's measured metrics to.
+///
+/// Set by the CI matrix so every platform's numbers are collected as an artifact and the
+/// cross-platform spread can be *measured* rather than assumed. Independent of the gate: the
+/// file is written whether the comparison passes or fails, because a failing platform's
+/// numbers are exactly the ones worth having.
+const EMIT_ENV: &str = "PERF_EMIT_MEASURED";
+
+/// The platform a baseline was blessed on, and the one this run is executing on.
+///
+/// `std::env::consts::OS` rather than the full target triple: the spread #386 measures is
+/// between operating systems' libm implementations, and the triple would make two Linux
+/// runners on different architectures look like different platforms when the question is
+/// whether a Linux bless holds on Windows.
+const fn platform() -> &'static str {
+    std::env::consts::OS
+}
 
 /// Schema version of `perf_baseline.json`. Bump it when the file's shape changes.
 const SCHEMA_VERSION: u32 = 3;
@@ -701,6 +727,17 @@ struct BaselineFile {
     note: String,
     /// Bands applied to any metric that does not override them.
     default_tolerance: Tolerance,
+    /// Operating system the recorded numbers were measured on.
+    ///
+    /// `rust.yml` gates this suite on Linux, macOS and Windows, and a bless happens on one of
+    /// them. Without this field a failing leg cannot tell "the navigation changed" from "you
+    /// are not on the platform this was measured on", and the improve-side message told every
+    /// contributor the former (#386).
+    ///
+    /// `Option`, so a baseline written before this field still loads; the message says which
+    /// case it is in rather than assuming.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    blessed_on: Option<String>,
     /// One entry per scenario id, sorted so a diff is stable.
     scenarios: BTreeMap<String, BaselineScenario>,
 }
@@ -834,7 +871,53 @@ fn render_baseline(
             },
             |p| p.default_tolerance,
         ),
+        // The blessing platform is whoever is running right now -- that is what a bless *is*.
+        blessed_on: Some(platform().to_string()),
         scenarios,
+    }
+}
+
+/// Write this run's measured metrics to the path in [`EMIT_ENV`], if it is set.
+///
+/// One flat object per scenario id, so the three platforms' files can be compared by a job
+/// that knows nothing about this crate. Unrounded: the whole point is to see differences the
+/// gate's six significant figures might hide.
+///
+/// Errors are reported and not fatal. This runs inside the gating test, and a CI step that
+/// cannot write an artifact should not turn a green navigation result red.
+fn emit_measured(measured: &[(Scenario, AccuracyMetrics)]) {
+    let Some(path) = std::env::var_os(EMIT_ENV) else {
+        return;
+    };
+    let path = PathBuf::from(path);
+
+    let mut out: BTreeMap<String, BTreeMap<String, Option<f64>>> = BTreeMap::new();
+    for (scenario, metrics) in measured {
+        let mut row = BTreeMap::new();
+        for (id, value) in metrics.iter() {
+            row.insert(id.key().to_string(), value);
+        }
+        out.insert(scenario.id.clone(), row);
+    }
+
+    let document = serde_json::json!({
+        "platform": platform(),
+        "scenarios": out,
+    });
+
+    match serde_json::to_string_pretty(&document) {
+        Ok(text) => match std::fs::write(&path, text + "\n") {
+            Ok(()) => println!(
+                "Wrote measured metrics for `{}` to {} (working directory {}). A relative \
+                 path lands in the *package* root, not the workspace root -- `cargo test -p` \
+                 sets it there.",
+                platform(),
+                path.display(),
+                std::env::current_dir().unwrap_or_default().display()
+            ),
+            Err(e) => println!("could not write {} ({e}); continuing", path.display()),
+        },
+        Err(e) => println!("could not serialise measured metrics ({e}); continuing"),
     }
 }
 
@@ -981,6 +1064,7 @@ fn compare(measured: &[(Scenario, AccuracyMetrics)], baseline: &BaselineFile) ->
                 value,
                 entry,
                 baseline.default_tolerance,
+                baseline.blessed_on.as_deref(),
             ));
         }
     }
@@ -1001,6 +1085,7 @@ fn check_metric(
     measured: Option<f64>,
     entry: &BaselineMetric,
     default: Tolerance,
+    blessed_on: Option<&str>,
 ) -> Vec<String> {
     match (entry.value, measured) {
         (None, None) => Vec::new(),
@@ -1032,14 +1117,43 @@ fn check_metric(
                 )],
                 Verdict::Improved => vec![format!(
                     "IMPROVED  `{scenario_id}` / `{}`: {now:.6} {unit} against a baseline of \
-                     {was:.6} {unit} ({dir}). This is better than the band allows, so the \
-                     baseline is stale -- re-bless it.",
+                     {was:.6} {unit} ({dir}). This is better than the band allows.{}",
                     id.key(),
+                    improvement_advice(blessed_on),
                     unit = unit_suffix(id),
                     dir = describe(id),
                 )],
             }
         }
+    }
+}
+
+/// What to do about a metric that improved past its band.
+///
+/// #386: this used to say "the baseline is stale -- re-bless it", unconditionally. That is the
+/// wrong instruction when the real cause is that the run is on a different platform from the
+/// blessing, because re-blessing here would then break the other two legs -- which is exactly
+/// how the failure it was written for actually arose. `real_rbpf_slice__rbpf`'s
+/// `horizontal_cep95_m` measured 34.02 m on Linux against 24.33 m on Windows on the same
+/// commit, and the Windows leg was told its baseline was stale.
+fn improvement_advice(blessed_on: Option<&str>) -> String {
+    match blessed_on {
+        Some(blessed) if blessed != platform() => format!(
+            " This run is on `{}` and the baseline was blessed on `{blessed}`, so the cause \
+             may be the platform rather than the navigation. Check the same metric on \
+             `{blessed}` before re-blessing: a re-bless here would move the value away from \
+             the platform the other legs are measured against. If it moved on `{blessed}` too, \
+             the baseline is genuinely stale.",
+            platform()
+        ),
+        Some(_) => " This run is on the platform the baseline was blessed on, so the baseline \
+             is stale -- re-bless it."
+            .to_string(),
+        // A baseline written before #386 added the field. Say so rather than guessing.
+        None => " The baseline records no blessing platform, so whether this is staleness or a \
+             cross-platform difference cannot be told apart from here. Re-bless on the \
+             platform CI reports, and the next bless will record it."
+            .to_string(),
     }
 }
 
@@ -1255,6 +1369,7 @@ fn book_tables(baseline: &BaselineFile) -> String {
 fn navigation_accuracy_matches_the_recorded_baseline() {
     let measured = measure_all();
     println!("{}", markdown_table(&measured));
+    emit_measured(&measured);
 
     let path = baseline_path();
     let existing: Option<BaselineFile> = if path.exists() {
@@ -1353,6 +1468,81 @@ fn navigation_accuracy_matches_the_recorded_baseline() {
 #[cfg(test)]
 mod gate_tests {
     use super::*;
+
+    /// The improve-side message must not blame the baseline when the platform differs.
+    ///
+    /// #386, acceptance criterion 2. The old message said "the baseline is stale -- re-bless
+    /// it" unconditionally, which is the wrong instruction on a leg that is not the blessing
+    /// platform: re-blessing there moves the value away from the other two legs. That is not a
+    /// hypothetical -- it is how the Windows leg failed on a commit behaving identically to
+    /// Linux.
+    #[test]
+    fn the_improve_message_distinguishes_staleness_from_a_platform_difference() {
+        let elsewhere = if platform() == "linux" {
+            "windows"
+        } else {
+            "linux"
+        };
+
+        let cross = improvement_advice(Some(elsewhere));
+        assert!(
+            cross.contains(elsewhere) && cross.contains(platform()),
+            "a cross-platform improvement must name both platforms, got: {cross}"
+        );
+        assert!(
+            !cross.contains("baseline is stale -- re-bless it"),
+            "a cross-platform improvement must not instruct an unconditional re-bless,              got: {cross}"
+        );
+
+        let same = improvement_advice(Some(platform()));
+        assert!(
+            same.contains("re-bless"),
+            "on the blessing platform the advice is still to re-bless, got: {same}"
+        );
+
+        // A baseline predating the field must say it cannot tell, rather than guessing.
+        let unknown = improvement_advice(None);
+        assert!(
+            unknown.contains("no blessing platform"),
+            "an unrecorded blessing platform must be reported as such, got: {unknown}"
+        );
+    }
+
+    /// A bless records the platform it ran on, so the message above has something to compare.
+    ///
+    /// This asserts the field is **present**, not that it matches the runner. The first
+    /// version asserted equality, which turned macOS and Windows red by construction -- the
+    /// baseline is blessed on Linux, so two of three legs could never agree. That is the exact
+    /// failure #386 exists to fix, committed inside the fix for it. A baseline blessed
+    /// elsewhere is the normal case, and is what `improvement_advice` is for.
+    #[test]
+    fn a_blessed_baseline_records_its_platform() {
+        let path = baseline_path();
+        let text = std::fs::read_to_string(&path).expect("baseline file must be readable");
+        let baseline: BaselineFile =
+            serde_json::from_str(&text).expect("baseline must deserialize");
+
+        let blessed = baseline.blessed_on.as_deref().unwrap_or_else(|| {
+            panic!(
+                "the checked-in baseline records no `blessed_on`. Re-bless it -- without that \
+                 field a failing leg cannot tell a navigation change from a platform \
+                 difference, which is #386."
+            )
+        });
+        assert!(
+            !blessed.trim().is_empty(),
+            "`blessed_on` is present but names no platform"
+        );
+
+        if blessed != platform() {
+            println!(
+                "note: this baseline was blessed on `{blessed}` and this run is on `{}`. That \
+                 is the expected case, not an error -- see the `Cross-platform accuracy \
+                 spread` job for how far the two actually differ.",
+                platform()
+            );
+        }
+    }
 
     /// Every metric shows up in exactly one of the book's tables.
     ///

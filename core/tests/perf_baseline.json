@@ -5,6 +5,7 @@
     "regress_fraction": 0.1,
     "improve_fraction": 0.25
   },
+  "blessed_on": "linux",
   "scenarios": {
     "real_clean__ekf": {
       "description": "test_data.csv, GNSS every epoch, no fault",
