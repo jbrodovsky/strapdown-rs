@@ -15,4 +15,4 @@
 # determinism pixi used to provide. To step outside it deliberately, use `cargo +stable ...`.
 [toolchain]
 channel = "1.91"
-components = ["clippy", "rustfmt", "rust-src"]
+components = ["clippy", "rustfmt", "rust-src", "rust-analyzer"]
