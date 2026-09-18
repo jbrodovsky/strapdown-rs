@@ -908,9 +908,12 @@ fn emit_measured(measured: &[(Scenario, AccuracyMetrics)]) {
     match serde_json::to_string_pretty(&document) {
         Ok(text) => match std::fs::write(&path, text + "\n") {
             Ok(()) => println!(
-                "Wrote measured metrics for `{}` to {}",
+                "Wrote measured metrics for `{}` to {} (working directory {}). A relative \
+                 path lands in the *package* root, not the workspace root -- `cargo test -p` \
+                 sets it there.",
                 platform(),
-                path.display()
+                path.display(),
+                std::env::current_dir().unwrap_or_default().display()
             ),
             Err(e) => println!("could not write {} ({e}); continuing", path.display()),
         },
@@ -1506,6 +1509,12 @@ mod gate_tests {
     }
 
     /// A bless records the platform it ran on, so the message above has something to compare.
+    ///
+    /// This asserts the field is **present**, not that it matches the runner. The first
+    /// version asserted equality, which turned macOS and Windows red by construction -- the
+    /// baseline is blessed on Linux, so two of three legs could never agree. That is the exact
+    /// failure #386 exists to fix, committed inside the fix for it. A baseline blessed
+    /// elsewhere is the normal case, and is what `improvement_advice` is for.
     #[test]
     fn a_blessed_baseline_records_its_platform() {
         let path = baseline_path();
@@ -1513,13 +1522,26 @@ mod gate_tests {
         let baseline: BaselineFile =
             serde_json::from_str(&text).expect("baseline must deserialize");
 
-        assert_eq!(
-            baseline.blessed_on.as_deref(),
-            Some(platform()),
-            "the checked-in baseline records `{:?}` as its blessing platform but this run is              on `{}`. That is not necessarily wrong -- it is the situation #386 is about --              but the recorded value must exist and must be the platform whoever blessed it              was on.",
-            baseline.blessed_on,
-            platform()
+        let blessed = baseline.blessed_on.as_deref().unwrap_or_else(|| {
+            panic!(
+                "the checked-in baseline records no `blessed_on`. Re-bless it -- without that \
+                 field a failing leg cannot tell a navigation change from a platform \
+                 difference, which is #386."
+            )
+        });
+        assert!(
+            !blessed.trim().is_empty(),
+            "`blessed_on` is present but names no platform"
         );
+
+        if blessed != platform() {
+            println!(
+                "note: this baseline was blessed on `{blessed}` and this run is on `{}`. That \
+                 is the expected case, not an error -- see the `Cross-platform accuracy \
+                 spread` job for how far the two actually differ.",
+                platform()
+            );
+        }
     }
 
     /// Every metric shows up in exactly one of the book's tables.

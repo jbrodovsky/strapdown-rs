@@ -72,7 +72,11 @@ jobs:
       - name: Test
         run: cargo test -p strapdown-core --no-default-features --locked
         env:
-          PERF_EMIT_MEASURED: measured-${{ matrix.os }}.json
+          # Absolute, because `cargo test -p <pkg>` runs the test binary with its working
+          # directory at the *package* root. A relative path here lands in `core/` and the
+          # upload below, which runs at the workspace root, finds nothing -- which is exactly
+          # what happened on the first run of this job.
+          PERF_EMIT_MEASURED: ${{ github.workspace }}/measured-${{ matrix.os }}.json
 
       # `always()`: a leg that failed the accuracy gate is the one whose numbers are most worth
       # having. Without this the artifact appears only when nothing was wrong with it.
