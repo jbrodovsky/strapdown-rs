@@ -19,7 +19,7 @@ overwrites this file, and the gate fails if it is stale. See #380. -->
 | `syn_outage_60s__ukf` | 15,000 | 25.475 | 1.626 | 48.177 | 131.118 | 2.045 | -0.039 | 1.427 | 0.284 |
 | `syn_outage_60s__eskf` | 15,000 | 24.634 | 1.641 | 55.443 | 114.684 | 1.873 | -0.229 | 1.454 | 0.234 |
 | `syn_dead_reckoning` | 6,000 | 316.860 | 110.128 | 715.856 | 835.634 | 86.591 | -64.255 | 9.363 | 1.896 |
-| `real_rbpf_slice__rbpf` | 1,200 | 17.560 | 1.825 | 33.289 | 118.789 | 2.847 | -2.251 | 2.221 | 1.065 |
+| `real_rbpf_slice__rbpf` | 1,200 | 16.751 | 1.827 | 29.260 | 113.231 | 2.851 | -2.258 | 2.211 | 1.067 |
 
 ### Attitude
 
@@ -39,7 +39,7 @@ overwrites this file, and the gate fails if it is stale. See #380. -->
 | `syn_outage_60s__ukf` | 15,000 | 0.275 | 0.223 | 0.227 | 0.420 |
 | `syn_outage_60s__eskf` | 15,000 | 0.263 | 0.262 | 0.286 | 0.468 |
 | `syn_dead_reckoning` | 6,000 | 0.468 | 1.106 | 0.494 | 1.301 |
-| `real_rbpf_slice__rbpf` | 1,200 | 2.833 | 3.150 | 20.314 | 20.745 |
+| `real_rbpf_slice__rbpf` | 1,200 | 2.828 | 3.142 | 20.362 | 20.790 |
 
 ### Consistency
 
@@ -59,4 +59,4 @@ overwrites this file, and the gate fails if it is stale. See #380. -->
 | `syn_outage_60s__ukf` | 15,000 | 2.574 | 2.576 | 0.997 | 0.966 |
 | `syn_outage_60s__eskf` | 15,000 | 2.459 | 2.461 | 0.997 | 0.963 |
 | `syn_dead_reckoning` | 6,000 | -- | -- | -- | -- |
-| `real_rbpf_slice__rbpf` | 1,200 | 199,856,000,000,000,000.000 | 105,567.000 | 0.790 | 0.626 |
+| `real_rbpf_slice__rbpf` | 1,200 | 5,961.300 | 3,432.900 | 0.806 | 0.640 |
