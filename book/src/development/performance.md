@@ -22,10 +22,11 @@ commit the diff; `cargo perf` runs the suite and prints the table without writin
 [CONTRIBUTING.md](https://github.com/jbrodovsky/strapdown-rs/blob/main/CONTRIBUTING.md) has the
 workflow.
 
-## Read these six caveats first
+## Read these seven caveats first
 
-The numbers are meaningless without them. The first four are properties of the measurement
-rather than defects in the harness; the fifth is a defect, in the gate.
+The numbers are meaningless without them. All but the fifth and seventh are properties of the
+measurement rather than defects in the harness; the fifth is a defect in the gate, and the
+seventh was a defect in the UKF that is now fixed.
 
 1. **On the real-data scenarios, "truth" is the GNSS fix -- which is also the filters' aiding
    source.** They measure agreement with the aid, not independent accuracy, and cannot fall
@@ -125,6 +126,27 @@ rather than defects in the harness; the fifth is a defect, in the gate.
    numbers recorded in its note; the general problem is
    [#386](https://github.com/jbrodovsky/strapdown-rs/issues/386).
 
+**The spread is now measured, on all three legs of one run** (at the old `ukf_alpha`), by
+   the advisory `Cross-platform accuracy spread` job. The largest entries:
+
+   | spread | scenario / metric | macOS | Linux | Windows |
+   |---:|---|---:|---:|---:|
+   | 10.79% | `real_rbpf_slice__rbpf/horizontal_cep50_m` | 1.82705 | 1.82705 | 1.64916 |
+   | 8.61% | `real_rbpf_slice__rbpf/horizontal_cep95_m` | 29.2597 | 29.2597 | 26.9394 |
+   | 4.70% | `syn_outage_60s__ukf/horizontal_cep50_m` | 1.64422 | 1.62557 | 1.57045 |
+   | 2.87% | `syn_outage_60s__ukf/roll_rmse_deg` | 0.27204 | 0.27475 | 0.26708 |
+   | 2.39% | `syn_outage_60s__ukf/yaw_rmse_deg` | 0.22314 | 0.22687 | 0.22158 |
+
+   Two readings fall out. The 28.5% this caveat quotes above is now **8.61%**, so #385's fix
+   did shrink the spread it was blamed for -- that was the missing measurement. And it is
+   **Windows against the other two**, not three-way scatter: macOS and Linux agree to eleven
+   significant figures on the RBPF rows, which is what a libm differing by an ulp looks like
+   rather than anything about the navigation.
+
+   The UKF rows there are caveat 7 seen a second way -- same rows, same order, about half the
+   magnitude of the one-ulp response recorded there. So caveat 7's fix **predicts those rows
+   collapse and the RBPF rows do not**. That is for the next run to settle, not to assume.
+
    **Two parts of that are now closed.** The baseline records the operating system it was
    blessed on (`blessed_on`), and the improve-side failure no longer tells a contributor their
    baseline is stale when the run is simply on a different platform -- it names both platforms
@@ -142,6 +164,59 @@ rather than defects in the harness; the fifth is a defect, in the gate.
    epochs where the particle cloud collapsed, and it no longer collapses, so the spread may
    already be much smaller. It has not been re-measured. Until then, **check a Windows run
    before calling a re-bless done.**
+7. **A one-ulp change to anything upstream used to move these numbers by percents.** This is
+   [#399](https://github.com/jbrodovsky/strapdown-rs/issues/399), and both halves of its
+   recorded diagnosis turned out to be wrong, which is worth keeping.
+
+   The issue's experiment was to add a `pub fn` to `linearize.rs` that nothing calls and
+   re-bless: 59 metrics moved, one by 4.86%. Its proposed mechanism was the innovation gate --
+   a continuous statistic turned into a discrete accept/reject, one flipped decision in 15,000
+   steps separating two trajectories.
+
+   **The gate was refuted by counting.** Gating is opt-in and this suite never installs one, so
+   across a full run all **137,876** calls to `GatePolicy::decide` took the "no gate" branch.
+   There was no accept/reject decision to flip. Nor was there any other discrete branch: all
+   98,786 sigma-point factorizations took plain Cholesky with no jitter and no eigenvalue
+   fallback, no IMU-bias clamp bound in 394,740 opportunities, and the Euler-rate inverse was
+   admitted on all 106,518.
+
+   **The codegen story did not reproduce either.** The dead `pub fn`, with its symbol confirmed
+   present in the compiled rlib, leaves all 236 metrics bit-identical. Rust emits IEEE-754
+   semantics without fast-math, so LLVM may not reassociate or contract floating-point;
+   changing what surrounds a function cannot change what it computes.
+
+   **What does reproduce is the amplification, from the data side, and it was the UKF's.**
+   Perturbing `earth::EQUATORIAL_RADIUS` by one ulp moved 170 of 236 metrics, the worst by
+   **9.77%** against a 10% band. Over six independent one-ulp perturbations of WGS84 constants:
+
+   | estimator | worst response to one ulp |
+   |---|---:|
+   | **UKF** | **9.77%** |
+   | RBPF | 1.0e-6 % |
+   | dead reckoning | 1.7e-10 % |
+   | EKF | 3.8e-11 % |
+   | ESKF | 3.3e-11 % |
+
+   Eleven orders of magnitude on the same scenarios, which rules out "a 60 s coast compounds a
+   last bit": `syn_outage_60s__eskf` coasts identically and sits at 3.3e-11 %. The UKF is the
+   only estimator here that forms a weighted sigma-point mean, and at the `alpha = 1e-3` this
+   crate shipped, a 16-state filter formed it as `-999,999 x_0 + sum 31,250 x_i` -- six of
+   `f64`'s sixteen significant digits spent on cancellation, every step. End to end, one ulp of
+   initial latitude moved a 180 s solution's final position by **1.76 m**.
+
+   **Fixed by raising `ukf_alpha` to `0.1`**, which takes that to 0.18 mm and the worst metric
+   response to 0.0003%, and improves accuracy slightly on the way. An equilibrated Cholesky
+   landed with it and is worth a further factor of two. `core/tests/ukf_conditioning.rs` guards
+   both ends, and the numbers above are in that file and in `ClosedLoopConfig::ukf_alpha`.
+
+   **Use a control build when a bless surprises you.** If a re-bless moves rows the change
+   cannot reach, compile the new code *without calling it*, bless that, and diff the real
+   change against the control rather than against the parent commit. On
+   [#394](https://github.com/jbrodovsky/strapdown-rs/issues/394) that reduced "seven scenarios
+   moved" to the two the change can actually touch. It is only valid if it neutralises **every**
+   call site -- a first attempt at #398's control missed the UKF's transport and reported half
+   the moved metrics. This is now insurance rather than a necessity, but it is the habit that
+   found every mis-attribution on this project so far.
 6. **The `syn_*` rows run at 50 Hz and the `real_*` rows at 1 Hz, and the aiding sensors no
    longer follow that.** Until
    [#375](https://github.com/jbrodovsky/strapdown-rs/issues/375) the barometer and the

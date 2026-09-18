@@ -44,8 +44,9 @@
 //!
 //! # Reading the numbers
 //!
-//! Six caveats apply to every figure in the baseline. All but the fifth are properties of the
-//! measurement rather than defects in this harness; the fifth is a defect, in the gate:
+//! Seven caveats apply to every figure in the baseline. All but the fifth and seventh are
+//! properties of the measurement rather than defects in this harness; the fifth is a defect in
+//! the gate and the seventh was a defect in the UKF, now fixed:
 //!
 //! 1. **Real-data metrics are scored against the GNSS fix, which is also the aiding source.**
 //!    They measure agreement with the aid, and cannot fall below the receiver's own 3.81 m
@@ -151,6 +152,31 @@
 //!    reports a collapsed sigma. Whether the 28.5% spread went with it is **unmeasured**: this
 //!    was blessed on Linux, which is the gap itself. Do not read the fix as closing #386.
 //!
+//!
+//!    **The spread is now measured, on all three legs of one run** (#413's CI, at the old
+//!    `alpha`). The largest, as `Cross-platform accuracy spread` printed it:
+//!
+//!    | spread | scenario / metric | macOS | Linux | Windows |
+//!    |---:|---|---:|---:|---:|
+//!    | 10.79% | `real_rbpf_slice__rbpf/horizontal_cep50_m` | 1.82705 | 1.82705 | 1.64916 |
+//!    | 8.61% | `real_rbpf_slice__rbpf/horizontal_cep95_m` | 29.2597 | 29.2597 | 26.9394 |
+//!    | 4.70% | `syn_outage_60s__ukf/horizontal_cep50_m` | 1.64422 | 1.62557 | 1.57045 |
+//!    | 2.87% | `syn_outage_60s__ukf/roll_rmse_deg` | 0.27204 | 0.27475 | 0.26708 |
+//!    | 2.39% | `syn_outage_60s__ukf/yaw_rmse_deg` | 0.22314 | 0.22687 | 0.22158 |
+//!
+//!    Two things fall straight out of it. **#385's fix did shrink the spread it was blamed
+//!    for**: `real_rbpf_slice__rbpf/horizontal_cep95_m` was 28.5% Linux-vs-Windows in #386 and
+//!    is 8.61% here, which is the measurement the note above called missing. And **it is
+//!    Windows against the other two, not three-way scatter** -- macOS and Linux agree to
+//!    eleven significant figures on the RBPF rows -- which is the signature of a libm
+//!    differing by an ulp, not of anything about the navigation.
+//!
+//!    The UKF rows in that table are caveat 7 measured a second way: they are the same rows,
+//!    in the same order, at about half the magnitude of the one-ulp response recorded there.
+//!    **So caveat 7's fix predicts they collapse and the RBPF rows do not**, since the RBPF
+//!    never amplified a one-ulp perturbation in the first place. That prediction is this
+//!    change's own CI run to settle; do not assume it.
+//!
 //!    What has changed in the gate: the baseline now records `blessed_on`, and an
 //!    improve-side failure on a different platform says so instead of instructing a re-bless
 //!    that would break the other two legs. Every matrix leg writes its raw numbers through
@@ -158,6 +184,66 @@
 //!    per-metric spread. **The tolerance floor itself is still unset, on purpose** -- it has
 //!    to come from that job's output rather than from an estimate, which is the whole of
 //!    #386's argument.
+//! 7. **A one-ulp change to anything upstream used to move these numbers by percents, and the
+//!    cause was the UKF's own sigma-point weights.** #399 recorded that adding a `pub fn`
+//!    nobody calls moved 59 gated metrics, one by 4.86%, and proposed the innovation gate as
+//!    the mechanism: a continuous statistic turned into a discrete accept/reject, one flipped
+//!    decision separating two trajectories.
+//!
+//!    **Both halves of that were wrong, and the measurements are worth keeping.**
+//!
+//!    *The gate was refuted by census.* Gating is opt-in (`ClosedLoopConfig::innovation_gate`
+//!    defaults to `None`) and `solve` below never installs one, so across a full run of this
+//!    suite all **137,876** calls to `GatePolicy::decide` took the "no gate installed" branch.
+//!    There was never an accept/reject decision to flip. Every other discrete branch in the
+//!    filter path was saturated on one side too: 98,786 of 98,786 sigma-point factorizations
+//!    took plain Cholesky with no jitter and no eigenvalue fallback, not one of 394,740
+//!    IMU-bias clamp opportunities bound, and the Euler-rate inverse was admitted on all
+//!    106,518. There is no discrete decision anywhere in this suite for a last bit to flip.
+//!
+//!    *The codegen story did not reproduce.* A dead `pub fn` added to `linearize.rs` -- the
+//!    issue's own experiment, with the symbol confirmed present in the rlib -- leaves all 236
+//!    metrics **bit-identical**, twice, instrumented and not. That is what Rust's IEEE
+//!    semantics predict: without fast-math LLVM may not reassociate or contract
+//!    floating-point, so changing what surrounds a function cannot change what it computes.
+//!
+//!    *What did reproduce is the amplification, from the data side.* Perturbing
+//!    `earth::EQUATORIAL_RADIUS` by **one ulp** -- a relative $1.5\times10^{-16}$ -- moved 170
+//!    of 236 metrics, the worst (`syn_outage_60s__ukf/horizontal_cep50_m`) by **9.77%**
+//!    against a 10% band. Taken over six independent one-ulp perturbations of WGS84 constants,
+//!    the worst response per estimator was:
+//!
+//!    | estimator | worst response to one ulp |
+//!    |---|---:|
+//!    | **UKF** | **9.77%** |
+//!    | RBPF | 1.0e-6 % |
+//!    | dead reckoning | 1.7e-10 % |
+//!    | EKF | 3.8e-11 % |
+//!    | ESKF | 3.3e-11 % |
+//!
+//!    Eleven orders of magnitude, on the same scenarios. That rules out "a 60 s coast
+//!    compounds a last bit", because `syn_outage_60s__eskf` coasts identically and sits at
+//!    3.3e-11 %. The UKF is the only estimator here that forms a weighted sigma-point mean,
+//!    and at the `alpha = 1e-3` this crate shipped that mean was
+//!    $-999{,}999\,x_0 + \sum 31{,}250\,x_i$ for a 16-state filter: every term about $10^6$
+//!    times the answer, six of `f64`'s sixteen digits spent on cancellation per step. End to
+//!    end, one ulp of initial latitude moved a 180 s solution's final position by **1.76 m**.
+//!
+//!    *Fixed by raising `alpha` to `0.1`*, which takes that 1.76 m to **0.18 mm** and the
+//!    worst metric response to **0.0003%** -- and improves accuracy slightly while doing it,
+//!    the largest move being `syn_outage_60s__ukf/yaw_rmse_deg` 2.08% better.
+//!    `equilibrated_chol_sqrt` landed alongside it and is worth a further factor of 2; the
+//!    covariance really does reach a condition number of $5\times10^{14}$ from mixing radians
+//!    with metres, and that really is almost irrelevant, because Cholesky is backward stable.
+//!    `core/tests/ukf_conditioning.rs` guards both ends.
+//!
+//!    **The control-build technique this issue introduced is still the right habit**, and is
+//!    now cheap insurance rather than a necessity. When a bless moves rows the change cannot
+//!    reach, build a *control* -- the new code compiled but not called -- bless that, and diff
+//!    the real change against it rather than against the parent commit. On #394 that reduced
+//!    "seven scenarios moved" to the two the change can actually touch. It is only valid if it
+//!    neutralises **every** call site: a first attempt at #398's control missed the UKF's
+//!    transport and reported half the moved metrics.
 //! 6. **The `syn_*` rows run at 50 Hz and the `real_*` rows at 1 Hz, and the aiding sensors no
 //!    longer follow that.** Until #375 the barometer and the magnetometer were emitted once
 //!    per record, outside the scheduler, so their update rate was the log's: 1 Hz on
