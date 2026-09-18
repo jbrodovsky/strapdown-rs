@@ -30,8 +30,8 @@ use std::rc::Rc;
 
 use chrono::{TimeZone, Utc};
 use geonav::{
-    GeoBiasLayout, GeoMap, GeophysicalMeasurementType, GravityMeasurement, GravityResolution,
-    MagneticResolution, NAVIGATION_AND_IMU_BIAS_STATE_DIM, NAVIGATION_STATE_DIM,
+    GeoBiasLayout, GeoMap, GeophysicalAiding, GeophysicalMeasurementType, GravityMeasurement,
+    GravityResolution, MagneticResolution, NAVIGATION_AND_IMU_BIAS_STATE_DIM, NAVIGATION_STATE_DIM,
     build_event_stream,
 };
 use nalgebra::{DMatrix, DVector};
@@ -298,12 +298,15 @@ fn gravity_aided_closed_loop_completes_and_labels_its_bias_state() {
     let events = build_event_stream(
         &records,
         &passthrough_config(),
-        Some(Rc::clone(&map)),
-        Some(1.0),
-        None,
-        None,
-        Some(1.0),
-        Some(bias_layout),
+        false,
+        &GeophysicalAiding {
+            gravity_map: Some(Rc::clone(&map)),
+            gravity_noise_std: Some(1.0),
+            magnetic_map: None,
+            magnetic_noise_std: None,
+            interval_s: Some(1.0),
+            bias_layout: Some(bias_layout),
+        },
     )
     .expect("the geophysical event stream must build");
 
@@ -403,12 +406,15 @@ fn ekf_branch_completes_and_labels_its_bias_state() {
     let events = build_event_stream(
         &records,
         &passthrough_config(),
-        Some(Rc::clone(&map)),
-        Some(1.0),
-        None,
-        None,
-        Some(1.0),
-        Some(bias_layout),
+        false,
+        &GeophysicalAiding {
+            gravity_map: Some(Rc::clone(&map)),
+            gravity_noise_std: Some(1.0),
+            magnetic_map: None,
+            magnetic_noise_std: None,
+            interval_s: Some(1.0),
+            bias_layout: Some(bias_layout),
+        },
     )
     .expect("the geophysical event stream must build");
 
@@ -467,12 +473,15 @@ fn magnetic_only_ekf_estimates_its_bias_state() {
     let events = build_event_stream(
         &records,
         &passthrough_config(),
-        None,
-        None,
-        Some(Rc::clone(&map)),
-        Some(10.0),
-        Some(1.0),
-        Some(bias_layout),
+        false,
+        &GeophysicalAiding {
+            gravity_map: None,
+            gravity_noise_std: None,
+            magnetic_map: Some(Rc::clone(&map)),
+            magnetic_noise_std: Some(10.0),
+            interval_s: Some(1.0),
+            bias_layout: Some(bias_layout),
+        },
     )
     .expect("the geophysical event stream must build");
 
@@ -582,12 +591,15 @@ fn gravity_aided_particle_filter_labels_its_bias_state() {
     let events = build_event_stream(
         &records,
         &passthrough_config(),
-        Some(Rc::clone(&map)),
-        Some(1.0),
-        None,
-        None,
-        Some(1.0),
-        Some(bias_layout),
+        false,
+        &GeophysicalAiding {
+            gravity_map: Some(Rc::clone(&map)),
+            gravity_noise_std: Some(1.0),
+            magnetic_map: None,
+            magnetic_noise_std: None,
+            interval_s: Some(1.0),
+            bias_layout: Some(bias_layout),
+        },
     )
     .expect("the geophysical event stream must build");
 
