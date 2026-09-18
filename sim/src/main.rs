@@ -40,8 +40,8 @@ use strapdown::rbpf::{RaoBlackwellizedParticleFilter, RbpfConfig};
 // Geophysical navigation imports (feature-gated)
 #[cfg(feature = "geonav")]
 use geonav::{
-    GeoBiasLayout, GeoMap, GeophysicalMeasurementType, GravityResolution, MagneticResolution,
-    NAVIGATION_AND_IMU_BIAS_STATE_DIM, NAVIGATION_STATE_DIM,
+    GeoBiasLayout, GeoMap, GeophysicalAiding, GeophysicalMeasurementType, GravityResolution,
+    MagneticResolution, NAVIGATION_AND_IMU_BIAS_STATE_DIM, NAVIGATION_STATE_DIM,
     build_event_stream as geo_build_event_stream,
 };
 use rand::SeedableRng;
@@ -778,12 +778,15 @@ fn process_file(
                 geo_build_event_stream(
                     &records,
                     &config.aiding,
-                    gravity_map.clone(),
-                    gravity_map.as_ref().map(|_| gravity_noise_std),
-                    magnetic_map.clone(),
-                    magnetic_map.as_ref().map(|_| magnetic_noise_std),
-                    geo_interval_s,
-                    geo_bias_layout,
+                    config.is_enu,
+                    &GeophysicalAiding {
+                        gravity_noise_std: gravity_map.as_ref().map(|_| gravity_noise_std),
+                        magnetic_noise_std: magnetic_map.as_ref().map(|_| magnetic_noise_std),
+                        gravity_map,
+                        magnetic_map,
+                        interval_s: geo_interval_s,
+                        bias_layout: geo_bias_layout,
+                    },
                 )?
             } else {
                 build_event_stream(&records, &config.aiding, config.is_enu)?
@@ -1647,20 +1650,15 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
         let events = geo_build_event_stream(
             &records,
             &aiding,
-            gravity_map.clone(),
-            if gravity_map.is_some() {
-                Some(args.geo.gravity_noise_std)
-            } else {
-                None
+            args.sim.enu,
+            &GeophysicalAiding {
+                gravity_noise_std: gravity_map.as_ref().map(|_| args.geo.gravity_noise_std),
+                magnetic_noise_std: magnetic_map.as_ref().map(|_| args.geo.magnetic_noise_std),
+                gravity_map: gravity_map.clone(),
+                magnetic_map: magnetic_map.clone(),
+                interval_s: args.geo.geo_interval_s,
+                bias_layout: geo_bias_layout,
             },
-            magnetic_map.clone(),
-            if magnetic_map.is_some() {
-                Some(args.geo.magnetic_noise_std)
-            } else {
-                None
-            },
-            args.geo.geo_interval_s,
-            geo_bias_layout,
         )?;
         info!("Built event stream with {} events", events.events.len());
 
@@ -2050,12 +2048,15 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
             geo_build_event_stream(
                 &records,
                 &aiding,
-                gravity_map.clone(),
-                gravity_map.as_ref().map(|_| args.geo.gravity_noise_std),
-                magnetic_map.clone(),
-                magnetic_map.as_ref().map(|_| args.geo.magnetic_noise_std),
-                args.geo.geo_interval_s,
-                geo_bias_layout,
+                args.sim.enu,
+                &GeophysicalAiding {
+                    gravity_noise_std: gravity_map.as_ref().map(|_| args.geo.gravity_noise_std),
+                    magnetic_noise_std: magnetic_map.as_ref().map(|_| args.geo.magnetic_noise_std),
+                    gravity_map: gravity_map.clone(),
+                    magnetic_map: magnetic_map.clone(),
+                    interval_s: args.geo.geo_interval_s,
+                    bias_layout: geo_bias_layout,
+                },
             )?
         } else {
             build_event_stream(&records, &aiding, args.sim.enu)?
