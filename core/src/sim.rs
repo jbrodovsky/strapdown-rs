@@ -3552,7 +3552,11 @@ pub struct UkfConfig {
     pub other_states_covariance: Option<Vec<f64>>,
     /// Optional process noise diagonal vector.
     pub process_noise_diagonal: Option<Vec<f64>>,
-    /// Optional UKF alpha parameter (sigma-point spread).
+    /// Sigma-point spread, or `None` for [`ClosedLoopConfig::ukf_alpha`]'s default of `0.1`.
+    ///
+    /// That field's note is the one to read: `alpha` is a numerical-conditioning parameter
+    /// here as much as a tuning one, and the textbook `1e-3` costs six significant digits per
+    /// step to cancellation (#399).
     pub ukf_alpha: Option<f64>,
     /// Optional UKF beta parameter (prior distribution).
     pub ukf_beta: Option<f64>,
@@ -3762,9 +3766,12 @@ pub fn initialize_ukf(
         other_states.as_deref(),
         covariance_diagonal,
         process_noise,
-        config.ukf_alpha.unwrap_or(1e-3),
-        config.ukf_beta.unwrap_or(2.0),
-        config.ukf_kappa.unwrap_or(0.0),
+        // Through the named defaults rather than repeating their literals: this call site
+        // and `ClosedLoopConfig` are the two ways a UKF gets built, and they disagreed about
+        // `alpha` for as long as both spelled `1e-3` by hand.
+        config.ukf_alpha.unwrap_or_else(default_ukf_alpha),
+        config.ukf_beta.unwrap_or_else(default_ukf_beta),
+        config.ukf_kappa.unwrap_or_else(default_ukf_kappa),
     );
     // This function sized the state, so it is the one thing that knows where the bias landed.
     // Telling the filter is what lets `run_closed_loop` label the column without being handed
@@ -5080,7 +5087,63 @@ pub enum ParticleFilterType {
 pub struct ClosedLoopConfig {
     /// Filter type; defaults to the 15-state ESKF.
     pub filter: FilterType,
-    /// UKF alpha parameter (spread of sigma points)
+    /// Sigma-point spread for the unscented transform.
+    ///
+    /// # Why 0.1 and not the textbook `1e-3`
+    ///
+    /// The scaled unscented transform places its points at $\alpha\sqrt{n+\kappa}$ and weights
+    /// them $w_0 = 1 - \alpha^{-2}$, $w_i = 1/(2n\alpha^2)$. Those two move in opposite
+    /// directions as $\alpha$ shrinks, and they cancel *analytically* -- the weights sum to
+    /// exactly 1 whatever $\alpha$ is. They do not cancel in `f64`.
+    ///
+    /// At $\alpha = 10^{-3}$ and $n = 16$ the mean is formed as
+    /// $-999{,}999\,x_0 + \sum 31{,}250\,x_i$: every term is about $10^6$ times the answer, so
+    /// six of `f64`'s sixteen significant digits are consumed by cancellation on **every
+    /// propagation step**. This crate already recorded that -- see
+    /// [`unwrap_attitude_onto_reference_branch`](crate::kalman) -- as a hazard to work around.
+    /// It is also a defect to remove.
+    ///
+    /// Measured on the accuracy suite, perturbing a single WGS84 constant by **one ulp** and
+    /// taking the worst of 236 gated metrics ([#399](https://github.com/jbrodovsky/strapdown-rs/issues/399)):
+    ///
+    /// | configuration | worst response to one ulp |
+    /// |---|---:|
+    /// | `alpha = 1e-3`, plain Cholesky (shipped before this) | **9.77%** |
+    /// | `alpha = 1e-3`, equilibrated Cholesky | 3.57% |
+    /// | `alpha = 0.1`, plain Cholesky | 0.000297% |
+    /// | **`alpha = 0.1`, equilibrated Cholesky** (shipped) | **0.000140%** |
+    /// | `alpha = 1.0`, equilibrated Cholesky | 0.0000018% |
+    ///
+    /// The third row is the attribution: `alpha` alone accounts for a factor of **33,000**,
+    /// and
+    /// [`equilibrated_chol_sqrt`](crate::linalg::matrix_square_root) -- which landed in the
+    /// same change and was the first hypothesis -- for a further **2**. The covariance the
+    /// UKF factorizes really does reach a condition number of $5\times10^{14}$, and that
+    /// really is almost irrelevant here, because Cholesky is backward stable. Reading a
+    /// condition number as a digit count predicted the wrong culprit; the measurement
+    /// corrected it.
+    ///
+    /// Against a 10% regression band, the shipped configuration spent most of it on a change no
+    /// arithmetic can see. The EKF, ESKF and RBPF -- none of which forms a weighted sigma-point
+    /// mean -- responded to the identical perturbation by less than $10^{-6}$%, which is what
+    /// floating-point dust actually looks like.
+    ///
+    /// `0.1` rather than `1.0` because $\alpha$ has a job: it keeps the points near the mean so
+    /// the transform samples the local nonlinearity rather than a four-sigma shell. At `0.1` the
+    /// points sit at 0.4 sigma, $w_0$ is $-99$ and $w_i$ is $3.125$ -- two digits of
+    /// cancellation rather than six -- and the residual $1.4\times10^{-4}$% is five orders below
+    /// the narrowest gate band. `1.0` buys two more orders for a spread four times wider, which
+    /// is not a trade this filter needs.
+    ///
+    /// **Accuracy improves too, slightly.** Of 236 gated metrics 73 move, the largest being
+    /// `syn_outage_60s__ukf/yaw_rmse_deg` at 2.08% *better* (0.2287 -> 0.2239); pitch, the
+    /// geodesic attitude error and horizontal velocity all improve on the same row. Nothing
+    /// regresses by more than half a percent.
+    ///
+    /// Not to be confused with the $\alpha$ sweep recorded on
+    /// [`the_euler_chart_mean_leaves_the_cone_its_inputs_sit_in`](crate::kalman): that swept
+    /// $\alpha$ against the Euler-chart averaging defect of #371, which no value of $\alpha$
+    /// could reach and which has since been fixed on the manifold. This is a different quantity.
     #[serde(default = "default_ukf_alpha")]
     pub ukf_alpha: f64,
     /// UKF beta parameter (prior knowledge of distribution, 2.0 is optimal for Gaussian)
@@ -5221,8 +5284,10 @@ const fn default_zero_vertical_velocity_std_mps() -> f64 {
     0.1
 }
 
+/// Sigma-point spread for the unscented transform; see
+/// [`ClosedLoopConfig::ukf_alpha`] for why this is `0.1` and not the textbook `1e-3`.
 const fn default_ukf_alpha() -> f64 {
-    1e-3
+    0.1
 }
 
 const fn default_ukf_beta() -> f64 {
