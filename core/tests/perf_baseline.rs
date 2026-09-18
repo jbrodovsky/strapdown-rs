@@ -173,9 +173,34 @@
 //!
 //!    The UKF rows in that table are caveat 7 measured a second way: they are the same rows,
 //!    in the same order, at about half the magnitude of the one-ulp response recorded there.
-//!    **So caveat 7's fix predicts they collapse and the RBPF rows do not**, since the RBPF
-//!    never amplified a one-ulp perturbation in the first place. That prediction is this
-//!    change's own CI run to settle; do not assume it.
+//!    So caveat 7's fix predicted they would collapse and the RBPF rows would not, since the
+//!    RBPF never amplified a one-ulp perturbation in the first place.
+//!
+//!    **That prediction was recorded before the run and the run confirmed it.** Same job, same
+//!    three platforms, on the commit that raised `alpha`:
+//!
+//!    | scenario / metric | before | after |
+//!    |---|---:|---:|
+//!    | `syn_outage_60s__ukf/horizontal_cep50_m` | 4.70% | **0%** |
+//!    | `syn_outage_60s__ukf/roll_rmse_deg` | 2.87% | **0%** |
+//!    | `syn_outage_60s__ukf/yaw_rmse_deg` | 2.39% | **0%** |
+//!    | `syn_outage_60s__ukf/attitude_geodesic_rmse_deg` | 2.06% | **0%** |
+//!    | `syn_outage_60s__ukf/velocity_horizontal_rmse_mps` | 1.76% | **0%** |
+//!    | `real_rbpf_slice__rbpf/horizontal_cep50_m` | 10.79% | 10.79% |
+//!    | `real_rbpf_slice__rbpf/horizontal_cep95_m` | 8.61% | 8.61% |
+//!
+//!    Every `syn_*__ukf` row now agrees across macOS, Linux and Windows to seven or eight
+//!    significant figures, and every RBPF row is unchanged to the digit. So caveat 7 was not
+//!    only the mechanism behind the baseline's drift, it was the mechanism behind most of this
+//!    caveat as well.
+//!
+//!    **What is left of #386 is one scenario.** After the fix, `real_rbpf_slice__rbpf` holds
+//!    every entry above 0%, and nothing else in the suite exceeds it. That is an argument for
+//!    the per-metric treatment `npes_position` already has on that row rather than for a
+//!    suite-wide tolerance floor: a global floor sized at 10.8% would be set by two tail
+//!    statistics of one particle filter and would blind every other row in the file. The
+//!    remaining question is what that row's tail is doing on Windows, not what number to widen
+//!    the whole gate by.
 //!
 //!    What has changed in the gate: the baseline now records `blessed_on`, and an
 //!    improve-side failure on a different platform says so instead of instructing a re-bless

@@ -144,8 +144,30 @@ seventh was a defect in the UKF that is now fixed.
    rather than anything about the navigation.
 
    The UKF rows there are caveat 7 seen a second way -- same rows, same order, about half the
-   magnitude of the one-ulp response recorded there. So caveat 7's fix **predicts those rows
-   collapse and the RBPF rows do not**. That is for the next run to settle, not to assume.
+   magnitude of the one-ulp response recorded there. So caveat 7's fix predicted those rows
+   would collapse and the RBPF rows would not.
+
+   **That prediction was recorded before the run, and the run confirmed it.** Same job, same
+   three platforms, on the commit that raised `ukf_alpha`:
+
+   | scenario / metric | before | after |
+   |---|---:|---:|
+   | `syn_outage_60s__ukf/horizontal_cep50_m` | 4.70% | **0%** |
+   | `syn_outage_60s__ukf/roll_rmse_deg` | 2.87% | **0%** |
+   | `syn_outage_60s__ukf/yaw_rmse_deg` | 2.39% | **0%** |
+   | `syn_outage_60s__ukf/attitude_geodesic_rmse_deg` | 2.06% | **0%** |
+   | `syn_outage_60s__ukf/velocity_horizontal_rmse_mps` | 1.76% | **0%** |
+   | `real_rbpf_slice__rbpf/horizontal_cep50_m` | 10.79% | 10.79% |
+   | `real_rbpf_slice__rbpf/horizontal_cep95_m` | 8.61% | 8.61% |
+
+   Every `syn_*__ukf` row now agrees across all three platforms to seven or eight significant
+   figures, and every RBPF row is unchanged to the digit.
+
+   **So what is left of #386 is a single scenario.** `real_rbpf_slice__rbpf` holds every entry
+   above 0%, and nothing else in the suite exceeds it. That argues for the per-metric treatment
+   `npes_position` already has on that row, not for a suite-wide floor: a global tolerance
+   sized at 10.8% would be set by two tail statistics of one particle filter and would blind
+   every other row in the file.
 
    **Two parts of that are now closed.** The baseline records the operating system it was
    blessed on (`blessed_on`), and the improve-side failure no longer tells a contributor their
