@@ -163,11 +163,36 @@ seventh was a defect in the UKF that is now fixed.
    Every `syn_*__ukf` row now agrees across all three platforms to seven or eight significant
    figures, and every RBPF row is unchanged to the digit.
 
-   **So what is left of #386 is a single scenario.** `real_rbpf_slice__rbpf` holds every entry
-   above 0%, and nothing else in the suite exceeds it. That argues for the per-metric treatment
-   `npes_position` already has on that row, not for a suite-wide floor: a global tolerance
-   sized at 10.8% would be set by two tail statistics of one particle filter and would blind
-   every other row in the file.
+   **So what is left of #386 is a single scenario — and it is not floating-point noise.**
+   `real_rbpf_slice__rbpf` holds every entry above 0%, and nothing else in the suite exceeds
+   it. The obvious next move is a tolerance, global or per-metric. **Both are wrong, because
+   the number is not understood.**
+
+   Three one-ulp perturbations, each applied on *every* call — which is what a libm differing
+   in its last bit actually is:
+
+   | perturbation | worst of 236 metrics |
+   |---|---:|
+   | every Gaussian draw in the RBPF | 1.28e-6 % |
+   | every particle weight, after `exp` | 3.09e-7 % |
+   | one WGS84 constant (caveat 7's ensemble) | 1.0e-6 % |
+
+   The RBPF moves by about one part in 10⁸ under any of them, and `horizontal_cep50_m` — the
+   metric carrying the 10.79% spread — is the most responsive at 1.28e-6 %. **The RBPF is not
+   an amplifier**, the opposite of the UKF in caveat 7, so the residual spread cannot be a
+   last-bit effect.
+
+   The platform pattern agrees. macOS and Linux match to **eight significant figures** on that
+   metric, across *different CPU architectures*, while Windows — same architecture as Linux —
+   sits 10% away. That rules out CPU architecture, SIMD width and runtime feature dispatch,
+   all of which would separate ARM from x86 rather than Windows from everyone.
+
+   A 10% discrepancy on one platform and one scenario, demonstrably larger than an ulp, is a
+   **defect to diagnose rather than a band to widen**; fitting a tolerance to it would be
+   [#288](https://github.com/jbrodovsky/strapdown-rs/issues/288) again. Diagnose it by emitting
+   the sorted error series behind `horizontal_cep50_m` from each leg — the `PERF_EMIT_MEASURED`
+   plumbing is most of the way there — and by checking that `test_data.csv` parses identically
+   on Windows before blaming the filter.
 
    **Two parts of that are now closed.** The baseline records the operating system it was
    blessed on (`blessed_on`), and the improve-side failure no longer tells a contributor their

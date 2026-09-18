@@ -194,13 +194,39 @@
 //!    only the mechanism behind the baseline's drift, it was the mechanism behind most of this
 //!    caveat as well.
 //!
-//!    **What is left of #386 is one scenario.** After the fix, `real_rbpf_slice__rbpf` holds
-//!    every entry above 0%, and nothing else in the suite exceeds it. That is an argument for
-//!    the per-metric treatment `npes_position` already has on that row rather than for a
-//!    suite-wide tolerance floor: a global floor sized at 10.8% would be set by two tail
-//!    statistics of one particle filter and would blind every other row in the file. The
-//!    remaining question is what that row's tail is doing on Windows, not what number to widen
-//!    the whole gate by.
+//!    **What is left of #386 is one scenario, and it is not floating-point noise.** After the
+//!    fix, `real_rbpf_slice__rbpf` holds every entry above 0% and nothing else in the suite
+//!    exceeds it. The obvious next move is a tolerance -- global, or per-metric the way
+//!    `npes_position` already is on that row. **Both are wrong, because the number is not
+//!    understood.**
+//!
+//!    Three one-ulp perturbations, each applied on *every* call, which is what a libm
+//!    differing in its last bit actually is:
+//!
+//!    | perturbation | worst of 236 metrics |
+//!    |---|---:|
+//!    | every Gaussian draw in the RBPF | 1.28e-6 % |
+//!    | every particle weight, after `exp`, at both update sites | 3.09e-7 % |
+//!    | one WGS84 constant (caveat 7's ensemble) | 1.0e-6 % |
+//!
+//!    The RBPF moves by about one part in $10^8$ under any of them, and
+//!    `horizontal_cep50_m` -- the metric carrying the 10.79% spread -- is the most responsive
+//!    of them at 1.28e-6 %. **The RBPF is not an amplifier**, which is the opposite of the UKF
+//!    in caveat 7, and it means the residual spread cannot be a last-bit effect.
+//!
+//!    The platform pattern says the same thing. macOS and Linux agree to **eight significant
+//!    figures** on that metric -- 1.8270500842991202 against 1.8270500951744402 -- across
+//!    *different CPU architectures*, while Windows, same architecture as Linux, sits 10% away
+//!    at 1.6491552684081328. That rules out CPU architecture, SIMD width and runtime feature
+//!    dispatch, all of which would separate ARM from x86 rather than Windows from everyone.
+//!
+//!    So a 10% discrepancy on one platform and one scenario, demonstrably larger than an ulp,
+//!    is a **defect to diagnose rather than a band to widen**. Sizing any tolerance around it
+//!    would be fitting a threshold to an unexplained number, which is #288. Diagnose it by
+//!    emitting the sorted error series behind `horizontal_cep50_m` from each leg -- the
+//!    `PERF_EMIT_MEASURED` plumbing is most of the way there -- to see whether one sample moved
+//!    a long way or every sample moved a little, and by checking that `test_data.csv` parses
+//!    identically on Windows before blaming the filter.
 //!
 //!    What has changed in the gate: the baseline now records `blessed_on`, and an
 //!    improve-side failure on a different platform says so instead of instructing a re-bless
