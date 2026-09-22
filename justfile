@@ -1,6 +1,31 @@
 build:
     cargo build --release --workspace --all-features
 
+# Rebuild data/input from the Sensor Logger exports in data/raw. `data/raw` is read-only --
+# nothing in this repo may write to it.
+#
+# Recordings whose IMU drops out mid-flight are split at the gap into `<name>_A.csv`,
+# `<name>_B.csv`, ... and ones whose IMU stops before the GPS does are trimmed back to their
+# last inertial sample, because `strapdown-sim` rejects any file carrying a gap longer than
+# `max_imu_gap_s` (5 s) rather than dead-reckoning across it. `--max-imu-gap-s` here must stay
+# equal to that limit. See data/input/segments.json for what each run produced.
+#
+# `--prune` deletes CSVs in data/input that the run did not write, so the directory stays a
+# faithful function of data/raw. It matters most right after a recording starts being split:
+# the un-split original would otherwise stay behind, and since the simulator loads every CSV
+# in the directory it would go on being run and go on failing. Everything here is derived
+# from data/raw, which is read-only and is never written by any recipe.
+preprocess:
+    uv run --project analysis analyze preprocess -i data/raw -o data/input -f 1 \
+        --max-imu-gap-s 5.0 --min-segment-s 300.0 --prune
+
+# The 10 Hz variant. GNSS is only ever recorded at ~1 Hz, so the extra rows carry inertial
+# data only and the GNSS columns stay NaN in 9 bins out of 10 -- which is what gives 10 Hz
+# propagation against 1 Hz aiding. Do not interpolate GNSS up to match.
+preprocess-10hz:
+    uv run --project analysis analyze preprocess -i data/raw -o data/input_10hz -f 10 \
+        --max-imu-gap-s 5.0 --min-segment-s 300.0 --prune
+
 truth:
     -./target/release/strapdown-sim --config conf/ukf_truth.toml
     -./target/release/strapdown-sim --config conf/ekf_truth.toml
