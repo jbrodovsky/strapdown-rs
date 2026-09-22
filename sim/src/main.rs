@@ -308,6 +308,46 @@ struct SimArgs {
     #[arg(long, default_value_t = strapdown::sim::DEFAULT_MAX_NO_PROGRESS_S)]
     max_no_progress_s: f64,
 
+    /// Minimum latitude the filter estimate may reach, in degrees, before the run is failed
+    #[arg(long, default_value_t = strapdown::sim::DEFAULT_HEALTH_LAT_MIN_RAD.to_degrees())]
+    health_lat_min_deg: f64,
+
+    /// Maximum latitude the filter estimate may reach, in degrees, before the run is failed
+    #[arg(long, default_value_t = strapdown::sim::DEFAULT_HEALTH_LAT_MAX_RAD.to_degrees())]
+    health_lat_max_deg: f64,
+
+    /// Minimum longitude the filter estimate may reach, in degrees, before the run is failed
+    #[arg(long, default_value_t = strapdown::sim::DEFAULT_HEALTH_LON_MIN_RAD.to_degrees())]
+    health_lon_min_deg: f64,
+
+    /// Maximum longitude the filter estimate may reach, in degrees, before the run is failed
+    #[arg(long, default_value_t = strapdown::sim::DEFAULT_HEALTH_LON_MAX_RAD.to_degrees())]
+    health_lon_max_deg: f64,
+
+    /// Minimum altitude in metres above the ellipsoid before the run is failed
+    #[arg(long, default_value_t = strapdown::sim::DEFAULT_HEALTH_ALT_MIN_M)]
+    health_alt_min_m: f64,
+
+    /// Maximum altitude in metres above the ellipsoid before the run is failed
+    #[arg(long, default_value_t = strapdown::sim::DEFAULT_HEALTH_ALT_MAX_M)]
+    health_alt_max_m: f64,
+
+    /// Max velocity vector magnitude in m/s before the run is failed
+    #[arg(long, default_value_t = strapdown::sim::DEFAULT_HEALTH_SPEED_MPS_MAX)]
+    health_speed_mps_max: f64,
+
+    /// Largest variance tolerated on the covariance diagonal before the run is failed
+    #[arg(long, default_value_t = strapdown::sim::DEFAULT_HEALTH_COV_DIAG_MAX)]
+    health_cov_diag_max: f64,
+
+    /// NIS above which a measurement update counts as an outlier
+    #[arg(long, default_value_t = strapdown::sim::DEFAULT_NIS_POS_MAX)]
+    nis_pos_max: f64,
+
+    /// Consecutive NIS exceedances that fail the run
+    #[arg(long, default_value_t = strapdown::sim::DEFAULT_NIS_POS_CONSEC_FAIL)]
+    nis_pos_consec_fail: usize,
+
     /// Interpret the input records in the ENU convention rather than NED.
     ///
     /// Sensor Logger exports are ENU: at rest their specific force lands on the device's
@@ -614,6 +654,43 @@ const fn execution_limits_from_args(args: &SimArgs) -> ExecutionLimits {
     }
 }
 
+/// The angular bands are taken in degrees on the command line and converted here, because a
+/// clap flag carrying a radian literal is unreadable at the call site.
+const fn health_limits_from_args(args: &SimArgs) -> HealthLimits {
+    HealthLimits {
+        lat_rad: (
+            args.health_lat_min_deg.to_radians(),
+            args.health_lat_max_deg.to_radians(),
+        ),
+        lon_rad: (
+            args.health_lon_min_deg.to_radians(),
+            args.health_lon_max_deg.to_radians(),
+        ),
+        alt_m: (args.health_alt_min_m, args.health_alt_max_m),
+        speed_mps_max: args.health_speed_mps_max,
+        cov_diag_max: args.health_cov_diag_max,
+        nis_pos_max: args.nis_pos_max,
+        nis_pos_consec_fail: args.nis_pos_consec_fail,
+    }
+}
+
+/// The wall-clock and numerical guards a run is bounded by, carried as one value so that
+/// `run_single_closed_loop_simulation` does not grow a thirteenth parameter.
+#[derive(Clone, Debug)]
+struct RunLimits {
+    execution: ExecutionLimits,
+    health: HealthLimits,
+}
+
+impl RunLimits {
+    const fn from_args(args: &SimArgs) -> Self {
+        Self {
+            execution: execution_limits_from_args(args),
+            health: health_limits_from_args(args),
+        }
+    }
+}
+
 /// Process a single CSV file with the given configuration
 fn process_file(
     input_file: &Path,
@@ -714,6 +791,7 @@ fn process_file(
                 event_stream.events.len()
             );
             let execution_limits = config.execution_limits.clone();
+            let health_limits = config.health_limits.clone();
 
             let results = match filter_config.filter {
                 FilterType::Ukf => {
@@ -721,21 +799,36 @@ fn process_file(
                     info!("Initialized UKF");
                     ukf.set_innovation_gate(filter_config.innovation_gate);
                     ukf.set_gate_recovery(filter_config.gate_recovery);
-                    run_closed_loop(&mut ukf, event_stream, None, Some(execution_limits))
+                    run_closed_loop(
+                        &mut ukf,
+                        event_stream,
+                        Some(health_limits),
+                        Some(execution_limits),
+                    )
                 }
                 FilterType::Ekf => {
                     let mut ekf = initialize_ekf(&records[0].clone(), ekf_config)?;
                     info!("Initialized EKF");
                     ekf.set_innovation_gate(filter_config.innovation_gate);
                     ekf.set_gate_recovery(filter_config.gate_recovery);
-                    run_closed_loop(&mut ekf, event_stream, None, Some(execution_limits))
+                    run_closed_loop(
+                        &mut ekf,
+                        event_stream,
+                        Some(health_limits),
+                        Some(execution_limits),
+                    )
                 }
                 FilterType::Eskf => {
                     let mut eskf = initialize_eskf(&records[0].clone(), eskf_config)?;
                     info!("Initialized ESKF");
                     eskf.set_innovation_gate(filter_config.innovation_gate);
                     eskf.set_gate_recovery(filter_config.gate_recovery);
-                    run_closed_loop(&mut eskf, event_stream, None, Some(execution_limits))
+                    run_closed_loop(
+                        &mut eskf,
+                        event_stream,
+                        Some(health_limits),
+                        Some(execution_limits),
+                    )
                 }
             };
 
@@ -951,6 +1044,7 @@ fn process_file(
                 &mut rbpf,
                 event_stream,
                 &config.execution_limits,
+                &config.health_limits,
                 geo_layout,
             )?;
             let output_file = resolve_output_path(output, input_file, all_inputs)?;
@@ -1130,7 +1224,7 @@ fn run_single_closed_loop_simulation(
     records: &[TestDataRecord],
     aiding: &strapdown::messages::AidingConfig,
     output_file: &Path,
-    execution_limits: ExecutionLimits,
+    limits: RunLimits,
     ukf_alpha: f64,
     ukf_beta: f64,
     ukf_kappa: f64,
@@ -1193,21 +1287,36 @@ fn run_single_closed_loop_simulation(
             info!("Initialized UKF");
             ukf.set_innovation_gate(innovation_gate);
             ukf.set_gate_recovery(gate_recovery);
-            run_closed_loop(&mut ukf, event_stream, None, Some(execution_limits))
+            run_closed_loop(
+                &mut ukf,
+                event_stream,
+                Some(limits.health),
+                Some(limits.execution),
+            )
         }
         FilterType::Ekf => {
             let mut ekf = initialize_ekf(&records[0].clone(), ekf_config)?;
             info!("Initialized EKF");
             ekf.set_innovation_gate(innovation_gate);
             ekf.set_gate_recovery(gate_recovery);
-            run_closed_loop(&mut ekf, event_stream, None, Some(execution_limits))
+            run_closed_loop(
+                &mut ekf,
+                event_stream,
+                Some(limits.health),
+                Some(limits.execution),
+            )
         }
         FilterType::Eskf => {
             let mut eskf = initialize_eskf(&records[0].clone(), eskf_config)?;
             info!("Initialized ESKF");
             eskf.set_innovation_gate(innovation_gate);
             eskf.set_gate_recovery(gate_recovery);
-            run_closed_loop(&mut eskf, event_stream, None, Some(execution_limits))
+            run_closed_loop(
+                &mut eskf,
+                event_stream,
+                Some(limits.health),
+                Some(limits.execution),
+            )
         }
     };
 
@@ -1426,7 +1535,7 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
     // Get all CSV files to process
     let csv_files = get_csv_files(&args.sim.input)?;
     let is_multiple = csv_files.len() > 1;
-    let execution_limits = execution_limits_from_args(&args.sim);
+    let limits = RunLimits::from_args(&args.sim);
 
     if is_multiple {
         info!("Processing {} CSV files from directory", csv_files.len());
@@ -1473,7 +1582,7 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
             &records,
             &aiding,
             &output_file,
-            execution_limits.clone(),
+            limits.clone(),
             args.ukf_alpha,
             args.ukf_beta,
             args.ukf_kappa,
@@ -1683,9 +1792,7 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
     // Get all CSV files to process
     let csv_files = get_csv_files(&args.sim.input)?;
     let is_multiple = csv_files.len() > 1;
-    // NOTE: Execution limits are not yet applied in geophysical closed-loop simulations.
-    // We still parse the arguments here to validate them and keep CLI behavior consistent.
-    let _ = execution_limits_from_args(&args.sim);
+    let limits = RunLimits::from_args(&args.sim);
 
     if is_multiple {
         info!("Processing {} CSV files from directory", csv_files.len());
@@ -1844,7 +1951,13 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                 ukf.set_gate_recovery(gate_recovery);
 
                 info!("Running UKF geophysical navigation simulation...");
-                run_closed_loop_with_geo(&mut ukf, events, None, None, geo_layout)
+                run_closed_loop_with_geo(
+                    &mut ukf,
+                    events,
+                    Some(limits.health.clone()),
+                    Some(limits.execution.clone()),
+                    geo_layout,
+                )
             }
             FilterType::Ekf => {
                 info!("Initializing EKF...");
@@ -1943,7 +2056,13 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                 ekf.set_gate_recovery(gate_recovery);
 
                 info!("Running EKF geophysical navigation simulation...");
-                run_closed_loop_with_geo(&mut ekf, events, None, None, geo_layout)
+                run_closed_loop_with_geo(
+                    &mut ekf,
+                    events,
+                    Some(limits.health.clone()),
+                    Some(limits.execution.clone()),
+                    geo_layout,
+                )
             }
             FilterType::Eskf => {
                 error!("ESKF is not yet implemented for geophysical navigation");
@@ -2001,11 +2120,12 @@ fn run_rbpf_event_loop(
     rbpf: &mut RaoBlackwellizedParticleFilter,
     event_stream: EventStream,
     execution_limits: &ExecutionLimits,
+    health_limits: &HealthLimits,
     geo_layout: ExtraStateLayout,
 ) -> Result<Vec<NavigationResult>, Box<dyn Error>> {
     let start_time = event_stream.start_time;
     let mut results = Vec::with_capacity(event_stream.events.len());
-    let mut monitor = HealthMonitor::new(HealthLimits::default());
+    let mut monitor = HealthMonitor::new(health_limits.clone());
     let sim_duration_s = event_stream.events.last().map_or(0.0, |event| match event {
         Event::Imu { elapsed_s, .. } | Event::Measurement { elapsed_s, .. } => *elapsed_s,
     });
@@ -2093,6 +2213,7 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
     let csv_files = get_csv_files(&args.sim.input)?;
     let is_multiple = csv_files.len() > 1;
     let execution_limits = execution_limits_from_args(&args.sim);
+    let health_limits = health_limits_from_args(&args.sim);
 
     if is_multiple {
         info!("Processing {} CSV files from directory", csv_files.len());
@@ -2279,7 +2400,13 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
         let results = match args.filter_type {
             ParticleFilterType::RaoBlackwellized => {
                 let mut rbpf = RaoBlackwellizedParticleFilter::new(nominal, config)?;
-                run_rbpf_event_loop(&mut rbpf, event_stream, &execution_limits, geo_layout)?
+                run_rbpf_event_loop(
+                    &mut rbpf,
+                    event_stream,
+                    &execution_limits,
+                    &health_limits,
+                    geo_layout,
+                )?
             }
         };
 
@@ -2871,6 +2998,7 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
     let is_enu = prompt_frame();
     let parallel = prompt_parallel();
     let execution_limits = ExecutionLimits::default();
+    let health_limits = HealthLimits::default();
 
     // Logging configuration
     println!("\n--- Logging Configuration ---");
@@ -2969,6 +3097,7 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
         built.parallel = parallel;
         built.generate_plot = false;
         built.execution_limits = execution_limits;
+        built.health_limits = health_limits;
         built.logging = logging;
         built.closed_loop = closed_loop;
         built.particle_filter = particle_filter;

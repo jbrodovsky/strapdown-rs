@@ -43,18 +43,27 @@ gravity_noise_std = 100.0
 # Measurement frequency (seconds)
 geo_frequency_s = 1.0
 
+[health_limits]
+# Must match conf/rbpf_degraded.toml: `geoperf-rbpf` scores this run against that one, so a
+# difference in the guards would show up as geophysical performance.
+nis_pos_max = 1000.0
+speed_mps_max = 5000.0
+
 [gnss_degradation]
 seed = 42
 
+# This whole section must stay identical to conf/rbpf_degraded.toml. `geoperf-rbpf` measures
+# this run against the degraded one, so any difference in the GNSS profile is reported as the
+# contribution of the geophysical measurement when it is nothing of the kind.
 [gnss_degradation.scheduler]
 kind = "fixed_interval"
-interval_s = 60.0
+interval_s = 5.0
 phase_s = 0.0
 
 [gnss_degradation.fault]
 kind = "degraded"
 rho_pos = 0.99
-sigma_pos_m = 15.0
+sigma_pos_m = 3.0     # ~21 m steady-state wander
 rho_vel = 0.95
-sigma_vel_mps = 5.0
-r_scale = 15.0
+sigma_vel_mps = 0.3   # ~1 m/s steady-state wander
+r_scale = 5.0         # advertised sigmas x5, so R x25

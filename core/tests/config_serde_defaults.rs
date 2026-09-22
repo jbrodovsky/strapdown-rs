@@ -24,8 +24,8 @@ use strapdown::NavigationFilter;
 use strapdown::engine::InsEngineConfig;
 use strapdown::messages::AidingConfig;
 use strapdown::sim::{
-    ClosedLoopConfig, LoggingConfig, ParticleFilterConfig, SimulationConfig, SyntheticConfig,
-    SyntheticInitialState,
+    ClosedLoopConfig, ExecutionLimits, HealthLimits, LoggingConfig, ParticleFilterConfig,
+    SimulationConfig, SyntheticConfig, SyntheticInitialState,
 };
 
 /// Deserialize `$t` from a document that sets nothing beyond what it must, and require the
@@ -71,6 +71,56 @@ fn particle_filter_config_serde_defaults_match_its_default_impl() {
 #[test]
 fn logging_config_serde_defaults_match_its_default_impl() {
     assert_document_matches_default!(LoggingConfig, "{}");
+}
+
+#[test]
+fn execution_limits_serde_defaults_match_its_default_impl() {
+    assert_document_matches_default!(ExecutionLimits, "{}");
+}
+
+#[test]
+fn health_limits_serde_defaults_match_its_default_impl() {
+    assert_document_matches_default!(HealthLimits, "{}");
+}
+
+/// The way this knob is actually reached for: loosen one guard, inherit the rest.
+///
+/// Each field carries its own `#[serde(default = "..."]`, so a section naming only
+/// `nis_pos_max` must leave the others at their documented defaults. Without those per-field
+/// defaults the untouched tuple bands would deserialize to `(0.0, 0.0)` and fail every
+/// estimate on the first update -- a far more confusing failure than the one being relaxed.
+#[test]
+fn a_partial_health_limits_section_keeps_every_other_guard_at_its_default() {
+    let loosened: HealthLimits = serde_json::from_str(r#"{"nis_pos_max": 100000.0}"#)
+        .expect("a health_limits section naming one field should deserialize");
+    let default = HealthLimits::default();
+
+    assert!(
+        (loosened.nis_pos_max - 100_000.0).abs() < f64::EPSILON,
+        "the field that was set should take the document's value, got {}",
+        loosened.nis_pos_max
+    );
+    assert_eq!(
+        loosened.lat_rad, default.lat_rad,
+        "lat_rad was not inherited"
+    );
+    assert_eq!(
+        loosened.lon_rad, default.lon_rad,
+        "lon_rad was not inherited"
+    );
+    assert_eq!(loosened.alt_m, default.alt_m, "alt_m was not inherited");
+    assert!(
+        (loosened.speed_mps_max - default.speed_mps_max).abs() < f64::EPSILON,
+        "speed_mps_max was not inherited"
+    );
+    assert!(
+        (loosened.cov_diag_max - default.cov_diag_max).abs() < f64::EPSILON,
+        "cov_diag_max was not inherited"
+    );
+    assert_eq!(
+        loosened.nis_pos_consec_fail, default.nis_pos_consec_fail,
+        "nis_pos_consec_fail was not inherited"
+    );
 }
 
 /// `latitude_deg`/`longitude_deg`/`altitude_m` carry no serde default on purpose: a synthetic

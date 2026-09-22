@@ -220,6 +220,35 @@ pub enum StrapdownError {
         detail: String,
     },
 
+    /// A sensor stopped reporting for longer than the run tolerates.
+    ///
+    /// Raised while the event stream is built, before a single filter step, because only the
+    /// builder can tell "the recording has a hole" from "this sensor is simply slower than the
+    /// others": it sees a source epoch whose columns for `sensor` were unusable, where the
+    /// runner sees nothing at all. Detecting it late is what produced the defect this exists
+    /// for -- an IMU that stopped mid-recording left the filter unable to propagate, and the
+    /// frozen estimate fell far enough behind the vehicle to surface as an absurd NIS, so
+    /// [`Self::FilterDiverged`] blamed the filter for missing data.
+    ///
+    /// `sensor` is the discriminant that keeps this distinct from a deliberately GNSS-denied
+    /// run, which is a scenario rather than a fault and never reaches here.
+    #[error(
+        "{sensor} stream gap: {duration_s:.1} s without usable data, from t={start_s:.1} s to \
+         t={end_s:.1} s ({epochs} source epochs present with unusable {sensor} columns)"
+    )]
+    SensorStreamGap {
+        /// Which sensor stopped reporting.
+        sensor: &'static str,
+        /// Elapsed time of the last usable sample before the gap, in seconds.
+        start_s: f64,
+        /// Elapsed time at which the sensor resumed, or the stream ended.
+        end_s: f64,
+        /// Length of the gap in seconds.
+        duration_s: f64,
+        /// How many source epochs fell inside the gap.
+        epochs: usize,
+    },
+
     /// A run passed one of its execution limits.
     ///
     /// `context` is a `String` rather than a `&'static str` because it is supplied by the
@@ -318,6 +347,17 @@ mod tests {
             }
             .is_recoverable(),
             "a run that passed its limit has no partial result worth continuing from"
+        );
+        assert!(
+            !StrapdownError::SensorStreamGap {
+                sensor: "IMU",
+                start_s: 411.0,
+                end_s: 1319.0,
+                duration_s: 908.0,
+                epochs: 908,
+            }
+            .is_recoverable(),
+            "an inertial stream with a hole in it cannot be propagated across the hole"
         );
     }
 

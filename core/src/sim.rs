@@ -338,6 +338,32 @@ pub const DEFAULT_MAX_WALL_CLOCK_S: f64 = 1200.0;
 /// [`ExecutionMonitor::mark_progress`] before the run is treated as hung.
 pub const DEFAULT_MAX_NO_PROGRESS_S: f64 = 600.0;
 
+/// Default lower bound of [`HealthLimits::lat_rad`]: the full -90 degrees.
+pub const DEFAULT_HEALTH_LAT_MIN_RAD: f64 = -std::f64::consts::FRAC_PI_2;
+/// Default upper bound of [`HealthLimits::lat_rad`]: the full +90 degrees.
+pub const DEFAULT_HEALTH_LAT_MAX_RAD: f64 = std::f64::consts::FRAC_PI_2;
+/// Default lower bound of [`HealthLimits::lon_rad`]: the full -180 degrees.
+pub const DEFAULT_HEALTH_LON_MIN_RAD: f64 = -std::f64::consts::PI;
+/// Default upper bound of [`HealthLimits::lon_rad`]: the full +180 degrees.
+pub const DEFAULT_HEALTH_LON_MAX_RAD: f64 = std::f64::consts::PI;
+/// Default lower bound of [`HealthLimits::alt_m`].
+///
+/// Far below the [-11,000 m, 30,000 m] over which the mechanization is documented to be valid,
+/// so a diverging vertical channel trips the covariance or NIS check rather than this band.
+pub const DEFAULT_HEALTH_ALT_MIN_M: f64 = -1e8;
+/// Default upper bound of [`HealthLimits::alt_m`], the mirror of [`DEFAULT_HEALTH_ALT_MIN_M`].
+pub const DEFAULT_HEALTH_ALT_MAX_M: f64 = 1e8;
+/// Default [`HealthLimits::speed_mps_max`]: 500 m/s, i.e. road or low-altitude aircraft.
+pub const DEFAULT_HEALTH_SPEED_MPS_MAX: f64 = 500.0;
+/// Default [`HealthLimits::cov_diag_max`]: the largest variance tolerated on the covariance
+/// diagonal before the run is failed.
+pub const DEFAULT_HEALTH_COV_DIAG_MAX: f64 = 1e15;
+/// Default [`HealthLimits::nis_pos_max`]: the NIS above which a measurement update counts as
+/// an outlier.
+pub const DEFAULT_NIS_POS_MAX: f64 = 100.0;
+/// Default [`HealthLimits::nis_pos_consec_fail`]: consecutive NIS exceedances that fail a run.
+pub const DEFAULT_NIS_POS_CONSEC_FAIL: usize = 20;
+
 fn de_f64_nan<'de, D>(deserializer: D) -> Result<f64, D::Error>
 where
     D: Deserializer<'de>,
@@ -4640,24 +4666,32 @@ pub mod execution {
 /// This is the circuit breaker behind the per-update gating in [`crate::gating`]: gating rejects
 /// individual measurements, the monitor gives up on the whole trajectory.
 pub mod health {
-    use super::{Debug, StrapdownError, f64};
+    use super::{
+        DEFAULT_HEALTH_ALT_MAX_M, DEFAULT_HEALTH_ALT_MIN_M, DEFAULT_HEALTH_COV_DIAG_MAX,
+        DEFAULT_HEALTH_LAT_MAX_RAD, DEFAULT_HEALTH_LAT_MIN_RAD, DEFAULT_HEALTH_LON_MAX_RAD,
+        DEFAULT_HEALTH_LON_MIN_RAD, DEFAULT_HEALTH_SPEED_MPS_MAX, DEFAULT_NIS_POS_CONSEC_FAIL,
+        DEFAULT_NIS_POS_MAX, Debug, Deserialize, Serialize, StrapdownError, f64,
+    };
 
     /// Bounds a filter estimate must stay inside for [`HealthMonitor`] to consider it healthy.
     ///
     /// [`Default`] is deliberately permissive -- in particular the altitude band is opened to
     /// +/-1e8 m so that vertical-channel instability shows up as a covariance or NIS failure
     /// rather than as an altitude bound trip.
-    #[derive(Clone, Debug)]
+    #[derive(Clone, Debug, Serialize, Deserialize)]
     pub struct HealthLimits {
         /// Inclusive (min, max) latitude band in radians; defaults to the full +/-90 degrees.
+        #[serde(default = "default_health_lat_rad")]
         pub lat_rad: (f64, f64),
         /// Inclusive (min, max) longitude band in radians; defaults to the full +/-180 degrees.
+        #[serde(default = "default_health_lon_rad")]
         pub lon_rad: (f64, f64),
         /// Inclusive (min, max) altitude band in metres above the ellipsoid. Defaults to
         /// +/-1e8 -- deliberately far wider than the [-11,000 m, 30,000 m] over which the
         /// mechanization is documented to be valid, so that a diverging vertical channel is
         /// caught by the finiteness and covariance checks rather than by this band. Narrow
         /// it to the scenario's real altitude range to make it an effective gate.
+        #[serde(default = "default_health_alt_m")]
         pub alt_m: (f64, f64),
         /// Maximum velocity vector magnitude in m/s -- north, east, *and* down combined, not
         /// ground speed alone (default 500, i.e. road or low-altitude aircraft). Checked
@@ -4665,9 +4699,11 @@ pub mod health {
         /// this crate. Narrow this to the scenario's real speed range to make it an
         /// effective gate; unaided `dead_reckoning` never calls [`HealthMonitor`], so a run
         /// that deliberately drifts past this bound (see #299) is unaffected.
+        #[serde(default = "default_health_speed_mps_max")]
         pub speed_mps_max: f64,
         /// Largest variance allowed on the covariance diagonal before the run is failed
         /// (default 1e15).
+        #[serde(default = "default_health_cov_diag_max")]
         pub cov_diag_max: f64,
         /// NIS above which a measurement update counts as an outlier (default 100).
         ///
@@ -4676,22 +4712,52 @@ pub mod health {
         /// the single measurement arm of the event loop, so GNSS position/velocity fixes,
         /// `RelativeAltitudeMeasurement`, magnetometer-yaw and geophysical updates are all
         /// tested against this one threshold. The `_pos` in the field name is historical.
+        #[serde(default = "default_nis_pos_max")]
         pub nis_pos_max: f64,
         /// Number of consecutive NIS exceedances that fails the run (default 20). A single
         /// update whose NIS is within [`Self::nis_pos_max`] resets the streak.
+        #[serde(default = "default_nis_pos_consec_fail")]
         pub nis_pos_consec_fail: usize,
+    }
+
+    const fn default_health_lat_rad() -> (f64, f64) {
+        (DEFAULT_HEALTH_LAT_MIN_RAD, DEFAULT_HEALTH_LAT_MAX_RAD)
+    }
+
+    const fn default_health_lon_rad() -> (f64, f64) {
+        (DEFAULT_HEALTH_LON_MIN_RAD, DEFAULT_HEALTH_LON_MAX_RAD)
+    }
+
+    const fn default_health_alt_m() -> (f64, f64) {
+        (DEFAULT_HEALTH_ALT_MIN_M, DEFAULT_HEALTH_ALT_MAX_M)
+    }
+
+    const fn default_health_speed_mps_max() -> f64 {
+        DEFAULT_HEALTH_SPEED_MPS_MAX
+    }
+
+    const fn default_health_cov_diag_max() -> f64 {
+        DEFAULT_HEALTH_COV_DIAG_MAX
+    }
+
+    const fn default_nis_pos_max() -> f64 {
+        DEFAULT_NIS_POS_MAX
+    }
+
+    const fn default_nis_pos_consec_fail() -> usize {
+        DEFAULT_NIS_POS_CONSEC_FAIL
     }
 
     impl Default for HealthLimits {
         fn default() -> Self {
             Self {
-                lat_rad: (-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2),
-                lon_rad: (-std::f64::consts::PI, std::f64::consts::PI),
-                alt_m: (-100000000.0, 100000000.0), // Very tolerant for vertical channel instability
-                speed_mps_max: 500.0,
-                cov_diag_max: 1e15,
-                nis_pos_max: 100.0,
-                nis_pos_consec_fail: 20,
+                lat_rad: default_health_lat_rad(),
+                lon_rad: default_health_lon_rad(),
+                alt_m: default_health_alt_m(),
+                speed_mps_max: default_health_speed_mps_max(),
+                cov_diag_max: default_health_cov_diag_max(),
+                nis_pos_max: default_nis_pos_max(),
+                nis_pos_consec_fail: default_nis_pos_consec_fail(),
             }
         }
     }
@@ -5455,6 +5521,12 @@ pub struct SimulationConfig {
     /// Execution time limits (wall-clock and no-progress)
     #[serde(default)]
     pub execution_limits: ExecutionLimits,
+    /// Numerical divergence guards (position/velocity bands, covariance and NIS thresholds).
+    ///
+    /// Loosen these to let a run that is drifting on purpose -- a MEMS-grade recording under
+    /// heavy GNSS degradation, say -- reach its end instead of being failed part way through.
+    #[serde(default)]
+    pub health_limits: HealthLimits,
     /// Logging configuration
     #[serde(default)]
     pub logging: LoggingConfig,
@@ -5506,6 +5578,7 @@ impl Default for SimulationConfig {
             parallel: false,
             generate_plot: false,
             execution_limits: ExecutionLimits::default(),
+            health_limits: HealthLimits::default(),
             logging: LoggingConfig::default(),
             closed_loop: Some(ClosedLoopConfig::default()),
             particle_filter: None,
@@ -8318,10 +8391,22 @@ mod tests {
     #[test]
     fn test_health_limits_default() {
         let limits = HealthLimits::default();
-        assert!(limits.lat_rad.0 < 0.0);
-        assert!(limits.lat_rad.1 > 0.0);
-        assert!(limits.speed_mps_max > 0.0);
-        assert!(limits.cov_diag_max > 0.0);
+        assert_eq!(
+            limits.lat_rad,
+            (DEFAULT_HEALTH_LAT_MIN_RAD, DEFAULT_HEALTH_LAT_MAX_RAD)
+        );
+        assert_eq!(
+            limits.lon_rad,
+            (DEFAULT_HEALTH_LON_MIN_RAD, DEFAULT_HEALTH_LON_MAX_RAD)
+        );
+        assert_eq!(
+            limits.alt_m,
+            (DEFAULT_HEALTH_ALT_MIN_M, DEFAULT_HEALTH_ALT_MAX_M)
+        );
+        assert_approx_eq!(limits.speed_mps_max, DEFAULT_HEALTH_SPEED_MPS_MAX);
+        assert_approx_eq!(limits.cov_diag_max, DEFAULT_HEALTH_COV_DIAG_MAX);
+        assert_approx_eq!(limits.nis_pos_max, DEFAULT_NIS_POS_MAX);
+        assert_eq!(limits.nis_pos_consec_fail, DEFAULT_NIS_POS_CONSEC_FAIL);
     }
 
     /// Fixed reference instant plus an offset, so every timeout assertion below is

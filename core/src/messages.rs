@@ -1,5 +1,6 @@
 // gnss_degrader.rs
 use chrono::{DateTime, Datelike, Utc};
+use log::warn;
 use nalgebra::Vector3;
 use rand::SeedableRng;
 use rand_distr::Distribution;
@@ -225,6 +226,13 @@ const fn default_seed() -> u64 {
     42
 }
 
+/// Default [`AidingConfig::max_imu_gap_s`]: five seconds without a usable inertial sample.
+///
+/// Comfortably above the sub-second holes that resampling a variable-rate recording onto a
+/// fixed grid leaves behind, and far below the minutes-long holes that mean the inertial
+/// recording actually stopped.
+pub const DEFAULT_MAX_IMU_GAP_S: f64 = 5.0;
+
 /// Default emission schedule for the barometer and the magnetometer: one measurement per second.
 ///
 /// Not [`MeasurementScheduler::PassThrough`], which is what these two channels effectively had before
@@ -354,11 +362,29 @@ pub struct AidingConfig {
     /// realization of stochastic processes such as AR(1) degradation.
     #[serde(default = "default_seed")]
     pub seed: u64,
+
+    /// How long the inertial stream may stop reporting before the run is refused, in seconds.
+    ///
+    /// Defaults to [`DEFAULT_MAX_IMU_GAP_S`]; `<= 0.0` disables the check, matching the
+    /// convention [`crate::sim::ExecutionLimits`] uses for its own budgets.
+    ///
+    /// This bounds the *inertial* stream only. A gap in it cannot be propagated across -- with
+    /// no `Event::Imu` the filter never predicts, so its covariance stops growing while the
+    /// vehicle keeps moving -- which is a broken recording rather than a scenario. GNSS
+    /// outages are the opposite: they are the thing being studied, and are expressed through
+    /// [`Self::scheduler`] rather than rejected here.
+    #[serde(default = "default_max_imu_gap_s")]
+    pub max_imu_gap_s: f64,
 }
 
 /// Serde default for [`AidingConfig::baro_noise_std_m`].
 const fn default_baro_noise_std_m() -> f64 {
     BAROMETRIC_ALTITUDE_NOISE_M
+}
+
+/// Serde default for [`AidingConfig::max_imu_gap_s`].
+const fn default_max_imu_gap_s() -> f64 {
+    DEFAULT_MAX_IMU_GAP_S
 }
 
 impl Default for AidingConfig {
@@ -371,6 +397,7 @@ impl Default for AidingConfig {
             baro_noise_std_m: default_baro_noise_std_m(),
             baro_bias_index: None,
             seed: default_seed(),
+            max_imu_gap_s: default_max_imu_gap_s(),
         }
     }
 }
@@ -1146,6 +1173,12 @@ fn duty_cycle_is_on(elapsed_s: f64, on_s: f64, off_s: f64, start_phase_s: f64) -
 /// "no epoch". A slice of length one is *accepted* and yields an empty event list, so the
 /// boundary is emptiness, not "fewer than two".
 ///
+/// [`StrapdownError::SensorStreamGap`] if the inertial columns are unusable for longer than
+/// [`AidingConfig::max_imu_gap_s`], either mid-recording or by stopping and never resuming.
+/// Shorter gaps are warned about once and tolerated. This bounds the inertial stream only: a
+/// GNSS outage is a scenario expressed through [`AidingConfig::scheduler`], and no length of
+/// missing GNSS is an error here.
+///
 /// # Example
 /// ```
 /// use strapdown::messages::{build_event_stream, AidingConfig, MeasurementScheduler, GnssFaultModel};
@@ -1200,6 +1233,18 @@ pub fn build_event_stream(
     // Through preprocessing we assert that the first record must have a NED position
     // but it may or may not have IMU or other such measurements.
     let reference_altitude = first.altitude;
+
+    // Inertial-gap tracking. A hole in this stream is not a scenario: with no `Event::Imu` the
+    // filter never predicts, so its covariance stops growing while the vehicle keeps moving,
+    // and the frozen estimate falls behind until an ordinary fix looks like a wild outlier.
+    // Caught here, at construction, because only this loop can see that a source epoch existed
+    // and its inertial columns were unusable -- downstream all that survives is an absence.
+    let gap_limit_s = cfg.max_imu_gap_s;
+    let mut last_imu_elapsed_s = 0.0_f64;
+    let mut gap_epochs = 0_usize;
+    let mut tolerated_gaps = 0_usize;
+    let mut longest_tolerated_gap_s = 0.0_f64;
+
     for w in records_with_elapsed.windows(2) {
         let (t0, _) = (&w[0].0, &w[0].1);
         let (t1, r1) = (&w[1].0, &w[1].1);
@@ -1221,64 +1266,96 @@ pub fn build_event_stream(
                 imu,
                 elapsed_s: *t1,
             });
+            if gap_epochs > 0 {
+                let gap_s = *t1 - last_imu_elapsed_s;
+                if gap_limit_s > 0.0 && gap_s > gap_limit_s {
+                    return Err(StrapdownError::SensorStreamGap {
+                        sensor: "IMU",
+                        start_s: last_imu_elapsed_s,
+                        end_s: *t1,
+                        duration_s: gap_s,
+                        epochs: gap_epochs,
+                    });
+                }
+                tolerated_gaps += 1;
+                longest_tolerated_gap_s = longest_tolerated_gap_s.max(gap_s);
+                gap_epochs = 0;
+            }
+            last_imu_elapsed_s = *t1;
+        } else {
+            gap_epochs += 1;
         }
 
-        // Decide if GNSS should be emitted at t1
-        let emit_gnss = should_emit(&cfg.scheduler, *t1, &mut next_gnss_emit_time);
+        // Whether this epoch carries a fix worth scheduling, decided *before* the scheduler is
+        // consulted. `should_emit` advances `next_gnss_emit_time` as a side effect, so asking
+        // it about an epoch whose GNSS columns are unusable would consume the tick and drop
+        // the fix silently -- the scheduler would report having aided the filter while the
+        // filter dead-reckoned.
+        //
+        // The damage scales with how often an epoch lacks a fix, so it hid rather than being
+        // absent: 23 of the 25 reference 1 Hz recordings have GNSS-less epochs, and repairing
+        // this improved them in proportion -- 2.5% for a log missing a handful, 30% for one
+        // missing 8.8%, and 97.7% for the one missing 75%.
+        //
+        // It becomes ruinous once the inertial grid is finer than the receiver. Resampling to
+        // 10 Hz leaves GNSS in arbitrary 100 ms bins, only 0.2% of which land on a whole
+        // second, so a 5 s `FixedInterval` tick found a usable fix 0% of the time and a
+        // degraded run was pure dead reckoning wearing a degraded-GNSS label.
+        //
+        // Gating here makes the schedule mean "at most one fix per interval, taking the first
+        // usable fix at or after each tick".
+        let gnss_required = [r1.latitude, r1.longitude, r1.altitude, r1.speed, r1.bearing];
+        let gnss_present = gnss_required.iter().all(|v| !v.is_nan());
+        let emit_gnss = gnss_present && should_emit(&cfg.scheduler, *t1, &mut next_gnss_emit_time);
 
         if emit_gnss {
-            // Only create GNSS event when the core GNSS values are present
-            let gnss_required = [r1.latitude, r1.longitude, r1.altitude, r1.speed, r1.bearing];
-            let gnss_present = gnss_required.iter().all(|v| !v.is_nan());
-            if gnss_present {
-                // Truth-like GNSS from r1
-                let lat = r1.latitude;
-                let lon = r1.longitude;
-                let alt = r1.altitude;
-                let bearing_rad = r1.bearing.to_radians();
-                let vn = r1.speed * bearing_rad.cos();
-                let ve = r1.speed * bearing_rad.sin();
+            // Truth-like GNSS from r1
+            let lat = r1.latitude;
+            let lon = r1.longitude;
+            let alt = r1.altitude;
+            let bearing_rad = r1.bearing.to_radians();
+            let vn = r1.speed * bearing_rad.cos();
+            let ve = r1.speed * bearing_rad.sin();
 
-                // The record's accuracy columns are 1-sigma standard deviations, floored
-                // so a logged zero cannot produce a singular R. See the caveats on
-                // `build_event_stream`.
-                // If an accuracy is missing (NaN), substitute a conservative default
-                // to avoid propagating NaN into the measurement noise.
-                let horiz_std = if r1.horizontal_accuracy.is_nan() {
-                    15.0
-                } else {
-                    r1.horizontal_accuracy.max(1e-3)
-                };
-                let vert_std = if r1.vertical_accuracy.is_nan() {
-                    1000.0
-                } else {
-                    r1.vertical_accuracy.max(1e-3)
-                };
-                let vel_std = if r1.speed_accuracy.is_nan() {
-                    100.0
-                } else {
-                    r1.speed_accuracy.max(0.1)
-                };
+            // The record's accuracy columns are 1-sigma standard deviations, floored
+            // so a logged zero cannot produce a singular R. See the caveats on
+            // `build_event_stream`.
+            // If an accuracy is missing (NaN), substitute a conservative default
+            // to avoid propagating NaN into the measurement noise.
+            let horiz_std = if r1.horizontal_accuracy.is_nan() {
+                15.0
+            } else {
+                r1.horizontal_accuracy.max(1e-3)
+            };
+            let vert_std = if r1.vertical_accuracy.is_nan() {
+                1000.0
+            } else {
+                r1.vertical_accuracy.max(1e-3)
+            };
+            let vel_std = if r1.speed_accuracy.is_nan() {
+                100.0
+            } else {
+                r1.speed_accuracy.max(0.1)
+            };
 
-                let (lat_c, lon_c, alt_c, vn_c, ve_c, horiz_c, vel_c) = apply_fault(
-                    &cfg.fault, &mut st, *t1, dt, lat, lon, alt, vn, ve, horiz_std, vel_std,
-                );
+            let (lat_c, lon_c, alt_c, vn_c, ve_c, horiz_c, vel_c) = apply_fault(
+                &cfg.fault, &mut st, *t1, dt, lat, lon, alt, vn, ve, horiz_std, vel_std,
+            );
 
-                let meas = GPSPositionAndVelocityMeasurement {
-                    latitude: lat_c,
-                    longitude: lon_c,
-                    altitude: alt_c,
-                    northward_velocity: vn_c,
-                    eastward_velocity: ve_c,
-                    horizontal_noise_std: horiz_c,
-                    vertical_noise_std: vert_std, // pass-through here; you can also degrade it if desired
-                    velocity_noise_std: vel_c,
-                };
-                events.push(Event::Measurement {
-                    meas: Box::new(meas),
-                    elapsed_s: *t1,
-                });
-            }
+            let meas = GPSPositionAndVelocityMeasurement {
+                latitude: lat_c,
+                longitude: lon_c,
+                altitude: alt_c,
+                northward_velocity: vn_c,
+                eastward_velocity: ve_c,
+                horizontal_noise_std: horiz_c,
+                vertical_noise_std: vert_std, // pass-through here; you can also degrade it if desired
+                velocity_noise_std: vel_c,
+            };
+            events.push(Event::Measurement {
+                meas: Box::new(meas),
+                elapsed_s: *t1,
+            });
         }
         // The barometer and the magnetometer are scheduled on the same footing as GNSS. Until
         // #375 they were emitted once per record window, outside the scheduler entirely, which
@@ -1326,6 +1403,35 @@ pub fn build_event_stream(
             });
         }
     }
+
+    // A gap still open at the last record is a truncated recording: the inertial stream simply
+    // stopped and never resumed, so the loop above never got the resumption that would have
+    // measured it. Reported with the same error, ending at the last epoch there was.
+    if gap_epochs > 0 {
+        let end_s = records_with_elapsed
+            .last()
+            .map_or(last_imu_elapsed_s, |(elapsed_s, _)| *elapsed_s);
+        let gap_s = end_s - last_imu_elapsed_s;
+        if gap_limit_s > 0.0 && gap_s > gap_limit_s {
+            return Err(StrapdownError::SensorStreamGap {
+                sensor: "IMU",
+                start_s: last_imu_elapsed_s,
+                end_s,
+                duration_s: gap_s,
+                epochs: gap_epochs,
+            });
+        }
+        tolerated_gaps += 1;
+        longest_tolerated_gap_s = longest_tolerated_gap_s.max(gap_s);
+    }
+    if tolerated_gaps > 0 {
+        warn!(
+            "inertial stream has {tolerated_gaps} tolerated gap(s), longest \
+             {longest_tolerated_gap_s:.1} s: the filter does not propagate across a gap, so the \
+             estimate coasts through each one"
+        );
+    }
+
     Ok(EventStream { start_time, events })
 }
 
@@ -1378,6 +1484,166 @@ mod tests {
             records.push(record);
         }
         records
+    }
+
+    /// Blank the inertial columns of `range`, the way a recording whose IMU stopped looks
+    /// once it has been resampled onto a fixed grid beside a GNSS stream that kept going.
+    fn blank_imu(records: &mut [TestDataRecord], range: std::ops::Range<usize>) {
+        for record in &mut records[range] {
+            record.acc_x = f64::NAN;
+            record.acc_y = f64::NAN;
+            record.acc_z = f64::NAN;
+            record.gyro_x = f64::NAN;
+            record.gyro_y = f64::NAN;
+            record.gyro_z = f64::NAN;
+        }
+    }
+
+    /// A hole in the middle of the inertial stream is refused, and says so in those terms.
+    ///
+    /// This is the defect the error exists for: with no `Event::Imu` the filter never
+    /// predicts, so it cannot coast a long gap the way it coasts a GNSS outage. Left
+    /// undetected it surfaced as an absurd NIS, blaming the filter for missing data.
+    #[test]
+    fn build_event_stream_rejects_a_long_imu_gap() {
+        let mut records = create_test_records(40, 1.0);
+        blank_imu(&mut records, 10..25);
+
+        let err = build_event_stream(&records, &AidingConfig::default(), false)
+            .expect_err("a 16 s inertial gap must be refused");
+
+        match err {
+            StrapdownError::SensorStreamGap {
+                sensor,
+                duration_s,
+                epochs,
+                ..
+            } => {
+                assert_eq!(
+                    sensor, "IMU",
+                    "the gap must name the stream that went missing"
+                );
+                assert!(
+                    duration_s > DEFAULT_MAX_IMU_GAP_S,
+                    "a refused gap must exceed the limit, got {duration_s} s"
+                );
+                assert_eq!(epochs, 15);
+            }
+            other => panic!("expected SensorStreamGap, got {other:?}"),
+        }
+    }
+
+    /// An inertial stream that stops and never resumes is the same fault, found after the
+    /// loop: there is no resumption to measure the gap against, so the stream's end serves.
+    #[test]
+    fn build_event_stream_reports_a_truncated_imu_stream() {
+        let mut records = create_test_records(40, 1.0);
+        blank_imu(&mut records, 20..40);
+
+        let err = build_event_stream(&records, &AidingConfig::default(), false)
+            .expect_err("an inertial stream that stops early must be refused");
+
+        match err {
+            StrapdownError::SensorStreamGap {
+                sensor,
+                end_s,
+                epochs,
+                ..
+            } => {
+                assert_eq!(sensor, "IMU");
+                assert_approx_eq!(end_s, 39.0);
+                assert_eq!(epochs, 20);
+            }
+            other => panic!("expected SensorStreamGap, got {other:?}"),
+        }
+    }
+
+    /// Sub-limit holes are tolerated, because resampling a variable-rate recording onto a
+    /// fixed grid leaves them routinely and they are survivable.
+    #[test]
+    fn build_event_stream_tolerates_a_short_imu_gap() {
+        let mut records = create_test_records(40, 1.0);
+        blank_imu(&mut records, 10..12);
+
+        let stream = build_event_stream(&records, &AidingConfig::default(), false)
+            .expect("a 3 s inertial gap is under the default 5 s limit");
+
+        let imu_events = stream
+            .events
+            .iter()
+            .filter(|e| matches!(e, Event::Imu { .. }))
+            .count();
+        assert_eq!(
+            imu_events, 37,
+            "the two blanked epochs should be skipped, not the whole stream"
+        );
+    }
+
+    /// The distinction the `sensor` discriminant exists to make.
+    ///
+    /// A GNSS-denied run is the scenario under study, not a broken recording: it is expressed
+    /// through the scheduler and must build cleanly however long the outage, so long as the
+    /// inertial stream is intact. Conflating the two would refuse the very runs this crate is
+    /// for.
+    #[test]
+    fn a_gnss_denied_stream_is_not_an_imu_gap() {
+        let mut records = create_test_records(40, 1.0);
+        for record in &mut records[5..35] {
+            record.latitude = f64::NAN;
+            record.longitude = f64::NAN;
+            record.speed = f64::NAN;
+            record.bearing = f64::NAN;
+        }
+
+        let stream = build_event_stream(&records, &AidingConfig::default(), false)
+            .expect("30 s without GNSS is a scenario, not a broken recording");
+
+        let imu_events = stream
+            .events
+            .iter()
+            .filter(|e| matches!(e, Event::Imu { .. }))
+            .count();
+        assert_eq!(imu_events, 39, "every inertial epoch should survive");
+    }
+
+    /// A scheduler tick landing on an epoch with no usable fix must not consume the tick.
+    ///
+    /// The regression this pins: `should_emit` advances its clock as a side effect, and the
+    /// usability check used to sit *after* it. On a 1 Hz log every epoch carries GNSS so the
+    /// two orderings agree, but once the inertial grid is finer than the receiver -- a 10 Hz
+    /// resampling of a 1 Hz receiver, as here -- the ticks land between fixes and every one of
+    /// them was silently discarded. A degraded run then reported a schedule it had not
+    /// delivered, dead-reckoning the whole trajectory while labelled as GNSS-aided.
+    #[test]
+    fn a_tick_that_finds_no_fix_does_not_consume_the_schedule() {
+        // 30 s at 10 Hz, with GNSS only every tenth epoch and deliberately offset off the
+        // whole second, so a 5 s tick never coincides with a fix.
+        let mut records = create_test_records(300, 0.1);
+        for (i, record) in records.iter_mut().enumerate() {
+            if i % 10 != 3 {
+                record.latitude = f64::NAN;
+                record.longitude = f64::NAN;
+                record.speed = f64::NAN;
+                record.bearing = f64::NAN;
+            }
+        }
+
+        let cfg = AidingConfig {
+            scheduler: MeasurementScheduler::FixedInterval {
+                interval_s: 5.0,
+                phase_s: 0.0,
+            },
+            ..Default::default()
+        };
+        let stream = build_event_stream(&records, &cfg, false).expect("a mixed-rate log is fine");
+
+        let fixes = count_of::<GPSPositionAndVelocityMeasurement>(&stream);
+        assert_eq!(
+            fixes, 6,
+            "a 5 s schedule over 30 s should deliver one fix per window, taking the first \
+             usable epoch at or after each tick; got {fixes}. Zero means the ticks were being \
+             spent on epochs with no fix."
+        );
     }
 
     /// How many events in `stream` carry a measurement of type `M`.
