@@ -3548,9 +3548,20 @@ pub struct UkfConfig {
     pub imu_biases_covariance: Option<Vec<f64>>,
     /// Optional vector of f64 for any additional states (not used in the canonical UKF, but can be useful for custom implementations).
     pub other_states: Option<Vec<f64>>,
-    /// Optional vector of f64 for other states covariance.
+    /// Optional covariance for [`Self::other_states`], one entry per extra state.
+    ///
+    /// Entries are **variances**, in each state's own units squared. They are appended to
+    /// the covariance diagonal exactly as given -- [`initialize_ukf`] never squares them --
+    /// so a caller holding a standard deviation must square it first. Passing one unsquared
+    /// is a silent, plausible-looking prior rather than an error: `run_geo_closed_loop_cli`
+    /// handed this a 150 nT measurement noise and got a 12 nT map-bias prior, tight enough
+    /// to pin the state next to its seed.
     pub other_states_covariance: Option<Vec<f64>>,
     /// Optional process noise diagonal vector.
+    ///
+    /// Entries are **spectral densities** -- a variance per second -- matching
+    /// [`DEFAULT_PROCESS_NOISE_DENSITY`]. Each filter forms `Q_k = q * dt` (#374), so any
+    /// entries appended for [`Self::other_states`] are random-walk rates squared.
     pub process_noise_diagonal: Option<Vec<f64>>,
     /// Sigma-point spread, or `None` for [`ClosedLoopConfig::ukf_alpha`]'s default of `0.1`.
     ///
@@ -8258,6 +8269,51 @@ mod tests {
         )
         .unwrap();
         assert!(!ukf.get_estimate().is_empty());
+    }
+    /// `other_states_covariance` entries reach the diagonal as given -- they are variances.
+    ///
+    /// Pins the documented unit against a future "helpful" `.powi(2)` inside `initialize_ukf`,
+    /// and against the reading that caused the defect this test was written for: the
+    /// geophysical CLI passed a measurement-noise *standard deviation* here, so a 150 nT noise
+    /// became a 150 nT^2 prior -- a 12 nT sigma -- and pinned the map bias beside its seed.
+    /// A caller holding a standard deviation has to square it first, and nothing downstream
+    /// will do that for it.
+    #[test]
+    fn test_other_states_covariance_entries_are_variances() {
+        let rec = TestDataRecord {
+            time: Utc::now(),
+            horizontal_accuracy: 5.0,
+            vertical_accuracy: 2.0,
+            speed_accuracy: 1.0,
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            speed: 10.0,
+            bearing: 45.0,
+            ..Default::default()
+        };
+        let variance = 22_500.0;
+        let ukf = initialize_ukf(
+            &rec,
+            UkfConfig {
+                other_states: Some(vec![0.0]),
+                other_states_covariance: Some(vec![variance]),
+                process_noise_diagonal: Some(vec![1e-5; 16]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // `NAVIGATION_STATES` is the nine navigation states plus the six IMU biases, so the
+        // single extra state is the one past it.
+        let extra = NAVIGATION_STATES;
+        let on_diagonal = ukf.get_certainty()[(extra, extra)];
+        assert_approx_eq!(on_diagonal, variance, 1e-9);
+        assert!(
+            (on_diagonal - variance.powi(2)).abs() > 1.0,
+            "the entry was squared on the way in, which would make every caller's variance a \
+             fourth power: got {on_diagonal} for a declared {variance}"
+        );
     }
     #[test]
     fn test_health_limits_default() {

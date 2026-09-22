@@ -370,6 +370,63 @@ struct GeophysicalArgs {
 #[derive(Args, Clone, Debug, Default)]
 struct GeophysicalArgs {}
 
+/// Seconds over which a map bias is allowed to drift by about its own initial sigma.
+///
+/// Turns an initial standard deviation into a process-noise density the same way
+/// [`strapdown::sim::BARO_BIAS_PROCESS_NOISE_M2_PER_S`] turns a per-hour drift into one:
+/// `q = sigma^2 / tau`, so the variance the bias accumulates over `tau` seconds is back up
+/// to `sigma^2`. An hour is the order of a recording, not a tuned number -- pass the
+/// `--*-bias-process-noise-std` flags to set the rate directly.
+#[cfg(feature = "geonav")]
+const GEO_BIAS_DRIFT_TIME_CONSTANT_S: f64 = 3600.0;
+
+/// Prior and random-walk rate for the geophysical map-bias states.
+///
+/// Separate from [`GeophysicalArgs`] because these four flags belong to the closed-loop
+/// runner alone. `GeophysicalArgs` is flattened into the particle-filter subcommand too,
+/// which carries its own `--geo-bias-init-std`/`--geo-bias-process-noise-std`; putting
+/// these there would give `pf` four more flags that it silently ignores.
+///
+/// Both knobs are **standard deviations** in their channel's own units, matching
+/// `RbpfConfig::extra_state_init_std` and `extra_state_process_noise_std`, and are squared
+/// at the point of use. Gravity is in mGal and magnetic in nT -- three orders of magnitude
+/// apart, which is why there is a pair per channel rather than one pair for both.
+#[cfg(feature = "geonav")]
+#[derive(Args, Clone, Debug)]
+struct GeophysicalBiasArgs {
+    /// Initial standard deviation of the gravity map bias (mGal).
+    ///
+    /// Defaults to `--gravity-noise-std`: the map bias and the measurement noise are of the
+    /// same order, and that is the prior this path always meant to carry.
+    #[arg(long = "gravity-bias-init-std", requires = "geo")]
+    gravity_prior_std: Option<f64>,
+
+    /// Random-walk rate of the gravity map bias, a standard deviation in mGal per sqrt(s).
+    ///
+    /// Defaults to the prior spread over [`GEO_BIAS_DRIFT_TIME_CONSTANT_S`].
+    #[arg(long = "gravity-bias-process-noise-std", requires = "geo")]
+    gravity_drift_rate: Option<f64>,
+
+    /// Initial standard deviation of the magnetic map bias (nT).
+    ///
+    /// Defaults to `--magnetic-noise-std`. A platform's own field is the thing this state
+    /// exists to absorb, so a recording made inside a vehicle wants far more than the
+    /// default -- thousands of nT, not hundreds.
+    #[arg(long = "magnetic-bias-init-std", requires = "geo")]
+    magnetic_prior_std: Option<f64>,
+
+    /// Random-walk rate of the magnetic map bias, a standard deviation in nT per sqrt(s).
+    ///
+    /// Defaults to the prior spread over [`GEO_BIAS_DRIFT_TIME_CONSTANT_S`].
+    #[arg(long = "magnetic-bias-process-noise-std", requires = "geo")]
+    magnetic_drift_rate: Option<f64>,
+}
+
+/// Empty stub when geonav feature is disabled
+#[cfg(not(feature = "geonav"))]
+#[derive(Args, Clone, Debug, Default)]
+struct GeophysicalBiasArgs {}
+
 /// Closed-loop simulation arguments
 #[derive(Args, Clone, Debug)]
 struct ClosedLoopSimArgs {
@@ -451,6 +508,10 @@ struct ClosedLoopSimArgs {
     /// Geophysical navigation options (optional, requires --features geonav)
     #[command(flatten)]
     geo: GeophysicalArgs,
+
+    /// Map-bias prior and random-walk rate (optional, requires --features geonav)
+    #[command(flatten)]
+    geo_bias: GeophysicalBiasArgs,
 }
 
 /// Particle filter simulation arguments
@@ -1531,6 +1592,72 @@ fn find_magnetic_map(input_path: &Path) -> Result<PathBuf, Box<dyn Error>> {
     }
 }
 
+/// The seed, prior variance and process-noise density of each geophysical map bias.
+///
+/// One entry per active channel, **gravity first, then magnetic**, which is the order
+/// [`GeoBiasLayout::appended`] assigns the appended slots -- a magnetic-only run takes the
+/// first one. All three vectors are built together for that reason: they index the same
+/// states, and the UKF and EKF arms both read them, so they cannot be allowed to drift
+/// apart the way the two arms' hardcoded constants did.
+#[cfg(feature = "geonav")]
+#[derive(Debug)]
+struct GeoBiasSetup {
+    /// Initial value of each bias, in its channel's own units.
+    seeds: Vec<f64>,
+    /// Initial variance of each bias: the init standard deviation squared.
+    variances: Vec<f64>,
+    /// Process-noise **density** of each bias -- a variance per second, which every filter
+    /// here turns into `Q_k = q * dt` (#374), so it is the random-walk rate squared.
+    densities: Vec<f64>,
+}
+
+/// Build the map-bias prior from the CLI arguments.
+///
+/// Each channel defaults its prior to that channel's own measurement-noise standard
+/// deviation, and its random-walk rate to that prior spread over
+/// [`GEO_BIAS_DRIFT_TIME_CONSTANT_S`]. Both flags are standard deviations and are squared
+/// here, which is the whole of the units fix: the previous code passed
+/// `gravity_noise_std`/`magnetic_noise_std` **unsquared** into a covariance diagonal, so a
+/// 150 nT measurement noise became a 150 nT^2 prior -- a 12 nT sigma -- and pinned the bias
+/// next to its seed.
+#[cfg(feature = "geonav")]
+fn geo_bias_setup(args: &ClosedLoopSimArgs, gravity: bool, magnetic: bool) -> GeoBiasSetup {
+    let mut setup = GeoBiasSetup {
+        seeds: Vec::new(),
+        variances: Vec::new(),
+        densities: Vec::new(),
+    };
+
+    let mut push = |seed: f64, init_std: f64, process_noise_std: Option<f64>| {
+        let rate =
+            process_noise_std.unwrap_or_else(|| init_std / GEO_BIAS_DRIFT_TIME_CONSTANT_S.sqrt());
+        setup.seeds.push(seed);
+        setup.variances.push(init_std.powi(2));
+        setup.densities.push(rate.powi(2));
+    };
+
+    if gravity {
+        push(
+            args.geo.gravity_bias.unwrap_or(0.0),
+            args.geo_bias
+                .gravity_prior_std
+                .unwrap_or(args.geo.gravity_noise_std),
+            args.geo_bias.gravity_drift_rate,
+        );
+    }
+    if magnetic {
+        push(
+            args.geo.magnetic_bias.unwrap_or(0.0),
+            args.geo_bias
+                .magnetic_prior_std
+                .unwrap_or(args.geo.magnetic_noise_std),
+            args.geo_bias.magnetic_drift_rate,
+        );
+    }
+
+    setup
+}
+
 /// Execute geophysical closed-loop simulation
 #[cfg(feature = "geonav")]
 fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
@@ -1666,6 +1793,10 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
         // Determine number of geophysical states
         let num_geo_states = geo_bias_layout.map_or(0, |layout| layout.bias_count());
 
+        // Built once for both filter arms. Its ordering matches `geo_bias_layout`, and its
+        // length is `num_geo_states`.
+        let geo_bias = geo_bias_setup(args, gravity_map.is_some(), magnetic_map.is_some());
+
         // The same placement, restated for `NavigationResult`, which lives in `core` and so
         // cannot name `GeoBiasLayout`. Derived from that layout rather than rebuilt from the
         // map flags, so where the biases live is decided once: a filter that put them
@@ -1683,27 +1814,15 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
             FilterType::Ukf => {
                 info!("Initializing UKF...");
                 let mut process_noise: Vec<f64> = DEFAULT_PROCESS_NOISE_DENSITY.into();
-                process_noise.extend(vec![1e-9; num_geo_states]);
-
-                let mut geo_biases = Vec::new();
-                let mut geo_noise_stds = Vec::new();
-
-                if gravity_map.is_some() {
-                    geo_biases.push(args.geo.gravity_bias.unwrap_or(0.0));
-                    geo_noise_stds.push(args.geo.gravity_noise_std);
-                }
-                if magnetic_map.is_some() {
-                    geo_biases.push(args.geo.magnetic_bias.unwrap_or(0.0));
-                    geo_noise_stds.push(args.geo.magnetic_noise_std);
-                }
+                process_noise.extend(geo_bias.densities.iter().copied());
 
                 let mut ukf = initialize_ukf(&records[0].clone(), {
                     let mut built = UkfConfig::default();
                     built.attitude_covariance = None;
                     built.imu_biases = None;
                     built.imu_biases_covariance = None;
-                    built.other_states = Some(geo_biases);
-                    built.other_states_covariance = Some(geo_noise_stds);
+                    built.other_states = Some(geo_bias.seeds.clone());
+                    built.other_states_covariance = Some(geo_bias.variances.clone());
                     built.process_noise_diagonal = Some(process_noise);
                     built.ukf_alpha = Some(args.ukf_alpha);
                     built.ukf_beta = Some(args.ukf_beta);
@@ -1740,7 +1859,14 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                 // `initialize_ekf` (#296).
                 let initial_state = records[0].initial_state(args.sim.enu);
 
-                let imu_biases = vec![0.0; 6];
+                // Six IMU biases, then one seed per map bias. `ExtendedKalmanFilter::new`
+                // builds its mean as the nine navigation states followed by this slice and
+                // then zero-pads to the width of the covariance diagonal, so appending the
+                // seeds here is what puts them in the state. Passing six and letting the
+                // padding run is why `--gravity-bias`/`--magnetic-bias` used to be accepted
+                // and silently discarded on `--filter ekf` while the UKF arm honoured them.
+                let mut imu_biases = vec![0.0; 6];
+                imu_biases.extend(geo_bias.seeds.iter().copied());
 
                 // Initial position uncertainty. Only the *horizontal* pair changes: latitude
                 // and longitude are radians here and altitude is metres, and the `1e-6, 1e-6`
@@ -1774,7 +1900,7 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                 // like everything else now.
                 covariance_diagonal
                     .extend(strapdown::IMUQuality::default().initial_bias_covariance());
-                covariance_diagonal.extend(vec![1.0; num_geo_states]);
+                covariance_diagonal.extend(geo_bias.variances.iter().copied());
 
                 // Position process noise. Again only the horizontal pair: `1e-9, 1e-9` rad^2
                 // is a 201 m per-step standard deviation, the same units defect as #308 one
@@ -1795,7 +1921,7 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                     1e-9, 1e-9, 1e-9, // Accel bias process noise
                     1e-9, 1e-9, 1e-9, // Gyro bias process noise
                 ]);
-                process_noise_vec.extend(vec![1e-9; num_geo_states]);
+                process_noise_vec.extend(geo_bias.densities.iter().copied());
                 let process_noise = nalgebra::DMatrix::from_diagonal(&nalgebra::DVector::from_vec(
                     process_noise_vec,
                 ));

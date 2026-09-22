@@ -167,14 +167,35 @@ fn passthrough_config() -> AidingConfig {
     built
 }
 
+/// The map-bias prior these helpers seed, as a standard deviation in the channel's own units.
+///
+/// Mirrors what `run_geo_closed_loop_cli` defaults to: the prior is the channel's
+/// measurement-noise standard deviation, which is 10 nT on this track.
+const BIAS_INIT_STD: f64 = 10.0;
+
+/// Seconds over which the bias may drift by about [`BIAS_INIT_STD`], mirroring the CLI's
+/// `GEO_BIAS_DRIFT_TIME_CONSTANT_S`.
+const BIAS_DRIFT_TIME_CONSTANT_S: f64 = 3600.0;
+
+/// The bias prior as a **variance**, which is the unit a covariance diagonal takes.
+fn bias_variance() -> f64 {
+    BIAS_INIT_STD.powi(2)
+}
+
+/// The bias random-walk rate as a **spectral density**, which is the unit a process-noise
+/// diagonal takes: every filter here forms `Q_k = q * dt`.
+fn bias_process_noise_density() -> f64 {
+    (BIAS_INIT_STD / BIAS_DRIFT_TIME_CONSTANT_S.sqrt()).powi(2)
+}
+
 /// A geophysically aided UKF carrying one bias state, tuned as the CLI tunes it.
 fn aided_ukf(first: &TestDataRecord) -> strapdown::kalman::UnscentedKalmanFilter {
     let mut process_noise: Vec<f64> = DEFAULT_PROCESS_NOISE_DENSITY.into();
-    process_noise.push(1e-9);
+    process_noise.push(bias_process_noise_density());
     initialize_ukf(first, {
         let mut built = UkfConfig::default();
         built.other_states = Some(vec![0.0]);
-        built.other_states_covariance = Some(vec![100.0]);
+        built.other_states_covariance = Some(vec![bias_variance()]);
         built.process_noise_diagonal = Some(process_noise);
         built.is_enu = true;
         built
@@ -196,7 +217,7 @@ fn aided_ekf(first: &TestDataRecord) -> ExtendedKalmanFilter {
         1e-6, 1e-6, 1e-6, // accel bias
         1e-8, 1e-8, 1e-8, // gyro bias
     ];
-    covariance_diagonal.push(1.0);
+    covariance_diagonal.push(bias_variance());
     let mut process_noise_vec = vec![
         1e-12, 1e-12, 1e-6, // position
         1e-6, 1e-6, 1e-6, // velocity
@@ -204,7 +225,7 @@ fn aided_ekf(first: &TestDataRecord) -> ExtendedKalmanFilter {
         1e-9, 1e-9, 1e-9, // accel bias
         1e-9, 1e-9, 1e-9, // gyro bias
     ];
-    process_noise_vec.push(1e-9);
+    process_noise_vec.push(bias_process_noise_density());
 
     ExtendedKalmanFilter::new(
         &first.initial_state(true),
@@ -366,6 +387,62 @@ fn plain_closed_loop_still_rejects_a_geophysical_filter() {
         .expect("the plain event stream must build");
     let mut ukf = aided_ukf(&records[0]);
     let _ = run_closed_loop(&mut ukf, events, None, None);
+}
+
+/// The map bias accumulates process noise while the filter propagates.
+///
+/// This is the assertion `assert_bias_is_estimated` cannot make. Both of its checks -- that the
+/// bias moves and that its variance falls -- are satisfied by the *measurement* update alone, so
+/// they passed for the whole time the geophysical process noise was hardcoded to `1e-9`, a
+/// density that adds a variance of 1e-6 over a 1000 s run. The bias state was, for practical
+/// purposes, frozen at its seed: the one mechanism that could absorb a standing map-vs-sensor
+/// offset could not move. A prior with no random walk under it is a claim that the bias is
+/// constant and already known to the width of its seed, which is not what any of these runs mean.
+///
+/// Propagating with no measurements isolates the density: nothing here can inform the bias, so
+/// the only thing that may change its variance is `Q_k = q * dt`.
+#[test]
+fn the_map_bias_accumulates_process_noise_while_propagating() {
+    let records = synthetic_track(2);
+    let mut ukf = aided_ukf(&records[0]);
+
+    // The bias is the last state, one past the nine navigation states and six IMU biases.
+    let bias_index = NAVIGATION_AND_IMU_BIAS_STATE_DIM;
+    let seed_variance = ukf.get_certainty()[(bias_index, bias_index)];
+    assert!(
+        (seed_variance - bias_variance()).abs() < 1e-9,
+        "the bias prior must reach the filter as a variance, not as the standard deviation it \
+         was built from: expected {}, got {seed_variance}",
+        bias_variance()
+    );
+
+    // Level and at rest, so the navigation states have nothing to do either.
+    let imu = strapdown::IMUData {
+        accel: nalgebra::Vector3::new(0.0, 0.0, 9.81),
+        gyro: nalgebra::Vector3::zeros(),
+    };
+    for _ in 0..100 {
+        ukf.predict(&imu, 1.0)
+            .expect("a level, at-rest propagation must succeed");
+    }
+
+    // Stated against the prior and the time constant, deliberately *not* against
+    // `bias_process_noise_density()`. Deriving the expectation from the same function under test
+    // only asserts that the filter received whatever it was handed, which the hardcoded `1e-9`
+    // satisfies as happily as the correct value does. What makes the random walk meaningful is
+    // its size relative to the prior it carries: over `BIAS_DRIFT_TIME_CONSTANT_S` the bias
+    // should accumulate about its whole prior again, so over this window it should accumulate
+    // that fraction of it.
+    let elapsed_s = 100.0;
+    let grown = ukf.get_certainty()[(bias_index, bias_index)];
+    let growth = grown - seed_variance;
+    let expected_growth = seed_variance * elapsed_s / BIAS_DRIFT_TIME_CONSTANT_S;
+    assert!(
+        (growth - expected_growth).abs() < expected_growth * 0.01,
+        "over {elapsed_s} s the map bias variance must grow by its prior spread over the drift \
+         time constant -- expected {expected_growth}, got {growth} (from {seed_variance} to \
+         {grown}). A growth near zero is the frozen bias this test exists to catch."
+    );
 }
 
 /// The EKF branch of the geophysical CLI carries its bias state too, and estimates it.
