@@ -2037,10 +2037,18 @@ fn run_rbpf_event_loop(
         // loop under two mutually inconsistent conventions. `sim::dead_reckoning` was the
         // only one that was right; all of them now agree with it.
         if ts != last_ts {
-            let (mean, cov) = rbpf.estimate_with_extra_states();
-            results.push(NavigationResult::from_particle_filter_with_geo(
-                &last_ts, &mean, &cov, geo_layout,
-            ));
+            // The seed row pushed before this loop already covers `start_time`, whose epoch
+            // is empty (`build_event_stream` walks `windows(2)`, so record 0 produces no
+            // events) -- see the matching guard in `run_closed_loop_with_geo` (#367). Without
+            // it, this push re-emits `start_time` a second time, now labelling the state
+            // *after* the first event as if it were still the pre-event seed: every RBPF
+            // output carried one extra leading row, one longer than its reference.
+            if last_ts != start_time {
+                let (mean, cov) = rbpf.estimate_with_extra_states();
+                results.push(NavigationResult::from_particle_filter_with_geo(
+                    &last_ts, &mean, &cov, geo_layout,
+                ));
+            }
             last_ts = ts;
         }
 
