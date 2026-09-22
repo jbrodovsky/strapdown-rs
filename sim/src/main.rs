@@ -1051,6 +1051,7 @@ fn run_from_config(
         }
         if failures > 0 {
             error!("{failures} file(s) failed to process");
+            return Err(format!("{failures} file(s) failed to process").into());
         }
     }
 
