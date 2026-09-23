@@ -65,9 +65,30 @@ preprocess-1hz:
     uv run analyze preprocess -i data/raw -o data/input -f 1 \
         --max-imu-gap-s 5.0 --min-segment-s 300.0 --prune
 
+# Reports only -- it writes `data/output/geostats/geo_stats.toml` and leaves `conf/` alone,
+# which is why `pipeline` can run it without changing the experiment underneath itself. Read
+# that file, then run `geo-adopt` to take the numbers.
+#
 # Measure the geophysical residual against the maps: bias, noise, SNR and figure.
 geo-stats:
     uv run analyze geostats -i data/input -o data/output/geostats
+
+# The 100 mGal / 150 nT the configs shipped with were never measured against these maps. A
+# filter told a noise it does not have produces a covariance that stops describing its error,
+# which is the whole failure mode this branch exists to fix -- so adopting the measurement is
+# the point of `geo-stats`, not an optional extra.
+#
+# Deliberately separate from `geo-stats` and absent from `pipeline`: it rewrites tracked files
+# and invalidates every result already in data/output. Run it, read `git diff conf/`, then
+# re-run the simulations.
+#
+# `geo_frequency_s` is left at 1.0 unless you add `--apply-interval`. One measurement per
+# de-correlation length is several hundred seconds, which changes what the experiment asks of
+# the aid rather than how it is tuned. That one is a decision, not a measurement.
+#
+# Write the measured bias, noise and bias prior into all 18 geophysical configs.
+geo-adopt *ARGS:
+    uv run analyze geostats -i data/input -o data/output/geostats --apply-to conf {{ARGS}}
 
 # Run the truth configurations.
 truth:
@@ -269,10 +290,10 @@ geoperf-denied:
 # Run the whole experiment end to end, from data/raw to the scored analyses.
 pipeline: clean build preprocess geo-stats truth degraded denied jammed ukf-geo ekf-geo rbpf-sim denied-geo postprocess geoperf-all geoperf-denied
 
-# Remove everything the pipeline regenerates. `data/raw` is read-only and is never touched.
-#
 # `data/input_10hz` is included because `preprocess` used to write there. Nothing does now,
 # but a checkout that ran the old recipe still has it, and a stale directory full of
 # trajectories is the kind of thing that gets simulated by accident.
+#
+# Remove everything the pipeline regenerates. `data/raw` is read-only and is never touched.
 clean:
     rm -rf data/input data/input_10hz data/output log

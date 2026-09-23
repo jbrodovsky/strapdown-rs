@@ -815,6 +815,134 @@ def write_config_block(pooled: list[PooledStats], path: Path) -> None:
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def _rewrite_value(line: str, key: str, value: float) -> str:
+    """
+    Replace the value on a `key = value` line, keeping any trailing comment.
+
+    The comment is usually the unit or the source, which is the part of a config line worth
+    the most six months later.
+    """
+    comment = line.partition("=")[2].partition("#")[2]
+    if comment:
+        return f"{key} = {value:.6g}  #{comment}"
+    return f"{key} = {value:.6g}"
+
+
+def apply_to_configs(
+    pooled: list[PooledStats],
+    conf_dir: Path,
+    apply_interval: bool = False,
+) -> list[str]:
+    """
+    Write the measured values into every scenario config that carries a `[geophysical]` block.
+
+    The defaults these replace -- 100 mGal and 150 nT -- were never measured against the maps
+    they are differenced from. Leaving them in place means the filter is told a noise it does
+    not have, and its covariance stops describing its error.
+
+    Edited line by line rather than through a TOML round-trip, which would strip every comment
+    in these files. The rationale in `conf/*.toml` is most of their value.
+
+    Only keys already present are rewritten, so a gravity-only recipe stays gravity-only. The
+    one exception is `*_bias_init_std`: it is *added* after `*_noise_std` when absent, because
+    it is the prior on the map-bias state and the whole point of separating the
+    within-trajectory spread from the between-trajectory one. Without it the bias state keeps
+    a prior of `*_noise_std`, which for the magnetic channel is usually far too tight -- a
+    recording made inside a vehicle carries thousands of nT of the vehicle's own field.
+
+    Parameters
+    ----------
+    pooled : list of PooledStats
+        The measured statistics, as :func:`pool` returns them.
+    conf_dir : Path
+        Directory of scenario configs to rewrite.
+    apply_interval : bool, optional
+        Also rewrite `geo_interval_s` / `geo_frequency_s` to the recommended de-correlation
+        interval. Off by default: the noise and bias figures are direct measurements, whereas
+        the interval follows from a de-correlation argument about the *source* data, and
+        moving it from 1 s to several hundred changes the character of the experiment rather
+        than just its tuning. Worth doing -- deliberately.
+
+    Returns
+    -------
+    list of str
+        One line per edit, for printing. Empty if nothing matched.
+    """
+    by_field = {entry.field: entry for entry in pooled}
+    updates: dict[str, float] = {}
+    for field in ("gravity", "magnetic"):
+        entry = by_field.get(field)
+        if entry is None:
+            continue
+        updates[f"{field}_bias"] = entry.bias_median
+        updates[f"{field}_noise_std"] = entry.within_sigma
+        updates[f"{field}_bias_init_std"] = entry.between_sigma
+
+    interval = min(
+        (p.recommended_interval_s for p in pooled if np.isfinite(p.recommended_interval_s)),
+        default=float("nan"),
+    )
+
+    changes: list[str] = []
+    for path in sorted(Path(conf_dir).glob("*.toml")):
+        text = path.read_text(encoding="utf-8")
+        if "[geophysical]" not in text:
+            continue
+
+        lines = text.split("\n")
+        start = next(i for i, line in enumerate(lines) if line.strip() == "[geophysical]")
+        end = next(
+            (
+                i
+                for i in range(start + 1, len(lines))
+                if lines[i].startswith("[") and lines[i].strip() != "[geophysical]"
+            ),
+            len(lines),
+        )
+
+        edited = False
+        for index in range(start + 1, end):
+            key = lines[index].split("=", 1)[0].strip()
+            if key in updates and not np.isnan(updates[key]):
+                lines[index] = _rewrite_value(lines[index], key, updates[key])
+                changes.append(f"{path.name}: {key} = {updates[key]:.6g}")
+                edited = True
+            elif apply_interval and key in ("geo_interval_s", "geo_frequency_s"):
+                if np.isfinite(interval):
+                    lines[index] = _rewrite_value(lines[index], key, interval)
+                    changes.append(f"{path.name}: {key} = {interval:.6g}")
+                    edited = True
+
+        # Insert each `*_bias_init_std` directly after its `*_noise_std`, walking backwards so
+        # earlier insertions do not shift the indices of later ones.
+        for field in ("magnetic", "gravity"):
+            prior_key = f"{field}_bias_init_std"
+            value = updates.get(prior_key)
+            if value is None or np.isnan(value):
+                continue
+            if any(line.split("=", 1)[0].strip() == prior_key for line in lines[start:end]):
+                continue
+            noise_key = f"{field}_noise_std"
+            at = next(
+                (
+                    i
+                    for i in range(start + 1, end)
+                    if lines[i].split("=", 1)[0].strip() == noise_key
+                ),
+                None,
+            )
+            if at is None:
+                continue  # this recipe does not use the channel at all
+            lines.insert(at + 1, f"{prior_key} = {value:.6g}")
+            changes.append(f"{path.name}: {prior_key} = {value:.6g}  (added)")
+            edited = True
+
+        if edited:
+            path.write_text("\n".join(lines), encoding="utf-8")
+
+    return changes
+
+
 def plot_anomaly_differences(
     residuals: pd.DataFrame, pooled: list[PooledStats], path: Path
 ) -> None:
@@ -972,6 +1100,29 @@ def add_geostats_arguments(parser) -> None:
             "hundred times the signal."
         ),
     )
+    parser.add_argument(
+        "--apply-to",
+        type=str,
+        default=None,
+        metavar="CONF_DIR",
+        help=(
+            "Write the measured bias, noise and bias-prior into every config in CONF_DIR "
+            "that has a [geophysical] section (typically `conf`). Only keys already present "
+            "are rewritten, so a gravity-only recipe stays gravity-only; comments survive. "
+            "Without this the numbers are only reported, and `geo_stats.toml` has to be "
+            "merged by hand."
+        ),
+    )
+    parser.add_argument(
+        "--apply-interval",
+        action="store_true",
+        help=(
+            "With --apply-to, also rewrite `geo_frequency_s` to one measurement per "
+            "de-correlation length. Off by default: the noise figures are measurements, "
+            "whereas moving the interval from 1 s to several hundred changes what the "
+            "experiment is, not just how it is tuned."
+        ),
+    )
 
 
 def geostats_analysis(args) -> None:
@@ -1030,6 +1181,27 @@ def geostats_analysis(args) -> None:
 
     _print_summary(pooled, all_stats)
     print(f"\nWrote residuals, tables, a config block and the figure to {output_path}")
+
+    conf_dir = getattr(args, "apply_to", None)
+    if conf_dir:
+        changes = apply_to_configs(
+            pooled, Path(conf_dir), apply_interval=bool(getattr(args, "apply_interval", False))
+        )
+        if changes:
+            print(f"\nApplied to {conf_dir}:")
+            for change in changes:
+                print(f"  {change}")
+            if not getattr(args, "apply_interval", False):
+                print(
+                    "\n`geo_frequency_s` was left alone. Pass --apply-interval to adopt the "
+                    "de-correlation interval above as well."
+                )
+            print(
+                "\nThese results were produced under the previous values. Re-run the "
+                "simulations before comparing anything against them."
+            )
+        else:
+            print(f"\nNothing to apply in {conf_dir}: no config there has a [geophysical] block.")
 
 
 def _print_summary(pooled: list[PooledStats], stats: list[FieldStats]) -> None:

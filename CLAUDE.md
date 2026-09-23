@@ -74,7 +74,14 @@ Post-processing and experiment tooling, exposed as the `analyze` CLI:
   bias, measurement noise and signal-to-noise, plus the de-correlation length that sets
   `geo_interval_s`. Its anomaly models mirror `core/src/earth.rs` and `geonav/src/lib.rs` term
   for term, and `self_check()` asserts they still agree; a statistic computed from a
-  *differently* computed anomaly would describe a quantity the filter never sees
+  *differently* computed anomaly would describe a quantity the filter never sees. `--apply-to
+  conf` (`just geo-adopt`) writes the measured bias, noise and bias prior into all 18
+  geophysical configs, line by line so the comments survive, rewriting only keys already
+  present so a `*_grav.toml` stays gravity-only. `geo_frequency_s` is held back behind
+  `--apply-interval`: the noise figures are measurements, but moving the interval from 1 s to
+  one measurement per de-correlation length changes what the experiment asks of the aid.
+  `core/tests/example_configs.rs` asserts all 18 carry the same values, so a partial adoption
+  fails the build rather than producing a comparison across two different R
 - **compare.py / plotting.py**: error statistics, LaTeX tables and map figures
 
 Run it with `uv run analyze <subcommand>` from the repository root.

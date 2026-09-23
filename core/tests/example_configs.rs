@@ -20,6 +20,7 @@
 //! pass-through config and silently simulates nothing. The variant assertions below are what
 //! make a misspelling fail.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use strapdown::messages::{AidingConfig, GnssFaultModel, MeasurementScheduler};
@@ -365,4 +366,84 @@ fn load_conf(name: &str) -> Option<SimulationConfig> {
     path.is_file().then(|| {
         SimulationConfig::from_file(&path).unwrap_or_else(|e| panic!("{name} must parse: {e}"))
     })
+}
+
+/// Every geophysical recipe describes the *same sensor*, so it must carry the same numbers.
+///
+/// `analyze geostats --apply-to conf` measures the bias, the measurement noise and the bias
+/// prior of each channel once, from the residual against the maps, and writes them into all
+/// eighteen recipes. Those figures characterise the phone's gravimeter and magnetometer
+/// against the maps -- not the scenario -- so a UKF run and an RBPF run under a denial
+/// profile are looking at an instrument with identical statistics.
+///
+/// The failure this guards against is a *partial* adoption: one config edited by hand, or
+/// `--apply-to` pointed at a directory during a re-run that left a few files behind. The
+/// result still parses, still runs, and produces a comparison whose difference is attributed
+/// to the filter when it actually came from a different R. That is the same class of silent,
+/// research-invalidating drift as the GNSS-block divergence the test above catches.
+///
+/// Only keys that are *present* are compared: a `*_grav.toml` declares no magnetic channel
+/// and must not be forced to.
+#[test]
+fn every_geophysical_config_describes_the_same_sensor() {
+    const FILTERS: [&str; 3] = ["ukf", "ekf", "rbpf"];
+    const GEO_TYPES: [&str; 3] = ["grav", "mag", "both"];
+
+    // Field name -> the value seen first, and the config it came from.
+    let mut seen: BTreeMap<&'static str, (f64, String)> = BTreeMap::new();
+    let mut failures = Vec::new();
+    let mut checked = 0usize;
+
+    for filter in FILTERS {
+        for prefix in ["", "denied_"] {
+            for geo in GEO_TYPES {
+                let name = format!("{filter}_{prefix}{geo}.toml");
+                let Some(config) = load_conf(&name) else {
+                    failures.push(format!("{name}: missing"));
+                    continue;
+                };
+                let Some(geophysical) = config.geophysical else {
+                    failures.push(format!("{name}: is a geo recipe with no [geophysical]"));
+                    continue;
+                };
+                checked += 1;
+
+                for (field, value) in [
+                    ("gravity_bias", geophysical.gravity_bias),
+                    ("gravity_noise_std", geophysical.gravity_noise_std),
+                    ("gravity_bias_init_std", geophysical.gravity_bias_init_std),
+                    ("magnetic_bias", geophysical.magnetic_bias),
+                    ("magnetic_noise_std", geophysical.magnetic_noise_std),
+                    ("magnetic_bias_init_std", geophysical.magnetic_bias_init_std),
+                    ("geo_interval_s", geophysical.geo_interval_s),
+                ] {
+                    let Some(value) = value else { continue };
+                    match seen.get(field) {
+                        None => {
+                            seen.insert(field, (value, name.clone()));
+                        }
+                        Some((first, first_name)) if (first - value).abs() > f64::EPSILON => {
+                            failures.push(format!(
+                                "{name}: {field} = {value} but {first_name} has {first}. \
+                                 Re-run `analyze geostats --apply-to conf` so every recipe \
+                                 adopts the measured value, or none does."
+                            ));
+                        }
+                        Some(_) => {}
+                    }
+                }
+            }
+        }
+    }
+
+    assert_eq!(
+        checked, 18,
+        "expected 3 filters x 3 geo types x 2 baselines; found {checked}"
+    );
+    assert!(
+        failures.is_empty(),
+        "{} geophysical setting(s) disagree across the recipes:\n  {}",
+        failures.len(),
+        failures.join("\n  ")
+    );
 }

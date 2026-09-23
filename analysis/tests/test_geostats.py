@@ -9,6 +9,9 @@ and it is the chain whose output sets the filter's measurement noise.
 
 from __future__ import annotations
 
+import tomllib
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -17,7 +20,9 @@ from analysis.geostats import (
     MGAL_PER_M_PER_S2,
     MICROTESLA_TO_NANOTESLA,
     AnomalyMap,
+    PooledStats,
     analyse_trajectory,
+    apply_to_configs,
     decimal_year,
     eotvos,
     gravity_anomaly_mgal,
@@ -244,3 +249,196 @@ def test_outputs_are_written(characterised, tmp_path):
     figure_path = tmp_path / "anomaly_differences.png"
     plot_anomaly_differences(residuals, pooled, figure_path)
     assert figure_path.stat().st_size > 10_000, "the figure should not be a blank canvas"
+
+
+# ===============================================================================================
+# Applying the measured values back into the scenario configs
+# ===============================================================================================
+
+
+def _pooled(field: str, unit: str, bias: float, within: float, between: float, interval: float):
+    """Build a `PooledStats` with only the fields `apply_to_configs` reads."""
+    return PooledStats(
+        field=field,
+        unit=unit,
+        trajectories=6,
+        samples=5400,
+        bias_median=bias,
+        within_sigma=within,
+        between_sigma=between,
+        total_sigma=between,
+        snr_median=3.5,
+        snr_best=3.6,
+        snr_above_one=6,
+        recommended_interval_s=interval,
+        independent_samples_median=2.3,
+        decorrelation_m=9260.0,
+    )
+
+
+MEASURED = [
+    _pooled("gravity", "mGal", -4.672, 7.026, 12.38, 385.8),
+    _pooled("magnetic", "nT", 669.4, 25.12, 1269.0, 1309.0),
+]
+
+BOTH_CONFIG = """\
+[geophysical]
+# Gravity anomaly measurements.
+gravity_resolution = "one_minute"
+gravity_bias = 0.0
+gravity_noise_std = 100.0
+
+# Magnetic anomaly measurements.
+magnetic_resolution = "two_minutes"
+magnetic_bias = 0.0
+magnetic_noise_std = 150.0
+
+# Seconds between geophysical measurements -- a period, not a frequency.
+geo_frequency_s = 1.0
+
+[health_limits]
+max_position_sigma_m = 500.0
+"""
+
+GRAV_CONFIG = """\
+[geophysical]
+gravity_resolution = "one_minute"
+gravity_bias = 0.0
+gravity_noise_std = 100.0
+geo_frequency_s = 1.0
+"""
+
+
+def _write(directory: Path, name: str, body: str) -> Path:
+    path = directory / name
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+def test_apply_rewrites_the_measured_keys(tmp_path: Path) -> None:
+    """The three measured numbers per field land in the config."""
+    path = _write(tmp_path, "ukf_both.toml", BOTH_CONFIG)
+
+    apply_to_configs(MEASURED, tmp_path)
+
+    config = tomllib.loads(path.read_text(encoding="utf-8"))["geophysical"]
+    assert config["gravity_bias"] == pytest.approx(-4.672, rel=1e-3)
+    assert config["gravity_noise_std"] == pytest.approx(7.026, rel=1e-3)
+    assert config["gravity_bias_init_std"] == pytest.approx(12.38, rel=1e-3)
+    assert config["magnetic_bias"] == pytest.approx(669.4, rel=1e-3)
+    assert config["magnetic_noise_std"] == pytest.approx(25.12, rel=1e-3)
+    assert config["magnetic_bias_init_std"] == pytest.approx(1269.0, rel=1e-3)
+
+
+def test_apply_leaves_a_gravity_only_recipe_gravity_only(tmp_path: Path) -> None:
+    """
+    A `*_grav.toml` must not acquire a magnetic channel.
+
+    Adding `magnetic_noise_std` to a gravity-only config would not be a tuning change; it
+    would turn a single-aid run into a dual-aid one and silently change what the scenario
+    tests.
+    """
+    path = _write(tmp_path, "ukf_grav.toml", GRAV_CONFIG)
+
+    apply_to_configs(MEASURED, tmp_path)
+
+    config = tomllib.loads(path.read_text(encoding="utf-8"))["geophysical"]
+    assert config["gravity_noise_std"] == pytest.approx(7.026, rel=1e-3)
+    assert not any(key.startswith("magnetic") for key in config)
+
+
+def test_apply_inserts_the_bias_prior_after_its_noise(tmp_path: Path) -> None:
+    """`*_bias_init_std` is absent from every current config, so it has to be added."""
+    path = _write(tmp_path, "ukf_both.toml", BOTH_CONFIG)
+
+    changes = apply_to_configs(MEASURED, tmp_path)
+
+    lines = [line.split("=", 1)[0].strip() for line in path.read_text(encoding="utf-8").split("\n")]
+    assert lines.index("gravity_bias_init_std") == lines.index("gravity_noise_std") + 1
+    assert lines.index("magnetic_bias_init_std") == lines.index("magnetic_noise_std") + 1
+    assert any("(added)" in change for change in changes)
+
+
+def test_apply_is_idempotent(tmp_path: Path) -> None:
+    """A second run must not insert the prior twice."""
+    path = _write(tmp_path, "ukf_both.toml", BOTH_CONFIG)
+
+    apply_to_configs(MEASURED, tmp_path)
+    once = path.read_text(encoding="utf-8")
+    apply_to_configs(MEASURED, tmp_path)
+
+    assert path.read_text(encoding="utf-8") == once
+
+
+def test_apply_keeps_the_comments(tmp_path: Path) -> None:
+    """A TOML round-trip would strip these, which is most of what the configs are for."""
+    path = _write(tmp_path, "ukf_both.toml", BOTH_CONFIG)
+
+    apply_to_configs(MEASURED, tmp_path)
+
+    text = path.read_text(encoding="utf-8")
+    assert "# Gravity anomaly measurements." in text
+    assert "# Magnetic anomaly measurements." in text
+    assert "a period, not a frequency" in text
+
+
+def test_apply_keeps_a_trailing_comment_on_a_rewritten_line(tmp_path: Path) -> None:
+    """The unit or the source sits after the value; rewriting must not drop it."""
+    path = _write(
+        tmp_path,
+        "ukf_grav.toml",
+        "[geophysical]\ngravity_noise_std = 100.0  # mGal, never measured\n",
+    )
+
+    apply_to_configs(MEASURED, tmp_path)
+
+    text = path.read_text(encoding="utf-8")
+    assert "# mGal, never measured" in text
+    assert tomllib.loads(text)["geophysical"]["gravity_noise_std"] == pytest.approx(7.026, rel=1e-3)
+
+
+def test_apply_leaves_the_interval_alone_by_default(tmp_path: Path) -> None:
+    """
+    Moving `geo_frequency_s` from 1 s to several hundred changes the experiment.
+
+    The noise figures are direct measurements of a residual; the interval follows from a
+    de-correlation argument about the source grids. They deserve separate decisions.
+    """
+    path = _write(tmp_path, "ukf_both.toml", BOTH_CONFIG)
+
+    apply_to_configs(MEASURED, tmp_path)
+
+    assert tomllib.loads(path.read_text(encoding="utf-8"))["geophysical"]["geo_frequency_s"] == 1.0
+
+
+def test_apply_interval_uses_the_shorter_of_the_two_fields(tmp_path: Path) -> None:
+    """One interval covers both channels, so the tighter de-correlation length wins."""
+    path = _write(tmp_path, "ukf_both.toml", BOTH_CONFIG)
+
+    apply_to_configs(MEASURED, tmp_path, apply_interval=True)
+
+    interval = tomllib.loads(path.read_text(encoding="utf-8"))["geophysical"]["geo_frequency_s"]
+    assert interval == pytest.approx(385.8, rel=1e-3)
+
+
+def test_apply_skips_configs_without_a_geophysical_block(tmp_path: Path) -> None:
+    """A `*_degraded.toml` is a non-geo baseline and must stay byte-identical."""
+    body = "[gnss_degradation]\ninterval_s = 5.0\nsigma_pos_m = 3.0\n"
+    path = _write(tmp_path, "ukf_degraded.toml", body)
+
+    changes = apply_to_configs(MEASURED, tmp_path)
+
+    assert path.read_text(encoding="utf-8") == body
+    assert not any("ukf_degraded" in change for change in changes)
+
+
+def test_apply_stops_at_the_next_section(tmp_path: Path) -> None:
+    """A key of the same name outside [geophysical] is not ours to rewrite."""
+    body = BOTH_CONFIG + "\n[reporting]\ngravity_noise_std = 999.0\n"
+    path = _write(tmp_path, "ukf_both.toml", body)
+
+    apply_to_configs(MEASURED, tmp_path)
+
+    parsed = tomllib.loads(path.read_text(encoding="utf-8"))
+    assert parsed["reporting"]["gravity_noise_std"] == 999.0
+    assert parsed["geophysical"]["gravity_noise_std"] == pytest.approx(7.026, rel=1e-3)
