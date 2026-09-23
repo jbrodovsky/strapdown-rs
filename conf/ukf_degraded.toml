@@ -16,7 +16,6 @@ file = "log/ukf_degraded.log"
 
 [closed_loop]
 filter = "ukf"
-file = "log/ukf_degraded.log"
 
 [health_limits]
 # Both guards are loosened so a MEMS-grade recording is allowed to drift to its end rather

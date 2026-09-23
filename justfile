@@ -67,96 +67,29 @@ degraded:
     -./target/release/strapdown-sim --config conf/ukf_degraded.toml
     -./target/release/strapdown-sim --config conf/ekf_degraded.toml
 
-# `--geo` is only reachable from the `cl` subcommand's own flags, never from a `--config`
-# file: a closed-loop config with a [geophysical] section is refused on purpose (#296 /
-# see main.rs process_file), so these recipes can't just point at conf/*.toml like `truth`
-# and `degraded` do. The flags below are the CLI equivalent of the retired
-# conf/{ukf,ekf}_{both,grav,mag}.toml files.
+# Geophysical aiding runs. These now point at conf/*.toml like `truth` and `degraded` do:
+# a closed-loop config carrying a [geophysical] section used to be refused, so these recipes
+# carried the equivalent command line by hand and the comment here warned that the
+# --sched/--fault flags had to be kept in step with conf/*_degraded.toml by hand. They no
+# longer can drift: the GNSS profile lives in the config file beside the maps.
 #
-# The --sched/--fault flags below MUST stay in step with conf/*_degraded.toml. `geoperf-all`
-# scores each geo-aided run against that filter's degraded run, so if the two carry different
-# GNSS profiles the "improvement" it reports is just the difference between the two
-# degradations, not the contribution of the geophysical measurement.
-#
-# So must --nis-pos-max/--health-speed-mps-max, for a less obvious reason. These flags do not
-# change the trajectory, only whether a run is allowed to finish -- but `geoperformance` skips
-# any trajectory missing from either side, so a guard that fails here and not in the degraded
-# run silently drops that trajectory from the comparison. Left at their defaults these six
-# runs scored 12-27 trajectories each while the degraded baselines scored all 27, which means
-# every config's "improvement" was an average over a different subset.
-
-# Run the UKF geophysical configurations.
+# `geoperf-all` scores each geo-aided run against that filter's degraded run, so the
+# [gnss_degradation] and [health_limits] sections of conf/{ukf,ekf}_{grav,mag,both}.toml must
+# stay identical to conf/{ukf,ekf}_degraded.toml. Otherwise the "improvement" it reports is
+# the difference between two degradations.
 ukf-geo:
-    -./target/release/strapdown-sim cl --geo \
-        -i data/input -o data/output/ukf/both --enu --seed 42 \
-        --filter ukf \
-        --gravity-resolution one-minute --gravity-noise-std 100.0 \
-        --magnetic-resolution two-minutes --magnetic-noise-std 150.0 \
-        --geo-interval-s 1.0 \
-        --sched fixed --interval-s 5.0 --phase-s 0.0 \
-        --fault degraded --rho-pos 0.99 --sigma-pos-m 3.0 \
-        --rho-vel 0.95 --sigma-vel-mps 0.3 --r-scale 5.0 \
-        --nis-pos-max 1000.0 --health-speed-mps-max 5000.0 \
-        --log-level info --log-file log/ukf_both.log
-    -./target/release/strapdown-sim cl --geo \
-        -i data/input -o data/output/ukf/grav --enu --seed 42 \
-        --filter ukf \
-        --gravity-resolution one-minute --gravity-noise-std 100.0 \
-        --geo-interval-s 1.0 \
-        --sched fixed --interval-s 5.0 --phase-s 0.0 \
-        --fault degraded --rho-pos 0.99 --sigma-pos-m 3.0 \
-        --rho-vel 0.95 --sigma-vel-mps 0.3 --r-scale 5.0 \
-        --nis-pos-max 1000.0 --health-speed-mps-max 5000.0 \
-        --log-level info --log-file log/ukf_grav.log
-    -./target/release/strapdown-sim cl --geo \
-        -i data/input -o data/output/ukf/mag --enu --seed 42 \
-        --filter ukf \
-        --magnetic-resolution two-minutes --magnetic-noise-std 150.0 \
-        --geo-interval-s 1.0 \
-        --sched fixed --interval-s 5.0 --phase-s 0.0 \
-        --fault degraded --rho-pos 0.99 --sigma-pos-m 3.0 \
-        --rho-vel 0.95 --sigma-vel-mps 0.3 --r-scale 5.0 \
-        --nis-pos-max 1000.0 --health-speed-mps-max 5000.0 \
-        --log-level info --log-file log/ukf_mag.log
+    -./target/release/strapdown-sim --config conf/ukf_both.toml
+    -./target/release/strapdown-sim --config conf/ukf_grav.toml
+    -./target/release/strapdown-sim --config conf/ukf_mag.toml
 
-# Run the EKF geophysical configurations.
 ekf-geo:
-    -./target/release/strapdown-sim cl --geo \
-        -i data/input -o data/output/ekf/both --enu --seed 42 \
-        --filter ekf \
-        --gravity-resolution one-minute --gravity-noise-std 100.0 \
-        --magnetic-resolution two-minutes --magnetic-noise-std 150.0 \
-        --geo-interval-s 1.0 \
-        --sched fixed --interval-s 5.0 --phase-s 0.0 \
-        --fault degraded --rho-pos 0.99 --sigma-pos-m 3.0 \
-        --rho-vel 0.95 --sigma-vel-mps 0.3 --r-scale 5.0 \
-        --nis-pos-max 1000.0 --health-speed-mps-max 5000.0 \
-        --log-level info --log-file log/ekf_both.log
-    -./target/release/strapdown-sim cl --geo \
-        -i data/input -o data/output/ekf/grav --enu --seed 42 \
-        --filter ekf \
-        --gravity-resolution one-minute --gravity-noise-std 100.0 \
-        --geo-interval-s 1.0 \
-        --sched fixed --interval-s 5.0 --phase-s 0.0 \
-        --fault degraded --rho-pos 0.99 --sigma-pos-m 3.0 \
-        --rho-vel 0.95 --sigma-vel-mps 0.3 --r-scale 5.0 \
-        --nis-pos-max 1000.0 --health-speed-mps-max 5000.0 \
-        --log-level info --log-file log/ekf_grav.log
-    -./target/release/strapdown-sim cl --geo \
-        -i data/input -o data/output/ekf/mag --enu --seed 42 \
-        --filter ekf \
-        --magnetic-resolution two-minutes --magnetic-noise-std 150.0 \
-        --geo-interval-s 1.0 \
-        --sched fixed --interval-s 5.0 --phase-s 0.0 \
-        --fault degraded --rho-pos 0.99 --sigma-pos-m 3.0 \
-        --rho-vel 0.95 --sigma-vel-mps 0.3 --r-scale 5.0 \
-        --nis-pos-max 1000.0 --health-speed-mps-max 5000.0 \
-        --log-level info --log-file log/ekf_mag.log
+    -./target/release/strapdown-sim --config conf/ekf_both.toml
+    -./target/release/strapdown-sim --config conf/ekf_grav.toml
+    -./target/release/strapdown-sim --config conf/ekf_mag.toml
 
-# RBPF sims (truth, degraded, and each geophysical aiding combination). Unlike ukf-geo/ekf-geo,
-# these run entirely from conf/rbpf_*.toml: RBPF is the one filter whose config-driven
-# `mode = "particle-filter"` path is allowed to carry a [geophysical] section (main.rs only
-# refuses it for `mode = "closed-loop"`), so `--geo` CLI flags aren't needed here.
+# RBPF sims (truth, degraded, and each geophysical aiding combination). Like ukf-geo/ekf-geo
+# these run entirely from conf/rbpf_*.toml; RBPF was simply the only filter that could,
+# before closed-loop mode learned to carry a [geophysical] section.
 
 # Run the RBPF configurations.
 rbpf-sim:

@@ -40,8 +40,9 @@ use strapdown::rbpf::{RaoBlackwellizedParticleFilter, RbpfConfig};
 // Geophysical navigation imports (feature-gated)
 #[cfg(feature = "geonav")]
 use geonav::{
-    GeoBiasLayout, GeoMap, GeophysicalAiding, GeophysicalMeasurementType, GravityResolution,
-    MagneticResolution, NAVIGATION_AND_IMU_BIAS_STATE_DIM, NAVIGATION_STATE_DIM,
+    DEFAULT_GRAVITY_NOISE_MGAL, DEFAULT_MAGNETIC_NOISE_NT, GeoBiasLayout, GeoMap,
+    GeophysicalAiding, GeophysicalMeasurementType, GravityResolution, MagneticResolution,
+    NAVIGATION_AND_IMU_BIAS_STATE_DIM, NAVIGATION_STATE_DIM,
     build_event_stream as geo_build_event_stream,
 };
 use rand::SeedableRng;
@@ -63,6 +64,7 @@ use strapdown::sim::run_closed_loop_with_geo;
 #[cfg(feature = "geonav")]
 use strapdown::sim::{
     DEFAULT_INITIAL_POSITION_UNCERTAINTY_M, DEFAULT_PROCESS_NOISE_DENSITY, GeoResolution,
+    GeophysicalConfig,
 };
 use strapdown::sim::{
     EkfConfig, EskfConfig, ExecutionLimits, ExecutionMonitor, ExtraStateLayout, FaultArgs,
@@ -71,6 +73,13 @@ use strapdown::sim::{
     check_declared_frame, dead_reckoning, generate_synthetic, initialize_ekf, initialize_eskf,
     initialize_ukf, run_closed_loop,
 };
+
+/// The `--log-level` default.
+///
+/// Named rather than written twice because the `--config` path distinguishes "the user typed
+/// a level" from "this is the default" by comparing against it, and a literal that drifts
+/// from the flag's default silently turns that test into "always".
+const DEFAULT_LOG_LEVEL: &str = "info";
 
 const LONG_ABOUT: &str =
     "STRAPDOWN SIM: A simulation and analysis tool for strapdown inertial navigation systems.
@@ -107,7 +116,7 @@ struct Cli {
     command: Option<Command>,
 
     /// Log level (off, error, warn, info, debug, trace)
-    #[arg(long, default_value = "info", global = true)]
+    #[arg(long, default_value = DEFAULT_LOG_LEVEL, global = true)]
     log_level: String,
 
     /// Log file path (if not specified, logs to stderr)
@@ -479,7 +488,15 @@ struct ClosedLoopSimArgs {
     filter: FilterType,
 
     /// UKF alpha parameter (sigma point spread)
-    #[arg(long, default_value_t = 1e-3)]
+    ///
+    /// Defaults to the same `0.1` a configuration file does, not the textbook `1e-3` this
+    /// flag carried. `alpha` is a numerical-conditioning parameter here as much as a tuning
+    /// one -- `1e-3` costs six significant digits per step to cancellation in the weighted
+    /// sigma-point mean (#399) -- and `0.1` is the value that was measured and adopted for
+    /// `ClosedLoopConfig::ukf_alpha`. This flag was not moved with it, so `--filter ukf` and
+    /// a config file naming the same filter ran with sigma-point spreads two orders of
+    /// magnitude apart, and the two were not comparable.
+    #[arg(long, default_value_t = strapdown::sim::DEFAULT_UKF_ALPHA)]
     ukf_alpha: f64,
 
     /// UKF beta parameter (prior distribution)
@@ -729,17 +746,30 @@ fn process_file(
             // do this; closed loop is the default mode and needs it more, not less (#296).
             check_declared_frame(&records, config.is_enu)?;
 
-            // A `[geophysical]` section reaches this arm and is never read: only the
-            // particle-filter arm below builds maps from it, and only `--geo` on the command
-            // line reaches the geophysical closed-loop runner. Before the v1.0 freeze that was
-            // a silent wrong answer -- `examples/configs/geonav_example.toml` declares
-            // `mode = "closed-loop"` with gravity and magnetic maps, parses cleanly, and ran an
-            // ordinary non-geophysical simulation while reporting success. Refusing is the same
-            // choice `mode` itself makes: a loud failure beats a run that looks configured and
-            // silently ignores half its configuration.
+            // A `[geophysical]` section used to be refused here. The geophysical runner was
+            // reachable only through `--geo` on the command line, so a closed-loop config
+            // carrying maps parsed cleanly and ran an ordinary non-geophysical simulation
+            // while reporting success -- and refusing was chosen over wiring it up. The RBPF
+            // arm below never had the restriction, which left the two filter families
+            // configured in incompatible ways: one took a `--config`, the other a
+            // twelve-flag command line that had to be kept in step with it by hand.
+            //
+            // Both now resolve to the same `GeoClosedLoopSettings` and the same runner.
+            #[cfg(feature = "geonav")]
+            if let Some(geo_config) = config.geophysical.as_ref() {
+                let settings = geo_settings_from_config(config, geo_config);
+                settings.validate()?;
+                let output_file = resolve_output_path(output, input_file, all_inputs)?;
+                return run_geo_closed_loop_file(&settings, &records, input_file, &output_file);
+            }
+
+            #[cfg(not(feature = "geonav"))]
             if config.geophysical.is_some() {
                 return Err(
-                    "a [geophysical] section is not supported in closed-loop mode from a config                      file: the geophysical runner is reachable only through `--geo` on the                      command line, or from `mode = \"particle-filter\"`. Running this config                      would silently ignore the maps and produce an ordinary non-geophysical                      result. Use `strapdown-sim cl --geo ...`, or switch this file to                      `mode = \"particle-filter\"`."
+                    "a [geophysical] section requires the geonav feature: rebuild \
+                     with `--features geonav`. Running this config without it would \
+                     silently ignore the maps and produce an ordinary non-geophysical \
+                     result."
                         .into(),
                 );
             }
@@ -1701,6 +1731,189 @@ fn find_magnetic_map(input_path: &Path) -> Result<PathBuf, Box<dyn Error>> {
     }
 }
 
+/// Everything the geophysical closed-loop runner needs, independent of where it came from.
+///
+/// The runner used to read [`ClosedLoopSimArgs`] directly, which is what made `--geo`
+/// command-line-only: a configuration file has no `ClosedLoopSimArgs` to offer it, so
+/// `process_file` refused a `[geophysical]` section outright rather than wire one up. The
+/// RBPF arm of the same function had no such restriction and read both its maps and its
+/// GNSS degradation from one file, so the two filter families were configured in
+/// incompatible ways and the justfile carried a long CLI invocation for one and a
+/// `--config` for the other.
+///
+/// This type is the seam. [`geo_settings_from_args`] builds it from the command line and
+/// [`geo_settings_from_config`] from a scenario file; `run_geo_closed_loop_file` takes it
+/// and cannot tell which. `builder_equivalence` asserts the two agree.
+#[cfg(feature = "geonav")]
+#[derive(Clone, Debug)]
+struct GeoClosedLoopSettings {
+    /// Which filter runs. `Eskf` is rejected before a run starts; see
+    /// [`GeoClosedLoopSettings::validate`].
+    filter: FilterType,
+    /// Whether the records are ENU. Checked against the data by `check_declared_frame`.
+    is_enu: bool,
+    /// UKF sigma-point parameters, ignored by the EKF arm.
+    ukf_alpha: f64,
+    ukf_beta: f64,
+    ukf_kappa: f64,
+    /// Gravity map resolution. `None` disables the channel.
+    gravity_resolution: Option<GeoResolution>,
+    /// Explicit gravity map path, or `None` to look beside the input.
+    gravity_map_file: Option<PathBuf>,
+    /// Gravity measurement noise, mGal.
+    gravity_noise_std: f64,
+    /// Seed of the gravity map-bias state, mGal.
+    gravity_bias: Option<f64>,
+    /// Prior standard deviation of that bias, mGal. Defaults to `gravity_noise_std`.
+    gravity_prior_std: Option<f64>,
+    /// Random-walk rate of that bias, mGal per sqrt(s).
+    gravity_drift_rate: Option<f64>,
+    /// Magnetic map resolution. `None` disables the channel.
+    magnetic_resolution: Option<GeoResolution>,
+    /// Explicit magnetic map path, or `None` to look beside the input.
+    magnetic_map_file: Option<PathBuf>,
+    /// Magnetic measurement noise, nT.
+    magnetic_noise_std: f64,
+    /// Seed of the magnetic map-bias state, nT.
+    magnetic_bias: Option<f64>,
+    /// Prior standard deviation of that bias, nT. Defaults to `magnetic_noise_std`.
+    magnetic_prior_std: Option<f64>,
+    /// Random-walk rate of that bias, nT per sqrt(s).
+    magnetic_drift_rate: Option<f64>,
+    /// Seconds between geophysical measurements. A period, not a frequency.
+    geo_interval_s: Option<f64>,
+    /// GNSS scheduling and fault injection.
+    aiding: strapdown::messages::AidingConfig,
+    /// Run-level guards.
+    health: HealthLimits,
+    execution: ExecutionLimits,
+    /// Per-measurement gating. `None` accepts every measurement.
+    innovation_gate: Option<InnovationGate>,
+    gate_recovery: GateRecovery,
+    /// Whether to write a performance plot beside each result.
+    generate_plot: bool,
+}
+
+#[cfg(feature = "geonav")]
+impl GeoClosedLoopSettings {
+    /// Reject a configuration that cannot run, before any file is read.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no map is configured, or when the filter is the ESKF, which
+    /// has no geophysical implementation. The latter matters more than it looks:
+    /// [`FilterType`]'s `#[default]` is `Eskf`, so a configuration file that omits `filter`
+    /// lands here rather than on a filter that works.
+    fn validate(&self) -> Result<(), Box<dyn Error>> {
+        if self.gravity_resolution.is_none() && self.magnetic_resolution.is_none() {
+            return Err("geophysical navigation needs at least one map: set \
+                 `--gravity-resolution`/`--magnetic-resolution`, or `gravity_resolution`/\
+                 `magnetic_resolution` in the `[geophysical]` section of a config file"
+                .into());
+        }
+        if matches!(self.filter, FilterType::Eskf) {
+            return Err(
+                "ESKF is not yet implemented for geophysical navigation. Choose \
+                 `--filter ukf` or `--filter ekf` (or `filter = \"ukf\"` / `filter = \"ekf\"` \
+                 in a config file's `[closed_loop]` section). Note that `eskf` is the \
+                 default, so a config file that omits `filter` reaches this too."
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Build the runner's settings from the command line.
+#[cfg(feature = "geonav")]
+fn geo_settings_from_args(
+    args: &ClosedLoopSimArgs,
+) -> Result<GeoClosedLoopSettings, Box<dyn Error>> {
+    let (innovation_gate, gate_recovery) = gating_from_args(args)?;
+    let limits = RunLimits::from_args(&args.sim);
+
+    // The barometer and magnetometer schedules have no CLI flag; they take their 1 Hz
+    // default. A config file can set them, which is one of the things the config path now
+    // gets that this one does not.
+    let mut aiding = strapdown::messages::AidingConfig::default();
+    aiding.scheduler = build_scheduler(&args.scheduler);
+    aiding.fault = build_fault(&args.fault);
+    aiding.seed = args.seed;
+
+    Ok(GeoClosedLoopSettings {
+        filter: args.filter,
+        is_enu: args.sim.enu,
+        ukf_alpha: args.ukf_alpha,
+        ukf_beta: args.ukf_beta,
+        ukf_kappa: args.ukf_kappa,
+        gravity_resolution: args.geo.gravity_resolution,
+        gravity_map_file: args.geo.gravity_map_file.clone(),
+        gravity_noise_std: args.geo.gravity_noise_std,
+        gravity_bias: args.geo.gravity_bias,
+        gravity_prior_std: args.geo_bias.gravity_prior_std,
+        gravity_drift_rate: args.geo_bias.gravity_drift_rate,
+        magnetic_resolution: args.geo.magnetic_resolution,
+        magnetic_map_file: args.geo.magnetic_map_file.clone(),
+        magnetic_noise_std: args.geo.magnetic_noise_std,
+        magnetic_bias: args.geo.magnetic_bias,
+        magnetic_prior_std: args.geo_bias.magnetic_prior_std,
+        magnetic_drift_rate: args.geo_bias.magnetic_drift_rate,
+        geo_interval_s: args.geo.geo_interval_s,
+        aiding,
+        health: limits.health,
+        execution: limits.execution,
+        innovation_gate,
+        gate_recovery,
+        generate_plot: false,
+    })
+}
+
+/// Build the same settings from a scenario file.
+///
+/// Infallible, unlike [`geo_settings_from_args`]: a scenario file's gate is already a parsed
+/// [`InnovationGate`], while the command line takes a confidence that has to be converted.
+/// What a file can get wrong is caught by [`GeoClosedLoopSettings::validate`] instead.
+#[cfg(feature = "geonav")]
+fn geo_settings_from_config(
+    config: &SimulationConfig,
+    geo: &GeophysicalConfig,
+) -> GeoClosedLoopSettings {
+    let filter_config = config.closed_loop.clone().unwrap_or_default();
+
+    // Derived from the filter rather than asked for twice, as the non-geophysical arm of
+    // `process_file` does. The geophysical filters estimate no barometric bias -- see the
+    // `estimate_baro_bias = false` in the UKF arm below -- so there is no index to hand over.
+    let mut aiding = config.aiding.clone();
+    aiding.baro_bias_index = None;
+
+    GeoClosedLoopSettings {
+        filter: filter_config.filter,
+        is_enu: config.is_enu,
+        ukf_alpha: filter_config.ukf_alpha,
+        ukf_beta: filter_config.ukf_beta,
+        ukf_kappa: filter_config.ukf_kappa,
+        gravity_resolution: geo.gravity_resolution,
+        gravity_map_file: geo.gravity_map_file.as_ref().map(PathBuf::from),
+        gravity_noise_std: geo.gravity_noise_std.unwrap_or(DEFAULT_GRAVITY_NOISE_MGAL),
+        gravity_bias: geo.gravity_bias,
+        gravity_prior_std: geo.gravity_bias_init_std,
+        gravity_drift_rate: geo.gravity_bias_process_noise_std,
+        magnetic_resolution: geo.magnetic_resolution,
+        magnetic_map_file: geo.magnetic_map_file.as_ref().map(PathBuf::from),
+        magnetic_noise_std: geo.magnetic_noise_std.unwrap_or(DEFAULT_MAGNETIC_NOISE_NT),
+        magnetic_bias: geo.magnetic_bias,
+        magnetic_prior_std: geo.magnetic_bias_init_std,
+        magnetic_drift_rate: geo.magnetic_bias_process_noise_std,
+        geo_interval_s: geo.geo_interval_s,
+        aiding,
+        health: config.health_limits.clone(),
+        execution: config.execution_limits.clone(),
+        innovation_gate: filter_config.innovation_gate,
+        gate_recovery: filter_config.gate_recovery,
+        generate_plot: config.generate_plot,
+    }
+}
+
 /// The seed, prior variance and process-noise density of each geophysical map bias.
 ///
 /// One entry per active channel, **gravity first, then magnetic**, which is the order
@@ -1720,7 +1933,7 @@ struct GeoBiasSetup {
     densities: Vec<f64>,
 }
 
-/// Build the map-bias prior from the CLI arguments.
+/// Build the map-bias prior from the resolved settings.
 ///
 /// Each channel defaults its prior to that channel's own measurement-noise standard
 /// deviation, and its random-walk rate to that prior spread over
@@ -1730,7 +1943,7 @@ struct GeoBiasSetup {
 /// 150 nT measurement noise became a 150 nT^2 prior -- a 12 nT sigma -- and pinned the bias
 /// next to its seed.
 #[cfg(feature = "geonav")]
-fn geo_bias_setup(args: &ClosedLoopSimArgs, gravity: bool, magnetic: bool) -> GeoBiasSetup {
+fn geo_bias_setup(settings: &GeoClosedLoopSettings, gravity: bool, magnetic: bool) -> GeoBiasSetup {
     let mut setup = GeoBiasSetup {
         seeds: Vec::new(),
         variances: Vec::new(),
@@ -1747,52 +1960,41 @@ fn geo_bias_setup(args: &ClosedLoopSimArgs, gravity: bool, magnetic: bool) -> Ge
 
     if gravity {
         push(
-            args.geo.gravity_bias.unwrap_or(0.0),
-            args.geo_bias
+            settings.gravity_bias.unwrap_or(0.0),
+            settings
                 .gravity_prior_std
-                .unwrap_or(args.geo.gravity_noise_std),
-            args.geo_bias.gravity_drift_rate,
+                .unwrap_or(settings.gravity_noise_std),
+            settings.gravity_drift_rate,
         );
     }
     if magnetic {
         push(
-            args.geo.magnetic_bias.unwrap_or(0.0),
-            args.geo_bias
+            settings.magnetic_bias.unwrap_or(0.0),
+            settings
                 .magnetic_prior_std
-                .unwrap_or(args.geo.magnetic_noise_std),
-            args.geo_bias.magnetic_drift_rate,
+                .unwrap_or(settings.magnetic_noise_std),
+            settings.magnetic_drift_rate,
         );
     }
 
     setup
 }
 
-/// Execute geophysical closed-loop simulation
+/// Execute geophysical closed-loop simulation from the command line.
+///
+/// Resolves `--geo`'s flags into [`GeoClosedLoopSettings`] and hands each input file to
+/// [`run_geo_closed_loop_file`], which is the same entry point a `--config` run uses.
 #[cfg(feature = "geonav")]
 fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
     validate_input_path(&args.sim.input)?;
     validate_output_path(&args.sim.output)?;
 
-    let filter_name = match args.filter {
-        FilterType::Ukf => "Unscented Kalman Filter (UKF)",
-        FilterType::Ekf => "Extended Kalman Filter (EKF)",
-        FilterType::Eskf => "Error-State Kalman Filter (ESKF)",
-    };
-    info!("Running geophysical navigation in closed-loop mode with {filter_name}");
-
-    // Validate that at least one geophysical map is configured
-    if args.geo.gravity_resolution.is_none() && args.geo.magnetic_resolution.is_none() {
-        return Err("At least one of --gravity-resolution or --magnetic-resolution must be specified when using --geo".into());
-    }
-
-    // Gating applies here exactly as it does to a non-geophysical run: geophysical anomalies
-    // ride the same event stream and are scored by the same test.
-    let (innovation_gate, gate_recovery) = gating_from_args(args)?;
+    let settings = geo_settings_from_args(args)?;
+    settings.validate()?;
 
     // Get all CSV files to process
     let csv_files = get_csv_files(&args.sim.input)?;
     let is_multiple = csv_files.len() > 1;
-    let limits = RunLimits::from_args(&args.sim);
 
     if is_multiple {
         info!("Processing {} CSV files from directory", csv_files.len());
@@ -1818,9 +2020,63 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
             Err(e) => return Err(e),
         };
 
+        let output_file = resolve_output_path(&args.sim.output, input_file, &csv_files)?;
+        if let Err(e) = run_geo_closed_loop_file(&settings, &records, input_file, &output_file) {
+            error!(
+                "Error running geophysical navigation on {}: {}",
+                input_file.display(),
+                e
+            );
+            if !is_multiple {
+                return Err(e);
+            }
+            failures += 1;
+        }
+    }
+
+    if failures > 0 {
+        error!("{failures} file(s) skipped or failed");
+    }
+
+    Ok(())
+}
+
+/// Run one file's geophysical closed loop, from settings that say nothing about where they
+/// came from.
+///
+/// This is the body the command line and a `--config` run share. Keeping it filter-agnostic
+/// and source-agnostic is what lets `builder_equivalence` assert the two paths agree: there
+/// is one implementation, and the only thing that varies is how its settings were built.
+///
+/// # Errors
+///
+/// Returns an error when a map is missing or unreadable, when the declared frame does not
+/// match the data, or when the filter fails a health or execution limit.
+#[cfg(feature = "geonav")]
+fn run_geo_closed_loop_file(
+    settings: &GeoClosedLoopSettings,
+    records: &[TestDataRecord],
+    input_file: &Path,
+    output_file: &Path,
+) -> Result<(), Box<dyn Error>> {
+    // Moved into whichever filter arm runs rather than cloned per arm: only one of them
+    // executes, so each may take ownership.
+    let health = settings.health.clone();
+    let execution = settings.execution.clone();
+    let innovation_gate = settings.innovation_gate;
+    let gate_recovery = settings.gate_recovery;
+
+    let filter_name = match settings.filter {
+        FilterType::Ukf => "Unscented Kalman Filter (UKF)",
+        FilterType::Ekf => "Extended Kalman Filter (EKF)",
+        FilterType::Eskf => "Error-State Kalman Filter (ESKF)",
+    };
+    info!("Running geophysical navigation in closed-loop mode with {filter_name}");
+
+    {
         // Load gravity map if configured
-        let gravity_map = if let Some(res) = args.geo.gravity_resolution {
-            let map_path = match &args.geo.gravity_map_file {
+        let gravity_map = if let Some(res) = settings.gravity_resolution {
+            let map_path = match &settings.gravity_map_file {
                 Some(path) => path.clone(),
                 None => find_gravity_map(input_file)?,
             };
@@ -1840,8 +2096,8 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
         };
 
         // Load magnetic map if configured
-        let magnetic_map = if let Some(res) = args.geo.magnetic_resolution {
-            let map_path = match &args.geo.magnetic_map_file {
+        let magnetic_map = if let Some(res) = settings.magnetic_resolution {
+            let map_path = match &settings.magnetic_map_file {
                 Some(path) => path.clone(),
                 None => find_magnetic_map(input_file)?,
             };
@@ -1860,17 +2116,6 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
             None
         };
 
-        // Build the aiding config from CLI args
-        let aiding = {
-            // The barometer and magnetometer schedules have no CLI flag; they take their
-            // 1 Hz default, overridable from a config file through serde.
-            let mut built = strapdown::messages::AidingConfig::default();
-            built.scheduler = build_scheduler(&args.scheduler);
-            built.fault = build_fault(&args.fault);
-            built.seed = args.seed;
-            built
-        };
-
         // This path runs a UKF or an EKF, whose states are the nine navigation states, the
         // six IMU biases, and then the map biases -- the UKF via `other_states`, the EKF via
         // a covariance diagonal longer than its mean, which its constructor zero-pads to
@@ -1883,15 +2128,15 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
 
         // Build event stream with geophysical measurements
         let events = geo_build_event_stream(
-            &records,
-            &aiding,
-            args.sim.enu,
+            records,
+            &settings.aiding,
+            settings.is_enu,
             &GeophysicalAiding {
-                gravity_noise_std: gravity_map.as_ref().map(|_| args.geo.gravity_noise_std),
-                magnetic_noise_std: magnetic_map.as_ref().map(|_| args.geo.magnetic_noise_std),
+                gravity_noise_std: gravity_map.as_ref().map(|_| settings.gravity_noise_std),
+                magnetic_noise_std: magnetic_map.as_ref().map(|_| settings.magnetic_noise_std),
                 gravity_map: gravity_map.clone(),
                 magnetic_map: magnetic_map.clone(),
-                interval_s: args.geo.geo_interval_s,
+                interval_s: settings.geo_interval_s,
                 bias_layout: geo_bias_layout,
             },
         )?;
@@ -1902,7 +2147,7 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
 
         // Built once for both filter arms. Its ordering matches `geo_bias_layout`, and its
         // length is `num_geo_states`.
-        let geo_bias = geo_bias_setup(args, gravity_map.is_some(), magnetic_map.is_some());
+        let geo_bias = geo_bias_setup(settings, gravity_map.is_some(), magnetic_map.is_some());
 
         // The same placement, restated for `NavigationResult`, which lives in `core` and so
         // cannot name `GeoBiasLayout`. Derived from that layout rather than rebuilt from the
@@ -1917,7 +2162,7 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
         });
 
         // Run simulation based on filter type
-        let results = match args.filter {
+        let results = match settings.filter {
             FilterType::Ukf => {
                 info!("Initializing UKF...");
                 let mut process_noise: Vec<f64> = DEFAULT_PROCESS_NOISE_DENSITY.into();
@@ -1931,15 +2176,15 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                     built.other_states = Some(geo_bias.seeds.clone());
                     built.other_states_covariance = Some(geo_bias.variances.clone());
                     built.process_noise_diagonal = Some(process_noise);
-                    built.ukf_alpha = Some(args.ukf_alpha);
-                    built.ukf_beta = Some(args.ukf_beta);
-                    built.ukf_kappa = Some(args.ukf_kappa);
+                    built.ukf_alpha = Some(settings.ukf_alpha);
+                    built.ukf_beta = Some(settings.ukf_beta);
+                    built.ukf_kappa = Some(settings.ukf_kappa);
                     built.imu_quality = strapdown::IMUQuality::default();
                     // Off on the geophysical path: this filter's extra states are map
                     // biases, and #372's barometric state has not been measured against a
                     // geo run. Turning it on here would change two things at once.
                     built.estimate_baro_bias = false;
-                    built.is_enu = args.sim.enu;
+                    built.is_enu = settings.is_enu;
                     built
                 })?;
                 info!(
@@ -1954,15 +2199,15 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                 run_closed_loop_with_geo(
                     &mut ukf,
                     events,
-                    Some(limits.health.clone()),
-                    Some(limits.execution.clone()),
+                    Some(health),
+                    Some(execution),
                     geo_layout,
                 )
             }
             FilterType::Ekf => {
                 info!("Initializing EKF...");
 
-                check_declared_frame(&records, args.sim.enu)?;
+                check_declared_frame(records, settings.is_enu)?;
                 // The same seed every other path builds. It was a struct literal here, and
                 // carried the double conversion that gave this block its share of #337:
                 // `yaw: bearing.to_radians()` beside `in_degrees: true`, converted once here
@@ -1970,7 +2215,7 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                 // filter as 0.0822 rad (4.7 deg). It also threw away roll and pitch. The
                 // guard is still run explicitly above because this path does not go through
                 // `initialize_ekf` (#296).
-                let initial_state = records[0].initial_state(args.sim.enu);
+                let initial_state = records[0].initial_state(settings.is_enu);
 
                 // Six IMU biases, then one seed per map bias. `ExtendedKalmanFilter::new`
                 // builds its mean as the nine navigation states followed by this slice and
@@ -2059,48 +2304,48 @@ fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error
                 run_closed_loop_with_geo(
                     &mut ekf,
                     events,
-                    Some(limits.health.clone()),
-                    Some(limits.execution.clone()),
+                    Some(health),
+                    Some(execution),
                     geo_layout,
                 )
             }
             FilterType::Eskf => {
+                // Unreachable: `GeoClosedLoopSettings::validate` rejects this before any
+                // file is read, so that a run fails on its configuration rather than after
+                // loading maps. Kept as a arm rather than an `unreachable!()` because the
+                // zero-panic policy applies here too.
                 error!("ESKF is not yet implemented for geophysical navigation");
                 return Err("ESKF is not yet implemented for geophysical navigation".into());
             }
         };
 
-        // Write results
-        let output_file = resolve_output_path(&args.sim.output, input_file, &csv_files)?;
+        let nav_results = results?;
+        NavigationResult::to_csv(&nav_results, output_file)?;
+        info!("Results written to {}", output_file.display());
 
-        match results {
-            Ok(ref nav_results) => {
-                NavigationResult::to_csv(nav_results, &output_file)?;
-                info!("Results written to {}", output_file.display());
-            }
-            Err(e) => {
-                error!(
-                    "Error running geophysical navigation on {}: {}",
-                    input_file.display(),
-                    e
-                );
-                if !is_multiple {
-                    return Err(e.into());
-                }
-                error!(
-                    "Error processing {}: {}. Continuing with remaining files...",
-                    input_file.display(),
-                    e
-                );
+        // Plotting reached the non-geophysical config path and never this one, so a
+        // `generate_plot = true` in a geophysical config used to be accepted and ignored --
+        // and every conf/*.toml sets it. The CLI path leaves it false, matching what `--geo`
+        // did before.
+        #[cfg(feature = "plotting")]
+        if settings.generate_plot {
+            let plot_path = output_file.with_extension("png");
+            info!("Generating performance plot at {}", plot_path.display());
+            match plotting::plot_performance(&nav_results, records, &plot_path) {
+                Ok(()) => info!("Performance plot generated successfully"),
+                // A missing plot is not a reason to discard a completed run.
+                Err(e) => error!("Failed to generate performance plot: {e}"),
             }
         }
-    }
+        #[cfg(not(feature = "plotting"))]
+        if settings.generate_plot {
+            error!(
+                "Plotting requested but 'plotting' feature not enabled. Rebuild with --features plotting"
+            );
+        }
 
-    if failures > 0 {
-        error!("{failures} file(s) skipped because they held no usable records");
+        Ok(())
     }
-
-    Ok(())
 }
 
 /// Run the RBPF event loop.
@@ -3086,6 +3331,27 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
         None
     };
 
+    // The geophysical section is offered after the filter has already been chosen, and the
+    // ESKF has no geophysical implementation -- so an `eskf` answer followed by a `yes` here
+    // writes a file that `GeoClosedLoopSettings::validate` refuses. The wizard exists to
+    // produce a runnable config, so reconcile rather than emit one that fails. It matters
+    // more than it sounds: `Eskf` is `FilterType`'s `#[default]`.
+    let closed_loop = match (closed_loop, geophysical.is_some()) {
+        (Some(cfg), true) if matches!(cfg.filter, FilterType::Eskf) => {
+            println!(
+                "\nNote: the ESKF has no geophysical implementation, so the filter has been \
+                 switched to the UKF.\n      Edit `[closed_loop] filter` in the generated file \
+                 to use the EKF instead."
+            );
+            Some({
+                let mut built = cfg;
+                built.filter = FilterType::Ukf;
+                built
+            })
+        }
+        (other, _) => other,
+    };
+
     // Build the complete configuration
     let config = {
         let mut built = SimulationConfig::default();
@@ -3135,9 +3401,19 @@ fn main() -> Result<(), Box<dyn Error>> {
         // Load config first to get logging preferences
         let config = SimulationConfig::from_file(config_path)?;
 
-        // Determine log level: CLI flag takes precedence over config
-        // Check if CLI log level was explicitly set (not just the default)
-        let log_level = config.logging.level.as_str();
+        // Determine log level: CLI flag takes precedence over config.
+        //
+        // `--log-level` is `global = true` with a default of "info", so it is always
+        // populated and there is no `Option` to tell "the user asked for info" apart from
+        // "nobody asked". Comparing against the default is the available discrimination:
+        // anything else was typed. The comment here used to claim CLI precedence while the
+        // line below took the config's level unconditionally, so `--log-level debug
+        // --config ...` silently ran at whatever the file said.
+        let log_level = if cli.log_level == DEFAULT_LOG_LEVEL {
+            config.logging.level.as_str()
+        } else {
+            cli.log_level.as_str()
+        };
 
         // Create PathBuf from config file string if needed
         let config_log_file = config.logging.file.as_ref().map(PathBuf::from);
@@ -3177,6 +3453,24 @@ fn main() -> Result<(), Box<dyn Error>> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    /// Write a TOML fixture to a temp file and load it the way `--config` does.
+    ///
+    /// Through `SimulationConfig::from_file` rather than a direct `toml::from_str` so the
+    /// tests exercise the extension dispatch and serde aliases the real path uses -- and so
+    /// `sim` does not gain a `toml` dependency solely for its tests.
+    #[cfg(feature = "geonav")]
+    fn config_from_toml(body: &str) -> SimulationConfig {
+        let path = std::env::temp_dir().join(format!(
+            "strapdown-sim-test-{}-{:?}.toml",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::write(&path, body).expect("the fixture must be writable");
+        let config = SimulationConfig::from_file(&path).expect("the fixture must parse");
+        std::fs::remove_file(&path).ok();
+        config
+    }
 
     #[test]
     fn test_create_config_args_structure() {
@@ -3262,5 +3556,182 @@ mod tests {
         };
         assert_eq!(logging.level, LogLevel::Debug);
         assert_eq!(logging.file, Some("/tmp/test.log".to_string()));
+    }
+
+    /// The command line and a configuration file must resolve to the same settings.
+    ///
+    /// This is the assertion that keeps the two vocabularies from drifting. They describe the
+    /// same run in different words -- `--sched fixed --interval-s 5` against
+    /// `kind = "fixed_interval"` / `interval_s = 5.0`, `--gravity-resolution one-minute`
+    /// against `gravity_resolution = "one_minute"` -- and before they shared a runner there
+    /// was nothing to notice when one gained a default the other did not. `--ukf-alpha` was
+    /// exactly that: `1e-3` on the flag against the `0.1` a config file takes, so the same
+    /// named filter ran with sigma-point spreads two orders of magnitude apart.
+    ///
+    /// Compared through `Debug` rather than `PartialEq`: the settings carry `AidingConfig`,
+    /// `HealthLimits` and `ExecutionLimits`, none of which implements it, and deriving it
+    /// across `core`'s public API to serve one test is the larger change.
+    #[cfg(feature = "geonav")]
+    #[test]
+    fn the_cli_and_config_paths_resolve_to_the_same_geophysical_settings() {
+        let cli = Cli::try_parse_from([
+            "strapdown-sim",
+            "cl",
+            "--geo",
+            "-i",
+            "in.csv",
+            "-o",
+            "out.csv",
+            "--enu",
+            "--seed",
+            "42",
+            "--filter",
+            "ukf",
+            "--gravity-resolution",
+            "one-minute",
+            "--gravity-noise-std",
+            "10",
+            "--magnetic-resolution",
+            "two-minutes",
+            "--magnetic-noise-std",
+            "200",
+            "--geo-interval-s",
+            "1",
+            "--sched",
+            "fixed",
+            "--interval-s",
+            "5",
+            "--phase-s",
+            "0",
+            "--fault",
+            "degraded",
+            "--rho-pos",
+            "0.99",
+            "--sigma-pos-m",
+            "3",
+            "--rho-vel",
+            "0.95",
+            "--sigma-vel-mps",
+            "0.3",
+            "--r-scale",
+            "5",
+            "--nis-pos-max",
+            "1000",
+            "--health-speed-mps-max",
+            "5000",
+        ])
+        .expect("the flags above must parse");
+        let Some(Command::ClosedLoop(args)) = cli.command else {
+            panic!("expected the `cl` subcommand");
+        };
+        let from_cli = geo_settings_from_args(&args).expect("CLI settings must resolve");
+
+        let toml = r#"
+input = "in.csv"
+output = "out.csv"
+mode = "closed-loop"
+is_enu = true
+seed = 42
+
+[closed_loop]
+filter = "ukf"
+
+[geophysical]
+gravity_resolution = "one_minute"
+gravity_noise_std = 10.0
+magnetic_resolution = "two_minutes"
+magnetic_noise_std = 200.0
+geo_frequency_s = 1.0
+
+[health_limits]
+nis_pos_max = 1000.0
+speed_mps_max = 5000.0
+
+[gnss_degradation]
+seed = 42
+
+[gnss_degradation.scheduler]
+kind = "fixed_interval"
+interval_s = 5.0
+phase_s = 0.0
+
+[gnss_degradation.fault]
+kind = "degraded"
+rho_pos = 0.99
+sigma_pos_m = 3.0
+rho_vel = 0.95
+sigma_vel_mps = 0.3
+r_scale = 5.0
+"#;
+        let config = config_from_toml(toml);
+        let geo = config
+            .geophysical
+            .as_ref()
+            .expect("the fixture declares a [geophysical] section");
+        let from_config = geo_settings_from_config(&config, geo);
+
+        // `generate_plot` is the one field the two are meant to disagree on: a config file
+        // asks for a plot and the command line has no equivalent flag on this path.
+        let mut from_config_comparable = from_config;
+        from_config_comparable.generate_plot = from_cli.generate_plot;
+
+        assert_eq!(
+            format!("{from_cli:?}"),
+            format!("{from_config_comparable:?}"),
+            "the CLI and config paths must describe the same run"
+        );
+    }
+
+    /// A geophysical run with no map is refused before any file is opened.
+    #[cfg(feature = "geonav")]
+    #[test]
+    fn geophysical_settings_require_at_least_one_map() {
+        let config = config_from_toml(
+            "mode = \"closed-loop\"\n\n[closed_loop]\nfilter = \"ukf\"\n\n[geophysical]\n",
+        );
+        let geo = config
+            .geophysical
+            .as_ref()
+            .expect("a [geophysical] section");
+        let settings = geo_settings_from_config(&config, geo);
+
+        let error = settings
+            .validate()
+            .expect_err("a geophysical run with no map must be refused");
+        assert!(
+            error.to_string().contains("at least one map"),
+            "the error should name the missing maps, got: {error}"
+        );
+    }
+
+    /// The ESKF has no geophysical implementation, and it is `FilterType`'s default.
+    ///
+    /// So a config file that declares `[geophysical]` and omits `filter` reaches this -- which
+    /// is why the check runs before any map is loaded rather than at the filter match.
+    #[cfg(feature = "geonav")]
+    #[test]
+    fn a_geophysical_config_that_omits_its_filter_is_refused_for_the_eskf() {
+        let config = config_from_toml(
+            "mode = \"closed-loop\"\n\n[geophysical]\ngravity_resolution = \"one_minute\"\n",
+        );
+        let geo = config
+            .geophysical
+            .as_ref()
+            .expect("a [geophysical] section");
+        let settings = geo_settings_from_config(&config, geo);
+
+        assert!(
+            matches!(settings.filter, FilterType::Eskf),
+            "omitting `filter` should fall back to the ESKF default"
+        );
+        let error = settings
+            .validate()
+            .expect_err("the ESKF has no geophysical implementation");
+        let message = error.to_string();
+        assert!(message.contains("ESKF"), "got: {message}");
+        assert!(
+            message.contains("default"),
+            "the error should say that omitting `filter` lands here, got: {message}"
+        );
     }
 }

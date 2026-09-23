@@ -5363,8 +5363,14 @@ const fn default_zero_vertical_velocity_std_mps() -> f64 {
 
 /// Sigma-point spread for the unscented transform; see
 /// [`ClosedLoopConfig::ukf_alpha`] for why this is `0.1` and not the textbook `1e-3`.
+///
+/// Public so `strapdown-sim`'s `--ukf-alpha` can default to the same number rather than
+/// restating it. It restated `1e-3`, the value this one was raised *from*, so the command
+/// line and a configuration file naming the same filter did not run the same filter.
+pub const DEFAULT_UKF_ALPHA: f64 = 0.1;
+
 const fn default_ukf_alpha() -> f64 {
-    0.1
+    DEFAULT_UKF_ALPHA
 }
 
 const fn default_ukf_beta() -> f64 {
@@ -5748,16 +5754,29 @@ pub struct GeophysicalConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gravity_resolution: Option<GeoResolution>,
 
-    /// Gravity measurement bias (mGal).
+    /// Seed value of the gravity map-bias state (mGal).
     ///
-    /// **Read only on the CLI path** (`--gravity-bias`, `sim/src/main.rs:1693`). The
-    /// configuration-file path never reads it: closed-loop mode rejects a `[geophysical]`
-    /// section outright, and the particle-filter arm takes only the resolutions, the noise
-    /// standard deviations and `geo_interval_s`. Setting it in a config file is silently
-    /// ignored. Kept rather than removed because shipped and user configuration files set it,
-    /// and dropping the field would turn a silently-ignored value into a parse error.
+    /// Read on both the CLI path (`--gravity-bias`) and, since closed-loop mode learned to
+    /// run a `[geophysical]` section, the configuration-file path. It used to be inert in a
+    /// config file: closed-loop mode rejected the whole section, and the particle-filter arm
+    /// took only the resolutions, the noise standard deviations and `geo_interval_s`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gravity_bias: Option<f64>,
+
+    /// Initial standard deviation of the gravity map-bias state (mGal).
+    ///
+    /// The configuration-file counterpart of `--gravity-bias-init-std`. Defaults to
+    /// [`gravity_noise_std`](GeophysicalConfig::gravity_noise_std): the map bias and the
+    /// measurement noise are of the same order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gravity_bias_init_std: Option<f64>,
+
+    /// Random-walk rate of the gravity map bias, a standard deviation in mGal per sqrt(s).
+    ///
+    /// The configuration-file counterpart of `--gravity-bias-process-noise-std`. Defaults to
+    /// the prior spread over an hour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gravity_bias_process_noise_std: Option<f64>,
 
     /// Gravity measurement noise std dev (mGal)
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -5772,12 +5791,28 @@ pub struct GeophysicalConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub magnetic_resolution: Option<GeoResolution>,
 
-    /// Magnetic measurement bias (nT).
+    /// Seed value of the magnetic map-bias state (nT).
     ///
-    /// Config-path-inert in exactly the way
+    /// Read on both paths, in exactly the way
     /// [`gravity_bias`](GeophysicalConfig::gravity_bias) is; see its note.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub magnetic_bias: Option<f64>,
+
+    /// Initial standard deviation of the magnetic map-bias state (nT).
+    ///
+    /// The configuration-file counterpart of `--magnetic-bias-init-std`. Defaults to
+    /// [`magnetic_noise_std`](GeophysicalConfig::magnetic_noise_std), which is usually far
+    /// too tight: a recording made inside a vehicle carries thousands of nT of the vehicle's
+    /// own field, and this state is what absorbs it. `analyze geostats` in the `analysis`
+    /// package measures the right value as the spread of the per-trajectory medians.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub magnetic_bias_init_std: Option<f64>,
+
+    /// Random-walk rate of the magnetic map bias, a standard deviation in nT per sqrt(s).
+    ///
+    /// The configuration-file counterpart of `--magnetic-bias-process-noise-std`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub magnetic_bias_process_noise_std: Option<f64>,
 
     /// Magnetic measurement noise std dev (nT)
     #[serde(default, skip_serializing_if = "Option::is_none")]

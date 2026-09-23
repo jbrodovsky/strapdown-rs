@@ -1623,10 +1623,20 @@ pub fn build_event_stream(
 }
 
 /// Default gravity-measurement noise, milligal, when the caller names none.
-const DEFAULT_GRAVITY_NOISE_MGAL: f64 = 100.0;
+///
+/// Public so `strapdown-sim` can resolve a configuration file's omitted `gravity_noise_std`
+/// to the same number this crate would. It used to be private, so the binary wrote `100.0`
+/// itself in three places and this crate in a fourth.
+///
+/// Note that this value has never been measured against the maps it is differenced from --
+/// `analyze geostats` in the `analysis` package derives one that has.
+pub const DEFAULT_GRAVITY_NOISE_MGAL: f64 = 100.0;
 
 /// Default magnetic-anomaly measurement noise, nanotesla, when the caller names none.
-const DEFAULT_MAGNETIC_NOISE_NT: f64 = 150.0;
+///
+/// Public for the same reason as [`DEFAULT_GRAVITY_NOISE_MGAL`], and carrying the same
+/// caveat: it is a default, not a measurement.
+pub const DEFAULT_MAGNETIC_NOISE_NT: f64 = 150.0;
 
 /// Elapsed time of an event, whichever variant it is.
 const fn elapsed_of(event: &Event) -> f64 {

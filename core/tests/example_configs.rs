@@ -25,17 +25,32 @@ use std::path::{Path, PathBuf};
 use strapdown::messages::{AidingConfig, GnssFaultModel, MeasurementScheduler};
 use strapdown::sim::SimulationConfig;
 
-/// Scenario configs live at the top level of `examples/configs/`.
+/// Scenario configs live at the top level of `examples/configs/` and in `conf/`.
 ///
-/// The `json/` subdirectory is deliberately excluded: those files are `{name, args}` CLI
-/// invocation presets, not [`AidingConfig`] documents, and they use the *CLI's*
-/// vocabulary (`--sched duty`) rather than the config schema's (`kind: duty_cycle`).
+/// The `json/` subdirectory of `examples/configs/` is deliberately excluded: those files are
+/// `{name, args}` CLI invocation presets, not [`AidingConfig`] documents, and they use the
+/// *CLI's* vocabulary (`--sched duty`) rather than the config schema's (`kind: duty_cycle`).
 fn example_config_paths() -> Vec<PathBuf> {
-    // `CARGO_MANIFEST_DIR` is the `core/` crate; the examples live at the workspace root.
+    let mut found = Vec::new();
+    // `conf/` covers the experiment recipes the justfile runs. They were not covered until
+    // the geophysical config path landed, and six of them had drifted to a GNSS profile that
+    // did not match the degraded run they are scored against -- exactly the class of defect
+    // the variant assertions below exist to catch, in the directory that is actually run.
+    for directory in ["examples/configs", "conf"] {
+        found.extend(config_paths_in(directory));
+    }
+    found.sort();
+    assert!(!found.is_empty(), "no configs found");
+    found
+}
+
+/// Every parseable config file directly inside one workspace-relative directory.
+fn config_paths_in(relative: &str) -> Vec<PathBuf> {
+    // `CARGO_MANIFEST_DIR` is the `core/` crate; both directories live at the workspace root.
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("core/ has a parent")
-        .join("examples/configs");
+        .join(relative);
 
     let mut found: Vec<PathBuf> = std::fs::read_dir(&root)
         .unwrap_or_else(|e| panic!("reading {}: {e}", root.display()))
@@ -52,7 +67,7 @@ fn example_config_paths() -> Vec<PathBuf> {
     found.sort();
     assert!(
         !found.is_empty(),
-        "no example configs found under {}",
+        "no configs found under {}",
         root.display()
     );
     found
@@ -63,6 +78,7 @@ fn example_config_paths() -> Vec<PathBuf> {
 /// Derived from the file rather than from a hardcoded table, so a config added later is
 /// covered without editing this test.
 fn declared_variants(text: &str) -> (&'static str, &'static str) {
+    let text = &strip_comments(text);
     let scheduler = if text.contains("duty_cycle") {
         "DutyCycle"
     } else if text.contains("fixed_interval") {
@@ -80,6 +96,34 @@ fn declared_variants(text: &str) -> (&'static str, &'static str) {
         "None"
     };
     (scheduler, fault)
+}
+
+/// Drop `#` comments, so the heuristic above reads a file's configuration rather than its prose.
+///
+/// The `conf/*_truth.toml` recipes carry `kind = "none"` and a comment explaining that their
+/// health limits are "kept identical across truth and degraded" -- which made a naive
+/// `contains("degraded")` declare a fault the file does not configure. TOML and YAML both
+/// comment to end of line with `#`, and JSON has no comments, so one rule covers all three.
+/// Quoted `#` is respected: a Windows path or a colour literal in a string is not a comment.
+fn strip_comments(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for line in text.lines() {
+        let mut in_string = false;
+        let mut cut = line.len();
+        for (index, character) in line.char_indices() {
+            match character {
+                '"' => in_string = !in_string,
+                '#' if !in_string => {
+                    cut = index;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        out.push_str(&line[..cut]);
+        out.push('\n');
+    }
+    out
 }
 
 const fn scheduler_variant(scheduler: &MeasurementScheduler) -> &'static str {

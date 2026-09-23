@@ -1,11 +1,16 @@
-# EKF with both gravity and magnetic anomaly measurements
+# EKF with both gravity and magnetic anomaly measurements.
+#
+# Runs from this file end to end. `--geo` used to be reachable only from the `cl` subcommand's
+# own flags -- a closed-loop config carrying a [geophysical] section was refused outright -- so
+# these six files were retired and the justfile carried the equivalent command lines by hand.
+# Both paths now resolve to the same settings and the same runner.
 input = "data/input"
 output = "data/output/ekf/both"
 mode = "closed-loop"
-# These recipes read Sensor Logger exports from `data/input`, which are ENU
-# convention: at rest the device reports +g along its up axis. The library default
-# is NED as of #272, so the frame has to be declared -- `strapdown-sim` checks it
-# against the data and refuses rather than silently double-counting gravity (#296).
+# These recipes read Sensor Logger exports from `data/input`, which are ENU convention: at rest
+# the device reports +g along its up axis. The library default is NED as of #272, so the frame
+# has to be declared -- `strapdown-sim` checks it against the data and refuses rather than
+# silently double-counting gravity (#296).
 is_enu = true
 seed = 42
 parallel = true
@@ -19,31 +24,45 @@ file = "log/ekf_both.log"
 filter = "ekf"
 
 [geophysical]
-# Gravity anomaly measurements
+# Gravity anomaly measurements.
 gravity_resolution = "one_minute"
 gravity_bias = 0.0
 gravity_noise_std = 100.0
 
-# Magnetic anomaly measurements
+# Magnetic anomaly measurements. See conf/*_mag.toml on the declared-vs-actual resolution.
 magnetic_resolution = "two_minutes"
 magnetic_bias = 0.0
 magnetic_noise_std = 150.0
 
-# Measurement frequency (seconds)
+# Seconds between geophysical measurements -- a period, not a frequency.
 geo_frequency_s = 1.0
+
+[health_limits]
+# Identical to conf/ekf_degraded.toml. `geoperf-all` scores this run against that one, so a
+# difference in the guards would be reported as geophysical performance.
+nis_pos_max = 1000.0
+speed_mps_max = 5000.0
 
 [gnss_degradation]
 seed = 42
 
+# This whole section must stay identical to conf/ekf_degraded.toml, for the same reason.
+# It previously read `interval_s = 1.0` with `sigma_pos_m = 15.0`, `sigma_vel_mps = 5.0` and
+# `r_scale = 15.0` -- a different GNSS profile entirely, so any "improvement" measured against
+# the degraded run was the difference between two degradations, not the contribution of the
+# geophysical measurement.
 [gnss_degradation.scheduler]
 kind = "fixed_interval"
-interval_s = 1.0
+# 5 s between fixes: a real 5x reduction on this 1 Hz recording. `interval_s = 1.0`
+# passed every fix through and reduced nothing.
+interval_s = 5.0
 phase_s = 0.0
 
 [gnss_degradation.fault]
 kind = "degraded"
+# AR(1) steady-state error is sigma / sqrt(1 - rho^2), not sigma.
 rho_pos = 0.99
-sigma_pos_m = 15.0
+sigma_pos_m = 3.0     # ~21 m steady-state wander
 rho_vel = 0.95
-sigma_vel_mps = 5.0
-r_scale = 15.0
+sigma_vel_mps = 0.3   # ~1 m/s steady-state wander
+r_scale = 5.0         # advertised sigmas x5, so R x25
