@@ -277,3 +277,92 @@ fn an_empty_aiding_section_schedules_the_other_two_channels() {
         "the magnetometer defaults to a 1 Hz fixed interval, not to pass-through"
     );
 }
+
+/// Every geophysically-aided recipe must carry the GNSS profile of the run it is scored
+/// against.
+///
+/// `analyze geoperformance` measures a geo-aided run against a non-geo baseline and reports
+/// the difference as the contribution of the geophysical measurement. That is only true when
+/// the two runs differ in *nothing else*. If their GNSS degradation or their health limits
+/// disagree, the "improvement" is the difference between two GNSS profiles wearing the
+/// geophysical measurement's name.
+///
+/// This is not hypothetical. `conf/{ukf,ekf}_{grav,mag,both}.toml` sat in the tree carrying
+/// `interval_s = 1.0` with `sigma_pos_m = 15.0`, `sigma_vel_mps = 5.0` and `r_scale = 15.0`,
+/// against a `conf/*_degraded.toml` at `5.0 / 3.0 / 0.3 / 5.0` -- six files, every one of
+/// them scored against a baseline it did not match, with nothing to say so.
+///
+/// The pairing is taken from the filename: `<filter>_<geo>.toml` is scored against
+/// `<filter>_degraded.toml`, and `<filter>_denied_<geo>.toml` against `<filter>_denied.toml`.
+/// Adding a geo recipe therefore enrolls it in this check automatically.
+#[test]
+fn every_geophysical_config_matches_the_baseline_it_is_scored_against() {
+    const FILTERS: [&str; 3] = ["ukf", "ekf", "rbpf"];
+    const GEO_TYPES: [&str; 3] = ["grav", "mag", "both"];
+
+    let mut failures = Vec::new();
+    let mut checked = 0usize;
+
+    for filter in FILTERS {
+        for (suffix, baseline) in [("", "degraded"), ("denied_", "denied")] {
+            let baseline_name = format!("{filter}_{baseline}.toml");
+            let Some(baseline_config) = load_conf(&baseline_name) else {
+                failures.push(format!("{baseline_name}: missing, but geo recipes name it"));
+                continue;
+            };
+
+            for geo in GEO_TYPES {
+                let name = format!("{filter}_{suffix}{geo}.toml");
+                let Some(config) = load_conf(&name) else {
+                    failures.push(format!("{name}: missing"));
+                    continue;
+                };
+                checked += 1;
+
+                // Compared through `Debug` because neither `AidingConfig` nor `HealthLimits`
+                // implements `PartialEq`, and deriving it across `core`'s public API to serve
+                // one test is the larger change. The rendering is total, so a difference in
+                // any field of either fails this.
+                if format!("{:?}", config.aiding) != format!("{:?}", baseline_config.aiding) {
+                    failures.push(format!(
+                        "{name}: [gnss_degradation] differs from {baseline_name}\n  \
+                         geo:      {:?}\n  baseline: {:?}",
+                        config.aiding, baseline_config.aiding
+                    ));
+                }
+                if format!("{:?}", config.health_limits)
+                    != format!("{:?}", baseline_config.health_limits)
+                {
+                    failures.push(format!(
+                        "{name}: [health_limits] differs from {baseline_name}\n  \
+                         geo:      {:?}\n  baseline: {:?}",
+                        config.health_limits, baseline_config.health_limits
+                    ));
+                }
+            }
+        }
+    }
+
+    assert_eq!(
+        checked, 18,
+        "expected 3 filters x 3 geo types x 2 baselines; found {checked}"
+    );
+    assert!(
+        failures.is_empty(),
+        "{} geophysical config(s) do not match their baseline:\n  {}",
+        failures.len(),
+        failures.join("\n  ")
+    );
+}
+
+/// Load one `conf/` recipe by file name, or `None` if it is absent.
+fn load_conf(name: &str) -> Option<SimulationConfig> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("core/ has a parent")
+        .join("conf")
+        .join(name);
+    path.is_file().then(|| {
+        SimulationConfig::from_file(&path).unwrap_or_else(|e| panic!("{name} must parse: {e}"))
+    })
+}

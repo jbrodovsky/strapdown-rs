@@ -48,17 +48,17 @@ check-python:
 # not found", three steps downstream of the cause. It needs the GMT C library (`libgmt`) and
 # network access to the GMT data server.
 #
-# NOTE: `-b` is a *fraction*, not a percentage -- `inflate_bounds` computes
-# `x_min - x_range * buffer`, and its default is 0.1 for a 10% margin. `-b 10` therefore pads
-# the map bounding box by ten times the track's own extent on each side, a box about 21x wider
-# and 21x taller than the track. Left as you set it, but it looks like `-f 10` copied one flag
-# across: at the default buffer the relief grid for the longest recording here is already
-# 195 MB.
+# `-b` is a *fraction*, not a percentage: `inflate_bounds` computes `x_min - x_range * buffer`
+# and defaults to 0.1 for a 10% margin. It was `-b 10` for a while, which padded each map's
+# bounding box by ten times the track's own extent per side -- a box about 21x wider and 21x
+# taller than the track. That was harmless while `--getmaps` was absent and nothing was
+# downloaded; with it, the relief grid for the longest recording here is already 195 MB at a
+# 10% margin, so 21x the area is gigabytes per trajectory.
 #
 # Rebuild data/input from data/raw at 10 Hz, splitting recordings at IMU dropouts.
 preprocess:
     uv run analyze preprocess -i data/raw -o data/input -f 10 \
-        -b 10 --getmaps --max-imu-gap-s 5.0 --min-segment-s 300.0 --prune
+        -b 0.1 --getmaps --max-imu-gap-s 5.0 --min-segment-s 300.0 --prune
 
 # Rebuild data/input at 1 Hz instead, matching the rate every result before this branch used.
 preprocess-1hz:
@@ -108,6 +108,22 @@ jammed:
 # [gnss_degradation] and [health_limits] sections of conf/{ukf,ekf}_{grav,mag,both}.toml must
 # stay identical to conf/{ukf,ekf}_degraded.toml. Otherwise the "improvement" it reports is
 # the difference between two degradations.
+# The same nine aiding runs under GNSS denial rather than degradation, so `geoperf-denied`
+# compares like with like. Each of these carries the [gnss_degradation] block of its filter's
+# `denied` recipe; `core/tests/example_configs.rs` asserts that and fails if one drifts.
+#
+# Run the geophysical aiding configurations under GNSS denial (all three filters).
+denied-geo:
+    -./target/release/strapdown-sim --config conf/ukf_denied_both.toml
+    -./target/release/strapdown-sim --config conf/ukf_denied_grav.toml
+    -./target/release/strapdown-sim --config conf/ukf_denied_mag.toml
+    -./target/release/strapdown-sim --config conf/ekf_denied_both.toml
+    -./target/release/strapdown-sim --config conf/ekf_denied_grav.toml
+    -./target/release/strapdown-sim --config conf/ekf_denied_mag.toml
+    -./target/release/strapdown-sim --config conf/rbpf_denied_both.toml
+    -./target/release/strapdown-sim --config conf/rbpf_denied_grav.toml
+    -./target/release/strapdown-sim --config conf/rbpf_denied_mag.toml
+
 # Run the UKF geophysical aiding configurations (both, gravity-only, magnetic-only).
 ukf-geo:
     -./target/release/strapdown-sim --config conf/ukf_both.toml
@@ -143,6 +159,9 @@ postprocess:
     -uv run analyze performance --processed data/output/ukf/degraded --reference data/input/ --output data/output/ukf/degraded/performance
     -uv run analyze performance --processed data/output/ukf/denied --reference data/input/ --output data/output/ukf/denied/performance
     -uv run analyze performance --processed data/output/ukf/jammed --reference data/input/ --output data/output/ukf/jammed/performance
+    -uv run analyze performance --processed data/output/ukf/denied_grav --reference data/input/ --output data/output/ukf/denied_grav/performance
+    -uv run analyze performance --processed data/output/ukf/denied_mag --reference data/input/ --output data/output/ukf/denied_mag/performance
+    -uv run analyze performance --processed data/output/ukf/denied_both --reference data/input/ --output data/output/ukf/denied_both/performance
     -uv run analyze performance --processed data/output/ukf/both --reference data/input/ --output data/output/ukf/both/performance
     -uv run analyze performance --processed data/output/ukf/grav --reference data/input/ --output data/output/ukf/grav/performance
     -uv run analyze performance --processed data/output/ukf/mag --reference data/input/ --output data/output/ukf/mag/performance
@@ -150,6 +169,9 @@ postprocess:
     -uv run analyze performance --processed data/output/ekf/degraded --reference data/input/ --output data/output/ekf/degraded/performance
     -uv run analyze performance --processed data/output/ekf/denied --reference data/input/ --output data/output/ekf/denied/performance
     -uv run analyze performance --processed data/output/ekf/jammed --reference data/input/ --output data/output/ekf/jammed/performance
+    -uv run analyze performance --processed data/output/ekf/denied_grav --reference data/input/ --output data/output/ekf/denied_grav/performance
+    -uv run analyze performance --processed data/output/ekf/denied_mag --reference data/input/ --output data/output/ekf/denied_mag/performance
+    -uv run analyze performance --processed data/output/ekf/denied_both --reference data/input/ --output data/output/ekf/denied_both/performance
     -uv run analyze performance --processed data/output/ekf/both --reference data/input/ --output data/output/ekf/both/performance
     -uv run analyze performance --processed data/output/ekf/grav --reference data/input/ --output data/output/ekf/grav/performance
     -uv run analyze performance --processed data/output/ekf/mag --reference data/input/ --output data/output/ekf/mag/performance
@@ -157,6 +179,9 @@ postprocess:
     -uv run analyze performance --processed data/output/rbpf/degraded --reference data/input/ --output data/output/rbpf/degraded/performance
     -uv run analyze performance --processed data/output/rbpf/denied --reference data/input/ --output data/output/rbpf/denied/performance
     -uv run analyze performance --processed data/output/rbpf/jammed --reference data/input/ --output data/output/rbpf/jammed/performance
+    -uv run analyze performance --processed data/output/rbpf/denied_grav --reference data/input/ --output data/output/rbpf/denied_grav/performance
+    -uv run analyze performance --processed data/output/rbpf/denied_mag --reference data/input/ --output data/output/rbpf/denied_mag/performance
+    -uv run analyze performance --processed data/output/rbpf/denied_both --reference data/input/ --output data/output/rbpf/denied_both/performance
     -uv run analyze performance --processed data/output/rbpf/both --reference data/input/ --output data/output/rbpf/both/performance
     -uv run analyze performance --processed data/output/rbpf/grav --reference data/input/ --output data/output/rbpf/grav/performance
     -uv run analyze performance --processed data/output/rbpf/mag --reference data/input/ --output data/output/rbpf/mag/performance
@@ -213,21 +238,22 @@ geoperf-rbpf:
 # 120 s at a time, so during an outage the aid is the only correction there is -- which is
 # the regime a geophysical aid exists for, and where its contribution is separable.
 #
-# Requires `just denied` and the geo runs to have been run first. The geo runs carry the
-# `degraded` GNSS profile, so this comparison is not apples-to-apples yet: to make it one,
-# copy the [gnss_degradation] block from conf/*_denied.toml into the six geo configs and
-# re-run them. See book/src/gnss/fault-simulation.md on why the two must match.
-# Score every geo-aided run against its filter's `denied` run instead.
+# Reads the `denied_*` runs, not the `grav`/`mag`/`both` ones: those carry the *degraded*
+# GNSS profile, so scoring them against a duty-cycled baseline would report the difference
+# between two GNSS profiles as the contribution of the aid. Requires `just denied` and
+# `just denied-geo`.
+#
+# Score every geo-aided denial run against its filter's `denied` run.
 geoperf-denied:
-    -uv run analyze geoperformance -p data/output/ukf/grav -d data/output/ukf/denied -r data/input -o data/output/ukf/grav/analysis/denied -f ukf --geo-type grav
-    -uv run analyze geoperformance -p data/output/ukf/mag -d data/output/ukf/denied -r data/input -o data/output/ukf/mag/analysis/denied -f ukf --geo-type mag
-    -uv run analyze geoperformance -p data/output/ukf/both -d data/output/ukf/denied -r data/input -o data/output/ukf/both/analysis/denied -f ukf --geo-type both
-    -uv run analyze geoperformance -p data/output/ekf/grav -d data/output/ekf/denied -r data/input -o data/output/ekf/grav/analysis/denied -f ekf --geo-type grav
-    -uv run analyze geoperformance -p data/output/ekf/mag -d data/output/ekf/denied -r data/input -o data/output/ekf/mag/analysis/denied -f ekf --geo-type mag
-    -uv run analyze geoperformance -p data/output/ekf/both -d data/output/ekf/denied -r data/input -o data/output/ekf/both/analysis/denied -f ekf --geo-type both
-    -uv run analyze geoperformance -p data/output/rbpf/grav -d data/output/rbpf/denied -r data/input -o data/output/rbpf/grav/analysis/denied -f rbpf --geo-type grav
-    -uv run analyze geoperformance -p data/output/rbpf/mag -d data/output/rbpf/denied -r data/input -o data/output/rbpf/mag/analysis/denied -f rbpf --geo-type mag
-    -uv run analyze geoperformance -p data/output/rbpf/both -d data/output/rbpf/denied -r data/input -o data/output/rbpf/both/analysis/denied -f rbpf --geo-type both
+    -uv run analyze geoperformance -p data/output/ukf/denied_grav -d data/output/ukf/denied -r data/input -o data/output/ukf/denied_grav/analysis -f ukf --geo-type grav
+    -uv run analyze geoperformance -p data/output/ukf/denied_mag -d data/output/ukf/denied -r data/input -o data/output/ukf/denied_mag/analysis -f ukf --geo-type mag
+    -uv run analyze geoperformance -p data/output/ukf/denied_both -d data/output/ukf/denied -r data/input -o data/output/ukf/denied_both/analysis -f ukf --geo-type both
+    -uv run analyze geoperformance -p data/output/ekf/denied_grav -d data/output/ekf/denied -r data/input -o data/output/ekf/denied_grav/analysis -f ekf --geo-type grav
+    -uv run analyze geoperformance -p data/output/ekf/denied_mag -d data/output/ekf/denied -r data/input -o data/output/ekf/denied_mag/analysis -f ekf --geo-type mag
+    -uv run analyze geoperformance -p data/output/ekf/denied_both -d data/output/ekf/denied -r data/input -o data/output/ekf/denied_both/analysis -f ekf --geo-type both
+    -uv run analyze geoperformance -p data/output/rbpf/denied_grav -d data/output/rbpf/denied -r data/input -o data/output/rbpf/denied_grav/analysis -f rbpf --geo-type grav
+    -uv run analyze geoperformance -p data/output/rbpf/denied_mag -d data/output/rbpf/denied -r data/input -o data/output/rbpf/denied_mag/analysis -f rbpf --geo-type mag
+    -uv run analyze geoperformance -p data/output/rbpf/denied_both -d data/output/rbpf/denied -r data/input -o data/output/rbpf/denied_both/analysis -f rbpf --geo-type both
 
 
 
@@ -241,7 +267,7 @@ geoperf-denied:
 # a recipe's own body runs after its dependencies, which is why the `rm -rf` lines moved into
 # their own `clean` recipe rather than staying here.
 # Run the whole experiment end to end, from data/raw to the scored analyses.
-pipeline: clean build preprocess geo-stats truth degraded denied jammed ukf-geo ekf-geo rbpf-sim postprocess geoperf-all
+pipeline: clean build preprocess geo-stats truth degraded denied jammed ukf-geo ekf-geo rbpf-sim denied-geo postprocess geoperf-all geoperf-denied
 
 # Remove everything the pipeline regenerates. `data/raw` is read-only and is never touched.
 #
