@@ -911,20 +911,39 @@ pub trait GeophysicalAnomalyMeasurementModel: MeasurementModel {
 /// magnitude against Somigliana normal gravity, with the Eötvös correction for platform
 /// motion ([`gravity_anomaly`]). The expected measurement is read from a [`GeoMap`].
 ///
+/// # Units
+///
+/// This model works in **milligal**, because that is what the maps [`GeoMap`] loads are in.
+/// [`gravity_observed`](Self::gravity_observed) is the one exception -- it is the raw
+/// accelerometer magnitude in $m/s^2$, and [`gravity_anomaly`] converts as it differences.
+///
+/// That conversion was missing until the fix that added `earth::MGAL_PER_M_PER_S2`: the
+/// observation arrived in $m/s^2$, the map value in milligal, and the innovation $z - h$ was
+/// therefore just $-h$ to five significant figures. It never tripped a gate, because a
+/// tens-of-milligal innovation against the default 100 mGal noise is a NIS of about 0.16.
+/// This is the same defect the magnetic channel had and the same fix; see
+/// [`MICROTESLA_TO_NANOTESLA`].
+///
 /// # Latitude units
 ///
 /// [`gravity_anomaly`] takes **degrees**, while [`StrapdownState`] stores radians, so both
 /// of this type's anomaly paths convert: [`GeophysicalAnomalyMeasurementModel::set_state`]
 /// and the per-particle path through [`Self::extract_state_inputs`]. Neither did before
 /// #330, which evaluated normal gravity near the equator whatever the true latitude -- a
-/// -2136 mGal error at 40 deg N, against map anomalies of tens of mGal.
+/// -2136 mGal error at 40 deg N, against map anomalies of tens of mGal. (That figure was
+/// itself written while the anomaly was still $m/s^2$; it is only literally true in milligal
+/// now that the conversion above is applied.)
 #[derive(Clone, Debug)]
 pub struct GravityMeasurement {
     /// Source map
     pub map: Rc<GeoMap>,
-    /// Measurement Noise
+    /// Measurement noise standard deviation, **milligal** -- the unit of the map this model
+    /// differences against, not the $m/s^2$ of the accelerometer it reads.
     pub noise_std: f64,
-    /// Observed gravity magnitude (m/s^2)
+    /// Observed gravity magnitude (m/s^2).
+    ///
+    /// The norm of the record's three `grav_*` axes, in SI. Converted to milligal by
+    /// [`gravity_anomaly`], so this is the only field here that is not already milligal.
     pub gravity_observed: f64,
     /// Current latitude in **degrees**, converted from the radian-valued
     /// [`StrapdownState`] on the way in, because [`gravity_anomaly`] takes degrees (#330).

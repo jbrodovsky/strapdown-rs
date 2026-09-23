@@ -57,6 +57,16 @@ pub const GE: f64 = 9.7803253359; // m/s^2, equatorial radius
 pub const GP: f64 = 9.8321849378; // $m/s^2$, polar radius
 /// Earth's average gravitational acceleration ($g$) in $m/s^2$
 pub const G0: f64 = 9.80665; // m/s^2, average gravitational acceleration
+/// Milligal per $m/s^2$: the factor converting an SI acceleration into the unit gravity
+/// anomalies are quoted, mapped and configured in.
+///
+/// 1 Gal is $1\ cm/s^2$, so 1 mGal is $10^{-5}\ m/s^2$ and there are $10^5$ mGal in one
+/// $m/s^2$. [`gravity_anomaly`] applies this, because every consumer of its output is in
+/// milligal: the `z` variable of the NetCDF anomaly maps `strapdown-geonav` loads, the
+/// `--gravity-noise-std` and `--gravity-bias` flags, and the `[geophysical]` section of a
+/// scenario file. The magnetic channel carries the same conversion for the same reason
+/// (`MICROTESLA_TO_NANOTESLA` in `strapdown-geonav`).
+pub const MGAL_PER_M_PER_S2: f64 = 1.0e5;
 /// Earth's flattening factor ($f$)
 pub const F: f64 = 1.0 / 298.257223563; // Flattening factor
 /// Somigliana's constant ($K$)
@@ -518,12 +528,29 @@ pub fn gravitation(latitude: &f64, longitude: &f64, altitude: &f64) -> Vector3<f
     // Calculate the effective gravity vector combining gravity and centrifugal terms
     gravity + rot * omega_ie * omega_ie * ecef_vec
 }
-/// Calculate local gravity anomaly from IMU accelerometer measurements
+/// Calculate the local gravity anomaly, in **milligal**, from IMU accelerometer measurements
 ///
 /// This function calculates the local gravity anomaly by comparing the observed gravity from the
 /// IMU accelerometer measurements (eg: $\sqrt(a_x^2 + a_y^2 + a_z^2)$) with the normal gravity
 /// at the given latitude and altitude via the Somigliana method. Additionally, this function
 /// compensates for the motion of the platform (if any) using the Eötvös correction.
+///
+/// # Units
+///
+/// Every input is SI and the **output is milligal**, scaled by [`MGAL_PER_M_PER_S2`]. That
+/// asymmetry is deliberate: the caller holds an accelerometer reading in $m/s^2$, but every
+/// consumer of the anomaly is in milligal -- the `z` variable of the NetCDF maps
+/// `strapdown-geonav` loads, `--gravity-noise-std`, `--gravity-bias`, and the `[geophysical]`
+/// section of a scenario file.
+///
+/// This conversion was missing until the fix that added [`MGAL_PER_M_PER_S2`]. The anomaly was
+/// returned in $m/s^2$ and differenced straight against a milligal map, so the observation was
+/// $10^5$ times too small and the innovation $z - h$ was, to five significant figures, just
+/// $-h$: the filter was told its predicted map value was wrong by exactly that value, at every
+/// geophysical update. Nothing caught it, because with a 100 mGal noise standard deviation
+/// against anomalies of tens of milligal the resulting NIS is around 0.16 -- far under any
+/// gate. The magnetic channel had the identical defect and was fixed separately; see
+/// `MICROTESLA_TO_NANOTESLA` in `strapdown-geonav`.
 ///
 /// # Arguments
 /// - `latitude` - The WGS84 latitude in degrees
@@ -533,7 +560,9 @@ pub fn gravitation(latitude: &f64, longitude: &f64, altitude: &f64) -> Vector3<f
 /// - `gravity_observed` - The observed gravity from the IMU accelerometer measurements in m/s^2
 ///
 /// # Returns
-/// The local gravity anomaly in m/s^2, which is the difference between the observed gravity and the normal gravity at the given latitude and altitude, adjusted for the Eötvös correction.
+/// The local gravity anomaly in **milligal**: the difference between the observed gravity and
+/// the normal gravity at the given latitude and altitude, adjusted for the Eötvös correction and
+/// converted out of $m/s^2$.
 pub fn gravity_anomaly(
     latitude: &f64,
     altitude: &f64,
@@ -543,7 +572,7 @@ pub fn gravity_anomaly(
 ) -> f64 {
     let normal_gravity: f64 = gravity(latitude, &0.0);
     let eotvos_correction: f64 = eotvos(latitude, altitude, north_velocity, east_velocity);
-    *gravity_observed - normal_gravity - eotvos_correction
+    (*gravity_observed - normal_gravity - eotvos_correction) * MGAL_PER_M_PER_S2
 }
 /// Calculate the Eötvös correction for the local-level frame
 ///
@@ -1281,29 +1310,49 @@ mod tests {
         assert_approx_eq!(obs_mag, 45000.0, 1e-6);
     }
 
+    /// The anomaly comes back in milligal, not in $m/s^2$.
+    ///
+    /// This is the assertion the original test lacked: it checked only `is_finite()`, which a
+    /// value $10^5$ off still satisfies. The map `z` this is differenced against is milligal,
+    /// so a scale error here is silent everywhere downstream -- the innovation just becomes
+    /// the negated map value and the NIS stays small enough to pass any gate.
     #[test]
-    fn test_gravity_anomaly() {
-        // Test gravity anomaly calculation
+    fn test_gravity_anomaly_is_milligal() {
         let latitude = 45.0;
         let altitude = 1000.0;
-        let north_velocity = 10.0;
-        let east_velocity = 5.0;
         let gravity_observed = 9.81;
 
-        let anomaly = gravity_anomaly(
-            &latitude,
-            &altitude,
-            &north_velocity,
-            &east_velocity,
-            &gravity_observed,
-        );
-        assert!(anomaly.is_finite(), "Gravity anomaly should be finite");
+        let anomaly = gravity_anomaly(&latitude, &altitude, &0.0, &0.0, &gravity_observed);
 
-        // Test with zero velocities
-        let anomaly_zero = gravity_anomaly(&latitude, &altitude, &0.0, &0.0, &gravity_observed);
+        // Normal gravity at 45 deg is ~9.806 m/s^2, so a 9.81 m/s^2 reading is a few
+        // thousandths of an m/s^2 high -- hundreds of milligal, not thousandths of one.
         assert!(
-            anomaly_zero.is_finite(),
-            "Gravity anomaly with zero velocity should be finite"
+            (100.0..=1000.0).contains(&anomaly),
+            "a 9.81 m/s^2 observation at 45 deg N must be hundreds of mGal, got {anomaly}"
+        );
+
+        // The scale itself: 1 mGal is 1e-5 m/s^2, so perturbing the observation by that much
+        // must move the anomaly by exactly one unit.
+        let perturbed =
+            gravity_anomaly(&latitude, &altitude, &0.0, &0.0, &(gravity_observed + 1e-5));
+        assert_approx_eq!(perturbed - anomaly, 1.0, 1e-6);
+    }
+
+    /// The Eötvös correction is applied, and in the same unit as the rest.
+    #[test]
+    fn test_gravity_anomaly_eotvos_is_scaled_too() {
+        let latitude = 45.0;
+        let altitude = 1000.0;
+        let gravity_observed = 9.81;
+
+        let still = gravity_anomaly(&latitude, &altitude, &0.0, &0.0, &gravity_observed);
+        let moving = gravity_anomaly(&latitude, &altitude, &10.0, &5.0, &gravity_observed);
+
+        let expected = eotvos(&latitude, &altitude, &10.0, &5.0) * MGAL_PER_M_PER_S2;
+        assert_approx_eq!(still - moving, expected, 1e-9);
+        assert!(
+            expected > 0.0,
+            "eastward motion must raise the Eötvös term, got {expected} mGal"
         );
     }
 

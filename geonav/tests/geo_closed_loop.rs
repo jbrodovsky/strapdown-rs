@@ -52,7 +52,7 @@ use strapdown::{NavigationFilter, StrapdownState};
 /// a constant map is one the filter can learn nothing from, which would let the bias assertion
 /// below pass for the wrong reason.
 fn write_gravity_map(path: &std::path::Path) {
-    write_anomaly_map(path, 0.0);
+    write_anomaly_map(path, GRAVITY_MAP_OFFSET_MGAL);
 }
 
 /// The same grid as a magnetic-anomaly map, offset so the track's constant observed anomaly
@@ -116,6 +116,10 @@ fn synthetic_track(samples: usize) -> Vec<TestDataRecord> {
             // Level and at rest: +g on the device up-axis, which is the ENU convention this
             // format uses and what `is_enu: true` declares below.
             acc_z: 9.81,
+            // The gravity sensor is its own channel, and `GravityMeasurement` takes the norm
+            // of the three axes. Left at `Default`'s zero this reads as an observation of
+            // -980,174 mGal; see `GRAVIMETER_READING_MPS2`.
+            grav_z: GRAVIMETER_READING_MPS2,
             qw: 1.0,
             ..Default::default()
         })
@@ -140,6 +144,45 @@ const MAGNETOMETER_READING_UT: f64 = 51.0;
 /// about +/-40 nT around this, so the innovation stays inside a few times the 10 nT measurement
 /// noise -- well posed, and varying enough along the track that the bias is observable.
 const MAGNETIC_MAP_OFFSET_NT: f64 = 130.0;
+
+/// What the track's gravimeter reads, in the $m/s^2$ `TestDataRecord` documents.
+///
+/// Normal gravity at this track is 9.801741 m/s^2, so this is a real reading with 130 mGal of
+/// free-air anomaly on it rather than a number picked to make the arithmetic work. The
+/// gravity channel needs this stated for the same reason the magnetometer above does: the
+/// record's `grav_*` fields used to be left at their `Default` zero, and
+/// `earth::gravity_anomaly` used to return $m/s^2$, so the observation was
+/// `0 - 9.8017 = -9.80` -- which lands inside a map generated around +/-40 and looks like a
+/// plausible milligal anomaly. It is not one. It is the whole of normal gravity, in the wrong
+/// unit, and the fixture passed on that coincidence. With the conversion in place the same
+/// zero reading is a -980,174 mGal observation, which is what made this visible.
+const GRAVIMETER_READING_MPS2: f64 = 9.803_04;
+
+/// Where the map's anomalies sit, in milligal: the anomaly the reading above actually has.
+///
+/// 9.80304 m/s^2 observed minus the 9.801741 m/s^2 reference is 130 mGal, and the generated
+/// field varies about +/-40 mGal around this, so the innovation stays inside a few times the
+/// [`GRAVITY_NOISE_STD_MGAL`] measurement noise -- well posed, and varying enough along the
+/// track that the bias is observable. Mirrors [`MAGNETIC_MAP_OFFSET_NT`].
+const GRAVITY_MAP_OFFSET_MGAL: f64 = 130.0;
+
+/// Gravity measurement noise for these fixtures, in milligal.
+///
+/// Sized against the map's own +/-40 mGal variation rather than left at the 1.0 it was: a 1 mGal
+/// sigma against a 40 mGal swing makes every innovation a 40-sigma event, which is not a test of
+/// the aiding so much as a test of how the filter behaves when saturated. Mirrors the 10 nT the
+/// magnetic side of these fixtures uses against its own +/-40 nT map.
+const GRAVITY_NOISE_STD_MGAL: f64 = 10.0;
+
+/// The largest gravity bias this run has any business estimating, in milligal.
+///
+/// The gravity counterpart of [`MAGNETIC_BIAS_PLAUSIBLE_NT`], and it exists for exactly the
+/// reason that constant gives: a units error does not stop the bias moving, it makes the bias
+/// absorb the error confidently, so "the bias moved" and "its variance fell" both still hold.
+/// Bounding the magnitude is the assertion that separates a bias tracking a real anomaly from
+/// one soaking up a scale factor. Without it the m/s^2-into-a-milligal-slot defect this
+/// fixture was written around survives every other check here.
+const GRAVITY_BIAS_PLAUSIBLE_MGAL: f64 = 100.0;
 
 /// The largest magnetic bias this run has any business estimating, in nanotesla.
 ///
@@ -322,7 +365,7 @@ fn gravity_aided_closed_loop_completes_and_labels_its_bias_state() {
         false,
         &GeophysicalAiding {
             gravity_map: Some(Rc::clone(&map)),
-            gravity_noise_std: Some(1.0),
+            gravity_noise_std: Some(GRAVITY_NOISE_STD_MGAL),
             magnetic_map: None,
             magnetic_noise_std: None,
             interval_s: Some(1.0),
@@ -369,6 +412,17 @@ fn gravity_aided_closed_loop_completes_and_labels_its_bias_state() {
     assert!(
         biases.iter().any(|b| (b - biases[0]).abs() > 1e-9),
         "the gravity bias never moved from its seed, so the aiding is not reaching the state"
+    );
+
+    // And it has to be a *plausible* bias, not one absorbing a unit conversion. See
+    // `GRAVITY_BIAS_PLAUSIBLE_MGAL`; this is the gravity twin of the magnetic bound below,
+    // and it is the assertion that fails if `earth::gravity_anomaly` ever stops returning
+    // milligal.
+    let worst = biases.iter().fold(0.0_f64, |acc, b| acc.max(b.abs()));
+    assert!(
+        worst < GRAVITY_BIAS_PLAUSIBLE_MGAL,
+        "the gravity bias reached {worst:.0} mGal, past anything a real anomaly explains -- the \
+         observation and the map are probably not in the same unit"
     );
 
     std::fs::remove_dir_all(&dir).ok();
@@ -486,7 +540,7 @@ fn ekf_branch_completes_and_labels_its_bias_state() {
         false,
         &GeophysicalAiding {
             gravity_map: Some(Rc::clone(&map)),
-            gravity_noise_std: Some(1.0),
+            gravity_noise_std: Some(GRAVITY_NOISE_STD_MGAL),
             magnetic_map: None,
             magnetic_noise_std: None,
             interval_s: Some(1.0),
@@ -671,7 +725,7 @@ fn gravity_aided_particle_filter_labels_its_bias_state() {
         false,
         &GeophysicalAiding {
             gravity_map: Some(Rc::clone(&map)),
-            gravity_noise_std: Some(1.0),
+            gravity_noise_std: Some(GRAVITY_NOISE_STD_MGAL),
             magnetic_map: None,
             magnetic_noise_std: None,
             interval_s: Some(1.0),
