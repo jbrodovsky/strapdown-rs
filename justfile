@@ -1,5 +1,6 @@
 # Install both halves of the monorepo: the Rust toolchain fetches itself on the first cargo
 # command, and `uv sync` builds the `analysis` workspace member from the root pyproject.toml.
+# Install both halves of the monorepo: the Rust toolchain and the Python workspace.
 setup:
     cargo fetch
     uv sync
@@ -54,6 +55,7 @@ preprocess:
 # config block and the two-panel histogram figure. The noise standard deviations in
 # conf/*.toml should come from its geo_stats.toml, not from the 100 mGal / 150 nT defaults,
 # which were never measured against anything.
+# Measure the geophysical residual against the maps: bias, noise, SNR and figure.
 geo-stats:
     uv run analyze geostats -i data/input -o data/output/geostats
 
@@ -71,6 +73,7 @@ degraded:
 # The tier that resembles jamming -- a receiver inside a jammed area reports nothing, it does
 # not report a noisier position. Sweep `off_s` in the configs to trace how an aid's
 # contribution grows with outage length. See book/src/gnss/fault-simulation.md.
+# Run the GNSS-denial configurations (duty-cycled outages, no fault on the fixes).
 denied:
     -./target/release/strapdown-sim --config conf/ukf_denied.toml
     -./target/release/strapdown-sim --config conf/ekf_denied.toml
@@ -79,6 +82,7 @@ denied:
 # The recalibrated accuracy tier: 35 m steady-state wander with the correlation time pinned
 # in seconds, so the fix interval can be swept without moving the error model. Kept separate
 # from `degraded`, which is the baseline every result so far was measured against.
+# Run the recalibrated fringe-of-jamming configurations (35 m steady-state wander).
 jammed:
     -./target/release/strapdown-sim --config conf/ukf_jammed.toml
     -./target/release/strapdown-sim --config conf/ekf_jammed.toml
@@ -94,11 +98,13 @@ jammed:
 # [gnss_degradation] and [health_limits] sections of conf/{ukf,ekf}_{grav,mag,both}.toml must
 # stay identical to conf/{ukf,ekf}_degraded.toml. Otherwise the "improvement" it reports is
 # the difference between two degradations.
+# Run the UKF geophysical aiding configurations (both, gravity-only, magnetic-only).
 ukf-geo:
     -./target/release/strapdown-sim --config conf/ukf_both.toml
     -./target/release/strapdown-sim --config conf/ukf_grav.toml
     -./target/release/strapdown-sim --config conf/ukf_mag.toml
 
+# Run the EKF geophysical aiding configurations (both, gravity-only, magnetic-only).
 ekf-geo:
     -./target/release/strapdown-sim --config conf/ekf_both.toml
     -./target/release/strapdown-sim --config conf/ekf_grav.toml
@@ -125,16 +131,22 @@ rbpf-sim:
 postprocess:
     -uv run analyze performance --processed data/output/ukf/truth --reference data/input/ --output data/output/ukf/truth/performance
     -uv run analyze performance --processed data/output/ukf/degraded --reference data/input/ --output data/output/ukf/degraded/performance
+    -uv run analyze performance --processed data/output/ukf/denied --reference data/input/ --output data/output/ukf/denied/performance
+    -uv run analyze performance --processed data/output/ukf/jammed --reference data/input/ --output data/output/ukf/jammed/performance
     -uv run analyze performance --processed data/output/ukf/both --reference data/input/ --output data/output/ukf/both/performance
     -uv run analyze performance --processed data/output/ukf/grav --reference data/input/ --output data/output/ukf/grav/performance
     -uv run analyze performance --processed data/output/ukf/mag --reference data/input/ --output data/output/ukf/mag/performance
     -uv run analyze performance --processed data/output/ekf/truth --reference data/input/ --output data/output/ekf/truth/performance
     -uv run analyze performance --processed data/output/ekf/degraded --reference data/input/ --output data/output/ekf/degraded/performance
+    -uv run analyze performance --processed data/output/ekf/denied --reference data/input/ --output data/output/ekf/denied/performance
+    -uv run analyze performance --processed data/output/ekf/jammed --reference data/input/ --output data/output/ekf/jammed/performance
     -uv run analyze performance --processed data/output/ekf/both --reference data/input/ --output data/output/ekf/both/performance
     -uv run analyze performance --processed data/output/ekf/grav --reference data/input/ --output data/output/ekf/grav/performance
     -uv run analyze performance --processed data/output/ekf/mag --reference data/input/ --output data/output/ekf/mag/performance
     -uv run analyze performance --processed data/output/rbpf/truth --reference data/input/ --output data/output/rbpf/truth/performance
     -uv run analyze performance --processed data/output/rbpf/degraded --reference data/input/ --output data/output/rbpf/degraded/performance
+    -uv run analyze performance --processed data/output/rbpf/denied --reference data/input/ --output data/output/rbpf/denied/performance
+    -uv run analyze performance --processed data/output/rbpf/jammed --reference data/input/ --output data/output/rbpf/jammed/performance
     -uv run analyze performance --processed data/output/rbpf/both --reference data/input/ --output data/output/rbpf/both/performance
     -uv run analyze performance --processed data/output/rbpf/grav --reference data/input/ --output data/output/rbpf/grav/performance
     -uv run analyze performance --processed data/output/rbpf/mag --reference data/input/ --output data/output/rbpf/mag/performance
@@ -152,7 +164,9 @@ postprocess:
 # dataset anyway (median RMSE 45.53 m UKF vs 45.44 m EKF), so this changes the framing far
 # more than the numbers -- which is exactly why it is worth getting right.
 
-# Run the geophysical performance analysis for all filter types.
+# Run the geophysical performance analysis for all filter types, against the `degraded`
+# baseline. This is the established comparison: every result recorded so far used it.
+# Score every geo-aided run against its filter's `degraded` run.
 geoperf-all:
     -uv run analyze geoperformance -p data/output/ukf/grav -d data/output/ukf/degraded -r data/input -o data/output/ukf/grav/analysis -f ukf --geo-type grav
     -uv run analyze geoperformance -p data/output/ukf/mag -d data/output/ukf/degraded -r data/input -o data/output/ukf/mag/analysis -f ukf --geo-type mag
@@ -181,19 +195,44 @@ geoperf-rbpf:
     -uv run analyze geoperformance -p data/output/rbpf/mag -d data/output/ekf/degraded -r data/input -o data/output/rbpf/mag/analysis/ins -f rbpf --geo-type mag
     -uv run analyze geoperformance -p data/output/rbpf/both -d data/output/ekf/degraded -r data/input -o data/output/rbpf/both/analysis/ins -f rbpf --geo-type both
 
+# The same scoring against the `denied` baseline instead of `degraded`.
+#
+# Kept separate rather than folded into `geoperf-all`, because it answers a different
+# question. `degraded` still delivers a fix every 5 s, so an aid there competes with GNSS and
+# mostly changes how the filter weights a noisy measurement. `denied` withholds GNSS for
+# 120 s at a time, so during an outage the aid is the only correction there is -- which is
+# the regime a geophysical aid exists for, and where its contribution is separable.
+#
+# Requires `just denied` and the geo runs to have been run first. The geo runs carry the
+# `degraded` GNSS profile, so this comparison is not apples-to-apples yet: to make it one,
+# copy the [gnss_degradation] block from conf/*_denied.toml into the six geo configs and
+# re-run them. See book/src/gnss/fault-simulation.md on why the two must match.
+# Score every geo-aided run against its filter's `denied` run instead.
+geoperf-denied:
+    -uv run analyze geoperformance -p data/output/ukf/grav -d data/output/ukf/denied -r data/input -o data/output/ukf/grav/analysis/denied -f ukf --geo-type grav
+    -uv run analyze geoperformance -p data/output/ukf/mag -d data/output/ukf/denied -r data/input -o data/output/ukf/mag/analysis/denied -f ukf --geo-type mag
+    -uv run analyze geoperformance -p data/output/ukf/both -d data/output/ukf/denied -r data/input -o data/output/ukf/both/analysis/denied -f ukf --geo-type both
+    -uv run analyze geoperformance -p data/output/ekf/grav -d data/output/ekf/denied -r data/input -o data/output/ekf/grav/analysis/denied -f ekf --geo-type grav
+    -uv run analyze geoperformance -p data/output/ekf/mag -d data/output/ekf/denied -r data/input -o data/output/ekf/mag/analysis/denied -f ekf --geo-type mag
+    -uv run analyze geoperformance -p data/output/ekf/both -d data/output/ekf/denied -r data/input -o data/output/ekf/both/analysis/denied -f ekf --geo-type both
+    -uv run analyze geoperformance -p data/output/rbpf/grav -d data/output/rbpf/denied -r data/input -o data/output/rbpf/grav/analysis/denied -f rbpf --geo-type grav
+    -uv run analyze geoperformance -p data/output/rbpf/mag -d data/output/rbpf/denied -r data/input -o data/output/rbpf/mag/analysis/denied -f rbpf --geo-type mag
+    -uv run analyze geoperformance -p data/output/rbpf/both -d data/output/rbpf/denied -r data/input -o data/output/rbpf/both/analysis/denied -f rbpf --geo-type both
+
+
 
 # Run the full analysis pipeline for all configurations.
-pipeline:
-    rm -rf data/input
-    rm -rf data/output/
-    rm -rf log
-    build
-    preprocess
-    truth
-    degraded
-    ukf-geo
-    ekf-geo
-    rbpf-sim
-    postprocess
-    geoperf-all
-    geoperf-rbpf
+#
+# The steps are recipe **dependencies**, listed after the colon. They were body lines, which
+# `just` runs as shell commands -- so this recipe tried to execute `build`, `preprocess` and
+# the rest as programs and died on the first one with "command not found".
+#
+# `just` runs each dependency once and in order, so the cleanup below still happens first:
+# a recipe's own body runs after its dependencies, which is why the `rm -rf` lines moved into
+# their own `clean` recipe rather than staying here.
+# Run the whole experiment end to end, from data/raw to the scored analyses.
+pipeline: clean build preprocess geo-stats truth degraded denied jammed ukf-geo ekf-geo rbpf-sim postprocess geoperf-all
+
+# Remove everything the pipeline regenerates. `data/raw` is read-only and is never touched.
+clean:
+    rm -rf data/input data/input_10hz data/output log
