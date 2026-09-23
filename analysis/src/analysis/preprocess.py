@@ -2,6 +2,7 @@
 Module for preprocessing data from the [sensor logger](https://github.com/tszheichoi/awesome-sensor-logger) app. Simple CLI interface for pre processing the data in a given directory.
 """
 
+import math
 import os
 import shutil
 from argparse import ArgumentParser
@@ -593,6 +594,83 @@ def segment_stem(source_name: str, segment: Segment) -> str:
     return f"{source_name}_{segment.label}" if segment.label else source_name
 
 
+#: Absolute map margin, kilometres, added around every trajectory's bounding box.
+#:
+#: Sized for how far the filter can wander off the recorded track, which is what decides
+#: whether a geophysical update finds the map. Under `conf/*_denied.toml` GNSS is withheld for
+#: 120 s at a time and a MEMS platform drifts unaided throughout; 5 km covers that with room.
+#: Cheap, too -- on a 17 km track it is about a 30% pad.
+DEFAULT_MAP_MARGIN_KM = 5.0
+
+#: Metres per degree of latitude. Matches `METRES_PER_DEGREE` in `analysis/geostats.py`, which
+#: uses it in the other direction to turn grid spacing into ground distance.
+METRES_PER_DEGREE = 111_320.0
+
+
+def pad_bounds(
+    lon_min: float,
+    lon_max: float,
+    lat_min: float,
+    lat_max: float,
+    buffer: float,
+    margin_km: float,
+) -> tuple[float, float, float, float]:
+    """
+    Pad a trajectory's bounding box by the larger of a fractional and an absolute margin.
+
+    `inflate_bounds` alone is not enough, for two reasons, and the second is the one that
+    bites:
+
+    1. **The thing being guarded against is an absolute distance.** A map needs to extend
+       past the track by however far the filter can wander off it, and that does not scale
+       with how far the vehicle drove. At a 10% fraction a 2 km track gets 200 m of margin
+       and a 50 km track gets 5 km, for the same 120 s outage.
+    2. **`inflate_bounds` scales each axis by its own range**, so a track that is straight in
+       one axis gets almost no margin in the other. A due-north drive has a longitude range
+       near zero, so its longitude pad is near zero, and any eastward excursion leaves the
+       map. No choice of `buffer` fixes that -- zero times anything is zero.
+
+    Either way the failure is silent at this end: the map is written successfully, and the
+    run dies later and per-trajectory on `OutOfMapBounds`.
+
+    Taking the larger of the two keeps the fractional behaviour for long tracks, where it is
+    already generous, and puts a floor under short and straight ones.
+
+    Parameters
+    ----------
+    lon_min, lon_max, lat_min, lat_max : float
+        The trajectory's bounding box, degrees.
+    buffer : float
+        Fractional margin, as `inflate_bounds` takes it -- 0.1 is 10% of each axis's range.
+    margin_km : float
+        Absolute margin in kilometres, applied on every side.
+
+    Returns
+    -------
+    tuple
+        `(lon_min, lon_max, lat_min, lat_max)`, padded.
+    """
+    fractional = inflate_bounds(lon_min, lon_max, lat_min, lat_max, buffer)
+    if margin_km <= 0:
+        return fractional
+
+    # Converted at the box's mean latitude: a degree of longitude shortens towards the poles,
+    # so a fixed number of kilometres is more degrees of longitude the further north you are.
+    # Clamped because cos() reaches zero at the pole and the conversion diverges.
+    mean_lat = (lat_min + lat_max) / 2.0
+    margin_m = margin_km * 1000.0
+    d_lat = margin_m / METRES_PER_DEGREE
+    d_lon = margin_m / (METRES_PER_DEGREE * max(math.cos(math.radians(mean_lat)), 1e-6))
+
+    frac_lon_min, frac_lon_max, frac_lat_min, frac_lat_max = fractional
+    return (
+        min(frac_lon_min, lon_min - d_lon),
+        max(frac_lon_max, lon_max + d_lon),
+        min(frac_lat_min, lat_min - d_lat),
+        max(frac_lat_max, lat_max + d_lat),
+    )
+
+
 def inherit_parent_maps(source_name: str, stem: str, output_path: Path) -> None:
     """
     Give a split segment the geophysical maps of the recording it came from.
@@ -663,8 +741,13 @@ def write_segment(segment: Segment, source_name: str, output_path: Path, args) -
     lon_max = segment.data["longitude"].max()
     lat_min = segment.data["latitude"].min()
     lat_max = segment.data["latitude"].max()
-    lon_min, lon_max, lat_min, lat_max = inflate_bounds(
-        lon_min, lon_max, lat_min, lat_max, args.buffer
+    lon_min, lon_max, lat_min, lat_max = pad_bounds(
+        lon_min,
+        lon_max,
+        lat_min,
+        lat_max,
+        buffer=args.buffer,
+        margin_km=getattr(args, "margin_km", DEFAULT_MAP_MARGIN_KM),
     )
 
     # Download the maps. See the note at the top of this module for why pygmt is imported
@@ -713,6 +796,19 @@ def add_preprocess_arguments(parser) -> None:
             "Output sample rate in Hz (default 1). The phone's inertial sensors run at "
             "13-100 Hz but its GNSS receiver only reports at ~1 Hz, so a higher rate raises "
             "the inertial propagation rate while GNSS stays where it was actually measured."
+        ),
+    )
+    parser.add_argument(
+        "--margin-km",
+        type=float,
+        default=DEFAULT_MAP_MARGIN_KM,
+        help=(
+            f"Absolute map margin in kilometres, applied on every side in addition to "
+            f"`--buffer` (default {DEFAULT_MAP_MARGIN_KM:g}). The larger of the two wins. "
+            "`--buffer` alone is a fraction of the track's own extent, which under-pads a "
+            "short track and gives a straight one almost no margin in the other axis -- a "
+            "due-north drive has near-zero longitude range, so a fraction of it is near "
+            "zero. The filter then leaves the map mid-run. Set 0 to use `--buffer` alone."
         ),
     )
     parser.add_argument(

@@ -129,7 +129,16 @@ pub enum StrapdownError {
     ///
     /// Routine rather than exceptional: a filter estimate near a tile edge, or any particle
     /// in the tail of the distribution, lands off-map regularly.
-    #[error("{axis} {value} is outside the map bounds [{min}, {max}]")]
+    ///
+    /// When it is *not* routine -- every update on a trajectory failing this way -- the map
+    /// does not extend far enough past the recorded track to cover where the filter wandered,
+    /// which is what the message points at. It shows up first under GNSS denial, where the
+    /// solution runs unaided for a whole outage before the next fix pulls it back.
+    #[error(
+        "{axis} {value} is outside the map bounds [{min}, {max}]. If every update on this \
+         trajectory fails this way, the map does not cover where the filter went: re-run \
+         `just preprocess` with a larger `--margin-km`"
+    )]
     OutOfMapBounds {
         /// Which axis was exceeded, `"latitude"` or `"longitude"`.
         axis: &'static str,
