@@ -29,32 +29,35 @@ check-python:
 # the un-split original would otherwise stay behind, and since the simulator loads every CSV
 # in the directory it would go on being run and go on failing. Everything here is derived
 # from data/raw, which is read-only and is never written by any recipe.
-
-# Rebuild data/input from the Sensor Logger exports in data/raw.
-# preprocess:
-#    uv run analyze preprocess -i data/raw -o data/input -f 1 \
-#        --max-imu-gap-s 5.0 --min-segment-s 300.0 --prune
-
-# The 10 Hz variant. GNSS is only ever recorded at ~1 Hz, so the extra rows carry inertial
-# data only and the GNSS columns stay NaN in 9 bins out of 10 -- which is what gives 10 Hz
-# propagation against 1 Hz aiding. Do not interpolate GNSS up to match.
-
-# Rebuild data/input_10hz from the Sensor Logger exports in data/raw.
+#
+# 10 Hz, into `data/input`. GNSS is only ever recorded at ~1 Hz, so the extra rows carry
+# inertial data only and the GNSS columns stay NaN in 9 bins out of 10 -- which is what gives
+# 10 Hz propagation against 1 Hz aiding. Do not interpolate GNSS up to match.
+#
+# The output directory is what every consumer reads: `input = "data/input"` in all 21
+# conf/*.toml, `-i data/input` in `geo-stats`, and `-r data/input` in `postprocess` and the
+# `geoperf-*` recipes. It wrote to `data/input_10hz` for a while, which nothing downstream
+# read, so `just pipeline` preprocessed into one directory and simulated from whatever stale
+# data happened to be in the other. Change the rate here and everything follows; change the
+# directory and 21 files have to follow it.
+#
+# NOTE: `-b` is a *fraction*, not a percentage -- `inflate_bounds` computes
+# `x_min - x_range * buffer`, and its default is 0.1 for a 10% margin. `-b 10` therefore pads
+# the map bounding box by ten times the track's own extent on each side, a box about 21x wider
+# and 21x taller than the track. Left as you set it, but it looks like `-f 10` copied one flag
+# across: at the default buffer the relief grid for the longest recording here is already
+# 195 MB.
+#
+# Rebuild data/input from data/raw at 10 Hz, splitting recordings at IMU dropouts.
 preprocess:
-    uv run analyze preprocess -i data/raw -o data/input_10hz -f 10 \
+    uv run analyze preprocess -i data/raw -o data/input -f 10 \
         -b 10 --max-imu-gap-s 5.0 --min-segment-s 300.0 --prune
 
-# Characterise the geophysical measurements against the maps they are matched against.
-#
-# Reads data/input -- the *output* of `preprocess`, not data/raw -- because it needs the
-# split, gap-trimmed trajectories and the `_gravity.nc` / `_magnetic.nc` that preprocessing
-# writes beside each one. It is a separate recipe rather than a step inside `preprocess` for
-# that reason: it consumes what preprocessing produces.
-#
-# Writes the per-record residuals, a per-trajectory summary, a paste-ready `[geophysical]`
-# config block and the two-panel histogram figure. The noise standard deviations in
-# conf/*.toml should come from its geo_stats.toml, not from the 100 mGal / 150 nT defaults,
-# which were never measured against anything.
+# Rebuild data/input at 1 Hz instead, matching the rate every result before this branch used.
+preprocess-1hz:
+    uv run analyze preprocess -i data/raw -o data/input -f 1 \
+        --max-imu-gap-s 5.0 --min-segment-s 300.0 --prune
+
 # Measure the geophysical residual against the maps: bias, noise, SNR and figure.
 geo-stats:
     uv run analyze geostats -i data/input -o data/output/geostats
@@ -234,5 +237,9 @@ geoperf-denied:
 pipeline: clean build preprocess geo-stats truth degraded denied jammed ukf-geo ekf-geo rbpf-sim postprocess geoperf-all
 
 # Remove everything the pipeline regenerates. `data/raw` is read-only and is never touched.
+#
+# `data/input_10hz` is included because `preprocess` used to write there. Nothing does now,
+# but a checkout that ran the old recipe still has it, and a stale directory full of
+# trajectories is the kind of thing that gets simulated by accident.
 clean:
     rm -rf data/input data/input_10hz data/output log

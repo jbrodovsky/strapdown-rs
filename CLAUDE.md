@@ -64,7 +64,12 @@ Command-line tool for running INS simulations with GNSS degradation:
 Post-processing and experiment tooling, exposed as the `analyze` CLI:
 - **preprocess.py**: rebuilds `data/input` from the Sensor Logger exports in `data/raw` --
   resampling, splitting recordings at IMU dropouts, and downloading the `_gravity.nc` /
-  `_magnetic.nc` maps beside each trajectory
+  `_magnetic.nc` maps beside each trajectory. `just preprocess` runs it at **10 Hz**, which
+  gives 10 Hz inertial propagation against the ~1 Hz the GNSS was actually recorded at (the
+  GNSS columns stay NaN in nine rows out of ten; do not interpolate them up). `data/input` is
+  the one directory every consumer reads -- all 21 `conf/*.toml`, `geo-stats`, `postprocess`
+  and `geoperf-*` -- so change the rate, not the path. `just preprocess-1hz` is the 1 Hz
+  variant, which is the rate every result before the geophysical fixes used
 - **geostats.py**: characterises the geophysical measurements against those maps -- per-field
   bias, measurement noise and signal-to-noise, plus the de-correlation length that sets
   `geo_interval_s`. Its anomaly models mirror `core/src/earth.rs` and `geonav/src/lib.rs` term
