@@ -19,13 +19,12 @@ Examples
 """
 
 from pathlib import Path
-from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
 
 
-def compute_error_statistics(errors: np.ndarray) -> Dict[str, float]:
+def compute_error_statistics(errors: np.ndarray) -> dict[str, float]:
     """Compute summary statistics for an array of errors.
 
     Parameters
@@ -54,7 +53,9 @@ def compute_error_statistics(errors: np.ndarray) -> Dict[str, float]:
     }
 
 
-def compute_improvement_statistics(geo_stats: Dict[str, float], baseline_stats: Dict[str, float]) -> Dict[str, float]:
+def compute_improvement_statistics(
+    geo_stats: dict[str, float], baseline_stats: dict[str, float]
+) -> dict[str, float]:
     """Compute improvement statistics (geo - baseline, negative = improvement).
 
     Parameters
@@ -76,7 +77,9 @@ def compute_improvement_statistics(geo_stats: Dict[str, float], baseline_stats: 
     }
 
 
-def save_detailed_results_to_csv(results: List[Tuple[str, Dict, Dict, Dict]], filename: str | Path) -> None:
+def save_detailed_results_to_csv(
+    results: list[tuple[str, dict, dict, dict]], filename: str | Path
+) -> None:
     """Save detailed comparison results to a CSV file.
 
     Parameters
@@ -114,7 +117,7 @@ def save_detailed_results_to_csv(results: List[Tuple[str, Dict, Dict, Dict]], fi
 
 
 def format_latex_table(
-    results: List[Tuple[str, Dict[str, float]]],
+    results: list[tuple[str, dict[str, float]]],
     title: str,
     label: str = "tab:comparison_results",
 ) -> str:
@@ -153,7 +156,9 @@ def format_latex_table(
     for traj_name, stats in results:
         # Clean up trajectory name (remove file extension, escape underscores)
         clean_name = str(traj_name).replace(".csv", "").replace("_", "\\_")
-        lines.append(f"    {clean_name} & {stats['rmse']:.2f} & {stats['mean']:.2f} & {stats['median']:.2f} \\\\")
+        lines.append(
+            f"    {clean_name} & {stats['rmse']:.2f} & {stats['mean']:.2f} & {stats['median']:.2f} \\\\"
+        )
 
     # Calculate summary statistics
     rmse_diffs = [s["rmse"] for _, s in results]
@@ -161,11 +166,15 @@ def format_latex_table(
     median_diffs = [s["median"] for _, s in results]
 
     lines.append("    \\midrule")
-    lines.append(f"    mean & {np.mean(rmse_diffs):.2f} & {np.mean(mean_diffs):.2f} & {np.mean(median_diffs):.2f} \\\\")
+    lines.append(
+        f"    mean & {np.mean(rmse_diffs):.2f} & {np.mean(mean_diffs):.2f} & {np.mean(median_diffs):.2f} \\\\"
+    )
     lines.append(
         f"    median & {np.median(rmse_diffs):.2f} & {np.median(mean_diffs):.2f} & {np.median(median_diffs):.2f} \\\\"
     )
-    lines.append(f"    std & {np.std(rmse_diffs):.2f} & {np.std(mean_diffs):.2f} & {np.std(median_diffs):.2f} \\\\")
+    lines.append(
+        f"    std & {np.std(rmse_diffs):.2f} & {np.std(mean_diffs):.2f} & {np.std(median_diffs):.2f} \\\\"
+    )
     lines.append("    \\bottomrule")
     lines.append("    \\end{tabular}")
     lines.append(f"    \\label{{{label}}}")
@@ -174,7 +183,7 @@ def format_latex_table(
     return "\n".join(lines)
 
 
-def print_summary_statistics(results: List[Tuple[str, Dict[str, float]]], label: str) -> None:
+def print_summary_statistics(results: list[tuple[str, dict[str, float]]], label: str) -> None:
     """Print summary statistics for a set of comparison results.
 
     Parameters

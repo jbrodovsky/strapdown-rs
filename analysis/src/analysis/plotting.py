@@ -27,10 +27,17 @@ References
 
 from enum import Enum
 from pathlib import Path
-from typing import Union
+from typing import TYPE_CHECKING
 
 import numpy as np
-import pygmt
+
+if TYPE_CHECKING:  # pragma: no cover - annotation only
+    import pygmt
+
+# pygmt is imported inside `plot_geo_map`, the one function here that uses it. It dlopens
+# the GMT C library on import, so a module-scope import made importing this module -- and
+# therefore `analysis` itself, and therefore every subcommand -- fail wherever GMT is not
+# installed, CI included.
 import xarray as xr
 from cartopy import crs as ccrs
 from cartopy.io import img_tiles as cimgt
@@ -38,7 +45,6 @@ from haversine import Unit, haversine_vector
 from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
 from pandas import DataFrame
-from pygmt.io import load_dataarray
 
 
 def inflate_bounds(
@@ -324,12 +330,12 @@ def plot_street_map(
 
 def plot_geo_map(
     nav: DataFrame | list[float] | None,
-    geo_map: Union[str, Path, xr.DataArray],
+    geo_map: str | Path | xr.DataArray,
     map_type: GeophysicalType,
     gps: DataFrame | None = None,
     margin: float = 0.01,
     title: str | None = None,
-) -> pygmt.Figure:
+) -> "pygmt.Figure":
     """Render a geophysical grid with an overlaid trajectory using PyGMT.
 
     The `geo_map` argument may be a path to a grid file (NetCDF-style) or an
@@ -356,6 +362,10 @@ def plot_geo_map(
         raise ValueError("No valid latitude/longitude points to plot.")
     lat_clean = lat_arr[valid_mask]
     lon_clean = lon_arr[valid_mask]
+
+    # See the note at the top of this module for why pygmt is imported here.
+    import pygmt
+    from pygmt.io import load_dataarray
 
     # Load grid
     if isinstance(geo_map, (str, Path)):

@@ -4,6 +4,18 @@ target
 data/raw
 data/
 
+# Python build and cache artefacts. `analysis/` is a checked-in workspace member as of the
+# monorepo change, so these need naming explicitly -- the blanket `analysis/` ignore that
+# used to cover them is gone, and the first commit of the package brought eight .pyc files
+# with it.
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+
 # Map files
 *.nc
 
@@ -43,7 +55,8 @@ book/book/
 data/output/*.png
 
 # Research artifacts kept locally, out of the v1.0 release scope.
-# See papers/README.md for where these live now.
+# See papers/README.md for where these live now. `analysis/` used to be on this list; it is a
+# checked-in workspace member now, but these loose scripts and notebooks are not.
 papers/anomaly_rbpf/
 papers/anomaly_ukf/
 papers/data_paper/
@@ -52,9 +65,10 @@ analysis_rbpf_results.py
 README_files/
 log/
 
-# Analysis notebooks, untracked in #335 for the same reason as analysis/: they import pygmt,
-# cartopy, numpy and filterpy against the Python environment that pixi used to provide, and
-# nothing in this Rust-only repository can run them. Kept on disk, out of the index. The map
-# provenance they used to be the only record of now lives in geonav/README.md.
+# Analysis notebooks, untracked in #335. They import pygmt, cartopy, numpy and filterpy
+# against the Python environment pixi used to provide. `analysis/` is now a checked-in
+# workspace member with its own dependency set, so a notebook worth keeping should move
+# there rather than be un-ignored here. The map provenance they used to be the only record
+# of now lives in geonav/README.md.
 examples/geonav-sim/
 examples/strapdown-sim/

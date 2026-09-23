@@ -60,6 +60,20 @@ Command-line tool for running INS simulations with GNSS degradation:
 - Built-in logging: Use `--log-level` and `--log-file` flags (see LOGGING.md for details)
 - Status: Experimental feature for research, may be commercialized in future roadmap
 
+### 4. `analysis` (/analysis, Python)
+Post-processing and experiment tooling, exposed as the `analyze` CLI:
+- **preprocess.py**: rebuilds `data/input` from the Sensor Logger exports in `data/raw` --
+  resampling, splitting recordings at IMU dropouts, and downloading the `_gravity.nc` /
+  `_magnetic.nc` maps beside each trajectory
+- **geostats.py**: characterises the geophysical measurements against those maps -- per-field
+  bias, measurement noise and signal-to-noise, plus the de-correlation length that sets
+  `geo_interval_s`. Its anomaly models mirror `core/src/earth.rs` and `geonav/src/lib.rs` term
+  for term, and `self_check()` asserts they still agree; a statistic computed from a
+  *differently* computed anomaly would describe a quantity the filter never sees
+- **compare.py / plotting.py**: error statistics, LaTeX tables and map figures
+
+Run it with `uv run analyze <subcommand>` from the repository root.
+
 ## Common Commands
 
 ### Build & Test
@@ -275,13 +289,29 @@ is the whole setup.
   set, even with `static` on, and the vendored netCDF build then fails against those headers
 - libfontconfig is a *runtime* dependency of `strapdown-sim`'s `plotting` feature (`dlopen`ed),
   not a build-time one
-- The repository is **Rust-only** -- the Python `analysis/` package was untracked in `c5f72c6`
-  when the repo was scoped to the v1.0 crate set, and the notebooks under `examples/` were
-  untracked in #335 for the same reason
+- The repository is a **two-language monorepo**: three Rust crates in a Cargo workspace, and
+  the Python `analysis` package in a uv workspace declared by the root `pyproject.toml`. The
+  two share the directory and nothing else -- `analysis/` is not a Cargo member and the crates
+  are not uv members. `analysis/` was untracked between `c5f72c6` and the monorepo change; the
+  notebooks under `examples/` are still untracked
+- **Python setup is `uv sync` from the repository root.** That builds the `analysis` member and
+  puts its `analyze` CLI on `uv run`, which is why the justfile recipes say `uv run analyze ...`
+  and not `uv run --project analysis ...`
+- **pygmt is imported inside the functions that use it, never at module scope.** It `dlopen`s
+  the GMT C library on import, so a module-scope import makes importing `analysis` at all fail
+  wherever GMT is absent -- which took down every subcommand, including the ones that touch no
+  maps, and would take down CI. `.github/workflows/python.yml` deliberately installs no GMT, so
+  it is what keeps this true
 
 ### Lint Policy
-Lints are **enforced at `deny`**, workspace-wide, not warn-level. `cargo lint` and one of the
-blocking CI jobs run `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
+
+**Python.** `uv run ruff check`, `uv run ruff format --check` and `uv run pytest -q` from the
+repository root, which is what `.github/workflows/python.yml` runs and what `just check-python`
+wraps. Configuration is `[tool.ruff]` in the root `pyproject.toml`; `target-version` there and
+`requires-python` in `analysis/pyproject.toml` must agree.
+
+**Rust.** Lints are **enforced at `deny`**, workspace-wide, not warn-level. `cargo lint` and one
+of the blocking CI jobs run `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
 
 **That is only half the gate.** A second blocking job runs
 `cargo clippy -p strapdown-core --all-targets --no-default-features -- -D warnings`, and the

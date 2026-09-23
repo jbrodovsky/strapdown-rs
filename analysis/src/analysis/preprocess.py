@@ -5,21 +5,20 @@ Module for preprocessing data from the [sensor logger](https://github.com/tszhei
 import os
 import shutil
 from argparse import ArgumentParser
-from concurrent import futures
 from pathlib import Path
 from typing import NamedTuple
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from pygmt.datasets import (
-    load_earth_free_air_anomaly,
-    load_earth_magnetic_anomaly,
-    load_earth_relief,
-)
 from tqdm import tqdm
 
 from analysis.plotting import inflate_bounds, plot_street_map
+
+# pygmt is imported inside `download_maps` rather than here. It dlopens the GMT C library on
+# import, so a module-scope import makes *importing this module* fail on a machine without
+# GMT -- and `analysis/__init__.py` imports it, so that took down every subcommand including
+# ones that touch no maps at all. Only map downloading needs it.
 
 # The columns `build_event_stream` requires before it will emit an `Event::Imu`. A row missing
 # any one of them is invisible to the simulator's propagation step, so a run of such rows is a
@@ -153,7 +152,7 @@ def split_on_imu_gaps(
 
     split = len(starts) > 1
     segments: list[Segment] = []
-    for position, (lo, hi) in enumerate(zip(starts, ends)):
+    for position, (lo, hi) in enumerate(zip(starts, ends, strict=True)):
         label = segment_label(position) if split else ""
         window = data.iloc[lo : hi + 1]
         ready = np.flatnonzero(window[list(INIT_COLUMNS)].notna().all(axis=1).to_numpy())
@@ -234,9 +233,7 @@ def clean_phone_data(dataset_path: Path | str, frequency: int = 1) -> pd.DataFra
     assert os.path.exists(os.path.join(dataset_path, "Barometer.csv")), (
         "Barometer.csv does not exist."
     )
-    assert os.path.exists(os.path.join(dataset_path, "Gravity.csv")), (
-        "Gravity.csv does not exist."
-    )
+    assert os.path.exists(os.path.join(dataset_path, "Gravity.csv")), "Gravity.csv does not exist."
     try:
         assert os.path.exists(os.path.join(dataset_path, "LocationGps.csv")), (
             "LocationGps.csv does not exist."
@@ -250,18 +247,12 @@ def clean_phone_data(dataset_path: Path | str, frequency: int = 1) -> pd.DataFra
     )
     # Read in raw data
     gyroscope = pd.read_csv(os.path.join(dataset_path, "Gyroscope.csv"), index_col=0)
-    magnetometer = pd.read_csv(
-        os.path.join(dataset_path, "Magnetometer.csv"), index_col=0
-    )
+    magnetometer = pd.read_csv(os.path.join(dataset_path, "Magnetometer.csv"), index_col=0)
     barometer = pd.read_csv(os.path.join(dataset_path, "Barometer.csv"), index_col=0)
     gravity = pd.read_csv(os.path.join(dataset_path, "Gravity.csv"), index_col=0)
-    orientation = pd.read_csv(
-        os.path.join(dataset_path, "Orientation.csv"), index_col=0
-    )
+    orientation = pd.read_csv(os.path.join(dataset_path, "Orientation.csv"), index_col=0)
     try:
-        location = pd.read_csv(
-            os.path.join(dataset_path, "LocationGps.csv"), index_col=0
-        )
+        location = pd.read_csv(os.path.join(dataset_path, "LocationGps.csv"), index_col=0)
     except FileNotFoundError:
         location = pd.read_csv(os.path.join(dataset_path, "Location.csv"), index_col=0)
     try:
@@ -270,9 +261,7 @@ def clean_phone_data(dataset_path: Path | str, frequency: int = 1) -> pd.DataFra
         )
     except FileNotFoundError as e:
         print(f"TotalAcceleration.csv not found, using Accelerometer.csv instead: {e}")
-        accelerometer = pd.read_csv(
-            os.path.join(dataset_path, "Accelerometer.csv"), index_col=0
-        )
+        accelerometer = pd.read_csv(os.path.join(dataset_path, "Accelerometer.csv"), index_col=0)
         accelerometer["x"] += gravity["x"]
         accelerometer["y"] += gravity["y"]
         accelerometer["z"] += gravity["z"]
@@ -293,12 +282,8 @@ def clean_phone_data(dataset_path: Path | str, frequency: int = 1) -> pd.DataFra
     location.drop(columns=["seconds_elapsed"], inplace=True)
     orientation.drop(columns=["seconds_elapsed"], inplace=True)
     # Rename columns
-    magnetometer = magnetometer.rename(
-        columns={"x": "mag_x", "y": "mag_y", "z": "mag_z"}
-    )
-    accelerometer = accelerometer.rename(
-        columns={"x": "acc_x", "y": "acc_y", "z": "acc_z"}
-    )
+    magnetometer = magnetometer.rename(columns={"x": "mag_x", "y": "mag_y", "z": "mag_z"})
+    accelerometer = accelerometer.rename(columns={"x": "acc_x", "y": "acc_y", "z": "acc_z"})
     gyroscope = gyroscope.rename(columns={"x": "gyro_x", "y": "gyro_y", "z": "gyro_z"})
     gravity = gravity.rename(columns={"x": "grav_x", "y": "grav_y", "z": "grav_z"})
     # Merge dataframes
@@ -340,9 +325,6 @@ def preprocess_data(args):
     """Preprocess the data based on the provided arguments."""
     input_path = Path(args.input)
     output_path = Path(args.output)
-    # Find all CSV files under the input directory
-    all_csv = list(input_path.rglob("*.csv"))
-
     # Check for folders directly under input that contain CSV files.
     datasets = [d for d in input_path.iterdir() if d.is_dir() and any(d.glob("*.csv"))]
 
@@ -352,9 +334,7 @@ def preprocess_data(args):
 
     # Check to see if datasets in empty, if true ask if the user would lke to download the dataset
     if not datasets:
-        download = input(
-            "No datasets found. Would you like to download the dataset? (y/n): "
-        )
+        download = input("No datasets found. Would you like to download the dataset? (y/n): ")
         if download.lower() == "y":
             # Code to download the dataset goes here
             print("Fetch script is currently not implemented")
@@ -363,9 +343,7 @@ def preprocess_data(args):
             print("No datasets found. Exiting.")
             return
 
-    print(
-        f"Preprocessing data from {args.input}. Output will be saved to {args.output}."
-    )
+    print(f"Preprocessing data from {args.input}. Output will be saved to {args.output}.")
     output_path.mkdir(parents=True, exist_ok=True)
 
     manifest: list[dict] = []
@@ -506,16 +484,12 @@ def report_orphans(manifest: list[dict], output_path: Path, prune: bool = False)
         reason -- this directory is the user's.
     """
     expected = {row["output"] for row in manifest if row.get("output")}
-    orphans = sorted(
-        path for path in output_path.glob("*.csv") if path.name not in expected
-    )
+    orphans = sorted(path for path in output_path.glob("*.csv") if path.name not in expected)
     if not orphans:
         return
 
     healthy = {
-        row["source"]
-        for row in manifest
-        if not str(row.get("status", "")).startswith("error")
+        row["source"] for row in manifest if not str(row.get("status", "")).startswith("error")
     }
     print(
         f"Found {len(orphans)} CSV file(s) in {output_path} that this run did not write. "
@@ -591,9 +565,7 @@ def segment_recording(cleaned_data: pd.DataFrame, args) -> list[Segment]:
     if args.no_split:
         span = 0.0
         if not cleaned_data.empty:
-            span = float(
-                (cleaned_data.index[-1] - cleaned_data.index[0]).total_seconds()
-            )
+            span = float((cleaned_data.index[-1] - cleaned_data.index[0]).total_seconds())
         return [Segment("", cleaned_data, 0.0, span, span, "kept")]
     return split_on_imu_gaps(
         cleaned_data,
@@ -695,10 +667,15 @@ def write_segment(segment: Segment, source_name: str, output_path: Path, args) -
         lon_min, lon_max, lat_min, lat_max, args.buffer
     )
 
-    # Download the maps
-    relief = load_earth_relief(
-        resolution="15s", region=[lon_min, lon_max, lat_min, lat_max]
+    # Download the maps. See the note at the top of this module for why pygmt is imported
+    # here rather than at module scope.
+    from pygmt.datasets import (
+        load_earth_free_air_anomaly,
+        load_earth_magnetic_anomaly,
+        load_earth_relief,
     )
+
+    relief = load_earth_relief(resolution="15s", region=[lon_min, lon_max, lat_min, lat_max])
     relief.to_netcdf(output_path / f"{stem}_relief.nc")
 
     gravity = load_earth_free_air_anomaly(

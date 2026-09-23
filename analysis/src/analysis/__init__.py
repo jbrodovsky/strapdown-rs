@@ -18,8 +18,14 @@ from analysis.compare import (
     print_summary_statistics,
     save_detailed_results_to_csv,
 )
-from analysis.plotting import plot_performance, plot_relative_performance
+from analysis.geostats import add_geostats_arguments, geostats_analysis
 from analysis.preprocess import add_preprocess_arguments, preprocess_data
+
+# `analysis.plotting` is NOT imported here. It imports pygmt at module scope, and pygmt
+# dlopens the GMT C library on import -- so an eager import made *every* subcommand, and
+# importing the package at all, fail on a machine without GMT installed. Only `performance`
+# and `geoperformance` actually draw maps; `preprocess` and `geostats` do not, and CI has no
+# GMT. The two call sites import it where they use it.
 
 __version__ = "0.1.0"
 
@@ -67,7 +73,9 @@ def main() -> None:
     )
     add_preprocess_arguments(preprocess)
 
-    performance = command.add_parser("performance", help="Generate performance plots from mechanization results.")
+    performance = command.add_parser(
+        "performance", help="Generate performance plots from mechanization results."
+    )
     performance.add_argument(
         "-p",
         "--processed",
@@ -89,7 +97,9 @@ def main() -> None:
         default="data/output",
     )
 
-    geoperformance = command.add_parser("geoperformance", help="Generate geophysical performance plots.")
+    geoperformance = command.add_parser(
+        "geoperformance", help="Generate geophysical performance plots."
+    )
     geoperformance.add_argument(
         "-p",
         "--processed",
@@ -141,6 +151,12 @@ def main() -> None:
     )
 
     # Compare filters command for cross-filter comparison
+    geostats = command.add_parser(
+        "geostats",
+        help="Characterise the geophysical measurements against the maps they are matched to.",
+    )
+    add_geostats_arguments(geostats)
+
     compare_filters = command.add_parser(
         "compare-filters",
         help="Compare performance across different filter modalities (e.g., RBPF vs UKF vs EKF).",
@@ -190,6 +206,8 @@ def main() -> None:
         performance_analysis(args)
     elif args.command == "geoperformance":
         geophysical_performance_analysis(args)
+    elif args.command == "geostats":
+        geostats_analysis(args)
     else:
         parser.print_help()
 
@@ -240,18 +258,26 @@ def performance_analysis(args):
             print(f"Reference file for {dataset.name} not found in {reference_path}. Skipping.")
             continue
         output_plot = output_path / f"{dataset.stem}_performance.png"
-        print(f"Processing dataset {dataset} ({len(nav)}) with reference {reference_file.name} ({len(gps)})")
+        print(
+            f"Processing dataset {dataset} ({len(nav)}) with reference {reference_file.name} ({len(gps)})"
+        )
         try:
+            from analysis.plotting import plot_performance
+
             plot_performance(nav, gps, output_plot)
         except Exception as e:
-            print(f"Error plotting performance for {dataset.name}, possible dimension mismatch or missing data: {e}")
+            print(
+                f"Error plotting performance for {dataset.name}, possible dimension mismatch or missing data: {e}"
+            )
             continue
         two_d_error = haversine_vector(
             gps[["latitude", "longitude"]].to_numpy(),
             nav[["latitude", "longitude"]].to_numpy(),
             Unit.METERS,
         )
-        three_d_error = np.sqrt(two_d_error**2 + (gps["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2)
+        three_d_error = np.sqrt(
+            two_d_error**2 + (gps["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2
+        )
         summary_df.loc[dataset.stem] = [
             np.nanmin(two_d_error),
             np.nanmax(two_d_error),
@@ -375,6 +401,8 @@ def geophysical_performance_analysis(args):
         try:
             # Generate plot if enabled
             if generate_plots:
+                from analysis.plotting import plot_relative_performance
+
                 plot_relative_performance(geo, degraded_nav, nav, output_plot)
 
             # Compute haversine errors
@@ -413,23 +441,47 @@ def geophysical_performance_analysis(args):
                 np.nanmax(geo["altitude"].to_numpy() - nav["altitude"].to_numpy()),
                 np.nanmean(geo["altitude"].to_numpy() - nav["altitude"].to_numpy()),
                 np.sqrt(np.nanmean((geo["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2))
-                - np.sqrt(np.nanmean((degraded_nav["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2)),
+                - np.sqrt(
+                    np.nanmean(
+                        (degraded_nav["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2
+                    )
+                ),
                 np.nanmin(
-                    np.sqrt(geo_error**2 + (geo["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2)
-                    - np.sqrt(deg_error**2 + (degraded_nav["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2)
+                    np.sqrt(
+                        geo_error**2
+                        + (geo["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2
+                    )
+                    - np.sqrt(
+                        deg_error**2
+                        + (degraded_nav["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2
+                    )
                 ),
                 np.nanmax(
-                    np.sqrt(geo_error**2 + (geo["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2)
-                    - np.sqrt(deg_error**2 + (degraded_nav["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2)
+                    np.sqrt(
+                        geo_error**2
+                        + (geo["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2
+                    )
+                    - np.sqrt(
+                        deg_error**2
+                        + (degraded_nav["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2
+                    )
                 ),
                 np.nanmean(
-                    np.sqrt(geo_error**2 + (geo["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2)
-                    - np.sqrt(deg_error**2 + (degraded_nav["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2)
+                    np.sqrt(
+                        geo_error**2
+                        + (geo["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2
+                    )
+                    - np.sqrt(
+                        deg_error**2
+                        + (degraded_nav["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2
+                    )
                 ),
                 geo_rmse - deg_rmse,
             ]
         except Exception as e:
-            print(f"Error processing {dataset.name}, possible dimension mismatch or missing data: {e}")
+            print(
+                f"Error processing {dataset.name}, possible dimension mismatch or missing data: {e}"
+            )
             continue
 
     # Add summary statistics to DataFrame

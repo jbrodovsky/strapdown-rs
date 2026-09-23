@@ -11,7 +11,14 @@ dependencies = [
     "cartopy>=0.25.0",
     "haversine>=2.9.0",
     "matplotlib>=3.10.8",
+    # NetCDF backend for xarray, so `geostats` can read the .nc maps `preprocess` writes.
+    # xarray arrives via pygmt but brings no engine of its own.
+    "netcdf4>=1.7.0",
     "numpy>=2.4.0",
+    # Pure-Python World Magnetic Model. `geostats` needs the core field to turn a
+    # magnetometer reading into an anomaly; without it the "anomaly" is the whole ~50,000 nT
+    # total field. Agrees with the `world_magnetic_model` crate the Rust side uses.
+    "pygeomag>=1.1.0",
     "pandas>=2.3.3",
     "pygmt>=0.17.0",
     "scipy>=1.16.3",
@@ -21,6 +28,12 @@ dependencies = [
 [build-system]
 requires = ["uv_build>=0.9.21,<0.10.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.14",
+]
 
 [project.scripts]
 analyze = "analysis.__init__:main"

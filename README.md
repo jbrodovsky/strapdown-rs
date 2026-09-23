@@ -20,9 +20,34 @@ The primary contributions of this project are:
 
 Additionally experimental research is being conducted on improving the accuracy and robustness of strapdown INS algorithms under degraded and denied GNSS conditions by providing an alternative PNT solution in the form of geophysical anomaly data (`strapdown-geonav`: /geonav). This is an area of active research.
 
+## Repository layout
+
+The repository is a two-language monorepo. The Rust crates are a Cargo workspace; the Python
+package is a [uv](https://docs.astral.sh/uv/) workspace declared by the root `pyproject.toml`.
+Neither is a member of the other.
+
+| Path | Language | What it is |
+|---|---|---|
+| [`core/`](core/) | Rust | `strapdown-core` -- the mechanization, the filters and the simulation framework |
+| [`sim/`](sim/) | Rust | `strapdown-sim` -- the command-line simulator |
+| [`geonav/`](geonav/) | Rust | `strapdown-geonav` -- experimental gravity and magnetic anomaly aiding |
+| [`analysis/`](analysis/) | Python | the `analyze` CLI: preprocessing, measurement characterisation and performance analysis |
+
 ## Installation
 
 To use `strapdown-rs`, you can add it as a dependency in your `Cargo.toml` file: `cargo add strapdown-rs`. You can install the whole package or just the core library. Similarly you can install the simulation binary `cargo install strapdown-sim`.
+
+To work on the repository itself, build both halves:
+
+```bash
+cargo build --workspace --release   # the Rust crates; the toolchain fetches itself
+uv sync                             # the analysis package, from the workspace root
+```
+
+`just setup` runs both. Nothing beyond Rust and uv is needed for the Rust crates; the
+`analyze` CLI's map-drawing subcommands additionally want the GMT C library installed, though
+every other subcommand -- preprocessing and measurement characterisation included -- runs
+without it.
 
 ## Runnable examples
 

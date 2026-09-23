@@ -1,6 +1,18 @@
+# Install both halves of the monorepo: the Rust toolchain fetches itself on the first cargo
+# command, and `uv sync` builds the `analysis` workspace member from the root pyproject.toml.
+setup:
+    cargo fetch
+    uv sync
+
 # Build the project in release mode
 build:
     cargo build --release --workspace --all-features
+
+# Lint and test the Python half, the same four commands .github/workflows/python.yml runs.
+check-python:
+    uv run ruff check
+    uv run ruff format --check
+    uv run pytest -q
 
 # Rebuild data/input from the Sensor Logger exports in data/raw. `data/raw` is read-only --
 # nothing in this repo may write to it.
@@ -19,7 +31,7 @@ build:
 
 # Rebuild data/input from the Sensor Logger exports in data/raw.
 # preprocess:
-#    uv run --project analysis analyze preprocess -i data/raw -o data/input -f 1 \
+#    uv run analyze preprocess -i data/raw -o data/input -f 1 \
 #        --max-imu-gap-s 5.0 --min-segment-s 300.0 --prune
 
 # The 10 Hz variant. GNSS is only ever recorded at ~1 Hz, so the extra rows carry inertial
@@ -28,8 +40,22 @@ build:
 
 # Rebuild data/input_10hz from the Sensor Logger exports in data/raw.
 preprocess:
-    uv run --project analysis analyze preprocess -i data/raw -o data/input_10hz -f 10 \
+    uv run analyze preprocess -i data/raw -o data/input_10hz -f 10 \
         -b 10 --max-imu-gap-s 5.0 --min-segment-s 300.0 --prune
+
+# Characterise the geophysical measurements against the maps they are matched against.
+#
+# Reads data/input -- the *output* of `preprocess`, not data/raw -- because it needs the
+# split, gap-trimmed trajectories and the `_gravity.nc` / `_magnetic.nc` that preprocessing
+# writes beside each one. It is a separate recipe rather than a step inside `preprocess` for
+# that reason: it consumes what preprocessing produces.
+#
+# Writes the per-record residuals, a per-trajectory summary, a paste-ready `[geophysical]`
+# config block and the two-panel histogram figure. The noise standard deviations in
+# conf/*.toml should come from its geo_stats.toml, not from the 100 mGal / 150 nT defaults,
+# which were never measured against anything.
+geo-stats:
+    uv run analyze geostats -i data/input -o data/output/geostats
 
 # Run the truth configurations.
 truth:
@@ -140,27 +166,28 @@ rbpf-sim:
     -./target/release/strapdown-sim --config conf/rbpf_mag.toml
     -./target/release/strapdown-sim --config conf/rbpf_both.toml
 
-# Performance postprocessing for all scenarios. `analyze` is the analysis/ package's CLI --
-# gitignored local tooling, not part of this Rust-only repo (see CLAUDE.md) -- so it's run via
-# `uv run --project analysis` rather than assumed to be on PATH.
+# Performance postprocessing for all scenarios. `analyze` is the analysis/ package's CLI. It
+# is a checked-in member of the uv workspace declared in the root pyproject.toml, so `uv run`
+# from the repository root resolves it -- no `--project analysis`, and no assumption that it
+# is on PATH.
 
 # Postprocess the performance of all scenarios.
 postprocess:
-    -uv run --project analysis analyze performance --processed data/output/ukf/truth --reference data/input/ --output data/output/ukf/truth/performance
-    -uv run --project analysis analyze performance --processed data/output/ukf/degraded --reference data/input/ --output data/output/ukf/degraded/performance
-    -uv run --project analysis analyze performance --processed data/output/ukf/both --reference data/input/ --output data/output/ukf/both/performance
-    -uv run --project analysis analyze performance --processed data/output/ukf/grav --reference data/input/ --output data/output/ukf/grav/performance
-    -uv run --project analysis analyze performance --processed data/output/ukf/mag --reference data/input/ --output data/output/ukf/mag/performance
-    -uv run --project analysis analyze performance --processed data/output/ekf/truth --reference data/input/ --output data/output/ekf/truth/performance
-    -uv run --project analysis analyze performance --processed data/output/ekf/degraded --reference data/input/ --output data/output/ekf/degraded/performance
-    -uv run --project analysis analyze performance --processed data/output/ekf/both --reference data/input/ --output data/output/ekf/both/performance
-    -uv run --project analysis analyze performance --processed data/output/ekf/grav --reference data/input/ --output data/output/ekf/grav/performance
-    -uv run --project analysis analyze performance --processed data/output/ekf/mag --reference data/input/ --output data/output/ekf/mag/performance
-    -uv run --project analysis analyze performance --processed data/output/rbpf/truth --reference data/input/ --output data/output/rbpf/truth/performance
-    -uv run --project analysis analyze performance --processed data/output/rbpf/degraded --reference data/input/ --output data/output/rbpf/degraded/performance
-    -uv run --project analysis analyze performance --processed data/output/rbpf/both --reference data/input/ --output data/output/rbpf/both/performance
-    -uv run --project analysis analyze performance --processed data/output/rbpf/grav --reference data/input/ --output data/output/rbpf/grav/performance
-    -uv run --project analysis analyze performance --processed data/output/rbpf/mag --reference data/input/ --output data/output/rbpf/mag/performance
+    -uv run analyze performance --processed data/output/ukf/truth --reference data/input/ --output data/output/ukf/truth/performance
+    -uv run analyze performance --processed data/output/ukf/degraded --reference data/input/ --output data/output/ukf/degraded/performance
+    -uv run analyze performance --processed data/output/ukf/both --reference data/input/ --output data/output/ukf/both/performance
+    -uv run analyze performance --processed data/output/ukf/grav --reference data/input/ --output data/output/ukf/grav/performance
+    -uv run analyze performance --processed data/output/ukf/mag --reference data/input/ --output data/output/ukf/mag/performance
+    -uv run analyze performance --processed data/output/ekf/truth --reference data/input/ --output data/output/ekf/truth/performance
+    -uv run analyze performance --processed data/output/ekf/degraded --reference data/input/ --output data/output/ekf/degraded/performance
+    -uv run analyze performance --processed data/output/ekf/both --reference data/input/ --output data/output/ekf/both/performance
+    -uv run analyze performance --processed data/output/ekf/grav --reference data/input/ --output data/output/ekf/grav/performance
+    -uv run analyze performance --processed data/output/ekf/mag --reference data/input/ --output data/output/ekf/mag/performance
+    -uv run analyze performance --processed data/output/rbpf/truth --reference data/input/ --output data/output/rbpf/truth/performance
+    -uv run analyze performance --processed data/output/rbpf/degraded --reference data/input/ --output data/output/rbpf/degraded/performance
+    -uv run analyze performance --processed data/output/rbpf/both --reference data/input/ --output data/output/rbpf/both/performance
+    -uv run analyze performance --processed data/output/rbpf/grav --reference data/input/ --output data/output/rbpf/grav/performance
+    -uv run analyze performance --processed data/output/rbpf/mag --reference data/input/ --output data/output/rbpf/mag/performance
 
 # Geophysical performance analysis for all filter types. Each geo-aided run is scored twice:
 #
@@ -177,18 +204,18 @@ postprocess:
 
 # Run the geophysical performance analysis for all filter types.
 geoperf-all:
-    -uv run --project analysis analyze geoperformance -p data/output/ukf/grav -d data/output/ukf/degraded -r data/input -o data/output/ukf/grav/analysis -f ukf --geo-type grav
-    -uv run --project analysis analyze geoperformance -p data/output/ukf/mag -d data/output/ukf/degraded -r data/input -o data/output/ukf/mag/analysis -f ukf --geo-type mag
-    -uv run --project analysis analyze geoperformance -p data/output/ukf/both -d data/output/ukf/degraded -r data/input -o data/output/ukf/both/analysis -f ukf --geo-type both
-    -uv run --project analysis analyze geoperformance -p data/output/ekf/grav -d data/output/ekf/degraded -r data/input -o data/output/ekf/grav/analysis -f ekf --geo-type grav
-    -uv run --project analysis analyze geoperformance -p data/output/ekf/mag -d data/output/ekf/degraded -r data/input -o data/output/ekf/mag/analysis -f ekf --geo-type mag
-    -uv run --project analysis analyze geoperformance -p data/output/ekf/both -d data/output/ekf/degraded -r data/input -o data/output/ekf/both/analysis -f ekf --geo-type both
-    -uv run --project analysis analyze geoperformance -p data/output/rbpf/grav -d data/output/rbpf/degraded -r data/input -o data/output/rbpf/grav/analysis/rbpf -f rbpf --geo-type grav
-    -uv run --project analysis analyze geoperformance -p data/output/rbpf/mag -d data/output/rbpf/degraded -r data/input -o data/output/rbpf/mag/analysis/rbpf -f rbpf --geo-type mag
-    -uv run --project analysis analyze geoperformance -p data/output/rbpf/both -d data/output/rbpf/degraded -r data/input -o data/output/rbpf/both/analysis/rbpf -f rbpf --geo-type both
-    -uv run --project analysis analyze geoperformance -p data/output/rbpf/grav -d data/output/ekf/degraded -r data/input -o data/output/rbpf/grav/analysis/ins -f rbpf --geo-type grav
-    -uv run --project analysis analyze geoperformance -p data/output/rbpf/mag -d data/output/ekf/degraded -r data/input -o data/output/rbpf/mag/analysis/ins -f rbpf --geo-type mag
-    -uv run --project analysis analyze geoperformance -p data/output/rbpf/both -d data/output/ekf/degraded -r data/input -o data/output/rbpf/both/analysis/ins -f rbpf --geo-type both
+    -uv run analyze geoperformance -p data/output/ukf/grav -d data/output/ukf/degraded -r data/input -o data/output/ukf/grav/analysis -f ukf --geo-type grav
+    -uv run analyze geoperformance -p data/output/ukf/mag -d data/output/ukf/degraded -r data/input -o data/output/ukf/mag/analysis -f ukf --geo-type mag
+    -uv run analyze geoperformance -p data/output/ukf/both -d data/output/ukf/degraded -r data/input -o data/output/ukf/both/analysis -f ukf --geo-type both
+    -uv run analyze geoperformance -p data/output/ekf/grav -d data/output/ekf/degraded -r data/input -o data/output/ekf/grav/analysis -f ekf --geo-type grav
+    -uv run analyze geoperformance -p data/output/ekf/mag -d data/output/ekf/degraded -r data/input -o data/output/ekf/mag/analysis -f ekf --geo-type mag
+    -uv run analyze geoperformance -p data/output/ekf/both -d data/output/ekf/degraded -r data/input -o data/output/ekf/both/analysis -f ekf --geo-type both
+    -uv run analyze geoperformance -p data/output/rbpf/grav -d data/output/rbpf/degraded -r data/input -o data/output/rbpf/grav/analysis/rbpf -f rbpf --geo-type grav
+    -uv run analyze geoperformance -p data/output/rbpf/mag -d data/output/rbpf/degraded -r data/input -o data/output/rbpf/mag/analysis/rbpf -f rbpf --geo-type mag
+    -uv run analyze geoperformance -p data/output/rbpf/both -d data/output/rbpf/degraded -r data/input -o data/output/rbpf/both/analysis/rbpf -f rbpf --geo-type both
+    -uv run analyze geoperformance -p data/output/rbpf/grav -d data/output/ekf/degraded -r data/input -o data/output/rbpf/grav/analysis/ins -f rbpf --geo-type grav
+    -uv run analyze geoperformance -p data/output/rbpf/mag -d data/output/ekf/degraded -r data/input -o data/output/rbpf/mag/analysis/ins -f rbpf --geo-type mag
+    -uv run analyze geoperformance -p data/output/rbpf/both -d data/output/ekf/degraded -r data/input -o data/output/rbpf/both/analysis/ins -f rbpf --geo-type both
 
 # The RBPF half of `geoperf-all`, for iterating on the particle filter without re-scoring the
 # UKF and EKF. These six lines must stay byte-identical to their counterparts above, output
@@ -197,12 +224,12 @@ geoperf-all:
 
 # Run the geophysical performance analysis for the RBPF only.
 geoperf-rbpf:
-    -uv run --project analysis analyze geoperformance -p data/output/rbpf/grav -d data/output/rbpf/degraded -r data/input -o data/output/rbpf/grav/analysis/rbpf -f rbpf --geo-type grav
-    -uv run --project analysis analyze geoperformance -p data/output/rbpf/mag -d data/output/rbpf/degraded -r data/input -o data/output/rbpf/mag/analysis/rbpf -f rbpf --geo-type mag
-    -uv run --project analysis analyze geoperformance -p data/output/rbpf/both -d data/output/rbpf/degraded -r data/input -o data/output/rbpf/both/analysis/rbpf -f rbpf --geo-type both
-    -uv run --project analysis analyze geoperformance -p data/output/rbpf/grav -d data/output/ekf/degraded -r data/input -o data/output/rbpf/grav/analysis/ins -f rbpf --geo-type grav
-    -uv run --project analysis analyze geoperformance -p data/output/rbpf/mag -d data/output/ekf/degraded -r data/input -o data/output/rbpf/mag/analysis/ins -f rbpf --geo-type mag
-    -uv run --project analysis analyze geoperformance -p data/output/rbpf/both -d data/output/ekf/degraded -r data/input -o data/output/rbpf/both/analysis/ins -f rbpf --geo-type both
+    -uv run analyze geoperformance -p data/output/rbpf/grav -d data/output/rbpf/degraded -r data/input -o data/output/rbpf/grav/analysis/rbpf -f rbpf --geo-type grav
+    -uv run analyze geoperformance -p data/output/rbpf/mag -d data/output/rbpf/degraded -r data/input -o data/output/rbpf/mag/analysis/rbpf -f rbpf --geo-type mag
+    -uv run analyze geoperformance -p data/output/rbpf/both -d data/output/rbpf/degraded -r data/input -o data/output/rbpf/both/analysis/rbpf -f rbpf --geo-type both
+    -uv run analyze geoperformance -p data/output/rbpf/grav -d data/output/ekf/degraded -r data/input -o data/output/rbpf/grav/analysis/ins -f rbpf --geo-type grav
+    -uv run analyze geoperformance -p data/output/rbpf/mag -d data/output/ekf/degraded -r data/input -o data/output/rbpf/mag/analysis/ins -f rbpf --geo-type mag
+    -uv run analyze geoperformance -p data/output/rbpf/both -d data/output/ekf/degraded -r data/input -o data/output/rbpf/both/analysis/ins -f rbpf --geo-type both
 
 
 # Run the full analysis pipeline for all configurations.

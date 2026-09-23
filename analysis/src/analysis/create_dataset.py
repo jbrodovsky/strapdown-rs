@@ -16,16 +16,15 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import List, Tuple
 
 DEFAULT_BIN = Path("target/release/strapdown-sim")
 DEFAULT_INPUT = Path("data/input")
 DEFAULT_OUTPUT_ROOT = Path("data")
 
 # Filter types to use for dataset generation
-FILTER_TYPES: List[str] = ["ukf", "ekf"]
+FILTER_TYPES: list[str] = ["ukf", "ekf"]
 
-CONFIGS: List[Tuple[str, List[str]]] = [
+CONFIGS: list[tuple[str, list[str]]] = [
     ("baseline", ["--sched", "passthrough", "--fault", "none", "--seed", "42"]),
     (
         "degraded_fullrate",
@@ -240,9 +239,9 @@ def build_cmd(
     bin_path: Path,
     input_file: Path,
     output_file: Path,
-    cfg_args: List[str],
+    cfg_args: list[str],
     filter_type: str,
-) -> List[str]:
+) -> list[str]:
     # Use the same invocation style as the notebook: <bin> closed-loop --filter <filter> -i <input> -o <output> <cfg_args...>
     cmd = [
         str(bin_path),
@@ -262,7 +261,7 @@ def run_job(
     input_path: Path,
     out_root: Path,
     cfg_name: str,
-    cfg_args: List[str],
+    cfg_args: list[str],
     filter_type: str,
 ) -> int:
     # Organize output: <out_root>/<filter_type>/<cfg_name>/<input_basename>.csv
@@ -282,11 +281,9 @@ def run_job(
         return 1
 
 
-def main(argv: List[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--bin", type=Path, default=None, help="Path to strapdown-sim binary"
-    )
+    parser.add_argument("--bin", type=Path, default=None, help="Path to strapdown-sim binary")
     parser.add_argument(
         "--input",
         type=Path,
@@ -332,9 +329,7 @@ def main(argv: List[str] | None = None) -> int:
     if args.jobs <= 1:
         failures = 0
         for filter_type, cfg_name, input_path, cfg_args in jobs:
-            rc = run_job(
-                bin_path, input_path, out_root, cfg_name, cfg_args, filter_type
-            )
+            rc = run_job(bin_path, input_path, out_root, cfg_name, cfg_args, filter_type)
             if rc != 0:
                 print(f"Job failed (rc={rc}): {filter_type}/{cfg_name} {input_path}")
                 failures += 1
@@ -360,14 +355,10 @@ def main(argv: List[str] | None = None) -> int:
                 try:
                     rc = fut.result()
                     if rc != 0:
-                        print(
-                            f"Job failed (rc={rc}): {filter_type}/{cfg_name} {input_path}"
-                        )
+                        print(f"Job failed (rc={rc}): {filter_type}/{cfg_name} {input_path}")
                         failures += 1
                 except Exception as e:
-                    print(
-                        f"Job raised exception: {filter_type}/{cfg_name} {input_path} -> {e}"
-                    )
+                    print(f"Job raised exception: {filter_type}/{cfg_name} {input_path} -> {e}")
                     failures += 1
         print(f"Finished parallel run. {failures} jobs failed.")
         return 0 if failures == 0 else 5
