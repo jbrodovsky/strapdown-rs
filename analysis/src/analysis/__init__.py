@@ -73,9 +73,7 @@ def main() -> None:
     )
     add_preprocess_arguments(preprocess)
 
-    performance = command.add_parser(
-        "performance", help="Generate performance plots from mechanization results."
-    )
+    performance = command.add_parser("performance", help="Generate performance plots from mechanization results.")
     performance.add_argument(
         "-p",
         "--processed",
@@ -97,9 +95,7 @@ def main() -> None:
         default="data/output",
     )
 
-    geoperformance = command.add_parser(
-        "geoperformance", help="Generate geophysical performance plots."
-    )
+    geoperformance = command.add_parser("geoperformance", help="Generate geophysical performance plots.")
     geoperformance.add_argument(
         "-p",
         "--processed",
@@ -208,6 +204,8 @@ def main() -> None:
         geophysical_performance_analysis(args)
     elif args.command == "geostats":
         geostats_analysis(args)
+    elif args.command == "compare-filters":
+        compare_filters_analysis(args)
     else:
         parser.print_help()
 
@@ -258,26 +256,20 @@ def performance_analysis(args):
             print(f"Reference file for {dataset.name} not found in {reference_path}. Skipping.")
             continue
         output_plot = output_path / f"{dataset.stem}_performance.png"
-        print(
-            f"Processing dataset {dataset} ({len(nav)}) with reference {reference_file.name} ({len(gps)})"
-        )
+        print(f"Processing dataset {dataset} ({len(nav)}) with reference {reference_file.name} ({len(gps)})")
         try:
             from analysis.plotting import plot_performance
 
             plot_performance(nav, gps, output_plot)
         except Exception as e:
-            print(
-                f"Error plotting performance for {dataset.name}, possible dimension mismatch or missing data: {e}"
-            )
+            print(f"Error plotting performance for {dataset.name}, possible dimension mismatch or missing data: {e}")
             continue
         two_d_error = haversine_vector(
             gps[["latitude", "longitude"]].to_numpy(),
             nav[["latitude", "longitude"]].to_numpy(),
             Unit.METERS,
         )
-        three_d_error = np.sqrt(
-            two_d_error**2 + (gps["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2
-        )
+        three_d_error = np.sqrt(two_d_error**2 + (gps["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2)
         summary_df.loc[dataset.stem] = [
             np.nanmin(two_d_error),
             np.nanmax(two_d_error),
@@ -441,47 +433,23 @@ def geophysical_performance_analysis(args):
                 np.nanmax(geo["altitude"].to_numpy() - nav["altitude"].to_numpy()),
                 np.nanmean(geo["altitude"].to_numpy() - nav["altitude"].to_numpy()),
                 np.sqrt(np.nanmean((geo["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2))
-                - np.sqrt(
-                    np.nanmean(
-                        (degraded_nav["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2
-                    )
-                ),
+                - np.sqrt(np.nanmean((degraded_nav["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2)),
                 np.nanmin(
-                    np.sqrt(
-                        geo_error**2
-                        + (geo["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2
-                    )
-                    - np.sqrt(
-                        deg_error**2
-                        + (degraded_nav["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2
-                    )
+                    np.sqrt(geo_error**2 + (geo["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2)
+                    - np.sqrt(deg_error**2 + (degraded_nav["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2)
                 ),
                 np.nanmax(
-                    np.sqrt(
-                        geo_error**2
-                        + (geo["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2
-                    )
-                    - np.sqrt(
-                        deg_error**2
-                        + (degraded_nav["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2
-                    )
+                    np.sqrt(geo_error**2 + (geo["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2)
+                    - np.sqrt(deg_error**2 + (degraded_nav["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2)
                 ),
                 np.nanmean(
-                    np.sqrt(
-                        geo_error**2
-                        + (geo["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2
-                    )
-                    - np.sqrt(
-                        deg_error**2
-                        + (degraded_nav["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2
-                    )
+                    np.sqrt(geo_error**2 + (geo["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2)
+                    - np.sqrt(deg_error**2 + (degraded_nav["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2)
                 ),
                 geo_rmse - deg_rmse,
             ]
         except Exception as e:
-            print(
-                f"Error processing {dataset.name}, possible dimension mismatch or missing data: {e}"
-            )
+            print(f"Error processing {dataset.name}, possible dimension mismatch or missing data: {e}")
             continue
 
     # Add summary statistics to DataFrame
@@ -522,6 +490,132 @@ def geophysical_performance_analysis(args):
         print_summary_statistics(latex_results, f"{filter_name.upper()} {geo_type}-aided")
 
     print("\nGeophysical performance analysis completed.")
+
+
+def _horizontal_error(nav: DataFrame, gps: DataFrame) -> np.ndarray | None:
+    """Horizontal error between a filter solution and GPS truth, in meters.
+
+    `strapdown-sim` emits one fewer row than it reads -- the first record seeds the filter
+    rather than producing an estimate -- so the leading truth row is dropped before pairing,
+    matching the convention in :func:`geophysical_performance_analysis`. Solutions that are
+    still a different length are aligned onto the truth index.
+
+    Parameters
+    ----------
+    nav : DataFrame
+        Navigation solution, indexed by timestamp, with latitude and longitude columns.
+    gps : DataFrame
+        GPS ground truth, indexed by timestamp, with latitude and longitude columns.
+
+    Returns
+    -------
+    np.ndarray | None
+        Per-sample horizontal error in meters, or None when the two frames share no
+        overlap and cannot be paired.
+    """
+    columns = ["latitude", "longitude"]
+    truth = gps.iloc[1:]
+    solution = nav if len(nav) == len(truth) else nav.reindex(truth.index)
+    if truth.empty or solution[columns].isna().to_numpy().all():
+        return None
+    return haversine_vector(
+        truth[columns].to_numpy(dtype=np.float64),
+        solution[columns].to_numpy(dtype=np.float64),
+        Unit.METERS,
+    )
+
+
+def _print_filter_summary(label: str, traj_stats: list[tuple[str, dict[str, float]]]) -> None:
+    """Print absolute-error summary statistics for one filter.
+
+    Unlike :func:`analysis.compare.print_summary_statistics`, which summarizes *differences*
+    against a baseline and so reports "improved (negative diff)", these are absolute errors
+    against truth: none of them can be negative, and lower is better.
+
+    Parameters
+    ----------
+    label : str
+        Filter label, as supplied via ``--labels``.
+    traj_stats : list[tuple[str, dict[str, float]]]
+        List of (trajectory_name, error_statistics) tuples.
+    """
+    if not traj_stats:
+        print(f"\n{label}: no trajectories scored.")
+        return
+
+    rmses = [stats["rmse"] for _, stats in traj_stats]
+    best_name, best = min(traj_stats, key=lambda item: item[1]["rmse"])
+    worst_name, worst = max(traj_stats, key=lambda item: item[1]["rmse"])
+
+    print(f"\n{label}: {len(traj_stats)} trajectories scored.")
+    print(f"  Mean RMSE: {np.mean(rmses):.2f} m")
+    print(f"  Median RMSE: {np.median(rmses):.2f} m")
+    print(f"  Best (lowest RMSE): {best_name} at {best['rmse']:.2f} m")
+    print(f"  Worst (highest RMSE): {worst_name} at {worst['rmse']:.2f} m")
+
+
+def compare_filters_analysis(args) -> None:
+    """Compare performance across multiple filter output directories.
+
+    Each directory named by ``--input-dirs`` is scored independently against the GPS truth in
+    ``--reference``, and the per-trajectory error statistics for every filter are written to a
+    single long-format CSV (one row per filter and trajectory). This is the cross-filter
+    comparison -- RBPF vs UKF vs EKF over the same trajectories -- that
+    :func:`geophysical_performance_analysis` does not cover, since that scores one geo-aided
+    run against one degraded baseline of the same filter.
+    """
+    if len(args.input_dirs) != len(args.labels):
+        print(
+            f"ERROR: --input-dirs ({len(args.input_dirs)}) and --labels ({len(args.labels)}) must have the same count."
+        )
+        return
+
+    output_path = Path(args.output)
+    output_path.mkdir(parents=True, exist_ok=True)
+    reference_path = Path(args.reference)
+
+    print("=" * 80)
+    print(f"Filter Comparison: {', '.join(args.labels)}")
+    print("=" * 80)
+
+    all_filter_stats = {}
+    for input_dir, label in zip(args.input_dirs, args.labels, strict=True):
+        datasets = list(Path(input_dir).glob("*.csv"))
+        if not datasets:
+            print(f"No CSVs found in {input_dir}, skipping {label}.")
+            continue
+        traj_stats = []
+        for dataset in sorted(datasets):
+            try:
+                nav = read_csv(dataset, parse_dates=True, index_col=0)
+                gps = read_csv(reference_path / dataset.name, parse_dates=True, index_col=0)
+                two_d_error = _horizontal_error(nav, gps)
+            except FileNotFoundError:
+                print(f"Reference for {dataset.name} not found, skipping.")
+                continue
+            except (KeyError, ValueError) as e:
+                print(f"Could not score {dataset.name} for {label}: {e}. Skipping.")
+                continue
+            if two_d_error is None:
+                print(f"Could not align {dataset.name} with its reference for {label}. Skipping.")
+                continue
+            traj_stats.append((dataset.stem, compute_error_statistics(two_d_error)))
+        all_filter_stats[label] = traj_stats
+        _print_filter_summary(label, traj_stats)
+
+    rows = [
+        {"filter": label, "trajectory": traj_name, **stats}
+        for label, traj_stats in all_filter_stats.items()
+        for traj_name, stats in traj_stats
+    ]
+    if rows:
+        out_file = output_path / f"filter_comparison_{args.geo_type}.csv"
+        DataFrame(rows).to_csv(out_file, index=False)
+        print(f"\nSaved comparison CSV to {out_file}")
+    else:
+        print("\nNo trajectories scored; no comparison CSV written.")
+
+    print("\nFilter comparison completed.")
 
 
 if __name__ == "__main__":
