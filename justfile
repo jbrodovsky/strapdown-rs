@@ -55,6 +55,12 @@ check-python:
 # downloaded; with it, the relief grid for the longest recording here is already 195 MB at a
 # 10% margin, so 21x the area is gigabytes per trajectory.
 #
+# `--getmaps` downloads each trajectory's `_gravity.nc`/`_magnetic.nc` siblings via pygmt.
+# Without it `data/input` never gets them, and `geo-stats` silently has nothing to measure --
+# it reports "no trajectory yielded a usable channel" rather than failing loudly. `write_segment`
+# re-fetches and overwrites both files on every run regardless (pygmt caches the underlying
+# grids locally, so a re-run costs no network, but it still rewrites the `.nc` files).
+#
 # Rebuild data/input from data/raw at 10 Hz, splitting recordings at IMU dropouts.
 preprocess:
     uv run analyze preprocess -i data/raw -o data/input -f 10 \
@@ -63,7 +69,7 @@ preprocess:
 # Rebuild data/input at 1 Hz instead, matching the rate every result before this branch used.
 preprocess-1hz:
     uv run analyze preprocess -i data/raw -o data/input -f 1 \
-        --max-imu-gap-s 5.0 --min-segment-s 300.0 --prune
+        --max-imu-gap-s 5.0 --min-segment-s 300.0 --prune --getmaps
 
 # Reports only -- it writes `data/output/geostats/geo_stats.toml` and leaves `conf/` alone,
 # which is why `pipeline` can run it without changing the experiment underneath itself. Read
