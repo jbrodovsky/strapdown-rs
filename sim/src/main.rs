@@ -2862,6 +2862,11 @@ fn prompt_degraded_fault_model() -> strapdown::messages::GnssFaultModel {
         rho_vel,
         sigma_vel_mps,
         r_scale,
+        // The wizard writes the per-fix form, which is what the prompts above describe.
+        // A correlation time is an expert knob -- it reinterprets `sigma_pos_m` as a
+        // steady-state rather than a per-step value -- so it is left to be added by hand.
+        tau_pos_s: None,
+        tau_vel_s: None,
     }
 }
 

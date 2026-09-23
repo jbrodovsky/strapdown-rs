@@ -522,6 +522,8 @@ fn scenarios() -> Vec<Scenario> {
                     rho_vel: 0.98,
                     sigma_vel_mps: 0.3,
                     r_scale: 1.0,
+                    tau_pos_s: None,
+                    tau_vel_s: None,
                 };
                 built.seed = SEED;
                 built

@@ -67,6 +67,23 @@ degraded:
     -./target/release/strapdown-sim --config conf/ukf_degraded.toml
     -./target/release/strapdown-sim --config conf/ekf_degraded.toml
 
+# Intermittent GNSS denial: 30 s of fixes in every 150, no fault on the fixes that arrive.
+# The tier that resembles jamming -- a receiver inside a jammed area reports nothing, it does
+# not report a noisier position. Sweep `off_s` in the configs to trace how an aid's
+# contribution grows with outage length. See book/src/gnss/fault-simulation.md.
+denied:
+    -./target/release/strapdown-sim --config conf/ukf_denied.toml
+    -./target/release/strapdown-sim --config conf/ekf_denied.toml
+    -./target/release/strapdown-sim --config conf/rbpf_denied.toml
+
+# The recalibrated accuracy tier: 35 m steady-state wander with the correlation time pinned
+# in seconds, so the fix interval can be swept without moving the error model. Kept separate
+# from `degraded`, which is the baseline every result so far was measured against.
+jammed:
+    -./target/release/strapdown-sim --config conf/ukf_jammed.toml
+    -./target/release/strapdown-sim --config conf/ekf_jammed.toml
+    -./target/release/strapdown-sim --config conf/rbpf_jammed.toml
+
 # Geophysical aiding runs. These now point at conf/*.toml like `truth` and `degraded` do:
 # a closed-loop config carrying a [geophysical] section used to be refused, so these recipes
 # carried the equivalent command line by hand and the comment here warned that the

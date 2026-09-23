@@ -5013,6 +5013,20 @@ pub struct FaultArgs {
     /// squared**: the default 5.0 multiplies R by 25, not by 5.
     #[cfg_attr(feature = "clap", arg(long, default_value_t = 5.0))]
     pub r_scale: f64,
+    /// Degraded: position-error correlation time in **seconds**, decoupling the error's
+    /// timescale from the fix interval.
+    ///
+    /// Without it, `--rho-pos` is applied once per emitted fix and the correlation time is
+    /// `-interval_s / ln(rho_pos)` -- so changing `--interval-s` changes the error model
+    /// too, and a sweep over the fix rate cannot be separated from a sweep over the error
+    /// timescale. With it, the coefficient is `exp(-dt / tau)` for the actual interval and
+    /// `--sigma-pos-m` becomes the **steady-state** standard deviation rather than the
+    /// per-step innovation.
+    #[cfg_attr(feature = "clap", arg(long))]
+    pub tau_pos_s: Option<f64>,
+    /// Degraded: velocity-error correlation time in seconds. See `--tau-pos-s`.
+    #[cfg_attr(feature = "clap", arg(long))]
+    pub tau_vel_s: Option<f64>,
     /// Slow bias: northward drift rate of the injected offset, in m/s
     #[cfg_attr(feature = "clap", arg(long, default_value_t = 0.02))]
     pub drift_n_mps: f64,
@@ -5069,6 +5083,8 @@ pub const fn build_fault(a: &FaultArgs) -> GnssFaultModel {
             rho_vel: a.rho_vel,
             sigma_vel_mps: a.sigma_vel_mps,
             r_scale: a.r_scale,
+            tau_pos_s: a.tau_pos_s,
+            tau_vel_s: a.tau_vel_s,
         },
         FaultKind::Slowbias => GnssFaultModel::SlowBias {
             drift_n_mps: a.drift_n_mps,
@@ -9013,6 +9029,8 @@ mod tests {
             rho_vel: 0.95,
             sigma_vel_mps: 0.3,
             r_scale: 5.0,
+            tau_pos_s: None,
+            tau_vel_s: None,
             drift_n_mps: 0.02,
             drift_e_mps: 0.0,
             q_bias: 1e-6,
@@ -9035,6 +9053,8 @@ mod tests {
             rho_vel: 0.93,
             sigma_vel_mps: 0.5,
             r_scale: 10.0,
+            tau_pos_s: None,
+            tau_vel_s: None,
             drift_n_mps: 0.02,
             drift_e_mps: 0.0,
             q_bias: 1e-6,
@@ -9051,6 +9071,7 @@ mod tests {
             rho_vel,
             sigma_vel_mps,
             r_scale,
+            ..
         } = fault
         {
             assert_eq!(rho_pos, 0.98);
@@ -9072,6 +9093,8 @@ mod tests {
             rho_vel: 0.95,
             sigma_vel_mps: 0.3,
             r_scale: 5.0,
+            tau_pos_s: None,
+            tau_vel_s: None,
             drift_n_mps: 0.05,
             drift_e_mps: 0.02,
             q_bias: 1e-5,
@@ -9107,6 +9130,8 @@ mod tests {
             rho_vel: 0.95,
             sigma_vel_mps: 0.3,
             r_scale: 5.0,
+            tau_pos_s: None,
+            tau_vel_s: None,
             drift_n_mps: 0.02,
             drift_e_mps: 0.0,
             q_bias: 1e-6,

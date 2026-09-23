@@ -2932,6 +2932,8 @@ fn test_rbpf_with_degraded_gnss() {
             rho_vel: 0.95,
             sigma_vel_mps: 0.3,
             r_scale: 5.0,
+            tau_pos_s: None,
+            tau_vel_s: None,
         };
         built
     };
