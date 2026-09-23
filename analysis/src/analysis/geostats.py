@@ -115,7 +115,9 @@ def principal_radii(latitude_deg, altitude_m):
     """
     lat_rad = np.radians(latitude_deg)
     sin_sq = np.sin(lat_rad) ** 2
-    r_n = (EQUATORIAL_RADIUS * (1.0 - ECCENTRICITY_SQUARED)) / np.power(1.0 - ECCENTRICITY_SQUARED * sin_sq, 1.5)
+    r_n = (EQUATORIAL_RADIUS * (1.0 - ECCENTRICITY_SQUARED)) / np.power(
+        1.0 - ECCENTRICITY_SQUARED * sin_sq, 1.5
+    )
     r_e = EQUATORIAL_RADIUS / np.sqrt(1.0 - ECCENTRICITY_SQUARED * sin_sq)
     r_p = r_e * np.cos(lat_rad) + altitude_m
     return r_n, r_e, r_p
@@ -129,10 +131,15 @@ def eotvos(latitude_deg, altitude_m, north_velocity, east_velocity):
     centrifugal acceleration, and any horizontal motion adds a curvature term.
     """
     _, _, r_p = principal_radii(latitude_deg, altitude_m)
-    return 2.0 * RATE * east_velocity * np.cos(np.radians(latitude_deg)) + (north_velocity**2 + east_velocity**2) / r_p
+    return (
+        2.0 * RATE * east_velocity * np.cos(np.radians(latitude_deg))
+        + (north_velocity**2 + east_velocity**2) / r_p
+    )
 
 
-def gravity_anomaly_mgal(latitude_deg, altitude_m, north_velocity, east_velocity, gravity_observed_mps2):
+def gravity_anomaly_mgal(
+    latitude_deg, altitude_m, north_velocity, east_velocity, gravity_observed_mps2
+):
     """
     Free-air gravity anomaly in **milligal**. Mirrors `earth::gravity_anomaly`.
 
@@ -280,7 +287,9 @@ class AnomalyMap:
             values = np.asarray(dataset[data_name].values, dtype=float)
 
         if values.shape != (lats.size, lons.size):
-            raise ValueError(f"{path.name}: data is {values.shape}, expected {(lats.size, lons.size)}")
+            raise ValueError(
+                f"{path.name}: data is {values.shape}, expected {(lats.size, lons.size)}"
+            )
         return cls(path=path, lats=lats, lons=lons, values=values)
 
     def sample(self, latitude_deg: np.ndarray, longitude_deg: np.ndarray) -> np.ndarray:
@@ -437,7 +446,9 @@ def _stats_from(
 ) -> FieldStats:
     """Reduce one field's residual and signal series to a :class:`FieldStats`."""
     sigma = float(np.std(residual, ddof=1)) if residual.size > 1 else float("nan")
-    mad = float(np.median(np.abs(residual - np.median(residual)))) if residual.size else float("nan")
+    mad = (
+        float(np.median(np.abs(residual - np.median(residual)))) if residual.size else float("nan")
+    )
     sigma_robust = MAD_TO_SIGMA * mad
     signal_sigma = float(np.std(map_value, ddof=1)) if map_value.size > 1 else float("nan")
 
@@ -491,7 +502,9 @@ def _stats_from(
     )
 
 
-def analyse_trajectory(csv_path: Path, skip_magnetic: bool = False) -> tuple[list[FieldStats], pd.DataFrame]:
+def analyse_trajectory(
+    csv_path: Path, skip_magnetic: bool = False
+) -> tuple[list[FieldStats], pd.DataFrame]:
     """
     Compute both channels' residuals for one trajectory.
 
@@ -571,13 +584,17 @@ def analyse_trajectory(csv_path: Path, skip_magnetic: bool = False) -> tuple[lis
             if not all(c in frame.columns for c in grav_columns):
                 continue
             observed = np.sqrt(sum(frame[c].to_numpy(float) ** 2 for c in grav_columns))
-            measured = gravity_anomaly_mgal(latitude, altitude, north_velocity, east_velocity, observed)
+            measured = gravity_anomaly_mgal(
+                latitude, altitude, north_velocity, east_velocity, observed
+            )
         else:
             mag_columns = ("mag_x", "mag_y", "mag_z")
             if not all(c in frame.columns for c in mag_columns):
                 continue
             observed = observed_field_nt(*(frame[c].to_numpy(float) for c in mag_columns))
-            reference = wmm_total_field_nt(latitude, longitude, altitude, decimal_year(frame["time"]))
+            reference = wmm_total_field_nt(
+                latitude, longitude, altitude, decimal_year(frame["time"])
+            )
             measured = observed - reference
 
         anomaly_map = AnomalyMap.load(map_path)
@@ -694,7 +711,9 @@ def pool(stats: list[FieldStats], residuals: pd.DataFrame) -> list[PooledStats]:
         residual = subset["residual"].to_numpy(float)
         # Remove each trajectory's own median, leaving only within-recording variation.
         centred = (
-            subset.groupby("trajectory")["residual"].transform(lambda series: series - series.median()).to_numpy(float)
+            subset.groupby("trajectory")["residual"]
+            .transform(lambda series: series - series.median())
+            .to_numpy(float)
         )
         per_trajectory_medians = np.array([s.bias_median for s in rows], dtype=float)
         snrs = np.array([s.snr for s in rows], dtype=float)
@@ -910,7 +929,11 @@ def apply_to_configs(
                 continue
             noise_key = f"{field}_noise_std"
             at = next(
-                (i for i in range(start + 1, end) if lines[i].split("=", 1)[0].strip() == noise_key),
+                (
+                    i
+                    for i in range(start + 1, end)
+                    if lines[i].split("=", 1)[0].strip() == noise_key
+                ),
                 None,
             )
             if at is None:
@@ -925,7 +948,9 @@ def apply_to_configs(
     return changes
 
 
-def plot_anomaly_differences(residuals: pd.DataFrame, pooled: list[PooledStats], path: Path) -> None:
+def plot_anomaly_differences(
+    residuals: pd.DataFrame, pooled: list[PooledStats], path: Path
+) -> None:
     """
     Two stacked density histograms of (measured - map), one per field, with a normal fit.
 
@@ -941,7 +966,9 @@ def plot_anomaly_differences(residuals: pd.DataFrame, pooled: list[PooledStats],
     if not fields:
         return
 
-    figure, axes = plt.subplots(len(fields), 1, figsize=(13, 4.2 * len(fields)), constrained_layout=True)
+    figure, axes = plt.subplots(
+        len(fields), 1, figsize=(13, 4.2 * len(fields)), constrained_layout=True
+    )
     if len(fields) == 1:
         axes = [axes]
 
@@ -1162,7 +1189,9 @@ def geostats_analysis(args) -> None:
 
     conf_dir = getattr(args, "apply_to", None)
     if conf_dir:
-        changes = apply_to_configs(pooled, Path(conf_dir), apply_interval=bool(getattr(args, "apply_interval", False)))
+        changes = apply_to_configs(
+            pooled, Path(conf_dir), apply_interval=bool(getattr(args, "apply_interval", False))
+        )
         if changes:
             print(f"\nApplied to {conf_dir}:")
             for change in changes:
@@ -1190,8 +1219,12 @@ def _print_summary(pooled: list[PooledStats], stats: list[FieldStats]) -> None:
         print(f"\n{entry.field.upper()}  ({entry.unit})")
         print(f"  trajectories / samples      {entry.trajectories} / {entry.samples:,}")
         print(f"  bias (pooled median)        {entry.bias_median:,.2f}")
-        print(f"  within-trajectory sigma     {entry.within_sigma:,.2f}   -> {entry.field}_noise_std")
-        print(f"  between-trajectory sigma    {entry.between_sigma:,.2f}   -> {entry.field}_bias_init_std")
+        print(
+            f"  within-trajectory sigma     {entry.within_sigma:,.2f}   -> {entry.field}_noise_std"
+        )
+        print(
+            f"  between-trajectory sigma    {entry.between_sigma:,.2f}   -> {entry.field}_bias_init_std"
+        )
         print(f"  total sigma (pooled)        {entry.total_sigma:,.2f}")
         print(
             f"  signal-to-noise             median {entry.snr_median:.2f}, "
