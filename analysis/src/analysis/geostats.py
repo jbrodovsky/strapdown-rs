@@ -522,10 +522,22 @@ def analyse_trajectory(
         ``(stats, residuals)`` -- one :class:`FieldStats` per available channel, and a long
         frame of per-record residuals for the histogram and for inspection.
     """
-    frame = pd.read_csv(csv_path, parse_dates=["time"])
+    frame = pd.read_csv(csv_path)
     missing = [c for c in REQUIRED_COLUMNS if c not in frame.columns]
     if missing:
         raise ValueError(f"{csv_path.name}: missing column(s) {missing}")
+
+    # Parsed explicitly rather than through `read_csv(parse_dates=...)`. On a column of
+    # `2025-03-01 12:00:00+00:00` -- which is exactly what `analyze preprocess` writes --
+    # pandas leaves `parse_dates` columns as **strings** when it cannot infer a format, with
+    # no error, so the failure surfaced a hundred lines later as
+    # `unsupported operand type(s) for -: 'str' and 'str'`.
+    frame["time"] = pd.to_datetime(frame["time"], utc=True, format="ISO8601")
+    if not isinstance(frame["time"].dtype, pd.DatetimeTZDtype):
+        raise ValueError(
+            f"{csv_path.name}: 'time' did not parse as a timezone-aware datetime "
+            f"(got {frame['time'].dtype}); every downstream calculation assumes it did"
+        )
 
     stem = csv_path.with_suffix("").name
     have_gnss = _finite(

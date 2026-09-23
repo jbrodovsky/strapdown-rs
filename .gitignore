@@ -19,6 +19,11 @@ __pycache__/
 # Map files
 *.nc
 
+# GMT writes a gmt.conf into whatever directory it runs in the moment anything calls
+# `gmtset`, which pygmt does on some paths. It records machine-local settings (data server,
+# cache paths) and belongs to nobody's checkout.
+gmt.conf
+
 # MCAP test output files
 *.mcap
 

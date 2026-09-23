@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 from haversine import Unit, haversine_vector
-from pandas import DataFrame, read_csv
+from pandas import DataFrame, read_csv, to_datetime
 from tqdm import tqdm
 
 from analysis.compare import (
@@ -28,6 +28,38 @@ from analysis.preprocess import add_preprocess_arguments, preprocess_data
 # GMT. The two call sites import it where they use it.
 
 __version__ = "0.1.0"
+
+
+def read_timeseries(path) -> DataFrame:
+    """
+    Read a navigation-solution or reference CSV with a real datetime index.
+
+    `read_csv(..., parse_dates=True, index_col=0)` does **not** guarantee a datetime index.
+    When pandas cannot infer a format it leaves the index as strings, silently and without
+    error, so the failure surfaces much later as an arithmetic error on two strings:
+
+        unsupported operand type(s) for -: 'str' and 'str'
+
+    Every timestamp this package reads is written by `analyze preprocess` or by
+    `strapdown-sim`, both of which emit ISO 8601, so the format is named rather than guessed.
+    The index is checked before the frame is handed back, because the whole point is that the
+    silent version of this failure costs an hour: `performance_analysis` caught it in a broad
+    `except`, reported "possible dimension mismatch or missing data" and exited 0 having
+    produced no plots at all.
+
+    Parameters
+    ----------
+    path : str | Path
+        CSV whose first column is the timestamp.
+
+    Returns
+    -------
+    DataFrame
+        The frame, with a timezone-aware `DatetimeIndex`.
+    """
+    frame = read_csv(path, index_col=0)
+    frame.index = to_datetime(frame.index, utc=True, format="ISO8601")
+    return frame
 
 
 def main() -> None:
@@ -252,10 +284,10 @@ def performance_analysis(args):
     )
 
     for dataset in datasets:
-        nav = read_csv(dataset, parse_dates=True, index_col=0)
+        nav = read_timeseries(dataset)
         try:
             reference_file = reference_path / dataset.name
-            gps = read_csv(reference_file, parse_dates=True, index_col=0)
+            gps = read_timeseries(reference_file)
         except FileNotFoundError:
             print(f"Reference file for {dataset.name} not found in {reference_path}. Skipping.")
             continue
@@ -366,16 +398,16 @@ def geophysical_performance_analysis(args):
     detailed_results = []  # List of (traj_name, geo_stats, baseline_stats, improvement_stats)
 
     for dataset in tqdm(datasets):
-        geo = read_csv(dataset, parse_dates=True, index_col=0)
+        geo = read_timeseries(dataset)
         try:
             reference_file = reference_path / dataset.name
-            nav = read_csv(reference_file, parse_dates=True, index_col=0)
+            nav = read_timeseries(reference_file)
         except FileNotFoundError:
             print(f"Reference file for {dataset.name} not found in {reference_path}. Skipping.")
             continue
         try:
             degraded_file = degraded_path / dataset.name
-            degraded_nav = read_csv(degraded_file, parse_dates=True, index_col=0)
+            degraded_nav = read_timeseries(degraded_file)
         except FileNotFoundError:
             print(f"Degraded file for {dataset.name} not found in {degraded_path}. Skipping.")
             continue
@@ -621,8 +653,8 @@ def compare_filters_analysis(args) -> None:
         traj_stats = []
         for dataset in sorted(datasets):
             try:
-                nav = read_csv(dataset, parse_dates=True, index_col=0)
-                gps = read_csv(reference_path / dataset.name, parse_dates=True, index_col=0)
+                nav = read_timeseries(dataset)
+                gps = read_timeseries(reference_path / dataset.name)
                 two_d_error = _horizontal_error(nav, gps)
             except FileNotFoundError:
                 print(f"Reference for {dataset.name} not found, skipping.")

@@ -41,6 +41,13 @@ check-python:
 # data happened to be in the other. Change the rate here and everything follows; change the
 # directory and 21 files have to follow it.
 #
+# `--getmaps` is required, not optional. Without it `preprocess` calls `inherit_parent_maps`,
+# which copies `data/input/<source>_{gravity,magnetic}.nc` onto each split segment -- but
+# `clean` has just deleted those, so there is nothing to inherit and the directory ends up
+# with trajectories and no maps at all. Every geophysical run then dies on "Gravity map file
+# not found", three steps downstream of the cause. It needs the GMT C library (`libgmt`) and
+# network access to the GMT data server.
+#
 # NOTE: `-b` is a *fraction*, not a percentage -- `inflate_bounds` computes
 # `x_min - x_range * buffer`, and its default is 0.1 for a 10% margin. `-b 10` therefore pads
 # the map bounding box by ten times the track's own extent on each side, a box about 21x wider
@@ -51,7 +58,7 @@ check-python:
 # Rebuild data/input from data/raw at 10 Hz, splitting recordings at IMU dropouts.
 preprocess:
     uv run analyze preprocess -i data/raw -o data/input -f 10 \
-        -b 10 --max-imu-gap-s 5.0 --min-segment-s 300.0 --prune
+        -b 10 --getmaps --max-imu-gap-s 5.0 --min-segment-s 300.0 --prune
 
 # Rebuild data/input at 1 Hz instead, matching the rate every result before this branch used.
 preprocess-1hz:
