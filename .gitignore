@@ -44,7 +44,6 @@ data/output/*.png
 
 # Research artifacts kept locally, out of the v1.0 release scope.
 # See papers/README.md for where these live now.
-analysis/
 papers/anomaly_rbpf/
 papers/anomaly_ukf/
 papers/data_paper/
