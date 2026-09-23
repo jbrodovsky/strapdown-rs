@@ -73,7 +73,9 @@ def main() -> None:
     )
     add_preprocess_arguments(preprocess)
 
-    performance = command.add_parser("performance", help="Generate performance plots from mechanization results.")
+    performance = command.add_parser(
+        "performance", help="Generate performance plots from mechanization results."
+    )
     performance.add_argument(
         "-p",
         "--processed",
@@ -95,7 +97,9 @@ def main() -> None:
         default="data/output",
     )
 
-    geoperformance = command.add_parser("geoperformance", help="Generate geophysical performance plots.")
+    geoperformance = command.add_parser(
+        "geoperformance", help="Generate geophysical performance plots."
+    )
     geoperformance.add_argument(
         "-p",
         "--processed",
@@ -256,20 +260,26 @@ def performance_analysis(args):
             print(f"Reference file for {dataset.name} not found in {reference_path}. Skipping.")
             continue
         output_plot = output_path / f"{dataset.stem}_performance.png"
-        print(f"Processing dataset {dataset} ({len(nav)}) with reference {reference_file.name} ({len(gps)})")
+        print(
+            f"Processing dataset {dataset} ({len(nav)}) with reference {reference_file.name} ({len(gps)})"
+        )
         try:
             from analysis.plotting import plot_performance
 
             plot_performance(nav, gps, output_plot)
         except Exception as e:
-            print(f"Error plotting performance for {dataset.name}, possible dimension mismatch or missing data: {e}")
+            print(
+                f"Error plotting performance for {dataset.name}, possible dimension mismatch or missing data: {e}"
+            )
             continue
         two_d_error = haversine_vector(
             gps[["latitude", "longitude"]].to_numpy(),
             nav[["latitude", "longitude"]].to_numpy(),
             Unit.METERS,
         )
-        three_d_error = np.sqrt(two_d_error**2 + (gps["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2)
+        three_d_error = np.sqrt(
+            two_d_error**2 + (gps["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2
+        )
         summary_df.loc[dataset.stem] = [
             np.nanmin(two_d_error),
             np.nanmax(two_d_error),
@@ -433,23 +443,47 @@ def geophysical_performance_analysis(args):
                 np.nanmax(geo["altitude"].to_numpy() - nav["altitude"].to_numpy()),
                 np.nanmean(geo["altitude"].to_numpy() - nav["altitude"].to_numpy()),
                 np.sqrt(np.nanmean((geo["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2))
-                - np.sqrt(np.nanmean((degraded_nav["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2)),
+                - np.sqrt(
+                    np.nanmean(
+                        (degraded_nav["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2
+                    )
+                ),
                 np.nanmin(
-                    np.sqrt(geo_error**2 + (geo["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2)
-                    - np.sqrt(deg_error**2 + (degraded_nav["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2)
+                    np.sqrt(
+                        geo_error**2
+                        + (geo["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2
+                    )
+                    - np.sqrt(
+                        deg_error**2
+                        + (degraded_nav["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2
+                    )
                 ),
                 np.nanmax(
-                    np.sqrt(geo_error**2 + (geo["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2)
-                    - np.sqrt(deg_error**2 + (degraded_nav["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2)
+                    np.sqrt(
+                        geo_error**2
+                        + (geo["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2
+                    )
+                    - np.sqrt(
+                        deg_error**2
+                        + (degraded_nav["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2
+                    )
                 ),
                 np.nanmean(
-                    np.sqrt(geo_error**2 + (geo["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2)
-                    - np.sqrt(deg_error**2 + (degraded_nav["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2)
+                    np.sqrt(
+                        geo_error**2
+                        + (geo["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2
+                    )
+                    - np.sqrt(
+                        deg_error**2
+                        + (degraded_nav["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2
+                    )
                 ),
                 geo_rmse - deg_rmse,
             ]
         except Exception as e:
-            print(f"Error processing {dataset.name}, possible dimension mismatch or missing data: {e}")
+            print(
+                f"Error processing {dataset.name}, possible dimension mismatch or missing data: {e}"
+            )
             continue
 
     # Add summary statistics to DataFrame

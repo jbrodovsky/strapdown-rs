@@ -108,9 +108,7 @@ def test_compare_filters_writes_a_comparison_csv(
     )
 
     written = output / "filter_comparison_smoke.csv"
-    assert written.exists(), (
-        "compare-filters produced no CSV -- the dispatch branch is missing"
-    )
+    assert written.exists(), "compare-filters produced no CSV -- the dispatch branch is missing"
 
     results = read_csv(written)
     assert list(results.columns) == [
@@ -154,9 +152,7 @@ def test_compare_filters_scores_each_filter_against_truth(
     for name in TRAJECTORIES:
         accurate_rmse = results.loc[("UKF", name), "rmse"]
         coarse_rmse = results.loc[("EKF", name), "rmse"]
-        assert accurate_rmse == pytest.approx(
-            1e-6 * METERS_PER_DEGREE_LATITUDE, rel=1e-3
-        )
+        assert accurate_rmse == pytest.approx(1e-6 * METERS_PER_DEGREE_LATITUDE, rel=1e-3)
         assert coarse_rmse == pytest.approx(1e-5 * METERS_PER_DEGREE_LATITUDE, rel=1e-3)
         assert accurate_rmse < coarse_rmse
 
