@@ -34,13 +34,12 @@ use geonav::{
     GravityResolution, MagneticResolution, NAVIGATION_AND_IMU_BIAS_STATE_DIM, NAVIGATION_STATE_DIM,
     build_event_stream,
 };
-use nalgebra::{DMatrix, DVector};
 use strapdown::kalman::ExtendedKalmanFilter;
-use strapdown::messages::{AidingConfig, Event, GnssFaultModel, MeasurementScheduler};
+use strapdown::messages::{AidingConfig, Event, EventStream, GnssFaultModel, MeasurementScheduler};
 use strapdown::rbpf::{RaoBlackwellizedParticleFilter, RbpfConfig};
 use strapdown::sim::{
-    DEFAULT_PROCESS_NOISE_DENSITY, ExtraStateLayout, NavigationResult, TestDataRecord, UkfConfig,
-    initialize_ukf, run_closed_loop, run_closed_loop_with_geo,
+    DEFAULT_PROCESS_NOISE_DENSITY, EkfConfig, ExtraStateLayout, NavigationResult, TestDataRecord,
+    UkfConfig, initialize_ekf, initialize_ukf, run_closed_loop, run_closed_loop_with_geo,
 };
 use strapdown::{NavigationFilter, StrapdownState};
 
@@ -147,8 +146,12 @@ const MAGNETIC_MAP_OFFSET_NT: f64 = 130.0;
 
 /// What the track's gravimeter reads, in the $m/s^2$ `TestDataRecord` documents.
 ///
-/// Normal gravity at this track is 9.801741 m/s^2, so this is a real reading with 130 mGal of
-/// free-air anomaly on it rather than a number picked to make the arithmetic work. The
+/// Normal gravity at this track's 100 m is 9.801433 m/s^2 -- 9.801741 on the ellipsoid, less
+/// the 0.308 mGal/m free-air gradient -- so this is a real reading with 130 mGal of free-air
+/// anomaly on it rather than a number picked to make the arithmetic work. It was 9.80304 while
+/// `earth::gravity_anomaly` referred normal gravity to the ellipsoid, which at 100 m is 31 mGal
+/// more anomaly than the map below is built around. (The track's 1 m/s northward drift adds an
+/// Eötvös term of 0.02 mGal, which is nothing here.) The
 /// gravity channel needs this stated for the same reason the magnetometer above does: the
 /// record's `grav_*` fields used to be left at their `Default` zero, and
 /// `earth::gravity_anomaly` used to return $m/s^2$, so the observation was
@@ -156,11 +159,11 @@ const MAGNETIC_MAP_OFFSET_NT: f64 = 130.0;
 /// plausible milligal anomaly. It is not one. It is the whole of normal gravity, in the wrong
 /// unit, and the fixture passed on that coincidence. With the conversion in place the same
 /// zero reading is a -980,174 mGal observation, which is what made this visible.
-const GRAVIMETER_READING_MPS2: f64 = 9.803_04;
+const GRAVIMETER_READING_MPS2: f64 = 9.802_733;
 
 /// Where the map's anomalies sit, in milligal: the anomaly the reading above actually has.
 ///
-/// 9.80304 m/s^2 observed minus the 9.801741 m/s^2 reference is 130 mGal, and the generated
+/// 9.802733 m/s^2 observed minus the 9.801433 m/s^2 reference is 130 mGal, and the generated
 /// field varies about +/-40 mGal around this, so the innovation stays inside a few times the
 /// [`GRAVITY_NOISE_STD_MGAL`] measurement noise -- well posed, and varying enough along the
 /// track that the bias is observable. Mirrors [`MAGNETIC_MAP_OFFSET_NT`].
@@ -246,37 +249,25 @@ fn aided_ukf(first: &TestDataRecord) -> strapdown::kalman::UnscentedKalmanFilter
     .expect("a geophysically aided UKF must initialise")
 }
 
-/// A geophysically aided EKF carrying one bias state, tuned as the CLI's `FilterType::Ekf` arm
-/// tunes it.
+/// A geophysically aided EKF carrying one bias state, built as the CLI's `FilterType::Ekf` arm
+/// builds it: through `initialize_ekf`, like every unaided EKF, with the map bias as an extra
+/// state.
 ///
-/// The CLI builds this by hand -- `initialize_ekf` has no `other_states`, so the geophysical
-/// covariance and process noise are extended at the call site -- which is why it is worth
-/// mirroring here rather than reaching for a constructor.
+/// It was assembled by hand here, as in the CLI, while `initialize_ekf` had no `other_states`:
+/// a covariance and a process noise of its own that no unaided EKF shared, which is the
+/// mismatch that made the CLI's geophysical results incomparable with its unaided ones.
 fn aided_ekf(first: &TestDataRecord) -> ExtendedKalmanFilter {
-    let mut covariance_diagonal = vec![
-        1e-10, 1e-10, 1.0, // position
-        0.1, 0.1, 0.1, // velocity
-        1e-4, 1e-4, 1e-4, // attitude
-        1e-6, 1e-6, 1e-6, // accel bias
-        1e-8, 1e-8, 1e-8, // gyro bias
-    ];
-    covariance_diagonal.push(bias_variance());
-    let mut process_noise_vec = vec![
-        1e-12, 1e-12, 1e-6, // position
-        1e-6, 1e-6, 1e-6, // velocity
-        1e-9, 1e-9, 1e-9, // attitude
-        1e-9, 1e-9, 1e-9, // accel bias
-        1e-9, 1e-9, 1e-9, // gyro bias
-    ];
-    process_noise_vec.push(bias_process_noise_density());
-
-    ExtendedKalmanFilter::new(
-        &first.initial_state(true),
-        &[0.0; 6],
-        covariance_diagonal,
-        DMatrix::from_diagonal(&DVector::from_vec(process_noise_vec)),
-        true,
-    )
+    let mut process_noise: Vec<f64> = DEFAULT_PROCESS_NOISE_DENSITY.into();
+    process_noise.push(bias_process_noise_density());
+    initialize_ekf(first, {
+        let mut built = EkfConfig::default();
+        built.other_states = Some(vec![0.0]);
+        built.other_states_covariance = Some(vec![bias_variance()]);
+        built.process_noise_diagonal = Some(process_noise);
+        built.is_enu = true;
+        built
+    })
+    .expect("a geophysically aided EKF must initialise")
 }
 
 /// The two assertions that separate an estimated bias from a carried-along constant.
@@ -501,10 +492,9 @@ fn the_map_bias_accumulates_process_noise_while_propagating() {
 
 /// The EKF branch of the geophysical CLI carries its bias state too, and estimates it.
 ///
-/// The CLI builds the EKF by hand -- `initialize_ekf` has no `other_states`, so the geophysical
-/// covariance and process noise are extended at the call site -- which makes it a different
-/// construction path from the UKF above and worth covering separately. This mirrors what
-/// `run_geo_closed_loop_cli`'s `FilterType::Ekf` arm assembles.
+/// The CLI builds the EKF through `initialize_ekf`, with the map bias as one of
+/// `EkfConfig::other_states` -- a different filter and a different constructor from the UKF
+/// above, so worth covering separately. It assembled this EKF by hand until that field existed.
 ///
 /// The movement assertion at the end is a second regression on this path, and the reason the
 /// comment that used to stand here -- saying the bias does not move on this path and that
@@ -652,6 +642,179 @@ fn magnetic_only_ekf_estimates_its_bias_state() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// The track above with a barometer: `relative_altitude` held at zero, which is what a flat track
+/// at constant height reads, so the barometric channel emits at its 1 Hz default.
+fn barometric_track(samples: usize) -> Vec<TestDataRecord> {
+    synthetic_track(samples)
+        .into_iter()
+        .map(|record| TestDataRecord {
+            relative_altitude: 0.0,
+            ..record
+        })
+        .collect()
+}
+
+/// The generated gravity map, loaded, in a directory of its own.
+fn gravity_map_in(name: &str) -> (std::path::PathBuf, Rc<GeoMap>) {
+    let dir = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let map_path = dir.join("gravity.nc");
+    write_gravity_map(&map_path);
+    let map = GeoMap::load_geomap(
+        &map_path,
+        GeophysicalMeasurementType::Gravity(GravityResolution::OneMinute),
+    )
+    .expect("the generated map must load");
+    (dir, Rc::new(map))
+}
+
+/// A gravity-aided run's events and output layout for a filter that also estimates the
+/// barometric bias.
+///
+/// The map bias sits at fifteen and the barometric bias after it, in a state one wider than the
+/// map-only layouts above: the placement `initialize_ukf` and `initialize_ekf` give the two, and
+/// the one `strapdown-sim`'s `kalman_geo_bias_layout` describes. The map measurement is declared
+/// against that full width, and the barometer is pointed at `baro_index`.
+fn gravity_and_barometer_events(
+    records: &[TestDataRecord],
+    map: &Rc<GeoMap>,
+    baro_index: usize,
+) -> (EventStream, ExtraStateLayout) {
+    let state_dim = NAVIGATION_AND_IMU_BIAS_STATE_DIM + 2;
+    let gravity_index = Some(NAVIGATION_AND_IMU_BIAS_STATE_DIM);
+    let bias_layout = GeoBiasLayout::new(state_dim, gravity_index, None)
+        .expect("a map bias at fifteen of a seventeen-state vector must be valid");
+    let mut aiding = passthrough_config();
+    aiding.baro_bias_index = Some(baro_index);
+    let events = build_event_stream(
+        records,
+        &aiding,
+        false,
+        &GeophysicalAiding {
+            gravity_map: Some(Rc::clone(map)),
+            gravity_noise_std: Some(GRAVITY_NOISE_STD_MGAL),
+            magnetic_map: None,
+            magnetic_noise_std: None,
+            interval_s: Some(1.0),
+            bias_layout: Some(bias_layout),
+        },
+    )
+    .expect("the geophysical event stream must build");
+    let layout = ExtraStateLayout::new(state_dim, gravity_index, None).with_baro_bias(baro_index);
+    (events, layout)
+}
+
+/// Both biases are estimated, and each where it belongs: the map bias stays a plausible gravity
+/// anomaly, and the barometer informs the barometric bias.
+///
+/// Reading one as the other is what a misplaced index would do -- the barometer pointed at the
+/// map bias drags it by metres-as-milligal, and the map measurement pointed at the barometric
+/// bias leaves the map bias frozen -- so each half is checked on its own.
+fn assert_map_and_barometric_biases_are_estimated(results: &[NavigationResult]) {
+    assert!(!results.is_empty(), "the run must produce solutions");
+    for (i, result) in results.iter().enumerate() {
+        assert!(
+            result.gravity_bias.is_some() && result.gravity_bias_cov.is_some(),
+            "row {i} carried a gravity map, so it must carry the gravity bias"
+        );
+        assert!(
+            result.baro_bias.is_some() && result.baro_bias_cov.is_some(),
+            "row {i} came from a filter estimating the barometric bias, so it must carry it"
+        );
+    }
+
+    let gravity: Vec<f64> = results.iter().filter_map(|r| r.gravity_bias).collect();
+    let gravity_cov: Vec<f64> = results.iter().filter_map(|r| r.gravity_bias_cov).collect();
+    assert_bias_is_estimated(&gravity, &gravity_cov, "gravity");
+    let worst = gravity.iter().fold(0.0_f64, |acc, b| acc.max(b.abs()));
+    assert!(
+        worst < GRAVITY_BIAS_PLAUSIBLE_MGAL,
+        "the gravity bias reached {worst:.0} mGal: something other than the map is driving it"
+    );
+
+    let baro: Vec<f64> = results.iter().filter_map(|r| r.baro_bias).collect();
+    let baro_cov: Vec<f64> = results.iter().filter_map(|r| r.baro_bias_cov).collect();
+    assert_bias_is_estimated(&baro, &baro_cov, "barometric");
+}
+
+/// A gravity-aided UKF that also estimates the barometric bias completes a run and estimates
+/// both.
+///
+/// This is the filter every `strapdown-sim` geophysical run now builds: the unaided UKF,
+/// barometric bias included, with the map bias inserted before that bias. It carried no
+/// barometric bias until then, so its results compared a different filter with the unaided
+/// runs. The map measurement checks the full width and the barometer reads the index after the
+/// map bias, so a layout that forgot either fails here on the first fix.
+#[test]
+fn a_gravity_aided_ukf_also_estimates_the_barometric_bias() {
+    let (dir, map) = gravity_map_in("geonav-ukf-baro");
+    let records = barometric_track(60);
+    let mut process_noise: Vec<f64> = DEFAULT_PROCESS_NOISE_DENSITY.into();
+    process_noise.push(bias_process_noise_density());
+    let config = {
+        let mut built = UkfConfig::default();
+        built.other_states = Some(vec![0.0]);
+        built.other_states_covariance = Some(vec![bias_variance()]);
+        built.process_noise_diagonal = Some(process_noise);
+        built.estimate_baro_bias = true;
+        built.is_enu = true;
+        built
+    };
+    let baro_index = config
+        .baro_bias_index()
+        .expect("the barometric bias was asked for");
+    assert_eq!(
+        baro_index,
+        NAVIGATION_AND_IMU_BIAS_STATE_DIM + 1,
+        "the barometric bias follows the map bias"
+    );
+    let (events, layout) = gravity_and_barometer_events(&records, &map, baro_index);
+
+    let mut ukf = initialize_ukf(&records[0], config).expect("the UKF must initialise");
+    let results = run_closed_loop_with_geo(&mut ukf, events, None, None, layout)
+        .expect("the gravity- and barometer-aided UKF must complete a run");
+
+    assert_map_and_barometric_biases_are_estimated(&results);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The EKF twin of the test above, through `EkfConfig::other_states`.
+///
+/// The EKF gained extra states so the CLI could build its geophysical EKF this way rather than
+/// by hand, and that hand-built filter is where the barometric bias went missing.
+#[test]
+fn a_gravity_aided_ekf_also_estimates_the_barometric_bias() {
+    let (dir, map) = gravity_map_in("geonav-ekf-baro");
+    let records = barometric_track(60);
+    let mut process_noise: Vec<f64> = DEFAULT_PROCESS_NOISE_DENSITY.into();
+    process_noise.push(bias_process_noise_density());
+    let config = {
+        let mut built = EkfConfig::default();
+        built.other_states = Some(vec![0.0]);
+        built.other_states_covariance = Some(vec![bias_variance()]);
+        built.process_noise_diagonal = Some(process_noise);
+        built.estimate_baro_bias = true;
+        built.is_enu = true;
+        built
+    };
+    let baro_index = config
+        .baro_bias_index()
+        .expect("the barometric bias was asked for");
+    assert_eq!(
+        baro_index,
+        NAVIGATION_AND_IMU_BIAS_STATE_DIM + 1,
+        "the barometric bias follows the map bias"
+    );
+    let (events, layout) = gravity_and_barometer_events(&records, &map, baro_index);
+
+    let mut ekf = initialize_ekf(&records[0], config).expect("the EKF must initialise");
+    let results = run_closed_loop_with_geo(&mut ekf, events, None, None, layout)
+        .expect("the gravity- and barometer-aided EKF must complete a run");
+
+    assert_map_and_barometric_biases_are_estimated(&results);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// The same gravity-only pair for a filter with no IMU-bias block.
 ///
 /// `gravity_only_layouts` builds the fifteen-state Kalman version; this one passes
@@ -750,8 +913,9 @@ fn gravity_aided_particle_filter_labels_its_bias_state() {
         let mut built = RbpfConfig::default();
         built.num_particles = 200;
         built.extra_state_dim = layout.len();
-        built.extra_state_init_std = 10.0;
-        built.extra_state_process_noise_std = 0.1;
+        built.extra_state_initial = vec![0.0];
+        built.extra_state_init_std = vec![10.0];
+        built.extra_state_process_noise_std = vec![0.1];
         built.seed = 42;
         built
     })
@@ -829,12 +993,11 @@ fn gravity_aided_particle_filter_labels_its_bias_state() {
         "a bias reported with no uncertainty on it is not one a reader can use"
     );
 
-    // The bias is a state the cloud estimates, not a seed carried along. Unlike the Kalman
-    // paths the geophysical fix never enters a linear update here -- it reweights and
-    // resamples the particles -- so this is the assertion that the reweighting is reaching the
-    // bias dimension at all. Over this track it walks from 0.70 to 3.93 mGal while the
-    // reported variance falls from 103 to 0.077, so the bound below is far looser than the
-    // movement it is guarding.
+    // The bias is a state the filter estimates, not a seed carried along. The geophysical fix
+    // reaches it through the Kalman half of the update -- each particle's conditional
+    // estimate takes a gain step -- so this is the assertion that the map measurement is
+    // reaching the bias dimension at all. The bound below only asks that it move, which is
+    // far looser than the movement it guards.
     assert!(
         biases.iter().any(|b| (b - biases[0]).abs() > 1e-9),
         "the gravity bias never moved from its seed, so the aiding is not reaching the state"
@@ -849,11 +1012,14 @@ fn gravity_aided_particle_filter_labels_its_bias_state() {
     // measurement in `core`; this is the same property with a `GravityMeasurement` reading a
     // NetCDF map, which is the configuration the defect was reported against.
     //
-    // A correctly scored one-degree-of-freedom fix has a NIS of order 1, and these do: 59
-    // fixes, median 0.76, largest 1.01. Scoring them on the yaw angle instead -- ~0 rad on
-    // this due-north track -- in place of a bias that converges near 15 mGal, against a
-    // 1 mGal noise standard deviation, would put the NIS two orders of magnitude higher. The
-    // bound below sits between the two rather than fitting the observed numbers.
+    // A correctly scored one-degree-of-freedom fix has a NIS of order 1 or below, and these
+    // do: 59 fixes, median 0.025, largest 1.74. They sit low because the synthetic fixes carry
+    // no noise, and because the gate's `S` includes the bias's own conditional variance, which
+    // starts at 100 mGal^2 and falls to 1.9 as the bias walks from 0 to 15.2 mGal. This bound
+    // is a sanity check on the scoring, not the #354 guard: at this fixture's 10 mGal noise,
+    // a gate reading the ~0 rad yaw angle in place of a 15 mGal bias would score about 2.3,
+    // inside it. The guard is the `unwrap` on `update` above, which fails on a nine-state
+    // summary before any NIS is formed.
     assert!(
         gravity_nis.len() >= 50,
         "the run scored only {} geophysical fixes; with too few this asserts nothing",

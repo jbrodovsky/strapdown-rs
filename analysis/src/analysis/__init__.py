@@ -291,6 +291,11 @@ def performance_analysis(args):
         except FileNotFoundError:
             print(f"Reference file for {dataset.name} not found in {reference_path}. Skipping.")
             continue
+        # Pair by timestamp, not row position. The sim writes no row for a record with
+        # neither IMU nor GNSS data, so an output can be shorter than its input; pairing by
+        # position then misaligned every later row, and the length mismatch dropped the
+        # trajectory from both the plots and the summary.
+        gps = gps.reindex(nav.index)
         output_plot = output_path / f"{dataset.stem}_performance.png"
         print(
             f"Processing dataset {dataset} ({len(nav)}) with reference {reference_file.name} ({len(gps)})"
@@ -561,10 +566,12 @@ def geophysical_performance_analysis(args):
 def _horizontal_error(nav: DataFrame, gps: DataFrame) -> np.ndarray | None:
     """Horizontal error between a filter solution and GPS truth, in meters.
 
-    `strapdown-sim` emits one fewer row than it reads -- the first record seeds the filter
-    rather than producing an estimate -- so the leading truth row is dropped before pairing,
-    matching the convention in :func:`geophysical_performance_analysis`. Solutions that are
-    still a different length are aligned onto the truth index.
+    The leading truth row is dropped -- the first record seeds the filter, so its error is
+    zero by construction -- matching :func:`geophysical_performance_analysis`. The solution
+    is then aligned onto the truth index by timestamp. Pairing by row position whenever the
+    lengths happened to agree assumed the sim writes one row fewer than it reads, which
+    stopped being true once outputs began with the initial state, and which a run that skips
+    a record breaks anyway.
 
     Parameters
     ----------
@@ -581,7 +588,7 @@ def _horizontal_error(nav: DataFrame, gps: DataFrame) -> np.ndarray | None:
     """
     columns = ["latitude", "longitude"]
     truth = gps.iloc[1:]
-    solution = nav if len(nav) == len(truth) else nav.reindex(truth.index)
+    solution = nav.reindex(truth.index)
     if truth.empty or solution[columns].isna().to_numpy().all():
         return None
     return haversine_vector(

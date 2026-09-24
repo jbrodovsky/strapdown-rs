@@ -9,6 +9,7 @@ and it is the chain whose output sets the filter's measurement noise.
 
 from __future__ import annotations
 
+import dataclasses
 import tomllib
 from pathlib import Path
 
@@ -90,13 +91,14 @@ def planted(tmp_path_factory):
         )
 
         # Invert the measurement models, so the CSV carries raw sensor values and the tool
-        # has to run the forward model itself to get back what was planted.
+        # has to run the forward model itself to get back what was planted. A moving
+        # gravimeter reads normal gravity at its height plus the anomaly, less the Eotvos term.
         north = speed * np.cos(np.radians(bearing))
         east = speed * np.sin(np.radians(bearing))
         gravity_magnitude = (
             gravity_measured / MGAL_PER_M_PER_S2
-            + normal_gravity(latitude, 0.0)
-            + eotvos(latitude, altitude, north, east)
+            + normal_gravity(latitude, altitude)
+            - eotvos(latitude, altitude, north, east)
         )
         reference = wmm_total_field_nt(latitude, longitude, altitude, decimal_year(pd.Series(time)))
         magnetic_magnitude_ut = (magnetic_measured + reference) / MICROTESLA_TO_NANOTESLA
@@ -232,6 +234,73 @@ def test_decorrelation_uses_source_resolution_not_cell_size(characterised):
     for entry in stats:
         assert entry.decorrelation_m > max(entry.cell_north_m, entry.cell_east_m)
         assert entry.recommended_interval_s > 1.0
+
+
+def test_one_parked_trajectory_does_not_blank_the_pooled_interval(characterised):
+    """
+    A trajectory with no de-correlation interval is left out of the pooled one.
+
+    A parked trajectory has no speed and so no interval. The pool took a plain median, which is
+    NaN if any entry is, so one parked segment -- `2025-11-09_17-34-01_B` in the real data --
+    printed ``nan s`` and left `--apply-interval` nothing finite to write.
+    """
+    stats, residuals, _ = characterised
+    parked = next(s for s in stats if s.field == "gravity")
+    blanked = [
+        dataclasses.replace(
+            s, recommended_interval_s=float("nan"), independent_samples=float("nan")
+        )
+        if s is parked
+        else s
+        for s in stats
+    ]
+
+    gravity = next(p for p in pool(blanked, residuals) if p.field == "gravity")
+
+    moving = [s.recommended_interval_s for s in stats if s.field == "gravity" and s is not parked]
+    assert gravity.recommended_interval_s == pytest.approx(float(np.median(moving)))
+    assert np.isfinite(gravity.independent_samples_median)
+
+
+def test_wmm_reference_uses_the_epoch_the_crate_selects():
+    """
+    2023 is referenced to WMM2020, and a date in no carried epoch is an error, as in the crate.
+
+    The value is the literal `geonav`'s `a_2023_recording_is_referenced_to_wmm2020` asserts
+    against the `world_magnetic_model` crate.
+    """
+    field = float(wmm_total_field_nt(40.05, -75.95, 100.0, 2023 + 181 / 365)[0])
+    assert field == pytest.approx(51069.8, abs=1.0)
+    with pytest.raises(ValueError, match="no World Magnetic Model"):
+        wmm_total_field_nt(40.05, -75.95, 100.0, 2019.5)
+
+
+@pytest.mark.parametrize(
+    ("year", "channels"), [(2023, {"gravity", "magnetic"}), (2019, {"gravity"})]
+)
+def test_a_recording_before_2025_keeps_its_gravity_channel(planted, tmp_path, year, channels):
+    """
+    A recording dated before 2025 is still characterised: both channels in 2023, which WMM2020
+    covers, and gravity alone where no carried epoch covers the date.
+
+    Every 2023 and 2024 recording used to vanish from the statistics. pygeomag's default model
+    is WMM2025, which refuses earlier dates; the error escaped `analyse_trajectory`, and the
+    caller skipped the trajectory with its gravity channel. That took five of the repository's
+    27 trajectories out of every value `geo-adopt` wrote.
+    """
+    source = sorted(planted.glob("track_*.csv"))[0]
+    stem = source.with_suffix("").name
+    frame = pd.read_csv(source)
+    frame["time"] = pd.to_datetime(frame["time"], utc=True, format="ISO8601") - pd.DateOffset(
+        years=2025 - year
+    )
+    frame.to_csv(tmp_path / f"{stem}.csv", index=False)
+    for kind in ("gravity", "magnetic"):
+        (tmp_path / f"{stem}_{kind}.nc").write_bytes((planted / f"{stem}_{kind}.nc").read_bytes())
+
+    stats, _ = analyse_trajectory(tmp_path / f"{stem}.csv")
+
+    assert {entry.field for entry in stats} == channels
 
 
 def test_outputs_are_written(characterised, tmp_path):

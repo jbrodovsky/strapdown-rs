@@ -79,6 +79,11 @@ MGAL_PER_M_PER_S2 = 1.0e5
 #: Sensor Logger reports the magnetometer in microtesla; anomalies and maps are nanotesla.
 MICROTESLA_TO_NANOTESLA = 1000.0
 
+#: The World Magnetic Model epochs the Rust ``world_magnetic_model`` crate carries, and so the
+#: only ones this mirror may use. The crate selects ``year // 5 * 5`` -- WMM2020 for 2020-2024,
+#: WMM2025 for 2025-2029 -- and errors outside them; :func:`wmm_total_field_nt` does the same.
+WMM_EPOCHS = (2020, 2025)
+
 
 def normal_gravity(latitude_deg: np.ndarray | float, altitude_m: np.ndarray | float = 0.0):
     """
@@ -89,8 +94,9 @@ def normal_gravity(latitude_deg: np.ndarray | float, altitude_m: np.ndarray | fl
     latitude_deg : array_like or float
         Geodetic latitude, degrees.
     altitude_m : array_like or float, optional
-        Height above the ellipsoid, metres. Note that `earth::gravity_anomaly` calls this
-        with ``0.0``, so :func:`gravity_anomaly_mgal` does too.
+        Height above the ellipsoid, metres. :func:`gravity_anomaly_mgal` passes the
+        observation's own height, as `earth::gravity_anomaly` does; both passed ``0.0`` until
+        the free-air fix.
 
     Returns
     -------
@@ -111,7 +117,9 @@ def principal_radii(latitude_deg, altitude_m):
     Returns
     -------
     tuple of ndarray
-        ``(r_n, r_e, r_p)``, where ``r_p`` is the one the Eotvos term divides by.
+        ``(r_n, r_e, r_p)``: the meridian and transverse radii of curvature, which
+        :func:`eotvos` uses at height, and ``r_p``, the radius of the parallel, which it
+        no longer uses.
     """
     lat_rad = np.radians(latitude_deg)
     sin_sq = np.sin(lat_rad) ** 2
@@ -127,13 +135,16 @@ def eotvos(latitude_deg, altitude_m, north_velocity, east_velocity):
     """
     Eotvos correction, m/s^2. Mirrors `earth::eotvos`.
 
-    The apparent change in gravity from moving over a rotating Earth: an eastward run adds
-    centrifugal acceleration, and any horizontal motion adds a curvature term.
+    How far a platform moving over the rotating Earth reads *below* gravity: the down row
+    of Groves equation 5.54, ``2 Omega v_E cos(lat) + v_N^2 / (R_N + h) + v_E^2 / (R_E + h)``.
+    Each curvature term takes the radius of curvature of its own direction. Both used to
+    divide by ``r_p``, the radius of the parallel, which overstates them by ``1 / cos(lat)``.
     """
-    _, _, r_p = principal_radii(latitude_deg, altitude_m)
+    r_n, r_e, _ = principal_radii(latitude_deg, altitude_m)
     return (
         2.0 * RATE * east_velocity * np.cos(np.radians(latitude_deg))
-        + (north_velocity**2 + east_velocity**2) / r_p
+        + north_velocity**2 / (r_n + altitude_m)
+        + east_velocity**2 / (r_e + altitude_m)
     )
 
 
@@ -142,6 +153,12 @@ def gravity_anomaly_mgal(
 ):
     """
     Free-air gravity anomaly in **milligal**. Mirrors `earth::gravity_anomaly`.
+
+    ``observed - normal_gravity(lat, h) + eotvos``: normal gravity at the observation height,
+    and the Eotvos correction *added*, since a moving platform reads low by it. Until the
+    fix both were wrong here as in Rust -- normal gravity was taken at ``h = 0`` and the
+    correction was subtracted -- and the bias, noise and prior this module wrote into
+    ``conf/*.toml`` were measured through that formula.
 
     Parameters
     ----------
@@ -153,9 +170,9 @@ def gravity_anomaly_mgal(
     ndarray
         The anomaly in milligal, the unit the map is in.
     """
-    gamma = normal_gravity(latitude_deg, 0.0)
+    gamma = normal_gravity(latitude_deg, altitude_m)
     correction = eotvos(latitude_deg, altitude_m, north_velocity, east_velocity)
-    return (gravity_observed_mps2 - gamma - correction) * MGAL_PER_M_PER_S2
+    return (gravity_observed_mps2 - gamma + correction) * MGAL_PER_M_PER_S2
 
 
 def observed_field_nt(mag_x, mag_y, mag_z):
@@ -180,7 +197,13 @@ def wmm_total_field_nt(latitude_deg, longitude_deg, altitude_m, years) -> np.nda
     `geonav::MagneticAnomalyMeasurement::reference_field_nt`.
 
     The Rust side uses the ``world_magnetic_model`` crate; this uses ``pygeomag``. The two
-    agree to well under a nanotesla, which :func:`self_check` asserts.
+    agree to well under a nanotesla, which :func:`self_check` asserts for one date per epoch.
+
+    Each sample is referenced to the epoch the crate selects for its date (see
+    :data:`WMM_EPOCHS`), so a 2023 recording gets WMM2020. This loaded pygeomag's default --
+    WMM2025 -- for every date until that was fixed, and pygeomag refuses a date before its
+    model's epoch: every 2023 and 2024 recording raised here, and :func:`geostats_analysis`
+    dropped the whole trajectory, its gravity channel included.
 
     Raises
     ------
@@ -188,19 +211,29 @@ def wmm_total_field_nt(latitude_deg, longitude_deg, altitude_m, years) -> np.nda
         If ``pygeomag`` is not installed. The magnetic channel is skipped rather than
         silently producing an anomaly with no core field removed -- which would be a ~50,000
         nT error, several hundred times the signal.
+    ValueError
+        For a date in no epoch of :data:`WMM_EPOCHS`, where the crate errors too.
     """
     from pygeomag import GeoMag
 
-    model = GeoMag()
     latitude_deg = np.atleast_1d(latitude_deg)
     longitude_deg = np.atleast_1d(longitude_deg)
     altitude_m = np.atleast_1d(altitude_m)
     years = np.atleast_1d(years)
 
+    models: dict[int, GeoMag] = {}
     out = np.empty(latitude_deg.shape, dtype=float)
     for i in range(latitude_deg.size):
+        epoch = int(np.floor(years[i])) // 5 * 5
+        if epoch not in WMM_EPOCHS:
+            raise ValueError(
+                f"no World Magnetic Model for {float(years[i]):.3f}: the Rust crate carries "
+                f"the {WMM_EPOCHS} epochs only"
+            )
+        if epoch not in models:
+            models[epoch] = GeoMag(coefficients_file=f"wmm/WMM_{epoch}.COF")
         # pygeomag takes altitude in kilometres.
-        result = model.calculate(
+        result = models[epoch].calculate(
             glat=float(latitude_deg[i]),
             glon=float(longitude_deg[i]),
             alt=float(altitude_m[i]) / 1000.0,
@@ -592,9 +625,16 @@ def analyse_trajectory(
             if not all(c in frame.columns for c in mag_columns):
                 continue
             observed = observed_field_nt(*(frame[c].to_numpy(float) for c in mag_columns))
-            reference = wmm_total_field_nt(
-                latitude, longitude, altitude, decimal_year(frame["time"])
-            )
+            try:
+                reference = wmm_total_field_nt(
+                    latitude, longitude, altitude, decimal_year(frame["time"])
+                )
+            except ValueError as error:
+                # The magnetic channel alone. A date the field model cannot serve says nothing
+                # about gravity, which used to be dropped along with it: the error escaped to
+                # the caller, which skips the whole trajectory.
+                print(f"  {csv_path.name}: skipping the magnetic channel: {error}")
+                continue
             measured = observed - reference
 
         anomaly_map = AnomalyMap.load(map_path)
@@ -697,6 +737,19 @@ def _robust_sigma(values: np.ndarray) -> float:
     return float(MAD_TO_SIGMA * np.median(np.abs(values - np.median(values))))
 
 
+def _finite_median(values) -> float:
+    """
+    Median of the finite values, NaN only when there are none.
+
+    For the per-trajectory quantities that are undefined on some trajectories -- a parked one
+    has no speed, so no de-correlation interval. A plain median returned NaN whenever one
+    trajectory was parked, which silently disabled the interval recommendation for all of them:
+    the report printed ``nan s`` and ``--apply-interval`` found nothing finite to write.
+    """
+    finite = np.asarray([value for value in values if np.isfinite(value)], dtype=float)
+    return float(np.median(finite)) if finite.size else float("nan")
+
+
 def pool(stats: list[FieldStats], residuals: pd.DataFrame) -> list[PooledStats]:
     """Combine per-trajectory statistics into one row per field."""
     pooled: list[PooledStats] = []
@@ -734,9 +787,9 @@ def pool(stats: list[FieldStats], residuals: pd.DataFrame) -> list[PooledStats]:
                 snr_median=float(np.median(snrs)) if snrs.size else float("nan"),
                 snr_best=float(np.max(snrs)) if snrs.size else float("nan"),
                 snr_above_one=int(np.sum(snrs > 1.0)),
-                recommended_interval_s=float(np.median([s.recommended_interval_s for s in rows])),
-                independent_samples_median=float(np.median([s.independent_samples for s in rows])),
-                decorrelation_m=float(np.median([s.decorrelation_m for s in rows])),
+                recommended_interval_s=_finite_median(s.recommended_interval_s for s in rows),
+                independent_samples_median=_finite_median(s.independent_samples for s in rows),
+                decorrelation_m=_finite_median(s.decorrelation_m for s in rows),
             )
         )
     return pooled
@@ -1058,17 +1111,32 @@ def self_check() -> None:
     gamma = float(normal_gravity(40.05, 0.0))
     assert abs(gamma - 9.801741) < 1e-5, f"normal gravity drifted: {gamma}"
 
-    # A 1e-5 m/s^2 perturbation is exactly 1 mGal, mirroring the Rust unit test.
-    base = float(gravity_anomaly_mgal(40.05, 100.0, 0.0, 0.0, gamma))
-    bumped = float(gravity_anomaly_mgal(40.05, 100.0, 0.0, 0.0, gamma + 1e-5))
+    # A 1e-5 m/s^2 perturbation is exactly 1 mGal, mirroring the Rust unit test. Normal
+    # gravity is referred to the observation height, so the zero-anomaly reading at 100 m is
+    # normal gravity at 100 m.
+    gamma_at_height = float(normal_gravity(40.05, 100.0))
+    base = float(gravity_anomaly_mgal(40.05, 100.0, 0.0, 0.0, gamma_at_height))
+    bumped = float(gravity_anomaly_mgal(40.05, 100.0, 0.0, 0.0, gamma_at_height + 1e-5))
     assert abs(base) < 1e-6, f"a reading equal to normal gravity must be a zero anomaly: {base}"
     assert abs((bumped - base) - 1.0) < 1e-6, f"gravity anomaly is not in mGal: {bumped - base}"
+
+    # `earth::tests::eotvos_matches_the_python_mirror` asserts the same literal.
+    correction_mgal = float(eotvos(40.05, 100.0, 10.0, 20.0)) * MGAL_PER_M_PER_S2
+    assert abs(correction_mgal - 231.114161) < 1e-6, f"Eotvos drifted: {correction_mgal}"
+    moving = float(gravity_anomaly_mgal(40.05, 100.0, 10.0, 20.0, gamma_at_height))
+    assert abs(moving - correction_mgal) < 1e-6, f"Eotvos must be added: {moving}"
 
     try:
         field = float(wmm_total_field_nt(40.05, -75.95, 100.0, 2025.164)[0])
     except ImportError:
         return
     assert abs(field - 50869.6) < 50.0, f"WMM disagrees with the Rust crate: {field} nT"
+
+    # 1 July 2023: the WMM2020 epoch, which the crate selects for 2020-2024 and this module
+    # did not load at all. `geonav`'s `a_2023_recording_is_referenced_to_wmm2020` asserts the
+    # same literal against the crate.
+    field_2023 = float(wmm_total_field_nt(40.05, -75.95, 100.0, 2023 + 181 / 365)[0])
+    assert abs(field_2023 - 51069.8) < 1.0, f"WMM2020 disagrees with the crate: {field_2023} nT"
 
 
 def add_geostats_arguments(parser) -> None:

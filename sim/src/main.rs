@@ -55,24 +55,19 @@ use strapdown::NavigationFilter;
 use strapdown::gating::{
     DEFAULT_FORCED_UPDATE_AFTER, DEFAULT_REJECTION_INFLATION, GateRecovery, InnovationGate,
 };
-#[cfg(feature = "geonav")]
-use strapdown::kalman::ExtendedKalmanFilter;
 use strapdown::sim::HealthLimits;
 use strapdown::sim::health::HealthMonitor;
 #[cfg(feature = "geonav")]
 use strapdown::sim::run_closed_loop_with_geo;
-#[cfg(feature = "geonav")]
 use strapdown::sim::{
-    DEFAULT_INITIAL_POSITION_UNCERTAINTY_M, DEFAULT_PROCESS_NOISE_DENSITY, GeoResolution,
-    GeophysicalConfig,
-};
-use strapdown::sim::{
-    EkfConfig, EskfConfig, ExecutionLimits, ExecutionMonitor, ExtraStateLayout, FaultArgs,
-    FilterType, NavigationResult, ParticleFilterType, SchedulerArgs, SimulationConfig,
+    ClosedLoopConfig, EkfConfig, EskfConfig, ExecutionLimits, ExecutionMonitor, ExtraStateLayout,
+    FaultArgs, FilterType, NavigationResult, ParticleFilterType, SchedulerArgs, SimulationConfig,
     SimulationMode, SyntheticConfig, TestDataRecord, UkfConfig, build_fault, build_scheduler,
     check_declared_frame, dead_reckoning, generate_synthetic, initialize_ekf, initialize_eskf,
     initialize_ukf, run_closed_loop,
 };
+#[cfg(feature = "geonav")]
+use strapdown::sim::{DEFAULT_PROCESS_NOISE_DENSITY, GeoResolution, GeophysicalConfig};
 
 /// The `--log-level` default.
 ///
@@ -431,15 +426,17 @@ const GEO_BIAS_DRIFT_TIME_CONSTANT_S: f64 = 3600.0;
 
 /// Prior and random-walk rate for the geophysical map-bias states.
 ///
-/// Separate from [`GeophysicalArgs`] because these four flags belong to the closed-loop
-/// runner alone. `GeophysicalArgs` is flattened into the particle-filter subcommand too,
-/// which carries its own `--geo-bias-init-std`/`--geo-bias-process-noise-std`; putting
-/// these there would give `pf` four more flags that it silently ignores.
+/// Flattened into both `cl` and `pf`, and resolved for either through [`geo_bias_setup`].
+/// `pf` used to carry its own `--geo-bias-init-std`/`--geo-bias-process-noise-std` instead --
+/// one pair for both channels -- and ignored these, along with `--gravity-bias` and
+/// `--magnetic-bias`. Those two flags are refused now, by name; see
+/// [`refuse_removed_particle_filter_flags`].
 ///
-/// Both knobs are **standard deviations** in their channel's own units, matching
-/// `RbpfConfig::extra_state_init_std` and `extra_state_process_noise_std`, and are squared
-/// at the point of use. Gravity is in mGal and magnetic in nT -- three orders of magnitude
-/// apart, which is why there is a pair per channel rather than one pair for both.
+/// Both knobs are **standard deviations** in their channel's own units. The Kalman arms square
+/// them into a prior variance and a process-noise density; the particle filter takes them as
+/// they are, entry for entry, in `RbpfConfig::extra_state_init_std` and
+/// `extra_state_process_noise_std`. Gravity is in mGal and magnetic in nT -- three orders of
+/// magnitude apart, which is why there is a pair per channel rather than one pair for both.
 #[cfg(feature = "geonav")]
 #[derive(Args, Clone, Debug)]
 struct GeophysicalBiasArgs {
@@ -633,6 +630,10 @@ struct ParticleFilterSimArgs {
     #[command(flatten)]
     geo: GeophysicalArgs,
 
+    /// Prior and random walk of each map bias, per channel -- the same flags `cl` takes.
+    #[command(flatten)]
+    geo_bias: GeophysicalBiasArgs,
+
     /// Apply zero-vertical-velocity pseudo-measurement (RBPF only).
     #[arg(long, default_value_t = true)]
     zero_vertical_velocity: bool,
@@ -641,13 +642,48 @@ struct ParticleFilterSimArgs {
     #[arg(long, default_value_t = 0.1)]
     zero_vertical_velocity_std_mps: f64,
 
-    /// Initial standard deviation for geophysical bias states.
-    #[arg(long, default_value_t = 1.0)]
-    geo_bias_init_std: f64,
+    /// Removed. Accepted only so it can be refused by name; see
+    /// [`refuse_removed_particle_filter_flags`].
+    #[arg(long, hide = true)]
+    geo_bias_init_std: Option<f64>,
 
-    /// Random-walk rate for geophysical bias states (bias units per sqrt(s)).
-    #[arg(long, default_value_t = 1e-3)]
-    geo_bias_process_noise_std: f64,
+    /// Removed. Accepted only so it can be refused by name; see
+    /// [`refuse_removed_particle_filter_flags`].
+    #[arg(long, hide = true)]
+    geo_bias_process_noise_std: Option<f64>,
+}
+
+/// Refuse the particle filter's two retired map-bias flags, naming what replaced them.
+///
+/// `--geo-bias-init-std` and `--geo-bias-process-noise-std` set one prior and one random walk
+/// for every map bias, whatever its unit, while `pf` ignored the per-channel flags `cl` takes.
+/// Both subcommands now read those. Dropping the old flags outright would still fail loudly --
+/// clap rejects an unknown argument -- but would not say where the setting went.
+///
+/// # Errors
+/// When either retired flag is passed.
+fn refuse_removed_particle_filter_flags(
+    args: &ParticleFilterSimArgs,
+) -> Result<(), Box<dyn Error>> {
+    if args.geo_bias_init_std.is_some() {
+        return Err(
+            "`--geo-bias-init-std` was removed: it was one prior for every map bias, in no \
+                    particular unit. Pass `--gravity-bias-init-std` (mGal) and/or \
+                    `--magnetic-bias-init-std` (nT), or omit them to default to each channel's \
+                    noise standard deviation"
+                .into(),
+        );
+    }
+    if args.geo_bias_process_noise_std.is_some() {
+        return Err(
+            "`--geo-bias-process-noise-std` was removed: it was one random walk for every \
+                    map bias, in no particular unit. Pass `--gravity-bias-process-noise-std` \
+                    (mGal per sqrt(s)) and/or `--magnetic-bias-process-noise-std` (nT per \
+                    sqrt(s)), or omit them to default to each prior spread over an hour"
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 /// Arguments for create-config command
@@ -776,32 +812,15 @@ fn process_file(
 
             let filter_config = config.closed_loop.clone().unwrap_or_default();
 
-            // `ukf_alpha`/`beta`/`kappa` are read here rather than left at the constructor's
-            // defaults. This path ignored all three, so a config file setting `ukf_alpha` got
-            // the 1e-3 default silently -- the same shape of defect as #392, found while
-            // adding the flag below. The values are a no-op for a config that does not set
-            // them: `default_ukf_alpha`/`_beta`/`_kappa` are the constructor's own defaults.
-            let ukf_config = {
-                let mut built = UkfConfig::default();
-                built.ukf_alpha = Some(filter_config.ukf_alpha);
-                built.ukf_beta = Some(filter_config.ukf_beta);
-                built.ukf_kappa = Some(filter_config.ukf_kappa);
-                built.estimate_baro_bias = filter_config.estimate_baro_bias;
-                built.is_enu = config.is_enu;
-                built
-            };
-            let ekf_config = {
-                let mut built = EkfConfig::default();
-                built.estimate_baro_bias = filter_config.estimate_baro_bias;
-                built.is_enu = config.is_enu;
-                built
-            };
-            let eskf_config = {
-                let mut built = EskfConfig::default();
-                built.estimate_baro_bias = filter_config.estimate_baro_bias;
-                built.is_enu = config.is_enu;
-                built
-            };
+            // `ukf_alpha`/`beta`/`kappa` are read from the file rather than left at the
+            // constructor's defaults. This path ignored all three, so a config file setting
+            // `ukf_alpha` got the 1e-3 default silently -- the same shape of defect as #392.
+            // Built through `KalmanSettings` so the geophysical arm above builds the same
+            // filters and only appends its map biases.
+            let kalman = KalmanSettings::from_closed_loop(&filter_config, config.is_enu);
+            let ukf_config = kalman.ukf_config();
+            let ekf_config = kalman.ekf_config();
+            let eskf_config = kalman.eskf_config();
 
             // Derived from the filter, not asked for a second time; see
             // `run_single_closed_loop_simulation` for why (#372).
@@ -934,13 +953,43 @@ fn process_file(
                         gravity_map,
                         magnetic_map,
                         geo_cfg.geo_interval_s,
-                        geo_cfg.gravity_noise_std.unwrap_or(100.0),
-                        geo_cfg.magnetic_noise_std.unwrap_or(150.0),
+                        geo_cfg
+                            .gravity_noise_std
+                            .unwrap_or(DEFAULT_GRAVITY_NOISE_MGAL),
+                        geo_cfg
+                            .magnetic_noise_std
+                            .unwrap_or(DEFAULT_MAGNETIC_NOISE_NT),
                     )
                 } else {
-                    (None, None, None, 100.0, 150.0)
+                    (
+                        None,
+                        None,
+                        None,
+                        DEFAULT_GRAVITY_NOISE_MGAL,
+                        DEFAULT_MAGNETIC_NOISE_NT,
+                    )
                 }
             };
+
+            // Each map bias's seed, prior and random walk, from `[geophysical]` and through the
+            // helper the Kalman arms use -- so the bias `analyze geostats` measures reaches this
+            // filter as it reaches those. This arm used to read none of them, and started every
+            // bias at zero under `[particle_filter] geo_bias_init_std`, one prior for every
+            // channel in no particular unit.
+            #[cfg(feature = "geonav")]
+            let geo_bias = config.geophysical.as_ref().map_or_else(
+                || geo_bias_setup(None, None),
+                |geo_cfg| {
+                    geo_bias_setup(
+                        gravity_map
+                            .is_some()
+                            .then_some(MapBiasPrior::gravity_from_config(geo_cfg)),
+                        magnetic_map
+                            .is_some()
+                            .then_some(MapBiasPrior::magnetic_from_config(geo_cfg)),
+                    )
+                },
+            );
 
             #[cfg(not(feature = "geonav"))]
             if config.geophysical.is_some() {
@@ -1052,16 +1101,8 @@ fn process_file(
                 built.velocity_process_noise_std_mps = pf_cfg.velocity_process_noise_std_mps;
                 built.attitude_process_noise_std_rad = pf_cfg.attitude_process_noise_std_rad;
                 built.extra_state_dim = geo_bias_dim;
-                built.extra_state_init_std = if geo_bias_dim > 0 {
-                    pf_cfg.geo_bias_init_std
-                } else {
-                    0.0
-                };
-                built.extra_state_process_noise_std = if geo_bias_dim > 0 {
-                    pf_cfg.geo_bias_process_noise_std
-                } else {
-                    0.0
-                };
+                #[cfg(feature = "geonav")]
+                geo_bias.apply_to_rbpf(&mut built);
                 built.seed = config.seed;
                 built.zero_vertical_velocity = pf_cfg.zero_vertical_velocity;
                 built.zero_vertical_velocity_std_mps = pf_cfg.zero_vertical_velocity_std_mps;
@@ -1243,6 +1284,84 @@ fn run_from_config(
     Ok(())
 }
 
+/// The settings every closed-loop Kalman filter is built from, besides its first record and
+/// any geophysical map biases.
+///
+/// One value, handed to every arm that constructs a UKF, EKF or ESKF: the closed-loop branch of
+/// [`process_file`], [`run_single_closed_loop_simulation`] for the command line, and the
+/// geophysical runner, which takes the same configs and appends its map-bias states to them
+/// (`GeoBiasSetup::apply_to_ukf` and `apply_to_ekf`). So the variants a study compares -- full
+/// GNSS, degraded GNSS, and degraded GNSS with map aiding -- run one filter, barometric bias
+/// included, and differ only by the GNSS they are given and the map biases an aided run carries.
+///
+/// The geophysical runner used to build its own. Neither of its filters estimated the
+/// barometric bias, and its EKF had a hand-written P0 and Q, so a map-aided result was compared
+/// against an unaided one from a different filter and the difference was reported as the map's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct KalmanSettings {
+    /// UKF sigma-point spread. Ignored by the EKF and ESKF, like the next two.
+    ukf_alpha: f64,
+    /// UKF prior-distribution parameter.
+    ukf_beta: f64,
+    /// UKF secondary spread parameter.
+    ukf_kappa: f64,
+    /// Estimate a barometric altitude bias as an extra state (#372).
+    estimate_baro_bias: bool,
+    /// Whether the records are ENU. Checked against the data by `check_declared_frame`.
+    is_enu: bool,
+}
+
+impl KalmanSettings {
+    /// The settings a scenario file's `[closed_loop]` section describes.
+    const fn from_closed_loop(config: &ClosedLoopConfig, is_enu: bool) -> Self {
+        Self {
+            ukf_alpha: config.ukf_alpha,
+            ukf_beta: config.ukf_beta,
+            ukf_kappa: config.ukf_kappa,
+            estimate_baro_bias: config.estimate_baro_bias,
+            is_enu,
+        }
+    }
+
+    /// The settings the `cl` subcommand's flags describe.
+    const fn from_args(args: &ClosedLoopSimArgs) -> Self {
+        Self {
+            ukf_alpha: args.ukf_alpha,
+            ukf_beta: args.ukf_beta,
+            ukf_kappa: args.ukf_kappa,
+            estimate_baro_bias: args.estimate_baro_bias,
+            is_enu: args.sim.enu,
+        }
+    }
+
+    /// The UKF these settings describe, before any map biases.
+    fn ukf_config(self) -> UkfConfig {
+        let mut built = UkfConfig::default();
+        built.ukf_alpha = Some(self.ukf_alpha);
+        built.ukf_beta = Some(self.ukf_beta);
+        built.ukf_kappa = Some(self.ukf_kappa);
+        built.estimate_baro_bias = self.estimate_baro_bias;
+        built.is_enu = self.is_enu;
+        built
+    }
+
+    /// The EKF these settings describe, before any map biases.
+    fn ekf_config(self) -> EkfConfig {
+        let mut built = EkfConfig::default();
+        built.estimate_baro_bias = self.estimate_baro_bias;
+        built.is_enu = self.is_enu;
+        built
+    }
+
+    /// The ESKF these settings describe. It has no geophysical arm.
+    fn eskf_config(self) -> EskfConfig {
+        let mut built = EskfConfig::default();
+        built.estimate_baro_bias = self.estimate_baro_bias;
+        built.is_enu = self.is_enu;
+        built
+    }
+}
+
 /// Execute a single closed-loop simulation run
 ///
 /// This is a helper function that extracts the common logic for running closed-loop simulations
@@ -1255,39 +1374,17 @@ fn run_single_closed_loop_simulation(
     aiding: &strapdown::messages::AidingConfig,
     output_file: &Path,
     limits: RunLimits,
-    ukf_alpha: f64,
-    ukf_beta: f64,
-    ukf_kappa: f64,
+    kalman: KalmanSettings,
     innovation_gate: Option<InnovationGate>,
     gate_recovery: GateRecovery,
-    is_enu: bool,
-    estimate_baro_bias: bool,
 ) -> Result<(), Box<dyn Error>> {
     // Same full-window guard as the other entry points: the `initialize_*` helpers below see
     // only one record, which is not enough evidence in either direction (#296).
-    check_declared_frame(records, is_enu)?;
+    check_declared_frame(records, kalman.is_enu)?;
 
-    let ukf_config = {
-        let mut built = UkfConfig::default();
-        built.ukf_alpha = Some(ukf_alpha);
-        built.ukf_beta = Some(ukf_beta);
-        built.ukf_kappa = Some(ukf_kappa);
-        built.estimate_baro_bias = estimate_baro_bias;
-        built.is_enu = is_enu;
-        built
-    };
-    let ekf_config = {
-        let mut built = EkfConfig::default();
-        built.estimate_baro_bias = estimate_baro_bias;
-        built.is_enu = is_enu;
-        built
-    };
-    let eskf_config = {
-        let mut built = EskfConfig::default();
-        built.estimate_baro_bias = estimate_baro_bias;
-        built.is_enu = is_enu;
-        built
-    };
+    let ukf_config = kalman.ukf_config();
+    let ekf_config = kalman.ekf_config();
+    let eskf_config = kalman.eskf_config();
 
     // The barometer model has to be told which state holds its bias, and the answer is the
     // filter's own. Deriving it here rather than asking for `baro_bias_index` to be set
@@ -1304,7 +1401,7 @@ fn run_single_closed_loop_simulation(
     };
 
     // Build event stream from records and the aiding config
-    let event_stream = build_event_stream(records, &aiding, is_enu)?;
+    let event_stream = build_event_stream(records, &aiding, kalman.is_enu)?;
     info!(
         "Initialized event stream with {} events",
         event_stream.events.len()
@@ -1613,13 +1710,9 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
             &aiding,
             &output_file,
             limits.clone(),
-            args.ukf_alpha,
-            args.ukf_beta,
-            args.ukf_kappa,
+            KalmanSettings::from_args(args),
             innovation_gate,
             gate_recovery,
-            args.sim.enu,
-            args.estimate_baro_bias,
         ) {
             Ok(()) => {
                 // Success - result logging is handled by the helper function
@@ -1750,12 +1843,9 @@ struct GeoClosedLoopSettings {
     /// Which filter runs. `Eskf` is rejected before a run starts; see
     /// [`GeoClosedLoopSettings::validate`].
     filter: FilterType,
-    /// Whether the records are ENU. Checked against the data by `check_declared_frame`.
-    is_enu: bool,
-    /// UKF sigma-point parameters, ignored by the EKF arm.
-    ukf_alpha: f64,
-    ukf_beta: f64,
-    ukf_kappa: f64,
+    /// The filter's own settings, exactly as the unaided closed-loop paths build them --
+    /// barometric bias included. The runner appends the map biases and changes nothing else.
+    kalman: KalmanSettings,
     /// Gravity map resolution. `None` disables the channel.
     gravity_resolution: Option<GeoResolution>,
     /// Explicit gravity map path, or `None` to look beside the input.
@@ -1822,6 +1912,26 @@ impl GeoClosedLoopSettings {
         }
         Ok(())
     }
+
+    /// The gravity channel's map-bias prior, as [`geo_bias_setup`] takes it.
+    const fn gravity_bias_prior(&self) -> MapBiasPrior {
+        MapBiasPrior {
+            noise_std: self.gravity_noise_std,
+            seed: self.gravity_bias,
+            init_std: self.gravity_prior_std,
+            drift_rate: self.gravity_drift_rate,
+        }
+    }
+
+    /// The magnetic channel's map-bias prior, as [`geo_bias_setup`] takes it.
+    const fn magnetic_bias_prior(&self) -> MapBiasPrior {
+        MapBiasPrior {
+            noise_std: self.magnetic_noise_std,
+            seed: self.magnetic_bias,
+            init_std: self.magnetic_prior_std,
+            drift_rate: self.magnetic_drift_rate,
+        }
+    }
 }
 
 /// Build the runner's settings from the command line.
@@ -1842,10 +1952,7 @@ fn geo_settings_from_args(
 
     Ok(GeoClosedLoopSettings {
         filter: args.filter,
-        is_enu: args.sim.enu,
-        ukf_alpha: args.ukf_alpha,
-        ukf_beta: args.ukf_beta,
-        ukf_kappa: args.ukf_kappa,
+        kalman: KalmanSettings::from_args(args),
         gravity_resolution: args.geo.gravity_resolution,
         gravity_map_file: args.geo.gravity_map_file.clone(),
         gravity_noise_std: args.geo.gravity_noise_std,
@@ -1880,18 +1987,15 @@ fn geo_settings_from_config(
 ) -> GeoClosedLoopSettings {
     let filter_config = config.closed_loop.clone().unwrap_or_default();
 
-    // Derived from the filter rather than asked for twice, as the non-geophysical arm of
-    // `process_file` does. The geophysical filters estimate no barometric bias -- see the
-    // `estimate_baro_bias = false` in the UKF arm below -- so there is no index to hand over.
+    // Cleared here and derived by the runner from the filter it builds, as the unaided arm of
+    // `process_file` derives it: the index depends on how many map biases precede the
+    // barometric one, which only the runner knows once the maps are loaded.
     let mut aiding = config.aiding.clone();
     aiding.baro_bias_index = None;
 
     GeoClosedLoopSettings {
         filter: filter_config.filter,
-        is_enu: config.is_enu,
-        ukf_alpha: filter_config.ukf_alpha,
-        ukf_beta: filter_config.ukf_beta,
-        ukf_kappa: filter_config.ukf_kappa,
+        kalman: KalmanSettings::from_closed_loop(&filter_config, config.is_enu),
         gravity_resolution: geo.gravity_resolution,
         gravity_map_file: geo.gravity_map_file.as_ref().map(PathBuf::from),
         gravity_noise_std: geo.gravity_noise_std.unwrap_or(DEFAULT_GRAVITY_NOISE_MGAL),
@@ -1914,18 +2018,90 @@ fn geo_settings_from_config(
     }
 }
 
-/// The seed, prior variance and process-noise density of each geophysical map bias.
+/// One map channel's bias prior, as configured and before its defaults are resolved.
+///
+/// Gathered from wherever the run was configured -- `[geophysical]` in a scenario file, `--geo`
+/// and the `--*-bias-*` flags on the command line -- so that [`geo_bias_setup`] resolves the
+/// defaults in one place for the Kalman arms and the particle filter alike. The particle filter
+/// used to skip all of this and take one prior for every channel from `[particle_filter]`.
+#[cfg(feature = "geonav")]
+#[derive(Clone, Copy, Debug)]
+struct MapBiasPrior {
+    /// The channel's measurement noise standard deviation, which the prior defaults to.
+    noise_std: f64,
+    /// Seed of the bias state. `None` seeds zero.
+    seed: Option<f64>,
+    /// Prior standard deviation. `None` takes `noise_std`.
+    init_std: Option<f64>,
+    /// Random-walk rate per root-second. `None` spreads the prior over
+    /// [`GEO_BIAS_DRIFT_TIME_CONSTANT_S`].
+    drift_rate: Option<f64>,
+}
+
+#[cfg(feature = "geonav")]
+impl MapBiasPrior {
+    /// The gravity channel's prior as a `[geophysical]` section states it.
+    fn gravity_from_config(geo: &GeophysicalConfig) -> Self {
+        Self {
+            noise_std: geo.gravity_noise_std.unwrap_or(DEFAULT_GRAVITY_NOISE_MGAL),
+            seed: geo.gravity_bias,
+            init_std: geo.gravity_bias_init_std,
+            drift_rate: geo.gravity_bias_process_noise_std,
+        }
+    }
+
+    /// The magnetic channel's prior as a `[geophysical]` section states it.
+    fn magnetic_from_config(geo: &GeophysicalConfig) -> Self {
+        Self {
+            noise_std: geo.magnetic_noise_std.unwrap_or(DEFAULT_MAGNETIC_NOISE_NT),
+            seed: geo.magnetic_bias,
+            init_std: geo.magnetic_bias_init_std,
+            drift_rate: geo.magnetic_bias_process_noise_std,
+        }
+    }
+
+    /// The gravity channel's prior as the command line states it.
+    const fn gravity_from_args(geo: &GeophysicalArgs, bias: &GeophysicalBiasArgs) -> Self {
+        Self {
+            noise_std: geo.gravity_noise_std,
+            seed: geo.gravity_bias,
+            init_std: bias.gravity_prior_std,
+            drift_rate: bias.gravity_drift_rate,
+        }
+    }
+
+    /// The magnetic channel's prior as the command line states it.
+    const fn magnetic_from_args(geo: &GeophysicalArgs, bias: &GeophysicalBiasArgs) -> Self {
+        Self {
+            noise_std: geo.magnetic_noise_std,
+            seed: geo.magnetic_bias,
+            init_std: bias.magnetic_prior_std,
+            drift_rate: bias.magnetic_drift_rate,
+        }
+    }
+}
+
+/// The seed, prior and random walk of each geophysical map bias, resolved.
 ///
 /// One entry per active channel, **gravity first, then magnetic**, which is the order
 /// [`GeoBiasLayout::appended`] assigns the appended slots -- a magnetic-only run takes the
-/// first one. All three vectors are built together for that reason: they index the same
-/// states, and the UKF and EKF arms both read them, so they cannot be allowed to drift
-/// apart the way the two arms' hardcoded constants did.
+/// first one. Every vector is built together for that reason: they index the same states,
+/// and the UKF, the EKF and the particle filter all read them, so they cannot be allowed to
+/// drift apart the way the arms' hardcoded constants once did.
+///
+/// The prior and the random walk are held twice, as standard deviations and squared, because
+/// the two filter families take different forms: the Kalman arms a variance and a density, the
+/// particle filter the standard deviations. Both come from the one loop in
+/// [`geo_bias_setup`].
 #[cfg(feature = "geonav")]
 #[derive(Debug)]
 struct GeoBiasSetup {
     /// Initial value of each bias, in its channel's own units.
     seeds: Vec<f64>,
+    /// Initial standard deviation of each bias.
+    init_stds: Vec<f64>,
+    /// Random-walk rate of each bias, per root-second.
+    drift_rates: Vec<f64>,
     /// Initial variance of each bias: the init standard deviation squared.
     variances: Vec<f64>,
     /// Process-noise **density** of each bias -- a variance per second, which every filter
@@ -1933,48 +2109,136 @@ struct GeoBiasSetup {
     densities: Vec<f64>,
 }
 
-/// Build the map-bias prior from the resolved settings.
+#[cfg(feature = "geonav")]
+impl GeoBiasSetup {
+    /// Give a particle filter these map biases as its extra states.
+    ///
+    /// Leaves `extra_state_dim` alone. The bias layout sets that, and
+    /// `RaoBlackwellizedParticleFilter::new` refuses per-state vectors of any other length, so
+    /// the layout and these priors cannot silently disagree about how many biases there are.
+    fn apply_to_rbpf(&self, config: &mut RbpfConfig) {
+        config.extra_state_initial.clone_from(&self.seeds);
+        config.extra_state_init_std.clone_from(&self.init_stds);
+        config
+            .extra_state_process_noise_std
+            .clone_from(&self.drift_rates);
+    }
+
+    /// Give a UKF these map biases as its extra states, and change nothing else about it.
+    ///
+    /// They land after the fifteen navigation and IMU-bias states and before the barometric
+    /// bias, which `initialize_ukf` puts last; [`kalman_geo_bias_layout`] describes the same
+    /// placement to the measurement models. The process noise is the config's own diagonal --
+    /// the crate default when it has none, as `initialize_ukf` would take -- with the biases'
+    /// densities appended, so the fifteen shared entries are exactly the unaided filter's.
+    fn apply_to_ukf(&self, config: &mut UkfConfig) {
+        config.other_states = Some(self.seeds.clone());
+        config.other_states_covariance = Some(self.variances.clone());
+        config.process_noise_diagonal =
+            Some(self.extend_process_noise(config.process_noise_diagonal.take()));
+    }
+
+    /// Give an EKF these map biases as its extra states; see [`Self::apply_to_ukf`], which
+    /// `EkfConfig::other_states` mirrors placement for placement.
+    fn apply_to_ekf(&self, config: &mut EkfConfig) {
+        config.other_states = Some(self.seeds.clone());
+        config.other_states_covariance = Some(self.variances.clone());
+        config.process_noise_diagonal =
+            Some(self.extend_process_noise(config.process_noise_diagonal.take()));
+    }
+
+    /// A Kalman filter's base process-noise diagonal with these biases' densities appended.
+    ///
+    /// `base` covers the fifteen navigation and IMU-bias states and nothing after them: the
+    /// constructors append the barometric bias's own entry behind the map biases'.
+    fn extend_process_noise(&self, base: Option<Vec<f64>>) -> Vec<f64> {
+        let mut diagonal = base.unwrap_or_else(|| DEFAULT_PROCESS_NOISE_DENSITY.to_vec());
+        diagonal.extend(self.densities.iter().copied());
+        diagonal
+    }
+}
+
+/// Refuse a filter whose state is not the width its map and barometric biases were laid out
+/// for.
+///
+/// The layout and the filter come from the same `KalmanSettings`, so this holds by
+/// construction. It is checked anyway, once, before a run starts: a disagreement would
+/// otherwise surface as a dimension error on the first geophysical fix, or as a solution whose
+/// bias columns read the wrong states.
+///
+/// # Errors
+/// When `width` is not `expected`.
+#[cfg(feature = "geonav")]
+fn ensure_layout_width(filter: &str, width: usize, expected: usize) -> Result<(), Box<dyn Error>> {
+    if width == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "the {filter} carries {width} states, but its map and barometric biases were laid \
+             out for {expected}"
+        )
+        .into())
+    }
+}
+
+/// Where a UKF or EKF built by `initialize_ukf` / `initialize_ekf` carries its map biases.
+///
+/// After the fifteen navigation and IMU-bias states, gravity first -- and, when the filter
+/// also estimates a barometric bias, *before* it, since both constructors put that state last.
+/// The layout's width is the filter's whole state, barometric bias included, because the
+/// measurement models check it: a layout ending at the map biases would be refused on the
+/// first fix by a filter one state wider.
+///
+/// # Errors
+/// Propagated from [`GeoBiasLayout`], which validates the placement.
+#[cfg(feature = "geonav")]
+fn kalman_geo_bias_layout(
+    gravity: bool,
+    magnetic: bool,
+    estimate_baro_bias: bool,
+) -> Result<Option<GeoBiasLayout>, strapdown::StrapdownError> {
+    GeoBiasLayout::appended(NAVIGATION_AND_IMU_BIAS_STATE_DIM, gravity, magnetic)?
+        .map(|layout| {
+            GeoBiasLayout::new(
+                layout.state_dim() + usize::from(estimate_baro_bias),
+                layout.gravity_bias().map(|bias| bias.index),
+                layout.magnetic_bias().map(|bias| bias.index),
+            )
+        })
+        .transpose()
+}
+
+/// Resolve each active channel's map-bias prior.
 ///
 /// Each channel defaults its prior to that channel's own measurement-noise standard
 /// deviation, and its random-walk rate to that prior spread over
-/// [`GEO_BIAS_DRIFT_TIME_CONSTANT_S`]. Both flags are standard deviations and are squared
-/// here, which is the whole of the units fix: the previous code passed
+/// [`GEO_BIAS_DRIFT_TIME_CONSTANT_S`]. Both are standard deviations and are squared here for
+/// the Kalman arms, which is the whole of the units fix: the previous code passed
 /// `gravity_noise_std`/`magnetic_noise_std` **unsquared** into a covariance diagonal, so a
 /// 150 nT measurement noise became a 150 nT^2 prior -- a 12 nT sigma -- and pinned the bias
 /// next to its seed.
+///
+/// `None` for a channel the run does not aid.
 #[cfg(feature = "geonav")]
-fn geo_bias_setup(settings: &GeoClosedLoopSettings, gravity: bool, magnetic: bool) -> GeoBiasSetup {
+fn geo_bias_setup(gravity: Option<MapBiasPrior>, magnetic: Option<MapBiasPrior>) -> GeoBiasSetup {
     let mut setup = GeoBiasSetup {
         seeds: Vec::new(),
+        init_stds: Vec::new(),
+        drift_rates: Vec::new(),
         variances: Vec::new(),
         densities: Vec::new(),
     };
 
-    let mut push = |seed: f64, init_std: f64, process_noise_std: Option<f64>| {
-        let rate =
-            process_noise_std.unwrap_or_else(|| init_std / GEO_BIAS_DRIFT_TIME_CONSTANT_S.sqrt());
-        setup.seeds.push(seed);
+    for prior in [gravity, magnetic].into_iter().flatten() {
+        let init_std = prior.init_std.unwrap_or(prior.noise_std);
+        let rate = prior
+            .drift_rate
+            .unwrap_or_else(|| init_std / GEO_BIAS_DRIFT_TIME_CONSTANT_S.sqrt());
+        setup.seeds.push(prior.seed.unwrap_or(0.0));
+        setup.init_stds.push(init_std);
+        setup.drift_rates.push(rate);
         setup.variances.push(init_std.powi(2));
         setup.densities.push(rate.powi(2));
-    };
-
-    if gravity {
-        push(
-            settings.gravity_bias.unwrap_or(0.0),
-            settings
-                .gravity_prior_std
-                .unwrap_or(settings.gravity_noise_std),
-            settings.gravity_drift_rate,
-        );
-    }
-    if magnetic {
-        push(
-            settings.magnetic_bias.unwrap_or(0.0),
-            settings
-                .magnetic_prior_std
-                .unwrap_or(settings.magnetic_noise_std),
-            settings.magnetic_drift_rate,
-        );
     }
 
     setup
@@ -2059,6 +2323,11 @@ fn run_geo_closed_loop_file(
     input_file: &Path,
     output_file: &Path,
 ) -> Result<(), Box<dyn Error>> {
+    // The full-window frame guard, for both filters. Only the EKF arm ran it, so
+    // `cl --geo --filter ukf` never checked its declared frame against the data (#296); a
+    // `--config` run was covered by `process_file`'s own call.
+    check_declared_frame(records, settings.kalman.is_enu)?;
+
     // Moved into whichever filter arm runs rather than cloned per arm: only one of them
     // executes, so each may take ownership.
     let health = settings.health.clone();
@@ -2116,81 +2385,92 @@ fn run_geo_closed_loop_file(
             None
         };
 
-        // This path runs a UKF or an EKF, whose states are the nine navigation states, the
-        // six IMU biases, and then the map biases -- the UKF via `other_states`, the EKF via
-        // a covariance diagonal longer than its mean, which its constructor zero-pads to
-        // match. So the base here is 15, not the RBPF's 9.
-        let geo_bias_layout = GeoBiasLayout::appended(
-            NAVIGATION_AND_IMU_BIAS_STATE_DIM,
+        // The filter is the one every unaided closed-loop path builds from the same
+        // `KalmanSettings` -- barometric bias included -- with the map biases appended and
+        // nothing else changed. Its state is `[9 navigation, 6 IMU bias, ..map biases,
+        // barometric bias]`: both constructors put the barometer last, so the map biases sit
+        // at fifteen onward and the layout the measurements check spans the barometer too.
+        //
+        // This arm used to build its own filters: neither estimated the barometric bias, and
+        // the EKF was assembled by hand with a P0 and Q of its own. Its results therefore
+        // measured a different filter from the degraded-GNSS runs they were scored against.
+        let geo_bias = geo_bias_setup(
+            gravity_map
+                .is_some()
+                .then_some(settings.gravity_bias_prior()),
+            magnetic_map
+                .is_some()
+                .then_some(settings.magnetic_bias_prior()),
+        );
+        let kalman = settings.kalman;
+        let mut ukf_config = kalman.ukf_config();
+        geo_bias.apply_to_ukf(&mut ukf_config);
+        let mut ekf_config = kalman.ekf_config();
+        geo_bias.apply_to_ekf(&mut ekf_config);
+        let geo_bias_layout = kalman_geo_bias_layout(
             gravity_map.is_some(),
             magnetic_map.is_some(),
+            kalman.estimate_baro_bias,
         )?;
+        let num_geo_states = geo_bias_layout.map_or(0, |layout| layout.bias_count());
+
+        // Derived from the filter, as every other closed-loop path derives it (#372), and after
+        // the map biases. It was cleared here while neither filter carried the state.
+        let baro_bias_index = match settings.filter {
+            FilterType::Ukf => ukf_config.baro_bias_index(),
+            FilterType::Ekf => ekf_config.baro_bias_index(),
+            FilterType::Eskf => None,
+        };
+        let mut aiding = settings.aiding.clone();
+        aiding.baro_bias_index = baro_bias_index;
 
         // Build event stream with geophysical measurements
         let events = geo_build_event_stream(
             records,
-            &settings.aiding,
-            settings.is_enu,
+            &aiding,
+            kalman.is_enu,
             &GeophysicalAiding {
                 gravity_noise_std: gravity_map.as_ref().map(|_| settings.gravity_noise_std),
                 magnetic_noise_std: magnetic_map.as_ref().map(|_| settings.magnetic_noise_std),
-                gravity_map: gravity_map.clone(),
-                magnetic_map: magnetic_map.clone(),
+                gravity_map,
+                magnetic_map,
                 interval_s: settings.geo_interval_s,
                 bias_layout: geo_bias_layout,
             },
         )?;
         info!("Built event stream with {} events", events.events.len());
 
-        // Determine number of geophysical states
-        let num_geo_states = geo_bias_layout.map_or(0, |layout| layout.bias_count());
-
-        // Built once for both filter arms. Its ordering matches `geo_bias_layout`, and its
-        // length is `num_geo_states`.
-        let geo_bias = geo_bias_setup(settings, gravity_map.is_some(), magnetic_map.is_some());
-
         // The same placement, restated for `NavigationResult`, which lives in `core` and so
-        // cannot name `GeoBiasLayout`. Derived from that layout rather than rebuilt from the
-        // map flags, so where the biases live is decided once: a filter that put them
-        // somewhere other than the end would move both together.
-        let geo_layout = geo_bias_layout.map_or(ExtraStateLayout::NONE, |layout| {
-            ExtraStateLayout::new(
-                layout.state_dim(),
-                layout.gravity_bias().map(|bias| bias.index),
-                layout.magnetic_bias().map(|bias| bias.index),
-            )
-        });
+        // cannot name `GeoBiasLayout`: the map biases where the layout put them, and the
+        // barometric bias after them.
+        let state_dim = NAVIGATION_AND_IMU_BIAS_STATE_DIM
+            + num_geo_states
+            + usize::from(baro_bias_index.is_some());
+        let geo_layout = ExtraStateLayout::new(
+            state_dim,
+            geo_bias_layout
+                .and_then(|layout| layout.gravity_bias())
+                .map(|bias| bias.index),
+            geo_bias_layout
+                .and_then(|layout| layout.magnetic_bias())
+                .map(|bias| bias.index),
+        );
+        let geo_layout = match baro_bias_index {
+            Some(index) => geo_layout.with_baro_bias(index),
+            None => geo_layout,
+        };
 
         // Run simulation based on filter type
         let results = match settings.filter {
             FilterType::Ukf => {
                 info!("Initializing UKF...");
-                let mut process_noise: Vec<f64> = DEFAULT_PROCESS_NOISE_DENSITY.into();
-                process_noise.extend(geo_bias.densities.iter().copied());
-
-                let mut ukf = initialize_ukf(&records[0].clone(), {
-                    let mut built = UkfConfig::default();
-                    built.attitude_covariance = None;
-                    built.imu_biases = None;
-                    built.imu_biases_covariance = None;
-                    built.other_states = Some(geo_bias.seeds.clone());
-                    built.other_states_covariance = Some(geo_bias.variances.clone());
-                    built.process_noise_diagonal = Some(process_noise);
-                    built.ukf_alpha = Some(settings.ukf_alpha);
-                    built.ukf_beta = Some(settings.ukf_beta);
-                    built.ukf_kappa = Some(settings.ukf_kappa);
-                    built.imu_quality = strapdown::IMUQuality::default();
-                    // Off on the geophysical path: this filter's extra states are map
-                    // biases, and #372's barometric state has not been measured against a
-                    // geo run. Turning it on here would change two things at once.
-                    built.estimate_baro_bias = false;
-                    built.is_enu = settings.is_enu;
-                    built
-                })?;
+                let mut ukf = initialize_ukf(&records[0].clone(), ukf_config)?;
+                ensure_layout_width("UKF", ukf.get_estimate().len(), state_dim)?;
                 info!(
-                    "Initialized UKF with state dimension {} (base: 9, geo: {})",
+                    "Initialized UKF with state dimension {} (base: 15, geo: {num_geo_states}, \
+                     barometric bias: {})",
                     ukf.get_estimate().len(),
-                    num_geo_states
+                    baro_bias_index.is_some()
                 );
                 ukf.set_innovation_gate(innovation_gate);
                 ukf.set_gate_recovery(gate_recovery);
@@ -2206,96 +2486,13 @@ fn run_geo_closed_loop_file(
             }
             FilterType::Ekf => {
                 info!("Initializing EKF...");
-
-                check_declared_frame(records, settings.is_enu)?;
-                // The same seed every other path builds. It was a struct literal here, and
-                // carried the double conversion that gave this block its share of #337:
-                // `yaw: bearing.to_radians()` beside `in_degrees: true`, converted once here
-                // and a second time by the constructor, so a 270 deg bearing reached the
-                // filter as 0.0822 rad (4.7 deg). It also threw away roll and pitch. The
-                // guard is still run explicitly above because this path does not go through
-                // `initialize_ekf` (#296).
-                let initial_state = records[0].initial_state(settings.is_enu);
-
-                // Six IMU biases, then one seed per map bias. `ExtendedKalmanFilter::new`
-                // builds its mean as the nine navigation states followed by this slice and
-                // then zero-pads to the width of the covariance diagonal, so appending the
-                // seeds here is what puts them in the state. Passing six and letting the
-                // padding run is why `--gravity-bias`/`--magnetic-bias` used to be accepted
-                // and silently discarded on `--filter ekf` while the UKF arm honoured them.
-                let mut imu_biases = vec![0.0; 6];
-                imu_biases.extend(geo_bias.seeds.iter().copied());
-
-                // Initial position uncertainty. Only the *horizontal* pair changes: latitude
-                // and longitude are radians here and altitude is metres, and the `1e-6, 1e-6`
-                // this used to carry was #308 in P0 -- 1e-6 rad^2 is a 6367 m claim, not the
-                // 1e-3 m it reads as. The altitude entry stays at its own 1.0 m^2: it was
-                // already metres-squared, it was never a units defect, and moving it to the
-                // crate default's 100 m^2 would be a silent 10x retune of the vertical channel
-                // folded into a units fix -- the same thing `VERTICAL_POSITION_PROCESS_NOISE_M2`
-                // exists to prevent in `DEFAULT_PROCESS_NOISE_DENSITY`. Everything below the position
-                // block is this path's own and deliberately unchanged.
-                let horizontal_std_rad =
-                    DEFAULT_INITIAL_POSITION_UNCERTAINTY_M * strapdown::earth::METERS_TO_RADIANS;
-                let mut covariance_diagonal = vec![
-                    horizontal_std_rad.powi(2),
-                    horizontal_std_rad.powi(2),
-                    1.0, // Position uncertainty (altitude, m^2 -- unchanged, see above)
-                    0.1,
-                    0.1,
-                    0.1, // Velocity uncertainty
-                    1e-4,
-                    1e-4,
-                    1e-4, // Attitude uncertainty
-                ];
-                // The bias block is the one part of this diagonal that is *not* this path's
-                // own any more. It used to carry `1e-6` x3 and `1e-8` x3 -- the constants
-                // `initialize_eskf` shipped -- while the UKF branch a hundred lines above now
-                // takes its prior from the IMU grade. That is exactly the cross-filter
-                // mismatch this change exists to remove, left alive on `--geo --filter ekf`:
-                // two filters on the same flag pair, given priors five orders of magnitude
-                // apart, and every comparison between them meaningless. It reads the grade
-                // like everything else now.
-                covariance_diagonal
-                    .extend(strapdown::IMUQuality::default().initial_bias_covariance());
-                covariance_diagonal.extend(geo_bias.variances.iter().copied());
-
-                // Position process noise. Again only the horizontal pair: `1e-9, 1e-9` rad^2
-                // is a 201 m per-step standard deviation, the same units defect as #308 one
-                // third of a magnitude smaller, so those come from the crate default. The
-                // `1e-6` altitude entry was already m^2 and stays exactly where it was --
-                // taking `DEFAULT_PROCESS_NOISE_DENSITY[0..3]` wholesale would move it to 1e-2, a
-                // 10,000x variance retune of the vertical channel that no test here covers
-                // (`run_geo_closed_loop_cli` has no test at all). The crate default's altitude
-                // entry was retuned from 1e-4 to 1e-2 on measured evidence; this path was not
-                // part of that measurement, so it keeps its own value until it has tests that
-                // could see the difference. The entries below the position block are
-                // deliberately tighter than the crate default.
-                let mut process_noise_vec = DEFAULT_PROCESS_NOISE_DENSITY[0..2].to_vec();
-                process_noise_vec.extend([
-                    1e-6, // Altitude process noise, m^2 -- unchanged, see above
-                    1e-6, 1e-6, 1e-6, // Velocity process noise
-                    1e-9, 1e-9, 1e-9, // Attitude process noise
-                    1e-9, 1e-9, 1e-9, // Accel bias process noise
-                    1e-9, 1e-9, 1e-9, // Gyro bias process noise
-                ]);
-                process_noise_vec.extend(geo_bias.densities.iter().copied());
-                let process_noise = nalgebra::DMatrix::from_diagonal(&nalgebra::DVector::from_vec(
-                    process_noise_vec,
-                ));
-
-                let mut ekf = ExtendedKalmanFilter::new(
-                    &initial_state,
-                    &imu_biases,
-                    covariance_diagonal,
-                    process_noise,
-                    true,
-                );
-
+                let mut ekf = initialize_ekf(&records[0].clone(), ekf_config)?;
+                ensure_layout_width("EKF", ekf.get_estimate().len(), state_dim)?;
                 info!(
-                    "Initialized EKF with state dimension {} (base: 15, geo: {})",
+                    "Initialized EKF with state dimension {} (base: 15, geo: {num_geo_states}, \
+                     barometric bias: {})",
                     ekf.get_estimate().len(),
-                    num_geo_states
+                    baro_bias_index.is_some()
                 );
                 ekf.set_innovation_gate(innovation_gate);
                 ekf.set_gate_recovery(gate_recovery);
@@ -2348,6 +2545,10 @@ fn run_geo_closed_loop_file(
     }
 }
 
+/// Abort after this many consecutive rejected measurements. Mirrors
+/// `strapdown::sim::run_closed_loop_with_geo`'s own limit of the same value.
+const RBPF_MAX_CONSECUTIVE_REJECTIONS: usize = 100;
+
 /// Run the RBPF event loop.
 ///
 /// Handles every measurement type carried by the event stream, geophysical
@@ -2361,6 +2562,12 @@ fn run_geo_closed_loop_file(
 /// reach the solution: summarising a geophysically aided run as nine states drops the one
 /// quantity the aiding exists to produce, and the rows then look complete with their
 /// geophysical columns blank.
+///
+/// A recoverable measurement failure -- chiefly the estimate wandering off the loaded
+/// geophysical map during a long GNSS outage -- is skipped rather than aborting the run, the
+/// same contract `run_closed_loop_with_geo` gives the EKF/UKF/ESKF path. Skipping every
+/// measurement would silently degrade to dead reckoning, so
+/// [`RBPF_MAX_CONSECUTIVE_REJECTIONS`] consecutive rejections is still fatal.
 fn run_rbpf_event_loop(
     rbpf: &mut RaoBlackwellizedParticleFilter,
     event_stream: EventStream,
@@ -2369,8 +2576,11 @@ fn run_rbpf_event_loop(
     geo_layout: ExtraStateLayout,
 ) -> Result<Vec<NavigationResult>, Box<dyn Error>> {
     let start_time = event_stream.start_time;
-    let mut results = Vec::with_capacity(event_stream.events.len());
+    let total = event_stream.events.len();
+    let mut results = Vec::with_capacity(total);
     let mut monitor = HealthMonitor::new(health_limits.clone());
+    let mut rejected_measurements: usize = 0;
+    let mut consecutive_rejections: usize = 0;
     let sim_duration_s = event_stream.events.last().map_or(0.0, |event| match event {
         Event::Imu { elapsed_s, .. } | Event::Measurement { elapsed_s, .. } => *elapsed_s,
     });
@@ -2385,7 +2595,7 @@ fn run_rbpf_event_loop(
     ));
     let mut last_ts = start_time;
 
-    for event in event_stream.events {
+    for (i, event) in event_stream.events.into_iter().enumerate() {
         let elapsed_s = match &event {
             Event::Imu { elapsed_s, .. } | Event::Measurement { elapsed_s, .. } => *elapsed_s,
         };
@@ -2417,13 +2627,44 @@ fn run_rbpf_event_loop(
             last_ts = ts;
         }
 
+        // Checked before the event rather than after it, so the recoverable-measurement
+        // `continue` below cannot skip progress tracking -- see the matching guard in
+        // `run_closed_loop_with_geo` (#367).
+        execution_monitor.check("particle-filter")?;
+        execution_monitor.mark_progress();
+
         match event {
             Event::Imu { dt_s, imu, .. } => {
                 rbpf.predict(&imu, dt_s)?;
             }
-            Event::Measurement { meas, .. } => {
-                rbpf.update(meas.as_ref())?;
-            }
+            Event::Measurement { meas, .. } => match rbpf.update(meas.as_ref()) {
+                Ok(_outcome) => {
+                    consecutive_rejections = 0;
+                }
+                // A measurement the filter cannot use -- chiefly an off-map geophysical
+                // sample -- leaves the state untouched and valid. Aborting on it would make
+                // geophysical aiding unusable at map edges, which is the condition it exists
+                // to handle (mirrors `run_closed_loop_with_geo`, #254).
+                Err(e) if e.is_recoverable() => {
+                    rejected_measurements += 1;
+                    consecutive_rejections += 1;
+                    log::warn!("Measurement rejected at {ts} (#{i}): {e}");
+                    if consecutive_rejections > RBPF_MAX_CONSECUTIVE_REJECTIONS {
+                        return Err(strapdown::StrapdownError::FilterDiverged {
+                            consecutive_rejections,
+                            limit: RBPF_MAX_CONSECUTIVE_REJECTIONS,
+                            detail: format!("most recently at {ts} (#{i}): {e}"),
+                        }
+                        .into());
+                    }
+                    // State is unchanged, so the health check below has nothing new to judge.
+                    continue;
+                }
+                Err(e) => {
+                    log::error!("Filter update failed at {ts} (#{i}): {e}");
+                    return Err(e.into());
+                }
+            },
         }
 
         // The health monitor sees the geophysical states too: it reads position and velocity
@@ -2434,8 +2675,14 @@ fn run_rbpf_event_loop(
         if let Err(e) = monitor.check(mean.as_slice(), &cov, None) {
             return Err(e.into());
         }
-        execution_monitor.check("particle-filter")?;
-        execution_monitor.mark_progress();
+    }
+
+    // Report the total even when it is zero: a silent run and a run that rejected every
+    // measurement look identical from the outside otherwise.
+    if rejected_measurements > 0 {
+        log::warn!(
+            "particle-filter run completed with {rejected_measurements} of {total} events rejected as unusable measurements"
+        );
     }
 
     // Flush the final epoch: the boundary push above only fires when a later timestamp
@@ -2452,6 +2699,7 @@ fn run_rbpf_event_loop(
 
 /// Execute particle filter simulation
 fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error>> {
+    refuse_removed_particle_filter_flags(args)?;
     validate_input_path(&args.sim.input)?;
     validate_output_path(&args.sim.output)?;
 
@@ -2531,6 +2779,20 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
                 (None, None)
             }
         };
+
+        // Each map bias's seed, prior and random walk -- `--gravity-bias`,
+        // `--gravity-bias-init-std` and the rest -- resolved exactly as `cl` resolves them.
+        // This path used to ignore every one of those and take a single
+        // `--geo-bias-init-std` for all channels.
+        #[cfg(feature = "geonav")]
+        let geo_bias = geo_bias_setup(
+            gravity_map
+                .is_some()
+                .then_some(MapBiasPrior::gravity_from_args(&args.geo, &args.geo_bias)),
+            magnetic_map
+                .is_some()
+                .then_some(MapBiasPrior::magnetic_from_args(&args.geo, &args.geo_bias)),
+        );
 
         #[cfg(not(feature = "geonav"))]
         let event_stream = build_event_stream(&records, &aiding, args.sim.enu)?;
@@ -2622,16 +2884,8 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
             built.velocity_process_noise_std_mps = args.velocity_process_noise_std_mps;
             built.attitude_process_noise_std_rad = args.attitude_process_noise_std_rad;
             built.extra_state_dim = geo_bias_dim;
-            built.extra_state_init_std = if geo_bias_dim > 0 {
-                args.geo_bias_init_std
-            } else {
-                0.0
-            };
-            built.extra_state_process_noise_std = if geo_bias_dim > 0 {
-                args.geo_bias_process_noise_std
-            } else {
-                0.0
-            };
+            #[cfg(feature = "geonav")]
+            geo_bias.apply_to_rbpf(&mut built);
             built.seed = args.seed;
             built.zero_vertical_velocity = args.zero_vertical_velocity;
             built.zero_vertical_velocity_std_mps = args.zero_vertical_velocity_std_mps;
@@ -3707,6 +3961,327 @@ r_scale = 5.0
             error.to_string().contains("at least one map"),
             "the error should name the missing maps, got: {error}"
         );
+    }
+
+    /// The geophysical arm builds the unaided filter plus its map biases, and nothing else.
+    ///
+    /// The variants a study compares -- full GNSS, degraded GNSS, degraded GNSS with map aiding
+    /// -- must run one filter, so that the only differences are the GNSS they see and the map
+    /// biases the aided run carries. The geophysical arm used to build its own: no barometric
+    /// bias on either filter, and a hand-written P0 and Q on the EKF. This builds both filters
+    /// the way the unaided `process_file` arm builds them from the same `[closed_loop]` section,
+    /// and the way `run_geo_closed_loop_file` builds them from the same file with maps, and
+    /// requires every shared state to open identically, the map biases to sit at fifteen and
+    /// sixteen, and the barometric bias -- present on both -- to follow them.
+    #[cfg(feature = "geonav")]
+    #[test]
+    fn the_geophysical_arm_builds_the_unaided_filter_plus_map_biases() {
+        let config = config_from_toml(
+            r#"
+mode = "closed-loop"
+is_enu = true
+
+[closed_loop]
+filter = "ekf"
+
+[geophysical]
+gravity_resolution = "one_minute"
+gravity_bias = 635.0
+gravity_noise_std = 139.0
+gravity_bias_init_std = 231.0
+magnetic_resolution = "two_minutes"
+magnetic_bias = 17500.0
+magnetic_noise_std = 7800.0
+magnetic_bias_init_std = 32000.0
+"#,
+        );
+        let geo = config
+            .geophysical
+            .as_ref()
+            .expect("the fixture declares a [geophysical] section");
+        let settings = geo_settings_from_config(&config, geo);
+        let unaided =
+            KalmanSettings::from_closed_loop(&config.closed_loop.clone().unwrap_or_default(), true);
+        assert_eq!(
+            settings.kalman, unaided,
+            "the geophysical arm reads the same filter settings as the unaided one"
+        );
+        assert!(
+            unaided.estimate_baro_bias,
+            "the barometric bias is on by default, on both arms"
+        );
+
+        let geo_bias = geo_bias_setup(
+            Some(settings.gravity_bias_prior()),
+            Some(settings.magnetic_bias_prior()),
+        );
+        let layout = kalman_geo_bias_layout(true, true, true)
+            .expect("a two-map layout with a barometric bias must be valid")
+            .expect("two maps yield a layout");
+        assert_eq!(layout.gravity_bias().map(|bias| bias.index), Some(15));
+        assert_eq!(layout.magnetic_bias().map(|bias| bias.index), Some(16));
+        assert_eq!(
+            layout.state_dim(),
+            18,
+            "the layout spans the barometric bias"
+        );
+
+        let record = TestDataRecord {
+            time: chrono::Utc::now(),
+            latitude: 40.0,
+            longitude: -75.0,
+            altitude: 100.0,
+            horizontal_accuracy: 5.0,
+            vertical_accuracy: 3.0,
+            speed_accuracy: 0.5,
+            speed: 10.0,
+            bearing: 45.0,
+            ..Default::default()
+        };
+
+        let mut aided_ukf_config = unaided.ukf_config();
+        geo_bias.apply_to_ukf(&mut aided_ukf_config);
+        assert_eq!(aided_ukf_config.baro_bias_index(), Some(17));
+        let plain_ukf = initialize_ukf(&record, unaided.ukf_config()).unwrap();
+        let aided_ukf = initialize_ukf(&record, aided_ukf_config).unwrap();
+        assert_aided_matches_unaided(
+            "UKF",
+            (&plain_ukf.get_estimate(), &plain_ukf.get_certainty()),
+            (&aided_ukf.get_estimate(), &aided_ukf.get_certainty()),
+            &geo_bias,
+        );
+        assert_eq!(aided_ukf.baro_bias_index(), Some(17));
+
+        let mut aided_ekf_config = unaided.ekf_config();
+        geo_bias.apply_to_ekf(&mut aided_ekf_config);
+        assert_eq!(aided_ekf_config.baro_bias_index(), Some(17));
+        let plain_ekf = initialize_ekf(&record, unaided.ekf_config()).unwrap();
+        let aided_ekf = initialize_ekf(&record, aided_ekf_config).unwrap();
+        assert_aided_matches_unaided(
+            "EKF",
+            (&plain_ekf.get_estimate(), &plain_ekf.get_certainty()),
+            (&aided_ekf.get_estimate(), &aided_ekf.get_certainty()),
+            &geo_bias,
+        );
+        assert_eq!(aided_ekf.baro_bias_index(), Some(17));
+    }
+
+    /// The aided filter opens as the unaided one on every shared state, with the map biases
+    /// seeded at fifteen and sixteen and the barometric bias last on both.
+    #[cfg(feature = "geonav")]
+    fn assert_aided_matches_unaided(
+        filter: &str,
+        (plain_mean, plain_cov): (&nalgebra::DVector<f64>, &nalgebra::DMatrix<f64>),
+        (aided_mean, aided_cov): (&nalgebra::DVector<f64>, &nalgebra::DMatrix<f64>),
+        geo_bias: &GeoBiasSetup,
+    ) {
+        assert_eq!(
+            plain_mean.len(),
+            16,
+            "{filter}: fifteen states plus the barometric bias"
+        );
+        assert_eq!(
+            aided_mean.len(),
+            18,
+            "{filter}: and two map biases before it"
+        );
+        for i in 0..15 {
+            assert_eq!(aided_mean[i], plain_mean[i], "{filter}: state {i}");
+            assert_eq!(
+                aided_cov[(i, i)],
+                plain_cov[(i, i)],
+                "{filter}: variance {i}"
+            );
+        }
+        for (k, (seed, variance)) in geo_bias.seeds.iter().zip(&geo_bias.variances).enumerate() {
+            assert_eq!(aided_mean[15 + k], *seed, "{filter}: map bias {k} seed");
+            assert_eq!(
+                aided_cov[(15 + k, 15 + k)],
+                *variance,
+                "{filter}: map bias {k} prior"
+            );
+        }
+        assert_eq!(
+            aided_mean[17], plain_mean[15],
+            "{filter}: barometric bias seed"
+        );
+        assert_eq!(
+            aided_cov[(17, 17)],
+            plain_cov[(15, 15)],
+            "{filter}: barometric bias prior"
+        );
+    }
+
+    /// The particle filter takes its map-bias prior from `[geophysical]`, as the Kalman arm does.
+    ///
+    /// Every RBPF recipe under `conf/` carried the bias, noise and prior `analyze geostats`
+    /// measured, and the particle filter read none of it: each bias started at zero with a
+    /// prior of `[particle_filter] geo_bias_init_std = 1.0`, one number for mGal and nT alike.
+    /// So the gravity bias -- hundreds of mGal -- could not be absorbed, and was cancelled by
+    /// selecting particles on velocity instead. This pins both halves of the fix: the RBPF's
+    /// extra states come out seeded and scaled per channel, and they are the same numbers the
+    /// Kalman arm resolves from the same section.
+    #[cfg(feature = "geonav")]
+    #[test]
+    fn the_particle_filter_takes_its_map_bias_prior_from_geophysical() {
+        let config = config_from_toml(
+            r#"
+mode = "particle-filter"
+
+[particle_filter]
+num_particles = 16
+
+[geophysical]
+gravity_resolution = "one_minute"
+gravity_bias = 635.283
+gravity_noise_std = 138.928
+gravity_bias_init_std = 230.598
+magnetic_resolution = "two_minutes"
+magnetic_bias = 17535.6
+magnetic_noise_std = 7846.51
+magnetic_bias_init_std = 32422.5
+magnetic_bias_process_noise_std = 3.0
+"#,
+        );
+        let geo = config
+            .geophysical
+            .as_ref()
+            .expect("the fixture declares a [geophysical] section");
+
+        let particle = geo_bias_setup(
+            Some(MapBiasPrior::gravity_from_config(geo)),
+            Some(MapBiasPrior::magnetic_from_config(geo)),
+        );
+        let mut rbpf_config = RbpfConfig::default();
+        rbpf_config.extra_state_dim = 2;
+        particle.apply_to_rbpf(&mut rbpf_config);
+
+        assert_eq!(rbpf_config.extra_state_initial, vec![635.283, 17535.6]);
+        assert_eq!(rbpf_config.extra_state_init_std, vec![230.598, 32422.5]);
+        // Gravity sets no rate, so it takes its prior spread over the hour; magnetic sets one.
+        let gravity_rate = 230.598 / GEO_BIAS_DRIFT_TIME_CONSTANT_S.sqrt();
+        assert!((rbpf_config.extra_state_process_noise_std[0] - gravity_rate).abs() < 1e-12);
+        assert!((rbpf_config.extra_state_process_noise_std[1] - 3.0).abs() < 1e-12);
+        RaoBlackwellizedParticleFilter::new(strapdown::StrapdownState::default(), rbpf_config)
+            .expect("the resolved priors must build a filter");
+
+        // The Kalman arm, reading the same section through its own settings, must resolve the
+        // identical priors: the two families are compared against each other, so they must
+        // be told the same thing about the sensor.
+        let settings = geo_settings_from_config(&config, geo);
+        let kalman = geo_bias_setup(
+            Some(settings.gravity_bias_prior()),
+            Some(settings.magnetic_bias_prior()),
+        );
+        assert_eq!(
+            format!("{kalman:?}"),
+            format!("{particle:?}"),
+            "the Kalman arm and the particle filter resolved different map-bias priors from \
+             the same [geophysical] section"
+        );
+    }
+
+    /// `pf`'s flags and a config file resolve to the same map-bias priors.
+    ///
+    /// `pf` flattened `--gravity-bias` in with the other geophysical flags and then ignored it,
+    /// along with every `--*-bias-init-std`; this holds it to the config path it now shares.
+    #[cfg(feature = "geonav")]
+    #[test]
+    fn the_pf_flags_and_a_config_file_resolve_the_same_map_bias_priors() {
+        let cli = Cli::try_parse_from([
+            "strapdown-sim",
+            "pf",
+            "-i",
+            "in.csv",
+            "-o",
+            "out.csv",
+            "--geo",
+            "--gravity-resolution",
+            "one-minute",
+            "--gravity-noise-std",
+            "138.928",
+            "--gravity-bias",
+            "635.283",
+            "--gravity-bias-init-std",
+            "230.598",
+            "--magnetic-resolution",
+            "two-minutes",
+            "--magnetic-noise-std",
+            "7846.51",
+            "--magnetic-bias",
+            "17535.6",
+            "--magnetic-bias-process-noise-std",
+            "3.0",
+        ])
+        .expect("the flags above must parse");
+        let Some(Command::ParticleFilter(args)) = cli.command else {
+            panic!("expected the `pf` subcommand");
+        };
+        let from_cli = geo_bias_setup(
+            Some(MapBiasPrior::gravity_from_args(&args.geo, &args.geo_bias)),
+            Some(MapBiasPrior::magnetic_from_args(&args.geo, &args.geo_bias)),
+        );
+
+        let config = config_from_toml(
+            r#"
+mode = "particle-filter"
+
+[geophysical]
+gravity_resolution = "one_minute"
+gravity_noise_std = 138.928
+gravity_bias = 635.283
+gravity_bias_init_std = 230.598
+magnetic_resolution = "two_minutes"
+magnetic_noise_std = 7846.51
+magnetic_bias = 17535.6
+magnetic_bias_process_noise_std = 3.0
+"#,
+        );
+        let geo = config
+            .geophysical
+            .as_ref()
+            .expect("the fixture declares a [geophysical] section");
+        let from_config = geo_bias_setup(
+            Some(MapBiasPrior::gravity_from_config(geo)),
+            Some(MapBiasPrior::magnetic_from_config(geo)),
+        );
+
+        assert_eq!(format!("{from_cli:?}"), format!("{from_config:?}"));
+        assert_eq!(from_cli.seeds, vec![635.283, 17535.6]);
+    }
+
+    /// `pf`'s two retired map-bias flags are refused, naming what replaced them.
+    #[test]
+    fn the_particle_filters_retired_flags_are_refused_by_name() {
+        for (flag, replacement) in [
+            ("--geo-bias-init-std", "--gravity-bias-init-std"),
+            (
+                "--geo-bias-process-noise-std",
+                "--gravity-bias-process-noise-std",
+            ),
+        ] {
+            let cli = Cli::try_parse_from([
+                "strapdown-sim",
+                "pf",
+                "-i",
+                "in.csv",
+                "-o",
+                "out.csv",
+                flag,
+                "1.0",
+            ])
+            .expect("the retired flag must still parse, so it can be refused by name");
+            let Some(Command::ParticleFilter(args)) = cli.command else {
+                panic!("expected the `pf` subcommand");
+            };
+            let error = refuse_removed_particle_filter_flags(&args)
+                .expect_err("a retired flag must be refused")
+                .to_string();
+            assert!(
+                error.contains(flag) && error.contains(replacement),
+                "the error must name `{flag}` and point at `{replacement}`, got: {error}"
+            );
+        }
     }
 
     /// The ESKF has no geophysical implementation, and it is `FilterType`'s default.

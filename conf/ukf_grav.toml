@@ -29,8 +29,9 @@ filter = "ukf"
 # `gravity_noise_std` is the code default, which has never been measured against the maps it
 # is differenced from. `just geo-stats` derives one that has; see data/output/geostats.
 gravity_resolution = "one_minute"
-gravity_bias = 0.0
-gravity_noise_std = 100.0
+gravity_bias = 841.721
+gravity_noise_std = 131.072
+gravity_bias_init_std = 252.766
 
 # Seconds between geophysical measurements -- a period, not a frequency.
 geo_frequency_s = 1.0
@@ -41,26 +42,36 @@ geo_frequency_s = 1.0
 nis_pos_max = 1000.0
 speed_mps_max = 5000.0
 
+
+# The fringe-of-jamming profile, anchored to measurement rather than to a round number.
+#
+# Smartphone GNSS is 3-5 m under good multipath and over 10 m in harsh multipath, with
+# semi-urban CEP95 around 10-12 m. Under jamming the tracked satellite count falls and GDOP
+# rises, so the true error and the advertised accuracy inflate together. 35 m of steady-state
+# wander is about 14x this dataset's 2.58 m median advertised accuracy -- a receiver still
+# producing fixes, but bad ones.
+#
+# `tau_pos_s` and `tau_vel_s` are what make this comparable across schedules. Without them
+# `rho_pos` is applied once per emitted fix, so the correlation time is
+# `-interval_s / ln(rho_pos)` and changing `interval_s` silently changes the error model too.
+# With them, `sigma_pos_m` is the steady-state standard deviation in metres and the timescale
+# is fixed in seconds, so `interval_s` can be swept on its own.
 [gnss_degradation]
 seed = 42
 
-# This whole section must stay identical to conf/ukf_degraded.toml, for the same reason.
-# It previously read `interval_s = 1.0` with `sigma_pos_m = 15.0`, `sigma_vel_mps = 5.0` and
-# `r_scale = 15.0` -- a different GNSS profile entirely, so any "improvement" measured against
-# the degraded run was the difference between two degradations, not the contribution of the
-# geophysical measurement.
 [gnss_degradation.scheduler]
 kind = "fixed_interval"
 # 5 s between fixes: a real 5x reduction on this 1 Hz recording. `interval_s = 1.0`
 # passed every fix through and reduced nothing.
-interval_s = 5.0
+interval_s = 60.0
 phase_s = 0.0
 
 [gnss_degradation.fault]
 kind = "degraded"
-# AR(1) steady-state error is sigma / sqrt(1 - rho^2), not sigma.
-rho_pos = 0.99
-sigma_pos_m = 3.0     # ~21 m steady-state wander
-rho_vel = 0.95
-sigma_vel_mps = 0.3   # ~1 m/s steady-state wander
-r_scale = 5.0         # advertised sigmas x5, so R x25
+rho_pos = 0.99          # ignored while tau_pos_s is set; kept for a run without it
+sigma_pos_m = 35.0      # steady-state wander, metres
+tau_pos_s = 500.0
+rho_vel = 0.95          # likewise
+sigma_vel_mps = 1.5     # steady-state wander, m/s
+tau_vel_s = 100.0
+r_scale = 5.0           # advertised sigmas x5, so R x25

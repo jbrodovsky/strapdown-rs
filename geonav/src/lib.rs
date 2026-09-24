@@ -2608,6 +2608,26 @@ mod tests {
         );
     }
 
+    /// A 2023 recording is referenced to WMM2020, and `analysis/geostats.py` agrees.
+    ///
+    /// Five of this repository's trajectories were recorded in 2023 and 2024. The crate carries
+    /// WMM2020 for them and selects it by date. `geostats` loaded only pygeomag's default,
+    /// WMM2025, which refuses those dates, and then dropped each such trajectory whole -- gravity
+    /// included -- from the statistics `geo-adopt` writes into the configs. Its `self_check`
+    /// asserts this same literal, so the two sides cannot pick different models again unnoticed.
+    #[test]
+    fn a_2023_recording_is_referenced_to_wmm2020() {
+        let mut measurement = magnetic_measurement_with_bias(None);
+        measurement.year = 2023;
+        measurement.day = 182; // 1 July
+
+        let reference = measurement
+            .reference_field_nt(40.05, -75.95, 100.0)
+            .unwrap();
+
+        assert_approx_eq!(reference, 51_069.8, 1.0);
+    }
+
     /// The event stream hands the model nanotesla, because the record is microtesla.
     #[test]
     fn test_event_stream_converts_the_magnetometer_to_nanotesla() {

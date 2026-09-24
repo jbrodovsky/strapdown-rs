@@ -294,8 +294,8 @@ fn an_empty_aiding_section_schedules_the_other_two_channels() {
 /// them scored against a baseline it did not match, with nothing to say so.
 ///
 /// The pairing is taken from the filename: `<filter>_<geo>.toml` is scored against
-/// `<filter>_degraded.toml`, and `<filter>_denied_<geo>.toml` against `<filter>_denied.toml`.
-/// Adding a geo recipe therefore enrolls it in this check automatically.
+/// `<filter>_degraded.toml`. Adding a geo recipe therefore enrolls it in this check
+/// automatically.
 #[test]
 fn every_geophysical_config_matches_the_baseline_it_is_scored_against() {
     const FILTERS: [&str; 3] = ["ukf", "ekf", "rbpf"];
@@ -305,48 +305,46 @@ fn every_geophysical_config_matches_the_baseline_it_is_scored_against() {
     let mut checked = 0usize;
 
     for filter in FILTERS {
-        for (suffix, baseline) in [("", "degraded"), ("denied_", "denied")] {
-            let baseline_name = format!("{filter}_{baseline}.toml");
-            let Some(baseline_config) = load_conf(&baseline_name) else {
-                failures.push(format!("{baseline_name}: missing, but geo recipes name it"));
+        let baseline_name = format!("{filter}_degraded.toml");
+        let Some(baseline_config) = load_conf(&baseline_name) else {
+            failures.push(format!("{baseline_name}: missing, but geo recipes name it"));
+            continue;
+        };
+
+        for geo in GEO_TYPES {
+            let name = format!("{filter}_{geo}.toml");
+            let Some(config) = load_conf(&name) else {
+                failures.push(format!("{name}: missing"));
                 continue;
             };
+            checked += 1;
 
-            for geo in GEO_TYPES {
-                let name = format!("{filter}_{suffix}{geo}.toml");
-                let Some(config) = load_conf(&name) else {
-                    failures.push(format!("{name}: missing"));
-                    continue;
-                };
-                checked += 1;
-
-                // Compared through `Debug` because neither `AidingConfig` nor `HealthLimits`
-                // implements `PartialEq`, and deriving it across `core`'s public API to serve
-                // one test is the larger change. The rendering is total, so a difference in
-                // any field of either fails this.
-                if format!("{:?}", config.aiding) != format!("{:?}", baseline_config.aiding) {
-                    failures.push(format!(
-                        "{name}: [gnss_degradation] differs from {baseline_name}\n  \
-                         geo:      {:?}\n  baseline: {:?}",
-                        config.aiding, baseline_config.aiding
-                    ));
-                }
-                if format!("{:?}", config.health_limits)
-                    != format!("{:?}", baseline_config.health_limits)
-                {
-                    failures.push(format!(
-                        "{name}: [health_limits] differs from {baseline_name}\n  \
-                         geo:      {:?}\n  baseline: {:?}",
-                        config.health_limits, baseline_config.health_limits
-                    ));
-                }
+            // Compared through `Debug` because neither `AidingConfig` nor `HealthLimits`
+            // implements `PartialEq`, and deriving it across `core`'s public API to serve
+            // one test is the larger change. The rendering is total, so a difference in
+            // any field of either fails this.
+            if format!("{:?}", config.aiding) != format!("{:?}", baseline_config.aiding) {
+                failures.push(format!(
+                    "{name}: [gnss_degradation] differs from {baseline_name}\n  \
+                     geo:      {:?}\n  baseline: {:?}",
+                    config.aiding, baseline_config.aiding
+                ));
+            }
+            if format!("{:?}", config.health_limits)
+                != format!("{:?}", baseline_config.health_limits)
+            {
+                failures.push(format!(
+                    "{name}: [health_limits] differs from {baseline_name}\n  \
+                     geo:      {:?}\n  baseline: {:?}",
+                    config.health_limits, baseline_config.health_limits
+                ));
             }
         }
     }
 
     assert_eq!(
-        checked, 18,
-        "expected 3 filters x 3 geo types x 2 baselines; found {checked}"
+        checked, 9,
+        "expected 3 filters x 3 geo types x 1 baseline; found {checked}"
     );
     assert!(
         failures.is_empty(),
@@ -372,9 +370,9 @@ fn load_conf(name: &str) -> Option<SimulationConfig> {
 ///
 /// `analyze geostats --apply-to conf` measures the bias, the measurement noise and the bias
 /// prior of each channel once, from the residual against the maps, and writes them into all
-/// eighteen recipes. Those figures characterise the phone's gravimeter and magnetometer
-/// against the maps -- not the scenario -- so a UKF run and an RBPF run under a denial
-/// profile are looking at an instrument with identical statistics.
+/// nine recipes. Those figures characterise the phone's gravimeter and magnetometer against
+/// the maps -- not the scenario -- so a UKF run and an RBPF run are looking at an instrument
+/// with identical statistics.
 ///
 /// The failure this guards against is a *partial* adoption: one config edited by hand, or
 /// `--apply-to` pointed at a directory during a re-run that left a few files behind. The
@@ -395,50 +393,48 @@ fn every_geophysical_config_describes_the_same_sensor() {
     let mut checked = 0usize;
 
     for filter in FILTERS {
-        for prefix in ["", "denied_"] {
-            for geo in GEO_TYPES {
-                let name = format!("{filter}_{prefix}{geo}.toml");
-                let Some(config) = load_conf(&name) else {
-                    failures.push(format!("{name}: missing"));
-                    continue;
-                };
-                let Some(geophysical) = config.geophysical else {
-                    failures.push(format!("{name}: is a geo recipe with no [geophysical]"));
-                    continue;
-                };
-                checked += 1;
+        for geo in GEO_TYPES {
+            let name = format!("{filter}_{geo}.toml");
+            let Some(config) = load_conf(&name) else {
+                failures.push(format!("{name}: missing"));
+                continue;
+            };
+            let Some(geophysical) = config.geophysical else {
+                failures.push(format!("{name}: is a geo recipe with no [geophysical]"));
+                continue;
+            };
+            checked += 1;
 
-                for (field, value) in [
-                    ("gravity_bias", geophysical.gravity_bias),
-                    ("gravity_noise_std", geophysical.gravity_noise_std),
-                    ("gravity_bias_init_std", geophysical.gravity_bias_init_std),
-                    ("magnetic_bias", geophysical.magnetic_bias),
-                    ("magnetic_noise_std", geophysical.magnetic_noise_std),
-                    ("magnetic_bias_init_std", geophysical.magnetic_bias_init_std),
-                    ("geo_interval_s", geophysical.geo_interval_s),
-                ] {
-                    let Some(value) = value else { continue };
-                    match seen.get(field) {
-                        None => {
-                            seen.insert(field, (value, name.clone()));
-                        }
-                        Some((first, first_name)) if (first - value).abs() > f64::EPSILON => {
-                            failures.push(format!(
-                                "{name}: {field} = {value} but {first_name} has {first}. \
-                                 Re-run `analyze geostats --apply-to conf` so every recipe \
-                                 adopts the measured value, or none does."
-                            ));
-                        }
-                        Some(_) => {}
+            for (field, value) in [
+                ("gravity_bias", geophysical.gravity_bias),
+                ("gravity_noise_std", geophysical.gravity_noise_std),
+                ("gravity_bias_init_std", geophysical.gravity_bias_init_std),
+                ("magnetic_bias", geophysical.magnetic_bias),
+                ("magnetic_noise_std", geophysical.magnetic_noise_std),
+                ("magnetic_bias_init_std", geophysical.magnetic_bias_init_std),
+                ("geo_interval_s", geophysical.geo_interval_s),
+            ] {
+                let Some(value) = value else { continue };
+                match seen.get(field) {
+                    None => {
+                        seen.insert(field, (value, name.clone()));
                     }
+                    Some((first, first_name)) if (first - value).abs() > f64::EPSILON => {
+                        failures.push(format!(
+                            "{name}: {field} = {value} but {first_name} has {first}. \
+                             Re-run `analyze geostats --apply-to conf` so every recipe \
+                             adopts the measured value, or none does."
+                        ));
+                    }
+                    Some(_) => {}
                 }
             }
         }
     }
 
     assert_eq!(
-        checked, 18,
-        "expected 3 filters x 3 geo types x 2 baselines; found {checked}"
+        checked, 9,
+        "expected 3 filters x 3 geo types x 1 baseline; found {checked}"
     );
     assert!(
         failures.is_empty(),

@@ -2,9 +2,9 @@
 Tests for the map margin around each trajectory's bounding box.
 
 The map has to extend past the recorded track by however far the *filter* can wander off it,
-or a geophysical update lands off-map and is skipped. Under `conf/*_denied.toml` GNSS is
-withheld for 120 s at a time and the solution runs unaided throughout, which is the first
-scenario that reaches the edge.
+or a geophysical update lands off-map and is skipped. `conf/*_degraded.toml` never fully
+withholds GNSS -- fixes still arrive every 5 s, just noisier -- so the margin here is sized
+generously rather than against a specific worst-case scenario.
 
 The failure is silent at the preprocessing end -- the map is written successfully, and the
 run dies later, per trajectory, on `OutOfMapBounds`. So these are the checks that have to

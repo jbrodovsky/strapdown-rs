@@ -597,9 +597,9 @@ def segment_stem(source_name: str, segment: Segment) -> str:
 #: Absolute map margin, kilometres, added around every trajectory's bounding box.
 #:
 #: Sized for how far the filter can wander off the recorded track, which is what decides
-#: whether a geophysical update finds the map. Under `conf/*_denied.toml` GNSS is withheld for
-#: 120 s at a time and a MEMS platform drifts unaided throughout; 5 km covers that with room.
-#: Cheap, too -- on a 17 km track it is about a 30% pad.
+#: whether a geophysical update finds the map. `conf/*_degraded.toml` never fully withholds
+#: GNSS -- fixes still arrive every 5 s, just noisier -- so this margin is a generous, not a
+#: tightly-derived, bound; 5 km is cheap too -- on a 17 km track it is about a 30% pad.
 DEFAULT_MAP_MARGIN_KM = 5.0
 
 #: Metres per degree of latitude. Matches `METRES_PER_DEGREE` in `analysis/geostats.py`, which

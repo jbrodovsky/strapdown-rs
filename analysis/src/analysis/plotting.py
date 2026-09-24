@@ -107,8 +107,8 @@ def plot_performance(nav: DataFrame, gps: DataFrame, output_path: Path | str):
       so that `(nav.index - nav.index[0]).total_seconds()` yields seconds.
     - gps: `pandas.DataFrame` containing GPS truth with columns
       `latitude`, `longitude`, `altitude`, `horizontalAccuracy`, and
-      `verticalAccuracy`. Index should align with `nav` timing or be
-      time-indexed as well.
+      `verticalAccuracy`, indexed by timestamp. It is aligned onto `nav`'s
+      index, so rows the run skipped do not shift the pairing.
     - output_path: path to write the PNG output.
 
     Notes
@@ -117,31 +117,25 @@ def plot_performance(nav: DataFrame, gps: DataFrame, output_path: Path | str):
     """
     output_path = Path(output_path)
     # output_path.mkdir(parents=True, exist_ok=True)
+    gps = gps.reindex(nav.index)
     fig, ax = plt.subplots(1, 1, figsize=(12, 4))
+    nav_time = (nav.index - nav.index[0]).total_seconds().to_numpy()
+    gps_time = (gps.index - gps.index[0]).total_seconds().to_numpy()
     two_d_error = haversine_vector(
         gps[["latitude", "longitude"]].to_numpy(),
         nav[["latitude", "longitude"]].to_numpy(),
         Unit.METERS,
     )
+    altitude_error = np.abs(nav["altitude"].to_numpy() - gps["altitude"].to_numpy())
+    ax.plot(*_finite(nav_time, two_d_error), label="2D Haversine Error")
+    ax.plot(*_finite(nav_time, altitude_error), label="Altitude Error")
     ax.plot(
-        (nav.index - nav.index[0]).total_seconds(),
-        two_d_error,
-        label="2D Haversine Error",
-    )
-    ax.plot(
-        (nav.index - nav.index[0]).total_seconds(),
-        abs(nav["altitude"].to_numpy() - gps["altitude"].to_numpy()),
-        label="Altitude Error",
-    )
-    ax.plot(
-        (gps.index - gps.index[0]).total_seconds(),
-        gps["horizontalAccuracy"],
+        *_finite(gps_time, gps["horizontalAccuracy"].to_numpy()),
         label="GPS Horizontal Accuracy",
         linestyle="--",
     )
     ax.plot(
-        (gps.index - gps.index[0]).total_seconds(),
-        gps["verticalAccuracy"],
+        *_finite(gps_time, gps["verticalAccuracy"].to_numpy()),
         label="GPS Vertical Accuracy",
         linestyle="--",
     )
@@ -154,6 +148,20 @@ def plot_performance(nav: DataFrame, gps: DataFrame, output_path: Path | str):
     ax.legend()
     fig.savefig(output_path, dpi=300)
     plt.close(fig)
+    return fig
+
+
+def _finite(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Keep only the points where ``y`` is finite.
+
+    The reference for every error series is the recorded GNSS, which is NaN between fixes --
+    nine rows in ten at the 10 Hz preprocessing rate. Matplotlib draws a segment only between
+    two *consecutive* finite points, so a series with NaN between every fix renders as nothing
+    at all: the axes still autoscale to the data, and the plot comes out as an empty frame.
+    An error only exists where there is a fix, so plotting the fixes, joined, is the series.
+    """
+    mask = np.isfinite(y)
+    return x[mask], y[mask]
 
 
 def plot_relative_performance(
@@ -179,14 +187,6 @@ def plot_relative_performance(
             f"Input DataFrames must be the same length for relative performance plotting.\nGot lengths: geo={len(geo)}, deg={len(deg)}, nav={len(nav)}"
         )
 
-    distance_traveled = haversine_vector(
-        nav[["latitude", "longitude"]].to_numpy()[:-1, :],
-        nav[["latitude", "longitude"]].to_numpy()[1:, :],
-        Unit.METERS,
-    )
-    distance_traveled = np.hstack(([0], distance_traveled))
-    distance_traveled = np.nancumsum(distance_traveled)
-
     geo_error = haversine_vector(
         geo[["latitude", "longitude"]].to_numpy(dtype=np.float64, copy=False),
         nav[["latitude", "longitude"]].to_numpy(),
@@ -199,19 +199,22 @@ def plot_relative_performance(
         Unit.METERS,
     )
 
-    time = (nav.index - nav.index[0]).total_seconds() / 3600
-
-    err_diff = geo_error - deg_error
+    time, err_diff = _finite(
+        (nav.index - nav.index[0]).total_seconds().to_numpy() / 3600, geo_error - deg_error
+    )
     geo_rmse = np.sqrt(np.nanmean(geo_error**2))
     deg_rmse = np.sqrt(np.nanmean(deg_error**2))
     # General errors
     fig, ax = plt.subplots(1, 1, figsize=(24, 6), layout="tight")
     ax.plot(time, err_diff, label="Error Difference", color="black", linewidth=1)
+    # `interpolate` closes each fill at the zero crossing rather than at the last sample
+    # before it, so a sign change between two fixes leaves no unfilled wedge.
     ax.fill_between(
         time,
         err_diff,
         0,
         where=err_diff > 0,
+        interpolate=True,
         alpha=0.4,
         color="red",
         label="Geo INS > Degraded INS",
@@ -221,6 +224,7 @@ def plot_relative_performance(
         err_diff,
         0,
         where=err_diff < 0,
+        interpolate=True,
         alpha=0.4,
         color="green",
         label="Degraded INS > Geo INS",
@@ -237,7 +241,7 @@ def plot_relative_performance(
     ax.legend()
     fig.savefig(output_path, dpi=300)
     plt.close(fig)
-    # print(f"Saved relative performance plot to: {output_path}")
+    return fig
 
 
 def plot_street_map(

@@ -211,3 +211,36 @@ def test_compare_filters_skips_unalignable_trajectory(
     results = read_csv(output / "filter_comparison_comparison.csv")
     # The other trajectory is still scored.
     assert list(results["trajectory"]) == ["traj_B"]
+
+
+def test_compare_filters_pairs_by_timestamp_when_the_run_skipped_a_record(
+    comparison_tree: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A solution that begins at the seed record and skips one later record is scored per epoch.
+
+    That is one row short of the reference -- the same length as ``truth[1:]`` -- which the
+    scorer used to take as "already aligned" and pair by position, comparing each solution with
+    the next epoch's truth up to the skipped record.
+    """
+    lines = ["timestamp,latitude,longitude,altitude"]
+    for i in (0, 1, 2, 4, 5):
+        latitude = 40.0 + i * 1e-4 + 1e-6
+        lines.append(f"2026-04-01T00:00:{i:02d}+00:00,{latitude:.10f},-75.0,10.0")
+    (comparison_tree / "accurate" / "traj_A.csv").write_text("\n".join(lines) + "\n")
+    output = comparison_tree / "out"
+    run_compare_filters(
+        monkeypatch,
+        "-i",
+        str(comparison_tree / "accurate"),
+        "-l",
+        "UKF",
+        "-r",
+        str(comparison_tree / "input"),
+        "-o",
+        str(output),
+    )
+
+    results = read_csv(output / "filter_comparison_comparison.csv").set_index("trajectory")
+    assert results.loc["traj_A", "max"] == pytest.approx(
+        1e-6 * METERS_PER_DEGREE_LATITUDE, rel=1e-3
+    )

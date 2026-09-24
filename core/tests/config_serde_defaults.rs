@@ -190,6 +190,51 @@ fn simulation_config_serde_defaults_match_its_default_impl() {
     );
 }
 
+/// The particle filter's two retired map-bias keys are refused by name, not dropped.
+///
+/// `[particle_filter] geo_bias_init_std` and `geo_bias_process_noise_std` set one prior and one
+/// random walk for every map bias, in no particular unit, while the particle filter ignored the
+/// per-channel `[geophysical]` keys the Kalman filters read. It reads those now. Serde drops a
+/// key it does not recognise without a word, so without an explicit refusal a config written
+/// for the old keys would run on the new defaults and never say so. The error must name the
+/// key and where its replacement lives, through the file format a user actually writes.
+#[test]
+fn the_particle_filters_retired_map_bias_keys_are_refused_by_name() {
+    for (key, replacement) in [
+        ("geo_bias_init_std", "gravity_bias_init_std"),
+        (
+            "geo_bias_process_noise_std",
+            "gravity_bias_process_noise_std",
+        ),
+    ] {
+        let section = format!(r#"{{"num_particles": 10, "{key}": 1.0}}"#);
+        let error = serde_json::from_str::<ParticleFilterConfig>(&section)
+            .expect_err("a retired key must be refused, not dropped")
+            .to_string();
+        assert!(
+            error.contains(key) && error.contains(replacement) && error.contains("[geophysical]"),
+            "the JSON error must name `{key}` and point at `{replacement}` in [geophysical], \
+             got: {error}"
+        );
+
+        let document = format!(
+            "mode = \"particle-filter\"\n\n[particle_filter]\nnum_particles = 10\n{key} = 1.0\n"
+        );
+        let error = toml::from_str::<SimulationConfig>(&document)
+            .expect_err("a retired key must be refused in a TOML scenario file too")
+            .to_string();
+        assert!(
+            error.contains(key) && error.contains(replacement),
+            "the TOML error must name `{key}` and point at `{replacement}`, got: {error}"
+        );
+    }
+
+    // A section that does not mention them is unaffected.
+    let parsed: ParticleFilterConfig = serde_json::from_str(r#"{"num_particles": 10}"#)
+        .expect("a section without the retired keys must parse");
+    assert_eq!(parsed.num_particles, 10);
+}
+
 /// The shipped default itself, through both construction paths.
 ///
 /// The tests above hold the two paths to the *same* answer; this one pins what that answer is.

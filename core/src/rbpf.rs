@@ -1,9 +1,10 @@
 //! Rao-Blackwellized particle filter (RBPF) for inertial navigation.
 //!
 //! This filter represents position errors with particles and uses a shared
-//! linear Kalman filter for velocity/attitude error states. It is intended
-//! for map-matching and GNSS-aided navigation where measurements are highly
-//! nonlinear in position but linear in the remaining states.
+//! linear Kalman filter for velocity/attitude error states and for any extra
+//! states, such as a geophysical map bias. It is intended for map-matching and
+//! GNSS-aided navigation where measurements are highly nonlinear in position
+//! but linear in the remaining states.
 
 use crate::StrapdownError;
 use crate::gating::{
@@ -106,6 +107,56 @@ fn position_std_to_state_units(
     )
 }
 
+/// Refuse an extra-state description the filter cannot carry.
+///
+/// The three per-state vectors must each hold exactly [`RbpfConfig::extra_state_dim`] entries:
+/// a short one would leave a state with no prior, and there is no default that is right in
+/// every unit. Every entry must be finite, and the two standard deviations non-negative. A NaN
+/// rate is the case worth refusing loudly: it enters the conditional covariance through `q_l`,
+/// and from there every particle's gain.
+///
+/// # Errors
+/// [`StrapdownError::InvalidConfiguration`] naming the offending field.
+fn validate_extra_states(config: &RbpfConfig) -> Result<(), StrapdownError> {
+    for (field, values, is_std) in [
+        ("extra_state_initial", &config.extra_state_initial, false),
+        ("extra_state_init_std", &config.extra_state_init_std, true),
+        (
+            "extra_state_process_noise_std",
+            &config.extra_state_process_noise_std,
+            true,
+        ),
+    ] {
+        if values.len() != config.extra_state_dim {
+            return Err(StrapdownError::InvalidConfiguration {
+                field,
+                reason: format!(
+                    "holds {} entries for {} extra states; give exactly one per state",
+                    values.len(),
+                    config.extra_state_dim
+                ),
+            });
+        }
+        if let Some(value) = values
+            .iter()
+            .find(|value| !value.is_finite() || (is_std && **value < 0.0))
+        {
+            return Err(StrapdownError::InvalidConfiguration {
+                field,
+                reason: format!(
+                    "{value} is not a usable {}",
+                    if is_std {
+                        "standard deviation"
+                    } else {
+                        "initial value"
+                    }
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// RBPF configuration parameters.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
@@ -172,21 +223,37 @@ pub struct RbpfConfig {
     /// nominal, here [`RaoBlackwellizedParticleFilter::nominal_extra_state`]: a particle's
     /// entry is its deviation from that nominal, not the absolute bias. Read the absolute
     /// estimate back with [`RaoBlackwellizedParticleFilter::extra_state_estimate`].
-    pub extra_state_dim: usize,
-    /// Initial standard deviation for extra states (applied uniformly).
-    pub extra_state_init_std: f64,
-    /// Process-noise standard deviation for the extra states, **in the state's own units per
-    /// root-second**, applied uniformly as a random walk.
     ///
-    /// Like the position block -- and unlike the velocity and attitude blocks, which enter
-    /// through the conditional covariance `q_l` -- it is applied as a per-particle draw. The
-    /// reason differs: position is the sampled partition and is *meant* to be drawn, whereas
-    /// these states sit in the linear partition by address only and are estimated by
-    /// importance weighting rather than analytically, so a `q_l` entry for them would never
-    /// be read -- see the note at the draw in `predict_sample` and #382. The variance it
-    /// contributes to the reported estimate is `std^2 * elapsed_seconds`, independent of
-    /// sample rate.
-    pub extra_state_process_noise_std: f64,
+    /// They are Rao-Blackwellised, as velocity and attitude are: every particle carries a
+    /// Kalman estimate of them, and a measurement that observes one -- a geophysical map,
+    /// predicted as the map value at the particle plus the map bias -- updates that estimate
+    /// analytically while weighting the particles with the bias integrated out. See
+    /// [`RaoBlackwellizedParticleFilter::update`].
+    ///
+    /// [`Self::extra_state_initial`], [`Self::extra_state_init_std`] and
+    /// [`Self::extra_state_process_noise_std`] describe them one entry per state, and all three
+    /// must be exactly this long.
+    pub extra_state_dim: usize,
+    /// Initial value of each extra state, in that state's own units.
+    ///
+    /// Seeds [`RaoBlackwellizedParticleFilter::nominal_extra_state`]. For a map bias this is
+    /// the offset between the sensor and the map, which need not be small: the geophysical
+    /// recipes under `conf/` seed hundreds of milligal.
+    pub extra_state_initial: Vec<f64>,
+    /// Initial standard deviation of each extra state, in that state's own units.
+    ///
+    /// The prior of the conditional estimate each particle carries. The particles all start
+    /// at [`Self::extra_state_initial`], so this is uncertainty in the conditional covariance,
+    /// not spread in the cloud. One entry per state because the states need not share a unit:
+    /// a gravity bias is in mGal and a magnetic one in nT, and the single number this used to
+    /// be was necessarily wrong for one of them.
+    pub extra_state_init_std: Vec<f64>,
+    /// Random-walk rate of each extra state, in that state's own units per root-second.
+    ///
+    /// Enters the conditional covariance as `(std * sqrt(dt))^2` per step, exactly as the
+    /// velocity and attitude rates do, so the variance it adds is `std^2 * elapsed_seconds`
+    /// whatever the log's sample rate.
+    pub extra_state_process_noise_std: Vec<f64>,
     /// Seed for the filter's random number generator, which draws the initial
     /// particle spread, the per-step process noise and the resampling indices. Runs
     /// with the same seed and the same inputs are reproducible.
@@ -250,8 +317,9 @@ impl Default for RbpfConfig {
             velocity_process_noise_std_mps: 1e-3,
             attitude_process_noise_std_rad: 0.01,
             extra_state_dim: 0,
-            extra_state_init_std: 0.0,
-            extra_state_process_noise_std: 0.0,
+            extra_state_initial: Vec::new(),
+            extra_state_init_std: Vec::new(),
+            extra_state_process_noise_std: Vec::new(),
             seed: 42,
             recenter_after_update: true,
             zero_vertical_velocity: true,
@@ -289,6 +357,22 @@ pub struct RbpfParticle {
     pub weight: f64,
 }
 
+/// The shared, conditional half of a measurement update that observes extra states.
+///
+/// Built once per update by `RaoBlackwellizedParticleFilter::extra_state_update` and applied
+/// to every particle, which is what keeps their conditional covariances identical (#268).
+#[derive(Debug)]
+struct ExtraStateUpdate {
+    /// The innovation covariance with the extra states integrated out, `H P H^T + R`: the
+    /// covariance each particle's residual is scored against.
+    innovation_covariance: DMatrix<f64>,
+    /// The Kalman gain over the whole linear partition, `P H^T S^-1`. Its velocity and
+    /// attitude rows are zero; only the extra-state rows move.
+    gain: DMatrix<f64>,
+    /// The conditional covariance after the update, `(I - K H) P`, symmetrised.
+    posterior_covariance: DMatrix<f64>,
+}
+
 /// Rao-Blackwellized particle filter implementation.
 #[derive(Debug)]
 pub struct RaoBlackwellizedParticleFilter {
@@ -315,11 +399,19 @@ impl RaoBlackwellizedParticleFilter {
         LINEAR_STATE_DIM_BASE + self.config.extra_state_dim
     }
     /// Create a new RBPF with particles initialized around the nominal state.
+    ///
+    /// Only position is drawn. Velocity, attitude and the extra states start every particle at
+    /// the same conditional estimate -- zero error against the nominal, and against
+    /// [`RbpfConfig::extra_state_initial`] -- with their prior in the conditional covariance.
+    ///
     /// # Errors
     /// [`StrapdownError::InvalidConfiguration`] if any `position_init_std_m` component is
     /// not a usable standard deviation. Zero is a plausible thing for a user to write --
     /// "I know my start position exactly" -- and it used to panic here at construction.
+    /// Likewise, via [`validate_extra_states`], if the extra-state vectors do not each hold
+    /// one entry per extra state or hold a value the filter cannot carry.
     pub fn new(nominal: StrapdownState, config: RbpfConfig) -> Result<Self, StrapdownError> {
+        validate_extra_states(&config)?;
         let mut rng = StdRng::seed_from_u64(config.seed);
         let linear_dim = LINEAR_STATE_DIM_BASE + config.extra_state_dim;
 
@@ -344,43 +436,28 @@ impl RaoBlackwellizedParticleFilter {
             linear_cov[(i, i)] = config.velocity_init_std_mps.powi(2);
             linear_cov[(i + 3, i + 3)] = config.attitude_init_std_rad.powi(2);
         }
-        if config.extra_state_dim > 0 {
-            let var = config.extra_state_init_std.powi(2);
-            for i in 0..config.extra_state_dim {
-                linear_cov[(LINEAR_STATE_DIM_BASE + i, LINEAR_STATE_DIM_BASE + i)] = var;
-            }
+        for (i, init_std) in config.extra_state_init_std.iter().enumerate() {
+            let index = LINEAR_STATE_DIM_BASE + i;
+            linear_cov[(index, index)] = init_std.powi(2);
         }
 
         let mut particles = Vec::with_capacity(config.num_particles);
         let weight = 1.0 / config.num_particles as f64;
-        let extra_state_normal = if config.extra_state_dim > 0 && config.extra_state_init_std > 0.0
-        {
-            // Guarded by `extra_state_init_std > 0.0` on the line above.
-            Some(crate::normal_with_std(config.extra_state_init_std))
-        } else {
-            None
-        };
         for _ in 0..config.num_particles {
             let position_error = Vector3::new(
                 normal_lat.sample(&mut rng),
                 normal_lon.sample(&mut rng),
                 normal_alt.sample(&mut rng),
             );
-            let mut linear_state = DVector::zeros(linear_dim);
-            if let Some(extra_normal) = &extra_state_normal {
-                for i in 0..config.extra_state_dim {
-                    linear_state[LINEAR_STATE_DIM_BASE + i] = extra_normal.sample(&mut rng);
-                }
-            }
             particles.push(RbpfParticle {
                 position_error,
-                linear_state,
+                linear_state: DVector::zeros(linear_dim),
                 linear_cov: linear_cov.clone(),
                 weight,
             });
         }
 
-        let nominal_extra = DVector::zeros(config.extra_state_dim);
+        let nominal_extra = DVector::from_column_slice(&config.extra_state_initial);
 
         Ok(Self {
             config,
@@ -411,8 +488,9 @@ impl RaoBlackwellizedParticleFilter {
     ///
     /// With [`RbpfConfig::recenter_after_update`] on, the mean error term is ~0 immediately
     /// after an update and the estimate is essentially the nominal; with it off, the
-    /// nominal stays at zero and the estimate is essentially the cloud mean. Both are the
-    /// same quantity, which is the point of splitting it.
+    /// nominal stays at its seed, [`RbpfConfig::extra_state_initial`], and the particles
+    /// carry everything learned since. Both are the same quantity, which is the point of
+    /// splitting it.
     pub fn extra_state_estimate(&self) -> DVector<f64> {
         let mut estimate = self.nominal_extra.clone();
         for particle in &self.particles {
@@ -498,36 +576,33 @@ impl RaoBlackwellizedParticleFilter {
         // `sqrt(dt)`, so each config entry is a standard deviation per root-second and every
         // block's variance grows linearly in elapsed time.
         //
-        // Settled by #382: the extra states take their process noise as a per-particle draw
-        // on the mean below, and get no entry in `q_l` at all.
+        // The extra states (geophysical map biases) take theirs in `q_l`, alongside velocity
+        // and attitude. They are Rao-Blackwellised: each particle carries a Kalman estimate of
+        // them, which a map measurement updates analytically (`extra_state_update`), so their
+        // uncertainty belongs to `linear_cov` and not to a spread of particles.
         //
-        // The entry that used to be here was not a second application of the noise. It was a
-        // **dead write**. Despite living in the linear container the extra states are not
-        // Rao-Blackwellised: `f_nl_full` has zero columns over them and `f_ll_full` is the
-        // identity there, so `linear_cov`'s (extra, base) cross-block is identically zero
-        // forever and the coupling gain `l` has zero extra rows. Every `h` handed to
-        // `update_linear_state` -- velocity, yaw, GPS position+velocity, the zero-vertical-
-        // velocity constraint -- likewise has zero extra columns, so the Kalman gain's extra
-        // rows are zero and `(I - k h) P` leaves that block untouched. And the reported
-        // covariance is not `linear_cov` at all: `weighted_moments` summarises the *cloud*,
-        // never `E_i[linear_cov]`. `particles` is private and nothing outside this file names
-        // `.linear_cov`. So a value written here reached no gain, no innovation covariance,
-        // no gate and no output. Removing it is bit-identical.
+        // They used to be importance-sampled instead -- drawn per particle at construction,
+        // given their random walk as a per-particle draw on the mean, and moved only by
+        // reweighting -- which is why #382 found this block's entry for them to be a dead
+        // write: no `h` reaching `update_linear_state` had an extra-state column, so nothing
+        // read it. #382 also recorded the way out: once an extra state acquires an analytic
+        // measurement path, its noise moves back here and replaces the draw rather than
+        // joining it. That is this. The sampled form could not hold a real map-bias prior --
+        // hundreds of mGal had to be represented by where the particles happened to land,
+        // resampling collapsed that onto a few ancestors, and only the random-walk draw could
+        // widen it again, so the bias froze wherever the collapse left it.
         //
-        // Removing it also closes a narrow poisoning path: that block was guarded only on
-        // `extra_state_dim > 0`, while the draw below is additionally guarded on
-        // `std > 0.0`, which is false for NaN. A NaN process noise therefore wrote NaN into
-        // `linear_cov`, and annihilation by structural zeros is exact only for finite
-        // entries -- `0.0 * NaN` is NaN, so it propagated into `n` and poisoned every
-        // particle's position noise.
+        // The structure that made the old entry dead still holds, and now does useful work:
+        // `f_nl_full` has zero columns over the extra states and `f_ll_full` is the identity
+        // there, so their cross-covariance with velocity and attitude starts at zero and stays
+        // there. A map update therefore reaches the bias and nothing else, and a GNSS update
+        // leaves the bias alone.
         //
-        // **If an extra state ever acquires a real analytic measurement path** -- an `h` with
-        // a non-zero extra column routed into `update_linear_state` -- its noise must MOVE
-        // back here, replacing the draw, not be added alongside it. Note what that block
-        // would otherwise inherit: `p_new[(i, i)] += 1e-9` below runs over the whole
-        // diagonal, extras included, so the block is not frozen, it creeps at 1e-9 per step
-        // (1e-7/s at 100 Hz) -- a rate set by a conditioning constant rather than by any
-        // configuration. A plausible-looking wrong number is a worse trap than a static one.
+        // `p_new[(i, i)] += 1e-9` below runs over the whole diagonal, extras included. It is a
+        // conditioning jitter, not a noise model: invisible against a bias prior of hundreds of
+        // mGal, and the reason a bias configured with no random walk at all creeps by 1e-9 per
+        // step rather than staying exactly frozen. `validate_extra_states` keeps a NaN rate from
+        // ever reaching `q_l`.
         let root_dt = dt.sqrt();
         let pos_noise = position_std_to_state_units(
             &self.config.position_process_noise_std_m,
@@ -545,6 +620,10 @@ impl RaoBlackwellizedParticleFilter {
         for i in 0..3 {
             q_l[(i, i)] = vel_noise.powi(2);
             q_l[(i + 3, i + 3)] = att_noise.powi(2);
+        }
+        for (i, rate) in self.config.extra_state_process_noise_std.iter().enumerate() {
+            let index = LINEAR_STATE_DIM_BASE + i;
+            q_l[(index, index)] = (rate * root_dt).powi(2);
         }
 
         // Propagate nominal state with strapdown mechanization.
@@ -593,47 +672,7 @@ impl RaoBlackwellizedParticleFilter {
             let x_n_pred_vec = &f_nn * &x_n_vec + &f_nl_full * &x_l + q_noise;
             let x_n_pred = Vector3::new(x_n_pred_vec[0], x_n_pred_vec[1], x_n_pred_vec[2]);
             let z = &x_n_pred_vec - &f_nn * &x_n_vec;
-            let mut x_l_pred =
-                &f_ll_full * &x_l + &f_ln_full * &x_n_vec + &l * (z - &f_nl_full * &x_l);
-            if self.config.extra_state_dim > 0 && self.config.extra_state_process_noise_std > 0.0 {
-                for i in 0..self.config.extra_state_dim {
-                    let idx = LINEAR_STATE_DIM_BASE + i;
-                    // The extra states' only process noise, and deliberately a draw onto the
-                    // mean rather than a `q_l` entry (#382, acceptance criterion 4 -- this
-                    // reason is not inferable from the code).
-                    //
-                    // These states are not Rao-Blackwellised despite their address. No Kalman
-                    // gain reaches their rows, so a `q_l` entry lands in a block of
-                    // `linear_cov` that nothing reads, while the reported variance comes from
-                    // `weighted_moments` -- from the cloud. Putting the noise on the mean is
-                    // the only form in which it reaches anything observable: a geophysical
-                    // model has no downcast arm in `update_with`, so it falls through to
-                    // `update_weights_generic`, which scores each particle through
-                    // `particle_state_vector_full`, where the particle's OWN extra state
-                    // enters its residual and therefore its weight.
-                    //
-                    // **What this is, and is not.** It is a random-walk drift model for a map
-                    // bias. It is *not* a roughening step holding the cloud up, and the
-                    // sizing says so: at the shipped defaults the spread comes overwhelmingly
-                    // from `extra_state_init_std` (1.0) rather than from this draw (1e-3 per
-                    // root-second), which would need ~1e6 s of trajectory to contribute as
-                    // much variance as the initialiser hands over at t = 0. Do not rely on it
-                    // to prevent particle collapse.
-                    //
-                    // What is true is asymptotic: `predict` is exactly the identity on these
-                    // states without it, `maybe_resample` clones particles with no jitter,
-                    // and `recenter_errors` shifts the cloud without widening it.
-                    // `inflate_particle_spread` does widen it -- gate rejection scales every
-                    // deviation from the mean by `sqrt(factor)` -- but multiplicatively, so it
-                    // can only grow a spread that is still non-zero, and only when a fix is
-                    // rejected. This draw is the filter's one unconditional source of extra-
-                    // state spread, and the only mechanism that can restore it from zero.
-                    let noise = normal.sample(&mut self.rng)
-                        * self.config.extra_state_process_noise_std
-                        * root_dt;
-                    x_l_pred[idx] += noise;
-                }
-            }
+            let x_l_pred = &f_ll_full * &x_l + &f_ln_full * &x_n_vec + &l * (z - &f_nl_full * &x_l);
 
             particle.position_error = x_n_pred;
             particle.linear_state = x_l_pred;
@@ -665,12 +704,18 @@ impl RaoBlackwellizedParticleFilter {
     ///   predicts a near-identical measurement and earns a near-identical weight. The
     ///   cloud has no spread along the axis the measurement constrains.
     /// * **Both** (GNSS position and velocity) -- do both, each on its own block.
+    /// * **Supported on position and an extra state** (a geophysical map, predicted as the
+    ///   map value at the particle's position plus the map bias) -- both again, in one
+    ///   update: reweight the cloud with the bias integrated out of the likelihood, and run
+    ///   the Kalman update on the bias. [`Self::update_weights_generic`] does this for any
+    ///   measurement whose Jacobian has a non-zero extra-state column.
     ///
-    /// Sending a linear-state measurement to [`Self::update_weights_generic`] is
-    /// therefore not an approximation but a silent no-op, and it is what #341 was: the
-    /// magnetometer fell through to the generic path, 5,365 heading fixes moved the
-    /// effective sample size from 500 to a median of 492.6, and the filter's yaw drifted
-    /// unaided to 65.9 deg RMSE while the aid it was being handed was good to 17.1 deg.
+    /// Sending a velocity or attitude measurement to [`Self::update_weights_generic`] is
+    /// therefore not an approximation but a silent no-op -- that path marginalises the extra
+    /// states and nothing else -- and it is what #341 was: the magnetometer fell through to
+    /// the generic path, 5,365 heading fixes moved the effective sample size from 500 to a
+    /// median of 492.6, and the filter's yaw drifted unaided to 65.9 deg RMSE while the aid
+    /// it was being handed was good to 17.1 deg.
     ///
     /// # Errors
     /// Propagates measurement failures — chiefly a geophysical model whose particle has
@@ -741,13 +786,48 @@ impl RaoBlackwellizedParticleFilter {
     /// Nothing enforces that tightness in general -- it is set by
     /// [`RbpfConfig::attitude_init_std_rad`] and by how well the filter is tracking -- and
     /// the failure, when it comes, is silent.
+    ///
+    /// # Velocity and attitude carry their conditional covariance
+    ///
+    /// Velocity and attitude are Rao-Blackwellised: each particle holds a Kalman estimate of
+    /// them *and* a covariance about it, so their marginal covariance is the law of total
+    /// covariance, `Cov_i[mean_i] + E_i[P_i]` -- the spread of the particles' estimates plus
+    /// the weighted conditional covariance. Position is sampled and has no conditional part.
+    ///
+    /// This reported the spread alone until the fix that added this section. A filter fresh
+    /// from [`Self::new`], whose particles all hold the same velocity and attitude estimate,
+    /// therefore claimed to know both exactly, whatever [`RbpfConfig::velocity_init_std_mps`]
+    /// said. That under-statement reached every consumer: the covariance columns a run writes,
+    /// and [`Self::evaluate_ensemble_gate`], which scored GNSS velocity and heading fixes
+    /// against it and so rejected fixes that were within the filter's real uncertainty.
     pub fn estimate(&self) -> (DVector<f64>, DMatrix<f64>) {
         let states: Vec<DVector<f64>> = self
             .particles
             .iter()
             .map(|particle| self.particle_state_vector(particle))
             .collect();
-        self.weighted_moments(&states, NAVIGATION_STATE_DIM)
+        let (mean, mut covariance) = self.weighted_moments(&states, NAVIGATION_STATE_DIM);
+        self.add_conditional_covariance(&mut covariance, LINEAR_STATE_DIM_BASE);
+        (mean, covariance)
+    }
+
+    /// Add `E_i[P_i]` over the first `width` linear states to an assembled covariance: the
+    /// conditional half of the law of total covariance, whose other half is
+    /// [`Self::weighted_moments`]' spread.
+    ///
+    /// The linear states follow position in the assembled vector, so row `r` of a particle's
+    /// `linear_cov` lands on row `POSITION_STATE_DIM + r`. The conditional covariance is shared
+    /// by every particle (#268), so this is that one matrix; it is summed with the weights
+    /// anyway, so the reported covariance does not lean on the invariant.
+    fn add_conditional_covariance(&self, covariance: &mut DMatrix<f64>, width: usize) {
+        for particle in &self.particles {
+            for row in 0..width {
+                for column in 0..width {
+                    covariance[(POSITION_STATE_DIM + row, POSITION_STATE_DIM + column)] +=
+                        particle.weight * particle.linear_cov[(row, column)];
+                }
+            }
+        }
     }
 
     /// [`Self::estimate`] over the whole state the filter carries: the nine navigation states
@@ -780,8 +860,22 @@ impl RaoBlackwellizedParticleFilter {
     /// [`Self::estimate`] is kept as the nine-state accessor rather than widened because the
     /// navigation solution is what nearly every caller wants, and its width should not depend
     /// on how the filter happens to be configured.
+    ///
+    /// # The covariance is not the cloud's alone
+    ///
+    /// The extra states are Rao-Blackwellised, like velocity and attitude, so each particle
+    /// holds a conditional estimate *and* a conditional covariance for them, and the particles
+    /// need not differ at all -- at construction they are identical. Their covariance is
+    /// therefore the law of total covariance, the spread of the particles' estimates plus the
+    /// weighted conditional covariance: `Cov_i[mean_i] + E_i[P_i]`. The spread alone would
+    /// report a freshly seeded bias as known exactly. The conditional term covers the whole
+    /// linear block -- velocity, attitude and the extras, whose cross-covariance with the other
+    /// two is structurally zero -- exactly as [`Self::estimate`] adds it to its own velocity and
+    /// attitude block, so the two accessors agree on the nine navigation states. Position has
+    /// no conditional part.
     pub fn estimate_with_extra_states(&self) -> (DVector<f64>, DMatrix<f64>) {
-        if self.config.extra_state_dim == 0 {
+        let extra_dim = self.config.extra_state_dim;
+        if extra_dim == 0 {
             return self.estimate();
         }
         let states: Vec<DVector<f64>> = self
@@ -789,7 +883,10 @@ impl RaoBlackwellizedParticleFilter {
             .iter()
             .map(|particle| self.particle_state_vector_full(particle))
             .collect();
-        self.weighted_moments(&states, NAVIGATION_STATE_DIM + self.config.extra_state_dim)
+        let (mean, mut covariance) =
+            self.weighted_moments(&states, NAVIGATION_STATE_DIM + extra_dim);
+        self.add_conditional_covariance(&mut covariance, LINEAR_STATE_DIM_BASE + extra_dim);
+        (mean, covariance)
     }
 
     /// Weighted mean and covariance of an assembled cloud, attitude handled on the circle.
@@ -848,7 +945,12 @@ impl RaoBlackwellizedParticleFilter {
     /// The cloud is summarised with [`Self::estimate_with_extra_states`] rather than
     /// [`Self::estimate`], so the measurement sees the same state layout here as it does in
     /// the weight update. A geophysical model reads its map bias by index from the end of
-    /// the vector, and a 9-vector has no bias to read.
+    /// the vector, and a 9-vector has no bias to read. That summary also carries the conditional
+    /// covariance of the whole linear block, so the `S` formed here includes the Kalman half of
+    /// the uncertainty: the bias uncertainty for a map measurement, as the weights' marginal
+    /// likelihood does, and the velocity and attitude uncertainty for a GNSS velocity or
+    /// heading fix. It carried only the particles' spread in velocity and attitude until the
+    /// fix described on [`Self::estimate`], which under-stated `S` for those fixes.
     ///
     /// # Errors
     /// Whatever the measurement model returns when evaluated at the ensemble mean, or
@@ -901,16 +1003,17 @@ impl RaoBlackwellizedParticleFilter {
     /// multiplicative inflation of the ensemble-filter literature (Anderson & Anderson
     /// 1999), and it needs no draw from the RNG, so a seeded run stays reproducible.
     ///
-    /// The stretch is what re-opens the gate, and it is enough on its own to do so:
-    /// [`Self::evaluate_ensemble_gate`] scores against [`Self::weighted_moments`], which is
-    /// the weighted *spread* of the particle states -- position, velocity, attitude and
-    /// extra states alike -- so scaling every deviation by $\sqrt{f}$ multiplies the exact
-    /// covariance the next NIS is computed from by $f$. `inflating_the_cloud_multiplies_its\
-    /// _covariance_by_the_factor` asserts that on the same summary the gate uses.
+    /// This is what re-opens the gate. [`Self::evaluate_ensemble_gate`] scores against the law
+    /// of total covariance: the weighted *spread* of the particle states -- position, velocity,
+    /// attitude and extra states alike -- plus the weighted conditional covariance of the
+    /// linear states. Scaling every deviation by $\sqrt{f}$ multiplies the first half by $f$,
+    /// and scaling each particle's own `linear_cov` by $f$ multiplies the second, so together
+    /// they multiply the exact covariance the next NIS is computed from by $f$.
+    /// `inflating_the_cloud_multiplies_its_covariance_by_the_factor` asserts that on the same
+    /// summary the gate uses.
     ///
-    /// Each particle's own `linear_cov` is scaled by $f$ as well. That does not enter the
-    /// gate's covariance, but it does enter each particle's own Kalman update, and leaving
-    /// it behind would produce a wide cloud of individually over-confident particles -- the
+    /// The `linear_cov` half also enters each particle's own Kalman update, and leaving it
+    /// behind would produce a wide cloud of individually over-confident particles -- the
     /// conditional half of the uncertainty contradicting the ensemble half.
     ///
     /// Unlike the Kalman filters, which inflate only the subspace the rejected measurement
@@ -1119,11 +1222,47 @@ impl RaoBlackwellizedParticleFilter {
         Ok(())
     }
 
+    /// Reweight the cloud on a measurement, marginalising any extra state it observes.
+    ///
+    /// Position is the sampled partition, so what a measurement says about position lands in
+    /// the weights. A measurement that also observes an extra state -- a geophysical map, whose
+    /// prediction is the map at the particle's position *plus* the map bias -- is additionally
+    /// linear-Gaussian in that state, and gets the marginalised particle filter's measurement
+    /// update for it (Schön, Gustafsson & Nordlund 2005):
+    ///
+    /// 1. each particle is weighted by the likelihood with the bias integrated out,
+    ///    `N(r_i; 0, H P H^T + R)`, where `r_i` is its residual at its own bias estimate and
+    ///    `P` the conditional covariance;
+    /// 2. each particle's bias estimate then takes the Kalman step `K r_i`.
+    ///
+    /// The bias used to be importance-sampled instead: each particle carried a drawn value and
+    /// was weighted by `R` alone at it, so the whole prior had to be represented by where the
+    /// particles landed. Drawn at 1.0 for every channel, that cloud could not reach a
+    /// sensor-to-map offset of hundreds of mGal, and the weights rewarded whatever else could
+    /// cancel it -- on a gravity map, the particles whose velocity moved the Eötvös term the
+    /// right way.
+    ///
+    /// A measurement that observes no extra state -- every navigation measurement routed here
+    /// -- takes the first step with `S = R` and skips the second, which is exactly what this
+    /// did before, computation for computation.
+    ///
+    /// # Errors
+    /// Propagated from the measurement model, and from [`Self::extra_state_update`].
     fn update_weights_generic<M: MeasurementModel + ?Sized>(
         &mut self,
         measurement: &M,
     ) -> Result<(), StrapdownError> {
+        let extra_update = self.extra_state_update(measurement)?;
+        let likelihood_covariance = extra_update.as_ref().map_or_else(
+            || measurement.get_noise(),
+            |update| update.innovation_covariance.clone(),
+        );
         let mut log_weights = Vec::with_capacity(self.particles.len());
+        let mut residuals = Vec::with_capacity(if extra_update.is_some() {
+            self.particles.len()
+        } else {
+            0
+        });
         let mut max_log = f64::NEG_INFINITY;
 
         for particle in &self.particles {
@@ -1135,11 +1274,14 @@ impl RaoBlackwellizedParticleFilter {
             // residual would flatten the likelihood of every particle (#267).
             measurement.wrap_residual(&mut residual);
 
-            let log_likelihood = gaussian_log_likelihood(&residual, &measurement.get_noise());
+            let log_likelihood = gaussian_log_likelihood(&residual, &likelihood_covariance);
             let log_w = particle.weight.ln() + log_likelihood;
             log_weights.push(log_w);
             if log_w > max_log {
                 max_log = log_w;
+            }
+            if extra_update.is_some() {
+                residuals.push(residual);
             }
         }
 
@@ -1161,12 +1303,109 @@ impl RaoBlackwellizedParticleFilter {
             }
         }
 
+        // The conditional half. Deliberately not flagged as a linear update for
+        // `recenter_errors`: the gain's velocity and attitude rows are structurally zero (see
+        // `extra_state_update`), so there is no velocity/attitude correction for it to fold in,
+        // and setting the flag would change what recentring does with the mean the predict
+        // step left there. The extra states' own mean is folded in unconditionally.
+        //
+        // A particle whose residual is not finite -- one that has wandered off the map, where
+        // the model predicts NaN -- has just been given zero weight, and says nothing about the
+        // bias. Its estimate must be left alone rather than stepped: `K * NaN` is NaN even
+        // through the gain's zero rows, and recentring would then carry it into the nominal
+        // whatever its weight, since `0 * NaN` is NaN too. That is exactly how the first real
+        // run of this update died, part way off the edge of its map. If no particle scored a
+        // usable residual the fix carried no information, so the covariance is left alone as
+        // well; otherwise every particle takes the same posterior covariance (#268).
+        if let Some(update) = &extra_update {
+            let is_usable =
+                |residual: &DVector<f64>| residual.iter().all(|value| value.is_finite());
+            if residuals.iter().any(is_usable) {
+                for (particle, residual) in self.particles.iter_mut().zip(&residuals) {
+                    if is_usable(residual) {
+                        particle.linear_state += &update.gain * residual;
+                    }
+                    particle.linear_cov.clone_from(&update.posterior_covariance);
+                }
+            }
+        }
+
         if self.config.recenter_after_update {
             self.recenter_errors()?;
         }
 
         self.maybe_resample();
         Ok(())
+    }
+
+    /// The Kalman half of an update that observes extra states, or `None` if it observes none.
+    ///
+    /// Which extra states a measurement observes is read off its own Jacobian, evaluated at the
+    /// ensemble mean and restricted to the extra-state columns. Evaluating once at the mean is
+    /// exact for a measurement linear in those states, which a map bias is: it enters the
+    /// prediction additively, with a column of exactly 1.0. Only those columns are taken. A
+    /// generic measurement's sensitivity to velocity or attitude is not used here -- those
+    /// states have their own update paths in [`Self::update_with`] -- so no navigation
+    /// measurement's handling changes.
+    ///
+    /// Everything returned is shared by the whole cloud. The gain depends only on `H`, `R` and
+    /// the conditional covariance, and the conditional covariance is identical across
+    /// particles (#268), so it is computed once rather than per particle, as the predict step's
+    /// recursion is. The first particle's covariance stands for all of them.
+    ///
+    /// The gain's velocity and attitude rows come out exactly zero. `H` has no columns there,
+    /// and the extra block's cross-covariance with velocity and attitude is structurally zero
+    /// (see the note on `q_l` in [`Self::predict_sample`]), so `P H^T` has nothing in those
+    /// rows either. A map update therefore moves the bias and nothing else.
+    ///
+    /// # Errors
+    /// Propagated from the measurement's Jacobian -- chiefly a geophysical model whose
+    /// ensemble mean has left its map, which the gate will already have reported -- and
+    /// [`StrapdownError::SingularMatrix`] if the marginal innovation covariance cannot be
+    /// inverted, which needs both a zero measurement noise and a zero bias variance.
+    fn extra_state_update<M: MeasurementModel + ?Sized>(
+        &self,
+        measurement: &M,
+    ) -> Result<Option<ExtraStateUpdate>, StrapdownError> {
+        let extra_dim = self.config.extra_state_dim;
+        let Some(first) = self.particles.first() else {
+            return Ok(None);
+        };
+        if extra_dim == 0 {
+            return Ok(None);
+        }
+
+        let (mean, _) = self.estimate_with_extra_states();
+        let jacobian = expand_measurement_jacobian(measurement.get_jacobian(&mean)?, mean.len())?;
+        let linear_dim = self.linear_state_dim();
+        let mut h = DMatrix::<f64>::zeros(jacobian.nrows(), linear_dim);
+        for row in 0..jacobian.nrows() {
+            for extra in 0..extra_dim {
+                h[(row, LINEAR_STATE_DIM_BASE + extra)] =
+                    jacobian[(row, NAVIGATION_STATE_DIM + extra)];
+            }
+        }
+        if h.iter().all(|entry| *entry == 0.0) {
+            return Ok(None);
+        }
+
+        let covariance = &first.linear_cov;
+        let innovation_covariance =
+            symmetrize(&(&h * covariance * h.transpose() + measurement.get_noise()));
+        let inverse = innovation_covariance.clone().try_inverse().ok_or_else(|| {
+            StrapdownError::SingularMatrix {
+                what: "RBPF extra-state innovation covariance",
+                dim: innovation_covariance.nrows(),
+            }
+        })?;
+        let gain = covariance * h.transpose() * inverse;
+        let identity = DMatrix::<f64>::identity(linear_dim, linear_dim);
+        let posterior_covariance = symmetrize(&((identity - &gain * &h) * covariance));
+        Ok(Some(ExtraStateUpdate {
+            innovation_covariance,
+            gain,
+            posterior_covariance,
+        }))
     }
 
     fn update_linear_state(&mut self, residual: &DVector<f64>, h: &DMatrix<f64>, r: &DMatrix<f64>) {
@@ -1679,6 +1918,76 @@ mod tests {
         }
     }
 
+    /// Velocity and attitude report their conditional covariance, not just the particles'
+    /// spread.
+    ///
+    /// Fresh from `new`, every particle holds the same velocity and attitude estimate, so the
+    /// spread is zero and the whole prior is conditional. `estimate` reported exactly that zero
+    /// until the law-of-total-covariance fix -- a filter just told its velocity was uncertain to
+    /// 1.5 m/s claimed to know it exactly -- and the ensemble gate scored GNSS velocity and
+    /// heading fixes against it.
+    #[test]
+    fn rbpf_reports_the_conditional_velocity_and_attitude_covariance() {
+        const VELOCITY_INIT_STD: f64 = 1.5;
+        const ATTITUDE_INIT_STD: f64 = 0.2;
+        const EAST_VELOCITY: usize = 1;
+
+        let mut rbpf = RaoBlackwellizedParticleFilter::new(
+            spread_test_nominal_state(),
+            RbpfConfig {
+                num_particles: 300,
+                velocity_init_std_mps: VELOCITY_INIT_STD,
+                attitude_init_std_rad: ATTITUDE_INIT_STD,
+                seed: 12,
+                ..RbpfConfig::default()
+            },
+        )
+        .unwrap();
+
+        let (_, fresh) = rbpf.estimate();
+        for (axis, attitude) in ATTITUDE_STATE_INDICES.into_iter().enumerate() {
+            let velocity = POSITION_STATE_DIM + axis;
+            assert_approx_eq!(fresh[(velocity, velocity)], VELOCITY_INIT_STD.powi(2), 1e-9);
+            assert_approx_eq!(fresh[(attitude, attitude)], ATTITUDE_INIT_STD.powi(2), 1e-9);
+        }
+
+        // Spread the east-velocity estimates and skew the weights, so both halves are non-zero
+        // and a plain mean is not the weighted one; the expectation is computed off the
+        // particles rather than by the code under test.
+        let mut total = 0.0;
+        for (i, particle) in rbpf.particles.iter_mut().enumerate() {
+            particle.weight = 1.0 + (i % 4) as f64;
+            total += particle.weight;
+            particle.linear_state[EAST_VELOCITY] = 0.5 * ((i % 5) as f64 - 2.0);
+        }
+        for particle in &mut rbpf.particles {
+            particle.weight /= total;
+        }
+        let mean: f64 = rbpf
+            .particles
+            .iter()
+            .map(|p| p.weight * p.linear_state[EAST_VELOCITY])
+            .sum();
+        let spread: f64 = rbpf
+            .particles
+            .iter()
+            .map(|p| p.weight * (p.linear_state[EAST_VELOCITY] - mean).powi(2))
+            .sum();
+        let conditional: f64 = rbpf
+            .particles
+            .iter()
+            .map(|p| p.weight * p.linear_cov[(EAST_VELOCITY, EAST_VELOCITY)])
+            .sum();
+
+        let (_, covariance) = rbpf.estimate();
+        let east = POSITION_STATE_DIM + EAST_VELOCITY;
+        assert_approx_eq!(covariance[(east, east)], spread + conditional, 1e-9);
+        assert!(
+            spread > 0.0 && conditional > 0.0,
+            "both halves must be exercised: spread {spread}, conditional {conditional}"
+        );
+    }
+
     /// Process noise accumulates with elapsed time, not with the log's sample rate (#331).
     ///
     /// `position_process_noise_std_m` names a continuous-time random walk, which accumulates
@@ -1767,20 +2076,36 @@ mod tests {
         )
     }
 
-    /// Propagate a cloud carrying one extra state and report the weighted spread of it.
+    /// Propagate a filter carrying one extra state and report the variance it reports for it.
     ///
-    /// `extra_state_init_std` is zero on purpose: the per-particle draw in `predict_sample`
-    /// is then the *only* thing that can move the particles apart in that dimension, so the
-    /// variance this returns is attributable to it and to nothing else.
+    /// The prior is zero on purpose, so the random walk is the only thing that can put
+    /// uncertainty into that state and the variance this returns is attributable to it alone.
     fn propagated_extra_state_variance(steps: usize, dt: f64, process_std: f64) -> f64 {
+        let (rbpf, _) = propagated_extra_state_filter(steps, dt, process_std);
+        let (_, covariance) = rbpf.estimate_with_extra_states();
+        covariance[(
+            crate::sim::PARTICLE_FILTER_STATES,
+            crate::sim::PARTICLE_FILTER_STATES,
+        )]
+    }
+
+    /// The filter behind [`propagated_extra_state_variance`], after `steps` predictions of `dt`,
+    /// with the particle count it was built with.
+    fn propagated_extra_state_filter(
+        steps: usize,
+        dt: f64,
+        process_std: f64,
+    ) -> (RaoBlackwellizedParticleFilter, usize) {
+        const PARTICLES: usize = 256;
         let gravity = earth::gravity(&SPREAD_TEST_LATITUDE_DEG, &SPREAD_TEST_ALTITUDE_M);
         let mut rbpf = RaoBlackwellizedParticleFilter::new(
             spread_test_nominal_state(),
             RbpfConfig {
-                num_particles: 20_000,
+                num_particles: PARTICLES,
                 extra_state_dim: 1,
-                extra_state_init_std: 0.0,
-                extra_state_process_noise_std: process_std,
+                extra_state_initial: vec![0.0],
+                extra_state_init_std: vec![0.0],
+                extra_state_process_noise_std: vec![process_std],
                 position_process_noise_std_m: Vector3::new(1e-9, 1e-9, 1e-9),
                 velocity_process_noise_std_mps: 0.0,
                 attitude_process_noise_std_rad: 0.0,
@@ -1797,92 +2122,73 @@ mod tests {
         for _ in 0..steps {
             rbpf.predict(&imu, dt).unwrap();
         }
-        let (_, covariance) = rbpf.estimate_with_extra_states();
-        covariance[(
-            crate::sim::PARTICLE_FILTER_STATES,
-            crate::sim::PARTICLE_FILTER_STATES,
-        )]
+        (rbpf, PARTICLES)
     }
 
-    /// The extra-state process noise is applied **once**, and through the cloud (#382).
+    /// The extra-state random walk is applied **once** (#382), and exactly.
     ///
-    /// This is the assertion that separates the two readings #382 could not choose between,
-    /// and it had to be written from scratch: before it, `strapdown-core` had no test that
-    /// ran `predict` with `extra_state_dim > 0` at all -- every extra-state test mutated
-    /// particles by hand, and the one gated RBPF scenario runs at `extra_state_dim: 0`, so
-    /// the deleted `q_l` line never executed anywhere the suite could see it.
-    ///
-    /// The reported variance must be `std^2 * elapsed`, not `2 std^2 * elapsed` (which is
-    /// what a live second application would give) and not zero.
+    /// The reported variance must be `std^2 * elapsed`: not twice that, which a second
+    /// application would give, and not zero. It used to be a per-particle draw, and this could
+    /// only be checked to 10% against the sampling noise of 20,000 particles. In the conditional
+    /// covariance it is deterministic, so the bound is the `1e-9` per step of conditioning
+    /// jitter `predict_sample` adds to the diagonal -- 4e-7 against the 1.0 expected here.
     #[test]
-    fn rbpf_extra_state_process_noise_is_applied_once_through_the_cloud() {
+    fn rbpf_extra_state_process_noise_is_applied_once() {
         const STD: f64 = 0.5;
         const ELAPSED_S: f64 = 4.0;
+        const STEPS: usize = 400;
 
-        let measured = propagated_extra_state_variance(400, ELAPSED_S / 400.0, STD);
+        let measured = propagated_extra_state_variance(STEPS, ELAPSED_S / STEPS as f64, STD);
         let expected = STD * STD * ELAPSED_S;
 
         assert!(
-            (measured - expected).abs() / expected < 0.1,
-            "extra-state variance {measured:.6} against an expected {expected:.6}; \
-             {:.2}x -- 2x would mean the noise is applied twice, 0 that it is applied never",
+            (measured - expected).abs() <= STEPS as f64 * 1e-9 * 1.5,
+            "extra-state variance {measured:.9} against an expected {expected:.9}; \
+             {:.4}x -- 2x would mean the noise is applied twice, 0 that it is applied never",
             measured / expected
         );
     }
 
-    /// The removed write stays removed.
+    /// The random walk lives in the conditional covariance, and the particles do not spread.
     ///
-    /// Deleting the `q_l` entry is bit-identical -- that is the whole argument for deleting
-    /// it -- so no accuracy test can notice if it comes back. This can: `linear_cov`'s extra
-    /// diagonal must not accumulate process noise, because nothing would ever read it if it
-    /// did. Without this, a future change could silently restore the dead write and every
-    /// other test in the tree would stay green.
-    ///
-    /// The `1e-9` tolerance is not slack: `p_new[(i, i)] += 1e-9` runs over the whole
-    /// diagonal, extras included, so the block creeps by exactly that per step from the
-    /// conditioning jitter. The bound is `steps * 1e-9` plus a little, and the quantity it
-    /// excludes -- `std^2 * elapsed` = 1.0 here -- is nine orders larger.
+    /// The other side of #382. There the extra states were importance-sampled, so their noise
+    /// had to be a per-particle draw on the mean and a `q_l` entry was a dead write. Now they
+    /// are Rao-Blackwellised and it is the reverse: the draw is gone, `linear_cov` carries the
+    /// walk, and every particle's estimate stays exactly where it started. A draw coming back
+    /// alongside the `q_l` entry -- the double application #382 warned about -- shows up here
+    /// as a spread, and as twice the variance in the test above.
     #[test]
-    fn the_extra_states_take_no_entry_in_the_conditional_covariance() {
+    fn the_extra_state_random_walk_lives_in_the_conditional_covariance() {
+        const STD: f64 = 0.5;
+        const ELAPSED_S: f64 = 4.0;
         const STEPS: usize = 400;
-        let gravity = earth::gravity(&SPREAD_TEST_LATITUDE_DEG, &SPREAD_TEST_ALTITUDE_M);
-        let mut rbpf = RaoBlackwellizedParticleFilter::new(
-            spread_test_nominal_state(),
-            RbpfConfig {
-                num_particles: 64,
-                extra_state_dim: 1,
-                extra_state_init_std: 0.0,
-                extra_state_process_noise_std: 0.5,
-                zero_vertical_velocity: false,
-                seed: 382,
-                ..RbpfConfig::default()
-            },
-        )
-        .unwrap();
-        let imu = IMUData {
-            accel: Vector3::new(0.0, 0.0, gravity),
-            gyro: Vector3::zeros(),
-        };
-        for _ in 0..STEPS {
-            rbpf.predict(&imu, 0.01).unwrap();
-        }
+
+        let (rbpf, particles) = propagated_extra_state_filter(STEPS, ELAPSED_S / STEPS as f64, STD);
+        assert_eq!(rbpf.particles.len(), particles);
 
         let extra = LINEAR_STATE_DIM_BASE;
         let accumulated = rbpf.particles[0].linear_cov[(extra, extra)];
-        let jitter_ceiling = STEPS as f64 * 1e-9 * 1.5;
+        let expected = STD * STD * ELAPSED_S;
         assert!(
-            accumulated < jitter_ceiling,
-            "linear_cov[({extra},{extra})] reached {accumulated:e} against a jitter ceiling \
-             of {jitter_ceiling:e}; the dead `q_l` entry has been restored -- it would have \
-             accumulated std^2 * elapsed = 1.0 here, and nothing reads it (#382)"
+            (accumulated - expected).abs() <= STEPS as f64 * 1e-9 * 1.5,
+            "linear_cov[({extra},{extra})] is {accumulated:.9} after {ELAPSED_S} s of a \
+             {STD}/sqrt(s) walk; expected {expected:.9}"
         );
+        for (i, particle) in rbpf.particles.iter().enumerate() {
+            assert!(
+                particle.linear_state[extra] == 0.0,
+                "particle {i}'s extra-state estimate moved to {:e} in a predict step with \
+                 nothing to observe it; a per-particle draw is back",
+                particle.linear_state[extra]
+            );
+        }
     }
 
     /// ...and it scales with elapsed time rather than with sample count (#374, #382).
     ///
     /// The property `rbpf_process_noise_depends_on_elapsed_time_not_sample_rate` pins for the
     /// position block, which the extra states never had. A decade of sample rate must not
-    /// change the answer.
+    /// change the answer beyond the per-step conditioning jitter.
     #[test]
     fn rbpf_extra_state_noise_depends_on_elapsed_time_not_sample_rate() {
         const STD: f64 = 0.5;
@@ -1891,31 +2197,25 @@ mod tests {
         let slow = propagated_extra_state_variance(40, 0.1, STD);
 
         assert!(
-            (fast - slow).abs() / fast < 0.1,
-            "4 s of propagation gave {fast:.6} at 100 Hz and {slow:.6} at 10 Hz; a ratio \
+            (fast - slow).abs() / fast < 1e-5,
+            "4 s of propagation gave {fast:.9} at 100 Hz and {slow:.9} at 10 Hz; a ratio \
              away from 1 means the variance is a function of the log's sample rate"
         );
     }
 
-    /// The structural claim the whole of #382 rests on, asserted rather than argued.
+    /// The extra states stay decoupled from the velocity and attitude block.
     ///
-    /// The `q_l` entry was removed because `linear_cov`'s extra block is *unreachable*: no
-    /// Kalman gain touches those rows, so anything written there is never read. That argument
-    /// is a proof about the code, and proofs about code rot. This pins the invariant it
-    /// depends on: that no `h` reaching `update_linear_state` has a non-zero extra-state
-    /// column. Two assertions are needed to cover that, because either one alone has a blind
-    /// spot:
+    /// The Rao-Blackwellised extra-state update depends on it. It reads its gain off the
+    /// conditional covariance, and with the extra block's cross-covariance at zero that gain
+    /// has zero velocity and attitude rows: a map fix moves the bias and nothing else. The same
+    /// structure keeps a GNSS fix, whose `h` has no extra-state column, from touching the bias.
+    /// So this checks both directions:
     ///
-    /// - the (extra, base) cross-block stays exactly zero, which catches an `h` observing an
-    ///   extra state *together with* a Kalman state; but
-    /// - an `h` observing an extra state and nothing else leaves those cross terms at zero
-    ///   while still reading `linear_cov[(extra, extra)]` through `s` and shrinking it through
-    ///   `(I - K H)`. So the extra diagonal is captured before the update and required to come
-    ///   through it bit-identical.
-    ///
-    /// Either failing means someone has routed a non-zero extra column into
-    /// `update_linear_state`, and the comment at the draw says what to do about it: move the
-    /// noise back into `q_l`, do not add it alongside.
+    /// - across a GNSS position and velocity update, the (extra, base) cross-block stays
+    ///   exactly zero and the extra diagonal comes through bit-identical;
+    /// - across a map-bias update, the cross-block stays exactly zero, the velocity and
+    ///   attitude block comes through bit-identical, and the extra diagonal it observes
+    ///   shrinks.
     #[test]
     fn the_extra_states_stay_decoupled_from_the_kalman_block() {
         let mut rbpf = rbpf_with_extra_states(2, 4242);
@@ -1931,7 +2231,7 @@ mod tests {
             width > LINEAR_STATE_DIM_BASE,
             "no extra states, so the loops below would assert nothing"
         );
-        let before_update: Vec<f64> = (LINEAR_STATE_DIM_BASE..width)
+        let before_gnss: Vec<f64> = (LINEAR_STATE_DIM_BASE..width)
             .map(|extra| rbpf.particles[0].linear_cov[(extra, extra)])
             .collect();
 
@@ -1947,27 +2247,56 @@ mod tests {
         })
         .unwrap();
 
+        assert_extra_block_is_decoupled(&rbpf.particles[0].linear_cov, "a GNSS update");
+        for (extra, before) in (LINEAR_STATE_DIM_BASE..width).zip(before_gnss) {
+            let after = rbpf.particles[0].linear_cov[(extra, extra)];
+            assert!(
+                after == before,
+                "linear_cov[({extra},{extra})] went {before:e} -> {after:e} across a GNSS \
+                 update, whose `h` has no extra-state column"
+            );
+        }
+
+        // A fix on the last extra state, the way a map model declares its bias.
+        let base_before = rbpf.particles[0]
+            .linear_cov
+            .view((0, 0), (LINEAR_STATE_DIM_BASE, LINEAR_STATE_DIM_BASE))
+            .into_owned();
+        let observed = width - 1;
+        let observed_before = rbpf.particles[0].linear_cov[(observed, observed)];
+        rbpf.update(&BiasedAltitudeMeasurement::new(100.0, Some(1)))
+            .unwrap();
+
         let covariance = &rbpf.particles[0].linear_cov;
-        for extra in LINEAR_STATE_DIM_BASE..width {
+        assert_extra_block_is_decoupled(covariance, "a map-bias update");
+        assert_eq!(
+            covariance
+                .view((0, 0), (LINEAR_STATE_DIM_BASE, LINEAR_STATE_DIM_BASE))
+                .into_owned(),
+            base_before,
+            "a map-bias update changed the velocity/attitude covariance; its gain has \
+             acquired non-zero velocity or attitude rows"
+        );
+        assert!(
+            covariance[(observed, observed)] < observed_before,
+            "the observed extra state's variance went {observed_before:e} -> {:e}; a map fix \
+             must shrink the variance of the bias it observes",
+            covariance[(observed, observed)]
+        );
+    }
+
+    /// Assert that `covariance`'s (extra, base) cross-block is exactly zero, after `what`.
+    fn assert_extra_block_is_decoupled(covariance: &DMatrix<f64>, what: &str) {
+        for extra in LINEAR_STATE_DIM_BASE..covariance.nrows() {
             for base in 0..LINEAR_STATE_DIM_BASE {
                 assert!(
                     covariance[(extra, base)] == 0.0 && covariance[(base, extra)] == 0.0,
-                    "linear_cov[({extra},{base})] = {:e} -- the extra states have acquired a \
-                     cross-covariance with the Kalman block, so #382's premise that their \
-                     covariance entry is unreachable no longer holds",
+                    "linear_cov[({extra},{base})] = {:e} after {what} -- the extra states have \
+                     acquired a cross-covariance with velocity and attitude, so a map fix would \
+                     now move those too",
                     covariance[(extra, base)]
                 );
             }
-        }
-        for (extra, before) in (LINEAR_STATE_DIM_BASE..width).zip(before_update) {
-            let after = covariance[(extra, extra)];
-            assert!(
-                after == before,
-                "linear_cov[({extra},{extra})] went {before:e} -> {after:e} across the linear \
-                 update. `h` has acquired a non-zero extra-state column, so the Kalman \
-                 recursion now reads that entry even though the cross-block above is still \
-                 zero -- #382's premise that it is unreachable no longer holds"
-            );
         }
     }
 
@@ -2049,11 +2378,16 @@ mod tests {
     ///
     /// The regression: `estimate` is a nine-state summary, so with extra states configured it
     /// silently drops exactly the quantity geophysical aiding exists to produce. Asserted
-    /// against moments computed straight off the cloud, so the estimator has to agree with
-    /// the particles rather than merely with itself.
+    /// against moments computed straight off the particles, so the estimator has to agree with
+    /// them rather than merely with itself.
+    ///
+    /// The variance is the law of total covariance: the weighted spread of the particles'
+    /// estimates *plus* their conditional variance. The spread alone would report a freshly
+    /// seeded bias -- every particle holding the same estimate -- as known exactly.
     #[test]
     fn rbpf_estimate_with_extra_states_reports_the_extra_states_and_their_variance() {
-        const EXTRA_INIT_STD: f64 = 3.0;
+        const EXTRA_INIT_STD: [f64; 2] = [3.0, 40.0];
+        const SEED: [f64; 2] = [635.0, -17_500.0];
 
         let nominal = StrapdownState {
             latitude: 0.7,
@@ -2066,19 +2400,36 @@ mod tests {
             RbpfConfig {
                 num_particles: 400,
                 extra_state_dim: 2,
-                extra_state_init_std: EXTRA_INIT_STD,
+                extra_state_initial: SEED.to_vec(),
+                extra_state_init_std: EXTRA_INIT_STD.to_vec(),
+                extra_state_process_noise_std: vec![0.0; 2],
                 seed: 7,
                 ..RbpfConfig::default()
             },
         )
         .unwrap();
-        // Skew the weights so a weighted mean is not the same number as a plain one; an
-        // unweighted implementation would otherwise pass this by coincidence.
+
+        // Freshly built: every particle holds the seed, and the prior is all conditional.
+        let (seeded_mean, seeded_cov) = rbpf.estimate_with_extra_states();
+        for extra in 0..2 {
+            assert_approx_eq!(seeded_mean[9 + extra], SEED[extra], 1e-9);
+            assert_approx_eq!(
+                seeded_cov[(9 + extra, 9 + extra)],
+                EXTRA_INIT_STD[extra].powi(2),
+                1e-9
+            );
+        }
+
+        // Spread the estimates and skew the weights, so the spread term is non-zero and a
+        // weighted mean is not the same number as a plain one; an unweighted implementation
+        // would otherwise pass this by coincidence.
         let count = rbpf.particles.len();
         let mut total = 0.0;
         for (i, particle) in rbpf.particles.iter_mut().enumerate() {
             particle.weight = 1.0 + (i % 5) as f64;
             total += particle.weight;
+            particle.linear_state[LINEAR_STATE_DIM_BASE] = (i % 7) as f64 - 3.0;
+            particle.linear_state[LINEAR_STATE_DIM_BASE + 1] = 10.0 * ((i % 3) as f64 - 1.0);
         }
         for particle in &mut rbpf.particles {
             particle.weight /= total;
@@ -2106,28 +2457,35 @@ mod tests {
             assert_approx_eq!(full_cov[(i, i)], nav_cov[(i, i)], 1e-12);
         }
 
-        // Moments of the cloud, computed here rather than by the code under test.
+        // Moments of the particles, computed here rather than by the code under test.
         for extra in 0..2 {
             let row = LINEAR_STATE_DIM_BASE + extra;
-            let expected_mean: f64 = rbpf
+            let expected_error_mean: f64 = rbpf
                 .particles
                 .iter()
                 .map(|p| p.weight * p.linear_state[row])
                 .sum();
-            let expected_var: f64 = rbpf
+            let spread: f64 = rbpf
                 .particles
                 .iter()
-                .map(|p| p.weight * (p.linear_state[row] - expected_mean).powi(2))
+                .map(|p| p.weight * (p.linear_state[row] - expected_error_mean).powi(2))
+                .sum();
+            let conditional: f64 = rbpf
+                .particles
+                .iter()
+                .map(|p| p.weight * p.linear_cov[(row, row)])
                 .sum();
 
-            assert_approx_eq!(full_mean[9 + extra], expected_mean, 1e-12);
-            assert_approx_eq!(full_cov[(9 + extra, 9 + extra)], expected_var, 1e-12);
-            // A bias reported without an uncertainty is not usable, and a variance that came
-            // out as zero would mean the draw never happened.
+            assert_approx_eq!(
+                full_mean[9 + extra],
+                SEED[extra] + expected_error_mean,
+                1e-9
+            );
+            assert_approx_eq!(full_cov[(9 + extra, 9 + extra)], spread + conditional, 1e-9);
             assert!(
-                full_cov[(9 + extra, 9 + extra)] > 0.0,
-                "extra state {extra} reported a zero variance over {count} particles drawn \
-                 with sigma {EXTRA_INIT_STD}"
+                spread > 0.0 && conditional > 0.0,
+                "extra state {extra}: both halves of the variance must be exercised over \
+                 {count} particles, got spread {spread} and conditional {conditional}"
             );
         }
     }
@@ -2202,9 +2560,11 @@ mod tests {
         );
         // pi + (-0.1 + 0.3)/2 = pi + 0.1, wrapped.
         assert_approx_eq!(yaw, crate::wrap_to_pi(std::f64::consts::PI + 0.1), 1e-12);
-        // The spread is 0.4 rad, so the variance is (0.2)^2 -- not the ~pi^2 an unwrapped
-        // difference against the mean would report.
-        assert_approx_eq!(cov[(8, 8)], 0.04, 1e-12);
+        // The spread is 0.4 rad, so its variance is (0.2)^2 -- not the ~pi^2 an unwrapped
+        // difference against the mean would report. The conditional yaw variance, the prior
+        // both particles still hold, is added to it: the law of total covariance.
+        let conditional = RbpfConfig::default().attitude_init_std_rad.powi(2);
+        assert_approx_eq!(cov[(8, 8)], 0.04 + conditional, 1e-12);
     }
 
     /// A tight cloud must be unaffected by averaging on the circle rather than the line.
@@ -2467,6 +2827,43 @@ mod tests {
         }
     }
 
+    /// [`BiasedAltitudeMeasurement`] with an edge to its map: a particle above `edge_altitude`
+    /// is predicted as NaN, the way a geophysical model predicts for a particle that has left
+    /// its map tile while the ensemble mean has not.
+    #[derive(Debug)]
+    struct EdgedAltitudeMeasurement {
+        inner: BiasedAltitudeMeasurement,
+        edge_altitude: f64,
+    }
+
+    impl MeasurementModel for EdgedAltitudeMeasurement {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+        fn get_dimension(&self) -> usize {
+            1
+        }
+        fn get_measurement(&self, state: &DVector<f64>) -> Result<DVector<f64>, StrapdownError> {
+            self.inner.get_measurement(state)
+        }
+        fn get_noise(&self) -> DMatrix<f64> {
+            self.inner.get_noise()
+        }
+        fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
+            if state[2] > self.edge_altitude {
+                DVector::from_element(1, f64::NAN)
+            } else {
+                self.inner.get_expected_measurement(state)
+            }
+        }
+        fn get_jacobian(&self, state: &DVector<f64>) -> Result<DMatrix<f64>, StrapdownError> {
+            self.inner.get_jacobian(state)
+        }
+    }
+
     fn rbpf_with_extra_states(extra_state_dim: usize, seed: u64) -> RaoBlackwellizedParticleFilter {
         RaoBlackwellizedParticleFilter::new(
             StrapdownState {
@@ -2479,7 +2876,9 @@ mod tests {
             RbpfConfig {
                 num_particles: 256,
                 extra_state_dim,
-                extra_state_init_std: 0.5,
+                extra_state_initial: vec![0.0; extra_state_dim],
+                extra_state_init_std: vec![0.5; extra_state_dim],
+                extra_state_process_noise_std: vec![0.0; extra_state_dim],
                 seed,
                 // Off: the vertical-velocity pseudo-measurement is a linear update and would
                 // only add noise to what these tests are watching.
@@ -2503,7 +2902,7 @@ mod tests {
     fn rbpf_recentring_moves_the_extra_state_mean_onto_its_own_nominal() {
         let mut rbpf = rbpf_with_extra_states(2, 7);
 
-        // A large common offset on top of the initial spread: this is the map bias.
+        // A large common offset on every particle's estimate: this is the map bias.
         for particle in &mut rbpf.particles {
             particle.linear_state[LINEAR_STATE_DIM_BASE] += 25.0;
             particle.linear_state[LINEAR_STATE_DIM_BASE + 1] -= 4.0;
@@ -2564,10 +2963,11 @@ mod tests {
             .iter()
             .map(|p| p.weight * p.linear_state[LINEAR_STATE_DIM_BASE])
             .sum();
-        // Not exactly zero: resampling runs after recentring and redraws the cloud, which
-        // reintroduces a sampling mean of order `extra_state_init_std / sqrt(N)` ~ 0.03.
-        // The bound is generous against that and still two orders below the 12.0 the
-        // un-recentred cloud used to carry.
+        // Not exactly zero: the update's gain step leaves each particle's estimate `K r_i` from
+        // the others -- `r_i` differing with each particle's altitude -- and resampling after
+        // recentring redraws the cloud, reintroducing a sampling mean of that spread over
+        // `sqrt(N)`. The bound is generous against that and still two orders below the 12.0
+        // the un-recentred cloud used to carry.
         assert!(
             cloud_mean.abs() < 0.25,
             "the extra-state cloud should be left ~zero-mean, got {cloud_mean}"
@@ -2590,7 +2990,9 @@ mod tests {
             RbpfConfig {
                 num_particles: 64,
                 extra_state_dim: 1,
-                extra_state_init_std: 0.5,
+                extra_state_initial: vec![0.0],
+                extra_state_init_std: vec![0.5],
+                extra_state_process_noise_std: vec![0.0],
                 recenter_after_update: false,
                 zero_vertical_velocity: false,
                 seed: 3,
@@ -2641,7 +3043,9 @@ mod tests {
             RbpfConfig {
                 num_particles: 128,
                 extra_state_dim: 1,
-                extra_state_init_std: 0.0,
+                extra_state_initial: vec![0.0],
+                extra_state_init_std: vec![0.0],
+                extra_state_process_noise_std: vec![0.0],
                 // A tight cloud, so the innovation below is the bias and not the spread.
                 position_init_std_m: Vector3::new(0.01, 0.01, 0.01),
                 attitude_init_std_rad: 0.0,
@@ -2739,6 +3143,249 @@ mod tests {
             ..Default::default()
         };
         assert!(rbpf.update(&baro).unwrap().accepted);
+    }
+
+    /// A map bias is estimated by the Kalman half of the update, and exactly.
+    ///
+    /// With every particle at the same position every particle scores the same residual, so the
+    /// weights cannot move and the whole update is the conditional one: a scalar Kalman filter
+    /// on a constant, whose posterior after `k` fixes has a closed form,
+    ///
+    /// $$ P_k = \left(P_0^{-1} + k R^{-1}\right)^{-1}, \qquad
+    ///    b_k = P_k \left(P_0^{-1} b_0 + k R^{-1} b^\ast\right). $$
+    ///
+    /// The filter must land on it to rounding. The importance-sampled bias this replaced could
+    /// not: with identical particles its weights were flat too, so a bias outside what the
+    /// cloud had drawn was unreachable however many fixes observed it. The numbers are the
+    /// gravity channel's, as `analyze geostats` measured them: a seed and prior of hundreds of
+    /// mGal, and a truth 230 mGal from the seed.
+    #[test]
+    fn rbpf_map_bias_takes_the_exact_kalman_posterior() {
+        const SEED: f64 = 600.0;
+        const PRIOR_STD: f64 = 230.0;
+        const TRUE_BIAS: f64 = 830.0;
+        const NOISE_STD: f64 = 140.0;
+        const FIXES: usize = 25;
+
+        let mut rbpf = RaoBlackwellizedParticleFilter::new(
+            StrapdownState {
+                latitude: 0.7,
+                longitude: -1.3,
+                altitude: 100.0,
+                is_enu: false,
+                ..StrapdownState::default()
+            },
+            RbpfConfig {
+                num_particles: 64,
+                // A point-mass cloud, so every particle scores the same residual.
+                position_init_std_m: Vector3::new(1e-9, 1e-9, 1e-9),
+                extra_state_dim: 1,
+                extra_state_initial: vec![SEED],
+                extra_state_init_std: vec![PRIOR_STD],
+                extra_state_process_noise_std: vec![0.0],
+                zero_vertical_velocity: false,
+                seed: 17,
+                ..RbpfConfig::default()
+            },
+        )
+        .unwrap();
+        let mut fix = BiasedAltitudeMeasurement::new(100.0 + TRUE_BIAS, Some(1));
+        fix.noise_std = NOISE_STD;
+        for _ in 0..FIXES {
+            assert!(rbpf.update(&fix).unwrap().accepted);
+        }
+
+        let prior_precision = PRIOR_STD.powi(-2);
+        let fix_precision = NOISE_STD.powi(-2);
+        let posterior_variance = 1.0 / (FIXES as f64).mul_add(fix_precision, prior_precision);
+        let posterior_mean = posterior_variance
+            * (prior_precision * SEED + FIXES as f64 * fix_precision * TRUE_BIAS);
+
+        let (mean, covariance) = rbpf.estimate_with_extra_states();
+        assert_approx_eq!(mean[9], posterior_mean, 1e-6);
+        assert_approx_eq!(covariance[(9, 9)], posterior_variance, 1e-6);
+        assert_approx_eq!(rbpf.extra_state_estimate()[0], posterior_mean, 1e-6);
+    }
+
+    /// Particles are weighted by the likelihood with the map bias integrated out.
+    ///
+    /// Two particles that differ only in altitude, scored by a fix on altitude plus a bias whose
+    /// prior is wide. Their weight ratio must be that of `N(r; 0, P + R)`, not `N(r; 0, R)`.
+    /// Weighting by `R` alone treats each particle's bias estimate as exact, and a residual the
+    /// bias has not yet absorbed is then pinned on whatever else distinguishes the particles --
+    /// which on a gravity map included their velocity, through the Eötvös term.
+    #[test]
+    fn rbpf_weights_a_map_fix_by_the_marginal_likelihood() {
+        const PRIOR_STD: f64 = 3.0;
+        const NOISE_STD: f64 = 1.0;
+
+        let mut rbpf = RaoBlackwellizedParticleFilter::new(
+            StrapdownState {
+                latitude: 0.7,
+                longitude: -1.3,
+                altitude: 100.0,
+                is_enu: false,
+                ..StrapdownState::default()
+            },
+            RbpfConfig {
+                num_particles: 2,
+                position_init_std_m: Vector3::new(1e-9, 1e-9, 1e-9),
+                extra_state_dim: 1,
+                extra_state_initial: vec![0.0],
+                extra_state_init_std: vec![PRIOR_STD],
+                extra_state_process_noise_std: vec![0.0],
+                zero_vertical_velocity: false,
+                // Keep both particles in view rather than resampling on the skew.
+                effective_sample_threshold: 0.0,
+                seed: 5,
+                ..RbpfConfig::default()
+            },
+        )
+        .unwrap();
+        rbpf.particles[0].position_error[2] = 1.0;
+        rbpf.particles[1].position_error[2] = -2.0;
+        let mut fix = BiasedAltitudeMeasurement::new(100.0, Some(1));
+        fix.noise_std = NOISE_STD;
+        rbpf.update(&fix).unwrap();
+
+        // Residuals z - (altitude + bias) are -1 and +2.
+        let marginal_variance = PRIOR_STD.mul_add(PRIOR_STD, NOISE_STD * NOISE_STD);
+        let expected_ratio = ((4.0 - 1.0) / (2.0 * marginal_variance)).exp();
+        let r_only_ratio = ((4.0 - 1.0) / (2.0 * NOISE_STD * NOISE_STD)).exp();
+        let ratio = rbpf.particles[0].weight / rbpf.particles[1].weight;
+        assert!(
+            (ratio - expected_ratio).abs() < 1e-6,
+            "weight ratio {ratio:.6}: the marginal likelihood gives {expected_ratio:.6}, and \
+             weighting by R alone would give {r_only_ratio:.6}"
+        );
+    }
+
+    /// A particle that has left the map must not poison the bias update.
+    ///
+    /// A geophysical model predicts NaN for a particle off its map tile, and the weight update
+    /// gives that particle zero weight -- all the importance-sampled bias ever needed. The
+    /// Kalman step is different: `K * NaN` is NaN even through the gain's zero rows, and
+    /// recentring then carries it into the nominal whatever the weight, since `0 * NaN` is NaN.
+    /// The first real run of the Rao-Blackwellised update died exactly this way, on a recording
+    /// whose cloud reached the edge of its map. Two cases:
+    ///
+    /// - some particles off the map: the rest take the update, and nothing goes non-finite;
+    /// - every particle off the map: the fix carried no information, so neither the estimates
+    ///   nor the conditional covariance move.
+    #[test]
+    fn rbpf_bias_update_skips_particles_that_have_left_the_map() {
+        const NOMINAL_ALTITUDE_M: f64 = 100.0;
+        let edge = NOMINAL_ALTITUDE_M + 3.0;
+
+        let mut rbpf = rbpf_with_extra_states(1, 29);
+        let off_map = rbpf
+            .particles
+            .iter()
+            .filter(|p| NOMINAL_ALTITUDE_M + p.position_error[2] > edge)
+            .count();
+        assert!(
+            off_map > 0 && off_map < rbpf.particles.len(),
+            "the setup needs some particles off the map and some on it, got {off_map} of {}",
+            rbpf.particles.len()
+        );
+        let partly = EdgedAltitudeMeasurement {
+            inner: BiasedAltitudeMeasurement::new(NOMINAL_ALTITUDE_M + 2.0, Some(1)),
+            edge_altitude: edge,
+        };
+        rbpf.update(&partly).unwrap();
+        for (i, particle) in rbpf.particles.iter().enumerate() {
+            assert!(
+                particle.linear_state.iter().all(|v| v.is_finite())
+                    && particle.position_error.iter().all(|v| v.is_finite()),
+                "particle {i} went non-finite after a fix {off_map} particles scored off the map"
+            );
+        }
+        let (mean, covariance) = rbpf.estimate_with_extra_states();
+        assert!(
+            mean.iter().chain(covariance.iter()).all(|v| v.is_finite()),
+            "the estimate went non-finite after a fix some particles scored off the map"
+        );
+
+        let mut rbpf = rbpf_with_extra_states(1, 31);
+        let covariance_before = rbpf.particles[0].linear_cov.clone();
+        let nowhere = EdgedAltitudeMeasurement {
+            inner: BiasedAltitudeMeasurement::new(NOMINAL_ALTITUDE_M + 2.0, Some(1)),
+            edge_altitude: f64::NEG_INFINITY,
+        };
+        rbpf.update_weights_generic(&nowhere).unwrap();
+        assert_eq!(
+            rbpf.particles[0].linear_cov, covariance_before,
+            "a fix no particle could score shrank the conditional covariance anyway"
+        );
+        for (i, particle) in rbpf.particles.iter().enumerate() {
+            assert!(
+                particle.linear_state[LINEAR_STATE_DIM_BASE] == 0.0,
+                "particle {i}'s bias estimate moved to {} on a fix no particle could score",
+                particle.linear_state[LINEAR_STATE_DIM_BASE]
+            );
+        }
+    }
+
+    /// The per-state vectors must each hold one entry per extra state, and usable values.
+    ///
+    /// A short vector would leave a state with no prior, and there is no default right in every
+    /// unit; a NaN rate would reach every particle's gain through `q_l`.
+    #[test]
+    fn rbpf_refuses_an_extra_state_description_it_cannot_carry() {
+        let build = |initial: Vec<f64>, init_std: Vec<f64>, rate: Vec<f64>| {
+            RaoBlackwellizedParticleFilter::new(
+                StrapdownState::default(),
+                RbpfConfig {
+                    num_particles: 8,
+                    extra_state_dim: 2,
+                    extra_state_initial: initial,
+                    extra_state_init_std: init_std,
+                    extra_state_process_noise_std: rate,
+                    ..RbpfConfig::default()
+                },
+            )
+        };
+        assert!(build(vec![0.0; 2], vec![1.0; 2], vec![0.1; 2]).is_ok());
+        for (initial, init_std, rate, expected_field) in [
+            (vec![0.0], vec![1.0; 2], vec![0.1; 2], "extra_state_initial"),
+            (
+                vec![0.0; 2],
+                vec![1.0],
+                vec![0.1; 2],
+                "extra_state_init_std",
+            ),
+            (
+                vec![0.0; 2],
+                vec![1.0; 2],
+                vec![0.1; 3],
+                "extra_state_process_noise_std",
+            ),
+            (
+                vec![0.0; 2],
+                vec![1.0, -1.0],
+                vec![0.1; 2],
+                "extra_state_init_std",
+            ),
+            (
+                vec![0.0; 2],
+                vec![1.0; 2],
+                vec![0.1, f64::NAN],
+                "extra_state_process_noise_std",
+            ),
+            (
+                vec![f64::INFINITY, 0.0],
+                vec![1.0; 2],
+                vec![0.1; 2],
+                "extra_state_initial",
+            ),
+        ] {
+            match build(initial, init_std, rate) {
+                Err(StrapdownError::InvalidConfiguration { field, .. }) => {
+                    assert_eq!(field, expected_field);
+                }
+                other => panic!("expected `{expected_field}` to be refused, got {other:?}"),
+            }
+        }
     }
 
     fn run_rbpf_on_scenario(
@@ -3105,7 +3752,9 @@ mod tests {
     /// the particle state, weight, or measurement value -- and every update
     /// applies the same H/R to each particle. All particles start from the
     /// same clone, so they must remain bit-identical forever. This invariant
-    /// is what allows hoisting the recursion out of the per-particle loop.
+    /// is what allows hoisting the recursion out of the per-particle loop, and
+    /// what lets the map-bias update compute one gain for the whole cloud --
+    /// so the filter here carries a map bias and takes map fixes as well.
     #[test]
     fn rbpf_particle_covariances_stay_identical() {
         use crate::measurements::{
@@ -3125,6 +3774,10 @@ mod tests {
         };
         let config = RbpfConfig {
             num_particles: 20,
+            extra_state_dim: 1,
+            extra_state_initial: vec![20.0],
+            extra_state_init_std: vec![5.0],
+            extra_state_process_noise_std: vec![0.1],
             seed: 42,
             ..RbpfConfig::default()
         };
@@ -3133,6 +3786,7 @@ mod tests {
             accel: Vector3::new(0.1, 0.05, 9.81),
             gyro: Vector3::new(0.001, -0.002, 0.0005),
         };
+        let map_fix = BiasedAltitudeMeasurement::new(100.0 + 25.0, Some(1));
         let gps = GPSPositionAndVelocityMeasurement {
             latitude: 0.7,
             longitude: -1.3,
@@ -3163,6 +3817,7 @@ mod tests {
             rbpf.update(&gps).unwrap();
             rbpf.update(&baro).unwrap();
             rbpf.update(&mag).unwrap();
+            rbpf.update(&map_fix).unwrap();
         }
         let reference = rbpf.particles[0].linear_cov.clone();
         for (i, particle) in rbpf.particles.iter().enumerate().skip(1) {

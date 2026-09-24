@@ -535,6 +535,27 @@ pub fn gravitation(latitude: &f64, longitude: &f64, altitude: &f64) -> Vector3<f
 /// at the given latitude and altitude via the Somigliana method. Additionally, this function
 /// compensates for the motion of the platform (if any) using the Eötvös correction.
 ///
+/// $$\Delta g = \left[g_\text{obs} - \gamma(\varphi, h) + E\right] \times 10^5$$
+///
+/// # Both corrections, and which way they go
+///
+/// **Eötvös is added.** A gravimeter carried over the rotating Earth reads the upward specific
+/// force, which falls short of gravity by [`eotvos`]'s $E$ -- the down row of Groves equation
+/// 5.54 -- so the reading is restored by adding $E$ back. This subtracted it until the fix
+/// that added this section, which doubled the motion error rather than removing it: about
+/// 11 mGal per m/s of east velocity at 40 deg N, twice over.
+///
+/// **Normal gravity is taken at the observation height.** [`gravity`] applies the free-air
+/// gradient, so $\gamma(\varphi, h)$ is normal gravity where the reading was made, and the
+/// difference is the free-air anomaly the maps hold. This passed `0.0` for the height until
+/// the same fix, so every observation carried $-0.308$ mGal per metre of altitude: about
+/// $-31$ mGal at 100 m, against map signals of tens of milligal.
+///
+/// $h$ is height above the **ellipsoid**, so strictly this is the gravity disturbance rather
+/// than the classical free-air anomaly, which is referred to the geoid. The two differ by
+/// about $0.3086\,N$ mGal for a geoid undulation of $N$ metres -- near-constant over a
+/// trajectory, and absorbed by a map-bias state.
+///
 /// # Units
 ///
 /// Every input is SI and the **output is milligal**, scaled by [`MGAL_PER_M_PER_S2`]. That
@@ -560,9 +581,8 @@ pub fn gravitation(latitude: &f64, longitude: &f64, altitude: &f64) -> Vector3<f
 /// - `gravity_observed` - The observed gravity from the IMU accelerometer measurements in m/s^2
 ///
 /// # Returns
-/// The local gravity anomaly in **milligal**: the difference between the observed gravity and
-/// the normal gravity at the given latitude and altitude, adjusted for the Eötvös correction and
-/// converted out of $m/s^2$.
+/// The local gravity anomaly in **milligal**: the observed gravity, less normal gravity at the
+/// given latitude and altitude, plus the Eötvös correction, converted out of $m/s^2$.
 pub fn gravity_anomaly(
     latitude: &f64,
     altitude: &f64,
@@ -570,17 +590,30 @@ pub fn gravity_anomaly(
     east_velocity: &f64,
     gravity_observed: &f64,
 ) -> f64 {
-    let normal_gravity: f64 = gravity(latitude, &0.0);
+    let normal_gravity: f64 = gravity(latitude, altitude);
     let eotvos_correction: f64 = eotvos(latitude, altitude, north_velocity, east_velocity);
-    (*gravity_observed - normal_gravity - eotvos_correction) * MGAL_PER_M_PER_S2
+    (*gravity_observed - normal_gravity + eotvos_correction) * MGAL_PER_M_PER_S2
 }
 /// Calculate the Eötvös correction for the local-level frame
 ///
-/// The Eötvös correction accounts for the centrifugal acceleration caused by the vehicle's motion
-/// relative to the Earth's rotation. It depends on the platform's velocity, latitude, and Earth's
-/// angular velocity. The correction is generally added to the observed gravity measurement to
-/// account for this effect. The formula can be complex, involving latitude, velocity components
-/// (East-West), and Earth's rotation rate.
+/// The amount by which a platform moving over the rotating Earth reads *less* than gravity,
+/// in m/s^2, and so the amount [`gravity_anomaly`] adds back to a reading:
+///
+/// $$E = 2\Omega v_E\cos\varphi + \frac{v_N^2}{R_N + h} + \frac{v_E^2}{R_E + h}$$
+///
+/// This is the down row of the Coriolis and transport-rate term
+/// $-(\Omega_{en}^n + 2\Omega_{ie}^n)\,v_{eb}^n$ of Groves equation 5.54, with the transport rate
+/// of equation 5.44, at zero vertical velocity. Eastward motion adds to the Earth's rotation
+/// and raises $E$; any horizontal motion adds the curvature terms.
+///
+/// # Radii
+///
+/// Each curvature term carries the radius of the path it describes: $R_N$, the meridian radius,
+/// for northward motion and $R_E$, the transverse radius, for eastward, each at height $h$ --
+/// the same pair [`transport_rate`] uses. This divided both terms by $R_E\cos\varphi + h$, the
+/// radius of the *parallel*, until the fix that added this section. That is the distance from
+/// the spin axis, not a radius of curvature, and it overstated the curvature terms by
+/// $1/\cos\varphi$: about 30% at 40 deg N, 4 mGal at 30 m/s.
 ///
 /// # Arguments
 /// - `latitude` - The WGS84 latitude in degrees
@@ -591,9 +624,10 @@ pub fn gravity_anomaly(
 /// # Returns
 /// The Eötvös correction in m/s^2
 pub fn eotvos(latitude: &f64, altitude: &f64, north_velocity: &f64, east_velocity: &f64) -> f64 {
-    let (_, _, r_p) = principal_radii(latitude, altitude);
+    let (r_n, r_e, _) = principal_radii(latitude, altitude);
     2.0 * RATE * *east_velocity * latitude.to_radians().cos()
-        + (north_velocity.powi(2) + east_velocity.powi(2)) / r_p
+        + north_velocity.powi(2) / (r_n + *altitude)
+        + east_velocity.powi(2) / (r_e + *altitude)
 }
 
 /// Calculate the Earth rotation rate vector in the local-level frame
@@ -1338,7 +1372,10 @@ mod tests {
         assert_approx_eq!(perturbed - anomaly, 1.0, 1e-6);
     }
 
-    /// The Eötvös correction is applied, and in the same unit as the rest.
+    /// The Eötvös correction is applied, in the same unit as the rest, and **added**: the same
+    /// reading taken on the move says more gravity is there than it does at rest, because a
+    /// moving platform reads low by $E$. This asserted the opposite sign until the fix that
+    /// made `gravity_anomaly` add the correction.
     #[test]
     fn test_gravity_anomaly_eotvos_is_scaled_too() {
         let latitude = 45.0;
@@ -1349,11 +1386,91 @@ mod tests {
         let moving = gravity_anomaly(&latitude, &altitude, &10.0, &5.0, &gravity_observed);
 
         let expected = eotvos(&latitude, &altitude, &10.0, &5.0) * MGAL_PER_M_PER_S2;
-        assert_approx_eq!(still - moving, expected, 1e-9);
+        assert_approx_eq!(moving - still, expected, 1e-9);
         assert!(
             expected > 0.0,
             "eastward motion must raise the Eötvös term, got {expected} mGal"
         );
+    }
+
+    /// A gravimeter on a moving platform, over ground with no anomaly, reports no anomaly.
+    ///
+    /// The reading such a platform takes is normal gravity *at its height* less the Eötvös
+    /// term (the down row of Groves equation 5.54). Before the fix both halves were wrong:
+    /// normal gravity was taken on the ellipsoid, and Eötvös was subtracted from a reading
+    /// already short by it. This case read -707 mGal of anomaly that was not there: -77 from
+    /// the ellipsoid reference, and the 313 mGal Eötvös term counted twice.
+    #[test]
+    fn a_moving_gravimeter_over_normal_gravity_reports_no_anomaly() {
+        let latitude = 40.2;
+        let altitude = 250.0;
+        let (north_velocity, east_velocity) = (-8.0, 27.0);
+        let reading = super::gravity(&latitude, &altitude)
+            - eotvos(&latitude, &altitude, &north_velocity, &east_velocity);
+
+        let anomaly = gravity_anomaly(
+            &latitude,
+            &altitude,
+            &north_velocity,
+            &east_velocity,
+            &reading,
+        );
+
+        assert_approx_eq!(anomaly, 0.0, 1e-9);
+    }
+
+    /// Normal gravity is referred to the observation height: a reading that follows the
+    /// free-air gradient up a hill is the same anomaly all the way up.
+    ///
+    /// It was taken at the ellipsoid, so this read 25, -283 and -591 mGal at the three heights.
+    #[test]
+    fn gravity_anomaly_refers_normal_gravity_to_the_observation_height() {
+        let latitude = 40.2;
+        let planted_mgal = 25.0;
+        for altitude in [0.0, 1000.0, 2000.0] {
+            let reading = super::gravity(&latitude, &altitude) + planted_mgal / MGAL_PER_M_PER_S2;
+            let anomaly = gravity_anomaly(&latitude, &altitude, &0.0, &0.0, &reading);
+            assert_approx_eq!(anomaly, planted_mgal, 1e-9);
+        }
+    }
+
+    /// The literal `analysis/geostats.py`'s `self_check` asserts for the same case.
+    ///
+    /// `geostats` re-implements this model in Python to measure the noise and bias the configs
+    /// are seeded with, and a statistic taken through a different formula describes a quantity
+    /// the filter never computes. The two sides used to agree only because both carried the same
+    /// two defects; pinning one number on both sides is what makes a one-sided change fail.
+    #[test]
+    fn eotvos_matches_the_python_mirror() {
+        let correction_mgal = eotvos(&40.05, &100.0, &10.0, &20.0) * MGAL_PER_M_PER_S2;
+        assert_approx_eq!(correction_mgal, 231.114_161, 1e-6);
+    }
+
+    /// [`eotvos`] is the down row of $(\omega_{en}^n + 2\omega_{ie}^n) \times v^n$, built here
+    /// from this module's own [`transport_rate`] (Groves 5.44) and [`earth_rate_lla`] rather than
+    /// from the formula under test.
+    ///
+    /// This is what pins the radii: the term used to divide by $R_E\cos\varphi + h$, the
+    /// radius of the parallel, which is 30% short at these latitudes and fails this by several
+    /// mGal.
+    #[test]
+    fn eotvos_is_the_down_row_of_the_velocity_update() {
+        for (latitude, altitude, north_velocity, east_velocity) in [
+            (40.2, 250.0, 0.0, 30.0),
+            (40.2, 250.0, 30.0, 0.0),
+            (40.2, 250.0, -12.0, -21.0),
+            (5.0, 0.0, 15.0, 25.0),
+            (70.0, 3000.0, 40.0, -35.0),
+        ] {
+            let velocity = Vector3::new(north_velocity, east_velocity, 0.0);
+            let rotation =
+                transport_rate(&latitude, &altitude, &velocity) + 2.0 * earth_rate_lla(&latitude);
+            let down_row = rotation.cross(&velocity)[2];
+
+            let correction = eotvos(&latitude, &altitude, &north_velocity, &east_velocity);
+
+            assert_approx_eq!(correction, down_row, 1e-12);
+        }
     }
 
     #[test]
