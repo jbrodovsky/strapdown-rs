@@ -116,22 +116,36 @@ def save_detailed_results_to_csv(
     df.to_csv(filename, index=False)
 
 
+DEFAULT_LATEX_COLUMNS = [
+    ("rmse", "RMSE Diff (m)"),
+    ("mean", "Mean Diff (m)"),
+    ("median", "Median Diff (m)"),
+]
+
+
 def format_latex_table(
     results: list[tuple[str, dict[str, float]]],
     title: str,
     label: str = "tab:comparison_results",
+    columns: list[tuple[str, str]] | None = None,
 ) -> str:
     """Format comparison results as a LaTeX table.
 
     Parameters
     ----------
     results : List[Tuple[str, Dict[str, float]]]
-        List of (trajectory_name, improvement_stats) tuples where
-        improvement_stats contains 'rmse', 'mean', and 'median' keys.
+        List of (trajectory_name, stats) tuples. Each ``stats`` dict must carry every key
+        named in ``columns``.
     title : str
         Caption/title for the table.
     label : str, optional
         LaTeX label for the table, by default "tab:comparison_results".
+    columns : List[Tuple[str, str]], optional
+        (stats key, column header) pairs defining the table's data columns, in order. Defaults
+        to the RMSE/Mean/Median improvement triple that :func:`compute_improvement_statistics`
+        produces, matching this function's original geophysical-aiding-vs-baseline table.
+        Pass a different set for a table of absolute statistics, e.g. from
+        :func:`compute_error_statistics`.
 
     Returns
     -------
@@ -143,38 +157,34 @@ def format_latex_table(
     The table includes per-trajectory rows plus summary statistics
     (mean, median, std) at the bottom.
     """
+    if columns is None:
+        columns = DEFAULT_LATEX_COLUMNS
+
     lines = []
     lines.append("\\begin{table}[h]")
     lines.append("    \\centering")
     lines.append(f"    \\caption{{{title}}}")
-    lines.append("    \\begin{tabular}{ || l || c c c || }")
+    column_spec = " ".join("c" for _ in columns)
+    lines.append(f"    \\begin{{tabular}}{{ || l || {column_spec} || }}")
     lines.append("    \\toprule")
-    lines.append("    Trajectory Name & RMSE Diff (m) & Mean Diff (m) & Median Diff (m) \\\\")
+    header = " & ".join(header for _, header in columns)
+    lines.append(f"    Trajectory Name & {header} \\\\")
     lines.append("    \\midrule")
 
     # Trajectory rows
     for traj_name, stats in results:
         # Clean up trajectory name (remove file extension, escape underscores)
         clean_name = str(traj_name).replace(".csv", "").replace("_", "\\_")
-        lines.append(
-            f"    {clean_name} & {stats['rmse']:.2f} & {stats['mean']:.2f} & {stats['median']:.2f} \\\\"
-        )
+        values = " & ".join(f"{stats[key]:.2f}" for key, _ in columns)
+        lines.append(f"    {clean_name} & {values} \\\\")
 
-    # Calculate summary statistics
-    rmse_diffs = [s["rmse"] for _, s in results]
-    mean_diffs = [s["mean"] for _, s in results]
-    median_diffs = [s["median"] for _, s in results]
-
+    # Summary statistics, one row per aggregate, over every column
     lines.append("    \\midrule")
-    lines.append(
-        f"    mean & {np.mean(rmse_diffs):.2f} & {np.mean(mean_diffs):.2f} & {np.mean(median_diffs):.2f} \\\\"
-    )
-    lines.append(
-        f"    median & {np.median(rmse_diffs):.2f} & {np.median(mean_diffs):.2f} & {np.median(median_diffs):.2f} \\\\"
-    )
-    lines.append(
-        f"    std & {np.std(rmse_diffs):.2f} & {np.std(mean_diffs):.2f} & {np.std(median_diffs):.2f} \\\\"
-    )
+    for row_name, aggregate in (("mean", np.mean), ("median", np.median), ("std", np.std)):
+        values = " & ".join(
+            f"{aggregate([stats[key] for _, stats in results]):.2f}" for key, _ in columns
+        )
+        lines.append(f"    {row_name} & {values} \\\\")
     lines.append("    \\bottomrule")
     lines.append("    \\end{tabular}")
     lines.append(f"    \\label{{{label}}}")

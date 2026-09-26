@@ -63,14 +63,15 @@ const MICROTESLA_TO_NANOTESLA: f64 = 1000.0;
 /// Navigation states every filter state vector starts with: position, velocity, attitude.
 ///
 /// Anything a filter carries beyond these -- IMU biases, map biases -- is appended after
-/// them, so this is the base a [`GeoBiasLayout`] is measured from for a filter that carries
-/// no IMU bias states, such as the RBPF.
+/// them, so this is the base a [`GeoBiasLayout`] is measured from for a filter that reports no
+/// IMU bias states. Every filter in this workspace reports them, the RBPF included, so in
+/// practice that base is [`NAVIGATION_AND_IMU_BIAS_STATE_DIM`].
 pub const NAVIGATION_STATE_DIM: usize = 9;
 
 /// The nine navigation states plus the six IMU bias states.
 ///
-/// The base a [`GeoBiasLayout`] is measured from for the UKF and EKF, whose state is
-/// `[9 navigation, 3 accelerometer bias, 3 gyroscope bias, ..map biases]`.
+/// The base a [`GeoBiasLayout`] is measured from for the UKF, the EKF and the RBPF, whose
+/// reported state is `[9 navigation, 3 accelerometer bias, 3 gyroscope bias, ..map biases]`.
 pub const NAVIGATION_AND_IMU_BIAS_STATE_DIM: usize = 15;
 
 /// Where a consuming filter carries one geophysical map-bias state.
@@ -96,7 +97,7 @@ pub struct BiasState {
 /// Where a consuming filter carries its geophysical map-bias states, if it carries any.
 ///
 /// Built by whoever knows the filter -- `strapdown-sim` configures an RBPF whose
-/// `extra_state_dim` is exactly these biases, and a UKF whose `other_states` are -- and
+/// `map_bias_channels` are exactly these biases, and a UKF whose `other_states` are -- and
 /// handed to [`build_event_stream`], which stamps it onto every geophysical measurement it
 /// emits. Passing `None` there says the consuming filter carries no map-bias states, and
 /// the measurements then declare none rather than inferring them from which maps happened
@@ -166,9 +167,8 @@ impl GeoBiasLayout {
     /// gravity first -- the convention every filter in this workspace follows.
     ///
     /// `base_state_dim` is the width of the filter's state *before* the map biases:
-    /// [`NAVIGATION_STATE_DIM`] for the RBPF, whose extra states are the map biases and
-    /// which carries no IMU biases, and [`NAVIGATION_AND_IMU_BIAS_STATE_DIM`] for the UKF
-    /// and EKF, whose map biases follow their IMU biases.
+    /// [`NAVIGATION_AND_IMU_BIAS_STATE_DIM`] for the UKF, EKF and RBPF, whose map biases
+    /// follow their IMU biases, and [`NAVIGATION_STATE_DIM`] for a filter reporting none.
     ///
     /// Returns `Ok(None)` when neither map contributes a bias state, which is the "carries
     /// no map biases" case [`build_event_stream`] takes.
@@ -2281,7 +2281,8 @@ mod tests {
             None
         );
 
-        // RBPF: no IMU bias states, so the map biases follow the nine navigation states.
+        // A filter reporting no IMU bias states: the map biases follow the nine navigation
+        // states.
         let both = GeoBiasLayout::appended(NAVIGATION_STATE_DIM, true, true)
             .unwrap()
             .unwrap();

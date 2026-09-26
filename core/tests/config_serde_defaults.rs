@@ -235,6 +235,43 @@ fn the_particle_filters_retired_map_bias_keys_are_refused_by_name() {
     assert_eq!(parsed.num_particles, 10);
 }
 
+/// The keys the Canciani & Raquet restructure retired are refused by name as well.
+///
+/// Position no longer has process noise of its own (eq. 19) and the barometer loop in the
+/// mechanization replaced the zero-vertical-velocity constraint. A config still setting them
+/// would otherwise run a different filter than it describes without a word.
+#[test]
+fn the_particle_filters_restructure_retired_keys_are_refused_by_name() {
+    for (setting, key, replacement) in [
+        (
+            "position_process_noise_std_m = [1.0, 1.0, 1.0]",
+            "position_process_noise_std_m",
+            "horizontal_process_noise_std_m",
+        ),
+        (
+            "zero_vertical_velocity = true",
+            "zero_vertical_velocity",
+            "baro_loop_time_constant_s",
+        ),
+        (
+            "zero_vertical_velocity_std_mps = 0.1",
+            "zero_vertical_velocity_std_mps",
+            "baro_loop_time_constant_s",
+        ),
+    ] {
+        let document = format!(
+            "mode = \"particle-filter\"\n\n[particle_filter]\nnum_particles = 10\n{setting}\n"
+        );
+        let error = toml::from_str::<SimulationConfig>(&document)
+            .expect_err("a retired key must be refused, not dropped")
+            .to_string();
+        assert!(
+            error.contains(key) && error.contains(replacement),
+            "the TOML error must name `{key}` and point at `{replacement}`, got: {error}"
+        );
+    }
+}
+
 /// The shipped default itself, through both construction paths.
 ///
 /// The tests above hold the two paths to the *same* answer; this one pins what that answer is.

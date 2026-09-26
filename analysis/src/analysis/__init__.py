@@ -4,6 +4,7 @@ import os
 os.environ.setdefault("MPLBACKEND", "Agg")
 
 from argparse import ArgumentParser
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -28,6 +29,61 @@ from analysis.preprocess import add_preprocess_arguments, preprocess_data
 # GMT. The two call sites import it where they use it.
 
 __version__ = "0.1.0"
+
+# Recordings are named by their start time, `YYYY-MM-DD_hh-mm-ss`; one split at an IMU gap
+# (see justfile's `preprocess`) shares that timestamp with its siblings and is told apart only
+# by a trailing `_A`/`_B`/... suffix.
+_TRAJECTORY_TIMESTAMP_FORMAT = "%Y-%m-%d_%H-%M-%S"
+_TRAJECTORY_TIMESTAMP_LENGTH = len("2025-01-01_00-00-00")
+
+
+def _trajectory_sort_key(name: str) -> tuple[bool, datetime, str]:
+    """Sort key that orders trajectory names chronologically by their leading timestamp.
+
+    The zero-padded `YYYY-MM-DD_hh-mm-ss` prefix already sorts correctly as a plain string,
+    but parsing it explicitly means an IMU-gap split's `_A`/`_B` suffix (or any other trailing
+    text) only ever breaks a tie between two identical timestamps, rather than by accident
+    affecting the order of two different ones.
+
+    Parameters
+    ----------
+    name : str
+        Trajectory stem, e.g. ``"2025-06-11_20-34-24_A"``.
+
+    Returns
+    -------
+    tuple[bool, datetime, str]
+        A name that does not start with a parseable timestamp sorts after every one that does
+        (the leading `True`), then alphabetically by its full name.
+    """
+    try:
+        timestamp = datetime.strptime(
+            name[:_TRAJECTORY_TIMESTAMP_LENGTH], _TRAJECTORY_TIMESTAMP_FORMAT
+        )
+    except ValueError:
+        return (True, datetime.max, name)
+    return (False, timestamp, name)
+
+
+def sort_trajectory_datasets(datasets: list[Path]) -> list[Path]:
+    """Sort trajectory CSV paths chronologically by their `YYYY-MM-DD_hh-mm-ss` stem.
+
+    `Path.glob` yields filesystem order, not any particular sort, so every table and plot
+    this package produces would otherwise list trajectories in whatever order the directory
+    happened to return them -- different between machines and unrelated to the recordings'
+    actual timeline.
+
+    Parameters
+    ----------
+    datasets : list[Path]
+        Trajectory CSV paths, as returned by :func:`Path.glob`.
+
+    Returns
+    -------
+    list[Path]
+        The same paths, ordered chronologically by :func:`_trajectory_sort_key`.
+    """
+    return sorted(datasets, key=lambda dataset: _trajectory_sort_key(dataset.stem))
 
 
 def read_timeseries(path) -> DataFrame:
@@ -105,6 +161,30 @@ def main() -> None:
     )
     add_preprocess_arguments(preprocess)
 
+    dataset_summary = command.add_parser(
+        "dataset-summary",
+        help="Summarize each trajectory's distance traveled and duration.",
+    )
+    dataset_summary.add_argument(
+        "-i",
+        "--input",
+        type=str,
+        default="data/input",
+        help="Input directory containing the trajectory CSV files.",
+    )
+    dataset_summary.add_argument(
+        "-o",
+        "--output",
+        type=str,
+        default="data/output/dataset_summary",
+        help="Output directory for the summary CSV and LaTeX table.",
+    )
+    dataset_summary.add_argument(
+        "--no-latex",
+        action="store_true",
+        help="Disable LaTeX table generation.",
+    )
+
     performance = command.add_parser(
         "performance", help="Generate performance plots from mechanization results."
     )
@@ -127,6 +207,11 @@ def main() -> None:
         type=str,
         help="Output directory for the performance plots.",
         default="data/output",
+    )
+    performance.add_argument(
+        "--no-latex",
+        action="store_true",
+        help="Disable LaTeX table generation.",
     )
 
     geoperformance = command.add_parser(
@@ -234,6 +319,8 @@ def main() -> None:
 
     if args.command == "preprocess":
         preprocess_data(args)
+    elif args.command == "dataset-summary":
+        dataset_summary_analysis(args)
     elif args.command == "performance":
         performance_analysis(args)
     elif args.command == "geoperformance":
@@ -246,12 +333,91 @@ def main() -> None:
         parser.print_help()
 
 
+def dataset_summary_analysis(args) -> None:
+    """Summarize each trajectory's distance traveled and duration.
+
+    This is the dataset-description table (distinct from `performance_analysis`'s filter
+    accuracy tables): how far and how long each recording ran, independent of any filter or
+    GNSS degradation. It was previously computed ad hoc in an untracked notebook
+    (`data.ipynb`, gitignored) against whatever `data/input` happened to hold at the time, so
+    the numbers were never reproducible from the tracked pipeline.
+
+    Distance is summed only over consecutive GNSS fixes, not consecutive rows: at the 10 Hz
+    rate `just preprocess` writes, nine rows out of ten carry no GNSS fix (see justfile), so a
+    row-to-row haversine would compare a fix against a NaN neighbor nine times out of ten and
+    sum to roughly nothing. Duration instead spans the full recording (first to last row,
+    fixes or not), since it describes how long the recording ran rather than how well it was
+    tracked.
+    """
+    input_path = Path(args.input)
+    output_path = Path(args.output)
+    output_path.mkdir(parents=True, exist_ok=True)
+    generate_latex = not args.no_latex
+
+    datasets = sort_trajectory_datasets(list(input_path.glob("*.csv")))
+    print(f"Found {len(datasets)} datasets in {input_path}.")
+
+    summary_df = DataFrame(
+        columns=["Distance Traversed (km)", "Duration (h)"],
+        index=[dataset.stem for dataset in datasets],  # ty:ignore[invalid-argument-type]
+    )
+    latex_columns = [
+        ("distance_km", "Distance Traversed (km)"),
+        ("duration_h", "Duration (h)"),
+    ]
+    latex_results = []
+
+    for dataset in datasets:
+        frame = read_timeseries(dataset)
+        fixes = frame[["latitude", "longitude"]].dropna()
+        if len(fixes) < 2:
+            print(f"Fewer than two GNSS fixes in {dataset.name}, skipping.")
+            continue
+
+        distance_km = float(
+            np.nansum(
+                haversine_vector(
+                    fixes[["latitude", "longitude"]].to_numpy()[:-1],
+                    fixes[["latitude", "longitude"]].to_numpy()[1:],
+                    Unit.KILOMETERS,
+                )
+            )
+        )
+        duration_h = (frame.index[-1] - frame.index[0]).total_seconds() / 3600.0
+
+        summary_df.loc[dataset.stem] = [distance_km, duration_h]
+        latex_results.append((dataset.stem, {"distance_km": distance_km, "duration_h": duration_h}))
+
+    if not summary_df.empty:
+        summary_df.loc["median"] = summary_df.median()
+        summary_df.loc["mean"] = summary_df.mean()
+
+    summary_file = output_path / "dataset_summary.csv"
+    summary_df.to_csv(summary_file)
+    print(f"Saved dataset summary to {summary_file}")
+
+    if generate_latex and latex_results:
+        latex_table = format_latex_table(
+            latex_results,
+            "Dataset Summary: Distance Traversed and Duration",
+            "tab:dataset_summary",
+            columns=latex_columns,
+        )
+        tex_file = output_path / "dataset_summary_table.tex"
+        with open(tex_file, "w") as f:
+            f.write(latex_table)
+        print(f"Saved LaTeX table to {tex_file}")
+
+    print("Dataset summary completed.")
+
+
 def performance_analysis(args):
-    """Generate performance plots from mechanization results."""
+    """Generate performance plots and a summary table from mechanization results."""
     input_dir = args.processed
+    generate_latex = not args.no_latex
     print(f"Generating performance plots from data in: {input_dir}")
 
-    datasets = list(Path(input_dir).glob("*.csv"))
+    datasets = sort_trajectory_datasets(list(Path(input_dir).glob("*.csv")))
     print(f"Found {len(datasets)} datasets to process.")
 
     print(f"Comparing to reference data in: {args.reference}")
@@ -263,6 +429,16 @@ def performance_analysis(args):
     print(f"Saving performance plots to: {args.output}")
 
     reference_path = Path(args.reference)
+
+    # Per-trajectory RMSE, for the summary LaTeX table. Absolute error against GPS truth, not
+    # a diff against a baseline, so it uses its own column set rather than
+    # compare.DEFAULT_LATEX_COLUMNS (built for the geophysical-aiding-vs-degraded tables).
+    latex_columns = [
+        ("horizontal_rmse", "Horizontal RMSE (m)"),
+        ("vertical_rmse", "Vertical RMSE (m)"),
+        ("3d_rmse", "3D RMSE (m)"),
+    ]
+    latex_results = []
 
     summary_df = DataFrame(
         columns=[
@@ -314,26 +490,60 @@ def performance_analysis(args):
             nav[["latitude", "longitude"]].to_numpy(),
             Unit.METERS,
         )
-        three_d_error = np.sqrt(
-            two_d_error**2 + (gps["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2
-        )
+        vertical_error = gps["altitude"].to_numpy() - nav["altitude"].to_numpy()
+        three_d_error = np.sqrt(two_d_error**2 + vertical_error**2)
+
+        horizontal_rmse = np.sqrt(np.nanmean(two_d_error**2))
+        vertical_rmse = np.sqrt(np.nanmean(vertical_error**2))
+        three_d_rmse = np.sqrt(np.nanmean(three_d_error**2))
+
         summary_df.loc[dataset.stem] = [
             np.nanmin(two_d_error),
             np.nanmax(two_d_error),
             np.nanmean(two_d_error),
-            np.sqrt(np.nanmean(two_d_error**2)),
-            np.nanmin(gps["altitude"].to_numpy() - nav["altitude"].to_numpy()),
-            np.nanmax(gps["altitude"].to_numpy() - nav["altitude"].to_numpy()),
-            np.nanmean(gps["altitude"].to_numpy() - nav["altitude"].to_numpy()),
-            np.sqrt(np.nanmean((gps["altitude"].to_numpy() - nav["altitude"].to_numpy()) ** 2)),
+            horizontal_rmse,
+            np.nanmin(vertical_error),
+            np.nanmax(vertical_error),
+            np.nanmean(vertical_error),
+            vertical_rmse,
             np.nanmin(three_d_error),
             np.nanmax(three_d_error),
             np.nanmean(three_d_error),
-            np.sqrt(np.nanmean(three_d_error**2)),
+            three_d_rmse,
         ]
+        latex_results.append(
+            (
+                dataset.stem,
+                {
+                    "horizontal_rmse": horizontal_rmse,
+                    "vertical_rmse": vertical_rmse,
+                    "3d_rmse": three_d_rmse,
+                },
+            )
+        )
+
+    # Summary statistics rows, matching geophysical_performance_analysis's summary CSV.
+    if not summary_df.empty:
+        summary_df.loc["median"] = summary_df.median()
+        summary_df.loc["mean"] = summary_df.mean()
+        summary_df.loc["std"] = summary_df.std()
 
     summary_file = output_path / "performance_summary.csv"
     summary_df.to_csv(summary_file)
+    print(f"Saved performance summary to {summary_file}")
+
+    if generate_latex and latex_results:
+        table_title = "Navigation Performance Summary (RMSE vs GPS Truth)"
+        table_label = "tab:performance_results"
+        latex_table = format_latex_table(
+            latex_results, table_title, table_label, columns=latex_columns
+        )
+
+        tex_file = output_path / "performance_table.tex"
+        with open(tex_file, "w") as f:
+            f.write(latex_table)
+        print(f"Saved LaTeX table to {tex_file}")
+
     print("Performance analysis completed.")
 
 
@@ -359,7 +569,7 @@ def geophysical_performance_analysis(args):
     print("=" * 80)
     print(f"Geophysical-aided data: {input_dir}")
 
-    datasets = list(Path(input_dir).glob("*.csv"))
+    datasets = sort_trajectory_datasets(list(Path(input_dir).glob("*.csv")))
     print(f"Found {len(datasets)} datasets to process.")
 
     print(f"Reference (truth) data: {args.reference}")
@@ -658,7 +868,7 @@ def compare_filters_analysis(args) -> None:
             print(f"No CSVs found in {input_dir}, skipping {label}.")
             continue
         traj_stats = []
-        for dataset in sorted(datasets):
+        for dataset in sort_trajectory_datasets(datasets):
             try:
                 nav = read_timeseries(dataset)
                 gps = read_timeseries(reference_path / dataset.name)

@@ -15,6 +15,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from analysis.plotting import inflate_bounds, plot_street_map
+from analysis.synthetic import PROVENANCE_FILE, synthesize_geophysical, write_provenance
 
 # pygmt is imported inside `download_maps` rather than here. It dlopens the GMT C library on
 # import, so a module-scope import makes *importing this module* fail on a machine without
@@ -347,7 +348,17 @@ def preprocess_data(args):
     print(f"Preprocessing data from {args.input}. Output will be saved to {args.output}.")
     output_path.mkdir(parents=True, exist_ok=True)
 
+    synthetic = bool(getattr(args, "synthetic", False))
+    if synthetic:
+        # The synthetic readings invert the anomaly models `geostats` mirrors from the Rust.
+        # If the two have drifted apart, every reading would describe a quantity the filter
+        # does not compute -- so check before writing a single one.
+        from analysis.geostats import self_check
+
+        self_check()
+
     manifest: list[dict] = []
+    synthesis: list[dict] = []
 
     # def process_dataset(dataset: Path):
     for dataset in tqdm(datasets):
@@ -383,7 +394,9 @@ def preprocess_data(args):
                     f"  {dataset.name}: segment {segment.label} covers "
                     f"t={segment.start_s:.1f}..{segment.end_s:.1f}s ({len(segment.data)} rows)"
                 )
-            write_segment(segment, dataset.name, output_path, args)
+            record = write_segment(segment, dataset.name, output_path, args)
+            if record is not None:
+                synthesis.append(record)
 
         for segment in segments:
             if segment.status != "kept":
@@ -405,6 +418,18 @@ def preprocess_data(args):
         f"Wrote {written} trajectory file(s) from {len(datasets)} recording(s). "
         f"Per-segment detail in {manifest_path}."
     )
+
+    # Written only by a synthetic run and removed by any other, so its presence always means
+    # the geophysical columns beside it are synthetic -- never that they once were.
+    provenance_path = output_path / PROVENANCE_FILE
+    if synthetic:
+        write_provenance(synthesis, provenance_path, seed=args.synthetic_seed)
+        print(
+            f"Gravity and magnetometer readings are synthetic in all {len(synthesis)} "
+            f"trajectories. Sensor models, seed and per-trajectory draws in {provenance_path}."
+        )
+    else:
+        provenance_path.unlink(missing_ok=True)
     report_orphans(manifest, output_path, prune=args.prune)
 
 
@@ -710,9 +735,14 @@ def inherit_parent_maps(source_name: str, stem: str, output_path: Path) -> None:
             shutil.copyfile(parent, child)
 
 
-def write_segment(segment: Segment, source_name: str, output_path: Path, args) -> None:
+def write_segment(segment: Segment, source_name: str, output_path: Path, args) -> dict | None:
     """
     Write one segment's CSV, street map and -- with `--getmaps` -- its geophysical maps.
+
+    The CSV is written **last**. With `--synthetic` its gravity and magnetometer columns are
+    sampled from the maps, so the maps have to exist first; and a failure on the way -- a
+    download, a missing map -- must not leave behind a CSV still carrying the phone's own
+    readings in a directory whose readings are meant to be synthetic.
 
     Parameters
     ----------
@@ -723,24 +753,57 @@ def write_segment(segment: Segment, source_name: str, output_path: Path, args) -
     output_path : Path
         Directory to write into.
     args
-        Parsed arguments carrying `getmaps` and `buffer`.
+        Parsed arguments carrying `getmaps`, `buffer`, `synthetic` and `synthetic_seed`.
+
+    Returns
+    -------
+    dict | None
+        With `--synthetic`, the segment's provenance record for `synthetic.json`.
     """
     stem = segment_stem(source_name, segment)
-    segment.data.to_csv(output_path / f"{stem}.csv")
 
     street_map = plot_street_map(segment.data, margin=0.01, title=stem)
     street_map.savefig(output_path / f"{stem}_street_map.png", dpi=300)
     # Close the figure to avoid accumulating open figures and memory usage
     plt.close(street_map)
 
-    if not args.getmaps:
+    if args.getmaps:
+        download_maps(segment.data, stem, output_path, args)
+    else:
         inherit_parent_maps(source_name, stem, output_path)
-        return
 
-    lon_min = segment.data["longitude"].min()
-    lon_max = segment.data["longitude"].max()
-    lat_min = segment.data["latitude"].min()
-    lat_max = segment.data["latitude"].max()
+    data, record = segment.data, None
+    if getattr(args, "synthetic", False):
+        data, record = synthesize_geophysical(
+            segment.data.copy(),
+            stem,
+            gravity_map=output_path / f"{stem}_gravity.nc",
+            magnetic_map=output_path / f"{stem}_magnetic.nc",
+            seed=args.synthetic_seed,
+        )
+    data.to_csv(output_path / f"{stem}.csv")
+    return record
+
+
+def download_maps(data: pd.DataFrame, stem: str, output_path: Path, args) -> None:
+    """
+    Download the relief, gravity and magnetic maps around one segment.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        The segment's rows; their bounding box, padded, is the region fetched.
+    stem : str
+        File stem the maps are named after.
+    output_path : Path
+        Directory to write into.
+    args
+        Parsed arguments carrying `buffer` and `margin_km`.
+    """
+    lon_min = data["longitude"].min()
+    lon_max = data["longitude"].max()
+    lat_min = data["latitude"].min()
+    lat_max = data["latitude"].max()
     lon_min, lon_max, lat_min, lat_max = pad_bounds(
         lon_min,
         lon_max,
@@ -845,6 +908,27 @@ def add_preprocess_arguments(parser) -> None:
             "Delete CSVs in the output directory that this run did not write, such as the "
             "un-split original of a recording that has since been split. Without it they are "
             "only reported, and the simulator goes on loading them."
+        ),
+    )
+    parser.add_argument(
+        "--synthetic",
+        action="store_true",
+        help=(
+            "Replace the phone's gravity and magnetometer readings (grav_*, mag_*) with those "
+            "of a synthetic ADXL355 gravimeter and RM3100 magnetometer: the maps sampled at the "
+            "GNSS track plus each part's datasheet error model (analysis/synthetic.py). Every "
+            "other column is untouched. Needs the maps, so pass --getmaps. Writes "
+            f"{PROVENANCE_FILE} beside the trajectories."
+        ),
+    )
+    parser.add_argument(
+        "--synthetic-seed",
+        type=int,
+        default=42,
+        help=(
+            "Seed of the synthetic sensor errors (default 42). Each trajectory draws from its "
+            "own stream, keyed by this seed and its file name, so no trajectory's errors depend "
+            "on which others were processed or in what order."
         ),
     )
 

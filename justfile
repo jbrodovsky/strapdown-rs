@@ -68,19 +68,36 @@ check-python:
 # re-fetches and overwrites both files on every run regardless (pygmt caches the underlying
 # grids locally, so a re-run costs no network, but it still rewrites the `.nc` files).
 #
-# Rebuild data/input from data/raw at 10 Hz, splitting recordings at IMU dropouts.
+# `--synthetic` makes data/input the SYNTHETIC arm. The phone's gravity and magnetometer
+# readings carry no map information (GEO_AIDING_NOTES.md §3), so they are replaced -- and only
+# they: every IMU, GNSS, barometer and attitude column is untouched -- by what a low-cost
+# ADXL355 gravimeter and RM3100 magnetometer would have read: each map sampled at the GNSS
+# track, plus the part's datasheet error model (analysis/src/analysis/synthetic.py). The seed
+# fixes the sensor errors, and data/input/synthetic.json records the models and every draw.
+# conf/*.toml describe these sensors, per 10 Hz row. The real arm is frozen: its inputs in
+# data/input_real, its results in data/output_real, its configs in conf/real/.
+#
+# Rebuild data/input from data/raw at 10 Hz with synthetic gravimeter and magnetometer readings.
 preprocess:
     uv run analyze preprocess -i data/raw -o data/input -f 10 \
-        -b 1.5 --margin-km 10.0 --getmaps --max-imu-gap-s 5.0 --min-segment-s 300.0 --prune
+        -b 1.5 --margin-km 10.0 --getmaps --max-imu-gap-s 5.0 --min-segment-s 300.0 --prune \
+        --synthetic --synthetic-seed 42
 
+# conf/*.toml give the synthetic sensors' white noise per 10 Hz row. A 1 Hz row averages ten
+# times as many samples, so its noise is sqrt(10) smaller than those configs tell the filter.
+#
 # Rebuild data/input at 1 Hz instead, matching the rate every result before this branch used.
 preprocess-1hz:
     uv run analyze preprocess -i data/raw -o data/input -f 1 \
-        --margin-km 10.0 --max-imu-gap-s 5.0 --min-segment-s 300.0 --prune --getmaps
+        --margin-km 10.0 --max-imu-gap-s 5.0 --min-segment-s 300.0 --prune --getmaps \
+        --synthetic --synthetic-seed 42
 
 # Reports only -- it writes `data/output/geostats/geo_stats.toml` and leaves `conf/` alone,
-# which is why `pipeline` can run it without changing the experiment underneath itself. Read
-# that file, then run `geo-adopt` to take the numbers.
+# which is why `pipeline` can run it without changing the experiment underneath itself.
+#
+# On the synthetic data/input it is the check that the planted sensors came out as specified:
+# within-trajectory sigma near each `*_noise_std` in conf/*.toml, and per-trajectory medians
+# equal to the turn-on biases drawn in data/input/synthetic.json.
 #
 # Measure the geophysical residual against the maps: bias, noise, SNR and figure.
 geo-stats:
@@ -98,6 +115,11 @@ geo-stats:
 # `geo_frequency_s` is left at 1.0 unless you add `--apply-interval`. One measurement per
 # de-correlation length is several hundred seconds, which changes what the experiment asks of
 # the aid rather than how it is tuned. That one is a decision, not a measurement.
+#
+# That was the real arm's method, and its adopted values are frozen in conf/real/. conf/*.toml
+# now carry the synthetic sensors' datasheet values, which analysis/tests/test_synthetic.py
+# checks against the model; this would replace them with numbers re-measured from data/input,
+# and that test would fail. `pipeline` no longer runs it.
 #
 # Write the measured bias, noise and bias prior into all 9 geophysical configs.
 geo-adopt *ARGS:
@@ -152,9 +174,21 @@ rbpf-sim:
 # is a checked-in member of the uv workspace declared in the root pyproject.toml, so `uv run`
 # from the repository root resolves it -- no `--project analysis`, and no assumption that it
 # is on PATH.
+#
+# Each invocation writes `performance_summary.csv` (per-trajectory min/max/mean/RMSE plus
+# mean/median/std rows) and `performance_table.tex` -- a pasteable LaTeX table of horizontal,
+# vertical and 3D RMSE against GPS truth, the `truth`/`degraded` counterpart to the geo-aided
+# tables `geoperf-all` writes. Pass `--no-latex` to skip it.
+#
+# `dataset-summary` runs once against `data/input` itself, not per filter/scenario: distance
+# traveled and duration describe the recordings, not any navigation solution, so they do not
+# vary across ukf/ekf/rbpf or truth/degraded/geo-aided. This used to be computed ad hoc in an
+# untracked notebook (`data.ipynb`, gitignored) and was never reproducible from the tracked
+# pipeline; see `dataset_summary_analysis` in analysis/src/analysis/__init__.py.
 
 # Postprocess the performance of all scenarios.
 postprocess:
+    -uv run analyze dataset-summary --input data/input --output data/output/dataset_summary
     -uv run analyze performance --processed data/output/ukf/truth --reference data/input/ --output data/output/ukf/truth/performance
     -uv run analyze performance --processed data/output/ukf/degraded --reference data/input/ --output data/output/ukf/degraded/performance
     -uv run analyze performance --processed data/output/ukf/both --reference data/input/ --output data/output/ukf/both/performance
@@ -224,8 +258,13 @@ geoperf-rbpf:
 # `just` runs each dependency once and in order, so the cleanup below still happens first:
 # a recipe's own body runs after its dependencies, which is why the `rm -rf` lines moved into
 # their own `clean` recipe rather than staying here.
+#
+# This is the synthetic arm: `preprocess` synthesises the geophysical readings and conf/*.toml
+# describe those sensors, so `geo-stats` runs as a report on them and `geo-adopt` does not run.
+# `clean` never touches data/input_real or data/output_real, where the real arm is frozen.
+#
 # Run the whole experiment end to end, from data/raw to the scored analyses.
-pipeline: clean build preprocess geo-adopt truth degraded ukf-geo ekf-geo rbpf-sim postprocess geoperf-all
+pipeline: clean build preprocess geo-stats truth degraded ukf-geo ekf-geo rbpf-sim postprocess geoperf-all
 
 # `data/input_10hz` is included because `preprocess` used to write there. Nothing does now,
 # but a checkout that ran the old recipe still has it, and a stale directory full of

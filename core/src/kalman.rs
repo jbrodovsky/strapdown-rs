@@ -1449,56 +1449,23 @@ impl NavigationFilter for ExtendedKalmanFilter {
 
         // Extend F to full state size if using biases or augmented states
         let f_full = if self.use_biases && self.state_size >= 15 {
-            let mut f_ext = DMatrix::<f64>::identity(self.state_size, self.state_size);
-            f_ext.view_mut((0, 0), (9, 9)).copy_from(&f_matrix);
             // The bias states themselves are a random walk, so their own diagonal is the
-            // identity already written above. What was missing is how they reach the
-            // navigation states: without the two coupling blocks below this filter carried
-            // fifteen states and estimated nine. `P[0..9, 9..15]` started at zero, `F` could
-            // not create it, no shipped measurement model observes a bias, and so the gain
-            // over the bias rows was identically zero -- measured at exactly 0.0 over 299
-            // steps, against the UKF's 4.3e-3 on the same stream (#394). The bias estimate
-            // never left `initialize_ekf`'s seed, which made the compensation applied to
-            // every sample above a no-op and this filter's bias prior unfalsifiable.
+            // identity. What was missing is how they reach the navigation states: without the
+            // coupling blocks this filter carried fifteen states and estimated nine (#394),
+            // and without the half-step on the bias columns position never correlated with
+            // accelerometer bias (#338). Both now live in one helper shared with the RBPF.
             //
             // The attitude block is *not* the ESKF's `-I dt`: this state holds Euler angles
             // and its Jacobian uses the nav-frame error convention, where the ESKF uses a
             // body-frame rotation vector. See `linearize::bias_coupling_blocks`.
-            let (velocity_bias_block, attitude_bias_block) = crate::linearize::bias_coupling_blocks(
+            crate::linearize::widen_with_imu_bias_coupling(
+                &f_matrix,
                 &state,
                 &corrected_rates.gyro,
                 corrected_sample.dt,
                 crate::linearize::AttitudeParametrization::Euler,
-            );
-            f_ext
-                .view_mut((3, 9), (3, 3))
-                .copy_from(&velocity_bias_block);
-            f_ext
-                .view_mut((6, 12), (3, 3))
-                .copy_from(&attitude_bias_block);
-
-            // The position rows' trapezoidal half-step, on the columns that did not exist
-            // when the 9x9 was built (#338).
-            //
-            // `transition_jacobian` applies the half-step to every column it has, but it has
-            // only nine: the bias columns are added *here*, after the copy above. Without
-            // this loop `f_ext[0..3, 9..15]` stays exactly zero while the mechanization does
-            // propagate accelerometer bias into position within one step -- through
-            // `velocity_bias_block` and then the trapezoid. That is #394's failure mode on a
-            // different block: a coupling `F` cannot create is one `P` never develops, so the
-            // position/bias cross-covariance stays at whatever it was seeded with and the
-            // gain over those states never reflects this path.
-            //
-            // Only the accelerometer columns are touched. Gyro bias reaches attitude, not
-            // velocity, so there is no one-step velocity-row dependence for the half-step to
-            // halve; columns 12..15 of the position rows stay zero, correctly.
-            let half_step = crate::linearize::position_half_step(&state, corrected_sample.dt);
-            for (row, half_step) in half_step.iter().enumerate() {
-                for column in 0..3 {
-                    f_ext[(row, 9 + column)] += half_step * velocity_bias_block[(row, column)];
-                }
-            }
-            f_ext
+                self.state_size,
+            )
         } else if self.state_size > 9 {
             // Handle augmented states without biases (should not happen, but be defensive)
             let mut f_ext = DMatrix::<f64>::identity(self.state_size, self.state_size);
@@ -2018,8 +1985,8 @@ fn regularize_covariance_in_place(covariance: &mut DMatrix<f64>, process_noise: 
 /// Orders of magnitude above legitimate consumer-MEMS turn-on biases
 /// (~0.1 m/s², ~0.01 rad/s) and far below the runaway values a persistently
 /// faulty aiding sensor can otherwise produce (9 m/s², 6 rad/s).
-const MAX_ACCEL_BIAS_MPS2: f64 = 2.0;
-const MAX_GYRO_BIAS_RPS: f64 = 0.05;
+pub(crate) const MAX_ACCEL_BIAS_MPS2: f64 = 2.0;
+pub(crate) const MAX_GYRO_BIAS_RPS: f64 = 0.05;
 
 impl ErrorStateKalmanFilter {
     /// Create a new Error-State Kalman Filter

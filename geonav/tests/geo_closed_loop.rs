@@ -31,8 +31,7 @@ use std::rc::Rc;
 use chrono::{TimeZone, Utc};
 use geonav::{
     GeoBiasLayout, GeoMap, GeophysicalAiding, GeophysicalMeasurementType, GravityMeasurement,
-    GravityResolution, MagneticResolution, NAVIGATION_AND_IMU_BIAS_STATE_DIM, NAVIGATION_STATE_DIM,
-    build_event_stream,
+    GravityResolution, MagneticResolution, NAVIGATION_AND_IMU_BIAS_STATE_DIM, build_event_stream,
 };
 use strapdown::kalman::ExtendedKalmanFilter;
 use strapdown::messages::{AidingConfig, Event, EventStream, GnssFaultModel, MeasurementScheduler};
@@ -815,15 +814,15 @@ fn a_gravity_aided_ekf_also_estimates_the_barometric_bias() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// The same gravity-only pair for a filter with no IMU-bias block.
+/// The gravity-only pair for a particle-filter run.
 ///
-/// `gravity_only_layouts` builds the fifteen-state Kalman version; this one passes
-/// [`NAVIGATION_STATE_DIM`] as the base, which is what `sim` passes for an RBPF run, so the
-/// bias lands at index 9 rather than 15. Everything downstream -- where the measurement reads
-/// its bias from, which column the conversion files it in -- follows from that one number.
+/// The RBPF reports the Kalman filters' fifteen navigation and IMU-bias states, so `sim` passes
+/// [`NAVIGATION_AND_IMU_BIAS_STATE_DIM`] as the base for it too and the bias lands at index 15.
+/// Everything downstream -- where the measurement reads its bias from, which column the
+/// conversion files it in -- follows from that one number.
 fn gravity_only_particle_layouts() -> (GeoBiasLayout, ExtraStateLayout) {
-    let bias = GeoBiasLayout::appended(NAVIGATION_STATE_DIM, true, false)
-        .expect("a gravity-only layout over the 9-state particle vector must be valid")
+    let bias = GeoBiasLayout::appended(NAVIGATION_AND_IMU_BIAS_STATE_DIM, true, false)
+        .expect("a gravity-only layout over the fifteen reported states must be valid")
         .expect("asking for a gravity bias must yield a layout");
     let state = ExtraStateLayout::new(
         bias.state_dim(),
@@ -835,25 +834,19 @@ fn gravity_only_particle_layouts() -> (GeoBiasLayout, ExtraStateLayout) {
 
 /// A gravity-aided particle-filter run scores and reports its bias state.
 ///
-/// Both halves of what a nine-state summary of the cloud costs, against a real map.
+/// *Reporting.* The particle filter was once the one aided path writing rows with the
+/// geophysical columns blank, because its summary had nowhere to put the bias. Its `estimate`
+/// now reports the fifteen navigation and bias states and one total `V + c` bias per map
+/// channel, which the ordinary conversion labels by layout.
 ///
-/// *Reporting.* The particle filter was the one aided path still writing rows with the
-/// geophysical columns blank. It configures `extra_state_dim` for each active map and the
-/// particles really do carry a bias -- the weight update reads it -- but the solution was
-/// assembled from `estimate()`, which has nowhere to put it, so every row came out looking
-/// complete and missing the quantity the aiding exists to produce.
-///
-/// *Scoring.* The gate had the same summary and a worse failure mode: a model that reads its
-/// bias by index got the wrong entry rather than none, so every geophysical fix was scored on
-/// an attitude angle standing in for the bias (#354). `core`'s
-/// `rbpf_gate_scores_the_extra_state_and_not_the_yaw_angle` covers that with a synthetic
-/// measurement; the NIS assertions below are the same property with a `GravityMeasurement`
-/// reading a NetCDF map, which is the configuration it was reported against.
+/// *Scoring.* A model that reads its bias by index got the wrong entry rather than none from a
+/// narrow summary, so every geophysical fix was scored on an attitude angle standing in for
+/// the bias (#354). The NIS assertions below hold that with a `GravityMeasurement` reading a
+/// NetCDF map, the configuration it was reported against.
 ///
 /// This runs the loop `strapdown-sim`'s `run_rbpf_event_loop` runs, which lives in that
-/// binary and so cannot be called from here. Under test is the trio it now uses:
-/// `estimate_with_extra_states`, the gate inside `update`, and
-/// `from_particle_filter_with_geo`.
+/// binary and so cannot be called from here: `estimate`, the gate inside `update`, and the
+/// four-tuple conversion.
 #[test]
 fn gravity_aided_particle_filter_labels_its_bias_state() {
     let dir = std::env::temp_dir().join(format!("geonav-rbpf-{}", std::process::id()));
@@ -870,17 +863,17 @@ fn gravity_aided_particle_filter_labels_its_bias_state() {
     );
 
     let records = synthetic_track(60);
-    // One map, so one extra linear state, appended after the nine navigation states. `sim`
-    // derives the filter's `extra_state_dim`, the measurement's declared bias index and this
+    // One map, so one reported map bias, after the fifteen navigation and bias states. `sim`
+    // derives the filter's `map_bias_channels`, the measurement's declared bias index and this
     // layout from the one `GeoBiasLayout`, which is what keeps all three in step.
     let (bias_layout, layout) = gravity_only_particle_layouts();
     assert_eq!(layout.len(), 1);
     assert_eq!(
         layout.state_dim(),
-        10,
-        "nine navigation states and the one map bias -- not the Kalman sixteen"
+        16,
+        "fifteen navigation and bias states and the one map bias"
     );
-    assert_eq!(layout.gravity_index(), Some(9));
+    assert_eq!(layout.gravity_index(), Some(15));
 
     let events = build_event_stream(
         &records,
@@ -912,10 +905,11 @@ fn gravity_aided_particle_filter_labels_its_bias_state() {
     let mut rbpf = RaoBlackwellizedParticleFilter::new(nominal, {
         let mut built = RbpfConfig::default();
         built.num_particles = 200;
-        built.extra_state_dim = layout.len();
-        built.extra_state_initial = vec![0.0];
-        built.extra_state_init_std = vec![10.0];
-        built.extra_state_process_noise_std = vec![0.1];
+        built.map_bias_channels = layout.len();
+        built.map_bias_initial = vec![0.0];
+        built.map_bias_init_std = vec![10.0];
+        built.map_variation_std = vec![1.0];
+        built.map_variation_time_constant_s = vec![300.0];
         built.seed = 42;
         built
     })
@@ -923,18 +917,13 @@ fn gravity_aided_particle_filter_labels_its_bias_state() {
 
     let start_time = events.start_time;
     let mut results = Vec::new();
-    let (mean, cov) = rbpf.estimate_with_extra_states();
+    let (mean, cov) = rbpf.estimate();
     assert_eq!(
         mean.len(),
-        10,
-        "nine navigation states plus the one map bias"
+        16,
+        "fifteen navigation and bias states plus the one map bias"
     );
-    results.push(NavigationResult::from_particle_filter_with_geo(
-        &start_time,
-        &mean,
-        &cov,
-        layout,
-    ));
+    results.push(NavigationResult::from((&start_time, &mean, &cov, layout)));
 
     let mut gravity_nis: Vec<f64> = Vec::new();
     for event in events.events {
@@ -948,20 +937,17 @@ fn gravity_aided_particle_filter_labels_its_bias_state() {
                 let is_gravity = meas.as_any().downcast_ref::<GravityMeasurement>().is_some();
                 // This `unwrap` is itself the gate assertion. `evaluate_ensemble_gate`
                 // summarises the cloud before handing it to the model, and the model checks
-                // the width against the `BiasState` it was declared with: a nine-state
-                // summary fails here with
-                // `DimensionMismatch { what: "geophysical bias state: filter state width",
-                // expected: 10, got: 9 }` rather than quietly scoring the wrong entry.
+                // the width against the `BiasState` it was declared with: a narrower summary
+                // fails here with `DimensionMismatch` rather than quietly scoring the wrong
+                // entry.
                 let outcome = rbpf.update(meas.as_ref()).unwrap();
                 if is_gravity {
                     gravity_nis.push(outcome.nis);
                 }
             }
         }
-        let (mean, cov) = rbpf.estimate_with_extra_states();
-        results.push(NavigationResult::from_particle_filter_with_geo(
-            &ts, &mean, &cov, layout,
-        ));
+        let (mean, cov) = rbpf.estimate();
+        results.push(NavigationResult::from((&ts, &mean, &cov, layout)));
     }
 
     assert!(!results.is_empty(), "the run must produce solutions");
@@ -1008,7 +994,7 @@ fn gravity_aided_particle_filter_labels_its_bias_state() {
          uncertainty"
     );
     // The gate, end to end against a real map. #354 fixed `evaluate_ensemble_gate` to
-    // summarise the cloud with `estimate_with_extra_states`, and covered it with a synthetic
+    // summarise the cloud with its map biases included, and covered it with a synthetic
     // measurement in `core`; this is the same property with a `GravityMeasurement` reading a
     // NetCDF map, which is the configuration the defect was reported against.
     //
@@ -1018,8 +1004,8 @@ fn gravity_aided_particle_filter_labels_its_bias_state() {
     // starts at 100 mGal^2 and falls to 1.9 as the bias walks from 0 to 15.2 mGal. This bound
     // is a sanity check on the scoring, not the #354 guard: at this fixture's 10 mGal noise,
     // a gate reading the ~0 rad yaw angle in place of a 15 mGal bias would score about 2.3,
-    // inside it. The guard is the `unwrap` on `update` above, which fails on a nine-state
-    // summary before any NIS is formed.
+    // inside it. The guard is the `unwrap` on `update` above, which fails on a summary with
+    // no bias in it before any NIS is formed.
     assert!(
         gravity_nis.len() >= 50,
         "the run scored only {} geophysical fixes; with too few this asserts nothing",

@@ -7,7 +7,6 @@
 
 use crate::StrapdownError;
 use crate::StrapdownState;
-use crate::earth::METERS_TO_DEGREES;
 
 use std::any::Any;
 use std::fmt::{self, Debug, Display};
@@ -256,7 +255,7 @@ pub trait MeasurementModel: Any {
     /// |---|---|
     /// | Euler angles | this trait, and [`ExtendedKalmanFilter`](crate::kalman::ExtendedKalmanFilter)'s state |
     /// | **body**-frame rotation vector | [`ErrorStateKalmanFilter`](crate::kalman::ErrorStateKalmanFilter)'s error state, injected as $q \otimes \delta q$ |
-    /// | **nav**-frame rotation vector | [`linearize::apply_eskf_correction`](crate::linearize::apply_eskf_correction) and `transition_jacobian`'s `RotationVector` |
+    /// | **nav**-frame rotation vector | [`RaoBlackwellizedParticleFilter`](crate::rbpf::RaoBlackwellizedParticleFilter)'s tilt, `transition_jacobian`'s `RotationVector`, and [`linearize::apply_eskf_correction`](crate::linearize::apply_eskf_correction) |
     ///
     /// A filter in one of the other two is expected to convert, rather than asking models to
     /// write their Jacobians in its own coordinates:
@@ -266,15 +265,12 @@ pub trait MeasurementModel: Any {
     /// disagree by *order one* on where the magnetometer's yaw sensitivity lives, so this is
     /// not a nicety.
     ///
-    /// **One filter does not yet hold up its end, and saying so is part of the contract.**
-    /// [`RaoBlackwellizedParticleFilter`](crate::rbpf::RaoBlackwellizedParticleFilter)
-    /// consumes these Jacobians unconverted, in both its linear attitude update and its
-    /// ensemble gate, while propagating its linear state with the nav-frame rotation-vector
-    /// transition Jacobian. That mismatch is #349's open half; the obvious one-line fix
-    /// **diverges** the filter (twenty consecutive NIS exceedances, last NIS 214.8), so it
-    /// needs the cloud's attitude representation designed rather than a call swapped, and
-    /// #349 stays open for it. Until then, do not read the paragraph above as a guarantee
-    /// that every filter in this crate converts -- three do and one does not.
+    /// The [`RaoBlackwellizedParticleFilter`](crate::rbpf::RaoBlackwellizedParticleFilter)
+    /// carries a nav-frame tilt `ε`, and converts through `∂Φ/∂ε = E(Φ)⁻¹` -- the Euler-rate
+    /// inverse, since a nav-frame tilt is `C_bⁿ` times a body-frame one -- in its measurement
+    /// update, and composes `exp([ε×]) C` rather than adding `ε` to the Euler angles when it
+    /// assembles a particle. That closed #349's second half: it used to consume these
+    /// Jacobians unconverted while propagating in the nav-frame chart.
     ///
     /// Two consequences for an implementor:
     ///
@@ -345,8 +341,9 @@ pub struct GPSPositionMeasurement {
     /// (height above the WGS84 ellipsoid by convention); in practice it is whatever datum the
     /// source CSV's altitude column uses.
     pub altitude: f64,
-    /// One-sigma horizontal position accuracy, metres; converted to radians of arc and applied
-    /// to both the latitude and longitude channels of the noise matrix.
+    /// One-sigma horizontal position accuracy, metres. Converted to radians separately for
+    /// each channel of the noise matrix, through the WGS84 radii at the fix: see
+    /// [`GPSPositionMeasurement::get_noise`].
     pub horizontal_noise_std: f64,
     /// One-sigma vertical position accuracy, metres.
     pub vertical_noise_std: f64,
@@ -382,12 +379,24 @@ impl MeasurementModel for GPSPositionMeasurement {
             self.altitude,
         ]))
     }
+    /// The noise covariance, with latitude and longitude in rad^2 and altitude in m^2.
+    ///
+    /// The horizontal accuracy is a ground distance, and a metre of easting is a larger angle
+    /// of longitude than a metre of northing is of latitude, by `1 / cos(latitude)`. Each
+    /// channel is therefore converted with its own WGS84 radius of curvature at the fix, the
+    /// radii the position update integrates against. Both channels used to take the
+    /// latitude factor ([`crate::earth::METERS_TO_DEGREES`] in radians), which understated
+    /// the longitude variance by `cos^2(latitude)` -- 0.59x at 40 degrees -- so every filter
+    /// trusted a fix's longitude 1.7x more than its latitude for the same metres of error.
     fn get_noise(&self) -> DMatrix<f64> {
-        // Convert horizontal noise from meters to radians for position covariance
-        let horizontal_noise_rad = (self.horizontal_noise_std * METERS_TO_DEGREES).to_radians();
+        let (latitude_variance, longitude_variance) = crate::horizontal_position_variance(
+            self.horizontal_noise_std,
+            self.latitude,
+            self.altitude,
+        );
         DMatrix::from_diagonal(&DVector::from_vec(vec![
-            horizontal_noise_rad.powi(2),
-            horizontal_noise_rad.powi(2),
+            latitude_variance,
+            longitude_variance,
             self.vertical_noise_std.powi(2),
         ]))
     }
@@ -482,8 +491,8 @@ pub struct GPSPositionAndVelocityMeasurement {
     pub northward_velocity: f64,
     /// East velocity, m/s.
     pub eastward_velocity: f64,
-    /// One-sigma horizontal position accuracy, metres; converted to radians of arc and applied
-    /// to both the latitude and longitude channels of the noise matrix.
+    /// One-sigma horizontal position accuracy, metres. Converted to radians separately for
+    /// each channel, as [`GPSPositionMeasurement::get_noise`] describes.
     pub horizontal_noise_std: f64,
     /// One-sigma vertical position accuracy, metres.
     pub vertical_noise_std: f64,
@@ -510,12 +519,17 @@ impl MeasurementModel for GPSPositionAndVelocityMeasurement {
             self.eastward_velocity,
         ]))
     }
+    /// The noise covariance: position as [`GPSPositionMeasurement::get_noise`] forms it, each
+    /// horizontal channel through its own WGS84 radius, then the two velocities in m^2/s^2.
     fn get_noise(&self) -> DMatrix<f64> {
-        // Convert horizontal noise from meters to radians for position covariance
-        let horizontal_noise_rad = (self.horizontal_noise_std * METERS_TO_DEGREES).to_radians();
+        let (latitude_variance, longitude_variance) = crate::horizontal_position_variance(
+            self.horizontal_noise_std,
+            self.latitude,
+            self.altitude,
+        );
         DMatrix::from_diagonal(&DVector::from_vec(vec![
-            horizontal_noise_rad.powi(2),
-            horizontal_noise_rad.powi(2),
+            latitude_variance,
+            longitude_variance,
             self.vertical_noise_std.powi(2),
             self.velocity_noise_std.powi(2),
             self.velocity_noise_std.powi(2),
@@ -1520,6 +1534,84 @@ mod tests {
         assert_approx_eq!(r[0], 0.5, EPS);
     }
 
+    /// The (north, east) ground distance, in metres, that a GNSS noise matrix's latitude and
+    /// longitude standard deviations subtend at a fix.
+    ///
+    /// Measured by great-circle distance on a sphere rather than through the WGS84 radii the
+    /// code under test uses, so it cannot agree by construction; the two differ by a few
+    /// tenths of a percent, which is what the 1% tolerances on it allow for.
+    fn gps_noise_ground_sigma_m(
+        noise: &DMatrix<f64>,
+        latitude_deg: f64,
+        longitude_deg: f64,
+    ) -> (f64, f64) {
+        let (latitude, longitude) = (latitude_deg.to_radians(), longitude_deg.to_radians());
+        let north = crate::earth::haversine_distance(
+            latitude,
+            longitude,
+            latitude + noise[(0, 0)].sqrt(),
+            longitude,
+        );
+        let east = crate::earth::haversine_distance(
+            latitude,
+            longitude,
+            latitude,
+            longitude + noise[(1, 1)].sqrt(),
+        );
+        (north, east)
+    }
+
+    /// A GNSS fix's horizontal accuracy is the same ground distance on both axes.
+    ///
+    /// `horizontal_noise_std` is metres on the ground, so the longitude variance must subtend
+    /// the same metres east as the latitude variance does north. Both used to be converted
+    /// with the latitude factor, which put the east sigma at `cos(latitude)` of the request:
+    /// 1.03 m of a 3 m fix at the 70 degrees used here, so every filter trusted the fix's
+    /// longitude nine times more (in variance) than its latitude. Both position-bearing models
+    /// are checked, since each forms its own noise matrix.
+    #[test]
+    fn gps_noise_is_the_same_ground_distance_on_both_axes() {
+        const LATITUDE_DEG: f64 = 70.0;
+        const LONGITUDE_DEG: f64 = 25.0;
+        const HORIZONTAL_STD_M: f64 = 3.0;
+
+        let position = GPSPositionMeasurement {
+            latitude: LATITUDE_DEG,
+            longitude: LONGITUDE_DEG,
+            altitude: 200.0,
+            horizontal_noise_std: HORIZONTAL_STD_M,
+            vertical_noise_std: 5.0,
+        };
+        let position_and_velocity = GPSPositionAndVelocityMeasurement {
+            latitude: LATITUDE_DEG,
+            longitude: LONGITUDE_DEG,
+            altitude: 200.0,
+            northward_velocity: 1.0,
+            eastward_velocity: 2.0,
+            horizontal_noise_std: HORIZONTAL_STD_M,
+            vertical_noise_std: 5.0,
+            velocity_noise_std: 0.2,
+        };
+        for (name, noise) in [
+            ("GPSPositionMeasurement", position.get_noise()),
+            (
+                "GPSPositionAndVelocityMeasurement",
+                position_and_velocity.get_noise(),
+            ),
+        ] {
+            let (north, east) = gps_noise_ground_sigma_m(&noise, LATITUDE_DEG, LONGITUDE_DEG);
+            for (axis, observed) in [("north", north), ("east", east)] {
+                assert!(
+                    (observed - HORIZONTAL_STD_M).abs() / HORIZONTAL_STD_M < 0.01,
+                    "{name}: the {axis} noise subtends {observed:.3} m on the ground for a \
+                     {HORIZONTAL_STD_M} m fix at {LATITUDE_DEG} deg; the latitude factor on \
+                     longitude gives cos(latitude) = {:.3} of the request",
+                    LATITUDE_DEG.to_radians().cos()
+                );
+            }
+        }
+    }
+
     #[test]
     fn gps_position_vector_noise_and_sigma_points() {
         let meas = GPSPositionMeasurement {
@@ -1540,14 +1632,14 @@ mod tests {
         assert!((vec[1] - (-122.0_f64).to_radians()).abs() < EPS);
         assert!((vec[2] - 12.34).abs() < EPS);
 
-        // Noise diagonal entries - should be in radians squared for lat/lon
+        // Noise diagonal entries: radians squared for lat/lon, each the 3 m ground accuracy
+        // through its own radius (see `gps_noise_is_the_same_ground_distance_on_both_axes`).
         let noise = meas.get_noise();
-        let expected_h = (3.0 * METERS_TO_DEGREES).to_radians().powi(2);
-        let expected_v = 2.0_f64.powi(2);
         assert_eq!(noise.nrows(), 3);
-        assert!((noise[(0, 0)] - expected_h).abs() < EPS);
-        assert!((noise[(1, 1)] - expected_h).abs() < EPS);
-        assert!((noise[(2, 2)] - expected_v).abs() < EPS);
+        let ground = gps_noise_ground_sigma_m(&noise, meas.latitude, meas.longitude);
+        assert_approx_eq!(ground.0, 3.0, 0.03);
+        assert_approx_eq!(ground.1, 3.0, 0.03);
+        assert!((noise[(2, 2)] - 2.0_f64.powi(2)).abs() < EPS);
 
         let state_sigma: DVector<f64> = DVector::from_vec(vec![
             0.1, // lat
