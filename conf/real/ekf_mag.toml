@@ -1,19 +1,11 @@
-# SYNTHETIC ARM -- the complement of conf/real/ekf_grav.toml.
-#
-# Same filter, trajectories, inertial data and GNSS degradation as the real arm. What differs
-# is `grav_*` and `mag_*` in data/input: `just preprocess` (`analyze preprocess --synthetic`)
-# replaces the phone's readings with those of an ADXL355 gravimeter and an RM3100 magnetometer
-# -- the maps at the GNSS track plus each part's datasheet error model, installation ideal
-# (analysis/src/analysis/synthetic.py). conf/real/ ran the phone's own readings.
-#
-# EKF with gravity anomaly measurements.
+# EKF with magnetic anomaly measurements.
 #
 # Runs from this file end to end. `--geo` used to be reachable only from the `cl` subcommand's
 # own flags -- a closed-loop config carrying a [geophysical] section was refused outright -- so
 # these six files were retired and the justfile carried the equivalent command lines by hand.
 # Both paths now resolve to the same settings and the same runner.
 input = "data/input"
-output = "data/output/ekf/grav"
+output = "data/output/ekf/mag"
 mode = "closed-loop"
 # These recipes read Sensor Logger exports from `data/input`, which are ENU convention: at rest
 # the device reports +g along its up axis. The library default is NED as of #272, so the frame
@@ -26,33 +18,23 @@ generate_plot = true
 
 [logging]
 level = "info"
-file = "log/ekf_grav.log"
+file = "log/ekf_mag.log"
 
 [closed_loop]
 filter = "ekf"
 
 [geophysical]
-# The sensors `analyze preprocess --synthetic` planted, not a measurement of the phone. The
-# noise is per 10 Hz row -- a row averages 0.1 s of samples -- so these values assume `-f 10`.
-# analysis/tests/test_synthetic.py checks every number against the model; `just geo-adopt`
-# would overwrite them with re-measured ones, so the pipeline does not run it.
+# Magnetic anomaly measurements.
+#
+# NOTE: `analyze preprocess` downloads the magnetic grid at 3 arc-minutes (`earth_wdmam`),
+# not the two minutes named here, and nothing validates that the two agree -- `GeoResolution`
+# is a filename token and no code derives metres from a loaded grid.
+magnetic_resolution = "two_minutes"
+magnetic_bias = 23342.7
+magnetic_noise_std = 7537.31
+magnetic_bias_init_std = 45902.2
 
-# Gravimeter: Analog Devices ADXL355 (+/-2 g) read as a scalar gravimeter, $77 at Digi-Key.
-#   white noise   25 ug/rtHz (data sheet Rev. 0, Table 2) = 24.5 mGal/rtHz, so a 0.1 s row
-#                 carries 24.5 x sqrt(5) = 54.8 mGal
-#   turn-on bias  +/-9 mg Z-axis repeatability (Table 2; "10 year life") = 8,826 mGal. The
-#                 datasheet's only turn-on figure, and a generous one; the filter estimates it
-#   drift         bias instability, the Z Allan floor of 3.5 ug at 100-300 s (Fig. 56) as a
-#                 Gauss-Markov process: 5.55 mGal, tau 300 s. Temperature, ~100 mGal/degC on
-#                 an axis reading 1 g, with 10% left after compensation and a 1 degC cabin
-#                 sigma (both assumptions): 10.0 mGal, tau 1,800 s
-gravity_resolution = "one_minute"
-gravity_bias = 0.0                            # mGal; the turn-on bias has zero mean
-gravity_noise_std = 54.8208                   # mGal per 10 Hz row
-gravity_bias_init_std = 8825.99               # mGal; turn-on and drift, in quadrature
-gravity_bias_process_noise_std = 0.563179     # mGal/sqrt(s); sqrt(sum 2 sigma^2 / tau)
-
-# Seconds between geophysical measurements -- a period, not a frequency. As in conf/real/.
+# Seconds between geophysical measurements -- a period, not a frequency.
 geo_frequency_s = 1.0
 
 [health_limits]
@@ -80,8 +62,8 @@ seed = 42
 
 [gnss_degradation.scheduler]
 kind = "fixed_interval"
-# One fix every 60 s from a ~1 Hz receiver. (`interval_s = 1.0` passed every fix through
-# and reduced nothing.)
+# 5 s between fixes: a real 5x reduction on this 1 Hz recording. `interval_s = 1.0`
+# passed every fix through and reduced nothing.
 interval_s = 60.0
 phase_s = 0.0
 

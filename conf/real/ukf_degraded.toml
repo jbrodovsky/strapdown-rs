@@ -1,13 +1,3 @@
-# SYNTHETIC ARM -- the complement of conf/real/ukf_degraded.toml.
-#
-# Same filter, trajectories, inertial data and GNSS degradation as the real arm. What differs
-# is `grav_*` and `mag_*` in data/input: `just preprocess` (`analyze preprocess --synthetic`)
-# replaces the phone's readings with those of an ADXL355 gravimeter and an RM3100 magnetometer
-# -- the maps at the GNSS track plus each part's datasheet error model, installation ideal
-# (analysis/src/analysis/synthetic.py). conf/real/ ran the phone's own readings.
-#
-# This run has no geophysical channel. The magnetometer's *direction* feeds its yaw update and
-# `--synthetic` keeps every direction, so it reproduces conf/real/ukf_degraded.toml's output.
 input = "data/input"
 output = "data/output/ukf/degraded"
 mode = "closed-loop"
@@ -61,8 +51,8 @@ seed = 42
 
 [gnss_degradation.scheduler]
 kind = "fixed_interval"
-# One fix every 60 s from a ~1 Hz receiver. (`interval_s = 1.0` passed every fix through
-# and reduced nothing.)
+# 5 s between fixes: a real 5x reduction on this 1 Hz recording. `interval_s = 1.0`
+# passed every fix through and reduced nothing.
 interval_s = 60.0
 phase_s = 0.0
 

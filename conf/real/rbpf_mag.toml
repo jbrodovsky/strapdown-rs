@@ -1,44 +1,50 @@
-# SYNTHETIC ARM -- the complement of conf/real/ukf_degraded.toml.
-#
-# Same filter, trajectories, inertial data and GNSS degradation as the real arm. What differs
-# is `grav_*` and `mag_*` in data/input: `just preprocess` (`analyze preprocess --synthetic`)
-# replaces the phone's readings with those of an ADXL355 gravimeter and an RM3100 magnetometer
-# -- the maps at the GNSS track plus each part's datasheet error model, installation ideal
-# (analysis/src/analysis/synthetic.py). conf/real/ ran the phone's own readings.
-#
-# This run has no geophysical channel. The magnetometer's *direction* feeds its yaw update and
-# `--synthetic` keeps every direction, so it reproduces conf/real/ukf_degraded.toml's output.
+# RBPF with magnetic anomaly measurements only
 input = "data/input"
-output = "data/output/ukf/degraded"
-mode = "closed-loop"
+output = "data/output/rbpf/mag"
+mode = "particle-filter"
 # These recipes read Sensor Logger exports from `data/input`, which are ENU
 # convention: at rest the device reports +g along its up axis. The library default
 # is NED as of #272, so the frame has to be declared -- `strapdown-sim` checks it
 # against the data and refuses rather than silently double-counting gravity (#296).
 is_enu = true
 seed = 42
-parallel = true
 generate_plot = true
+parallel = true
 
 [logging]
 level = "info"
-file = "log/ukf_degraded.log"
+file = "log/rbpf_mag.log"
 
-[closed_loop]
-filter = "ukf"
+[particle_filter]
+num_particles = 2000
+position_init_std_m = [10.0, 10.0, 5.0]
+velocity_init_std_mps = 1.0
+attitude_init_std_rad = 0.1
+position_process_noise_std_m = [1.0, 1.0, 1.0]
+velocity_process_noise_std_mps = 1e-3
+attitude_process_noise_std_rad = 0.01
+zero_vertical_velocity = true
+zero_vertical_velocity_std_mps = 0.1
+
+[geophysical]
+# Magnetic anomaly measurements
+magnetic_resolution = "one_minute"
+magnetic_bias = 23342.7
+magnetic_noise_std = 7537.31
+magnetic_bias_init_std = 45902.2
+# magnetic_map_file will be auto-detected if not specified
+
+# Gravity anomaly disabled for this config
+# gravity_resolution = ""
+# gravity_bias = 0.0
+# gravity_noise_std = 100.0
+
+# Measurement frequency (seconds)
+geo_frequency_s = 1.0
 
 [health_limits]
-# Both guards are loosened so a MEMS-grade recording is allowed to drift to its end rather
-# than being failed part way through.
-#
-#   nis_pos_max    default 100 -- two trajectories peak at 897 and 476 while still tracking.
-#   speed_mps_max  default 500 -- only 2025-06-14_21-17-02 reaches it, the worst recording
-#                  in the set (587 rows, median hAcc 16.2 m, a 1000 m sentinel at p95).
-#
-# The cost is real and applies to both: a genuinely diverged filter can now run to
-# completion and land in the aggregates, so a run finishing is weaker evidence that it
-# stayed healthy than it used to be. Kept identical across truth and degraded so the two
-# always fail the same trajectories and remain comparable.
+# Must match conf/rbpf_degraded.toml: `geoperf-rbpf` scores this run against that one, so a
+# difference in the guards would show up as geophysical performance.
 nis_pos_max = 1000.0
 speed_mps_max = 5000.0
 
@@ -61,8 +67,8 @@ seed = 42
 
 [gnss_degradation.scheduler]
 kind = "fixed_interval"
-# One fix every 60 s from a ~1 Hz receiver. (`interval_s = 1.0` passed every fix through
-# and reduced nothing.)
+# 5 s between fixes: a real 5x reduction on this 1 Hz recording. `interval_s = 1.0`
+# passed every fix through and reduced nothing.
 interval_s = 60.0
 phase_s = 0.0
 

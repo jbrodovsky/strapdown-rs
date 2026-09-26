@@ -20,7 +20,8 @@ The core library implementing strapdown INS algorithms and simulation framework:
 - **lib.rs**: Library entry point and 9-state strapdown mechanization in local-level frame (NED). Implements forward propagation equations from Groves textbook (Chapter 5.4-5.5)
 - **earth.rs**: WGS84 Earth ellipsoid model and geodetic calculations
 - **kalman.rs**: Kalman-style navigation filters including Unscented Kalman Filter (UKF) for nonlinear state estimation
-- **particle.rs**: Particle filter (Sequential Monte Carlo) implementation for non-Gaussian estimation with resampling strategies
+- **particle.rs**: Particle-filter building blocks (the `Particle` trait, resampling and averaging strategies); not a filter on its own
+- **rbpf.rs**: The Rao-Blackwellized particle filter, after Canciani & Raquet (2017) -- the one concrete particle filter
 - **measurements.rs**: Measurement models (GPS position/velocity, barometric altitude, pseudorange, carrier phase) implementing the `MeasurementModel` trait
 - **messages.rs**: Event stream handling for GNSS scheduling and fault injection scenarios
 - **sim.rs**: Simulation utilities, CSV data loading (Sensor Logger format), dead reckoning and closed-loop functions
@@ -257,12 +258,21 @@ The Free Core implementation must achieve the following capabilities:
 - **UKF implementation**:
   - Uses unscented transform with sigma points for nonlinear state estimation
   - Handles full 9-state navigation solution
-- **Particle filter implementation** (`particle.rs`):
-  - Extended state: 15+ states (9 nav states + 3 accel bias + 3 gyro bias + optional)
-  - Resampling strategies: systematic, stratified, residual
-  - Averaging strategies: mean, weighted mean, maximum weight
-  - Includes vertical channel damping with altitude error feedback
-  - Each particle propagates independently through strapdown equations
+- **Particle filter implementation** (`rbpf.rs`): Canciani & Raquet's marginalized particle
+  filter (IEEE TAES 53(1), 2017), error-state and closed-loop
+  - Particles sample horizontal position error only (`δlat, δlon`); the paper's linear states
+    -- altitude, velocity, nav-frame tilt, the barometer-aiding error `δh_a`, the barometer
+    loop's vertical-acceleration error `δâ`, and each map bias as `V` (Gauss-Markov) + `c`
+    (constant) -- are one Kalman filter whose covariance all particles share. **No IMU bias
+    states**: adding them made the RBPF diverge on degraded-GNSS runs
+  - Barometer aiding is a third-order loop in the mechanization; barometer readings feed the
+    loop and are not measurement updates
+  - Time update once per measurement epoch (transition and noise accumulate between); one
+    measurement update for every other sensor (`C = H T`, weights under `C P Cᵀ + R`)
+  - `horizontal_process_noise_std_m` defaults to the paper's zero (eq. 19), which **diverges**
+    with GNSS-rate fixes on MEMS data; the `conf/` recipes set 1 m/√s
+  - Reports the Kalman filters' layout, `[9 nav, b_a, b_g, map biases]`, with zero bias rows;
+    `core/src/rbpf.rs`'s module docs list the departures from the paper
 - **Process noise**: `sim::DEFAULT_PROCESS_NOISE_DENSITY` is a **spectral density** -- a
   variance per second. Each filter forms $Q_k = q\,\Delta t$; it was a per-step variance with
   no `dt` anywhere until #374, which made effective Q a function of sample rate (a 50x spread

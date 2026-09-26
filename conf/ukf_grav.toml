@@ -1,3 +1,11 @@
+# SYNTHETIC ARM -- the complement of conf/real/ukf_grav.toml.
+#
+# Same filter, trajectories, inertial data and GNSS degradation as the real arm. What differs
+# is `grav_*` and `mag_*` in data/input: `just preprocess` (`analyze preprocess --synthetic`)
+# replaces the phone's readings with those of an ADXL355 gravimeter and an RM3100 magnetometer
+# -- the maps at the GNSS track plus each part's datasheet error model, installation ideal
+# (analysis/src/analysis/synthetic.py). conf/real/ ran the phone's own readings.
+#
 # UKF with gravity anomaly measurements.
 #
 # Runs from this file end to end. `--geo` used to be reachable only from the `cl` subcommand's
@@ -24,16 +32,27 @@ file = "log/ukf_grav.log"
 filter = "ukf"
 
 [geophysical]
-# Gravity anomaly measurements.
-#
-# `gravity_noise_std` is the code default, which has never been measured against the maps it
-# is differenced from. `just geo-stats` derives one that has; see data/output/geostats.
-gravity_resolution = "one_minute"
-gravity_bias = 841.721
-gravity_noise_std = 131.072
-gravity_bias_init_std = 252.766
+# The sensors `analyze preprocess --synthetic` planted, not a measurement of the phone. The
+# noise is per 10 Hz row -- a row averages 0.1 s of samples -- so these values assume `-f 10`.
+# analysis/tests/test_synthetic.py checks every number against the model; `just geo-adopt`
+# would overwrite them with re-measured ones, so the pipeline does not run it.
 
-# Seconds between geophysical measurements -- a period, not a frequency.
+# Gravimeter: Analog Devices ADXL355 (+/-2 g) read as a scalar gravimeter, $77 at Digi-Key.
+#   white noise   25 ug/rtHz (data sheet Rev. 0, Table 2) = 24.5 mGal/rtHz, so a 0.1 s row
+#                 carries 24.5 x sqrt(5) = 54.8 mGal
+#   turn-on bias  +/-9 mg Z-axis repeatability (Table 2; "10 year life") = 8,826 mGal. The
+#                 datasheet's only turn-on figure, and a generous one; the filter estimates it
+#   drift         bias instability, the Z Allan floor of 3.5 ug at 100-300 s (Fig. 56) as a
+#                 Gauss-Markov process: 5.55 mGal, tau 300 s. Temperature, ~100 mGal/degC on
+#                 an axis reading 1 g, with 10% left after compensation and a 1 degC cabin
+#                 sigma (both assumptions): 10.0 mGal, tau 1,800 s
+gravity_resolution = "one_minute"
+gravity_bias = 0.0                            # mGal; the turn-on bias has zero mean
+gravity_noise_std = 54.8208                   # mGal per 10 Hz row
+gravity_bias_init_std = 8825.99               # mGal; turn-on and drift, in quadrature
+gravity_bias_process_noise_std = 0.563179     # mGal/sqrt(s); sqrt(sum 2 sigma^2 / tau)
+
+# Seconds between geophysical measurements -- a period, not a frequency. As in conf/real/.
 geo_frequency_s = 1.0
 
 [health_limits]
@@ -61,8 +80,8 @@ seed = 42
 
 [gnss_degradation.scheduler]
 kind = "fixed_interval"
-# 5 s between fixes: a real 5x reduction on this 1 Hz recording. `interval_s = 1.0`
-# passed every fix through and reduced nothing.
+# One fix every 60 s from a ~1 Hz receiver. (`interval_s = 1.0` passed every fix through
+# and reduced nothing.)
 interval_s = 60.0
 phase_s = 0.0
 

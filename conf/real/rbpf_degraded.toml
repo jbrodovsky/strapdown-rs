@@ -1,31 +1,29 @@
-# SYNTHETIC ARM -- the complement of conf/real/ukf_degraded.toml.
-#
-# Same filter, trajectories, inertial data and GNSS degradation as the real arm. What differs
-# is `grav_*` and `mag_*` in data/input: `just preprocess` (`analyze preprocess --synthetic`)
-# replaces the phone's readings with those of an ADXL355 gravimeter and an RM3100 magnetometer
-# -- the maps at the GNSS track plus each part's datasheet error model, installation ideal
-# (analysis/src/analysis/synthetic.py). conf/real/ ran the phone's own readings.
-#
-# This run has no geophysical channel. The magnetometer's *direction* feeds its yaw update and
-# `--synthetic` keeps every direction, so it reproduces conf/real/ukf_degraded.toml's output.
 input = "data/input"
-output = "data/output/ukf/degraded"
-mode = "closed-loop"
+output = "data/output/rbpf/degraded"
+mode = "particle-filter"
 # These recipes read Sensor Logger exports from `data/input`, which are ENU
 # convention: at rest the device reports +g along its up axis. The library default
 # is NED as of #272, so the frame has to be declared -- `strapdown-sim` checks it
 # against the data and refuses rather than silently double-counting gravity (#296).
 is_enu = true
 seed = 42
-parallel = true
 generate_plot = true
+parallel = true
 
 [logging]
 level = "info"
-file = "log/ukf_degraded.log"
+file = "log/rbpf_degraded.log"
 
-[closed_loop]
-filter = "ukf"
+[particle_filter]
+num_particles = 2000
+position_init_std_m = [10.0, 10.0, 5.0]
+velocity_init_std_mps = 1.0
+attitude_init_std_rad = 0.1
+position_process_noise_std_m = [1.0, 1.0, 1.0]
+velocity_process_noise_std_mps = 1e-3
+attitude_process_noise_std_rad = 0.01
+zero_vertical_velocity = true
+zero_vertical_velocity_std_mps = 0.1
 
 [health_limits]
 # Both guards are loosened so a MEMS-grade recording is allowed to drift to its end rather
@@ -61,8 +59,8 @@ seed = 42
 
 [gnss_degradation.scheduler]
 kind = "fixed_interval"
-# One fix every 60 s from a ~1 Hz receiver. (`interval_s = 1.0` passed every fix through
-# and reduced nothing.)
+# 5 s between fixes: a real 5x reduction on this 1 Hz recording. `interval_s = 1.0`
+# passed every fix through and reduced nothing.
 interval_s = 60.0
 phase_s = 0.0
 

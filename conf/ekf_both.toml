@@ -1,3 +1,11 @@
+# SYNTHETIC ARM -- the complement of conf/real/ekf_both.toml.
+#
+# Same filter, trajectories, inertial data and GNSS degradation as the real arm. What differs
+# is `grav_*` and `mag_*` in data/input: `just preprocess` (`analyze preprocess --synthetic`)
+# replaces the phone's readings with those of an ADXL355 gravimeter and an RM3100 magnetometer
+# -- the maps at the GNSS track plus each part's datasheet error model, installation ideal
+# (analysis/src/analysis/synthetic.py). conf/real/ ran the phone's own readings.
+#
 # EKF with both gravity and magnetic anomaly measurements.
 #
 # Runs from this file end to end. `--geo` used to be reachable only from the `cl` subcommand's
@@ -24,19 +32,42 @@ file = "log/ekf_both.log"
 filter = "ekf"
 
 [geophysical]
-# Gravity anomaly measurements.
+# The sensors `analyze preprocess --synthetic` planted, not a measurement of the phone. The
+# noise is per 10 Hz row -- a row averages 0.1 s of samples -- so these values assume `-f 10`.
+# analysis/tests/test_synthetic.py checks every number against the model; `just geo-adopt`
+# would overwrite them with re-measured ones, so the pipeline does not run it.
+
+# Gravimeter: Analog Devices ADXL355 (+/-2 g) read as a scalar gravimeter, $77 at Digi-Key.
+#   white noise   25 ug/rtHz (data sheet Rev. 0, Table 2) = 24.5 mGal/rtHz, so a 0.1 s row
+#                 carries 24.5 x sqrt(5) = 54.8 mGal
+#   turn-on bias  +/-9 mg Z-axis repeatability (Table 2; "10 year life") = 8,826 mGal. The
+#                 datasheet's only turn-on figure, and a generous one; the filter estimates it
+#   drift         bias instability, the Z Allan floor of 3.5 ug at 100-300 s (Fig. 56) as a
+#                 Gauss-Markov process: 5.55 mGal, tau 300 s. Temperature, ~100 mGal/degC on
+#                 an axis reading 1 g, with 10% left after compensation and a 1 degC cabin
+#                 sigma (both assumptions): 10.0 mGal, tau 1,800 s
 gravity_resolution = "one_minute"
-gravity_bias = 841.721
-gravity_noise_std = 131.072
-gravity_bias_init_std = 252.766
+gravity_bias = 0.0                            # mGal; the turn-on bias has zero mean
+gravity_noise_std = 54.8208                   # mGal per 10 Hz row
+gravity_bias_init_std = 8825.99               # mGal; turn-on and drift, in quadrature
+gravity_bias_process_noise_std = 0.563179     # mGal/sqrt(s); sqrt(sum 2 sigma^2 / tau)
 
-# Magnetic anomaly measurements. See conf/*_mag.toml on the declared-vs-actual resolution.
+# Magnetometer: PNI RM3100 at cycle count 200, $25 a sensor suite.
+#   white noise   15 nT per sample at 440/3 Hz on three axes (User Manual, Table 3-1), so a
+#                 0.1 s row carries 15 x sqrt(10 / 146.7) = 3.92 nT
+#   turn-on bias  8 nT repeatability and 15 nT hysteresis (Table 3-1), in quadrature: 17 nT
+#   drift         no offset drift over 100 h (Regoli et al. 2018), but a floor that does not
+#                 average down: 2.2 nT at 1 s where white noise gives 1.38, so 1.7 nT, tau 1 h.
+#                 Temperature, 0.5 nT/degC (Strabel et al. 2022), 10% and 1 degC: 0.05 nT
+# `magnetic_resolution` is a label: the grid is whatever <stem>_magnetic.nc holds (earth_wdmam,
+# 3 arc-minutes).
 magnetic_resolution = "two_minutes"
-magnetic_bias = 23342.7
-magnetic_noise_std = 7537.31
-magnetic_bias_init_std = 45902.2
+magnetic_bias = 0.0                           # nT; the turn-on bias has zero mean
+magnetic_noise_std = 3.91675                  # nT per 10 Hz row
+magnetic_bias_init_std = 17.0862              # nT; turn-on and drift, in quadrature
+magnetic_bias_process_noise_std = 0.0404123   # nT/sqrt(s); sqrt(sum 2 sigma^2 / tau)
 
-# Seconds between geophysical measurements -- a period, not a frequency.
+# Seconds between geophysical measurements -- a period, not a frequency. As in conf/real/.
 geo_frequency_s = 1.0
 
 [health_limits]
@@ -64,8 +95,8 @@ seed = 42
 
 [gnss_degradation.scheduler]
 kind = "fixed_interval"
-# 5 s between fixes: a real 5x reduction on this 1 Hz recording. `interval_s = 1.0`
-# passed every fix through and reduced nothing.
+# One fix every 60 s from a ~1 Hz receiver. (`interval_s = 1.0` passed every fix through
+# and reduced nothing.)
 interval_s = 60.0
 phase_s = 0.0
 

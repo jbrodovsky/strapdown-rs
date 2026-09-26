@@ -1,3 +1,13 @@
+# SYNTHETIC ARM -- the complement of conf/real/rbpf_truth.toml.
+#
+# Same filter, trajectories, inertial data and GNSS degradation as the real arm. What differs
+# is `grav_*` and `mag_*` in data/input: `just preprocess` (`analyze preprocess --synthetic`)
+# replaces the phone's readings with those of an ADXL355 gravimeter and an RM3100 magnetometer
+# -- the maps at the GNSS track plus each part's datasheet error model, installation ideal
+# (analysis/src/analysis/synthetic.py). conf/real/ ran the phone's own readings.
+#
+# This run has no geophysical channel. The magnetometer's *direction* feeds its yaw update and
+# `--synthetic` keeps every direction, so it reproduces conf/real/rbpf_truth.toml's output.
 input = "data/input"
 output = "data/output/rbpf/truth"
 mode = "particle-filter"
@@ -15,15 +25,43 @@ level = "info"
 file = "log/rbpf_truth.log"
 
 [particle_filter]
+# Canciani & Raquet (IEEE TAES 53(1), 2017) marginalized particle filter: particles on
+# horizontal position error only; the paper's eleven linear states -- altitude, velocity and
+# tilt error, the barometer-aiding error, the loop's vertical-acceleration error, and each map
+# bias's temporal variation V plus constant offset c -- in a Kalman filter shared by every
+# particle. Time update once per measurement epoch with no process noise on position (eq. 19).
+# core/src/rbpf.rs gives the equations and every departure from the paper.
 num_particles = 2000
 position_init_std_m = [10.0, 10.0, 5.0]
 velocity_init_std_mps = 1.0
 attitude_init_std_rad = 0.1
-position_process_noise_std_m = [1.0, 1.0, 1.0]
+# Velocity and angular random walk, per sqrt(s): the paper's VRW and ARW (eq. 20).
 velocity_process_noise_std_mps = 1e-3
 attitude_process_noise_std_rad = 0.01
-zero_vertical_velocity = true
-zero_vertical_velocity_std_mps = 0.1
+# Random walk on the sampled horizontal position, m/sqrt(s). The paper's eq. 19 is zero, which
+# diverges with GNSS-rate fixes on this data (17 km on the reference recording, against 3.8 m
+# at 1 m/sqrt(s)); [0.0, 0.0] reproduces it.
+horizontal_process_noise_std_m = [1.0, 1.0]
+# Third-order barometer loop in the mechanization, with the paper's two barometer states. The
+# paper gives no gains: the loop places its three poles at -1/tau (Titterton & Weston). The
+# aiding error is a Gauss-Markov process sized from the barometric drift the UKF/EKF assume.
+baro_loop_time_constant_s = 10.0
+baro_error_std_m = 8.3
+baro_error_time_constant_s = 3600.0
+vertical_accel_error_init_std_mps2 = 0.1
+# Resample after every update, as the paper does (Algorithm 1, step 6).
+effective_sample_threshold = 1.0
+# Roughening is not in the paper (0.0 reproduces it); kept against the cloud collapse #385
+# measured on the phone data.
+roughening_factor = 0.2
+
+[execution_limits]
+# Both wall-clock budgets off, so every trajectory runs to its end whatever the load: the budget
+# is min(ratio x duration, max_wall_clock_s) and `<= 0` removes only its own term. The real
+# arm's rbpf_both lost 2025-06-27_11-54-35 to the 1,200 s default, so its aided and unaided
+# runs were scored over different sets. The no-progress guard still catches a hang.
+max_wall_clock_s = 0.0
+max_wall_clock_ratio = 0.0
 
 [health_limits]
 # Both guards are loosened so a MEMS-grade recording is allowed to drift to its end rather
