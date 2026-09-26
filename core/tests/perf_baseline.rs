@@ -522,6 +522,8 @@ fn scenarios() -> Vec<Scenario> {
                     rho_vel: 0.98,
                     sigma_vel_mps: 0.3,
                     r_scale: 1.0,
+                    tau_pos_s: None,
+                    tau_vel_s: None,
                 };
                 built.seed = SEED;
                 built
@@ -803,24 +805,20 @@ fn solve(scenario: &Scenario, trajectory: &Trajectory) -> Vec<NavigationResult> 
             run_closed_loop(&mut filter, stream, None, None).expect("ESKF closed loop")
         }
         Estimator::Rbpf => {
-            // Through the shared runner, not a hand-rolled loop: `ExtraStateLayout::PARTICLE_NONE`
-            // now dispatches to the particle constructor inside `NavigationResult`'s four-tuple
-            // `From`, which is what makes `run_closed_loop_with_geo` usable here.
+            // Through the shared runner, not a hand-rolled loop: the RBPF reports the Kalman
+            // filters' fifteen navigation and IMU-bias states, so it converts through the same
+            // four-tuple `From` at the same unaided layout.
             let mut filter = RaoBlackwellizedParticleFilter::new(nominal_state(first, is_enu), {
                 let mut built = RbpfConfig::default();
                 built.num_particles = RBPF_PARTICLES;
+                // The recipes' horizontal random walk; the paper's zero diverges here.
+                built.horizontal_process_noise_std_m = nalgebra::Vector2::new(1.0, 1.0);
                 built.seed = SEED;
                 built
             })
             .expect("RBPF construction");
-            run_closed_loop_with_geo(
-                &mut filter,
-                stream,
-                None,
-                None,
-                ExtraStateLayout::PARTICLE_NONE,
-            )
-            .expect("RBPF closed loop")
+            run_closed_loop_with_geo(&mut filter, stream, None, None, ExtraStateLayout::NONE)
+                .expect("RBPF closed loop")
         }
         Estimator::DeadReckoning => unreachable!("handled above"),
     }

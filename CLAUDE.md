@@ -20,7 +20,8 @@ The core library implementing strapdown INS algorithms and simulation framework:
 - **lib.rs**: Library entry point and 9-state strapdown mechanization in local-level frame (NED). Implements forward propagation equations from Groves textbook (Chapter 5.4-5.5)
 - **earth.rs**: WGS84 Earth ellipsoid model and geodetic calculations
 - **kalman.rs**: Kalman-style navigation filters including Unscented Kalman Filter (UKF) for nonlinear state estimation
-- **particle.rs**: Particle filter (Sequential Monte Carlo) implementation for non-Gaussian estimation with resampling strategies
+- **particle.rs**: Particle-filter building blocks (the `Particle` trait, resampling and averaging strategies); not a filter on its own
+- **rbpf.rs**: The Rao-Blackwellized particle filter, after Canciani & Raquet (2017) -- the one concrete particle filter
 - **measurements.rs**: Measurement models (GPS position/velocity, barometric altitude, pseudorange, carrier phase) implementing the `MeasurementModel` trait
 - **messages.rs**: Event stream handling for GNSS scheduling and fault injection scenarios
 - **sim.rs**: Simulation utilities, CSV data loading (Sensor Logger format), dead reckoning and closed-loop functions
@@ -59,6 +60,32 @@ Command-line tool for running INS simulations with GNSS degradation:
 - Provides alternative PNT in GNSS-denied environments
 - Built-in logging: Use `--log-level` and `--log-file` flags (see LOGGING.md for details)
 - Status: Experimental feature for research, may be commercialized in future roadmap
+
+### 4. `analysis` (/analysis, Python)
+Post-processing and experiment tooling, exposed as the `analyze` CLI:
+- **preprocess.py**: rebuilds `data/input` from the Sensor Logger exports in `data/raw` --
+  resampling, splitting recordings at IMU dropouts, and downloading the `_gravity.nc` /
+  `_magnetic.nc` maps beside each trajectory. `just preprocess` runs it at **10 Hz**, which
+  gives 10 Hz inertial propagation against the ~1 Hz the GNSS was actually recorded at (the
+  GNSS columns stay NaN in nine rows out of ten; do not interpolate them up). `data/input` is
+  the one directory every consumer reads -- all 21 `conf/*.toml`, `geo-stats`, `postprocess`
+  and `geoperf-*` -- so change the rate, not the path. `just preprocess-1hz` is the 1 Hz
+  variant, which is the rate every result before the geophysical fixes used
+- **geostats.py**: characterises the geophysical measurements against those maps -- per-field
+  bias, measurement noise and signal-to-noise, plus the de-correlation length that sets
+  `geo_interval_s`. Its anomaly models mirror `core/src/earth.rs` and `geonav/src/lib.rs` term
+  for term, and `self_check()` asserts they still agree; a statistic computed from a
+  *differently* computed anomaly would describe a quantity the filter never sees. `--apply-to
+  conf` (`just geo-adopt`) writes the measured bias, noise and bias prior into all 18
+  geophysical configs, line by line so the comments survive, rewriting only keys already
+  present so a `*_grav.toml` stays gravity-only. `geo_frequency_s` is held back behind
+  `--apply-interval`: the noise figures are measurements, but moving the interval from 1 s to
+  one measurement per de-correlation length changes what the experiment asks of the aid.
+  `core/tests/example_configs.rs` asserts all 18 carry the same values, so a partial adoption
+  fails the build rather than producing a comparison across two different R
+- **compare.py / plotting.py**: error statistics, LaTeX tables and map figures
+
+Run it with `uv run analyze <subcommand>` from the repository root.
 
 ## Common Commands
 
@@ -231,12 +258,21 @@ The Free Core implementation must achieve the following capabilities:
 - **UKF implementation**:
   - Uses unscented transform with sigma points for nonlinear state estimation
   - Handles full 9-state navigation solution
-- **Particle filter implementation** (`particle.rs`):
-  - Extended state: 15+ states (9 nav states + 3 accel bias + 3 gyro bias + optional)
-  - Resampling strategies: systematic, stratified, residual
-  - Averaging strategies: mean, weighted mean, maximum weight
-  - Includes vertical channel damping with altitude error feedback
-  - Each particle propagates independently through strapdown equations
+- **Particle filter implementation** (`rbpf.rs`): Canciani & Raquet's marginalized particle
+  filter (IEEE TAES 53(1), 2017), error-state and closed-loop
+  - Particles sample horizontal position error only (`δlat, δlon`); the paper's linear states
+    -- altitude, velocity, nav-frame tilt, the barometer-aiding error `δh_a`, the barometer
+    loop's vertical-acceleration error `δâ`, and each map bias as `V` (Gauss-Markov) + `c`
+    (constant) -- are one Kalman filter whose covariance all particles share. **No IMU bias
+    states**: adding them made the RBPF diverge on degraded-GNSS runs
+  - Barometer aiding is a third-order loop in the mechanization; barometer readings feed the
+    loop and are not measurement updates
+  - Time update once per measurement epoch (transition and noise accumulate between); one
+    measurement update for every other sensor (`C = H T`, weights under `C P Cᵀ + R`)
+  - `horizontal_process_noise_std_m` defaults to the paper's zero (eq. 19), which **diverges**
+    with GNSS-rate fixes on MEMS data; the `conf/` recipes set 1 m/√s
+  - Reports the Kalman filters' layout, `[9 nav, b_a, b_g, map biases]`, with zero bias rows;
+    `core/src/rbpf.rs`'s module docs list the departures from the paper
 - **Process noise**: `sim::DEFAULT_PROCESS_NOISE_DENSITY` is a **spectral density** -- a
   variance per second. Each filter forms $Q_k = q\,\Delta t$; it was a per-step variance with
   no `dt` anywhere until #374, which made effective Q a function of sample rate (a 50x spread
@@ -275,13 +311,29 @@ is the whole setup.
   set, even with `static` on, and the vendored netCDF build then fails against those headers
 - libfontconfig is a *runtime* dependency of `strapdown-sim`'s `plotting` feature (`dlopen`ed),
   not a build-time one
-- The repository is **Rust-only** -- the Python `analysis/` package was untracked in `c5f72c6`
-  when the repo was scoped to the v1.0 crate set, and the notebooks under `examples/` were
-  untracked in #335 for the same reason
+- The repository is a **two-language monorepo**: three Rust crates in a Cargo workspace, and
+  the Python `analysis` package in a uv workspace declared by the root `pyproject.toml`. The
+  two share the directory and nothing else -- `analysis/` is not a Cargo member and the crates
+  are not uv members. `analysis/` was untracked between `c5f72c6` and the monorepo change; the
+  notebooks under `examples/` are still untracked
+- **Python setup is `uv sync` from the repository root.** That builds the `analysis` member and
+  puts its `analyze` CLI on `uv run`, which is why the justfile recipes say `uv run analyze ...`
+  and not `uv run --project analysis ...`
+- **pygmt is imported inside the functions that use it, never at module scope.** It `dlopen`s
+  the GMT C library on import, so a module-scope import makes importing `analysis` at all fail
+  wherever GMT is absent -- which took down every subcommand, including the ones that touch no
+  maps, and would take down CI. `.github/workflows/python.yml` deliberately installs no GMT, so
+  it is what keeps this true
 
 ### Lint Policy
-Lints are **enforced at `deny`**, workspace-wide, not warn-level. `cargo lint` and one of the
-blocking CI jobs run `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
+
+**Python.** `uv run ruff check`, `uv run ruff format --check` and `uv run pytest -q` from the
+repository root, which is what `.github/workflows/python.yml` runs and what `just check-python`
+wraps. Configuration is `[tool.ruff]` in the root `pyproject.toml`; `target-version` there and
+`requires-python` in `analysis/pyproject.toml` must agree.
+
+**Rust.** Lints are **enforced at `deny`**, workspace-wide, not warn-level. `cargo lint` and one
+of the blocking CI jobs run `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
 
 **That is only half the gate.** A second blocking job runs
 `cargo clippy -p strapdown-core --all-targets --no-default-features -- -D warnings`, and the

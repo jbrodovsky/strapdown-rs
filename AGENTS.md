@@ -128,11 +128,19 @@ forward-looking `allow` for a lint the pinned toolchain does not know about is m
   or Ubuntu package is new enough (Ubuntu 26.04 and Debian trixie ship 2.46, bookworm 2.23), so
   take it from [cli.github.com](https://github.com/cli/cli/blob/trunk/docs/install_linux.md) or
   put the release binary on `PATH`. Diagnosed in #365; `gh api` was never affected.
-- The repository is **Rust-only**. The Python post-processing package under `analysis/` was
-  untracked in `c5f72c6` when the repo was scoped to the v1.0 crate set, and the two analysis
-  notebooks under `examples/` followed in #335 -- they import pygmt, cartopy and filterpy
-  against the environment pixi used to provide, and nothing here can run them. So there is no
-  Python source, no `pyproject.toml` and no `ruff`/`ty` configuration to maintain. If Python bindings
-  or an analysis package return (`strapdown_py` is a commented-out workspace member), they get
-  their own tooling gate at that point.
+- The repository is a **two-language monorepo**. Three Rust crates in a Cargo workspace, and
+  the Python `analysis` package in a uv workspace declared by the root `pyproject.toml`. The
+  `analysis/` package was untracked between `c5f72c6` and the monorepo change and is checked in
+  again now; the two analysis notebooks under `examples/` are still untracked, because they
+  import filterpy against the environment pixi used to provide.
+- **The Python half has its own gate**, and it is separate from the Rust one:
+  `uv run ruff check`, `uv run ruff format --check`, `uv run pytest -q` from the repository
+  root -- `just check-python`, or `.github/workflows/python.yml` in CI. Configuration lives in
+  `[tool.ruff]` and `[tool.pytest.ini_options]` in the root `pyproject.toml`.
+- **Never import pygmt at module scope.** It `dlopen`s the GMT C library on import, so a
+  module-scope import makes importing `analysis` fail wherever GMT is absent -- every
+  subcommand, including the ones that draw no maps, and CI, which installs no GMT on purpose.
+  Import it inside the function that uses it, as `plot_geo_map` and `download_maps` do.
+- Python bindings to the Rust crates are still future work (`strapdown_py` is a commented-out
+  Cargo member); `analysis/` is post-processing, not bindings.
 - Scenarios use YAML/JSON configs; CSV inputs follow Sensor Logger-style IMU/GNSS columns.

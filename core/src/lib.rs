@@ -898,7 +898,7 @@ pub(crate) fn horizontal_meters_to_radians(latitude_degrees: f64, altitude_m: f6
 /// Uses the WGS84 meridian and transverse radii of curvature (Groves §2.4.4), matching the
 /// radii the position update integrates against, so that P0 is expressed in exactly the
 /// units the filter's position states carry.
-fn horizontal_position_variance(
+pub(crate) fn horizontal_position_variance(
     horizontal_position_m: f64,
     latitude_degrees: f64,
     altitude_m: f64,
@@ -3692,10 +3692,15 @@ mod tests {
         );
 
         let noise = gps[0].get_noise();
-        // Back out of radians of arc, the units `get_noise` leaves the horizontal channel in.
-        let horizontal_std_m = noise[(0, 0)].sqrt() / earth::METERS_TO_RADIANS;
+        // Back out of radians of arc, the units `get_noise` leaves the horizontal channels in,
+        // through the per-axis WGS84 factors it converts with.
+        let (latitude_per_meter, longitude_per_meter) =
+            horizontal_meters_to_radians(gps[0].latitude, gps[0].altitude);
+        let north_std_m = noise[(0, 0)].sqrt() / latitude_per_meter;
+        let east_std_m = noise[(1, 1)].sqrt() / longitude_per_meter;
         let vertical_std_m = noise[(2, 2)].sqrt();
-        assert_approx_eq!(horizontal_std_m, 5.0, 1e-9);
+        assert_approx_eq!(north_std_m, 5.0, 1e-9);
+        assert_approx_eq!(east_std_m, 5.0, 1e-9);
         assert_approx_eq!(vertical_std_m, 2.0, 1e-12);
     }
 

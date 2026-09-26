@@ -12,6 +12,13 @@
 //! resample was **1.0** and the resample produced **one** distinct ancestor out of 500.
 //!
 //! #385. The repair is roughening ([`RbpfConfig::roughening_factor`]).
+//!
+//! Since the filter was restructured after Canciani & Raquet -- two sampled states rather than
+//! three, altitude in the Kalman partition -- the reference recording no longer degenerates
+//! that way even without roughening: its smallest reported sigma unroughened is 3 cm to 33 cm
+//! across the configurations measured. So the recording is kept as a regression guard, and the
+//! demonstration that roughening is what prevents a collapse when one does happen uses a fix
+//! built to cause one.
 
 #![allow(
     clippy::unwrap_used,
@@ -22,15 +29,23 @@
 )]
 
 use nalgebra::Rotation3;
-use strapdown::NavigationFilter;
-use strapdown::StrapdownState;
+use strapdown::measurements::GPSPositionMeasurement;
 use strapdown::messages::{AidingConfig, Event, build_event_stream};
 use strapdown::rbpf::{RaoBlackwellizedParticleFilter, RbpfConfig};
 use strapdown::sim::TestDataRecord;
+use strapdown::{IMUData, NavigationFilter, StrapdownState};
 
 /// The slice the gated `real_rbpf_slice__rbpf` scenario uses, so the two agree.
 const SLICE_SAMPLES: usize = 1200;
 const PARTICLES: usize = 500;
+
+/// The horizontal random walk the `conf/` recipes run, m/sqrt(s).
+///
+/// Not the filter's default, which is Canciani & Raquet's zero (eq. 19). With zero, the cloud's
+/// extent shrinks every epoch, so roughening -- which scales with that extent -- cannot hold it
+/// open; that collapse is the reason the recipes set this, and is documented on
+/// `RbpfConfig::horizontal_process_noise_std_m`. Roughening is tested here as it runs.
+const RECIPE_HORIZONTAL_PROCESS_NOISE: nalgebra::Vector2<f64> = nalgebra::Vector2::new(1.0, 1.0);
 
 /// Metres per radian of latitude, near enough for turning a variance into a legible sigma.
 const M_PER_RAD: f64 = 6_371_000.0;
@@ -52,16 +67,18 @@ fn reported_sigmas(roughening_factor: f64) -> Vec<f64> {
         velocity_east,
         velocity_vertical: 0.0,
         attitude: Rotation3::from_euler_angles(roll, pitch, yaw),
-        is_enu: false,
+        // The recording is ENU, as `integration_tests.rs`'s `TEST_DATA_IS_ENU` records.
+        is_enu: true,
     };
 
     let mut config = RbpfConfig::default();
     config.num_particles = PARTICLES;
     config.seed = 42;
     config.roughening_factor = roughening_factor;
+    config.horizontal_process_noise_std_m = RECIPE_HORIZONTAL_PROCESS_NOISE;
     let mut filter = RaoBlackwellizedParticleFilter::new(nominal, config).unwrap();
 
-    let stream = build_event_stream(&slice, &AidingConfig::default(), false).unwrap();
+    let stream = build_event_stream(&slice, &AidingConfig::default(), true).unwrap();
 
     let mut sigmas = Vec::new();
     for event in stream.events {
@@ -113,19 +130,66 @@ fn the_position_cloud_does_not_collapse_to_a_point() {
     );
 }
 
-/// The guard above must be able to fail: with roughening off, the collapse returns.
+/// The sigma reported right after each of a few centimetre-accurate fixes against a 10 m
+/// cloud, with the given roughening.
+///
+/// A likelihood three orders of magnitude narrower than the cloud puts essentially all the
+/// weight on one particle, which is the condition #385 recorded on the reference recording
+/// before the restructure made it rare there.
+fn sigmas_after_degenerate_fixes(roughening_factor: f64) -> Vec<f64> {
+    let nominal = StrapdownState {
+        latitude: 40.0_f64.to_radians(),
+        longitude: (-105.0_f64).to_radians(),
+        altitude: 1600.0,
+        attitude: Rotation3::identity(),
+        is_enu: true,
+        ..StrapdownState::default()
+    };
+    let mut config = RbpfConfig::default();
+    config.num_particles = PARTICLES;
+    config.seed = 385;
+    config.roughening_factor = roughening_factor;
+    config.horizontal_process_noise_std_m = RECIPE_HORIZONTAL_PROCESS_NOISE;
+    let mut filter = RaoBlackwellizedParticleFilter::new(nominal, config).unwrap();
+    let fix = GPSPositionMeasurement {
+        latitude: 40.0,
+        longitude: -105.0,
+        altitude: 1600.0,
+        horizontal_noise_std: 0.01,
+        vertical_noise_std: 1.0,
+    };
+    let imu = IMUData {
+        accel: nalgebra::Vector3::new(0.0, 0.0, strapdown::earth::gravity(&40.0, &1600.0)),
+        gyro: nalgebra::Vector3::zeros(),
+    };
+    let mut sigmas = Vec::new();
+    for _ in 0..5 {
+        filter.predict(&imu, 0.1).unwrap();
+        filter.update(&fix).unwrap();
+        let (_, covariance) = filter.estimate();
+        sigmas.push(covariance[(0, 0)].sqrt() * M_PER_RAD);
+    }
+    sigmas
+}
+
+/// The guard above must be able to fail: a fix that degenerates the weights collapses the
+/// cloud without roughening, and does not with it.
 ///
 /// Without this, a change that quietly stopped the cloud from ever being resampled would leave
 /// the test above green while removing the thing it checks.
 #[test]
-fn without_roughening_the_collapse_is_reproducible() {
-    let sigmas = reported_sigmas(0.0);
-    let collapsed = sigmas.iter().filter(|s| **s < 1e-3).count();
-
+fn without_roughening_a_degenerate_fix_collapses_the_cloud() {
+    let unroughened = sigmas_after_degenerate_fixes(0.0);
     assert!(
-        collapsed > 0,
-        "with roughening disabled the cloud no longer collapses, so \
-         `the_position_cloud_does_not_collapse_to_a_point` is no longer testing anything. \
-         Either the resampling path changed or the scenario no longer degenerates."
+        unroughened.iter().any(|sigma| *sigma < 1e-3),
+        "with roughening disabled a centimetre fix against a 10 m cloud no longer collapses it \
+         (sigmas {unroughened:?}), so `the_position_cloud_does_not_collapse_to_a_point` is no \
+         longer testing anything. Either the resampling path changed or the weights no longer \
+         degenerate."
+    );
+    let roughened = sigmas_after_degenerate_fixes(RbpfConfig::default().roughening_factor);
+    assert!(
+        roughened.iter().all(|sigma| *sigma >= 1e-3),
+        "with roughening on, the same fixes still collapsed the cloud: {roughened:?}"
     );
 }

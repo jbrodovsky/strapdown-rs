@@ -4,7 +4,29 @@ This document describes how to configure geophysical measurements (gravity and m
 
 ## Overview
 
-The `strapdown-sim config` command now supports interactive configuration of geophysical navigation parameters. This allows you to set up simulations that incorporate gravity and/or magnetic anomaly measurements for GNSS-denied navigation.
+Geophysical measurements are configured in one of two equivalent ways: a `[geophysical]`
+section in a scenario file, or the `--geo` flags on the `cl` subcommand. Both resolve to the
+same settings and run the same code, so a run is reproducible from either.
+
+```bash
+strapdown-sim --config conf/ukf_both.toml        # a scenario file
+strapdown-sim cl --geo -i ... --filter ukf ...   # the equivalent flags
+```
+
+A closed-loop scenario file carrying a `[geophysical]` section used to be **refused**: the
+geophysical runner was reachable only from the command line, so `mode = "closed-loop"` plus
+maps was an error and only `mode = "particle-filter"` could carry them. The nine recipes under
+`conf/` that describe UKF and EKF geophysical runs are live again as a result.
+
+Two things are worth knowing before writing one:
+
+- **`filter` must be `ukf` or `ekf`.** The ESKF has no geophysical implementation, and it is
+  the default -- so a `[geophysical]` section in a file that omits `filter` is refused.
+- **At least one of `gravity_resolution` / `magnetic_resolution` must be set.** A
+  `[geophysical]` section naming neither configures nothing, and is refused rather than run.
+
+`strapdown-sim config` also writes these sections interactively, and reconciles the two rules
+above for you.
 
 ## Using the Configuration Wizard
 
@@ -75,19 +97,33 @@ The geophysical configuration section in the generated TOML file looks like this
 [geophysical]
 # Gravity anomaly measurements
 gravity_resolution = "one_minute"
-gravity_bias = 0.0
-gravity_noise_std = 100.0
+gravity_bias = 0.0                  # seed of the map-bias state, mGal
+gravity_noise_std = 100.0           # measurement noise, mGal
+gravity_bias_init_std = 100.0       # prior on the bias state; defaults to gravity_noise_std
+gravity_bias_process_noise_std = 1.7  # random walk, mGal per sqrt(s); defaults to the prior over an hour
 gravity_map_file = "path/to/gravity_map.nc"  # Optional
 
 # Magnetic anomaly measurements
 magnetic_resolution = "one_minute"
 magnetic_bias = 0.0
 magnetic_noise_std = 150.0
+magnetic_bias_init_std = 150.0
+magnetic_bias_process_noise_std = 2.5
 magnetic_map_file = "path/to/magnetic_map.nc"  # Optional
 
 # Measurement interval in seconds -- a period, not a frequency.
 geo_interval_s = 1.0
 ```
+
+The four `*_bias_init_std` / `*_bias_process_noise_std` keys are the configuration-file
+counterparts of `--gravity-bias-init-std` and friends. They matter most for the magnetic
+channel: a recording made inside a vehicle carries thousands of nT of the vehicle's own field,
+and the bias state is what absorbs it, so the default prior of `magnetic_noise_std` is usually
+far too tight.
+
+**The noise defaults are defaults, not measurements.** 100 mGal and 150 nT have never been
+compared against the maps they are differenced from. `analyze geostats` in the `analysis`
+package measures the residual directly and writes a paste-ready block; run `just geo-stats`.
 
 ## Resolution Options
 

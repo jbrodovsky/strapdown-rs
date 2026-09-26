@@ -1,0 +1,51 @@
+# uv workspace root for the Python half of the monorepo.
+#
+# This is a *virtual* workspace root: it declares members and shared tool configuration but
+# is not itself a Python package, which is why there is no `[project]` table. The Rust half
+# is a Cargo workspace declared in Cargo.toml; the two sit side by side and share nothing but
+# this directory. `analysis/` is not a Cargo member and `core/`, `sim/` and `geonav/` are not
+# uv members.
+#
+# From here, `uv sync` builds every member and `uv run analyze ...` resolves the CLI, which
+# is why the justfile recipes no longer pass `--project analysis`.
+
+[tool.uv.workspace]
+members = ["analysis"]
+
+[tool.ruff]
+# Matches `requires-python` in analysis/pyproject.toml. Keep the two in step, the way the
+# 1.91 Rust pin is kept in step across rust-toolchain.toml, Cargo.toml and clippy.toml.
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+# Deliberately a small, high-signal set rather than everything. The Rust half runs clippy at
+# `deny` with pedantic and nursery on; this is not an attempt to mirror that, because the
+# Python here is analysis code whose job is to be read alongside the numbers it produces.
+select = [
+    "E",    # pycodestyle
+    "F",    # pyflakes
+    "I",    # import sorting
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "NPY",  # numpy-specific correctness
+]
+ignore = [
+    "E501",  # line length is handled by the formatter, not the linter
+]
+
+[tool.ruff.lint.per-file-ignores]
+# The CLI module imports its submodules for the side effect of registering subcommands, and
+# `plot_geo_map`/`download_maps` import pygmt inside the function body on purpose -- see the
+# comments at those call sites. Neither is a mistake ruff should flag.
+"analysis/src/analysis/__init__.py" = ["E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["analysis/tests"]
+filterwarnings = [
+    # pygmt registers an xarray backend that fails to load without the GMT C library. The
+    # code paths under test do not use it, and CI has no GMT.
+    "ignore:Engine 'gmt' loading failed:RuntimeWarning",
+    "ignore:numpy.ndarray size changed:RuntimeWarning",
+    "ignore:Setting the shape on a NumPy array has been deprecated:DeprecationWarning",
+]

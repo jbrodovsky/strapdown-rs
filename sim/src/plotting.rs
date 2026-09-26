@@ -3,6 +3,7 @@
 //! This module provides functionality to generate performance plots comparing
 //! navigation output with GPS ground truth measurements.
 
+use chrono::{DateTime, Utc};
 use plotters::prelude::*;
 use std::error::Error;
 use std::path::Path;
@@ -33,6 +34,54 @@ pub(crate) fn haversine_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> 
     EARTH_RADIUS_M * c
 }
 
+/// A plotted series of `(elapsed seconds, value)` points.
+type Series = Vec<(f64, f64)>;
+
+/// Seconds from `origin` to `time`, at millisecond resolution.
+fn elapsed_seconds(origin: DateTime<Utc>, time: DateTime<Utc>) -> f64 {
+    (time - origin).num_milliseconds() as f64 / 1000.0
+}
+
+/// Horizontal and vertical error, as `(elapsed seconds, metres)`, at every epoch where the
+/// reference has a GNSS fix.
+///
+/// Each solution is paired with the record carrying the *same* timestamp. Every run writes one
+/// result per record, the initial state included, so the positional pairing this replaced --
+/// solution `i` against record `i + 1` -- compared each solution with the *next* record's fix,
+/// adding a speed x sample-interval error to every point (1 s of travel at 1 Hz).
+///
+/// Epochs without a fix are dropped rather than carried as NaN. Nine records in ten have none
+/// at the 10 Hz preprocessing rate, and plotters maps a NaN coordinate to the bottom of the
+/// axis, so a NaN-carrying series drew a comb from zero up to each fix instead of a trace.
+fn error_series(
+    nav_results: &[NavigationResult],
+    gps_records: &[TestDataRecord],
+) -> (Series, Series) {
+    let mut horizontal = Vec::new();
+    let mut vertical = Vec::new();
+    let Some(origin) = nav_results.first().map(|nav| nav.timestamp) else {
+        return (horizontal, vertical);
+    };
+    // Both sequences are in time order, so a single forward pass pairs them.
+    let mut records = gps_records.iter().peekable();
+    for nav in nav_results {
+        while records.next_if(|gps| gps.time < nav.timestamp).is_some() {}
+        let Some(gps) = records.peek().filter(|gps| gps.time == nav.timestamp) else {
+            continue;
+        };
+        let elapsed = elapsed_seconds(origin, nav.timestamp);
+        let h_error = haversine_distance(nav.latitude, nav.longitude, gps.latitude, gps.longitude);
+        if h_error.is_finite() {
+            horizontal.push((elapsed, h_error));
+        }
+        let v_error = (nav.altitude - gps.altitude).abs();
+        if v_error.is_finite() {
+            vertical.push((elapsed, v_error));
+        }
+    }
+    (horizontal, vertical)
+}
+
 /// Generate a performance plot comparing navigation results with GPS measurements.
 ///
 /// The plot includes:
@@ -57,16 +106,12 @@ pub(crate) fn plot_performance(
     let root = BitMapBackend::new(output_path, (1200, 400)).into_drawing_area();
     root.fill(&WHITE)?;
 
-    // Calculate errors
-    let mut horizontal_errors = Vec::new();
-    let mut vertical_errors = Vec::new();
-    let mut timestamps = Vec::new();
     let mut gps_h_accuracy = Vec::new();
     let mut gps_v_accuracy = Vec::new();
 
     // Collect GPS accuracy data
     for gps in gps_records {
-        let elapsed = (gps.time - gps_records[0].time).num_milliseconds() as f64 / 1000.0;
+        let elapsed = elapsed_seconds(gps_records[0].time, gps.time);
 
         if !gps.horizontal_accuracy.is_nan() && gps.horizontal_accuracy > 0.0 {
             gps_h_accuracy.push((elapsed, gps.horizontal_accuracy));
@@ -76,36 +121,20 @@ pub(crate) fn plot_performance(
         }
     }
 
-    // Calculate errors for each navigation result
-    // Skip first GPS record as it's used for initialization
-    for (i, nav) in nav_results.iter().enumerate() {
-        if i + 1 >= gps_records.len() {
-            break;
-        }
-
-        let gps = &gps_records[i + 1];
-        let elapsed = (nav.timestamp - nav_results[0].timestamp).num_milliseconds() as f64 / 1000.0;
-
-        // Calculate 2D haversine distance error
-        let h_error = haversine_distance(nav.latitude, nav.longitude, gps.latitude, gps.longitude);
-
-        // Calculate vertical error
-        let v_error = (nav.altitude - gps.altitude).abs();
-
-        timestamps.push(elapsed);
-        horizontal_errors.push(h_error);
-        vertical_errors.push(v_error);
-    }
-
-    if timestamps.is_empty() {
-        return Err("No data points to plot".into());
+    let (horizontal_errors, vertical_errors) = error_series(nav_results, gps_records);
+    if horizontal_errors.is_empty() && vertical_errors.is_empty() {
+        return Err("No GNSS fix coincides with a navigation solution".into());
     }
 
     // Find the maximum time and error for axis scaling
-    let max_time = timestamps.iter().copied().fold(0.0f64, f64::max);
+    let max_time = match (nav_results.first(), nav_results.last()) {
+        (Some(first), Some(last)) => elapsed_seconds(first.timestamp, last.timestamp),
+        _ => 0.0,
+    };
     let max_error = horizontal_errors
         .iter()
         .chain(vertical_errors.iter())
+        .map(|(_, v)| v)
         .chain(gps_h_accuracy.iter().map(|(_, v)| v))
         .chain(gps_v_accuracy.iter().map(|(_, v)| v))
         .copied()
@@ -137,25 +166,13 @@ pub(crate) fn plot_performance(
 
     // Plot 2D haversine error
     chart
-        .draw_series(LineSeries::new(
-            timestamps
-                .iter()
-                .copied()
-                .zip(horizontal_errors.iter().copied()),
-            &RED,
-        ))?
+        .draw_series(LineSeries::new(horizontal_errors, &RED))?
         .label("2D Haversine Error")
         .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], RED));
 
     // Plot altitude error
     chart
-        .draw_series(LineSeries::new(
-            timestamps
-                .iter()
-                .copied()
-                .zip(vertical_errors.iter().copied()),
-            &BLUE,
-        ))?
+        .draw_series(LineSeries::new(vertical_errors, &BLUE))?
         .label("Altitude Error")
         .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], BLUE));
 
@@ -198,6 +215,82 @@ pub(crate) fn plot_performance(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use chrono::TimeDelta;
+    use strapdown::StrapdownState;
+
+    /// A 10 Hz track due north at ~20 m/s, with a GNSS fix on every `fix_every`-th record and
+    /// NaN position on the rest, as the preprocessed Sensor Logger inputs have; and a
+    /// navigation solution that sits exactly on the true track at every record.
+    fn track(n: i64, fix_every: i64) -> (Vec<NavigationResult>, Vec<TestDataRecord>) {
+        let start = DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap();
+        let mut nav_results = Vec::new();
+        let mut records = Vec::new();
+        for i in 0..n {
+            let time = start + TimeDelta::milliseconds(100 * i);
+            let latitude = 40.0 + 2e-5 * i as f64;
+            let state = StrapdownState {
+                latitude: latitude.to_radians(),
+                longitude: (-75.0_f64).to_radians(),
+                altitude: 100.0,
+                ..StrapdownState::default()
+            };
+            nav_results.push(NavigationResult::from((&time, &state)));
+            let has_fix = i % fix_every == 0;
+            let fix = |value: f64| if has_fix { value } else { f64::NAN };
+            records.push(TestDataRecord {
+                time,
+                latitude: fix(latitude),
+                longitude: fix(-75.0),
+                altitude: fix(100.0),
+                ..TestDataRecord::default()
+            });
+        }
+        (nav_results, records)
+    }
+
+    #[test]
+    fn errors_pair_each_solution_with_the_record_at_its_own_timestamp() {
+        let (nav_results, records) = track(50, 1);
+        let (horizontal, vertical) = error_series(&nav_results, &records);
+        assert_eq!(horizontal.len(), 50);
+        // A solution on the true track scores zero. Pairing it with the next record instead
+        // scores the 2.2 m the vehicle covers in one 0.1 s sample.
+        for (_, error) in horizontal.iter().chain(&vertical) {
+            assert!(*error < 1e-6, "solution on the track scored {error} m");
+        }
+    }
+
+    #[test]
+    fn epochs_without_a_fix_are_dropped_not_carried_as_nan() {
+        let (nav_results, records) = track(100, 10);
+        let (horizontal, vertical) = error_series(&nav_results, &records);
+        assert_eq!(horizontal.len(), 10);
+        assert_eq!(vertical.len(), 10);
+        assert!(
+            horizontal
+                .iter()
+                .chain(&vertical)
+                .all(|(t, e)| t.is_finite() && e.is_finite())
+        );
+        let times: Vec<f64> = horizontal.iter().map(|(t, _)| *t).collect();
+        assert!(
+            (times[1] - 1.0).abs() < 1e-9,
+            "second fix at {} s, not 1 s",
+            times[1]
+        );
+    }
+
+    #[test]
+    fn records_without_a_matching_solution_are_skipped() {
+        let (nav_results, records) = track(20, 1);
+        // Every other solution: the unmatched records in between are passed over, and the
+        // matched ones still pair by timestamp.
+        let sparse: Vec<NavigationResult> = nav_results.into_iter().step_by(2).collect();
+        let (horizontal, _) = error_series(&sparse, &records);
+        assert_eq!(horizontal.len(), 10);
+        assert!(horizontal.iter().all(|(_, e)| *e < 1e-6));
+    }
 
     #[test]
     fn test_haversine_distance_zero() {

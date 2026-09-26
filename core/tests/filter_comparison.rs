@@ -1013,6 +1013,13 @@ fn every_fifteen_state_filter_couples_its_biases_to_its_navigation_states() {
             );
             continue;
         }
+        // The RBPF reports the fifteen-state layout without carrying bias states -- Canciani &
+        // Raquet's filter has none -- and says so with bias rows that are identically zero.
+        // There is nothing there to couple.
+        if (9..15).all(|bias| covariance[(bias, bias)] == 0.0) {
+            println!("{name}: reports no bias states");
+            continue;
+        }
 
         let mut coupling = 0.0_f64;
         for row in 0..9 {

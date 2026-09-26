@@ -1,0 +1,42 @@
+input = "data/input"
+output = "data/output/ukf/truth"
+mode = "closed-loop"
+# These recipes read Sensor Logger exports from `data/input`, which are ENU
+# convention: at rest the device reports +g along its up axis. The library default
+# is NED as of #272, so the frame has to be declared -- `strapdown-sim` checks it
+# against the data and refuses rather than silently double-counting gravity (#296).
+is_enu = true
+seed = 42
+parallel = true
+generate_plot = true
+
+[logging]
+level = "info"
+file = "log/ukf_truth.log"
+
+[closed_loop]
+filter = "ukf"
+
+[health_limits]
+# Both guards are loosened so a MEMS-grade recording is allowed to drift to its end rather
+# than being failed part way through.
+#
+#   nis_pos_max    default 100 -- two trajectories peak at 897 and 476 while still tracking.
+#   speed_mps_max  default 500 -- only 2025-06-14_21-17-02 reaches it, the worst recording
+#                  in the set (587 rows, median hAcc 16.2 m, a 1000 m sentinel at p95).
+#
+# The cost is real and applies to both: a genuinely diverged filter can now run to
+# completion and land in the aggregates, so a run finishing is weaker evidence that it
+# stayed healthy than it used to be. Kept identical across truth and degraded so the two
+# always fail the same trajectories and remain comparable.
+nis_pos_max = 1000.0
+speed_mps_max = 5000.0
+
+[gnss_degradation]
+seed = 42
+
+[gnss_degradation.scheduler]
+kind = "pass_through"
+
+[gnss_degradation.fault]
+kind = "none"
