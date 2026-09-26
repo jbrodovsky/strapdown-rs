@@ -141,11 +141,12 @@ def plot_performance(nav: DataFrame, gps: DataFrame, output_path: Path | str):
     )
     ax.set_xlim(left=0)
     # ax.set_ylim((0, 50))
-    ax.set_xlabel("Time (s)")
-    ax.set_ylabel("2D Haversine Error (m)")
-    ax.set_title("Strapdown INS Simulation Performance with GPS Comparison", fontsize=16)
+    ax.set_xlabel("Time (s)", fontsize=14)
+    ax.set_ylabel("2D Haversine Error (m)", fontsize=14)
+    ax.set_title("Strapdown INS Simulation Performance with GPS Comparison", fontsize=20)
+    ax.tick_params(labelsize=12)
     ax.grid()
-    ax.legend()
+    ax.legend(fontsize=12)
     fig.savefig(output_path, dpi=300)
     plt.close(fig)
     return fig
@@ -231,14 +232,15 @@ def plot_relative_performance(
     )
     ax.set_xlim(left=0)
     # ax[0].set_ylim((-0.1, 0.1))
-    ax.set_xlabel("Time (h)")
-    ax.set_ylabel("Distance (m)")
+    ax.set_xlabel("Time (h)", fontsize=14)
+    ax.set_ylabel("Distance (m)", fontsize=14)
     ax.set_title(
         f"Geophysical Navigation Performance | RMSE difference: {geo_rmse - deg_rmse:0.2f}",
-        fontsize=16,
+        fontsize=20,
     )
+    ax.tick_params(labelsize=12)
     ax.grid()
-    ax.legend()
+    ax.legend(fontsize=12)
     fig.savefig(output_path, dpi=300)
     plt.close(fig)
     return fig
