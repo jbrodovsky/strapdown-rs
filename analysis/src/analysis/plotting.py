@@ -200,7 +200,9 @@ def plot_relative_performance(
         Unit.METERS,
     )
 
-    time, err_diff = _finite((nav.index - nav.index[0]).total_seconds().to_numpy() / 3600, geo_error - deg_error)
+    time, err_diff = _finite(
+        (nav.index - nav.index[0]).total_seconds().to_numpy() / 3600, geo_error - deg_error
+    )
     geo_rmse = np.sqrt(np.nanmean(geo_error**2))
     deg_rmse = np.sqrt(np.nanmean(deg_error**2))
     # General errors
