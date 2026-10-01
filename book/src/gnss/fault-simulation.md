@@ -24,31 +24,23 @@ and 2024; European flights encountering GNSS interference rose from roughly 200 
 2024 to around 900 per day in Q2, and EUROCONTROL logged more than 2,500 jamming events in
 2024 alone.
 
-## The three tiers
+## The interference tier
 
 | Tier | What it models | Scheduler | Fault | Configs |
 |---|---|---|---|---|
-| **Denial** | inside the jammed area | `duty_cycle` | `none` | `conf/*_denied.toml` |
-| **Degraded** | the fringe of it | `fixed_interval` | `degraded` | `conf/*_jammed.toml` |
+| **Degraded** | the fringe of a jammed area | `fixed_interval` | `degraded` | `conf/*_degraded.toml` |
 | **Spoof** | a deceptive signal | either | `slow_bias` / `hijack` | — |
 
-### Denial
-
-`conf/*_denied.toml`: 30 s of fixes in every 150, fault `none`.
-
-The only variable is availability, which is the point — the fixes that do arrive are the
-receiver's own, so any change in the result is attributable to the outage rather than to a
-noise model. 30 s on is long enough for the filter to re-converge between outages, so each
-one starts from a comparable state; 120 s off is where a MEMS platform's drift becomes the
-dominant error term.
-
-Sweep `off_s` over 60 / 120 / 300 / 600 to trace how an aid's contribution grows with outage
-length. This is the tier where an aid can be shown to earn its keep, because during an outage
-it is the only correction there is.
+An earlier version of this experiment matrix also carried a **Denial** tier
+(`duty_cycle`/`none`, modeling total loss of fix inside a jammed area) as a config separate
+from Degraded. It was consolidated into the single Degraded tier below: keeping one
+interference profile, used identically everywhere a geo-aided run is scored, was worth more
+than covering both regimes at the cost of doubling the config matrix and the pairing logic
+that keeps it honest (see "Choosing a baseline" below).
 
 ### Degraded
 
-`conf/*_jammed.toml`: fixes every 5 s, with AR(1)-correlated error on position and velocity
+`conf/*_degraded.toml`: fixes every 5 s, with AR(1)-correlated error on position and velocity
 and the advertised accuracies inflated.
 
 Anchoring the magnitude to measurement rather than to a round number: smartphone GNSS is 3–5 m
@@ -102,13 +94,17 @@ error you get: an AR(1) settles at `sigma / sqrt(1 - rho²)`, so `sigma_pos_m = 
 `geoperf-all` scores each geophysically-aided run against that filter's unaided run, so the
 two must carry an **identical** GNSS profile. If they differ, the "improvement" reported is
 the difference between two degradations and has nothing to do with the aid. The
-`[gnss_degradation]` and `[health_limits]` sections of `conf/{ukf,ekf}_{grav,mag,both}.toml`
+`[gnss_degradation]` and `[health_limits]` sections of `conf/{ukf,ekf,rbpf}_{grav,mag,both}.toml`
 are duplicated from `conf/*_degraded.toml` for exactly this reason, and
 `core/tests/example_configs.rs` covers `conf/` so a drift in them fails a test.
 
-`conf/*_degraded.toml` is kept as it was — 21 m steady state — because it is the baseline
-every result so far was measured against. `conf/*_jammed.toml` is the recalibrated profile to
-prefer for new work. Switch deliberately rather than by having the old one change underfoot.
+`conf/*_degraded.toml` carries this recalibrated 35 m profile, and it is the only
+interference tier in the config matrix: `conf/{ukf,ekf,rbpf}_{grav,mag,both}.toml` are all
+scored against their own filter's `conf/{ukf,ekf,rbpf}_degraded.toml`, and RBPF's geo-aided
+runs are additionally scored against `conf/ekf_degraded.toml` as the canonical INS baseline
+(`just geoperf-all`/`geoperf-rbpf`). Keeping a single profile, applied identically everywhere,
+is what makes the pairing in `core/tests/example_configs.rs` a simple filename convention
+rather than a per-tier lookup.
 
 ## Sources
 

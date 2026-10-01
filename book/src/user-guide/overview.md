@@ -76,8 +76,10 @@ The library provides multiple filter implementations:
 - **Error-State Kalman Filter (ESKF)**: multiplicative attitude error. **The default for `cl`.**
 - **Extended Kalman Filter (EKF)**: Fast, efficient, works well for mildly nonlinear systems
 - **Unscented Kalman Filter (UKF)**: Better accuracy for nonlinear systems, 2-3x slower
-- **Rao-Blackwellized Particle Filter (RBPF)**: position as particles, the remaining states as
-  per-particle Kalman filters. The only particle filter implementation -- `ParticleFilterType`
+- **Rao-Blackwellized Particle Filter (RBPF)**: Canciani & Raquet's marginalized particle filter
+  -- horizontal position as particles; altitude, velocity, tilt, the barometer loop's two states
+  and the map biases as a Kalman filter shared by every particle. See
+  [the RBPF page](../filters/rbpf.md). The only particle filter implementation -- `ParticleFilterType`
   has this one variant, and `particle.rs` is a module of building blocks rather than a filter
   that can be selected on its own
 

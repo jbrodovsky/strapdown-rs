@@ -412,12 +412,13 @@ will tell you off; change the numbers by re-blessing.
   horizontal containment 0.161 to 0.497, `npes` 1,249 to 68. That is the offset leaving the
   numerator. It is still not consistent -- 0.497 against an ideal of 0.9973 -- and what
   remains is a real finding rather than an artefact.
-- **`real_rbpf_slice__rbpf`'s consistency metrics are not gated.** `npes` reads 5.7e25 and the
-  real `nees` larger still -- both meaningless, and deliberately quoted without a ratio -- because the particle
-  cloud collapses to a horizontal sigma of nanometres on 17 of 1,200 epochs, which a mean of
-  $e^2/P$ cannot survive. Exposed rather than caused by #367, which stopped sampling the cloud
-  one propagation step after each fix had re-inflated it. Tracked as
-  [#385](https://github.com/jbrodovsky/strapdown-rs/issues/385).
+- **`real_rbpf_slice__rbpf`'s consistency metrics are not gated.** When this was written `npes`
+  read 5.7e25 and the real `nees` larger still, because the particle cloud collapsed to a
+  horizontal sigma of nanometres on 17 of 1,200 epochs, which a mean of $e^2/P$ cannot survive
+  ([#385](https://github.com/jbrodovsky/strapdown-rs/issues/385)). Roughening removed the
+  collapse, and the restructure after Canciani & Raquet (2026-09-25) took `npes` to 10.3 and
+  both channels' 3-sigma containment to 0.95: the filter is now close to consistent. The metrics stay ungated until the gate has a
+  cross-platform tolerance ([#386](https://github.com/jbrodovsky/strapdown-rs/issues/386)).
 - **Several numbers here therefore record known defects rather than good behaviour**, which is
   what a two-sided gate is for. Each is annotated in the baseline file. When one is fixed the
   improvement side trips and asks for the diff that records it.
