@@ -1,3 +1,11 @@
+# SYNTHETIC ARM -- the complement of conf/real/rbpf_grav.toml.
+#
+# Same filter, trajectories, inertial data and GNSS degradation as the real arm. What differs
+# is `grav_*` and `mag_*` in data/input: `just preprocess` (`analyze preprocess --synthetic`)
+# replaces the phone's readings with those of an ADXL355 gravimeter and an RM3100 magnetometer
+# -- the maps at the GNSS track plus each part's datasheet error model, installation ideal
+# (analysis/src/analysis/synthetic.py). conf/real/ ran the phone's own readings.
+#
 # RBPF with gravity anomaly measurements only
 input = "data/input"
 output = "data/output/rbpf/grav"
@@ -16,45 +24,110 @@ level = "info"
 file = "log/rbpf_grav.log"
 
 [particle_filter]
+# Canciani & Raquet (IEEE TAES 53(1), 2017) marginalized particle filter: particles on
+# horizontal position error only; the paper's eleven linear states -- altitude, velocity and
+# tilt error, the barometer-aiding error, the loop's vertical-acceleration error, and each map
+# bias's temporal variation V plus constant offset c -- in a Kalman filter shared by every
+# particle. Time update once per measurement epoch with no process noise on position (eq. 19).
+# core/src/rbpf.rs gives the equations and every departure from the paper.
 num_particles = 1000
 position_init_std_m = [10.0, 10.0, 5.0]
 velocity_init_std_mps = 1.0
 attitude_init_std_rad = 0.1
-position_process_noise_std_m = [1.0, 1.0, 1.0]
+# Velocity and angular random walk, per sqrt(s): the paper's VRW and ARW (eq. 20).
 velocity_process_noise_std_mps = 1e-3
 attitude_process_noise_std_rad = 0.01
-geo_bias_init_std = 1.0
-geo_bias_process_noise_std = 1e-3
-zero_vertical_velocity = true
-zero_vertical_velocity_std_mps = 0.1
+# Random walk on the sampled horizontal position, m/sqrt(s). The paper's eq. 19 is zero, which
+# diverges with GNSS-rate fixes on this data (17 km on the reference recording, against 3.8 m
+# at 1 m/sqrt(s)); [0.0, 0.0] reproduces it.
+horizontal_process_noise_std_m = [1.0, 1.0]
+# Third-order barometer loop in the mechanization, with the paper's two barometer states. The
+# paper gives no gains: the loop places its three poles at -1/tau (Titterton & Weston). The
+# aiding error is a Gauss-Markov process sized from the barometric drift the UKF/EKF assume.
+baro_loop_time_constant_s = 10.0
+baro_error_std_m = 8.3
+baro_error_time_constant_s = 3600.0
+vertical_accel_error_init_std_mps2 = 0.1
+# Resample after every update, as the paper does (Algorithm 1, step 6).
+effective_sample_threshold = 1.0
+# Roughening is not in the paper (0.0 reproduces it); kept against the cloud collapse #385
+# measured on the phone data.
+roughening_factor = 0.2
+# Each map bias's temporal variation V (eq. 14): the planted sensor's drift terms as one
+# Gauss-Markov process with the same stationary variance and short-term drive as their sum
+# (analysis/src/analysis/synthetic.py, SensorModel.variation_values). The constant offset c
+# takes the rest of [geophysical]'s *_bias_init_std.
+gravity_variation_std = 11.4422
+gravity_variation_time_constant_s = 825.569
 
 [geophysical]
-# Gravity anomaly measurements
+# The sensors `analyze preprocess --synthetic` planted, not a measurement of the phone. The
+# noise is per 10 Hz row -- a row averages 0.1 s of samples -- so these values assume `-f 10`.
+# analysis/tests/test_synthetic.py checks every number against the model; `just geo-adopt`
+# would overwrite them with re-measured ones, so the pipeline does not run it.
+
+# Gravimeter: Analog Devices ADXL355 (+/-2 g) read as a scalar gravimeter, $77 at Digi-Key.
+#   white noise   25 ug/rtHz (data sheet Rev. 0, Table 2) = 24.5 mGal/rtHz, so a 0.1 s row
+#                 carries 24.5 x sqrt(5) = 54.8 mGal
+#   turn-on bias  +/-9 mg Z-axis repeatability (Table 2; "10 year life") = 8,826 mGal. The
+#                 datasheet's only turn-on figure, and a generous one; the filter estimates it
+#   drift         bias instability, the Z Allan floor of 3.5 ug at 100-300 s (Fig. 56) as a
+#                 Gauss-Markov process: 5.55 mGal, tau 300 s. Temperature, ~100 mGal/degC on
+#                 an axis reading 1 g, with 10% left after compensation and a 1 degC cabin
+#                 sigma (both assumptions): 10.0 mGal, tau 1,800 s
 gravity_resolution = "one_minute"
-gravity_bias = 0.0
-gravity_noise_std = 100.0
-# gravity_map_file will be auto-detected if not specified
+gravity_bias = 0.0                            # mGal; the turn-on bias has zero mean
+gravity_noise_std = 54.8208                   # mGal per 10 Hz row
+gravity_bias_init_std = 8825.99               # mGal; turn-on and drift, in quadrature
+gravity_bias_process_noise_std = 0.563179     # mGal/sqrt(s); sqrt(sum 2 sigma^2 / tau)
 
-# Magnetic anomaly disabled for this config
-# magnetic_resolution = ""
-# magnetic_bias = 0.0
-# magnetic_noise_std = 150.0
-
-# Measurement frequency (seconds)
+# Seconds between geophysical measurements -- a period, not a frequency. As in conf/real/.
 geo_frequency_s = 1.0
 
+[execution_limits]
+# Both wall-clock budgets off, so every trajectory runs to its end whatever the load: the budget
+# is min(ratio x duration, max_wall_clock_s) and `<= 0` removes only its own term. The real
+# arm's rbpf_both lost 2025-06-27_11-54-35 to the 1,200 s default, so its aided and unaided
+# runs were scored over different sets. The no-progress guard still catches a hang.
+max_wall_clock_s = 0.0
+max_wall_clock_ratio = 0.0
+
+[health_limits]
+# Must match conf/rbpf_degraded.toml: `geoperf-rbpf` scores this run against that one, so a
+# difference in the guards would show up as geophysical performance.
+nis_pos_max = 1000.0
+speed_mps_max = 5000.0
+
+
+# The fringe-of-jamming profile, anchored to measurement rather than to a round number.
+#
+# Smartphone GNSS is 3-5 m under good multipath and over 10 m in harsh multipath, with
+# semi-urban CEP95 around 10-12 m. Under jamming the tracked satellite count falls and GDOP
+# rises, so the true error and the advertised accuracy inflate together. 35 m of steady-state
+# wander is about 14x this dataset's 2.58 m median advertised accuracy -- a receiver still
+# producing fixes, but bad ones.
+#
+# `tau_pos_s` and `tau_vel_s` are what make this comparable across schedules. Without them
+# `rho_pos` is applied once per emitted fix, so the correlation time is
+# `-interval_s / ln(rho_pos)` and changing `interval_s` silently changes the error model too.
+# With them, `sigma_pos_m` is the steady-state standard deviation in metres and the timescale
+# is fixed in seconds, so `interval_s` can be swept on its own.
 [gnss_degradation]
 seed = 42
 
 [gnss_degradation.scheduler]
 kind = "fixed_interval"
+# One fix every 60 s from a ~1 Hz receiver. (`interval_s = 1.0` passed every fix through
+# and reduced nothing.)
 interval_s = 60.0
 phase_s = 0.0
 
 [gnss_degradation.fault]
 kind = "degraded"
-rho_pos = 0.99
-sigma_pos_m = 15.0
-rho_vel = 0.95
-sigma_vel_mps = 5.0
-r_scale = 15.0
+rho_pos = 0.99          # ignored while tau_pos_s is set; kept for a run without it
+sigma_pos_m = 35.0      # steady-state wander, metres
+tau_pos_s = 500.0
+rho_vel = 0.95          # likewise
+sigma_vel_mps = 1.5     # steady-state wander, m/s
+tau_vel_s = 100.0
+r_scale = 5.0           # advertised sigmas x5, so R x25

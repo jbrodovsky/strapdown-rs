@@ -20,22 +20,38 @@
 //! pass-through config and silently simulates nothing. The variant assertions below are what
 //! make a misspelling fail.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use strapdown::messages::{AidingConfig, GnssFaultModel, MeasurementScheduler};
 use strapdown::sim::SimulationConfig;
 
-/// Scenario configs live at the top level of `examples/configs/`.
+/// Scenario configs live at the top level of `examples/configs/` and in `conf/`.
 ///
-/// The `json/` subdirectory is deliberately excluded: those files are `{name, args}` CLI
-/// invocation presets, not [`AidingConfig`] documents, and they use the *CLI's*
-/// vocabulary (`--sched duty`) rather than the config schema's (`kind: duty_cycle`).
+/// The `json/` subdirectory of `examples/configs/` is deliberately excluded: those files are
+/// `{name, args}` CLI invocation presets, not [`AidingConfig`] documents, and they use the
+/// *CLI's* vocabulary (`--sched duty`) rather than the config schema's (`kind: duty_cycle`).
 fn example_config_paths() -> Vec<PathBuf> {
-    // `CARGO_MANIFEST_DIR` is the `core/` crate; the examples live at the workspace root.
+    let mut found = Vec::new();
+    // `conf/` covers the experiment recipes the justfile runs. They were not covered until
+    // the geophysical config path landed, and six of them had drifted to a GNSS profile that
+    // did not match the degraded run they are scored against -- exactly the class of defect
+    // the variant assertions below exist to catch, in the directory that is actually run.
+    for directory in ["examples/configs", "conf"] {
+        found.extend(config_paths_in(directory));
+    }
+    found.sort();
+    assert!(!found.is_empty(), "no configs found");
+    found
+}
+
+/// Every parseable config file directly inside one workspace-relative directory.
+fn config_paths_in(relative: &str) -> Vec<PathBuf> {
+    // `CARGO_MANIFEST_DIR` is the `core/` crate; both directories live at the workspace root.
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("core/ has a parent")
-        .join("examples/configs");
+        .join(relative);
 
     let mut found: Vec<PathBuf> = std::fs::read_dir(&root)
         .unwrap_or_else(|e| panic!("reading {}: {e}", root.display()))
@@ -52,7 +68,7 @@ fn example_config_paths() -> Vec<PathBuf> {
     found.sort();
     assert!(
         !found.is_empty(),
-        "no example configs found under {}",
+        "no configs found under {}",
         root.display()
     );
     found
@@ -63,6 +79,7 @@ fn example_config_paths() -> Vec<PathBuf> {
 /// Derived from the file rather than from a hardcoded table, so a config added later is
 /// covered without editing this test.
 fn declared_variants(text: &str) -> (&'static str, &'static str) {
+    let text = &strip_comments(text);
     let scheduler = if text.contains("duty_cycle") {
         "DutyCycle"
     } else if text.contains("fixed_interval") {
@@ -80,6 +97,34 @@ fn declared_variants(text: &str) -> (&'static str, &'static str) {
         "None"
     };
     (scheduler, fault)
+}
+
+/// Drop `#` comments, so the heuristic above reads a file's configuration rather than its prose.
+///
+/// The `conf/*_truth.toml` recipes carry `kind = "none"` and a comment explaining that their
+/// health limits are "kept identical across truth and degraded" -- which made a naive
+/// `contains("degraded")` declare a fault the file does not configure. TOML and YAML both
+/// comment to end of line with `#`, and JSON has no comments, so one rule covers all three.
+/// Quoted `#` is respected: a Windows path or a colour literal in a string is not a comment.
+fn strip_comments(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for line in text.lines() {
+        let mut in_string = false;
+        let mut cut = line.len();
+        for (index, character) in line.char_indices() {
+            match character {
+                '"' => in_string = !in_string,
+                '#' if !in_string => {
+                    cut = index;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        out.push_str(&line[..cut]);
+        out.push('\n');
+    }
+    out
 }
 
 const fn scheduler_variant(scheduler: &MeasurementScheduler) -> &'static str {
@@ -231,5 +276,170 @@ fn an_empty_aiding_section_schedules_the_other_two_channels() {
         scheduler_variant(&aiding.magnetometer_scheduler),
         "FixedInterval",
         "the magnetometer defaults to a 1 Hz fixed interval, not to pass-through"
+    );
+}
+
+/// Every geophysically-aided recipe must carry the GNSS profile of the run it is scored
+/// against.
+///
+/// `analyze geoperformance` measures a geo-aided run against a non-geo baseline and reports
+/// the difference as the contribution of the geophysical measurement. That is only true when
+/// the two runs differ in *nothing else*. If their GNSS degradation or their health limits
+/// disagree, the "improvement" is the difference between two GNSS profiles wearing the
+/// geophysical measurement's name.
+///
+/// This is not hypothetical. `conf/{ukf,ekf}_{grav,mag,both}.toml` sat in the tree carrying
+/// `interval_s = 1.0` with `sigma_pos_m = 15.0`, `sigma_vel_mps = 5.0` and `r_scale = 15.0`,
+/// against a `conf/*_degraded.toml` at `5.0 / 3.0 / 0.3 / 5.0` -- six files, every one of
+/// them scored against a baseline it did not match, with nothing to say so.
+///
+/// The pairing is taken from the filename: `<filter>_<geo>.toml` is scored against
+/// `<filter>_degraded.toml`. Adding a geo recipe therefore enrolls it in this check
+/// automatically.
+#[test]
+fn every_geophysical_config_matches_the_baseline_it_is_scored_against() {
+    const FILTERS: [&str; 3] = ["ukf", "ekf", "rbpf"];
+    const GEO_TYPES: [&str; 3] = ["grav", "mag", "both"];
+
+    let mut failures = Vec::new();
+    let mut checked = 0usize;
+
+    for filter in FILTERS {
+        let baseline_name = format!("{filter}_degraded.toml");
+        let Some(baseline_config) = load_conf(&baseline_name) else {
+            failures.push(format!("{baseline_name}: missing, but geo recipes name it"));
+            continue;
+        };
+
+        for geo in GEO_TYPES {
+            let name = format!("{filter}_{geo}.toml");
+            let Some(config) = load_conf(&name) else {
+                failures.push(format!("{name}: missing"));
+                continue;
+            };
+            checked += 1;
+
+            // Compared through `Debug` because neither `AidingConfig` nor `HealthLimits`
+            // implements `PartialEq`, and deriving it across `core`'s public API to serve
+            // one test is the larger change. The rendering is total, so a difference in
+            // any field of either fails this.
+            if format!("{:?}", config.aiding) != format!("{:?}", baseline_config.aiding) {
+                failures.push(format!(
+                    "{name}: [gnss_degradation] differs from {baseline_name}\n  \
+                     geo:      {:?}\n  baseline: {:?}",
+                    config.aiding, baseline_config.aiding
+                ));
+            }
+            if format!("{:?}", config.health_limits)
+                != format!("{:?}", baseline_config.health_limits)
+            {
+                failures.push(format!(
+                    "{name}: [health_limits] differs from {baseline_name}\n  \
+                     geo:      {:?}\n  baseline: {:?}",
+                    config.health_limits, baseline_config.health_limits
+                ));
+            }
+        }
+    }
+
+    assert_eq!(
+        checked, 9,
+        "expected 3 filters x 3 geo types x 1 baseline; found {checked}"
+    );
+    assert!(
+        failures.is_empty(),
+        "{} geophysical config(s) do not match their baseline:\n  {}",
+        failures.len(),
+        failures.join("\n  ")
+    );
+}
+
+/// Load one `conf/` recipe by file name, or `None` if it is absent.
+fn load_conf(name: &str) -> Option<SimulationConfig> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("core/ has a parent")
+        .join("conf")
+        .join(name);
+    path.is_file().then(|| {
+        SimulationConfig::from_file(&path).unwrap_or_else(|e| panic!("{name} must parse: {e}"))
+    })
+}
+
+/// Every geophysical recipe describes the *same sensor*, so it must carry the same numbers.
+///
+/// `analyze geostats --apply-to conf` measures the bias, the measurement noise and the bias
+/// prior of each channel once, from the residual against the maps, and writes them into all
+/// nine recipes. Those figures characterise the phone's gravimeter and magnetometer against
+/// the maps -- not the scenario -- so a UKF run and an RBPF run are looking at an instrument
+/// with identical statistics.
+///
+/// The failure this guards against is a *partial* adoption: one config edited by hand, or
+/// `--apply-to` pointed at a directory during a re-run that left a few files behind. The
+/// result still parses, still runs, and produces a comparison whose difference is attributed
+/// to the filter when it actually came from a different R. That is the same class of silent,
+/// research-invalidating drift as the GNSS-block divergence the test above catches.
+///
+/// Only keys that are *present* are compared: a `*_grav.toml` declares no magnetic channel
+/// and must not be forced to.
+#[test]
+fn every_geophysical_config_describes_the_same_sensor() {
+    const FILTERS: [&str; 3] = ["ukf", "ekf", "rbpf"];
+    const GEO_TYPES: [&str; 3] = ["grav", "mag", "both"];
+
+    // Field name -> the value seen first, and the config it came from.
+    let mut seen: BTreeMap<&'static str, (f64, String)> = BTreeMap::new();
+    let mut failures = Vec::new();
+    let mut checked = 0usize;
+
+    for filter in FILTERS {
+        for geo in GEO_TYPES {
+            let name = format!("{filter}_{geo}.toml");
+            let Some(config) = load_conf(&name) else {
+                failures.push(format!("{name}: missing"));
+                continue;
+            };
+            let Some(geophysical) = config.geophysical else {
+                failures.push(format!("{name}: is a geo recipe with no [geophysical]"));
+                continue;
+            };
+            checked += 1;
+
+            for (field, value) in [
+                ("gravity_bias", geophysical.gravity_bias),
+                ("gravity_noise_std", geophysical.gravity_noise_std),
+                ("gravity_bias_init_std", geophysical.gravity_bias_init_std),
+                ("magnetic_bias", geophysical.magnetic_bias),
+                ("magnetic_noise_std", geophysical.magnetic_noise_std),
+                ("magnetic_bias_init_std", geophysical.magnetic_bias_init_std),
+                ("geo_interval_s", geophysical.geo_interval_s),
+            ] {
+                let Some(value) = value else { continue };
+                match seen.get(field) {
+                    None => {
+                        seen.insert(field, (value, name.clone()));
+                    }
+                    Some((first, first_name)) if (first - value).abs() > f64::EPSILON => {
+                        failures.push(format!(
+                            "{name}: {field} = {value} but {first_name} has {first}. \
+                             Re-run `analyze geostats --apply-to conf` so every recipe \
+                             adopts the measured value, or none does."
+                        ));
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+    }
+
+    assert_eq!(
+        checked, 9,
+        "expected 3 filters x 3 geo types x 1 baseline; found {checked}"
+    );
+    assert!(
+        failures.is_empty(),
+        "{} geophysical setting(s) disagree across the recipes:\n  {}",
+        failures.len(),
+        failures.join("\n  ")
     );
 }

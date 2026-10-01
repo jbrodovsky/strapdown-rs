@@ -24,8 +24,8 @@ use strapdown::NavigationFilter;
 use strapdown::engine::InsEngineConfig;
 use strapdown::messages::AidingConfig;
 use strapdown::sim::{
-    ClosedLoopConfig, LoggingConfig, ParticleFilterConfig, SimulationConfig, SyntheticConfig,
-    SyntheticInitialState,
+    ClosedLoopConfig, ExecutionLimits, HealthLimits, LoggingConfig, ParticleFilterConfig,
+    SimulationConfig, SyntheticConfig, SyntheticInitialState,
 };
 
 /// Deserialize `$t` from a document that sets nothing beyond what it must, and require the
@@ -71,6 +71,56 @@ fn particle_filter_config_serde_defaults_match_its_default_impl() {
 #[test]
 fn logging_config_serde_defaults_match_its_default_impl() {
     assert_document_matches_default!(LoggingConfig, "{}");
+}
+
+#[test]
+fn execution_limits_serde_defaults_match_its_default_impl() {
+    assert_document_matches_default!(ExecutionLimits, "{}");
+}
+
+#[test]
+fn health_limits_serde_defaults_match_its_default_impl() {
+    assert_document_matches_default!(HealthLimits, "{}");
+}
+
+/// The way this knob is actually reached for: loosen one guard, inherit the rest.
+///
+/// Each field carries its own `#[serde(default = "..."]`, so a section naming only
+/// `nis_pos_max` must leave the others at their documented defaults. Without those per-field
+/// defaults the untouched tuple bands would deserialize to `(0.0, 0.0)` and fail every
+/// estimate on the first update -- a far more confusing failure than the one being relaxed.
+#[test]
+fn a_partial_health_limits_section_keeps_every_other_guard_at_its_default() {
+    let loosened: HealthLimits = serde_json::from_str(r#"{"nis_pos_max": 100000.0}"#)
+        .expect("a health_limits section naming one field should deserialize");
+    let default = HealthLimits::default();
+
+    assert!(
+        (loosened.nis_pos_max - 100_000.0).abs() < f64::EPSILON,
+        "the field that was set should take the document's value, got {}",
+        loosened.nis_pos_max
+    );
+    assert_eq!(
+        loosened.lat_rad, default.lat_rad,
+        "lat_rad was not inherited"
+    );
+    assert_eq!(
+        loosened.lon_rad, default.lon_rad,
+        "lon_rad was not inherited"
+    );
+    assert_eq!(loosened.alt_m, default.alt_m, "alt_m was not inherited");
+    assert!(
+        (loosened.speed_mps_max - default.speed_mps_max).abs() < f64::EPSILON,
+        "speed_mps_max was not inherited"
+    );
+    assert!(
+        (loosened.cov_diag_max - default.cov_diag_max).abs() < f64::EPSILON,
+        "cov_diag_max was not inherited"
+    );
+    assert_eq!(
+        loosened.nis_pos_consec_fail, default.nis_pos_consec_fail,
+        "nis_pos_consec_fail was not inherited"
+    );
 }
 
 /// `latitude_deg`/`longitude_deg`/`altitude_m` carry no serde default on purpose: a synthetic
@@ -138,6 +188,88 @@ fn simulation_config_serde_defaults_match_its_default_impl() {
         document_value, default_value,
         "SimulationConfig: a document setting only `mode` does not produce `Default::default()`"
     );
+}
+
+/// The particle filter's two retired map-bias keys are refused by name, not dropped.
+///
+/// `[particle_filter] geo_bias_init_std` and `geo_bias_process_noise_std` set one prior and one
+/// random walk for every map bias, in no particular unit, while the particle filter ignored the
+/// per-channel `[geophysical]` keys the Kalman filters read. It reads those now. Serde drops a
+/// key it does not recognise without a word, so without an explicit refusal a config written
+/// for the old keys would run on the new defaults and never say so. The error must name the
+/// key and where its replacement lives, through the file format a user actually writes.
+#[test]
+fn the_particle_filters_retired_map_bias_keys_are_refused_by_name() {
+    for (key, replacement) in [
+        ("geo_bias_init_std", "gravity_bias_init_std"),
+        (
+            "geo_bias_process_noise_std",
+            "gravity_bias_process_noise_std",
+        ),
+    ] {
+        let section = format!(r#"{{"num_particles": 10, "{key}": 1.0}}"#);
+        let error = serde_json::from_str::<ParticleFilterConfig>(&section)
+            .expect_err("a retired key must be refused, not dropped")
+            .to_string();
+        assert!(
+            error.contains(key) && error.contains(replacement) && error.contains("[geophysical]"),
+            "the JSON error must name `{key}` and point at `{replacement}` in [geophysical], \
+             got: {error}"
+        );
+
+        let document = format!(
+            "mode = \"particle-filter\"\n\n[particle_filter]\nnum_particles = 10\n{key} = 1.0\n"
+        );
+        let error = toml::from_str::<SimulationConfig>(&document)
+            .expect_err("a retired key must be refused in a TOML scenario file too")
+            .to_string();
+        assert!(
+            error.contains(key) && error.contains(replacement),
+            "the TOML error must name `{key}` and point at `{replacement}`, got: {error}"
+        );
+    }
+
+    // A section that does not mention them is unaffected.
+    let parsed: ParticleFilterConfig = serde_json::from_str(r#"{"num_particles": 10}"#)
+        .expect("a section without the retired keys must parse");
+    assert_eq!(parsed.num_particles, 10);
+}
+
+/// The keys the Canciani & Raquet restructure retired are refused by name as well.
+///
+/// Position no longer has process noise of its own (eq. 19) and the barometer loop in the
+/// mechanization replaced the zero-vertical-velocity constraint. A config still setting them
+/// would otherwise run a different filter than it describes without a word.
+#[test]
+fn the_particle_filters_restructure_retired_keys_are_refused_by_name() {
+    for (setting, key, replacement) in [
+        (
+            "position_process_noise_std_m = [1.0, 1.0, 1.0]",
+            "position_process_noise_std_m",
+            "horizontal_process_noise_std_m",
+        ),
+        (
+            "zero_vertical_velocity = true",
+            "zero_vertical_velocity",
+            "baro_loop_time_constant_s",
+        ),
+        (
+            "zero_vertical_velocity_std_mps = 0.1",
+            "zero_vertical_velocity_std_mps",
+            "baro_loop_time_constant_s",
+        ),
+    ] {
+        let document = format!(
+            "mode = \"particle-filter\"\n\n[particle_filter]\nnum_particles = 10\n{setting}\n"
+        );
+        let error = toml::from_str::<SimulationConfig>(&document)
+            .expect_err("a retired key must be refused, not dropped")
+            .to_string();
+        assert!(
+            error.contains(key) && error.contains(replacement),
+            "the TOML error must name `{key}` and point at `{replacement}`, got: {error}"
+        );
+    }
 }
 
 /// The shipped default itself, through both construction paths.

@@ -63,14 +63,15 @@ const MICROTESLA_TO_NANOTESLA: f64 = 1000.0;
 /// Navigation states every filter state vector starts with: position, velocity, attitude.
 ///
 /// Anything a filter carries beyond these -- IMU biases, map biases -- is appended after
-/// them, so this is the base a [`GeoBiasLayout`] is measured from for a filter that carries
-/// no IMU bias states, such as the RBPF.
+/// them, so this is the base a [`GeoBiasLayout`] is measured from for a filter that reports no
+/// IMU bias states. Every filter in this workspace reports them, the RBPF included, so in
+/// practice that base is [`NAVIGATION_AND_IMU_BIAS_STATE_DIM`].
 pub const NAVIGATION_STATE_DIM: usize = 9;
 
 /// The nine navigation states plus the six IMU bias states.
 ///
-/// The base a [`GeoBiasLayout`] is measured from for the UKF and EKF, whose state is
-/// `[9 navigation, 3 accelerometer bias, 3 gyroscope bias, ..map biases]`.
+/// The base a [`GeoBiasLayout`] is measured from for the UKF, the EKF and the RBPF, whose
+/// reported state is `[9 navigation, 3 accelerometer bias, 3 gyroscope bias, ..map biases]`.
 pub const NAVIGATION_AND_IMU_BIAS_STATE_DIM: usize = 15;
 
 /// Where a consuming filter carries one geophysical map-bias state.
@@ -96,7 +97,7 @@ pub struct BiasState {
 /// Where a consuming filter carries its geophysical map-bias states, if it carries any.
 ///
 /// Built by whoever knows the filter -- `strapdown-sim` configures an RBPF whose
-/// `extra_state_dim` is exactly these biases, and a UKF whose `other_states` are -- and
+/// `map_bias_channels` are exactly these biases, and a UKF whose `other_states` are -- and
 /// handed to [`build_event_stream`], which stamps it onto every geophysical measurement it
 /// emits. Passing `None` there says the consuming filter carries no map-bias states, and
 /// the measurements then declare none rather than inferring them from which maps happened
@@ -166,9 +167,8 @@ impl GeoBiasLayout {
     /// gravity first -- the convention every filter in this workspace follows.
     ///
     /// `base_state_dim` is the width of the filter's state *before* the map biases:
-    /// [`NAVIGATION_STATE_DIM`] for the RBPF, whose extra states are the map biases and
-    /// which carries no IMU biases, and [`NAVIGATION_AND_IMU_BIAS_STATE_DIM`] for the UKF
-    /// and EKF, whose map biases follow their IMU biases.
+    /// [`NAVIGATION_AND_IMU_BIAS_STATE_DIM`] for the UKF, EKF and RBPF, whose map biases
+    /// follow their IMU biases, and [`NAVIGATION_STATE_DIM`] for a filter reporting none.
     ///
     /// Returns `Ok(None)` when neither map contributes a bias state, which is the "carries
     /// no map biases" case [`build_event_stream`] takes.
@@ -911,20 +911,39 @@ pub trait GeophysicalAnomalyMeasurementModel: MeasurementModel {
 /// magnitude against Somigliana normal gravity, with the Eötvös correction for platform
 /// motion ([`gravity_anomaly`]). The expected measurement is read from a [`GeoMap`].
 ///
+/// # Units
+///
+/// This model works in **milligal**, because that is what the maps [`GeoMap`] loads are in.
+/// [`gravity_observed`](Self::gravity_observed) is the one exception -- it is the raw
+/// accelerometer magnitude in $m/s^2$, and [`gravity_anomaly`] converts as it differences.
+///
+/// That conversion was missing until the fix that added `earth::MGAL_PER_M_PER_S2`: the
+/// observation arrived in $m/s^2$, the map value in milligal, and the innovation $z - h$ was
+/// therefore just $-h$ to five significant figures. It never tripped a gate, because a
+/// tens-of-milligal innovation against the default 100 mGal noise is a NIS of about 0.16.
+/// This is the same defect the magnetic channel had and the same fix; see
+/// [`MICROTESLA_TO_NANOTESLA`].
+///
 /// # Latitude units
 ///
 /// [`gravity_anomaly`] takes **degrees**, while [`StrapdownState`] stores radians, so both
 /// of this type's anomaly paths convert: [`GeophysicalAnomalyMeasurementModel::set_state`]
 /// and the per-particle path through [`Self::extract_state_inputs`]. Neither did before
 /// #330, which evaluated normal gravity near the equator whatever the true latitude -- a
-/// -2136 mGal error at 40 deg N, against map anomalies of tens of mGal.
+/// -2136 mGal error at 40 deg N, against map anomalies of tens of mGal. (That figure was
+/// itself written while the anomaly was still $m/s^2$; it is only literally true in milligal
+/// now that the conversion above is applied.)
 #[derive(Clone, Debug)]
 pub struct GravityMeasurement {
     /// Source map
     pub map: Rc<GeoMap>,
-    /// Measurement Noise
+    /// Measurement noise standard deviation, **milligal** -- the unit of the map this model
+    /// differences against, not the $m/s^2$ of the accelerometer it reads.
     pub noise_std: f64,
-    /// Observed gravity magnitude (m/s^2)
+    /// Observed gravity magnitude (m/s^2).
+    ///
+    /// The norm of the record's three `grav_*` axes, in SI. Converted to milligal by
+    /// [`gravity_anomaly`], so this is the only field here that is not already milligal.
     pub gravity_observed: f64,
     /// Current latitude in **degrees**, converted from the radian-valued
     /// [`StrapdownState`] on the way in, because [`gravity_anomaly`] takes degrees (#330).
@@ -1604,10 +1623,20 @@ pub fn build_event_stream(
 }
 
 /// Default gravity-measurement noise, milligal, when the caller names none.
-const DEFAULT_GRAVITY_NOISE_MGAL: f64 = 100.0;
+///
+/// Public so `strapdown-sim` can resolve a configuration file's omitted `gravity_noise_std`
+/// to the same number this crate would. It used to be private, so the binary wrote `100.0`
+/// itself in three places and this crate in a fourth.
+///
+/// Note that this value has never been measured against the maps it is differenced from --
+/// `analyze geostats` in the `analysis` package derives one that has.
+pub const DEFAULT_GRAVITY_NOISE_MGAL: f64 = 100.0;
 
 /// Default magnetic-anomaly measurement noise, nanotesla, when the caller names none.
-const DEFAULT_MAGNETIC_NOISE_NT: f64 = 150.0;
+///
+/// Public for the same reason as [`DEFAULT_GRAVITY_NOISE_MGAL`], and carrying the same
+/// caveat: it is a default, not a measurement.
+pub const DEFAULT_MAGNETIC_NOISE_NT: f64 = 150.0;
 
 /// Elapsed time of an event, whichever variant it is.
 const fn elapsed_of(event: &Event) -> f64 {
@@ -2252,7 +2281,8 @@ mod tests {
             None
         );
 
-        // RBPF: no IMU bias states, so the map biases follow the nine navigation states.
+        // A filter reporting no IMU bias states: the map biases follow the nine navigation
+        // states.
         let both = GeoBiasLayout::appended(NAVIGATION_STATE_DIM, true, true)
             .unwrap()
             .unwrap();
@@ -2577,6 +2607,26 @@ mod tests {
             (measurement.get_anomaly().unwrap() - measurement.mag_obs).abs() > 1.0,
             "the reference field was not removed from the observation"
         );
+    }
+
+    /// A 2023 recording is referenced to WMM2020, and `analysis/geostats.py` agrees.
+    ///
+    /// Five of this repository's trajectories were recorded in 2023 and 2024. The crate carries
+    /// WMM2020 for them and selects it by date. `geostats` loaded only pygeomag's default,
+    /// WMM2025, which refuses those dates, and then dropped each such trajectory whole -- gravity
+    /// included -- from the statistics `geo-adopt` writes into the configs. Its `self_check`
+    /// asserts this same literal, so the two sides cannot pick different models again unnoticed.
+    #[test]
+    fn a_2023_recording_is_referenced_to_wmm2020() {
+        let mut measurement = magnetic_measurement_with_bias(None);
+        measurement.year = 2023;
+        measurement.day = 182; // 1 July
+
+        let reference = measurement
+            .reference_field_nt(40.05, -75.95, 100.0)
+            .unwrap();
+
+        assert_approx_eq!(reference, 51_069.8, 1.0);
     }
 
     /// The event stream hands the model nanotesla, because the record is microtesla.

@@ -338,6 +338,32 @@ pub const DEFAULT_MAX_WALL_CLOCK_S: f64 = 1200.0;
 /// [`ExecutionMonitor::mark_progress`] before the run is treated as hung.
 pub const DEFAULT_MAX_NO_PROGRESS_S: f64 = 600.0;
 
+/// Default lower bound of [`HealthLimits::lat_rad`]: the full -90 degrees.
+pub const DEFAULT_HEALTH_LAT_MIN_RAD: f64 = -std::f64::consts::FRAC_PI_2;
+/// Default upper bound of [`HealthLimits::lat_rad`]: the full +90 degrees.
+pub const DEFAULT_HEALTH_LAT_MAX_RAD: f64 = std::f64::consts::FRAC_PI_2;
+/// Default lower bound of [`HealthLimits::lon_rad`]: the full -180 degrees.
+pub const DEFAULT_HEALTH_LON_MIN_RAD: f64 = -std::f64::consts::PI;
+/// Default upper bound of [`HealthLimits::lon_rad`]: the full +180 degrees.
+pub const DEFAULT_HEALTH_LON_MAX_RAD: f64 = std::f64::consts::PI;
+/// Default lower bound of [`HealthLimits::alt_m`].
+///
+/// Far below the [-11,000 m, 30,000 m] over which the mechanization is documented to be valid,
+/// so a diverging vertical channel trips the covariance or NIS check rather than this band.
+pub const DEFAULT_HEALTH_ALT_MIN_M: f64 = -1e8;
+/// Default upper bound of [`HealthLimits::alt_m`], the mirror of [`DEFAULT_HEALTH_ALT_MIN_M`].
+pub const DEFAULT_HEALTH_ALT_MAX_M: f64 = 1e8;
+/// Default [`HealthLimits::speed_mps_max`]: 500 m/s, i.e. road or low-altitude aircraft.
+pub const DEFAULT_HEALTH_SPEED_MPS_MAX: f64 = 500.0;
+/// Default [`HealthLimits::cov_diag_max`]: the largest variance tolerated on the covariance
+/// diagonal before the run is failed.
+pub const DEFAULT_HEALTH_COV_DIAG_MAX: f64 = 1e15;
+/// Default [`HealthLimits::nis_pos_max`]: the NIS above which a measurement update counts as
+/// an outlier.
+pub const DEFAULT_NIS_POS_MAX: f64 = 100.0;
+/// Default [`HealthLimits::nis_pos_consec_fail`]: consecutive NIS exceedances that fail a run.
+pub const DEFAULT_NIS_POS_CONSEC_FAIL: usize = 20;
+
 fn de_f64_nan<'de, D>(deserializer: D) -> Result<f64, D::Error>
 where
     D: Deserializer<'de>,
@@ -1265,20 +1291,6 @@ impl ExtraStateLayout {
         baro_index: None,
     };
 
-    /// No map biases, on the particle filter's nine-state estimate.
-    ///
-    /// [`Self::NONE`] says the same thing for the Kalman filters and is fifteen wide, because
-    /// that is *their* unaided shape. The particle filter carries no IMU-bias block, so an
-    /// unaided particle estimate is nine, and handing the Kalman constant to
-    /// [`NavigationResult::from_particle_filter_with_geo`] would fail its width assertion on
-    /// the first row of every ordinary particle run.
-    pub const PARTICLE_NONE: Self = Self {
-        state_dim: PARTICLE_FILTER_STATES,
-        gravity_index: None,
-        magnetic_index: None,
-        baro_index: None,
-    };
-
     /// A layout over a state of `state_dim` entries, with the biases at the given indices.
     ///
     /// The indices are taken on trust: the caller that knows the filter has already validated
@@ -1406,28 +1418,18 @@ pub const BARO_BIAS_PROCESS_NOISE_M2_PER_S: f64 = {
 pub const INITIAL_BARO_BIAS_VARIANCE_M2: f64 =
     BARO_BIAS_DRIFT_M_PER_HOUR * BARO_BIAS_DRIFT_M_PER_HOUR;
 
-/// Length of the full Kalman state vector: nine navigation states plus three accelerometer and
-/// three gyroscope biases.
+/// Length of the full navigation state vector: nine navigation states plus three
+/// accelerometer and three gyroscope biases.
 ///
-/// This is the shape the UKF, EKF and ESKF carry and what [`NavigationResult`]'s conversions
-/// index, not a property of every filter in the crate: the particle filter reports a nine-state
-/// navigation estimate and appends its own extra linear states, with no IMU-bias block.
+/// The shape the UKF, EKF, ESKF and the Rao-Blackwellized particle filter report and what
+/// [`NavigationResult`]'s conversions index. The particle filter reports all fifteen whether or
+/// not it estimates the biases, with zero bias rows when it does not; only a nine-state EKF
+/// (`use_biases = false`) is narrower.
 pub const NAVIGATION_STATES: usize = 15;
 
-/// Length of the particle filter's navigation estimate: the nine navigation states alone.
-///
-/// The Rao-Blackwellized particle filter carries no IMU-bias block -- its linear state is
-/// velocity, attitude and whatever [`RbpfConfig::extra_state_dim`](crate::rbpf::RbpfConfig)
-/// asks for -- so its estimate is six states shorter than [`NAVIGATION_STATES`] and its map
-/// biases begin here rather than at 15. It is the bound
-/// [`NavigationResult::from_particle_filter_with_geo`] checks a declared bias index against,
-/// where the Kalman conversion checks [`NAVIGATION_STATES`].
-///
-/// The same nine as `geonav`'s `NAVIGATION_STATE_DIM`, which is what `GeoBiasLayout::appended`
-/// is given as the base for an RBPF run. `geonav` depends on this crate rather than the other
-/// way round, so the two are stated separately; `rbpf` holds the const assertion that keeps
-/// this one in step with the width its estimator actually reports.
-pub const PARTICLE_FILTER_STATES: usize = 9;
+/// Length of a navigation-only estimate: the nine navigation states with no IMU-bias block,
+/// which only a nine-state EKF reports. See [`NavigationResult::from_navigation_only`].
+const NAVIGATION_ONLY_STATES: usize = 9;
 
 /// Read an on-disk geophysical column back into an `Option`.
 ///
@@ -2413,18 +2415,9 @@ impl From<(&DateTime<Utc>, &DVector<f64>, &DMatrix<f64>)> for NavigationResult {
 /// 16-element state is gravity-only or magnetic-only depending on the run's flags. See
 /// [`ExtraStateLayout`].
 ///
-/// A layout narrower than [`NAVIGATION_STATES`] is a particle layout and is forwarded to
-/// [`NavigationResult::from_particle_filter_with_geo`], which is what lets
-/// [`run_closed_loop_with_geo`] drive a particle filter at [`ExtraStateLayout::PARTICLE_NONE`].
-///
-/// That is the no-extra-states particle path and only that path. A particle layout carrying
-/// map biases is ten or eleven wide, while the runner reads its estimate through
-/// [`NavigationFilter::get_estimate`](crate::NavigationFilter::get_estimate), which the
-/// Rao-Blackwellized particle filter implements with its nine-state `estimate()` -- the wider
-/// vector lives behind `estimate_with_extra_states`, which the trait has no way to ask for.
-/// Such a layout still reaches the width assertion in the particle constructor and fails it,
-/// by design rather than by running off the end of the vector. Geophysical particle runs
-/// therefore keep their own event loop.
+/// A layout narrower than [`NAVIGATION_STATES`] describes a nine-state EKF, which carries no
+/// IMU-bias block, and is converted with zero biases and NaN bias variances rather than read
+/// off the end of the vector.
 impl
     From<(
         &DateTime<Utc>,
@@ -2447,16 +2440,11 @@ impl
         ),
     ) -> Self {
         let expected = layout.state_dim();
-        // A layout narrower than the fifteen Kalman states describes a particle estimate,
-        // which carries no IMU-bias block. Without this dispatch the width assertion below
-        // passes for `ExtraStateLayout::PARTICLE_NONE` -- nine states, nine given -- and the
-        // bias reads at `state[9]..state[14]` then index off the end. That made
-        // `run_closed_loop_with_geo` unusable for the plain particle layout, which is why
-        // every particle event loop in this workspace is a hand-rolled copy of the others.
-        // It does not make the *geophysical* particle layouts usable through the runner; see
-        // the impl documentation above for why that needs an accessor the trait lacks.
+        // A layout narrower than the fifteen navigation and bias states is a nine-state EKF's.
+        // Without this dispatch the width assertion below passes -- nine states, nine given --
+        // and the bias reads at `state[9]..state[14]` index off the end.
         if expected < NAVIGATION_STATES {
-            return Self::from_particle_filter_with_geo(timestamp, state, covariance, layout);
+            return Self::from_navigation_only(timestamp, state, covariance, layout);
         }
         assert!(
             state.len() == expected,
@@ -2791,61 +2779,19 @@ impl From<(&DateTime<Utc>, &StrapdownState)> for NavigationResult {
 }
 
 impl NavigationResult {
-    /// Create `NavigationResult` from particle filter state
+    /// The conversion for a navigation-only estimate: nine navigation states and no IMU-bias
+    /// block, optionally followed by the extra states `layout` places, as a nine-state EKF
+    /// (`use_biases = false`) reports.
     ///
-    /// Creates a navigation result from a 9-element state vector (position, velocity, attitude)
-    /// and covariance matrix produced by particle filter averaging. Since particle filters don't
-    /// estimate IMU biases, those fields are set to zero.
-    ///
-    /// A geophysically aided run carries one bias state per active map after those nine, and
-    /// must go through [`Self::from_particle_filter_with_geo`], which knows what they are.
-    /// This one would reject it on the length assertion rather than silently drop them.
-    ///
-    /// # Arguments
-    /// * `timestamp` - Timestamp for this navigation solution
-    /// * `mean` - 9-element state vector [lat, lon, alt, vn, ve, vd, roll, pitch, yaw] in radians/meters
-    /// * `cov` - 9x9 covariance matrix
-    /// # Panics
-    /// If `mean` is not 9 elements or `cov` is not 9x9. Same reasoning as the `From` impl
-    /// above: the inputs come from `rbpf.estimate()`, not from user input.
-    pub fn from_particle_filter(
-        timestamp: &DateTime<Utc>,
-        mean: &DVector<f64>,
-        cov: &DMatrix<f64>,
-    ) -> Self {
-        // Not [`ExtraStateLayout::NONE`]: that one is fifteen states wide, because it describes
-        // the Kalman filters' unaided shape. An unaided particle estimate is nine.
-        Self::from_particle_filter_with_geo(timestamp, mean, cov, ExtraStateLayout::PARTICLE_NONE)
-    }
-
-    /// [`Self::from_particle_filter`] for a cloud that carries geophysical bias states.
-    ///
-    /// The particle filter appends one extra linear state per active map after its nine
-    /// navigation states -- see
-    /// [`RbpfConfig::extra_state_dim`](crate::rbpf::RbpfConfig::extra_state_dim) -- and
-    /// [`RaoBlackwellizedParticleFilter::estimate_with_extra_states`](crate::rbpf::RaoBlackwellizedParticleFilter::estimate_with_extra_states)
-    /// is the accessor that returns them with their covariance. `layout` says which of those
-    /// extra states is which, exactly as it does for the Kalman paths: a ten-element particle
-    /// estimate is gravity-only or magnetic-only depending on the run's flags, and the vector
-    /// cannot say which.
-    ///
-    /// This is the particle-filter counterpart of the four-tuple `From` impl above, and the
-    /// reason it is a separate constructor rather than a fourth argument on
-    /// `from_particle_filter` is the same reason [`run_closed_loop_with_geo`] is separate from
-    /// [`run_closed_loop`]: the geophysical paths need the layout and the ordinary ones do not.
-    ///
-    /// # Arguments
-    /// * `timestamp` - Timestamp for this navigation solution
-    /// * `mean` - `layout.state_dim()` element state vector
-    /// * `cov` - Covariance of `mean`, square and in the same ordering
-    /// * `layout` - Where the filter carries its map biases, past its nine navigation states
+    /// The bias columns are written as zero with a NaN variance -- nothing was estimated, so
+    /// no uncertainty is claimed -- and a declared extra-state index is checked against the
+    /// nine-state base rather than the fifteen-state one.
     ///
     /// # Panics
     /// If `mean` or `cov` disagrees with `layout.state_dim()`, or if a declared bias index
-    /// falls outside the nine navigation states and the end of the vector. Same reasoning as
-    /// [`Self::from_particle_filter`]: these come from the filter, not from user input, so a
-    /// mismatch is a crate invariant violation.
-    pub fn from_particle_filter_with_geo(
+    /// falls inside the nine navigation states or past the end of the vector. These come from
+    /// the filter, not from user input, so a mismatch is a crate invariant violation.
+    fn from_navigation_only(
         timestamp: &DateTime<Utc>,
         mean: &DVector<f64>,
         cov: &DMatrix<f64>,
@@ -2855,24 +2801,22 @@ impl NavigationResult {
         assert_eq!(
             mean.len(),
             expected,
-            "Particle filter state must have {expected} elements"
+            "Navigation-only state must have {expected} elements"
         );
         assert_eq!(
             cov.shape(),
             (expected, expected),
-            "Particle filter covariance must be {expected}x{expected}"
+            "Navigation-only covariance must be {expected}x{expected}"
         );
-        // The same index check the four-tuple `From` makes, against this filter's own base:
-        // the particle filter has no IMU-bias block, so its map biases start at
-        // `PARTICLE_FILTER_STATES` and not at `NAVIGATION_STATES`. Reusing the Kalman bound
-        // here would reject every genuine particle layout; dropping the check would let a
-        // wrong index read a navigation state as a map bias, which is the failure the whole
-        // layout exists to prevent.
+        // The same index check the four-tuple `From` makes, against this estimate's own base:
+        // with no IMU-bias block, extra states start at `NAVIGATION_ONLY_STATES` and not at
+        // `NAVIGATION_STATES`. Dropping the check would let a wrong index read a navigation
+        // state as a map bias, which is the failure the whole layout exists to prevent.
         let checked = |index: Option<usize>| {
             if let Some(i) = index {
                 assert!(
-                    i >= PARTICLE_FILTER_STATES && i < expected,
-                    "a map bias lives after the {PARTICLE_FILTER_STATES} navigation states \
+                    i >= NAVIGATION_ONLY_STATES && i < expected,
+                    "an extra state lives after the {NAVIGATION_ONLY_STATES} navigation states \
                      and inside the {expected}-element state; got index {i}"
                 );
             }
@@ -2906,7 +2850,7 @@ impl NavigationResult {
             roll: mean[6],
             pitch: mean[7],
             yaw: mean[8],
-            acc_bias_x: 0.0, // Particle filter doesn't estimate biases
+            acc_bias_x: 0.0, // No bias block: nothing was estimated
             acc_bias_y: 0.0,
             acc_bias_z: 0.0,
             gyro_bias_x: 0.0,
@@ -3192,7 +3136,7 @@ pub fn run_closed_loop<F: NavigationFilter>(
         // asserts the nine-state result. Taking `ExtraStateLayout::NONE` for it hardcoded
         // fifteen and panicked on the initial row with "State vector must have 15 elements;
         // got 9", before a single event was processed. `From` routes a sub-fifteen layout to
-        // the particle-shaped conversion, which is exactly the right shape here.
+        // the navigation-only conversion, which is exactly the right shape here.
         //
         // *Wider* than fifteen with no barometric-bias index is the opposite case and must
         // keep failing: those extra states are geophysical, the filter cannot say which is a
@@ -3548,9 +3492,20 @@ pub struct UkfConfig {
     pub imu_biases_covariance: Option<Vec<f64>>,
     /// Optional vector of f64 for any additional states (not used in the canonical UKF, but can be useful for custom implementations).
     pub other_states: Option<Vec<f64>>,
-    /// Optional vector of f64 for other states covariance.
+    /// Optional covariance for [`Self::other_states`], one entry per extra state.
+    ///
+    /// Entries are **variances**, in each state's own units squared. They are appended to
+    /// the covariance diagonal exactly as given -- [`initialize_ukf`] never squares them --
+    /// so a caller holding a standard deviation must square it first. Passing one unsquared
+    /// is a silent, plausible-looking prior rather than an error: `run_geo_closed_loop_cli`
+    /// handed this a 150 nT measurement noise and got a 12 nT map-bias prior, tight enough
+    /// to pin the state next to its seed.
     pub other_states_covariance: Option<Vec<f64>>,
     /// Optional process noise diagonal vector.
+    ///
+    /// Entries are **spectral densities** -- a variance per second -- matching
+    /// [`DEFAULT_PROCESS_NOISE_DENSITY`]. Each filter forms `Q_k = q * dt` (#374), so any
+    /// entries appended for [`Self::other_states`] are random-walk rates squared.
     pub process_noise_diagonal: Option<Vec<f64>>,
     /// Sigma-point spread, or `None` for [`ClosedLoopConfig::ukf_alpha`]'s default of `0.1`.
     ///
@@ -3828,7 +3783,33 @@ pub struct EkfConfig {
     /// discard this silently on this constructor, which is #392 on the one filter it was not
     /// fixed on.
     pub imu_biases_covariance: Option<Vec<f64>>,
-    /// Optional process noise diagonal (9 or 15 elements, matching `use_biases`).
+    /// Additional states appended after the IMU bias block, such as geophysical map biases.
+    ///
+    /// Mirrors [`UkfConfig::other_states`], and exists for the same reason: so that a map-aided
+    /// EKF is built by [`initialize_ekf`] like every other EKF, and an aided and an unaided run
+    /// of the filter share one set of priors and differ only by these states. `strapdown-sim`
+    /// built its map-aided EKF by hand until this field existed, with its own P0 and Q and no
+    /// barometric bias, so its geophysical results measured a different filter from its
+    /// unaided ones.
+    ///
+    /// Requires [`Self::use_biases`]: map biases are laid out after the fifteen navigation and
+    /// IMU-bias states. The barometric bias, when [`Self::estimate_baro_bias`] is on, goes
+    /// after these, as it does on the UKF; read its index off [`EkfConfig::baro_bias_index`].
+    ///
+    /// A [`Self::process_noise_diagonal`] must be given alongside, with an entry per extra
+    /// state: their random-walk rates have no default.
+    pub other_states: Option<Vec<f64>>,
+    /// Covariance for [`Self::other_states`], one entry per extra state.
+    ///
+    /// Entries are **variances**, appended to the covariance diagonal exactly as given, as on
+    /// [`UkfConfig::other_states_covariance`]. Defaults to `1e-3` per state, as there.
+    pub other_states_covariance: Option<Vec<f64>>,
+    /// Optional process noise diagonal: 9 or 15 elements, matching `use_biases`, then one per
+    /// [`Self::other_states`] entry.
+    ///
+    /// With [`Self::estimate_baro_bias`] on, a diagonal one entry short of the state gets the
+    /// barometric bias's entry appended, as [`initialize_ukf`] does, so turning the flag on does
+    /// not oblige every caller to hand-build a longer vector.
     pub process_noise_diagonal: Option<Vec<f64>>,
     /// 15-state (navigation states plus IMU biases) when `true`, 9-state otherwise.
     pub use_biases: bool,
@@ -3871,6 +3852,8 @@ impl Default for EkfConfig {
             attitude_covariance: None,
             imu_biases: None,
             imu_biases_covariance: None,
+            other_states: None,
+            other_states_covariance: None,
             process_noise_diagonal: None,
             // Every caller in this workspace asked for the 15-state filter before this
             // struct existed, and estimating the IMU biases is the whole reason to prefer
@@ -3923,6 +3906,8 @@ pub fn initialize_ekf(
         attitude_covariance,
         imu_biases,
         imu_biases_covariance,
+        other_states,
+        other_states_covariance,
         process_noise_diagonal,
         use_biases,
         estimate_baro_bias,
@@ -3946,10 +3931,20 @@ pub fn initialize_ekf(
         "estimate_baro_bias",
         "requires use_biases: the barometric bias is appended after the IMU bias block".to_string(),
     )?;
-    let state_size = if use_biases { 15 } else { 9 } + usize::from(estimate_baro_bias);
+    require_config(
+        other_states.is_none() || use_biases,
+        "other_states",
+        "requires use_biases: extra states are appended after the IMU bias block".to_string(),
+    )?;
+    let other_states = other_states.unwrap_or_default();
+    let state_size =
+        if use_biases { 15 } else { 9 } + other_states.len() + usize::from(estimate_baro_bias);
 
     // Build process noise diagonal
-    let process_noise_diagonal = if let Some(pn) = process_noise_diagonal {
+    let process_noise_diagonal = if let Some(mut pn) = process_noise_diagonal {
+        if estimate_baro_bias && pn.len() + 1 == state_size {
+            pn.push(BARO_BIAS_PROCESS_NOISE_M2_PER_S);
+        }
         require_config(
             pn.len() == state_size,
             "process_noise_diagonal",
@@ -3957,6 +3952,11 @@ pub fn initialize_ekf(
         )?;
         pn
     } else {
+        require_config(
+            other_states.is_empty(),
+            "process_noise_diagonal",
+            "required alongside other_states: their random-walk rates have no default".to_string(),
+        )?;
         let mut default = if use_biases {
             DEFAULT_PROCESS_NOISE_DENSITY.to_vec()
         } else {
@@ -4034,6 +4034,21 @@ pub fn initialize_ekf(
         vec![0.0; 6] // Not used in 9-state, but required by constructor
     };
 
+    // The extra states, then the barometric bias last: the order `initialize_ukf` uses, so
+    // map biases sit at fifteen onward on both filters and the barometer never collides with
+    // them.
+    let other_states_covariance =
+        other_states_covariance.unwrap_or_else(|| vec![1e-3; other_states.len()]);
+    require_config(
+        other_states_covariance.len() == other_states.len(),
+        "other_states_covariance",
+        format!(
+            "expected {} elements, one per other state, got {}",
+            other_states.len(),
+            other_states_covariance.len()
+        ),
+    )?;
+    covariance_diagonal.extend(other_states_covariance);
     if estimate_baro_bias {
         covariance_diagonal.push(INITIAL_BARO_BIAS_VARIANCE_M2);
     }
@@ -4047,10 +4062,15 @@ pub fn initialize_ekf(
         ),
     )?;
 
+    // `ExtendedKalmanFilter::new` builds its mean as the nine navigation states, then this
+    // slice, then zeros out to the width of the covariance. So the extra states' seeds follow
+    // the IMU biases here, and the barometric bias, last, opens at zero.
+    let mut leading_states = imu_biases_vec;
+    leading_states.extend(other_states);
     let process_noise = DMatrix::from_diagonal(&DVector::from_vec(process_noise_diagonal));
     let mut filter = ExtendedKalmanFilter::new(
         &initial_state,
-        &imu_biases_vec,
+        &leading_states,
         covariance_diagonal,
         process_noise,
         use_biases,
@@ -4063,17 +4083,15 @@ pub fn initialize_ekf(
 impl EkfConfig {
     /// Where [`Self::estimate_baro_bias`] puts the barometric bias, if it is on.
     ///
-    /// Always [`NAVIGATION_STATES`] here, because this constructor has no `other_states` to
-    /// append after. It is still a method rather than a literal for the reason
-    /// [`UkfConfig::baro_bias_index`] gives: three places have to agree on the index, and the
-    /// one that computes it by hand is the one that drifts.
+    /// After any [`Self::other_states`], exactly as [`UkfConfig::baro_bias_index`] places it and
+    /// for the reason given there: three places have to agree on the index, and map biases are
+    /// laid out from fifteen, so the barometer taking fifteen would collide with a gravity bias.
+    /// This was the literal [`NAVIGATION_STATES`] while the EKF had no extra states to append
+    /// after.
     #[must_use]
-    pub const fn baro_bias_index(&self) -> Option<usize> {
-        if self.estimate_baro_bias {
-            Some(NAVIGATION_STATES)
-        } else {
-            None
-        }
+    pub fn baro_bias_index(&self) -> Option<usize> {
+        self.estimate_baro_bias
+            .then(|| NAVIGATION_STATES + self.other_states.as_ref().map_or(0, Vec::len))
     }
 }
 
@@ -4629,24 +4647,32 @@ pub mod execution {
 /// This is the circuit breaker behind the per-update gating in [`crate::gating`]: gating rejects
 /// individual measurements, the monitor gives up on the whole trajectory.
 pub mod health {
-    use super::{Debug, StrapdownError, f64};
+    use super::{
+        DEFAULT_HEALTH_ALT_MAX_M, DEFAULT_HEALTH_ALT_MIN_M, DEFAULT_HEALTH_COV_DIAG_MAX,
+        DEFAULT_HEALTH_LAT_MAX_RAD, DEFAULT_HEALTH_LAT_MIN_RAD, DEFAULT_HEALTH_LON_MAX_RAD,
+        DEFAULT_HEALTH_LON_MIN_RAD, DEFAULT_HEALTH_SPEED_MPS_MAX, DEFAULT_NIS_POS_CONSEC_FAIL,
+        DEFAULT_NIS_POS_MAX, Debug, Deserialize, Serialize, StrapdownError, f64,
+    };
 
     /// Bounds a filter estimate must stay inside for [`HealthMonitor`] to consider it healthy.
     ///
     /// [`Default`] is deliberately permissive -- in particular the altitude band is opened to
     /// +/-1e8 m so that vertical-channel instability shows up as a covariance or NIS failure
     /// rather than as an altitude bound trip.
-    #[derive(Clone, Debug)]
+    #[derive(Clone, Debug, Serialize, Deserialize)]
     pub struct HealthLimits {
         /// Inclusive (min, max) latitude band in radians; defaults to the full +/-90 degrees.
+        #[serde(default = "default_health_lat_rad")]
         pub lat_rad: (f64, f64),
         /// Inclusive (min, max) longitude band in radians; defaults to the full +/-180 degrees.
+        #[serde(default = "default_health_lon_rad")]
         pub lon_rad: (f64, f64),
         /// Inclusive (min, max) altitude band in metres above the ellipsoid. Defaults to
         /// +/-1e8 -- deliberately far wider than the [-11,000 m, 30,000 m] over which the
         /// mechanization is documented to be valid, so that a diverging vertical channel is
         /// caught by the finiteness and covariance checks rather than by this band. Narrow
         /// it to the scenario's real altitude range to make it an effective gate.
+        #[serde(default = "default_health_alt_m")]
         pub alt_m: (f64, f64),
         /// Maximum velocity vector magnitude in m/s -- north, east, *and* down combined, not
         /// ground speed alone (default 500, i.e. road or low-altitude aircraft). Checked
@@ -4654,9 +4680,11 @@ pub mod health {
         /// this crate. Narrow this to the scenario's real speed range to make it an
         /// effective gate; unaided `dead_reckoning` never calls [`HealthMonitor`], so a run
         /// that deliberately drifts past this bound (see #299) is unaffected.
+        #[serde(default = "default_health_speed_mps_max")]
         pub speed_mps_max: f64,
         /// Largest variance allowed on the covariance diagonal before the run is failed
         /// (default 1e15).
+        #[serde(default = "default_health_cov_diag_max")]
         pub cov_diag_max: f64,
         /// NIS above which a measurement update counts as an outlier (default 100).
         ///
@@ -4665,22 +4693,52 @@ pub mod health {
         /// the single measurement arm of the event loop, so GNSS position/velocity fixes,
         /// `RelativeAltitudeMeasurement`, magnetometer-yaw and geophysical updates are all
         /// tested against this one threshold. The `_pos` in the field name is historical.
+        #[serde(default = "default_nis_pos_max")]
         pub nis_pos_max: f64,
         /// Number of consecutive NIS exceedances that fails the run (default 20). A single
         /// update whose NIS is within [`Self::nis_pos_max`] resets the streak.
+        #[serde(default = "default_nis_pos_consec_fail")]
         pub nis_pos_consec_fail: usize,
+    }
+
+    const fn default_health_lat_rad() -> (f64, f64) {
+        (DEFAULT_HEALTH_LAT_MIN_RAD, DEFAULT_HEALTH_LAT_MAX_RAD)
+    }
+
+    const fn default_health_lon_rad() -> (f64, f64) {
+        (DEFAULT_HEALTH_LON_MIN_RAD, DEFAULT_HEALTH_LON_MAX_RAD)
+    }
+
+    const fn default_health_alt_m() -> (f64, f64) {
+        (DEFAULT_HEALTH_ALT_MIN_M, DEFAULT_HEALTH_ALT_MAX_M)
+    }
+
+    const fn default_health_speed_mps_max() -> f64 {
+        DEFAULT_HEALTH_SPEED_MPS_MAX
+    }
+
+    const fn default_health_cov_diag_max() -> f64 {
+        DEFAULT_HEALTH_COV_DIAG_MAX
+    }
+
+    const fn default_nis_pos_max() -> f64 {
+        DEFAULT_NIS_POS_MAX
+    }
+
+    const fn default_nis_pos_consec_fail() -> usize {
+        DEFAULT_NIS_POS_CONSEC_FAIL
     }
 
     impl Default for HealthLimits {
         fn default() -> Self {
             Self {
-                lat_rad: (-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2),
-                lon_rad: (-std::f64::consts::PI, std::f64::consts::PI),
-                alt_m: (-100000000.0, 100000000.0), // Very tolerant for vertical channel instability
-                speed_mps_max: 500.0,
-                cov_diag_max: 1e15,
-                nis_pos_max: 100.0,
-                nis_pos_consec_fail: 20,
+                lat_rad: default_health_lat_rad(),
+                lon_rad: default_health_lon_rad(),
+                alt_m: default_health_alt_m(),
+                speed_mps_max: default_health_speed_mps_max(),
+                cov_diag_max: default_health_cov_diag_max(),
+                nis_pos_max: default_nis_pos_max(),
+                nis_pos_consec_fail: default_nis_pos_consec_fail(),
             }
         }
     }
@@ -4936,6 +4994,20 @@ pub struct FaultArgs {
     /// squared**: the default 5.0 multiplies R by 25, not by 5.
     #[cfg_attr(feature = "clap", arg(long, default_value_t = 5.0))]
     pub r_scale: f64,
+    /// Degraded: position-error correlation time in **seconds**, decoupling the error's
+    /// timescale from the fix interval.
+    ///
+    /// Without it, `--rho-pos` is applied once per emitted fix and the correlation time is
+    /// `-interval_s / ln(rho_pos)` -- so changing `--interval-s` changes the error model
+    /// too, and a sweep over the fix rate cannot be separated from a sweep over the error
+    /// timescale. With it, the coefficient is `exp(-dt / tau)` for the actual interval and
+    /// `--sigma-pos-m` becomes the **steady-state** standard deviation rather than the
+    /// per-step innovation.
+    #[cfg_attr(feature = "clap", arg(long))]
+    pub tau_pos_s: Option<f64>,
+    /// Degraded: velocity-error correlation time in seconds. See `--tau-pos-s`.
+    #[cfg_attr(feature = "clap", arg(long))]
+    pub tau_vel_s: Option<f64>,
     /// Slow bias: northward drift rate of the injected offset, in m/s
     #[cfg_attr(feature = "clap", arg(long, default_value_t = 0.02))]
     pub drift_n_mps: f64,
@@ -4992,6 +5064,8 @@ pub const fn build_fault(a: &FaultArgs) -> GnssFaultModel {
             rho_vel: a.rho_vel,
             sigma_vel_mps: a.sigma_vel_mps,
             r_scale: a.r_scale,
+            tau_pos_s: a.tau_pos_s,
+            tau_vel_s: a.tau_vel_s,
         },
         FaultKind::Slowbias => GnssFaultModel::SlowBias {
             drift_n_mps: a.drift_n_mps,
@@ -5067,8 +5141,9 @@ pub enum FilterType {
 #[serde(rename_all = "kebab-case")]
 #[derive(Default)]
 pub enum ParticleFilterType {
-    /// Rao-Blackwellized particle filter (position as particles, velocity/attitude/extra
-    /// states as per-particle Kalman filters). The default, and currently the only variant.
+    /// Rao-Blackwellized particle filter after Canciani & Raquet (horizontal position as
+    /// particles; altitude, velocity, tilt, optional IMU biases and the map biases as a
+    /// Kalman filter per particle). The default, and currently the only variant.
     #[default]
     RaoBlackwellized,
 }
@@ -5224,70 +5299,229 @@ impl Default for ClosedLoopConfig {
 }
 
 /// Particle filter configuration (RBPF defaults).
+///
+/// # Map biases are configured in `[geophysical]`, with their split here
+///
+/// A geophysically aided particle filter reads each map bias's seed and prior from
+/// [`GeophysicalConfig`] -- `gravity_bias`, `gravity_bias_init_std` and their magnetic
+/// counterparts -- exactly as the Kalman filters do. What is particle-filter specific is how
+/// that bias is modelled: as Canciani & Raquet's temporal variation `V` plus constant offset
+/// `c`, whose `V` is set by the `*_variation_*` keys below and defaults from
+/// `*_bias_process_noise_std`. This section used to carry its own `geo_bias_init_std` and
+/// `geo_bias_process_noise_std`: one number for every channel, whatever its unit, while the
+/// particle filter ignored the `[geophysical]` values beside them. Both keys are refused by
+/// name rather than dropped, which is what serde would otherwise do with a key it no longer
+/// knows.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(try_from = "ParticleFilterConfigDocument")]
 #[non_exhaustive]
 pub struct ParticleFilterConfig {
     /// Number of particles in the filter.
-    #[serde(default = "default_num_particles")]
     pub num_particles: usize,
     /// Initial position standard deviation as a ground extent in metres,
     /// [`north_m`, `east_m`, `up_m`]. Converted to the filter's radian position units
     /// at the starting latitude; see [`crate::rbpf::RbpfConfig::position_init_std_m`].
-    #[serde(default = "default_position_init_std_m")]
     pub position_init_std_m: Vec<f64>,
     /// Initial velocity standard deviation (m/s).
-    #[serde(default = "default_velocity_init_std_mps")]
     pub velocity_init_std_mps: f64,
     /// Initial attitude standard deviation (rad).
-    #[serde(default = "default_attitude_init_std_rad")]
     pub attitude_init_std_rad: f64,
-    /// Position random-walk rate as [`north`, `east`, `up`] in m/sqrt(s) -- the key name
-    /// keeps its `_m` for compatibility with existing configuration files, and the value
-    /// is unchanged at a 1 s step. The per-step standard deviation is this times
-    /// `sqrt(dt)`; see [`crate::rbpf::RbpfConfig::position_process_noise_std_m`].
-    #[serde(default = "default_position_process_noise_std_m")]
-    pub position_process_noise_std_m: Vec<f64>,
     /// Velocity random-walk rate in m/s per sqrt(s) -- the key name keeps its `_mps` for
     /// compatibility with existing configuration files, and the value is unchanged at a 1 s
     /// step. The per-step standard deviation is this times `sqrt(dt)`; see
     /// [`crate::rbpf::RbpfConfig::velocity_process_noise_std_mps`].
-    #[serde(default = "default_velocity_process_noise_std_mps")]
     pub velocity_process_noise_std_mps: f64,
     /// Attitude random-walk rate in rad per sqrt(s) -- the key name keeps its `_rad` for
     /// compatibility with existing configuration files, and the value is unchanged at a 1 s
     /// step. The per-step standard deviation is this times `sqrt(dt)`; see
     /// [`crate::rbpf::RbpfConfig::attitude_process_noise_std_rad`].
-    #[serde(default = "default_attitude_process_noise_std_rad")]
     pub attitude_process_noise_std_rad: f64,
-    /// Initial standard deviation for geophysical bias states.
-    #[serde(default = "default_geo_bias_init_std")]
-    pub geo_bias_init_std: f64,
-    /// Random-walk rate for the geophysical bias states, in the bias's own units per
-    /// sqrt(s): the variance it accumulates is `std^2 * elapsed_seconds`, independent of
-    /// the log's sample rate. Supplies
-    /// [`crate::rbpf::RbpfConfig::extra_state_process_noise_std`].
-    #[serde(default = "default_geo_bias_process_noise_std")]
-    pub geo_bias_process_noise_std: f64,
-    /// Apply zero-vertical-velocity pseudo-measurement.
-    #[serde(default = "default_zero_vertical_velocity")]
-    pub zero_vertical_velocity: bool,
-    /// Standard deviation for zero-vertical-velocity pseudo-measurement (m/s).
-    #[serde(default = "default_zero_vertical_velocity_std_mps")]
-    pub zero_vertical_velocity_std_mps: f64,
+    /// Random walk on the sampled horizontal position error, [`north`, `east`] in m per
+    /// sqrt(s). The filter's default is Canciani & Raquet's zero (eq. 19), which diverges with
+    /// GNSS-rate fixes on MEMS data; see
+    /// [`crate::rbpf::RbpfConfig::horizontal_process_noise_std_m`].
+    pub horizontal_process_noise_std_m: Vec<f64>,
+    /// Time constant of the barometer loop in the mechanization, s; see
+    /// [`crate::rbpf::RbpfConfig::baro_loop_time_constant_s`].
+    pub baro_loop_time_constant_s: f64,
+    /// Steady-state standard deviation of the barometer-aiding error, m (`σ_b`, eq. 21).
+    pub baro_error_std_m: f64,
+    /// Correlation time of the barometer-aiding error, s (`τ_b`, eqs. 12, 21).
+    pub baro_error_time_constant_s: f64,
+    /// Initial standard deviation of the loop's vertical-acceleration error, m/s².
+    pub vertical_accel_error_init_std_mps2: f64,
+    /// Resampling trigger as a fraction of the particle count; `1.0`, the default, resamples
+    /// after every update, as Canciani & Raquet do.
+    pub effective_sample_threshold: f64,
+    /// Roughening coefficient after resampling; `0.0` turns it off, as Canciani & Raquet have
+    /// it. See [`crate::rbpf::RbpfConfig::roughening_factor`].
+    pub roughening_factor: f64,
+    /// Steady-state standard deviation of the gravity channel's temporal variation `V`, mGal.
+    ///
+    /// Absent, it is the Gauss-Markov process whose short-term drive equals the
+    /// `[geophysical] gravity_bias_process_noise_std` random walk:
+    /// `rate * sqrt(tau / 2)`, with `tau` from [`Self::gravity_variation_time_constant_s`].
+    /// The constant offset `c` takes whatever of `gravity_bias_init_std` this leaves.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gravity_variation_std: Option<f64>,
+    /// Correlation time of the gravity channel's temporal variation `V`, s.
+    pub gravity_variation_time_constant_s: f64,
+    /// Steady-state standard deviation of the magnetic channel's temporal variation `V`, nT.
+    /// Canciani & Raquet use 5 nT (a 25 nT² variance). Absent, derived as for
+    /// [`Self::gravity_variation_std`] from `magnetic_bias_process_noise_std`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub magnetic_variation_std: Option<f64>,
+    /// Correlation time of the magnetic channel's temporal variation `V`, s; Canciani &
+    /// Raquet's is 300.
+    pub magnetic_variation_time_constant_s: f64,
 }
 
-const fn default_zero_vertical_velocity() -> bool {
-    true
+/// Why `[particle_filter] geo_bias_init_std` is refused, and what replaces it.
+const REMOVED_GEO_BIAS_INIT_STD: &str = "`geo_bias_init_std` is no longer a [particle_filter] \
+    key: it was one prior for every map bias, in no particular unit. The particle filter reads \
+    each channel's prior from [geophysical], as the Kalman filters do -- set \
+    `gravity_bias_init_std` (mGal) and/or `magnetic_bias_init_std` (nT) there, or omit them to \
+    default to that channel's noise standard deviation";
+
+/// Why `[particle_filter] position_process_noise_std_m` is refused.
+const REMOVED_POSITION_PROCESS_NOISE: &str = "`position_process_noise_std_m` is no longer a \
+    [particle_filter] key: the particle filter follows Canciani & Raquet, whose altitude error \
+    has no process noise (eq. 20). Set the horizontal pair with \
+    `horizontal_process_noise_std_m = [north, east]`, in m per sqrt(s)";
+
+/// Why `[particle_filter] zero_vertical_velocity` and its standard deviation are refused.
+const REMOVED_ZERO_VERTICAL_VELOCITY: &str = "`zero_vertical_velocity` and \
+    `zero_vertical_velocity_std_mps` are no longer [particle_filter] keys: the vertical channel \
+    is held by the barometer loop in the mechanization, as Canciani & Raquet do; set \
+    `baro_loop_time_constant_s` and the `baro_error_*` keys";
+
+/// Why `[particle_filter] geo_bias_process_noise_std` is refused, and what replaces it.
+const REMOVED_GEO_BIAS_PROCESS_NOISE_STD: &str = "`geo_bias_process_noise_std` is no longer a \
+    [particle_filter] key: it was one random walk for every map bias, in no particular unit. \
+    The particle filter reads each channel's rate from [geophysical], as the Kalman filters do \
+    -- set `gravity_bias_process_noise_std` (mGal per sqrt(s)) and/or \
+    `magnetic_bias_process_noise_std` (nT per sqrt(s)) there, or omit them to default to the \
+    prior spread over an hour";
+
+/// A `[particle_filter]` section as written: every [`ParticleFilterConfig`] key, plus the keys
+/// it no longer honours.
+///
+/// [`ParticleFilterConfig`] deserializes through this so a removed key can be refused by name.
+/// Serde drops a key it does not recognise without a word, and a tombstone field on the public
+/// struct would be dead code under `-D warnings`. Every default comes from
+/// [`ParticleFilterConfig::default`], so a section that sets nothing is that default exactly.
+#[derive(Deserialize)]
+#[serde(default)]
+struct ParticleFilterConfigDocument {
+    num_particles: usize,
+    position_init_std_m: Vec<f64>,
+    velocity_init_std_mps: f64,
+    attitude_init_std_rad: f64,
+    velocity_process_noise_std_mps: f64,
+    attitude_process_noise_std_rad: f64,
+    horizontal_process_noise_std_m: Vec<f64>,
+    baro_loop_time_constant_s: f64,
+    baro_error_std_m: f64,
+    baro_error_time_constant_s: f64,
+    vertical_accel_error_init_std_mps2: f64,
+    effective_sample_threshold: f64,
+    roughening_factor: f64,
+    gravity_variation_std: Option<f64>,
+    gravity_variation_time_constant_s: f64,
+    magnetic_variation_std: Option<f64>,
+    magnetic_variation_time_constant_s: f64,
+    /// Refused; see [`REMOVED_GEO_BIAS_INIT_STD`].
+    geo_bias_init_std: Option<f64>,
+    /// Refused; see [`REMOVED_GEO_BIAS_PROCESS_NOISE_STD`].
+    geo_bias_process_noise_std: Option<f64>,
+    /// Refused; see [`REMOVED_POSITION_PROCESS_NOISE`].
+    position_process_noise_std_m: Option<Vec<f64>>,
+    /// Refused; see [`REMOVED_ZERO_VERTICAL_VELOCITY`].
+    zero_vertical_velocity: Option<bool>,
+    /// Refused; see [`REMOVED_ZERO_VERTICAL_VELOCITY`].
+    zero_vertical_velocity_std_mps: Option<f64>,
 }
 
-const fn default_zero_vertical_velocity_std_mps() -> f64 {
-    0.1
+impl Default for ParticleFilterConfigDocument {
+    fn default() -> Self {
+        let defaults = ParticleFilterConfig::default();
+        Self {
+            num_particles: defaults.num_particles,
+            position_init_std_m: defaults.position_init_std_m,
+            velocity_init_std_mps: defaults.velocity_init_std_mps,
+            attitude_init_std_rad: defaults.attitude_init_std_rad,
+            velocity_process_noise_std_mps: defaults.velocity_process_noise_std_mps,
+            attitude_process_noise_std_rad: defaults.attitude_process_noise_std_rad,
+            horizontal_process_noise_std_m: defaults.horizontal_process_noise_std_m,
+            baro_loop_time_constant_s: defaults.baro_loop_time_constant_s,
+            baro_error_std_m: defaults.baro_error_std_m,
+            baro_error_time_constant_s: defaults.baro_error_time_constant_s,
+            vertical_accel_error_init_std_mps2: defaults.vertical_accel_error_init_std_mps2,
+            effective_sample_threshold: defaults.effective_sample_threshold,
+            roughening_factor: defaults.roughening_factor,
+            gravity_variation_std: defaults.gravity_variation_std,
+            gravity_variation_time_constant_s: defaults.gravity_variation_time_constant_s,
+            magnetic_variation_std: defaults.magnetic_variation_std,
+            magnetic_variation_time_constant_s: defaults.magnetic_variation_time_constant_s,
+            geo_bias_init_std: None,
+            geo_bias_process_noise_std: None,
+            position_process_noise_std_m: None,
+            zero_vertical_velocity: None,
+            zero_vertical_velocity_std_mps: None,
+        }
+    }
+}
+
+impl TryFrom<ParticleFilterConfigDocument> for ParticleFilterConfig {
+    type Error = &'static str;
+
+    fn try_from(document: ParticleFilterConfigDocument) -> Result<Self, Self::Error> {
+        if document.geo_bias_init_std.is_some() {
+            return Err(REMOVED_GEO_BIAS_INIT_STD);
+        }
+        if document.geo_bias_process_noise_std.is_some() {
+            return Err(REMOVED_GEO_BIAS_PROCESS_NOISE_STD);
+        }
+        if document.position_process_noise_std_m.is_some() {
+            return Err(REMOVED_POSITION_PROCESS_NOISE);
+        }
+        if document.zero_vertical_velocity.is_some()
+            || document.zero_vertical_velocity_std_mps.is_some()
+        {
+            return Err(REMOVED_ZERO_VERTICAL_VELOCITY);
+        }
+        Ok(Self {
+            num_particles: document.num_particles,
+            position_init_std_m: document.position_init_std_m,
+            velocity_init_std_mps: document.velocity_init_std_mps,
+            attitude_init_std_rad: document.attitude_init_std_rad,
+            velocity_process_noise_std_mps: document.velocity_process_noise_std_mps,
+            attitude_process_noise_std_rad: document.attitude_process_noise_std_rad,
+            horizontal_process_noise_std_m: document.horizontal_process_noise_std_m,
+            baro_loop_time_constant_s: document.baro_loop_time_constant_s,
+            baro_error_std_m: document.baro_error_std_m,
+            baro_error_time_constant_s: document.baro_error_time_constant_s,
+            vertical_accel_error_init_std_mps2: document.vertical_accel_error_init_std_mps2,
+            effective_sample_threshold: document.effective_sample_threshold,
+            roughening_factor: document.roughening_factor,
+            gravity_variation_std: document.gravity_variation_std,
+            gravity_variation_time_constant_s: document.gravity_variation_time_constant_s,
+            magnetic_variation_std: document.magnetic_variation_std,
+            magnetic_variation_time_constant_s: document.magnetic_variation_time_constant_s,
+        })
+    }
 }
 
 /// Sigma-point spread for the unscented transform; see
 /// [`ClosedLoopConfig::ukf_alpha`] for why this is `0.1` and not the textbook `1e-3`.
+///
+/// Public so `strapdown-sim`'s `--ukf-alpha` can default to the same number rather than
+/// restating it. It restated `1e-3`, the value this one was raised *from*, so the command
+/// line and a configuration file naming the same filter did not run the same filter.
+pub const DEFAULT_UKF_ALPHA: f64 = 0.1;
+
 const fn default_ukf_alpha() -> f64 {
-    0.1
+    DEFAULT_UKF_ALPHA
 }
 
 const fn default_ukf_beta() -> f64 {
@@ -5314,10 +5548,6 @@ const fn default_attitude_init_std_rad() -> f64 {
     0.1
 }
 
-fn default_position_process_noise_std_m() -> Vec<f64> {
-    vec![1.0, 1.0, 1.0]
-}
-
 const fn default_velocity_process_noise_std_mps() -> f64 {
     1e-3
 }
@@ -5326,28 +5556,33 @@ const fn default_attitude_process_noise_std_rad() -> f64 {
     0.01
 }
 
-const fn default_geo_bias_init_std() -> f64 {
-    1.0
-}
-
-const fn default_geo_bias_process_noise_std() -> f64 {
-    1e-3
-}
-
 impl Default for ParticleFilterConfig {
     fn default() -> Self {
+        // The barometer-loop and resampling defaults are the filter's own, read from it rather
+        // than restated, so a config file that omits them runs the filter `RbpfConfig`
+        // documents.
+        let filter = crate::rbpf::RbpfConfig::default();
         Self {
             num_particles: default_num_particles(),
             position_init_std_m: default_position_init_std_m(),
             velocity_init_std_mps: default_velocity_init_std_mps(),
             attitude_init_std_rad: default_attitude_init_std_rad(),
-            position_process_noise_std_m: default_position_process_noise_std_m(),
             velocity_process_noise_std_mps: default_velocity_process_noise_std_mps(),
             attitude_process_noise_std_rad: default_attitude_process_noise_std_rad(),
-            geo_bias_init_std: default_geo_bias_init_std(),
-            geo_bias_process_noise_std: default_geo_bias_process_noise_std(),
-            zero_vertical_velocity: default_zero_vertical_velocity(),
-            zero_vertical_velocity_std_mps: default_zero_vertical_velocity_std_mps(),
+            horizontal_process_noise_std_m: filter
+                .horizontal_process_noise_std_m
+                .as_slice()
+                .to_vec(),
+            baro_loop_time_constant_s: filter.baro_loop_time_constant_s,
+            baro_error_std_m: filter.baro_error_std_m,
+            baro_error_time_constant_s: filter.baro_error_time_constant_s,
+            vertical_accel_error_init_std_mps2: filter.vertical_accel_error_init_std_mps2,
+            effective_sample_threshold: filter.effective_sample_threshold,
+            roughening_factor: filter.roughening_factor,
+            gravity_variation_std: None,
+            gravity_variation_time_constant_s: crate::rbpf::DEFAULT_MAP_VARIATION_TIME_CONSTANT_S,
+            magnetic_variation_std: None,
+            magnetic_variation_time_constant_s: crate::rbpf::DEFAULT_MAP_VARIATION_TIME_CONSTANT_S,
         }
     }
 }
@@ -5444,6 +5679,12 @@ pub struct SimulationConfig {
     /// Execution time limits (wall-clock and no-progress)
     #[serde(default)]
     pub execution_limits: ExecutionLimits,
+    /// Numerical divergence guards (position/velocity bands, covariance and NIS thresholds).
+    ///
+    /// Loosen these to let a run that is drifting on purpose -- a MEMS-grade recording under
+    /// heavy GNSS degradation, say -- reach its end instead of being failed part way through.
+    #[serde(default)]
+    pub health_limits: HealthLimits,
     /// Logging configuration
     #[serde(default)]
     pub logging: LoggingConfig,
@@ -5495,6 +5736,7 @@ impl Default for SimulationConfig {
             parallel: false,
             generate_plot: false,
             execution_limits: ExecutionLimits::default(),
+            health_limits: HealthLimits::default(),
             logging: LoggingConfig::default(),
             closed_loop: Some(ClosedLoopConfig::default()),
             particle_filter: None,
@@ -5664,16 +5906,32 @@ pub struct GeophysicalConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gravity_resolution: Option<GeoResolution>,
 
-    /// Gravity measurement bias (mGal).
+    /// Seed value of the gravity map-bias state (mGal).
     ///
-    /// **Read only on the CLI path** (`--gravity-bias`, `sim/src/main.rs:1693`). The
-    /// configuration-file path never reads it: closed-loop mode rejects a `[geophysical]`
-    /// section outright, and the particle-filter arm takes only the resolutions, the noise
-    /// standard deviations and `geo_interval_s`. Setting it in a config file is silently
-    /// ignored. Kept rather than removed because shipped and user configuration files set it,
-    /// and dropping the field would turn a silently-ignored value into a parse error.
+    /// Read by every geophysically aided filter, on both the CLI path (`--gravity-bias`) and
+    /// the configuration-file path. It used to be inert in two places: closed-loop mode
+    /// rejected the whole section, and the particle filter -- on its command line and in a
+    /// config file alike -- took only the resolutions, the noise standard deviations and
+    /// `geo_interval_s`, starting every map bias at zero under a prior of
+    /// `[particle_filter] geo_bias_init_std`, one number in no particular unit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gravity_bias: Option<f64>,
+
+    /// Initial standard deviation of the gravity map-bias state (mGal).
+    ///
+    /// The configuration-file counterpart of `--gravity-bias-init-std`, read by the Kalman
+    /// filters and the particle filter alike. Defaults to
+    /// [`gravity_noise_std`](GeophysicalConfig::gravity_noise_std): the map bias and the
+    /// measurement noise are of the same order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gravity_bias_init_std: Option<f64>,
+
+    /// Random-walk rate of the gravity map bias, a standard deviation in mGal per sqrt(s).
+    ///
+    /// The configuration-file counterpart of `--gravity-bias-process-noise-std`. Defaults to
+    /// the prior spread over an hour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gravity_bias_process_noise_std: Option<f64>,
 
     /// Gravity measurement noise std dev (mGal)
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -5688,12 +5946,28 @@ pub struct GeophysicalConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub magnetic_resolution: Option<GeoResolution>,
 
-    /// Magnetic measurement bias (nT).
+    /// Seed value of the magnetic map-bias state (nT).
     ///
-    /// Config-path-inert in exactly the way
+    /// Read on both paths, in exactly the way
     /// [`gravity_bias`](GeophysicalConfig::gravity_bias) is; see its note.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub magnetic_bias: Option<f64>,
+
+    /// Initial standard deviation of the magnetic map-bias state (nT).
+    ///
+    /// The configuration-file counterpart of `--magnetic-bias-init-std`. Defaults to
+    /// [`magnetic_noise_std`](GeophysicalConfig::magnetic_noise_std), which is usually far
+    /// too tight: a recording made inside a vehicle carries thousands of nT of the vehicle's
+    /// own field, and this state is what absorbs it. `analyze geostats` in the `analysis`
+    /// package measures the right value as the spread of the per-trajectory medians.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub magnetic_bias_init_std: Option<f64>,
+
+    /// Random-walk rate of the magnetic map bias, a standard deviation in nT per sqrt(s).
+    ///
+    /// The configuration-file counterpart of `--magnetic-bias-process-noise-std`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub magnetic_bias_process_noise_std: Option<f64>,
 
     /// Magnetic measurement noise std dev (nT)
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -8259,13 +8533,70 @@ mod tests {
         .unwrap();
         assert!(!ukf.get_estimate().is_empty());
     }
+    /// `other_states_covariance` entries reach the diagonal as given -- they are variances.
+    ///
+    /// Pins the documented unit against a future "helpful" `.powi(2)` inside `initialize_ukf`,
+    /// and against the reading that caused the defect this test was written for: the
+    /// geophysical CLI passed a measurement-noise *standard deviation* here, so a 150 nT noise
+    /// became a 150 nT^2 prior -- a 12 nT sigma -- and pinned the map bias beside its seed.
+    /// A caller holding a standard deviation has to square it first, and nothing downstream
+    /// will do that for it.
+    #[test]
+    fn test_other_states_covariance_entries_are_variances() {
+        let rec = TestDataRecord {
+            time: Utc::now(),
+            horizontal_accuracy: 5.0,
+            vertical_accuracy: 2.0,
+            speed_accuracy: 1.0,
+            latitude: 37.0,
+            longitude: -122.0,
+            altitude: 100.0,
+            speed: 10.0,
+            bearing: 45.0,
+            ..Default::default()
+        };
+        let variance = 22_500.0;
+        let ukf = initialize_ukf(
+            &rec,
+            UkfConfig {
+                other_states: Some(vec![0.0]),
+                other_states_covariance: Some(vec![variance]),
+                process_noise_diagonal: Some(vec![1e-5; 16]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // `NAVIGATION_STATES` is the nine navigation states plus the six IMU biases, so the
+        // single extra state is the one past it.
+        let extra = NAVIGATION_STATES;
+        let on_diagonal = ukf.get_certainty()[(extra, extra)];
+        assert_approx_eq!(on_diagonal, variance, 1e-9);
+        assert!(
+            (on_diagonal - variance.powi(2)).abs() > 1.0,
+            "the entry was squared on the way in, which would make every caller's variance a \
+             fourth power: got {on_diagonal} for a declared {variance}"
+        );
+    }
     #[test]
     fn test_health_limits_default() {
         let limits = HealthLimits::default();
-        assert!(limits.lat_rad.0 < 0.0);
-        assert!(limits.lat_rad.1 > 0.0);
-        assert!(limits.speed_mps_max > 0.0);
-        assert!(limits.cov_diag_max > 0.0);
+        assert_eq!(
+            limits.lat_rad,
+            (DEFAULT_HEALTH_LAT_MIN_RAD, DEFAULT_HEALTH_LAT_MAX_RAD)
+        );
+        assert_eq!(
+            limits.lon_rad,
+            (DEFAULT_HEALTH_LON_MIN_RAD, DEFAULT_HEALTH_LON_MAX_RAD)
+        );
+        assert_eq!(
+            limits.alt_m,
+            (DEFAULT_HEALTH_ALT_MIN_M, DEFAULT_HEALTH_ALT_MAX_M)
+        );
+        assert_approx_eq!(limits.speed_mps_max, DEFAULT_HEALTH_SPEED_MPS_MAX);
+        assert_approx_eq!(limits.cov_diag_max, DEFAULT_HEALTH_COV_DIAG_MAX);
+        assert_approx_eq!(limits.nis_pos_max, DEFAULT_NIS_POS_MAX);
+        assert_eq!(limits.nis_pos_consec_fail, DEFAULT_NIS_POS_CONSEC_FAIL);
     }
 
     /// Fixed reference instant plus an offset, so every timeout assertion below is
@@ -8837,6 +9168,8 @@ mod tests {
             rho_vel: 0.95,
             sigma_vel_mps: 0.3,
             r_scale: 5.0,
+            tau_pos_s: None,
+            tau_vel_s: None,
             drift_n_mps: 0.02,
             drift_e_mps: 0.0,
             q_bias: 1e-6,
@@ -8859,6 +9192,8 @@ mod tests {
             rho_vel: 0.93,
             sigma_vel_mps: 0.5,
             r_scale: 10.0,
+            tau_pos_s: None,
+            tau_vel_s: None,
             drift_n_mps: 0.02,
             drift_e_mps: 0.0,
             q_bias: 1e-6,
@@ -8875,6 +9210,7 @@ mod tests {
             rho_vel,
             sigma_vel_mps,
             r_scale,
+            ..
         } = fault
         {
             assert_eq!(rho_pos, 0.98);
@@ -8896,6 +9232,8 @@ mod tests {
             rho_vel: 0.95,
             sigma_vel_mps: 0.3,
             r_scale: 5.0,
+            tau_pos_s: None,
+            tau_vel_s: None,
             drift_n_mps: 0.05,
             drift_e_mps: 0.02,
             q_bias: 1e-5,
@@ -8931,6 +9269,8 @@ mod tests {
             rho_vel: 0.95,
             sigma_vel_mps: 0.3,
             r_scale: 5.0,
+            tau_pos_s: None,
+            tau_vel_s: None,
             drift_n_mps: 0.02,
             drift_e_mps: 0.0,
             q_bias: 1e-6,
@@ -9283,6 +9623,105 @@ mod tests {
         assert_eq!(ekf.get_estimate().len(), 15);
     }
 
+    /// The first record the `EkfConfig::other_states` tests below build from.
+    fn ekf_extra_state_record() -> TestDataRecord {
+        TestDataRecord {
+            time: Utc::now(),
+            horizontal_accuracy: 5.0,
+            vertical_accuracy: 2.0,
+            speed_accuracy: 1.0,
+            latitude: 40.0,
+            longitude: -75.0,
+            altitude: 100.0,
+            speed: 10.0,
+            bearing: 45.0,
+            ..Default::default()
+        }
+    }
+
+    /// Extra states sit after the IMU biases and before the barometric bias, as on the UKF,
+    /// and leave every state the unaided filter carries exactly as it was.
+    ///
+    /// This is the property `strapdown-sim`'s geophysical arm stands on: it builds its EKF as
+    /// the unaided EKF plus map-bias states, so that an aided run and an unaided one differ by
+    /// those states alone. It built that EKF by hand, with its own P0 and Q and no barometric
+    /// bias, until `EkfConfig::other_states` existed.
+    #[test]
+    fn ekf_extra_states_follow_the_imu_biases_and_precede_the_barometric_bias() {
+        const SEEDS: [f64; 2] = [635.0, 17_500.0];
+        const VARIANCES: [f64; 2] = [53_000.0, 1.0e9];
+        const RATES_SQUARED: [f64; 2] = [16.0, 290_000.0];
+
+        let record = ekf_extra_state_record();
+        let plain = EkfConfig {
+            estimate_baro_bias: true,
+            ..EkfConfig::default()
+        };
+        // Sized for everything but the barometric bias, whose entry the constructor appends.
+        let mut process_noise = DEFAULT_PROCESS_NOISE_DENSITY.to_vec();
+        process_noise.extend(RATES_SQUARED);
+        let aided = EkfConfig {
+            other_states: Some(SEEDS.to_vec()),
+            other_states_covariance: Some(VARIANCES.to_vec()),
+            process_noise_diagonal: Some(process_noise),
+            ..plain.clone()
+        };
+        assert_eq!(plain.baro_bias_index(), Some(15));
+        assert_eq!(aided.baro_bias_index(), Some(17));
+
+        let plain_ekf = initialize_ekf(&record, plain).unwrap();
+        let aided_ekf = initialize_ekf(&record, aided).unwrap();
+        let (plain_mean, plain_cov) = (plain_ekf.get_estimate(), plain_ekf.get_certainty());
+        let (aided_mean, aided_cov) = (aided_ekf.get_estimate(), aided_ekf.get_certainty());
+
+        assert_eq!(aided_mean.len(), 18);
+        assert_eq!(aided_ekf.baro_bias_index(), Some(17));
+        for i in 0..15 {
+            assert_eq!(aided_mean[i], plain_mean[i], "state {i}");
+            assert_eq!(aided_cov[(i, i)], plain_cov[(i, i)], "variance {i}");
+        }
+        for (k, (seed, variance)) in SEEDS.iter().zip(VARIANCES).enumerate() {
+            assert_eq!(aided_mean[15 + k], *seed);
+            assert_eq!(aided_cov[(15 + k, 15 + k)], variance);
+        }
+        // The barometric bias, last on both, opens identically on both.
+        assert_eq!(aided_mean[17], plain_mean[15]);
+        assert_eq!(aided_cov[(17, 17)], plain_cov[(15, 15)]);
+    }
+
+    /// Extra states need the IMU-bias block they are laid out after, and process noise that
+    /// covers them. Either missing is refused rather than guessed at.
+    #[test]
+    fn ekf_extra_states_are_refused_without_the_bias_block_or_their_process_noise() {
+        let record = ekf_extra_state_record();
+
+        let nine_state = EkfConfig {
+            use_biases: false,
+            other_states: Some(vec![0.0]),
+            process_noise_diagonal: Some(vec![1e-6; 10]),
+            ..EkfConfig::default()
+        };
+        assert!(matches!(
+            initialize_ekf(&record, nine_state),
+            Err(StrapdownError::InvalidConfiguration {
+                field: "other_states",
+                ..
+            })
+        ));
+
+        let no_process_noise = EkfConfig {
+            other_states: Some(vec![0.0]),
+            ..EkfConfig::default()
+        };
+        assert!(matches!(
+            initialize_ekf(&record, no_process_noise),
+            Err(StrapdownError::InvalidConfiguration {
+                field: "process_noise_diagonal",
+                ..
+            })
+        ));
+    }
+
     #[cfg(feature = "hdf5")]
     #[test]
     fn test_test_data_record_hdf5_roundtrip() {
@@ -9482,18 +9921,14 @@ mod tests {
         );
     }
 
-    /// A geophysically aided particle run labels its bias states and their variances.
+    /// A navigation-only estimate with extra states labels them and their variances.
     ///
-    /// This is the regression the layout-aware constructor exists for. The RBPF carries one
-    /// extra linear state per active map after its nine navigation states, but
-    /// [`NavigationResult::from_particle_filter`] is a nine-state conversion: it had nowhere
-    /// to put them, so a gravity-aided run wrote rows whose `gravity_bias` column was empty
-    /// while the filter had estimated one all along.
+    /// A state narrower than [`NAVIGATION_STATES`] has no IMU-bias block, so its extra states
+    /// start at nine; the conversion must read them there, by the layout, and carry their
+    /// variances with them.
     #[test]
-    fn particle_filter_conversion_labels_its_geophysical_states() {
+    fn navigation_only_conversion_labels_its_extra_states() {
         let timestamp = Utc::now();
-        // Nine navigation states, then gravity, then magnetic -- the order
-        // `ExtraStateLayout` fixes and `geonav`'s `build_event_stream` counts back from.
         let mean = DVector::from_vec(vec![
             0.7, -1.3, 100.0, 1.0, 2.0, 3.0, 0.1, 0.2, 0.3, 12.5, -40.0,
         ]);
@@ -9501,176 +9936,146 @@ mod tests {
         for i in 0..11 {
             cov[(i, i)] = f64::from(u32::try_from(i).unwrap_or(0)) + 1.0;
         }
-        // Nine navigation states wide plus the two biases, gravity at 9 and magnetic at 10 --
-        // the placement `GeoBiasLayout::appended` gives an RBPF run.
         let layout = ExtraStateLayout::new(11, Some(9), Some(10));
 
-        let result =
-            NavigationResult::from_particle_filter_with_geo(&timestamp, &mean, &cov, layout);
+        let result = NavigationResult::from((&timestamp, &mean, &cov, layout));
 
         assert_approx_eq!(result.latitude, 0.7_f64.to_degrees(), 1e-12);
         assert_approx_eq!(result.altitude, 100.0, 1e-12);
-        assert_approx_eq!(
-            result.gravity_bias.expect("a gravity map was declared"),
-            12.5,
-            1e-12
-        );
-        assert_approx_eq!(
-            result.magnetic_bias.expect("a magnetic map was declared"),
-            -40.0,
-            1e-12
-        );
-        // The variance has to come out alongside the mean: a bias with no uncertainty on it
-        // is not one a reader can do anything with.
-        assert_approx_eq!(
-            result
-                .gravity_bias_cov
-                .expect("the gravity bias must carry its variance"),
-            10.0,
-            1e-12
-        );
-        assert_approx_eq!(
-            result
-                .magnetic_bias_cov
-                .expect("the magnetic bias must carry its variance"),
-            11.0,
-            1e-12
-        );
+        assert_approx_eq!(result.gravity_bias.unwrap(), 12.5, 1e-12);
+        assert_approx_eq!(result.magnetic_bias.unwrap(), -40.0, 1e-12);
+        assert_approx_eq!(result.gravity_bias_cov.unwrap(), 10.0, 1e-12);
+        assert_approx_eq!(result.magnetic_bias_cov.unwrap(), 11.0, 1e-12);
     }
 
-    /// A magnetic-only run puts its single extra state in the magnetic column, not the first
-    /// one.
+    /// A single extra state goes in the column its layout names, not the first one.
     ///
-    /// The whole reason the layout travels with the run: a ten-element particle estimate is
-    /// gravity-only or magnetic-only depending on which maps were loaded, and reading the
-    /// wrong label off it would file a nanotesla figure as milligals.
+    /// A ten-element estimate is gravity-only or magnetic-only depending on which maps were
+    /// loaded, and reading the wrong label off it would file a nanotesla figure as milligals.
     #[test]
-    fn particle_filter_conversion_reads_a_single_extra_state_by_layout() {
+    fn navigation_only_conversion_reads_a_single_extra_state_by_layout() {
         let timestamp = Utc::now();
         let mean = DVector::from_vec(vec![0.7, -1.3, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -40.0]);
         let mut cov = DMatrix::<f64>::identity(10, 10);
         cov[(9, 9)] = 7.0;
 
-        let magnetic_only = NavigationResult::from_particle_filter_with_geo(
+        let magnetic_only = NavigationResult::from((
             &timestamp,
             &mean,
             &cov,
             ExtraStateLayout::new(10, None, Some(9)),
-        );
-        assert_eq!(
-            magnetic_only.gravity_bias, None,
-            "no gravity map means no gravity column, which is not the same as a zero bias"
-        );
+        ));
+        assert_eq!(magnetic_only.gravity_bias, None);
         assert_eq!(magnetic_only.gravity_bias_cov, None);
         assert_approx_eq!(magnetic_only.magnetic_bias.unwrap(), -40.0, 1e-12);
         assert_approx_eq!(magnetic_only.magnetic_bias_cov.unwrap(), 7.0, 1e-12);
 
-        let gravity_only = NavigationResult::from_particle_filter_with_geo(
+        let gravity_only = NavigationResult::from((
             &timestamp,
             &mean,
             &cov,
             ExtraStateLayout::new(10, Some(9), None),
-        );
+        ));
         assert_approx_eq!(gravity_only.gravity_bias.unwrap(), -40.0, 1e-12);
         assert_eq!(gravity_only.magnetic_bias, None);
     }
 
-    /// The nine-state entry point is unchanged, and still leaves the geophysical columns
-    /// absent.
+    /// A nine-wide layout -- a nine-state EKF's -- converts with no bias block rather than
+    /// reading `state[9]..state[14]` off the end, and leaves the geophysical columns absent.
     #[test]
-    fn particle_filter_conversion_without_geo_states_leaves_the_columns_absent() {
+    fn a_nine_state_layout_converts_without_a_bias_block() {
         let timestamp = Utc::now();
         let mean = DVector::from_vec(vec![0.7, -1.3, 100.0, 1.0, 2.0, 3.0, 0.1, 0.2, 0.3]);
-        let cov = DMatrix::<f64>::identity(9, 9);
+        let cov = DMatrix::<f64>::identity(9, 9) * 0.25;
 
-        let result = NavigationResult::from_particle_filter(&timestamp, &mean, &cov);
+        let result = NavigationResult::from((
+            &timestamp,
+            &mean,
+            &cov,
+            ExtraStateLayout::new(9, None, None),
+        ));
         assert_approx_eq!(result.longitude, (-1.3_f64).to_degrees(), 1e-12);
-        assert_eq!(result.gravity_bias, None);
-        assert_eq!(result.gravity_bias_cov, None);
-        assert_eq!(result.magnetic_bias, None);
-        assert_eq!(result.magnetic_bias_cov, None);
-    }
-
-    /// Declaring no geophysical states still rejects a filter that has them.
-    ///
-    /// The fix told the conversion what the extra states are; it did not loosen the
-    /// invariant. Quietly dropping them is the outcome this whole change exists to remove,
-    /// so the nine-state path must keep refusing a wider estimate rather than truncating it.
-    #[test]
-    #[should_panic(expected = "Particle filter state must have 9 elements")]
-    fn particle_filter_conversion_rejects_extra_states_it_was_not_told_about() {
-        let timestamp = Utc::now();
-        let mean = DVector::from_vec(vec![0.7, -1.3, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
-        let cov = DMatrix::<f64>::identity(10, 10);
-        let _ = NavigationResult::from_particle_filter(&timestamp, &mean, &cov);
-    }
-
-    /// A particle-width layout goes through the particle constructor, not off the end.
-    ///
-    /// The four-tuple `From` asserts the state is `layout.state_dim()` wide -- nine, for
-    /// [`ExtraStateLayout::PARTICLE_NONE`], which a particle estimate satisfies -- and then used
-    /// to read `state[9]..state[14]` for the IMU-bias block a particle filter does not have.
-    /// The width assertion passed and the indexing panicked, which is why every particle event
-    /// loop in this workspace is hand-rolled rather than going through
-    /// [`run_closed_loop_with_geo`]. Nothing passed a particle layout to it, so the panic was
-    /// latent; this is the test that keeps it that way.
-    #[test]
-    fn a_particle_width_layout_converts_through_the_particle_constructor() {
-        let timestamp = Utc::now();
-        let mean = DVector::from_vec(vec![0.7, -1.3, 100.0, 1.0, 2.0, 3.0, 0.1, 0.2, 0.3]);
-        let cov = DMatrix::<f64>::identity(PARTICLE_FILTER_STATES, PARTICLE_FILTER_STATES) * 0.25;
-
-        let through_from =
-            NavigationResult::from((&timestamp, &mean, &cov, ExtraStateLayout::PARTICLE_NONE));
-        let through_constructor = NavigationResult::from_particle_filter(&timestamp, &mean, &cov);
-
-        assert_eq!(through_from.latitude, through_constructor.latitude);
-        assert_eq!(through_from.altitude, through_constructor.altitude);
-        assert_eq!(through_from.latitude_cov, through_constructor.latitude_cov);
-        // A particle filter estimates no IMU biases, so the bias block is zero and its
-        // covariance is not read from a state that does not carry it.
-        assert_eq!(through_from.acc_bias_x, 0.0);
-        assert_eq!(through_from.gyro_bias_z, 0.0);
-        // The position covariance a metric would score against must be a real number.
-        assert!(through_from.latitude_cov.is_finite());
-        assert!(through_from.altitude_cov.is_finite());
-    }
-
-    /// The unaided layouts differ by filter, and it is the width that differs.
-    ///
-    /// [`ExtraStateLayout::NONE`] describes the Kalman filters' unaided shape and is fifteen
-    /// wide. Handing it to the particle conversion would fail on the first row of every
-    /// ordinary particle run, which is why [`ExtraStateLayout::PARTICLE_NONE`] exists.
-    #[test]
-    fn unaided_layouts_carry_each_filter_s_own_width() {
-        assert_eq!(ExtraStateLayout::NONE.state_dim(), NAVIGATION_STATES);
-        assert_eq!(
-            ExtraStateLayout::PARTICLE_NONE.state_dim(),
-            PARTICLE_FILTER_STATES
+        assert_eq!(result.acc_bias_x, 0.0);
+        assert_eq!(result.gyro_bias_z, 0.0);
+        assert!(
+            result.acc_bias_x_cov.is_nan(),
+            "no bias was estimated, so none is claimed"
         );
-        assert!(ExtraStateLayout::PARTICLE_NONE.is_empty());
-        assert_eq!(ExtraStateLayout::PARTICLE_NONE.gravity_index(), None);
-        assert_eq!(ExtraStateLayout::PARTICLE_NONE.magnetic_index(), None);
+        assert!(result.latitude_cov.is_finite());
+        assert_eq!(result.gravity_bias, None);
+        assert_eq!(result.magnetic_bias, None);
     }
 
-    /// A bias index inside the navigation states is refused rather than read.
-    ///
-    /// The particle conversion checks against its own base of nine, not the Kalman fifteen --
-    /// the Kalman bound would reject every genuine particle layout. Index 8 is the yaw angle,
-    /// which is exactly the state a from-the-end index resolves to when the vector is too
-    /// narrow, so this is the failure the layout exists to prevent.
+    /// A narrow layout still rejects an estimate wider than it declares, rather than
+    /// truncating the states it was not told about.
     #[test]
-    #[should_panic(expected = "a map bias lives after the 9 navigation states")]
-    fn particle_filter_conversion_rejects_a_bias_index_inside_the_navigation_states() {
+    #[should_panic(expected = "Navigation-only state must have 9 elements")]
+    fn navigation_only_conversion_rejects_extra_states_it_was_not_told_about() {
         let timestamp = Utc::now();
         let mean = DVector::from_vec(vec![0.7, -1.3, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
         let cov = DMatrix::<f64>::identity(10, 10);
-        let _ = NavigationResult::from_particle_filter_with_geo(
+        let _ = NavigationResult::from((
+            &timestamp,
+            &mean,
+            &cov,
+            ExtraStateLayout::new(9, None, None),
+        ));
+    }
+
+    /// An extra-state index inside the navigation states is refused rather than read.
+    ///
+    /// Index 8 is the yaw angle, which is exactly the state a from-the-end index resolves to
+    /// when the vector is too narrow, so this is the failure the layout exists to prevent.
+    #[test]
+    #[should_panic(expected = "an extra state lives after the 9 navigation states")]
+    fn navigation_only_conversion_rejects_a_bias_index_inside_the_navigation_states() {
+        let timestamp = Utc::now();
+        let mean = DVector::from_vec(vec![0.7, -1.3, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+        let cov = DMatrix::<f64>::identity(10, 10);
+        let _ = NavigationResult::from((
             &timestamp,
             &mean,
             &cov,
             ExtraStateLayout::new(10, Some(8), None),
-        );
+        ));
+    }
+
+    /// The Rao-Blackwellized particle filter reports the Kalman layout, so its estimate
+    /// converts through the ordinary path: the bias columns zero, the map bias populated.
+    #[test]
+    fn a_particle_filter_estimate_converts_through_the_kalman_layout() {
+        use crate::rbpf::{RaoBlackwellizedParticleFilter, RbpfConfig};
+
+        let mut config = RbpfConfig::default();
+        config.num_particles = 16;
+        config.map_bias_channels = 1;
+        config.map_bias_initial = vec![635.0];
+        config.map_bias_init_std = vec![20.0];
+        config.map_variation_std = vec![2.0];
+        config.map_variation_time_constant_s = vec![300.0];
+        let rbpf = RaoBlackwellizedParticleFilter::new(
+            StrapdownState {
+                latitude: 0.7,
+                longitude: -1.3,
+                altitude: 100.0,
+                ..StrapdownState::default()
+            },
+            config,
+        )
+        .unwrap();
+        let (mean, cov) = rbpf.estimate();
+        assert_eq!(mean.len(), NAVIGATION_STATES + 1);
+
+        let result = NavigationResult::from((
+            &Utc::now(),
+            &mean,
+            &cov,
+            ExtraStateLayout::new(NAVIGATION_STATES + 1, Some(NAVIGATION_STATES), None),
+        ));
+        assert_eq!(result.acc_bias_x, 0.0);
+        assert_eq!(result.gyro_bias_z_cov, 0.0);
+        assert_approx_eq!(result.gravity_bias.unwrap(), 635.0, 1e-9);
+        assert_approx_eq!(result.gravity_bias_cov.unwrap(), 400.0, 1e-9);
     }
 
     #[cfg(feature = "hdf5")]

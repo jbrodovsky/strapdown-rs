@@ -1,0 +1,513 @@
+"""
+Tests for `analyze geostats`.
+
+The central assertion is a round trip: plant a known bias and sigma into a synthetic
+trajectory, run the characterisation, and require it back. That is the only check that
+covers the whole chain -- anomaly model, map sampling, residual, variance decomposition --
+and it is the chain whose output sets the filter's measurement noise.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import tomllib
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import pytest
+import xarray as xr
+from analysis.geostats import (
+    MGAL_PER_M_PER_S2,
+    MICROTESLA_TO_NANOTESLA,
+    AnomalyMap,
+    PooledStats,
+    analyse_trajectory,
+    apply_to_configs,
+    decimal_year,
+    eotvos,
+    gravity_anomaly_mgal,
+    normal_gravity,
+    observed_field_nt,
+    plot_anomaly_differences,
+    pool,
+    self_check,
+    wmm_total_field_nt,
+    write_config_block,
+)
+
+# Planted truth. The tolerances below are sampling error on these, not slack.
+GRAVITY_NOISE_MGAL = 7.0
+MAGNETIC_NOISE_NT = 25.0
+PER_TRAJECTORY_GRAVITY_OFFSET_MGAL = 12.0
+PER_TRAJECTORY_MAGNETIC_OFFSET_NT = 900.0
+TRAJECTORIES = 8
+ROWS = 900
+
+
+def _write_map(path, lats, lons, amplitude, offset):
+    lat_grid, lon_grid = np.meshgrid(lats, lons, indexing="ij")
+    values = offset + amplitude * (
+        np.sin((lat_grid - lats[0]) * 220.0) + np.cos((lon_grid - lons[0]) * 180.0)
+    )
+    xr.Dataset({"z": (("lat", "lon"), values)}, coords={"lat": lats, "lon": lons}).to_netcdf(path)
+
+
+@pytest.fixture(scope="module")
+def planted(tmp_path_factory):
+    """Synthetic trajectories whose residual statistics are known exactly."""
+    directory = tmp_path_factory.mktemp("planted")
+    rng = np.random.default_rng(20260923)
+
+    for index in range(TRAJECTORIES):
+        stem = f"track_{index:02d}"
+        lat0, lon0 = 40.05 + 0.01 * index, -75.95 - 0.01 * index
+        speed = np.full(ROWS, 24.0)
+        bearing = np.full(ROWS, 45.0)
+        d_lat = (speed * np.cos(np.radians(bearing))) / 111320.0
+        d_lon = (speed * np.sin(np.radians(bearing))) / (111320.0 * np.cos(np.radians(lat0)))
+        latitude = lat0 + np.cumsum(d_lat)
+        longitude = lon0 + np.cumsum(d_lon)
+        altitude = np.full(ROWS, 100.0)
+        time = pd.date_range("2025-03-01T00:00:00Z", periods=ROWS, freq="1s")
+
+        lats = np.linspace(latitude.min() - 0.2, latitude.max() + 0.2, 240)
+        lons = np.linspace(longitude.min() - 0.2, longitude.max() + 0.2, 240)
+        _write_map(directory / f"{stem}_gravity.nc", lats, lons, 20.0, 0.0)
+        _write_map(directory / f"{stem}_magnetic.nc", lats, lons, 120.0, 50.0)
+
+        gravity_map = AnomalyMap.load(directory / f"{stem}_gravity.nc")
+        magnetic_map = AnomalyMap.load(directory / f"{stem}_magnetic.nc")
+
+        gravity_measured = (
+            gravity_map.sample(latitude, longitude)
+            + PER_TRAJECTORY_GRAVITY_OFFSET_MGAL * rng.standard_normal()
+            + GRAVITY_NOISE_MGAL * rng.standard_normal(ROWS)
+        )
+        magnetic_measured = (
+            magnetic_map.sample(latitude, longitude)
+            + PER_TRAJECTORY_MAGNETIC_OFFSET_NT * rng.standard_normal()
+            + MAGNETIC_NOISE_NT * rng.standard_normal(ROWS)
+        )
+
+        # Invert the measurement models, so the CSV carries raw sensor values and the tool
+        # has to run the forward model itself to get back what was planted. A moving
+        # gravimeter reads normal gravity at its height plus the anomaly, less the Eotvos term.
+        north = speed * np.cos(np.radians(bearing))
+        east = speed * np.sin(np.radians(bearing))
+        gravity_magnitude = (
+            gravity_measured / MGAL_PER_M_PER_S2
+            + normal_gravity(latitude, altitude)
+            - eotvos(latitude, altitude, north, east)
+        )
+        reference = wmm_total_field_nt(latitude, longitude, altitude, decimal_year(pd.Series(time)))
+        magnetic_magnitude_ut = (magnetic_measured + reference) / MICROTESLA_TO_NANOTESLA
+
+        pd.DataFrame(
+            {
+                "time": time,
+                "latitude": latitude,
+                "longitude": longitude,
+                "altitude": altitude,
+                "speed": speed,
+                "bearing": bearing,
+                "grav_x": 0.0,
+                "grav_y": 0.0,
+                "grav_z": gravity_magnitude,
+                "mag_x": 0.0,
+                "mag_y": 0.0,
+                "mag_z": magnetic_magnitude_ut,
+            }
+        ).to_csv(directory / f"{stem}.csv", index=False)
+
+    return directory
+
+
+@pytest.fixture(scope="module")
+def characterised(planted):
+    """Run the characterisation once for the whole module."""
+    stats, frames = [], []
+    for csv_path in sorted(planted.glob("*.csv")):
+        trajectory_stats, residuals = analyse_trajectory(csv_path)
+        stats.extend(trajectory_stats)
+        frames.append(residuals)
+    residuals = pd.concat(frames, ignore_index=True)
+    return stats, residuals, pool(stats, residuals)
+
+
+def test_self_check_passes():
+    """The mirrored formulas still agree with the Rust they were copied from."""
+    self_check()
+
+
+def test_gravity_anomaly_is_milligal():
+    """Mirrors `earth::tests::test_gravity_anomaly_is_milligal`."""
+    gamma = float(normal_gravity(45.0, 0.0))
+    base = float(gravity_anomaly_mgal(45.0, 1000.0, 0.0, 0.0, gamma))
+    bumped = float(gravity_anomaly_mgal(45.0, 1000.0, 0.0, 0.0, gamma + 1e-5))
+    assert bumped - base == pytest.approx(1.0, abs=1e-6)
+
+
+def test_observed_field_converts_microtesla_to_nanotesla():
+    """A 49.5 uT reading is 49,500 nT, not 49.5 -- the unit bug the Rust side had."""
+    assert observed_field_nt(0.0, 0.0, 49.5) == pytest.approx(49_500.0)
+
+
+def test_map_sampling_is_bilinear_and_bounded(planted):
+    """`AnomalyMap.sample` interpolates inside the grid and returns NaN outside it."""
+    anomaly_map = AnomalyMap.load(sorted(planted.glob("*_gravity.nc"))[0])
+    inside_lat = float(np.mean(anomaly_map.lats))
+    inside_lon = float(np.mean(anomaly_map.lons))
+
+    inside = anomaly_map.sample(np.array([inside_lat]), np.array([inside_lon]))
+    assert np.isfinite(inside[0])
+
+    outside = anomaly_map.sample(np.array([inside_lat + 50.0]), np.array([inside_lon]))
+    assert np.isnan(outside[0]), "off-map must be NaN, not an edge value"
+
+    # A grid node reproduces its own value exactly.
+    node = anomaly_map.sample(np.array([anomaly_map.lats[10]]), np.array([anomaly_map.lons[20]]))
+    assert node[0] == pytest.approx(anomaly_map.values[10, 20], rel=1e-9)
+
+
+@pytest.mark.parametrize(
+    ("field", "planted_sigma"),
+    [("gravity", GRAVITY_NOISE_MGAL), ("magnetic", MAGNETIC_NOISE_NT)],
+)
+def test_within_trajectory_sigma_recovers_the_planted_noise(characterised, field, planted_sigma):
+    """
+    The number that sets `*_noise_std` comes back within 10%.
+
+    This is the headline assertion: within-trajectory sigma is what belongs in R, and it has
+    to survive the full forward-and-back trip through the anomaly models.
+    """
+    _, _, pooled = characterised
+    entry = next(p for p in pooled if p.field == field)
+    assert entry.within_sigma == pytest.approx(planted_sigma, rel=0.10)
+
+
+@pytest.mark.parametrize(
+    ("field", "planted_offset"),
+    [
+        ("gravity", PER_TRAJECTORY_GRAVITY_OFFSET_MGAL),
+        ("magnetic", PER_TRAJECTORY_MAGNETIC_OFFSET_NT),
+    ],
+)
+def test_between_trajectory_sigma_recovers_the_planted_offset(characterised, field, planted_offset):
+    """
+    The number that sets `*_bias_init_std` comes back.
+
+    Loose tolerance on purpose: this is the sample standard deviation of only
+    `TRAJECTORIES` draws, so its own relative standard error is about
+    1/sqrt(2*(n-1)) -- around 27% at n=8. A tighter bound here would be a flaky test, and
+    the looseness is itself the finding: with a couple of dozen recordings this estimate is
+    not precise, and the bias prior should be set generously.
+    """
+    _, _, pooled = characterised
+    entry = next(p for p in pooled if p.field == field)
+    assert entry.between_sigma == pytest.approx(planted_offset, rel=0.60)
+
+
+def test_within_sigma_is_far_below_total_sigma(characterised):
+    """
+    The decomposition separates two things a single sigma conflates.
+
+    With a per-trajectory offset larger than the per-sample noise, the pooled spread is
+    dominated by the offset. Reporting that as measurement noise is what makes the magnetic
+    channel look unusable when it is mis-modelled: the offset belongs in a bias state.
+    """
+    _, _, pooled = characterised
+    magnetic = next(p for p in pooled if p.field == "magnetic")
+    assert magnetic.within_sigma < 0.25 * magnetic.total_sigma
+
+
+def test_decorrelation_uses_source_resolution_not_cell_size(characterised):
+    """
+    The recommended interval respects the source data, not the grid spacing.
+
+    The fixture's grids are far finer than the real source data behind `earth_faa` and
+    `earth_wdmam`, so a cell-size rule would recommend a tiny interval. Taking the coarser
+    of cell and source resolution is what stops the tool endorsing the over-weighting it
+    exists to find.
+    """
+    stats, _, _ = characterised
+    for entry in stats:
+        assert entry.decorrelation_m > max(entry.cell_north_m, entry.cell_east_m)
+        assert entry.recommended_interval_s > 1.0
+
+
+def test_one_parked_trajectory_does_not_blank_the_pooled_interval(characterised):
+    """
+    A trajectory with no de-correlation interval is left out of the pooled one.
+
+    A parked trajectory has no speed and so no interval. The pool took a plain median, which is
+    NaN if any entry is, so one parked segment -- `2025-11-09_17-34-01_B` in the real data --
+    printed ``nan s`` and left `--apply-interval` nothing finite to write.
+    """
+    stats, residuals, _ = characterised
+    parked = next(s for s in stats if s.field == "gravity")
+    blanked = [
+        dataclasses.replace(
+            s, recommended_interval_s=float("nan"), independent_samples=float("nan")
+        )
+        if s is parked
+        else s
+        for s in stats
+    ]
+
+    gravity = next(p for p in pool(blanked, residuals) if p.field == "gravity")
+
+    moving = [s.recommended_interval_s for s in stats if s.field == "gravity" and s is not parked]
+    assert gravity.recommended_interval_s == pytest.approx(float(np.median(moving)))
+    assert np.isfinite(gravity.independent_samples_median)
+
+
+def test_wmm_reference_uses_the_epoch_the_crate_selects():
+    """
+    2023 is referenced to WMM2020, and a date in no carried epoch is an error, as in the crate.
+
+    The value is the literal `geonav`'s `a_2023_recording_is_referenced_to_wmm2020` asserts
+    against the `world_magnetic_model` crate.
+    """
+    field = float(wmm_total_field_nt(40.05, -75.95, 100.0, 2023 + 181 / 365)[0])
+    assert field == pytest.approx(51069.8, abs=1.0)
+    with pytest.raises(ValueError, match="no World Magnetic Model"):
+        wmm_total_field_nt(40.05, -75.95, 100.0, 2019.5)
+
+
+@pytest.mark.parametrize(
+    ("year", "channels"), [(2023, {"gravity", "magnetic"}), (2019, {"gravity"})]
+)
+def test_a_recording_before_2025_keeps_its_gravity_channel(planted, tmp_path, year, channels):
+    """
+    A recording dated before 2025 is still characterised: both channels in 2023, which WMM2020
+    covers, and gravity alone where no carried epoch covers the date.
+
+    Every 2023 and 2024 recording used to vanish from the statistics. pygeomag's default model
+    is WMM2025, which refuses earlier dates; the error escaped `analyse_trajectory`, and the
+    caller skipped the trajectory with its gravity channel. That took five of the repository's
+    27 trajectories out of every value `geo-adopt` wrote.
+    """
+    source = sorted(planted.glob("track_*.csv"))[0]
+    stem = source.with_suffix("").name
+    frame = pd.read_csv(source)
+    frame["time"] = pd.to_datetime(frame["time"], utc=True, format="ISO8601") - pd.DateOffset(
+        years=2025 - year
+    )
+    frame.to_csv(tmp_path / f"{stem}.csv", index=False)
+    for kind in ("gravity", "magnetic"):
+        (tmp_path / f"{stem}_{kind}.nc").write_bytes((planted / f"{stem}_{kind}.nc").read_bytes())
+
+    stats, _ = analyse_trajectory(tmp_path / f"{stem}.csv")
+
+    assert {entry.field for entry in stats} == channels
+
+
+def test_outputs_are_written(characterised, tmp_path):
+    """The config block and the figure both render."""
+    _, residuals, pooled = characterised
+
+    toml_path = tmp_path / "geo_stats.toml"
+    write_config_block(pooled, toml_path)
+    text = toml_path.read_text(encoding="utf-8")
+    assert "[geophysical]" in text
+    assert "gravity_noise_std" in text
+    assert "magnetic_bias_init_std" in text
+    assert "geo_interval_s" in text
+
+    figure_path = tmp_path / "anomaly_differences.png"
+    plot_anomaly_differences(residuals, pooled, figure_path)
+    assert figure_path.stat().st_size > 10_000, "the figure should not be a blank canvas"
+
+
+# ===============================================================================================
+# Applying the measured values back into the scenario configs
+# ===============================================================================================
+
+
+def _pooled(field: str, unit: str, bias: float, within: float, between: float, interval: float):
+    """Build a `PooledStats` with only the fields `apply_to_configs` reads."""
+    return PooledStats(
+        field=field,
+        unit=unit,
+        trajectories=6,
+        samples=5400,
+        bias_median=bias,
+        within_sigma=within,
+        between_sigma=between,
+        total_sigma=between,
+        snr_median=3.5,
+        snr_best=3.6,
+        snr_above_one=6,
+        recommended_interval_s=interval,
+        independent_samples_median=2.3,
+        decorrelation_m=9260.0,
+    )
+
+
+MEASURED = [
+    _pooled("gravity", "mGal", -4.672, 7.026, 12.38, 385.8),
+    _pooled("magnetic", "nT", 669.4, 25.12, 1269.0, 1309.0),
+]
+
+BOTH_CONFIG = """\
+[geophysical]
+# Gravity anomaly measurements.
+gravity_resolution = "one_minute"
+gravity_bias = 0.0
+gravity_noise_std = 100.0
+
+# Magnetic anomaly measurements.
+magnetic_resolution = "two_minutes"
+magnetic_bias = 0.0
+magnetic_noise_std = 150.0
+
+# Seconds between geophysical measurements -- a period, not a frequency.
+geo_frequency_s = 1.0
+
+[health_limits]
+max_position_sigma_m = 500.0
+"""
+
+GRAV_CONFIG = """\
+[geophysical]
+gravity_resolution = "one_minute"
+gravity_bias = 0.0
+gravity_noise_std = 100.0
+geo_frequency_s = 1.0
+"""
+
+
+def _write(directory: Path, name: str, body: str) -> Path:
+    path = directory / name
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+def test_apply_rewrites_the_measured_keys(tmp_path: Path) -> None:
+    """The three measured numbers per field land in the config."""
+    path = _write(tmp_path, "ukf_both.toml", BOTH_CONFIG)
+
+    apply_to_configs(MEASURED, tmp_path)
+
+    config = tomllib.loads(path.read_text(encoding="utf-8"))["geophysical"]
+    assert config["gravity_bias"] == pytest.approx(-4.672, rel=1e-3)
+    assert config["gravity_noise_std"] == pytest.approx(7.026, rel=1e-3)
+    assert config["gravity_bias_init_std"] == pytest.approx(12.38, rel=1e-3)
+    assert config["magnetic_bias"] == pytest.approx(669.4, rel=1e-3)
+    assert config["magnetic_noise_std"] == pytest.approx(25.12, rel=1e-3)
+    assert config["magnetic_bias_init_std"] == pytest.approx(1269.0, rel=1e-3)
+
+
+def test_apply_leaves_a_gravity_only_recipe_gravity_only(tmp_path: Path) -> None:
+    """
+    A `*_grav.toml` must not acquire a magnetic channel.
+
+    Adding `magnetic_noise_std` to a gravity-only config would not be a tuning change; it
+    would turn a single-aid run into a dual-aid one and silently change what the scenario
+    tests.
+    """
+    path = _write(tmp_path, "ukf_grav.toml", GRAV_CONFIG)
+
+    apply_to_configs(MEASURED, tmp_path)
+
+    config = tomllib.loads(path.read_text(encoding="utf-8"))["geophysical"]
+    assert config["gravity_noise_std"] == pytest.approx(7.026, rel=1e-3)
+    assert not any(key.startswith("magnetic") for key in config)
+
+
+def test_apply_inserts_the_bias_prior_after_its_noise(tmp_path: Path) -> None:
+    """`*_bias_init_std` is absent from every current config, so it has to be added."""
+    path = _write(tmp_path, "ukf_both.toml", BOTH_CONFIG)
+
+    changes = apply_to_configs(MEASURED, tmp_path)
+
+    lines = [line.split("=", 1)[0].strip() for line in path.read_text(encoding="utf-8").split("\n")]
+    assert lines.index("gravity_bias_init_std") == lines.index("gravity_noise_std") + 1
+    assert lines.index("magnetic_bias_init_std") == lines.index("magnetic_noise_std") + 1
+    assert any("(added)" in change for change in changes)
+
+
+def test_apply_is_idempotent(tmp_path: Path) -> None:
+    """A second run must not insert the prior twice."""
+    path = _write(tmp_path, "ukf_both.toml", BOTH_CONFIG)
+
+    apply_to_configs(MEASURED, tmp_path)
+    once = path.read_text(encoding="utf-8")
+    apply_to_configs(MEASURED, tmp_path)
+
+    assert path.read_text(encoding="utf-8") == once
+
+
+def test_apply_keeps_the_comments(tmp_path: Path) -> None:
+    """A TOML round-trip would strip these, which is most of what the configs are for."""
+    path = _write(tmp_path, "ukf_both.toml", BOTH_CONFIG)
+
+    apply_to_configs(MEASURED, tmp_path)
+
+    text = path.read_text(encoding="utf-8")
+    assert "# Gravity anomaly measurements." in text
+    assert "# Magnetic anomaly measurements." in text
+    assert "a period, not a frequency" in text
+
+
+def test_apply_keeps_a_trailing_comment_on_a_rewritten_line(tmp_path: Path) -> None:
+    """The unit or the source sits after the value; rewriting must not drop it."""
+    path = _write(
+        tmp_path,
+        "ukf_grav.toml",
+        "[geophysical]\ngravity_noise_std = 100.0  # mGal, never measured\n",
+    )
+
+    apply_to_configs(MEASURED, tmp_path)
+
+    text = path.read_text(encoding="utf-8")
+    assert "# mGal, never measured" in text
+    assert tomllib.loads(text)["geophysical"]["gravity_noise_std"] == pytest.approx(7.026, rel=1e-3)
+
+
+def test_apply_leaves_the_interval_alone_by_default(tmp_path: Path) -> None:
+    """
+    Moving `geo_frequency_s` from 1 s to several hundred changes the experiment.
+
+    The noise figures are direct measurements of a residual; the interval follows from a
+    de-correlation argument about the source grids. They deserve separate decisions.
+    """
+    path = _write(tmp_path, "ukf_both.toml", BOTH_CONFIG)
+
+    apply_to_configs(MEASURED, tmp_path)
+
+    assert tomllib.loads(path.read_text(encoding="utf-8"))["geophysical"]["geo_frequency_s"] == 1.0
+
+
+def test_apply_interval_uses_the_shorter_of_the_two_fields(tmp_path: Path) -> None:
+    """One interval covers both channels, so the tighter de-correlation length wins."""
+    path = _write(tmp_path, "ukf_both.toml", BOTH_CONFIG)
+
+    apply_to_configs(MEASURED, tmp_path, apply_interval=True)
+
+    interval = tomllib.loads(path.read_text(encoding="utf-8"))["geophysical"]["geo_frequency_s"]
+    assert interval == pytest.approx(385.8, rel=1e-3)
+
+
+def test_apply_skips_configs_without_a_geophysical_block(tmp_path: Path) -> None:
+    """A `*_degraded.toml` is a non-geo baseline and must stay byte-identical."""
+    body = "[gnss_degradation]\ninterval_s = 5.0\nsigma_pos_m = 3.0\n"
+    path = _write(tmp_path, "ukf_degraded.toml", body)
+
+    changes = apply_to_configs(MEASURED, tmp_path)
+
+    assert path.read_text(encoding="utf-8") == body
+    assert not any("ukf_degraded" in change for change in changes)
+
+
+def test_apply_stops_at_the_next_section(tmp_path: Path) -> None:
+    """A key of the same name outside [geophysical] is not ours to rewrite."""
+    body = BOTH_CONFIG + "\n[reporting]\ngravity_noise_std = 999.0\n"
+    path = _write(tmp_path, "ukf_both.toml", body)
+
+    apply_to_configs(MEASURED, tmp_path)
+
+    parsed = tomllib.loads(path.read_text(encoding="utf-8"))
+    assert parsed["reporting"]["gravity_noise_std"] == 999.0
+    assert parsed["geophysical"]["gravity_noise_std"] == pytest.approx(7.026, rel=1e-3)

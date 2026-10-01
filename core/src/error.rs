@@ -129,7 +129,16 @@ pub enum StrapdownError {
     ///
     /// Routine rather than exceptional: a filter estimate near a tile edge, or any particle
     /// in the tail of the distribution, lands off-map regularly.
-    #[error("{axis} {value} is outside the map bounds [{min}, {max}]")]
+    ///
+    /// When it is *not* routine -- every update on a trajectory failing this way -- the map
+    /// does not extend far enough past the recorded track to cover where the filter wandered,
+    /// which is what the message points at. It shows up first under GNSS denial, where the
+    /// solution runs unaided for a whole outage before the next fix pulls it back.
+    #[error(
+        "{axis} {value} is outside the map bounds [{min}, {max}]. If every update on this \
+         trajectory fails this way, the map does not cover where the filter went: re-run \
+         `just preprocess` with a larger `--margin-km`"
+    )]
     OutOfMapBounds {
         /// Which axis was exceeded, `"latitude"` or `"longitude"`.
         axis: &'static str,
@@ -218,6 +227,35 @@ pub enum StrapdownError {
         limit: usize,
         /// What identifies the most recent rejection.
         detail: String,
+    },
+
+    /// A sensor stopped reporting for longer than the run tolerates.
+    ///
+    /// Raised while the event stream is built, before a single filter step, because only the
+    /// builder can tell "the recording has a hole" from "this sensor is simply slower than the
+    /// others": it sees a source epoch whose columns for `sensor` were unusable, where the
+    /// runner sees nothing at all. Detecting it late is what produced the defect this exists
+    /// for -- an IMU that stopped mid-recording left the filter unable to propagate, and the
+    /// frozen estimate fell far enough behind the vehicle to surface as an absurd NIS, so
+    /// [`Self::FilterDiverged`] blamed the filter for missing data.
+    ///
+    /// `sensor` is the discriminant that keeps this distinct from a deliberately GNSS-denied
+    /// run, which is a scenario rather than a fault and never reaches here.
+    #[error(
+        "{sensor} stream gap: {duration_s:.1} s without usable data, from t={start_s:.1} s to \
+         t={end_s:.1} s ({epochs} source epochs present with unusable {sensor} columns)"
+    )]
+    SensorStreamGap {
+        /// Which sensor stopped reporting.
+        sensor: &'static str,
+        /// Elapsed time of the last usable sample before the gap, in seconds.
+        start_s: f64,
+        /// Elapsed time at which the sensor resumed, or the stream ended.
+        end_s: f64,
+        /// Length of the gap in seconds.
+        duration_s: f64,
+        /// How many source epochs fell inside the gap.
+        epochs: usize,
     },
 
     /// A run passed one of its execution limits.
@@ -318,6 +356,17 @@ mod tests {
             }
             .is_recoverable(),
             "a run that passed its limit has no partial result worth continuing from"
+        );
+        assert!(
+            !StrapdownError::SensorStreamGap {
+                sensor: "IMU",
+                start_s: 411.0,
+                end_s: 1319.0,
+                duration_s: 908.0,
+                epochs: 908,
+            }
+            .is_recoverable(),
+            "an inertial stream with a hole in it cannot be propagated across the hole"
         );
     }
 

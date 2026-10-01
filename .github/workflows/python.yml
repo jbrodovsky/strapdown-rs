@@ -1,0 +1,49 @@
+name: Test and Lint Python Package
+
+# Separate from rust.yml rather than a job inside it. The two halves of the monorepo fail for
+# unrelated reasons, and a Python lint failure reported under "Test, Lint, and Build Rust
+# Project" is a check name that lies about what broke.
+#
+# Trigger list mirrors rust.yml's, including the stacked-pull-request bases: a pull request is
+# filtered on its *base*, so `main` alone gives no CI at all to every pull request in a stack
+# except the bottom one.
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main", "v1/**", "claude/**" ]
+
+jobs:
+  analysis:
+    name: analysis (lint + tests)
+    runs-on: ubuntu-latest
+    # Sized like rust.yml's jobs: enough for a cold uv resolve plus the test suite, short
+    # enough that a hang is reported rather than burning GitHub's 360-minute default.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # Resolves from the workspace root, which builds `analysis` as a member. `--frozen`
+      # makes a stale uv.lock a failure rather than something CI silently papers over by
+      # re-resolving -- the same contract Cargo.lock has on the Rust side.
+      - name: Sync
+        run: uv sync --frozen
+
+      # No GMT here on purpose. pygmt dlopens the GMT C library, and installing it would be
+      # several minutes of apt for one plotting function. Every import of it is inside the
+      # function that uses it, so the package, its CLI and its tests all load without it --
+      # and this job is what keeps that true. If someone moves `import pygmt` back to module
+      # scope, this fails.
+      - name: Lint
+        run: uv run ruff check
+
+      - name: Format check
+        run: uv run ruff format --check
+
+      - name: Test
+        run: uv run pytest -q

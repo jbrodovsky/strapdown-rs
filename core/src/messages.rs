@@ -1,5 +1,6 @@
 // gnss_degrader.rs
 use chrono::{DateTime, Datelike, Utc};
+use log::warn;
 use nalgebra::Vector3;
 use rand::SeedableRng;
 use rand_distr::Distribution;
@@ -128,6 +129,10 @@ pub enum MeasurementScheduler {
 ///     rho_vel: 0.95,
 ///     sigma_vel_mps: 0.3,
 ///     r_scale: 5.0,
+///     // Optional: pin the correlation time in seconds so the fix
+///     // interval can be changed without moving the error model.
+///     tau_pos_s: None,
+///     tau_vel_s: None,
 /// };
 ///
 /// // Slow bias drifting north at 2 cm/s
@@ -178,6 +183,34 @@ pub enum GnssFaultModel {
         /// covariance is inflated by `r_scale` **squared**: the common value 5.0 gives a
         /// 25x `R`, not a 5x one.
         r_scale: f64,
+
+        /// Position error correlation time in **seconds**, or `None` to use `rho_pos` as a
+        /// per-fix coefficient.
+        ///
+        /// # Why this exists
+        ///
+        /// `rho_pos` is applied once per emitted fix with no reference to elapsed time, so
+        /// the error's correlation time is `-interval_s / ln(rho_pos)` -- a function of the
+        /// *scheduler*. At `rho_pos = 0.99` a 5 s fix interval is a 498 s correlation time
+        /// and a 30 s interval is 2985 s. Sweeping the fix interval therefore changes the
+        /// error model as well as the fix rate, and the two cannot be told apart in the
+        /// result.
+        ///
+        /// Setting this makes the coefficient `exp(-dt / tau_pos_s)` for the actual interval
+        /// between fixes, so the error keeps the same timescale whatever the schedule. It
+        /// also changes what `sigma_pos_m` means: with a time constant it is the
+        /// **steady-state** standard deviation in metres, the quantity worth specifying,
+        /// rather than the per-step innovation. Without one, nothing changes -- every
+        /// existing configuration and recorded result stands.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tau_pos_s: Option<f64>,
+
+        /// Velocity error correlation time in seconds, or `None` to use `rho_vel` per fix.
+        ///
+        /// The velocity counterpart of [`tau_pos_s`](GnssFaultModel::Degraded::tau_pos_s);
+        /// see its note.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tau_vel_s: Option<f64>,
     },
 
     /// (5) Slow drifting bias (soft spoof), applied in N/E meters and velocity.
@@ -224,6 +257,13 @@ pub enum GnssFaultModel {
 const fn default_seed() -> u64 {
     42
 }
+
+/// Default [`AidingConfig::max_imu_gap_s`]: five seconds without a usable inertial sample.
+///
+/// Comfortably above the sub-second holes that resampling a variable-rate recording onto a
+/// fixed grid leaves behind, and far below the minutes-long holes that mean the inertial
+/// recording actually stopped.
+pub const DEFAULT_MAX_IMU_GAP_S: f64 = 5.0;
 
 /// Default emission schedule for the barometer and the magnetometer: one measurement per second.
 ///
@@ -291,6 +331,10 @@ const fn default_aiding_scheduler() -> MeasurementScheduler {
 ///     rho_vel: 0.95,
 ///     sigma_vel_mps: 0.3,
 ///     r_scale: 5.0,
+///     // Optional: pin the correlation time in seconds so the fix
+///     // interval can be changed without moving the error model.
+///     tau_pos_s: None,
+///     tau_vel_s: None,
 /// };
 /// ```
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -354,11 +398,29 @@ pub struct AidingConfig {
     /// realization of stochastic processes such as AR(1) degradation.
     #[serde(default = "default_seed")]
     pub seed: u64,
+
+    /// How long the inertial stream may stop reporting before the run is refused, in seconds.
+    ///
+    /// Defaults to [`DEFAULT_MAX_IMU_GAP_S`]; `<= 0.0` disables the check, matching the
+    /// convention [`crate::sim::ExecutionLimits`] uses for its own budgets.
+    ///
+    /// This bounds the *inertial* stream only. A gap in it cannot be propagated across -- with
+    /// no `Event::Imu` the filter never predicts, so its covariance stops growing while the
+    /// vehicle keeps moving -- which is a broken recording rather than a scenario. GNSS
+    /// outages are the opposite: they are the thing being studied, and are expressed through
+    /// [`Self::scheduler`] rather than rejected here.
+    #[serde(default = "default_max_imu_gap_s")]
+    pub max_imu_gap_s: f64,
 }
 
 /// Serde default for [`AidingConfig::baro_noise_std_m`].
 const fn default_baro_noise_std_m() -> f64 {
     BAROMETRIC_ALTITUDE_NOISE_M
+}
+
+/// Serde default for [`AidingConfig::max_imu_gap_s`].
+const fn default_max_imu_gap_s() -> f64 {
+    DEFAULT_MAX_IMU_GAP_S
 }
 
 impl Default for AidingConfig {
@@ -371,6 +433,7 @@ impl Default for AidingConfig {
             baro_noise_std_m: default_baro_noise_std_m(),
             baro_bias_index: None,
             seed: default_seed(),
+            max_imu_gap_s: default_max_imu_gap_s(),
         }
     }
 }
@@ -652,6 +715,16 @@ pub struct FaultState {
     b_n_m: f64,
     /// Integrated slow bias (east, meters).
     b_e_m: f64,
+    /// Elapsed time at which the fault was last applied, seconds.
+    ///
+    /// The fault advances once per *emitted fix*, not once per record, so the interval
+    /// between its steps is set by the scheduler and not by the log's sample rate. The `dt`
+    /// [`build_event_stream`] had to hand it was the record spacing -- 1 s on a 1 Hz log --
+    /// which under `FixedInterval { interval_s: 5.0 }` meant a [`GnssFaultModel::SlowBias`]
+    /// integrated one second of drift per five seconds of flight and spoofed at a fifth of
+    /// its configured rate. `None` until the first fix, where the record spacing is the best
+    /// estimate available.
+    last_applied_s: Option<f64>,
     /// Deterministic RNG for generating noise realizations.
     rng: rand::rngs::StdRng,
 }
@@ -670,11 +743,40 @@ impl FaultState {
             //ev_u_mps: 0.0,
             b_n_m: 0.0,
             b_e_m: 0.0,
+            last_applied_s: None,
             rng: rand::rngs::StdRng::seed_from_u64(seed),
         }
     }
 }
 // -------- helpers --------
+/// Resolve an AR(1) coefficient and innovation standard deviation for one step.
+///
+/// With no time constant this is the identity: `rho` is applied per fix and `sigma` is the
+/// per-step innovation, which is what every configuration written before
+/// [`tau_pos_s`](GnssFaultModel::Degraded::tau_pos_s) existed means.
+///
+/// With one, the coefficient becomes `exp(-dt / tau)` for the actual interval between fixes
+/// and `sigma` is reinterpreted as the **steady-state** standard deviation, so the process
+/// is `sigma * sqrt(1 - rho_eff^2)` per step. An AR(1) driven by `s` has steady-state
+/// variance `s^2 / (1 - rho^2)`, so this holds the steady state at `sigma` whatever the
+/// schedule -- which is the point: the fix interval and the error timescale become
+/// independent, and a sweep over one does not silently move the other.
+///
+/// A non-finite or non-positive `tau` falls back to the per-fix form rather than producing
+/// a coefficient of NaN or 1.
+fn ar1_coefficients(rho: f64, sigma: f64, tau_s: Option<f64>, dt: f64) -> (f64, f64) {
+    match tau_s {
+        Some(tau) if tau.is_finite() && tau > 0.0 && dt.is_finite() && dt >= 0.0 => {
+            let rho_eff = (-dt / tau).exp();
+            // Clamped because `rho_eff` reaches 1 for dt = 0, which would make the
+            // innovation zero and freeze the process rather than leave it at steady state.
+            let variance_fraction = (1.0 - rho_eff * rho_eff).max(0.0);
+            (rho_eff, sigma * variance_fraction.sqrt())
+        }
+        _ => (rho, sigma),
+    }
+}
+
 /// Advance an AR(1) (autoregressive) process by one timestep.
 ///
 /// Updates the error state `x` according to
@@ -792,6 +894,7 @@ fn ar1_step(x: &mut f64, rho: f64, sigma: f64, rng: &mut rand::rngs::StdRng) {
 ///         rho_pos: 0.99, sigma_pos_m: 3.0,
 ///         rho_vel: 0.95, sigma_vel_mps: 0.3,
 ///         r_scale: 5.0,
+///         tau_pos_s: None, tau_vel_s: None,
 ///     },
 ///     &mut st,
 ///     t, dt,
@@ -831,12 +934,17 @@ pub fn apply_fault(
             rho_vel,
             sigma_vel_mps,
             r_scale,
+            tau_pos_s,
+            tau_vel_s,
         } => {
-            ar1_step(&mut st.e_n_m, *rho_pos, *sigma_pos_m, &mut st.rng);
-            ar1_step(&mut st.e_e_m, *rho_pos, *sigma_pos_m, &mut st.rng);
-            ar1_step(&mut st.e_u_m, *rho_pos, *sigma_pos_m, &mut st.rng);
-            ar1_step(&mut st.ev_n_mps, *rho_vel, *sigma_vel_mps, &mut st.rng);
-            ar1_step(&mut st.ev_e_mps, *rho_vel, *sigma_vel_mps, &mut st.rng);
+            let (rho_p, sigma_p) = ar1_coefficients(*rho_pos, *sigma_pos_m, *tau_pos_s, dt);
+            let (rho_v, sigma_v) = ar1_coefficients(*rho_vel, *sigma_vel_mps, *tau_vel_s, dt);
+
+            ar1_step(&mut st.e_n_m, rho_p, sigma_p, &mut st.rng);
+            ar1_step(&mut st.e_e_m, rho_p, sigma_p, &mut st.rng);
+            ar1_step(&mut st.e_u_m, rho_p, sigma_p, &mut st.rng);
+            ar1_step(&mut st.ev_n_mps, rho_v, sigma_v, &mut st.rng);
+            ar1_step(&mut st.ev_e_mps, rho_v, sigma_v, &mut st.rng);
 
             let (dlat, dlon) =
                 meters_ned_to_dlat_dlon(lat_deg.to_radians(), alt_m, st.e_n_m, st.e_e_m);
@@ -1146,6 +1254,12 @@ fn duty_cycle_is_on(elapsed_s: f64, on_s: f64, off_s: f64, start_phase_s: f64) -
 /// "no epoch". A slice of length one is *accepted* and yields an empty event list, so the
 /// boundary is emptiness, not "fewer than two".
 ///
+/// [`StrapdownError::SensorStreamGap`] if the inertial columns are unusable for longer than
+/// [`AidingConfig::max_imu_gap_s`], either mid-recording or by stopping and never resuming.
+/// Shorter gaps are warned about once and tolerated. This bounds the inertial stream only: a
+/// GNSS outage is a scenario expressed through [`AidingConfig::scheduler`], and no length of
+/// missing GNSS is an error here.
+///
 /// # Example
 /// ```
 /// use strapdown::messages::{build_event_stream, AidingConfig, MeasurementScheduler, GnssFaultModel};
@@ -1159,6 +1273,10 @@ fn duty_cycle_is_on(elapsed_s: f64, on_s: f64, off_s: f64, start_phase_s: f64) -
 ///     rho_pos: 0.99, sigma_pos_m: 3.0,
 ///     rho_vel: 0.95, sigma_vel_mps: 0.3,
 ///     r_scale: 5.0,
+///     // Optional: pin the correlation time in seconds so the fix
+///     // interval can be changed without moving the error model.
+///     tau_pos_s: None,
+///     tau_vel_s: None,
 /// };
 /// let events = build_event_stream(&records, &cfg, false)?; // false = NED
 /// // feed into your event-driven filter loop
@@ -1200,6 +1318,18 @@ pub fn build_event_stream(
     // Through preprocessing we assert that the first record must have a NED position
     // but it may or may not have IMU or other such measurements.
     let reference_altitude = first.altitude;
+
+    // Inertial-gap tracking. A hole in this stream is not a scenario: with no `Event::Imu` the
+    // filter never predicts, so its covariance stops growing while the vehicle keeps moving,
+    // and the frozen estimate falls behind until an ordinary fix looks like a wild outlier.
+    // Caught here, at construction, because only this loop can see that a source epoch existed
+    // and its inertial columns were unusable -- downstream all that survives is an absence.
+    let gap_limit_s = cfg.max_imu_gap_s;
+    let mut last_imu_elapsed_s = 0.0_f64;
+    let mut gap_epochs = 0_usize;
+    let mut tolerated_gaps = 0_usize;
+    let mut longest_tolerated_gap_s = 0.0_f64;
+
     for w in records_with_elapsed.windows(2) {
         let (t0, _) = (&w[0].0, &w[0].1);
         let (t1, r1) = (&w[1].0, &w[1].1);
@@ -1221,64 +1351,102 @@ pub fn build_event_stream(
                 imu,
                 elapsed_s: *t1,
             });
+            if gap_epochs > 0 {
+                let gap_s = *t1 - last_imu_elapsed_s;
+                if gap_limit_s > 0.0 && gap_s > gap_limit_s {
+                    return Err(StrapdownError::SensorStreamGap {
+                        sensor: "IMU",
+                        start_s: last_imu_elapsed_s,
+                        end_s: *t1,
+                        duration_s: gap_s,
+                        epochs: gap_epochs,
+                    });
+                }
+                tolerated_gaps += 1;
+                longest_tolerated_gap_s = longest_tolerated_gap_s.max(gap_s);
+                gap_epochs = 0;
+            }
+            last_imu_elapsed_s = *t1;
+        } else {
+            gap_epochs += 1;
         }
 
-        // Decide if GNSS should be emitted at t1
-        let emit_gnss = should_emit(&cfg.scheduler, *t1, &mut next_gnss_emit_time);
+        // Whether this epoch carries a fix worth scheduling, decided *before* the scheduler is
+        // consulted. `should_emit` advances `next_gnss_emit_time` as a side effect, so asking
+        // it about an epoch whose GNSS columns are unusable would consume the tick and drop
+        // the fix silently -- the scheduler would report having aided the filter while the
+        // filter dead-reckoned.
+        //
+        // The damage scales with how often an epoch lacks a fix, so it hid rather than being
+        // absent: 23 of the 25 reference 1 Hz recordings have GNSS-less epochs, and repairing
+        // this improved them in proportion -- 2.5% for a log missing a handful, 30% for one
+        // missing 8.8%, and 97.7% for the one missing 75%.
+        //
+        // It becomes ruinous once the inertial grid is finer than the receiver. Resampling to
+        // 10 Hz leaves GNSS in arbitrary 100 ms bins, only 0.2% of which land on a whole
+        // second, so a 5 s `FixedInterval` tick found a usable fix 0% of the time and a
+        // degraded run was pure dead reckoning wearing a degraded-GNSS label.
+        //
+        // Gating here makes the schedule mean "at most one fix per interval, taking the first
+        // usable fix at or after each tick".
+        let gnss_required = [r1.latitude, r1.longitude, r1.altitude, r1.speed, r1.bearing];
+        let gnss_present = gnss_required.iter().all(|v| !v.is_nan());
+        let emit_gnss = gnss_present && should_emit(&cfg.scheduler, *t1, &mut next_gnss_emit_time);
 
         if emit_gnss {
-            // Only create GNSS event when the core GNSS values are present
-            let gnss_required = [r1.latitude, r1.longitude, r1.altitude, r1.speed, r1.bearing];
-            let gnss_present = gnss_required.iter().all(|v| !v.is_nan());
-            if gnss_present {
-                // Truth-like GNSS from r1
-                let lat = r1.latitude;
-                let lon = r1.longitude;
-                let alt = r1.altitude;
-                let bearing_rad = r1.bearing.to_radians();
-                let vn = r1.speed * bearing_rad.cos();
-                let ve = r1.speed * bearing_rad.sin();
+            // Truth-like GNSS from r1
+            let lat = r1.latitude;
+            let lon = r1.longitude;
+            let alt = r1.altitude;
+            let bearing_rad = r1.bearing.to_radians();
+            let vn = r1.speed * bearing_rad.cos();
+            let ve = r1.speed * bearing_rad.sin();
 
-                // The record's accuracy columns are 1-sigma standard deviations, floored
-                // so a logged zero cannot produce a singular R. See the caveats on
-                // `build_event_stream`.
-                // If an accuracy is missing (NaN), substitute a conservative default
-                // to avoid propagating NaN into the measurement noise.
-                let horiz_std = if r1.horizontal_accuracy.is_nan() {
-                    15.0
-                } else {
-                    r1.horizontal_accuracy.max(1e-3)
-                };
-                let vert_std = if r1.vertical_accuracy.is_nan() {
-                    1000.0
-                } else {
-                    r1.vertical_accuracy.max(1e-3)
-                };
-                let vel_std = if r1.speed_accuracy.is_nan() {
-                    100.0
-                } else {
-                    r1.speed_accuracy.max(0.1)
-                };
+            // The record's accuracy columns are 1-sigma standard deviations, floored
+            // so a logged zero cannot produce a singular R. See the caveats on
+            // `build_event_stream`.
+            // If an accuracy is missing (NaN), substitute a conservative default
+            // to avoid propagating NaN into the measurement noise.
+            let horiz_std = if r1.horizontal_accuracy.is_nan() {
+                15.0
+            } else {
+                r1.horizontal_accuracy.max(1e-3)
+            };
+            let vert_std = if r1.vertical_accuracy.is_nan() {
+                1000.0
+            } else {
+                r1.vertical_accuracy.max(1e-3)
+            };
+            let vel_std = if r1.speed_accuracy.is_nan() {
+                100.0
+            } else {
+                r1.speed_accuracy.max(0.1)
+            };
 
-                let (lat_c, lon_c, alt_c, vn_c, ve_c, horiz_c, vel_c) = apply_fault(
-                    &cfg.fault, &mut st, *t1, dt, lat, lon, alt, vn, ve, horiz_std, vel_std,
-                );
+            // The interval since the fault last ran, which is the scheduler's, not the
+            // log's. Computed here rather than inside `apply_fault` so that a `Combo`'s
+            // members all see the same interval instead of the first one consuming it.
+            let fault_dt = st.last_applied_s.map_or(dt, |last| *t1 - last);
+            st.last_applied_s = Some(*t1);
 
-                let meas = GPSPositionAndVelocityMeasurement {
-                    latitude: lat_c,
-                    longitude: lon_c,
-                    altitude: alt_c,
-                    northward_velocity: vn_c,
-                    eastward_velocity: ve_c,
-                    horizontal_noise_std: horiz_c,
-                    vertical_noise_std: vert_std, // pass-through here; you can also degrade it if desired
-                    velocity_noise_std: vel_c,
-                };
-                events.push(Event::Measurement {
-                    meas: Box::new(meas),
-                    elapsed_s: *t1,
-                });
-            }
+            let (lat_c, lon_c, alt_c, vn_c, ve_c, horiz_c, vel_c) = apply_fault(
+                &cfg.fault, &mut st, *t1, fault_dt, lat, lon, alt, vn, ve, horiz_std, vel_std,
+            );
+
+            let meas = GPSPositionAndVelocityMeasurement {
+                latitude: lat_c,
+                longitude: lon_c,
+                altitude: alt_c,
+                northward_velocity: vn_c,
+                eastward_velocity: ve_c,
+                horizontal_noise_std: horiz_c,
+                vertical_noise_std: vert_std, // pass-through here; you can also degrade it if desired
+                velocity_noise_std: vel_c,
+            };
+            events.push(Event::Measurement {
+                meas: Box::new(meas),
+                elapsed_s: *t1,
+            });
         }
         // The barometer and the magnetometer are scheduled on the same footing as GNSS. Until
         // #375 they were emitted once per record window, outside the scheduler entirely, which
@@ -1326,6 +1494,35 @@ pub fn build_event_stream(
             });
         }
     }
+
+    // A gap still open at the last record is a truncated recording: the inertial stream simply
+    // stopped and never resumed, so the loop above never got the resumption that would have
+    // measured it. Reported with the same error, ending at the last epoch there was.
+    if gap_epochs > 0 {
+        let end_s = records_with_elapsed
+            .last()
+            .map_or(last_imu_elapsed_s, |(elapsed_s, _)| *elapsed_s);
+        let gap_s = end_s - last_imu_elapsed_s;
+        if gap_limit_s > 0.0 && gap_s > gap_limit_s {
+            return Err(StrapdownError::SensorStreamGap {
+                sensor: "IMU",
+                start_s: last_imu_elapsed_s,
+                end_s,
+                duration_s: gap_s,
+                epochs: gap_epochs,
+            });
+        }
+        tolerated_gaps += 1;
+        longest_tolerated_gap_s = longest_tolerated_gap_s.max(gap_s);
+    }
+    if tolerated_gaps > 0 {
+        warn!(
+            "inertial stream has {tolerated_gaps} tolerated gap(s), longest \
+             {longest_tolerated_gap_s:.1} s: the filter does not propagate across a gap, so the \
+             estimate coasts through each one"
+        );
+    }
+
     Ok(EventStream { start_time, events })
 }
 
@@ -1378,6 +1575,166 @@ mod tests {
             records.push(record);
         }
         records
+    }
+
+    /// Blank the inertial columns of `range`, the way a recording whose IMU stopped looks
+    /// once it has been resampled onto a fixed grid beside a GNSS stream that kept going.
+    fn blank_imu(records: &mut [TestDataRecord], range: std::ops::Range<usize>) {
+        for record in &mut records[range] {
+            record.acc_x = f64::NAN;
+            record.acc_y = f64::NAN;
+            record.acc_z = f64::NAN;
+            record.gyro_x = f64::NAN;
+            record.gyro_y = f64::NAN;
+            record.gyro_z = f64::NAN;
+        }
+    }
+
+    /// A hole in the middle of the inertial stream is refused, and says so in those terms.
+    ///
+    /// This is the defect the error exists for: with no `Event::Imu` the filter never
+    /// predicts, so it cannot coast a long gap the way it coasts a GNSS outage. Left
+    /// undetected it surfaced as an absurd NIS, blaming the filter for missing data.
+    #[test]
+    fn build_event_stream_rejects_a_long_imu_gap() {
+        let mut records = create_test_records(40, 1.0);
+        blank_imu(&mut records, 10..25);
+
+        let err = build_event_stream(&records, &AidingConfig::default(), false)
+            .expect_err("a 16 s inertial gap must be refused");
+
+        match err {
+            StrapdownError::SensorStreamGap {
+                sensor,
+                duration_s,
+                epochs,
+                ..
+            } => {
+                assert_eq!(
+                    sensor, "IMU",
+                    "the gap must name the stream that went missing"
+                );
+                assert!(
+                    duration_s > DEFAULT_MAX_IMU_GAP_S,
+                    "a refused gap must exceed the limit, got {duration_s} s"
+                );
+                assert_eq!(epochs, 15);
+            }
+            other => panic!("expected SensorStreamGap, got {other:?}"),
+        }
+    }
+
+    /// An inertial stream that stops and never resumes is the same fault, found after the
+    /// loop: there is no resumption to measure the gap against, so the stream's end serves.
+    #[test]
+    fn build_event_stream_reports_a_truncated_imu_stream() {
+        let mut records = create_test_records(40, 1.0);
+        blank_imu(&mut records, 20..40);
+
+        let err = build_event_stream(&records, &AidingConfig::default(), false)
+            .expect_err("an inertial stream that stops early must be refused");
+
+        match err {
+            StrapdownError::SensorStreamGap {
+                sensor,
+                end_s,
+                epochs,
+                ..
+            } => {
+                assert_eq!(sensor, "IMU");
+                assert_approx_eq!(end_s, 39.0);
+                assert_eq!(epochs, 20);
+            }
+            other => panic!("expected SensorStreamGap, got {other:?}"),
+        }
+    }
+
+    /// Sub-limit holes are tolerated, because resampling a variable-rate recording onto a
+    /// fixed grid leaves them routinely and they are survivable.
+    #[test]
+    fn build_event_stream_tolerates_a_short_imu_gap() {
+        let mut records = create_test_records(40, 1.0);
+        blank_imu(&mut records, 10..12);
+
+        let stream = build_event_stream(&records, &AidingConfig::default(), false)
+            .expect("a 3 s inertial gap is under the default 5 s limit");
+
+        let imu_events = stream
+            .events
+            .iter()
+            .filter(|e| matches!(e, Event::Imu { .. }))
+            .count();
+        assert_eq!(
+            imu_events, 37,
+            "the two blanked epochs should be skipped, not the whole stream"
+        );
+    }
+
+    /// The distinction the `sensor` discriminant exists to make.
+    ///
+    /// A GNSS-denied run is the scenario under study, not a broken recording: it is expressed
+    /// through the scheduler and must build cleanly however long the outage, so long as the
+    /// inertial stream is intact. Conflating the two would refuse the very runs this crate is
+    /// for.
+    #[test]
+    fn a_gnss_denied_stream_is_not_an_imu_gap() {
+        let mut records = create_test_records(40, 1.0);
+        for record in &mut records[5..35] {
+            record.latitude = f64::NAN;
+            record.longitude = f64::NAN;
+            record.speed = f64::NAN;
+            record.bearing = f64::NAN;
+        }
+
+        let stream = build_event_stream(&records, &AidingConfig::default(), false)
+            .expect("30 s without GNSS is a scenario, not a broken recording");
+
+        let imu_events = stream
+            .events
+            .iter()
+            .filter(|e| matches!(e, Event::Imu { .. }))
+            .count();
+        assert_eq!(imu_events, 39, "every inertial epoch should survive");
+    }
+
+    /// A scheduler tick landing on an epoch with no usable fix must not consume the tick.
+    ///
+    /// The regression this pins: `should_emit` advances its clock as a side effect, and the
+    /// usability check used to sit *after* it. On a 1 Hz log every epoch carries GNSS so the
+    /// two orderings agree, but once the inertial grid is finer than the receiver -- a 10 Hz
+    /// resampling of a 1 Hz receiver, as here -- the ticks land between fixes and every one of
+    /// them was silently discarded. A degraded run then reported a schedule it had not
+    /// delivered, dead-reckoning the whole trajectory while labelled as GNSS-aided.
+    #[test]
+    fn a_tick_that_finds_no_fix_does_not_consume_the_schedule() {
+        // 30 s at 10 Hz, with GNSS only every tenth epoch and deliberately offset off the
+        // whole second, so a 5 s tick never coincides with a fix.
+        let mut records = create_test_records(300, 0.1);
+        for (i, record) in records.iter_mut().enumerate() {
+            if i % 10 != 3 {
+                record.latitude = f64::NAN;
+                record.longitude = f64::NAN;
+                record.speed = f64::NAN;
+                record.bearing = f64::NAN;
+            }
+        }
+
+        let cfg = AidingConfig {
+            scheduler: MeasurementScheduler::FixedInterval {
+                interval_s: 5.0,
+                phase_s: 0.0,
+            },
+            ..Default::default()
+        };
+        let stream = build_event_stream(&records, &cfg, false).expect("a mixed-rate log is fine");
+
+        let fixes = count_of::<GPSPositionAndVelocityMeasurement>(&stream);
+        assert_eq!(
+            fixes, 6,
+            "a 5 s schedule over 30 s should deliver one fix per window, taking the first \
+             usable epoch at or after each tick; got {fixes}. Zero means the ticks were being \
+             spent on epochs with no fix."
+        );
     }
 
     /// How many events in `stream` carry a measurement of type `M`.
@@ -1879,6 +2236,8 @@ mod tests {
                 rho_vel: 0.95,
                 sigma_vel_mps: 0.3,
                 r_scale: 5.0,
+                tau_pos_s: None,
+                tau_vel_s: None,
             },
             seed: 500,
             ..Default::default()
@@ -2041,6 +2400,78 @@ mod tests {
         // This should at least not crash
         let events = build_event_stream(&records, &config, false).unwrap();
         assert!(!events.events.is_empty());
+    }
+
+    /// Without a time constant, nothing about the AR(1) step changes.
+    ///
+    /// The guarantee that lets `tau_pos_s` be additive: every configuration written before it
+    /// existed, and every result recorded from one, still means what it meant.
+    #[test]
+    fn ar1_coefficients_are_the_identity_without_a_time_constant() {
+        for dt in [0.1, 1.0, 5.0, 30.0] {
+            assert_eq!(ar1_coefficients(0.99, 3.0, None, dt), (0.99, 3.0));
+        }
+    }
+
+    /// A time constant holds the error's timescale fixed as the fix interval changes.
+    ///
+    /// This is the defect it exists to remove. `rho_pos` is applied once per emitted fix, so
+    /// the correlation time is `-interval / ln(rho)`: at `rho = 0.99` a 5 s interval is 498 s
+    /// and a 30 s interval is 2985 s. An experiment sweeping the fix rate was therefore also
+    /// sweeping the error model, and the two effects cannot be separated in the result.
+    #[test]
+    fn a_time_constant_decouples_the_error_timescale_from_the_fix_interval() {
+        const TAU_S: f64 = 500.0;
+
+        // Per-fix: the effective correlation time follows the schedule.
+        let five = -5.0 / 0.99_f64.ln();
+        let thirty = -30.0 / 0.99_f64.ln();
+        assert!(
+            (thirty / five - 6.0).abs() < 1e-9,
+            "a 6x longer interval must give a 6x longer correlation time without a tau"
+        );
+
+        // With a time constant: the same timescale at both intervals.
+        for dt in [1.0, 5.0, 30.0] {
+            let (rho, _) = ar1_coefficients(0.99, 21.0, Some(TAU_S), dt);
+            let implied_tau = -dt / rho.ln();
+            assert!(
+                (implied_tau - TAU_S).abs() < 1e-6,
+                "at dt = {dt} the implied correlation time was {implied_tau}, not {TAU_S}"
+            );
+        }
+    }
+
+    /// With a time constant, `sigma` is the steady-state spread whatever the interval.
+    ///
+    /// An AR(1) driven by innovation `s` settles at `s / sqrt(1 - rho^2)`, so holding the
+    /// steady state fixed means scaling the innovation with the coefficient. Without that,
+    /// decoupling the timescale would silently retune the error magnitude instead.
+    #[test]
+    fn a_time_constant_makes_sigma_the_steady_state_spread() {
+        const TAU_S: f64 = 500.0;
+        const STEADY_STATE_M: f64 = 21.0;
+
+        for dt in [1.0, 5.0, 30.0, 120.0] {
+            let (rho, sigma) = ar1_coefficients(0.0, STEADY_STATE_M, Some(TAU_S), dt);
+            let steady_state = sigma / (1.0 - rho * rho).sqrt();
+            assert!(
+                (steady_state - STEADY_STATE_M).abs() < 1e-9,
+                "at dt = {dt} the steady state was {steady_state}, not {STEADY_STATE_M}"
+            );
+        }
+    }
+
+    /// A nonsensical time constant falls back rather than producing NaN or a frozen process.
+    #[test]
+    fn a_degenerate_time_constant_falls_back_to_the_per_fix_form() {
+        for tau in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(
+                ar1_coefficients(0.99, 3.0, Some(tau), 1.0),
+                (0.99, 3.0),
+                "tau = {tau} should fall back, not produce a degenerate coefficient"
+            );
+        }
     }
 
     #[test]
@@ -2248,6 +2679,8 @@ mod serialization_tests {
                 rho_vel: 0.95,
                 sigma_vel_mps: 0.3,
                 r_scale: 5.0,
+                tau_pos_s: None,
+                tau_vel_s: None,
             },
             ..Default::default()
         }
