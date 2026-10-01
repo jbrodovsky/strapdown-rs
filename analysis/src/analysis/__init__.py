@@ -118,6 +118,41 @@ def read_timeseries(path) -> DataFrame:
     return frame
 
 
+def append_summary_rows(summary_df: DataFrame) -> DataFrame:
+    """Append `mean`, `median` and `std` rows computed over the per-trajectory rows only.
+
+    Every aggregate is taken from the trajectory rows before any of them is appended. Appending
+    one row and then aggregating the frame again folds the earlier aggregates into the later
+    ones: the `mean` row was the mean of the trajectories *and* their median, and `std` spanned
+    both, so each summary CSV disagreed with the LaTeX table written from the same run.
+
+    `std` is the population standard deviation (``ddof=0``), matching the `np.std` that
+    :func:`analysis.compare.format_latex_table` reports, so the two outputs agree.
+
+    Parameters
+    ----------
+    summary_df : DataFrame
+        One row per trajectory, numeric columns. A trajectory that was skipped may be left as
+        an all-NaN row; it is ignored by every aggregate.
+
+    Returns
+    -------
+    DataFrame
+        The same frame with the three summary rows appended, or unchanged if it has no rows.
+    """
+    if summary_df.empty:
+        return summary_df
+    trajectories = summary_df.astype(float)
+    aggregates = {
+        "mean": trajectories.mean(),
+        "median": trajectories.median(),
+        "std": trajectories.std(ddof=0),
+    }
+    for row_name, values in aggregates.items():
+        summary_df.loc[row_name] = values
+    return summary_df
+
+
 def main() -> None:
     parser = ArgumentParser(
         description="Data analysis and simulation orchestration tools for use with Strapdown-sim.",
@@ -388,9 +423,7 @@ def dataset_summary_analysis(args) -> None:
         summary_df.loc[dataset.stem] = [distance_km, duration_h]
         latex_results.append((dataset.stem, {"distance_km": distance_km, "duration_h": duration_h}))
 
-    if not summary_df.empty:
-        summary_df.loc["median"] = summary_df.median()
-        summary_df.loc["mean"] = summary_df.mean()
+    append_summary_rows(summary_df)
 
     summary_file = output_path / "dataset_summary.csv"
     summary_df.to_csv(summary_file)
@@ -523,10 +556,7 @@ def performance_analysis(args):
         )
 
     # Summary statistics rows, matching geophysical_performance_analysis's summary CSV.
-    if not summary_df.empty:
-        summary_df.loc["median"] = summary_df.median()
-        summary_df.loc["mean"] = summary_df.mean()
-        summary_df.loc["std"] = summary_df.std()
+    append_summary_rows(summary_df)
 
     summary_file = output_path / "performance_summary.csv"
     summary_df.to_csv(summary_file)
@@ -734,9 +764,7 @@ def geophysical_performance_analysis(args):
             continue
 
     # Add summary statistics to DataFrame
-    summary_df.loc["median"] = summary_df.median()
-    summary_df.loc["mean"] = summary_df.mean()
-    summary_df.loc["std"] = summary_df.std()
+    append_summary_rows(summary_df)
 
     # Save original summary CSV
     summary_file = output_path / "geophysical_performance_summary.csv"

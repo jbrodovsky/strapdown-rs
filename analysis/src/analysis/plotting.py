@@ -118,7 +118,7 @@ def plot_performance(nav: DataFrame, gps: DataFrame, output_path: Path | str):
     output_path = Path(output_path)
     # output_path.mkdir(parents=True, exist_ok=True)
     gps = gps.reindex(nav.index)
-    fig, ax = plt.subplots(1, 1, figsize=(12, 4))
+    fig, ax = plt.subplots(1, 1, figsize=(12, 4), layout="constrained")
     nav_time = (nav.index - nav.index[0]).total_seconds().to_numpy()
     gps_time = (gps.index - gps.index[0]).total_seconds().to_numpy()
     two_d_error = haversine_vector(
@@ -141,12 +141,12 @@ def plot_performance(nav: DataFrame, gps: DataFrame, output_path: Path | str):
     )
     ax.set_xlim(left=0)
     # ax.set_ylim((0, 50))
-    ax.set_xlabel("Time (s)", fontsize=14)
-    ax.set_ylabel("2D Haversine Error (m)", fontsize=14)
-    ax.set_title("Strapdown INS Simulation Performance with GPS Comparison", fontsize=20)
-    ax.tick_params(labelsize=12)
+    ax.set_xlabel("Time (s)", fontsize=16)
+    ax.set_ylabel("2D Haversine Error (m)", fontsize=16)
+    ax.set_title("Strapdown INS Simulation Performance with GPS Comparison", fontsize=24)
+    ax.tick_params(labelsize=14)
     ax.grid()
-    ax.legend(fontsize=12)
+    ax.legend(fontsize=14)
     fig.savefig(output_path, dpi=300)
     plt.close(fig)
     return fig
@@ -200,9 +200,7 @@ def plot_relative_performance(
         Unit.METERS,
     )
 
-    time, err_diff = _finite(
-        (nav.index - nav.index[0]).total_seconds().to_numpy() / 3600, geo_error - deg_error
-    )
+    time, err_diff = _finite((nav.index - nav.index[0]).total_seconds().to_numpy() / 3600, geo_error - deg_error)
     geo_rmse = np.sqrt(np.nanmean(geo_error**2))
     deg_rmse = np.sqrt(np.nanmean(deg_error**2))
     # General errors
@@ -232,15 +230,15 @@ def plot_relative_performance(
     )
     ax.set_xlim(left=0)
     # ax[0].set_ylim((-0.1, 0.1))
-    ax.set_xlabel("Time (h)", fontsize=14)
-    ax.set_ylabel("Distance (m)", fontsize=14)
+    ax.set_xlabel("Time (h)", fontsize=16)
+    ax.set_ylabel("Distance (m)", fontsize=16)
     ax.set_title(
         f"Geophysical Navigation Performance | RMSE difference: {geo_rmse - deg_rmse:0.2f}",
         fontsize=20,
     )
-    ax.tick_params(labelsize=12)
+    ax.tick_params(labelsize=14)
     ax.grid()
-    ax.legend(fontsize=12)
+    ax.legend(fontsize=14)
     fig.savefig(output_path, dpi=300)
     plt.close(fig)
     return fig
@@ -326,9 +324,9 @@ def plot_street_map(
     gl.right_labels = False
 
     if title is None:
-        ax.set_title("Street Map with Trajectory Points", fontsize=16)
+        ax.set_title("Street Map with Trajectory Points", fontsize=24)
     else:
-        ax.set_title(title, fontsize=16)
+        ax.set_title(title, fontsize=24)
 
     ax.legend()
     return fig
