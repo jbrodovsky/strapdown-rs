@@ -484,9 +484,9 @@ fn scenarios() -> Vec<Scenario> {
         });
     }
 
-    // The headline v1.0 case. Errors here reach tens of metres, so the one-step labelling
-    // offset described in the module docs is a small share of the number rather than most of
-    // it -- which is what makes this row a usable regression detector on real data.
+    // The headline v1.0 case. Errors here reach tens of metres, well above the receiver noise
+    // and the self-scoring floor the module docs describe, which is what makes this row a
+    // usable regression detector on real data.
     out.push(Scenario {
         id: "real_outage_60s__eskf".to_string(),
         description: "test_data.csv, 120 s of GNSS then a 60 s outage, repeating".to_string(),
@@ -619,10 +619,12 @@ fn baseline_path() -> PathBuf {
 
 /// The synthetic trajectory every `syn_*` scenario runs over.
 ///
-/// 50 Hz, not the 10 Hz default, on purpose: `run_closed_loop` labels each row with the
-/// timestamp of the event *before* the one it has already applied, so a solution carries one
-/// propagation step of along-track offset. At 50 m/s that is 1 m at 50 Hz and 5 m at 10 Hz,
-/// and the point of these rows is to resolve filter error of a few metres.
+/// 50 Hz, not the 10 Hz default. The rate was chosen while `run_closed_loop` labelled each row
+/// with the timestamp of the event *before* the one it had already applied, so a solution
+/// carried one propagation step of along-track offset -- 1 m at 50 m/s and 50 Hz, 5 m at 10 Hz,
+/// against filter errors of a few metres. #367 fixed that labelling: a row stamped `t_k` now
+/// holds every event at or before `t_k`. The rate stays because the baseline was blessed at it,
+/// and changing it would move every `syn_*` number for a reason unrelated to any filter.
 fn synthetic_config(duration_s: f64) -> SyntheticConfig {
     // Not a `const fn` any more: `SyntheticConfig` is `#[non_exhaustive]` as of the v1.0 API
     // freeze, so it cannot be built from a struct literal outside its own crate, and

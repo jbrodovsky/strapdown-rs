@@ -5190,7 +5190,8 @@ pub enum ParticleFilterType {
 #[serde(default)]
 #[non_exhaustive]
 pub struct ClosedLoopConfig {
-    /// Filter type; defaults to the 15-state ESKF.
+    /// Filter type; defaults to the error-state Kalman filter (ESKF): 15 error states, plus a
+    /// barometric bias state unless [`Self::estimate_baro_bias`] is `false`.
     pub filter: FilterType,
     /// Sigma-point spread for the unscented transform.
     ///
@@ -5265,11 +5266,53 @@ pub struct ClosedLoopConfig {
     /// scenario, and that is a decision to make against the ground-truth validation
     /// suite rather than as a side effect of adding the capability.
     ///
-    /// Deserializes from either form:
-    /// ```yaml
-    /// innovation_gate: { chi_squared: { confidence: 0.999 } }
-    /// innovation_gate: { fixed: { threshold: 25.0 } }
+    /// [`InnovationGate`] is an externally tagged enum, so the variant name is the key in TOML
+    /// and JSON and a **tag** in YAML -- `serde_yaml` reads `!chi_squared`, not a
+    /// `chi_squared:` key:
+    ///
+    /// ```toml
+    /// [closed_loop]
+    /// innovation_gate = { chi_squared = { confidence = 0.999 } }
+    /// # or: innovation_gate = { fixed = { threshold = 25.0 } }
     /// ```
+    ///
+    /// ```yaml
+    /// closed_loop:
+    ///   innovation_gate: !chi_squared { confidence: 0.999 }
+    ///   # or: innovation_gate: !fixed { threshold: 25.0 }
+    /// ```
+    ///
+    /// Both spellings, parsed:
+    ///
+    /// ```
+    /// use strapdown::gating::InnovationGate;
+    /// use strapdown::sim::ClosedLoopConfig;
+    ///
+    /// let from_yaml: ClosedLoopConfig =
+    ///     serde_yaml::from_str("innovation_gate: !chi_squared { confidence: 0.999 }")?;
+    /// let from_toml: ClosedLoopConfig =
+    ///     toml::from_str("innovation_gate = { fixed = { threshold = 25.0 } }")?;
+    ///
+    /// assert_eq!(
+    ///     from_yaml.innovation_gate,
+    ///     Some(InnovationGate::ChiSquared { confidence: 0.999 })
+    /// );
+    /// assert_eq!(
+    ///     from_toml.innovation_gate,
+    ///     Some(InnovationGate::Fixed { threshold: 25.0 })
+    /// );
+    ///
+    /// // The map form is not the YAML spelling of this enum.
+    /// assert!(serde_yaml::from_str::<ClosedLoopConfig>(
+    ///     "innovation_gate: { chi_squared: { confidence: 0.999 } }"
+    /// )
+    /// .is_err());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// Deserialization does not range-check the values; `strapdown-sim` refuses an
+    /// out-of-range confidence or threshold before a run starts, as it does for the
+    /// `--gate-confidence` flag.
     #[serde(default)]
     pub innovation_gate: Option<InnovationGate>,
     /// How the filter recovers from a measurement the gate rejected.
@@ -5310,7 +5353,9 @@ pub struct ClosedLoopConfig {
     /// `UkfConfig`/`EkfConfig`/`EskfConfig` defaults stay `false` -- flipping those would hand
     /// a direct caller a sixteenth state that nothing reads.
     ///
-    /// Not available on the geophysical path, whose extra states are map biases.
+    /// Honoured on the geophysical path too, by the UKF and EKF that path runs: the map-bias
+    /// states are appended after the fifteen navigation and IMU-bias states and the barometric
+    /// bias follows them, last.
     pub estimate_baro_bias: bool,
 }
 

@@ -98,12 +98,17 @@
 //!
 //! This mechanization and coordinate frame is only valid for positions relatively close to the Earth's surface (within 30 km above mean sea level).
 //! Above that it is more common to use the Earth-Centered Earth-Fixed (ECEF) frame for navigation. Additionally, the deepest ocean trenches
-//! are approximately 11 km below mean sea level. Thus, this mechanization is not valid for positions deeper than that. [`sim::health`]
-//! implements general sanity checks to ensure that the position states remain within valid bounds, given a specific coordinate frame:
+//! are approximately 11 km below mean sea level. Thus, this mechanization is not valid for positions deeper than that, and the
+//! range it is meant for is altitude in [-11,000 m, 30,000 m]. `altitude` is height above the ellipsoid, positive up,
+//! irrespective of `is_enu`; it is not a "down" coordinate in NED.
+//!
+//! [`sim::health`] implements run-level sanity checks on the position states. Its defaults
+//! ([`sim::HealthLimits::default`]) are bounds on what is representable, not on where the mechanization is valid:
 //! - Latitude: [-90 deg, 90 deg]
 //! - Longitude: [-180 deg, 180 deg]
-//! - Altitude: [-11,000 m, 30,000 m] in both frames. `altitude` is height above the ellipsoid,
-//!   positive up, irrespective of `is_enu`; it is not a "down" coordinate in NED.
+//! - Altitude: [-1e8 m, 1e8 m] -- deliberately far wider than the valid range above, so a diverging vertical
+//!   channel is caught by the finiteness and covariance checks. Narrow [`sim::HealthLimits::alt_m`] (or pass
+//!   `--health-alt-min-m`/`--health-alt-max-m` to `strapdown-sim`) to enforce the valid range.
 //!
 //! ### Strapdown equations in the Local-Level Frame
 //!

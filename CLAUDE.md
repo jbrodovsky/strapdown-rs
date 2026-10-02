@@ -229,8 +229,10 @@ The Free Core implementation must achieve the following capabilities:
   - Users control via `is_enu` boolean flags and sign conventions; `StrapdownState::to_ned`
     and `to_enu` convert an existing state between the two
   - Vertical velocity: positive down in NED, positive up in ENU
-  - `altitude` is height above the ellipsoid -- positive up -- in **both** frames, valid over
-    [-11,000m, 30,000m]. It is not a "down" coordinate in NED
+  - `altitude` is height above the ellipsoid -- positive up -- in **both** frames. The
+    mechanization is valid over [-11,000m, 30,000m], but nothing enforces that by default: the
+    health check's default altitude band is +/-1e8 m (`DEFAULT_HEALTH_ALT_{MIN,MAX}_M`), so
+    narrow `HealthLimits::alt_m` to make it a gate. It is not a "down" coordinate in NED
   - `TestDataRecord` carries no frame tag, so every entry point that loads one takes the
     frame from its caller: `sim::dead_reckoning(records, is_enu)` and `is_enu` on
     `UkfConfig`/`EkfConfig`/`EskfConfig`, all defaulting to NED. On the CLI that is `--enu`

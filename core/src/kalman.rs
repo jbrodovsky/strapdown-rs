@@ -1724,7 +1724,7 @@ impl NavigationFilter for ExtendedKalmanFilter {
 ///
 /// ## Error State (15 components, always small):
 /// ```text
-/// δx = [δp_n, δp_e, δp_d,           // position error (m)
+/// δx = [δlat, δlon, δalt,           // position error (rad, rad, m)
 ///       δv_n, δv_e, δv_d,           // velocity error (m/s)
 ///       δθ_x, δθ_y, δθ_z,           // attitude error (small angles, rad)
 ///       δb_ax, δb_ay, δb_az,        // accelerometer bias error (m/s²)

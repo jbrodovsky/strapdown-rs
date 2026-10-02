@@ -432,10 +432,14 @@ pub fn haversine_distance(lat1_rad: f64, lon1_rad: f64, lat2_rad: f64, lon2_rad:
 /// - `altitude` - The WGS84 altitude in meters
 ///
 /// # Returns
-/// A tuple of the principal radii of curvature (`r_n`, `r_e`, `r_p`) in meters where `r_n` is the radius
-/// of curvature in the prime vertical (alternatively as _N_ or `R_N`), `r_e` is the radius of curvature
-/// in the meridian (alternatively _M_ or `R_M`), and `r_p` is the radius of curvature in the local
-/// normal direction.
+/// A tuple (`r_n`, `r_e`, `r_p`) in meters, following Groves' naming:
+/// - `r_n` is the **meridian** radius of curvature, Groves' $R_N$ and often written
+///   _M_ elsewhere: $a(1 - e^2) / (1 - e^2 \sin^2 L)^{3/2}$. It relates north velocity to
+///   latitude rate.
+/// - `r_e` is the **transverse** (prime-vertical) radius of curvature, Groves' $R_E$
+///   and often written _N_ elsewhere: $a / \sqrt{1 - e^2 \sin^2 L}$. It relates
+///   east velocity to longitude rate.
+/// - `r_p` is `r_e * cos(latitude) + altitude`.
 ///
 /// # Example
 /// ```rust
@@ -461,9 +465,10 @@ pub fn principal_radii(latitude: &f64, altitude: &f64) -> (f64, f64, f64) {
 /// the Earth's gravity as a function of the latitude and altitude. The gravity model is used to
 /// calculate the gravitational force scalar in the local-level frame. Free-air correction is applied.
 ///
-/// *Note:* This function returns only the gravity scalar and does not include centrifugal effects
-/// nor does it assuming a vector form or make any assumptions about the direction of the gravitional
-/// force!
+/// *Note:* Somigliana's formula gives **normal gravity**: the magnitude of the gravity vector on
+/// the ellipsoid, which is gravitation *plus* the centrifugal acceleration of the Earth's
+/// rotation. So the centrifugal effect is already included in this scalar. What it does not give
+/// is a direction: it is a magnitude only, and makes no assumption about which way it points.
 ///
 /// # Arguments
 /// - `latitude` - The WGS84 latitude in degrees
@@ -491,9 +496,12 @@ pub fn gravity(latitude: &f64, altitude: &f64) -> f64 {
 /// method](https://en.wikipedia.org/wiki/Theoretical_gravity#Somigliana_equation), which models
 /// the Earth's gravity as a function of the latitude and altitude. The gravity model is used to
 /// calculate the gravitational force vector in the local-level frame. This is then combined
-/// with the rotational effects of the Earth to calculate the effective gravity vector. This
-/// differs from the gravity scalar in that it includes the centrifugal effects of the Earth's
-/// rotation.
+/// with the rotational effects of the Earth to calculate the effective gravity vector: the
+/// centrifugal acceleration is added as a vector to [`gravity`]'s vertical scalar.
+///
+/// Because [`gravity`] is Somigliana *normal* gravity, which already includes the centrifugal
+/// magnitude, the vertical component here counts it twice -- about 0.034 m/s^2 at the equator,
+/// which the `gravitation` unit test pins. Nothing in the mechanization calls this function.
 ///
 /// *Note:* This function uses the ENU convention, thus gravity acts along the negative Z-axis
 /// (downward) in the local-level frame.
