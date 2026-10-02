@@ -80,13 +80,17 @@ altitude fixed. If a first integration produces those two symptoms together, che
 
 ```text
 start: NavSolution(t: 0.000 s, 39.9500000 deg, -75.1600000 deg, 12.00 m, ...)
-after 60 s: NavSolution(t: 60.000 s, 39.9553996 deg, -75.1600000 deg, 12.14 m, ...)
-travelled 600.0 m north; expected 600.0 m (difference 0.00 m)
-position uncertainty (1-sigma): 3.01 m north, 2.32 m east, 1.08 m vertical
+after 60 s: NavSolution(t: 60.000 s, 39.9554004 deg, -75.1600000 deg, 12.11 m, ...)
+travelled 600.1 m north; expected 600.0 m (difference 0.10 m)
+position uncertainty (1-sigma): 0.80 m north, 0.78 m east, 1.04 m vertical
 ```
 
-600 m in 60 s at 10 m/s, and the reported north uncertainty settles near the 3 m accuracy the
-synthetic fixes advertise, which is what a correctly-tuned filter should do: with no vehicle
-dynamics to exploit it cannot do better than its aiding source.
+600 m in 60 s at 10 m/s, to a tenth of a metre. The reported uncertainty is well inside the 3 m
+horizontal and 5 m vertical the fixes advertise, and that is correct rather than optimistic: the
+filter has fused sixty position fixes and sixty 0.2 m/s velocity fixes through a motion model
+that lets the vehicle wander very little between them, and the combination is tighter than any
+single fix. (This page used to show about 3 m here and read it as the filter being unable to do
+better than its aiding source; the current code prints the numbers above, and a filter that
+averages repeated fixes is expected to beat each one.)
 
 Next: [Tutorial: GPS Degradation](./tutorial-gps-degradation.md).

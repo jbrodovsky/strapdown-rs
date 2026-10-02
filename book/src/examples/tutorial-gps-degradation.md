@@ -15,15 +15,16 @@ consumer MEMS part after turn-on.
 
 ```text
    t (s)     error (m)        GNSS
-      60           0.0          ok
-      70           0.2      denied
-     100           2.0      denied
-     140          14.9      denied
-     180          49.4      denied
-     190           0.0          ok
+      60           0.2          ok
+      70           0.4      denied
+     100           2.6      denied
+     140          16.8      denied
+     180          54.0      denied
+     190           0.1          ok
 ```
 
-Flat while aided, growing while coasting, and back to zero within a single fix of recovery.
+Flat while aided, growing while coasting, and back to a decimetre within a single fix of
+recovery. (The example prints every 10 s; these are a selection of its rows.)
 The growth is quadratic because a constant acceleration error integrates twice into position.
 
 ## Why the drift is smaller than the textbook figure
@@ -34,19 +35,19 @@ Double-integrating the bias over the outage predicts 360 m:
 0.5 × 0.05 m/s² × (120 s)² = 360 m
 ```
 
-The observed error is 49.4 m, seven times smaller. The reason is worth reading off the filter
+The observed error is 54.0 m, nearly seven times smaller. The reason is worth reading off the filter
 state rather than guessing at, and the example prints it:
 
 ```text
 accelerometer bias present:        0.0500 m/s^2 (forward axis)
 bias the filter estimated:         0.0001 m/s^2  <- it barely moved
-pitch error at outage start:       0.2987 deg
-gravity that tilt leaks forward:   0.0511 m/s^2  <- nearly cancels the bias
+pitch error at outage start:       0.2879 deg
+gravity that tilt leaks forward:   0.0493 m/s^2  <- nearly cancels the bias
 ```
 
 The filter did **not** estimate the bias. It absorbed it into *attitude* instead: it believes
-the vehicle is pitched nose-up by three tenths of a degree, and the gravity that tilt leaks
-into the forward axis very nearly cancels the bias.
+the vehicle is pitched by just under three tenths of a degree, and the gravity that tilt leaks
+into the forward axis, 0.0493 m/s², very nearly cancels the 0.05 m/s² bias.
 
 That is not a defect. A constant forward specific-force bias and a small pitch error produce
 the same horizontal acceleration signature, so position and velocity aiding cannot separate
