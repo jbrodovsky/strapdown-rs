@@ -336,37 +336,37 @@ struct SimArgs {
     max_no_progress_s: f64,
 
     /// Minimum latitude the estimate may reach, in degrees, before the run is failed. Applied
-    /// by dr, cl and pf
+    /// by cl and pf; dr is expected to diverge and is not bounded
     #[arg(long, default_value_t = strapdown::sim::DEFAULT_HEALTH_LAT_MIN_RAD.to_degrees())]
     health_lat_min_deg: f64,
 
     /// Maximum latitude the estimate may reach, in degrees, before the run is failed. Applied
-    /// by dr, cl and pf
+    /// by cl and pf; dr is expected to diverge and is not bounded
     #[arg(long, default_value_t = strapdown::sim::DEFAULT_HEALTH_LAT_MAX_RAD.to_degrees())]
     health_lat_max_deg: f64,
 
     /// Minimum longitude the estimate may reach, in degrees, before the run is failed. Applied
-    /// by dr, cl and pf
+    /// by cl and pf; dr is expected to diverge and is not bounded
     #[arg(long, default_value_t = strapdown::sim::DEFAULT_HEALTH_LON_MIN_RAD.to_degrees())]
     health_lon_min_deg: f64,
 
     /// Maximum longitude the estimate may reach, in degrees, before the run is failed. Applied
-    /// by dr, cl and pf
+    /// by cl and pf; dr is expected to diverge and is not bounded
     #[arg(long, default_value_t = strapdown::sim::DEFAULT_HEALTH_LON_MAX_RAD.to_degrees())]
     health_lon_max_deg: f64,
 
-    /// Minimum altitude in metres above the ellipsoid before the run is failed. Applied by dr,
-    /// cl and pf
+    /// Minimum altitude in metres above the ellipsoid before the run is failed. Applied by cl
+    /// and pf; dr is expected to diverge and is not bounded
     #[arg(long, default_value_t = strapdown::sim::DEFAULT_HEALTH_ALT_MIN_M)]
     health_alt_min_m: f64,
 
-    /// Maximum altitude in metres above the ellipsoid before the run is failed. Applied by dr,
-    /// cl and pf
+    /// Maximum altitude in metres above the ellipsoid before the run is failed. Applied by cl
+    /// and pf; dr is expected to diverge and is not bounded
     #[arg(long, default_value_t = strapdown::sim::DEFAULT_HEALTH_ALT_MAX_M)]
     health_alt_max_m: f64,
 
-    /// Max velocity vector magnitude in m/s before the run is failed. Applied by dr, cl and pf;
-    /// an unaided dr arc on MEMS data can exceed the default, so raise it for long runs
+    /// Max velocity vector magnitude in m/s before the run is failed. Applied by cl and pf; dr
+    /// is expected to diverge and is not bounded
     #[arg(long, default_value_t = strapdown::sim::DEFAULT_HEALTH_SPEED_MPS_MAX)]
     health_speed_mps_max: f64,
 
@@ -1021,7 +1021,6 @@ fn process_file(
             run_dead_reckoning_file(
                 &records,
                 config.is_enu,
-                &config.health_limits,
                 &config.execution_limits,
                 &output_file,
                 config.generate_plot,
@@ -1708,29 +1707,25 @@ fn run_dead_reckoning(args: &SimArgs, parallel: bool, plot: bool) -> Result<(), 
         info!("Processing file: {}", input_file.display());
         let records = load_records(input_file)?;
         let output_file = resolve_output_path(&args.output, input_file, &csv_files)?;
-        run_dead_reckoning_file(
-            &records,
-            args.enu,
-            &limits.health,
-            &limits.execution,
-            &output_file,
-            plot,
-        )
+        run_dead_reckoning_file(&records, args.enu, &limits.execution, &output_file, plot)
     })
 }
 
 /// Dead-reckon one file's records and write the result.
 ///
 /// Shared by `dr` and a `mode = "dead-reckoning"` scenario file. Both apply the wall-clock
-/// budgets and the position and speed health bounds; the covariance and NIS limits have
-/// nothing to test without a filter. They used to apply none of them.
+/// budgets, which they used to ignore, but not the health bounds. The health bounds exist to
+/// stop a *filter* that has diverged from burning the rest of its budget; an unaided arc on
+/// MEMS data is expected to leave every one of them, and that arc is the result. Applying the
+/// default 500 m/s speed bound made a plain `dr` on a ten-minute synthetic trajectory exit 1
+/// with no output. [`dead_reckoning_with_limits`] still accepts health limits for library
+/// callers who want them.
 ///
 /// # Errors
 /// From [`dead_reckoning_with_limits`], or when the result cannot be written.
 fn run_dead_reckoning_file(
     records: &[TestDataRecord],
     is_enu: bool,
-    health: &HealthLimits,
     execution: &ExecutionLimits,
     output_file: &Path,
     plot: bool,
@@ -1739,7 +1734,7 @@ fn run_dead_reckoning_file(
         "Running dead reckoning simulation on {} records",
         records.len()
     );
-    let results = dead_reckoning_with_limits(records, is_enu, Some(health), Some(execution))?;
+    let results = dead_reckoning_with_limits(records, is_enu, None, Some(execution))?;
     info!("Generated {} navigation results", results.len());
     NavigationResult::to_csv(&results, output_file)?;
     info!("Results written to {}", output_file.display());

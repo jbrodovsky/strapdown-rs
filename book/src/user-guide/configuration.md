@@ -135,8 +135,8 @@ The input and output path rules -- directory versus file, CSV only, refusing to 
 
 `mode = "dr"` is rejected as an unknown variant. Every mode reads `[aiding]`,
 `[execution_limits]`, `[health_limits]` and `[logging]`, with two exceptions. Dead reckoning has
-no aiding, so it ignores `[aiding]`; it applies the execution limits and the position and speed
-health limits, as `dr` does on the command line, but not `cov_diag_max` or the NIS pair. Synthetic
+no aiding, so it ignores `[aiding]`; it applies the execution limits but not `[health_limits]`,
+as `dr` does on the command line. Synthetic
 mode reads only `[synthetic]` and `[logging]`.
 
 ## `[aiding]`

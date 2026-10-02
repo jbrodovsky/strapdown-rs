@@ -4758,7 +4758,8 @@ pub mod health {
         /// this crate. Narrow this to the scenario's real speed range to make it an
         /// effective gate; unaided `dead_reckoning` never calls [`HealthMonitor`], so a run
         /// that deliberately drifts past this bound (see #299) is unaffected.
-        /// `dead_reckoning_with_limits`, which `strapdown-sim dr` runs, does apply it.
+        /// `strapdown-sim dr` does not apply it either: it passes only execution limits to
+        /// `dead_reckoning_with_limits`, which applies health limits when a caller gives them.
         #[serde(default = "default_health_speed_mps_max")]
         pub speed_mps_max: f64,
         /// Largest variance allowed on the covariance diagonal before the run is failed

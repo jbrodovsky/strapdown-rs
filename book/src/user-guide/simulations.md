@@ -171,10 +171,8 @@ because the initial velocity is taken from the first record's noisy `speed` and 
 
 Not every limit can apply to every mode, and each flag's `--help` says which modes apply it:
 
-- **`dr` applies the execution limits and the position and speed bounds**, checked after every
-  propagation step. It carries no covariance and makes no measurement update, so
-  `--health-cov-diag-max` and the NIS pair do not apply to it. An unaided MEMS arc can pass the
-  default 500 m/s speed bound on a long recording; raise `--health-speed-mps-max` for those.
+- **`dr` applies only the execution limits.** The health bounds exist to stop a diverged filter;
+  an unaided MEMS arc is expected to leave them, and that arc is what `dr` is for.
 - **`pf` applies every limit except the NIS pair**: its loop checks the state and covariance
   bounds but computes no NIS, so `--nis-pos-max` and `--nis-pos-consec-fail` have no effect on it.
 - **`ol` runs nothing**, so none of them applies.

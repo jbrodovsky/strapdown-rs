@@ -6,7 +6,7 @@ output is the free-inertial solution, with all of its drift.
 
 ```bash
 strapdown-sim syn -o synthetic.csv --duration-s 600 --seed 42
-strapdown-sim dr -i synthetic.csv -o results/dr.csv --health-speed-mps-max 1000
+strapdown-sim dr -i synthetic.csv -o results/dr.csv
 ```
 
 ```console
@@ -16,11 +16,7 @@ strapdown-sim dr -i synthetic.csv -o results/dr.csv --health-speed-mps-max 1000
 [INFO] - Results written to results/dr.csv
 ```
 
-(Timestamps trimmed from the log lines.) `--health-speed-mps-max 1000` is there because `dr`
-applies the health limits: on this ten-minute file the unaided velocity passes the default
-500 m/s about 580 s in, and without the flag the run stops with
-`Error: OutOfRange { what: "speed", value: 500.12376354277296, min: 0.0, max: 500.0 }` and writes
-no file. The flags are only the shared ones -- `-i`, `-o`,
+(Timestamps trimmed from the log lines.) The flags are only the shared ones -- `-i`, `-o`,
 `--enu` and the limit flags -- described in [Running Simulations](./simulations.md). `dr`
 takes no seed, because nothing in it is random.
 
@@ -51,13 +47,13 @@ Three practical consequences of having no filter:
   and fails on it. Blanking a single `acc_x` cell in a synthetic file stops the run with
   `Error: NonFinite { what: "filter state" }`, where `cl` on the same file logs a
   tolerated 0.2 s gap and finishes.
-- **The position and speed limits apply.** `dr` checks the wall-clock budgets
-  (`--max-wall-clock-*`, `--max-no-progress-s`) and the latitude, longitude, altitude and speed
-  bounds (`--health-lat-*`, `--health-lon-*`, `--health-alt-*`, `--health-speed-mps-max`) after
-  every step, as the filters do, and a run that leaves them stops with an error and writes no
-  file. The default speed bound is 500 m/s, which a long unaided MEMS arc can pass; raise it
-  when the drift itself is what you want to see. `--health-cov-diag-max` and `--nis-pos-*` do
-  not apply: there is no covariance and no measurement update.
+- **Only the wall-clock limits apply.** `dr` checks the wall-clock budgets
+  (`--max-wall-clock-*`, `--max-no-progress-s`), but none of the health bounds
+  (`--health-*`, `--nis-pos-*`). Those exist to stop a diverged *filter* from wasting the rest of
+  its budget. An unaided MEMS arc is expected to leave them -- on the ten-minute file above its
+  velocity error passes 500 m/s -- and that arc is the result. A non-finite state still stops
+  the run. Library callers who want the bounds can pass them to
+  `sim::dead_reckoning_with_limits`.
 - **The frame check still runs.** Declaring the wrong frame is the one mistake that would make
   dead reckoning fail at 2 g rather than drift, so it is refused before propagation exactly as in
   the other modes; see [Input Data Format](./data-format.md#frame-convention).

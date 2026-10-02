@@ -238,10 +238,7 @@ The gated comparison across scenarios, including the RBPF's own row, is on
 (one fix a minute) in which it diverges where the EKF does not.
 
 For the unaided baseline, run
-`strapdown-sim dr -i drive.csv -o dr_out.csv --health-speed-mps-max 1000`. The raised speed
-limit is needed because `dr` applies the health limits, and the unaided velocity error passes the
-default 500 m/s before the ten minutes are up; without it the run stops with an `OutOfRange`
-error on `speed` and writes nothing. Scored the same way, it reports no consistency metrics (a
+`strapdown-sim dr -i drive.csv -o dr_out.csv`. Scored the same way, it reports no consistency metrics (a
 dead-reckoning run has no covariance) and a horizontal error that reaches 108.8 km by the end, a
 horizontal RMSE of 41.3 km, on this consumer-grade IMU.
 

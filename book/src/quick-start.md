@@ -130,14 +130,13 @@ elements plus the barometric bias. See [Kalman Filters](./filters/kalman.md).
 ## 4. Dead reckoning
 
 ```bash
-strapdown-sim --log-level warn dr -i synthetic.csv -o dr.csv --health-speed-mps-max 1000
+strapdown-sim --log-level warn dr -i synthetic.csv -o dr.csv
 ```
 
 `dr` propagates the IMU from the first record with no aiding at all, so its error grows without
-bound. It applies the same health limits as the filters, and on this file the unaided velocity
-passes the default 500 m/s ceiling about 580 s in: without `--health-speed-mps-max 1000` the run
-stops with `Error: OutOfRange { what: "speed", value: 500.12376354277296, min: 0.0, max: 500.0 }`,
-exits 1 and writes no file. (`ol` is a different subcommand, reserved for an open-loop mode that is **not
+bound: on this file the unaided velocity error passes 500 m/s before the ten minutes are up.
+That divergence is the result, so `dr` applies the wall-clock budgets but none of the health
+bounds the filters are held to. (`ol` is a different subcommand, reserved for an open-loop mode that is **not
 implemented**: it writes no output. Use `dr` for dead reckoning.)
 
 ## 5. The particle filter
