@@ -1331,13 +1331,16 @@ impl MagneticAnomalyMeasurement {
 
 /// Combined gravity and magnetic anomaly measurement model
 ///
-/// When both gravity and magnetic anomaly maps are available, this model jointly processes
-/// them as a single 2-dimensional measurement update. This enables cross-correlation between
-/// the two modalities and provides a more statistically efficient update than processing them
-/// sequentially as independent 1D measurements.
+/// When both gravity and magnetic anomaly maps are available, this model processes them as a
+/// single 2-dimensional measurement update.
 ///
 /// The measurement vector is `[gravity_anomaly, magnetic_anomaly]` and the noise covariance
-/// is block-diagonal (assumes independence between gravity and magnetic noise).
+/// `R` is **diagonal**: the two sensors' noises are modelled as independent, with no
+/// cross-correlation term. The two predicted anomalies are still correlated through the state
+/// they share, so the innovation covariance `H P H^T + R` has off-diagonal entries; but with a
+/// diagonal `R` a linearized joint update is equivalent to two sequential 1-D updates, so this
+/// is a convenience (one update, one sigma-point pass in the UKF) rather than a statistically
+/// stronger model.
 #[derive(Clone, Debug)]
 pub struct CombinedGeophysicalMeasurement {
     /// Gravity anomaly measurement model
@@ -1453,18 +1456,14 @@ pub struct GeophysicalAiding {
 /// * `records` - Vector of test data records
 /// * `cfg` - Aiding configuration: the GNSS schedule and fault model, plus the barometer
 ///   and magnetometer schedules
-/// * `gravity_map` - Optional gravity map for measurements
-/// * `gravity_noise_std` - Standard deviation for gravity measurement noise (if `gravity_map` is Some)
-/// * `magnetic_map` - Optional magnetic map for measurements
-/// * `magnetic_noise_std` - Standard deviation for magnetic measurement noise (if `magnetic_map` is Some)
-/// * `geo_interval_s` - Seconds *between* geophysical measurements, so a larger value means
-///   fewer of them (None for every available measurement)
-/// * `bias_layout` - Where the filter that will consume this stream carries its map-bias
-///   states, or `None` when it carries none. This is not inferable from the maps: loading a
-///   gravity map says a gravity *measurement* is available, not that the filter estimating
-///   from it has a state to absorb that map's bias. Getting it from the caller, who knows
-///   the filter, is what keeps a stream built for one filter from being read against
-///   another's states -- see [`GeoBiasLayout`] and [`resolve_bias_index`].
+/// * `is_enu` - The local-level frame the records are expressed in, as for
+///   [`strapdown::messages::build_event_stream`]
+/// * `geophysical` - The maps, their noise, the measurement interval and the filter's bias
+///   layout; see [`GeophysicalAiding`]. `bias_layout` in particular is not inferable from the
+///   maps: loading a gravity map says a gravity *measurement* is available, not that the
+///   filter estimating from it has a state to absorb that map's bias. Getting it from the
+///   caller, who knows the filter, is what keeps a stream built for one filter from being
+///   read against another's states -- see [`GeoBiasLayout`] and [`resolve_bias_index`].
 ///
 /// # Errors
 /// [`StrapdownError::InvalidConfiguration`] if `records` is empty. The first record supplies
