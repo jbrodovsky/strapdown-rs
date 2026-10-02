@@ -1,0 +1,95 @@
+\section{Geophysical Anomaly Measurements}
+\label{sec:geophysical}
+
+\subsection{Maps}
+
+Two global anomaly maps are used, retrieved and cropped around each drive with the Generic Mapping Tools \citep{GMT} and interpolated bilinearly within the navigation software (\Cref{fig:maps}). The magnetic map is the World Digital Magnetic Anomaly Map (WDMAM) \citep{wdmam} on its 3~arc-minute grid, about 5.6~km at the equator, which is referenced to an altitude of 5~km; upward continuation to that altitude attenuates the short-wavelength crustal signal that a ground vehicle would observe. The gravity map is the free-air anomaly grid of \citet{SANDWELL20211059} at 1~arc-minute, about 1.85~km. Over land it is filled from the Earth Gravitational Model 2008 \citep{EGM2008}, whose coarser input limits its effective resolution along these drives to roughly 9~km. Along the 27 tracks, the median magnitude of the map gradient is 1.41~mGal/km for gravity and 6.28~nT/km for the magnetic field, and the median along-track standard deviation of the map is 14.3~mGal and 73.3~nT (\Cref{tab:error-model}). These two numbers, the map's gradient and its along-track variation, are the signal that any anomaly measurement must resolve.
+
+\begin{figure}[htb]
+  \centering
+  \includegraphics[width=\textwidth]{fig_maps}
+  \caption{The Anomaly Maps and the 27 MEMS-Nav Tracks. Each panel is the union of the map tiles cropped around the individual drives.}
+  \label{fig:maps}
+\end{figure}
+
+\subsection{Measurement Models}
+
+The smartphone records a three-axis gravity vector and a three-axis magnetic field, and only their norms enter the anomaly. Two properties of these vectors matter below. The gravity vector \(\mathbf{g}_\text{obs}\) is not a raw accelerometer measurement but the operating system's fused estimate of gravity, intended to exclude the vehicle's kinematic acceleration. The magnetic vector \(\mathbf{B}_\text{obs}\) is the operating system's calibrated field, from which a hard-iron offset estimated by the phone has already been removed. The gravity anomaly, in mGal, is
+\begin{equation}
+  z_g = 10^{5}\left[\lVert\mathbf{g}_\text{obs}\rVert - \gamma(L, h) + E\right], \qquad
+  E = 2\omega_{ie} v_E \cos L + \frac{v_N^2}{R_N + h} + \frac{v_E^2}{R_E + h},
+  \label{eqn:gravity-anomaly-obs}
+\end{equation}
+where \(\gamma\) is Somigliana normal gravity at the observation height, \(E\) is the E\"{o}tv\"{o}s correction, the vertical component of the Coriolis and transport-rate accelerations of a platform moving over the rotating Earth \citep{groves_ch5}, and \(R_N\) and \(R_E\) are the meridian and transverse radii of curvature. A moving gravimeter reads less than local gravity by \(E\), so the correction is added. Because \(h\) is ellipsoidal height, \(z_g\) is strictly a gravity disturbance, which differs from the map's free-air anomaly by a near-constant offset that the bias state absorbs. The magnetic anomaly, in nT, is
+\begin{equation}
+  z_m = \lVert\mathbf{B}_\text{obs}\rVert - F_\text{WMM}(L, \lambda, h, t),
+  \label{eqn:magnetic-anomaly-obs}
+\end{equation}
+where \(F_\text{WMM}\) is the total intensity of the World Magnetic Model at the epoch of the recording, WMM2020 before 2025 and WMM2025 thereafter \citep{wmm2020, wmm}. Both anomalies are formed at the filter's own estimate of position and velocity, and both are predicted as the map value at the estimated position plus a bias state,
+\begin{equation}
+  \hat{z} = \mathcal{M}(L, \lambda) + b,
+  \label{eqn:anomaly-prediction}
+\end{equation}
+where \(\mathcal{M}\) is the bilinear interpolation of the map. In the Kalman filters \(b\) follows a random walk; in the RBPF it is the sum \(V_k + c_k\) of \Cref{eqn:rbpf-partition}. Anomaly updates are applied once per second, without an innovation gate, as a single two-dimensional update with diagonal \(\mathbf{R}\) when both channels are enabled.
+
+\paragraph{EKF.} Because \(\hat{z}\) depends on position only, the measurement Jacobian is non-zero only in the latitude and longitude columns and the bias column. The two map derivatives are central finite differences of the bilinear interpolant with a step of \(10^{-6}\)~deg, converted from degrees to the radians the state holds. This Jacobian omits the dependence of the observation itself on the state, through the reference fields and the motion correction. Along these drives the WMM intensity changes by about 5~nT/km, normal gravity by about 0.8~mGal/km northward, the E\"{o}tv\"{o}s term by about 11~mGal per m/s of east velocity, and normal gravity by 0.31~mGal per meter of height. A complete Jacobian would add the information carried by these terms to each update, so the benefit reported for an informative observation in \Cref{sec:results-dedicated} is plausibly conservative.
+
+\paragraph{UKF.} The UKF passes its sigma points through \Cref{eqn:anomaly-prediction}, so the map nonlinearity enters through the spread of the sigma points rather than through a local gradient.
+
+\paragraph{RBPF.} The observation is formed once at the ensemble mean, as the Kalman filters form it, and the residual of particle \(i\) is
+\begin{equation}
+  r^i = z - \left[\mathcal{M}(\bar{L} + \delta L^i,\,\bar{\lambda} + \delta\lambda^i) + \bar{V} + \bar{c} + V^i + c^i\right],
+  \label{eqn:rbpf-map-residual}
+\end{equation}
+where barred quantities are the nominal. The map is evaluated at each particle's own horizontal position, which is where the particle filter could, in principle, represent a multimodal likelihood that a Gaussian filter cannot. A particle that leaves the map tile receives zero weight. The dependence of the gravity observation on velocity through the E\"{o}tv\"{o}s term is not modeled in \(\mathbf{C}\).
+
+\subsection{Error Models}
+\label{sec:error-models}
+
+\paragraph{Smartphone observations.} The error model of each smartphone observation is measured from the data. For each drive, \Cref{eqn:gravity-anomaly-obs} or \Cref{eqn:magnetic-anomaly-obs} is formed along the recorded GNSS track and differenced against the map at the same positions. The pooled median residual seeds the bias state, the median of the within-drive robust standard deviations sets \(\sqrt{R}\), and the spread of the per-drive medians sets the bias prior, which the bias random walk rebuilds over one hour. The signal-to-noise ratio of drive \(j\) is
+\begin{equation}
+  \mathrm{SNR}_j = \frac{\sigma_{\mathcal{M},j}}{1.4826\,\mathrm{MAD}(\mathbf{r}_j)},
+  \label{eqn:snr}
+\end{equation}
+where \(\sigma_{\mathcal{M},j}\) is the standard deviation of the map along the drive, \(\mathbf{r}_j\) the residuals, and MAD the median absolute deviation. Because the spread is taken about the drive's own median, a bias that is constant over the drive does not lower the SNR; it is left to the bias state. An SNR below one means that the residual scatter exceeds the variation of the map along the track, so that a single measurement cannot distinguish one position on the track from another. Calibrating \(\mathbf{R}\) against the GNSS track is a best case for the filter; it cannot make an observation more informative than it is.
+
+\begin{table}[htb]
+  \caption{Anomaly Error Models. Smartphone values are measured from the residuals against the maps; dedicated-sensor values are taken from the datasheet models of \Cref{tab:sensors}. Signal \(\sigma\) is the median over drives of \(\sigma_{\mathcal{M},j}\); SNR is the median over drives of \Cref{eqn:snr}, with the best drive in parentheses.}
+  \label{tab:error-model}
+  \centering
+  \small
+  \input{tables/error_model.tex}
+\end{table}
+
+\paragraph{Dedicated sensors.}
+\label{sec:dedicated-sensors}
+To separate the observation from the estimator and the IMU, a second set of inputs replaces only the norms of the recorded gravity and magnetic vectors with simulated readings of two commercially available low-cost sensors (\Cref{tab:sensors}). For every record the synthetic reading is the reference field at the recorded GNSS position and velocity, plus the map at that position, plus a sensor error; it is constructed by inverting \Cref{eqn:gravity-anomaly-obs,eqn:magnetic-anomaly-obs}, so that a filter at the recorded GNSS state recovers exactly the map value plus the sensor error. Vector directions are kept, so the heading observation, the IMU data, the barometer, the degraded GNSS stream, the filter configurations, and the random seed are unchanged. The magnetometer is a PNI RM3100 magneto-inductive sensor \citep{rm3100}, whose noise averaged to the 10~Hz record rate is 3.9~nT, consistent with the 4.7~nT at 10~Hz measured by \citet{regoli2018investigation}. The gravimeter is an Analog Devices ADXL355 MEMS accelerometer read as a scalar gravimeter \citep{adxl355}, whose noise density of 25~\(\mu\)g/\(\sqrt{\text{Hz}}\) gives 55~mGal per record. Each sensor also draws a turn-on bias per drive, a Gauss--Markov bias instability, and a residual temperature term; the temperature terms assume 90\% compensation and a cabin temperature varying by 1~\(^\circ\)C, and are the only parameters not taken from a datasheet or a published characterization. Gravity readings are withheld wherever the bracketing GNSS fixes are more than 2~s apart, since the velocity needed to invert the E\"{o}tv\"{o}s term cannot be interpolated across a longer gap. The filters use the datasheet error model directly: a zero bias seed, \(\sqrt{R}\) equal to the per-record white noise, and a bias prior and random walk matched to the turn-on, instability, and temperature terms. In the RBPF the bias splits into a variation of 11.4~mGal with an 826-s correlation time and 1.71~nT with 3{,}597~s, and a constant that takes the remainder of the prior.
+
+Installation is deliberately ideal: the vehicle's magnetic field is absent, its kinematic vertical acceleration is removed exactly, and the maps are exact. The dedicated-sensor arm is therefore a sensor-limited best case rather than a prediction of a fielded system, and any benefit it shows is an upper bound on what the same sensor would provide in a vehicle.
+
+\begin{table}[htb]
+  \caption{Error Models of the Simulated Dedicated Sensors, per 10~Hz Record. Gauss--Markov terms are given as a standard deviation and a correlation time.}
+  \label{tab:sensors}
+  \centering
+  \small
+  \begin{tabular}{lll}
+    \toprule
+    Error term & ADXL355 gravimeter & RM3100 magnetometer \\
+    \midrule
+    Unit price & \$77 & \$25 \\
+    White noise & 54.8~mGal & 3.92~nT \\
+    Turn-on bias & 8{,}826~mGal (9~mg) & 17.0~nT \\
+    Bias instability & 5.6~mGal, 300~s & 1.7~nT, 3{,}600~s \\
+    Temperature & 10.0~mGal, 1{,}800~s & 0.05~nT, 1{,}800~s \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\Cref{fig:residuals} compares the residual spread of both sets of observations with the variation of the map along the tracks. The smartphone's noise exceeds the map signal by an order of magnitude for gravity and by two orders of magnitude for the magnetic field, and no drive reaches an SNR of one in either channel (\Cref{tab:error-model}). The simulated RM3100 reaches an SNR above one on 24 of 27 drives. The simulated ADXL355 doubles the smartphone's gravity SNR but, at 0.26, still falls well short of one. Before any filter is run, the error models therefore predict no benefit from the smartphone observations or the ADXL355, and some benefit from the RM3100.
+
+\begin{figure}[htb]
+  \centering
+  \includegraphics[width=\textwidth]{fig_residuals}
+  \caption{Residuals of the Anomaly Observations Against the Maps. Each drive's residuals are taken about their own median; the outline is the map anomaly along the same tracks, each drive's mean removed. The robust \(\sigma\) is the pooled \(1.4826\,\mathrm{MAD}\) of the residuals; the pooled map \(\sigma\) is larger than the per-drive median signal \(\sigma\) of \Cref{tab:error-model} because it mixes drives.}
+  \label{fig:residuals}
+\end{figure}

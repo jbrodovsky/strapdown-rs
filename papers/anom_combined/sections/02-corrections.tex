@@ -1,0 +1,42 @@
+\section{Corrections to the Conference Results}
+\label{sec:corrections}
+
+This section documents why the results of \citet{anom-ukf} and \citet{anom-pf} are withdrawn. Each defect below was confirmed by inspecting the software revisions used to produce those papers, and each has since been fixed in \texttt{strapdown-rs} with a regression test that fails if it is reintroduced. \Cref{tab:conference-vs-journal} summarizes how the experiment of this paper differs from those of the conference papers.
+
+\subsection{Anomaly Observations That Carried No Map Information}
+
+The gravity anomaly observation was formed as \(\lVert\mathbf{g}_\text{obs}\rVert - \gamma - E\) in m/s\(^2\) and then differenced against a map in mGal, a factor of \(10^5\) apart. Normal gravity \(\gamma\) was evaluated with the latitude in radians passed to a function that expects degrees, which places every observation at the equator and introduces an error of about \(-2{,}100\)~mGal at 40\(^\circ\)~N, and at the ellipsoid surface rather than at the observation height, which omits the free-air gradient of 0.31~mGal/m. The E\"{o}tv\"{o}s correction \(E\) was subtracted rather than added, doubling rather than removing the motion term, and used the radius of the parallel in place of the radii of curvature. The magnetic anomaly observation subtracted the World Magnetic Model (WMM) total intensity expressed in tesla, about \(5\times10^{-5}\), from an observed intensity in microtesla, so that no core field was removed, and differenced the result against a map in nanotesla.
+
+In both channels the quantity passed to the filter was therefore a number of order \(10^{-2}\) to \(10^{1}\) in the units of a map whose anomalies span tens to hundreds of units. The observation was effectively constant, and each update pulled the solution toward positions at which the map value plus the bias state matched that constant. The residual statistics reported in the conference papers, a magnetic standard deviation of 41{,}303~nT among them, describe this defective observation, not the sensors.
+
+\subsection{Comparisons Against Baselines That Differed or Had Diverged}
+
+In both conference papers the aided and unaided runs were produced by different code paths: the aided runs by an event-stream builder in the geophysical module that had diverged from the one used for the unaided runs. In the software used for \citet{anom-pf}, the unaided stream contained a magnetometer heading update that the aided stream lacked, so the two runs differed in more than the anomaly measurement. The GNSS error model was parameterized per fix rather than per unit time, which made its steady-state wander depend on the fix interval.
+
+The RBPF paper's headline improvement of about 1{,}566~km is a difference against an unaided RBPF whose own mean horizontal RMSE over the 21 drives was about 1{,}572~km, larger than any of the routes. Against the unaided UKF of the same paper, whose mean RMSE was about 7.1~km, the aided RBPF was better on 11 to 14 of 21 drives by RMSE and worse by per-drive median error. Neither comparison isolates the effect of the anomaly measurement. The RBPF of that paper also differed from the one evaluated here: each particle carried its own Kalman filter over 14 linear states including IMU biases, resampling was triggered by the effective sample size, and nothing prevented the cloud from collapsing onto a single ancestor.
+
+\begin{table}[htb]
+  \caption{The Experiment of This Paper Compared with Those of the Conference Papers}
+  \label{tab:conference-vs-journal}
+  \centering
+  \small
+  \begin{tabular}{p{0.20\textwidth}p{0.35\textwidth}p{0.37\textwidth}}
+    \toprule
+    & Conference papers \citep{anom-ukf, anom-pf} & This paper \\
+    \midrule
+    Drives & 13 (UKF) and 21 (RBPF) & 27, all filters \\
+    Record rate & 1~Hz & 10~Hz inertial, about 1~Hz GNSS \\
+    GNSS degradation & AR(1) per fix, \(\rho\) = 0.99 / 0.95, \(\sigma\) = 5~m / 5~m/s, \(R\) inflated by \(15^2\) & One fix per 60~s; first-order Gauss--Markov errors, 35~m / 500~s and 1.5~m/s / 100~s; \(R\) inflated by \(5^2\) \\
+    Gravity observation & Unit, latitude, height and E\"{o}tv\"{o}s defects (above) & \Cref{eqn:gravity-anomaly-obs} \\
+    Magnetic observation & Raw intensity in \(\mu\)T, no core field removed & \Cref{eqn:magnetic-anomaly-obs}, WMM2020/2025 \\
+    Anomaly error model & Statistics of the defective observation & Measured against the maps (\Cref{tab:error-model}) \\
+    Filters & UKF; RBPF with a Kalman filter per particle & EKF, UKF; RBPF after \citet{canciani2017airborne} \\
+    Comparison & Aided vs.\ separately built unaided runs & Aided vs.\ the same filter's unaided run on an identical stream; bootstrap CI and Wilcoxon test \\
+    Control experiment & None & Simulated dedicated sensors (\Cref{sec:dedicated-sensors}) \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{What Survives}
+
+The software framework, the dataset, and the question posed by the conference papers stand. Their conclusions do not: with corrected observations the smartphone's sensors provide no benefit to any filter (\Cref{sec:results-phone}), and the particle filter, far from being the best-suited estimator, does not maintain a solution under the degraded GNSS scenario used here (\Cref{sec:results-rbpf}). Readers who have cited the conference papers for a quantitative benefit of smartphone-based anomaly aiding should cite this paper instead.

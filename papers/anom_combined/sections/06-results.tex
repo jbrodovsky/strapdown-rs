@@ -1,0 +1,112 @@
+\section{Results}
+\label{sec:results}
+
+\input{tables/phone_numbers.tex}
+
+\subsection{Unaided Baselines}
+\label{sec:results-baselines}
+
+\Cref{tab:baselines} and \Cref{fig:baselines} give the horizontal RMSE of each unaided filter with full and degraded GNSS. With full GNSS the three filters track the recorded solution closely, with medians of \numekffullmedian~m for the EKF, \numukffullmedian~m for the UKF, and \numrbpffullmedian~m for the RBPF, consistent with loosely coupled integration of consumer-grade sensors. The poor-quality 2025-06-14 drive is the worst for all three. The RBPF also diverges on one drive, 2023-08-04, that both Kalman filters hold to about 4~m.
+
+With one fix per minute, the medians rise to \numekfdegradedmedian~m for the EKF and \numukfdegradedmedian~m for the UKF, a factor of about a hundred, and no drive falls below 280~m. The two Kalman filters agree to within 5\% on most drives, and where they differ the UKF is usually the better. This two-order-of-magnitude gap between degraded and full GNSS is what anomaly aiding is asked to close. The RBPF does not maintain a solution under this schedule: its horizontal RMSE exceeds 10~km on 24 of the 25 drives that ran to completion, with a median of \numrbpfdegradedmedian, and two drives were stopped by the 5{,}000~m/s health limit. \Cref{sec:results-rbpf} examines this failure.
+
+\begin{table}[htb]
+  \caption{Horizontal RMSE of the Unaided Filters Across Drives. \(n\) is the number of drives that ran to completion.}
+  \label{tab:baselines}
+  \centering
+  \small
+  \input{tables/baselines.tex}
+\end{table}
+
+\begin{figure}[htb]
+  \centering
+  \includegraphics[width=\textwidth]{fig_baselines}
+  \caption{Horizontal RMSE of Each Unaided Filter on Each Drive, with Full GNSS and with One Fix per Minute. Bars mark the medians; the horizontal axis is logarithmic.}
+  \label{fig:baselines}
+\end{figure}
+
+\subsection{Aiding with the Smartphone's Own Observations}
+\label{sec:results-phone}
+
+\Cref{tab:aiding} summarizes the paired comparisons for the two Kalman filters, and \Cref{fig:ratios} shows the per-drive ratios. With the smartphone's observations, neither filter changes measurably under any aiding channel. The median ratio lies between 1.000 and 1.001 in all six configurations, no 95\% interval admits a change larger than 0.3\%, and no comparison is significant (\(p \geq 0.13\)). The largest median per-drive change is an increase of half a meter on a degraded error of several hundred meters. The individual ratios that depart visibly from one in \Cref{fig:ratios}(a) belong to the EKF on a few drives whose degraded-GNSS solution is sensitive to small perturbations of any kind (\Cref{sec:experiment}); they fall on both sides of one. \Cref{fig:example}(a) shows a representative drive, on which the aided and unaided EKF errors are indistinguishable at the scale of the dedicated-sensor result.
+
+This is the outcome the error models predict. With a measurement noise one to two orders of magnitude larger than the map signal, the Kalman gain of the anomaly update is close to zero, and both filters correctly assign the observation almost no weight.
+
+\begin{table}[htb]
+  \caption{Effect of Anomaly Aiding on the Kalman Filters Under Degraded GNSS. Ratio is the median over 27 drives of the aided to unaided horizontal RMSE of the same filter, with its 95\% bootstrap interval; B/W counts drives improved and worsened; \(p\) is from a two-sided Wilcoxon signed-rank test. Ratios below one are improvements.}
+  \label{tab:aiding}
+  \centering
+  \small
+  \setlength{\tabcolsep}{4pt}
+  \input{tables/aiding.tex}
+\end{table}
+
+\begin{figure}[htb]
+  \centering
+  \includegraphics[width=\textwidth]{fig_ratios}
+  \caption{Per-Drive Ratio of Aided to Unaided Horizontal RMSE for the Kalman Filters. Points are drives; the black marks are the median and its 95\% bootstrap interval. The vertical scales of the two panels differ.}
+  \label{fig:ratios}
+\end{figure}
+
+\subsection{Why the Smartphone Observations Carry No Map Information}
+\label{sec:results-cause}
+
+The null result is explained by how the smartphone forms its readings, without reference to any filter (\Cref{fig:phone-sensors}).
+
+\paragraph{Gravity.} The recorded vector is the operating system's fused estimate of gravity, and its norm is pinned to a device constant: on the median drive, \phonegravpinned\% of records lie within 1~mGal of the drive's maximum, which is 9.81000~m/s\(^2\) on the Google Pixel devices and the standard gravity of 9.80665~m/s\(^2\) on most others. The excursions below that ceiling follow the vehicle's dynamics rather than the map. Averaged over 60-s blocks, the norm correlates with the map at a median of \(r = \phonegravcorr\) with a regression slope of \(\phonegravslope\), where a gravimeter would give a slope of one. Because the norm is effectively constant, the anomaly of \Cref{eqn:gravity-anomaly-obs} reduces to a function of the filter's own latitude, height, and velocity, through normal gravity and the E\"{o}tv\"{o}s term: it is a biased velocity pseudo-measurement rather than a map observation. The raw accelerometer offers no alternative. Projected onto the vertical, corrected for normal gravity, the E\"{o}tv\"{o}s term, and barometrically derived vertical acceleration, and averaged over 120 to 600~s, its residual remains 50 to 90 times the map signal \citep{brodovsky2026dissertation}.
+
+\paragraph{Magnetic field.} The magnetometer is dominated by the vehicle. A smartphone fixed in a car yaws only with the car, so a field fixed to the vehicle adds a heading-dependent term to the measured intensity that a scalar bias state cannot follow. Fitting the intensity anomaly of \Cref{eqn:magnetic-anomaly-obs} to the vehicle's course over ground explains a median \phonemagrsq\% of its variance, with a heading-dependent amplitude of \phonemagamplitude~\(\mu\)T. The intensity varies along a drive with a median standard deviation of \phonemagspread~\(\mu\)T, against \phonemagmapsd~nT for the map along the same track. This is despite the operating system's own calibration, which removes a hard-iron offset of 67 to 325~\(\mu\)T per recording \citep{brodovsky2026dissertation}.
+
+\begin{figure}[htb]
+  \centering
+  \includegraphics[width=\textwidth]{fig_phone_sensors}
+  \caption{The Smartphone's Gravity and Magnetic Observations on Drive 2025-03-01 16:46:39, Against the Map Along the Same Track. (a) The norm of the reported gravity vector, in mGal below its maximum; (b) the magnetic intensity anomaly, in \(\mu\)T. Both maps are drawn with their mean removed and on the same scale as the observation.}
+  \label{fig:phone-sensors}
+\end{figure}
+
+The consequence for navigation is captured by a localization bound: the measurement noise divided by the median gradient of the map along the track, which is the position uncertainty that a single update can resolve. \Cref{fig:bound} gives this bound for each observation. For the smartphone it is about 90~km for gravity and 1{,}200~km for the magnetic field, two to three orders of magnitude larger than the 0.44~km median error of the degraded solution. An observation that resolves position far less precisely than the solution already holds cannot improve it.
+
+\begin{figure}[htb]
+  \centering
+  \includegraphics[width=\textwidth]{fig_bound}
+  \caption{Per-Update Localization Bound of Each Observation: Measurement Noise \(\sqrt{R}\) Divided by the Median Map Gradient Along the 27 Tracks (1.41~mGal/km, 6.28~nT/km). The vertical line is the median horizontal RMSE of the unaided EKF under degraded GNSS.}
+  \label{fig:bound}
+\end{figure}
+
+\subsection{Aiding with Dedicated Sensors}
+\label{sec:results-dedicated}
+
+The right half of \Cref{tab:aiding} and \Cref{fig:ratios}(b) give the same comparisons with the simulated dedicated sensors, with the IMU, the degraded GNSS, the filters, and the seed unchanged. With the RM3100 magnetometer, magnetic aiding improves the EKF on \numdedicatedekfmagbetter{} of 27 drives and the UKF on \numdedicatedukfmagbetter{}, with median ratios of \numdedicatedekfmagratio{} and \numdedicatedukfmagratio{} (\(p < 10^{-3}\) for both) and median reductions of \numdedicatedekfmagdmed~m and \numdedicatedukfmagdmed~m. Because the full-GNSS error is only a few meters, a ratio of 0.89 closes about a tenth of the gap between degraded and full-GNSS performance. \Cref{fig:example}(b) shows the drive whose EKF ratio lies at the median of the dataset: the aided error is lower for most of the drive, with short intervals in which it is higher, and the RMSE falls by 52~m. Gravity aiding with the ADXL355 does not help either filter; the EKF ratio is \numdedicatedekfgravratio{} and the UKF ratio \numdedicatedukfgravratio{}, both worse on 19 of 27 drives, and only the UKF result reaches marginal significance (\(p = \numdedicatedukfgravp\)). Combined aiding performs as magnetic aiding alone, because both filters assign the uninformative gravity channel almost no weight.
+
+\begin{figure}[htb]
+  \centering
+  \includegraphics[width=\textwidth]{fig_example}
+  \caption{Aided Minus Unaided Horizontal Error of the EKF on Drive 2025-03-01 16:46:39, with Magnetic Aiding from (a) the Smartphone Magnetometer and (b) the Simulated RM3100. Both panels share one vertical scale. Green intervals are those in which aiding reduced the error.}
+  \label{fig:example}
+\end{figure}
+
+The same filters, inertial data, and GNSS stream that were unaffected by the smartphone observations therefore benefit consistently once the magnetic observation carries map information. Because the IMU was held fixed, this places the cause of the smartphone result in the observations rather than in the consumer-grade inertial sensor or the estimators. The size of the gain agrees with the localization bound of \Cref{fig:bound}: the RM3100's bound of about 0.6~km is comparable to the 0.44~km degraded error, so each update constrains position only to about the accuracy the INS already holds, which predicts a consistent but modest improvement. The ADXL355's bound of about 40~km predicts none.
+
+\subsection{The Particle Filter Under Degraded GNSS}
+\label{sec:results-rbpf}
+
+The RBPF loses track under the 60-s GNSS schedule with or without aiding, so the effect of aiding on it cannot be assessed. \Cref{tab:rbpf} lists its paired results for completeness; the aided and unaided errors are both hundreds of kilometers, set by the divergence rather than by the anomaly measurement, and the ratios are not interpretable. \Cref{fig:rbpf} shows the failure on the example drive. Within the first minutes the RBPF's error leaves the range of the Kalman filters' and never returns, while its reported horizontal standard deviation stays at tens to hundreds of meters, the same order as the EKF's actual error. Across the drives, the error first exceeds 10~km after a median of 6~minutes, and over the second half of each drive the reported standard deviation has a median of 74~m against a median error of 880~km. The filter is not merely inaccurate but confidently wrong by four orders of magnitude.
+
+\begin{table}[htb]
+  \caption{Paired Results of the RBPF Under Degraded GNSS, Reported for Completeness. Both aided and unaided runs have diverged, so the comparison does not measure the anomaly measurement. \(n\) counts drives on which both runs completed.}
+  \label{tab:rbpf}
+  \centering
+  \small
+  \input{tables/rbpf.tex}
+\end{table}
+
+\begin{figure}[htb]
+  \centering
+  \includegraphics[width=\textwidth]{fig_rbpf}
+  \caption{Horizontal Error and Reported Uncertainty of the Unaided RBPF on Drive 2025-03-01 16:46:39 with One GNSS Fix per Minute, Against the Unaided EKF on the Same Stream and the RBPF with Full GNSS. The vertical axis is logarithmic.}
+  \label{fig:rbpf}
+\end{figure}
+
+That signature is particle deprivation. Horizontal position lives only in the particles, so a GNSS fix can correct it only by reweighting and resampling among them. Once the drift between fixes carries the true error outside the cloud, which is tens of meters wide, each fix can move the estimate by at most about one cloud width, and the filter never re-acquires. With a fix every second the drift never leaves the cloud, which is why the same filter has the lowest median error of the three with full GNSS. Why the cloud drifts out in the first place is not established. The RBPF, like the filter of \citet{canciani2017airborne}, estimates no IMU biases, so its nominal drifts between fixes on errors that the Kalman filters estimate and remove; but adding bias states also diverged, so their absence is not a demonstrated cause. A second candidate is the transfer of velocity uncertainty from the shared covariance into the particle spread described in \Cref{sec:rbpf}, which resampling then discards, and which over 60-s epochs may recur at every fix.
+
+The RBPF is also far less repeatable than the Kalman filters. The last-bit change in the heading input that distinguishes the two sets of unaided runs (\Cref{sec:experiment}) changes the RBPF's degraded-GNSS RMSE by more than 1\% on 22 of 25 drives, with a median change of 20\%, against one drive for the EKF and none for the UKF.
