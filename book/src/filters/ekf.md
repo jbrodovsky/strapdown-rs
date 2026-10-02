@@ -1,174 +1,83 @@
 # Extended Kalman Filter (EKF)
 
-The Extended Kalman Filter (EKF) is one of the primary navigation filters available in Strapdown-rs. It provides efficient state estimation for the INS through linearization of nonlinear system and measurement models.
+`kalman::ExtendedKalmanFilter` is a full-state EKF: position, velocity and attitude (as roll,
+pitch and yaw) are the state vector itself, and the filter linearizes the mechanization about
+its current estimate with analytic Jacobians (Groves Chapter 14.2). Run it from the command line
+with `strapdown-sim cl --filter ekf`. For when to prefer it over the default
+[ESKF](./eskf.md), see [Comparison](./comparison.md).
 
-## Overview
+## State
 
-The EKF linearizes the nonlinear navigation equations using Jacobian matrices (first-order Taylor series expansion). While this approximation is less accurate than the UKF's unscented transform for highly nonlinear systems, it is computationally more efficient and works well for most practical navigation scenarios.
+| configuration | states |
+| --- | --- |
+| 9-state (`use_biases: false`) | latitude, longitude, altitude, velocity (3), roll, pitch, yaw |
+| 15-state (`use_biases: true`, the `EkfConfig` default) | the nine above, then accelerometer bias (3) and gyroscope bias (3) |
+| extended | the fifteen, then any `other_states` (geophysical map biases), then the barometric bias if `estimate_baro_bias` is set |
 
-## Mathematical Foundation
+Units and order are the [shared layout](./kalman.md#state-layout-and-units): latitude and
+longitude in radians, attitude in radians on the principal branch. Extra states and the
+barometric bias require `use_biases`; `initialize_ekf` refuses them otherwise.
 
-### State Vector
+## Predict
 
-The EKF supports two state configurations:
+1. Bias-correct the increments with the current bias estimate, as the ESKF does:
+   $\Delta v^b = \Delta\tilde v^b - b_a\Delta t$, $\Delta\theta^b = \Delta\tilde\theta^b - b_g\Delta t$.
+2. Compute the transition Jacobian $F$ at the **pre-propagation** state with
+   `linearize::euler_state_transition_jacobian`, from the bias-corrected average rates.
+3. For the 15-state filter, widen $F$ with `linearize::widen_with_imu_bias_coupling`: the
+   blocks through which the accelerometer bias reaches velocity (and position, through the
+   trapezoidal half-step) and the gyroscope bias reaches attitude. Without them the bias states
+   exist but never correlate with anything a measurement observes, and the filter estimates nine
+   states while carrying fifteen; that was the EKF until #394. Extra states get an identity
+   (random-walk) diagonal.
+4. Mechanize the state with `mechanize`.
+5. $P \leftarrow F P F^\top + q\ \Delta t$, then regularize. There is no separate noise-input
+   matrix $G$: $q$ is taken to be the process-noise density already expressed in state space.
 
-**9-State Model (Navigation Only)**:
-- Latitude, longitude, altitude
-- North, east, down velocities
-- Roll, pitch, yaw angles
+### The Jacobian is in the Euler chart
 
-**15-State Model (Navigation + Biases)**:
-- 9 navigation states (as above)
-- Accelerometer biases (3)
-- Gyroscope biases (3)
+The EKF's attitude states are Euler angles, so its Jacobian differentiates with respect to
+roll, pitch and yaw. That is a different matrix from the rotation-vector form an error-state
+filter uses: the two differ by the Euler-rate matrix $E(\Phi)$, and the difference is as large
+as the terms themselves. `linearize` names the choice through `AttitudeParametrization`
+(`Euler` for this filter, `RotationVector` for the error-state form) rather than leaving it
+implied by which function is called. Using the rotation-vector form in the EKF was #307.
 
-### Prediction Step
+## Update
 
-The prediction step propagates the state and covariance forward using IMU measurements using the strapdown mechanization and computed Jacobian matrices.
+1. Evaluate the measurement Jacobian $H$ from the model's `get_jacobian` first: a geophysical
+   model whose estimate has left its map reports that as an error there, before any NaN reaches
+   the innovation. Every model writes its attitude columns as $\partial h/\partial$(roll, pitch,
+   yaw), which is exactly this filter's chart, so no conversion is needed. A nine-column
+   Jacobian is padded with zeros to the state width.
+2. $S = HPH^\top + R$, innovation $\nu = z - h(x)$, wrapped by the model for angles.
+3. Gate, if a gate is installed ([gating](./measurements.md#innovation-gating)).
+4. $K = PH^\top S^{-1}$ (through an SPD solve), $x \leftarrow x + K\nu$, then wrap the Euler
+   angles back onto the principal branch.
+5. Joseph-form covariance update, $P \leftarrow (I-KH)P(I-KH)^\top + KRK^\top$, then
+   regularize.
 
-### Update Step
+## Construction
 
-When GNSS or other measurements are available, the Kalman gain is computed and the state is updated with the measurement innovation.
-
-## Features
-
-### Advantages
-
-1. **Computational Efficiency**: 3-5x faster than UKF
-2. **Memory Efficient**: Stores only mean and covariance
-3. **Well-Understood**: Extensive literature and proven track record
-4. **Analytic Jacobians**: Uses pre-computed derivatives for accuracy
-
-### Limitations
-
-1. **Linearization Error**: Less accurate for highly nonlinear systems
-2. **First-Order Approximation**: May miss higher-order effects
-3. **Gaussian Assumption**: Cannot handle multimodal distributions
-
-## Usage
-
-### Basic Initialization
-
-```rust
-use strapdown::kalman::{ExtendedKalmanFilter, InitialState, NavigationFilter};
-use nalgebra::{DMatrix, DVector};
-
-// Define initial state
-let initial_state = InitialState {
-    latitude: 45.0,
-    longitude: -122.0,
-    altitude: 100.0,
-    northward_velocity: 0.0,
-    eastward_velocity: 0.0,
-    vertical_velocity: 0.0,
-    roll: 0.0,
-    pitch: 0.0,
-    yaw: 0.0,
-    in_degrees: true,
-    is_enu: false, // NED, the crate default; set true for ENU data
-};
-
-// Initial covariance diagonal.
-//
-// Latitude and longitude are held in RADIANS and altitude in metres, so the three position
-// entries are not the same unit and cannot come from one literal. `vec![1e-6; 9]` -- what
-// this example used to show -- reads as a 6.4 km initial horizontal uncertainty rather than
-// as a small number, and `1e-9` as a process-noise density is a 201 m one. Both are issue
-// #308; see **Units on the covariance diagonals** below. Write the metres once, convert where
-// they are used.
-let horizontal_std_rad = 10.0 * strapdown::earth::METERS_TO_RADIANS;  // a 10 m GNSS fix
-let mut initial_covariance = vec![
-    horizontal_std_rad.powi(2),  // latitude, rad^2
-    horizontal_std_rad.powi(2),  // longitude, rad^2
-    10.0_f64.powi(2),            // altitude, m^2
-];
-initial_covariance.extend([0.25; 3]);  // velocity, (m/s)^2 -- a 0.5 m/s fix
-initial_covariance.extend([1e-4; 3]);  // attitude, rad^2   -- ~0.6 deg
-
-// Initialize 9-state EKF (no biases)
-let mut ekf = ExtendedKalmanFilter::new(
-    initial_state,
-    vec![],  // No biases for 9-state
-    initial_covariance,
-    // The crate's own default, which is built the same way: one metric constant, converted
-    // once. Nine-state filters take its leading nine entries.
-    DMatrix::from_diagonal(&DVector::from_vec(
-        strapdown::sim::DEFAULT_PROCESS_NOISE_DENSITY[0..9].to_vec(),
-    )),
-    false,  // use_biases = false for 9-state
-);
+```rust,ignore
+{{#include ../../../core/examples/kalman_filters.rs:ekf_new}}
 ```
 
-### 15-State with Bias Estimation
+The arguments are an `InitialState`, a slice of initial bias estimates (used only when
+`use_biases` is `true`, with any further entries seeding extra states), the covariance
+diagonal, the process-noise density $q$ as a matrix, and `use_biases`. The state's width is the
+length of the covariance diagonal; states beyond the nine navigation states and the supplied
+seeds start at zero. `kalman_filters.rs` builds the diagonal with
+`IMUQuality::auto_covariance`; see [Kalman Filters](./kalman.md#the-constructors-with-p0-from-the-imu-grade).
 
-```rust
-// The nine-state diagonal built above, extended with the bias states. The same unit
-// caveat applies to its position block, and for the same reason.
-let mut initial_covariance_15 = initial_covariance.clone();
-initial_covariance_15.extend([1e-3; 3]);  // accel bias, (m/s^2)^2
-initial_covariance_15.extend([1e-8; 3]);  // gyro bias, (rad/s)^2
+`sim::initialize_ekf(&record, EkfConfig)` builds the same filter from a `TestDataRecord`, which
+is what `strapdown-sim` does; [Kalman Filters](./kalman.md#the-siminitialize_-helpers) lists
+the `EkfConfig` fields and the $P_0$ it derives. `EkfConfig::default()` is the 15-state filter;
+its `Default` is written by hand precisely so that it does not silently become the 9-state one.
 
-// Initialize 15-state EKF with bias estimation
-let mut ekf = ExtendedKalmanFilter::new(
-    initial_state,
-    vec![0.0; 6],  // Initial bias estimates (3 accel + 3 gyro)
-    initial_covariance_15,
-    DMatrix::from_diagonal(&DVector::from_vec(
-        strapdown::sim::DEFAULT_PROCESS_NOISE_DENSITY.to_vec(),
-    )),  // Process noise
-    true,  // use_biases = true for 15-state
-);
-```
-
-### Prediction with IMU Data
-
-```rust
-use strapdown::IMUData;
-
-let imu_data = IMUData {
-    timestamp: 1234567890.0,
-    gyro: [0.01, -0.02, 0.03],  // rad/s
-    accel: [0.5, -0.2, 9.81],    // m/s²
-};
-
-let dt = 0.01;  // Time step in seconds
-ekf.predict(&imu_data, dt);
-```
-
-### Update with GNSS
-
-```rust
-use strapdown::measurements::GPSPositionMeasurement;
-
-let gps_measurement = GPSPositionMeasurement {
-    latitude: 45.00012,
-    longitude: -122.00015,
-    altitude: 101.5,
-    std_dev: [5.0, 5.0, 10.0],  // Measurement uncertainty
-};
-
-ekf.update(&gps_measurement);
-```
-
-## Performance
-
-### Computational Complexity
-
-- Typical update rate: 10,000-20,000 updates/second on modern hardware
-- 3-5x faster than UKF
-- Memory usage: ~2 KB for 15-state
-
-## Comparison with UKF
-
-| Aspect | EKF | UKF |
-|--------|-----|-----|
-| **Speed** | Faster (3-5x) | Slower |
-| **Accuracy** | Good for mildly nonlinear | Better for highly nonlinear |
-| **Implementation** | Requires Jacobians | No Jacobians needed |
-| **Memory** | Lower | Higher |
-| **Best For** | Real-time systems | Research/offline processing |
-
-See [EKF vs UKF Comparison](./comparison.md) for detailed analysis.
+Driving it is the same as any filter: `predict` with an `ImuSample` or `IMUData`, `update` with
+a [measurement model](./measurements.md), each returning a `Result`
+([Driving a filter](./kalman.md#driving-a-filter)).
 
 ## Units on the covariance diagonals
 
@@ -184,10 +93,10 @@ It is worth knowing what the round numbers mean once the conversion is skipped:
 |---|---|
 | `1e-6` rad² | 6367 m |
 | `1e-9` rad² | 201 m |
-| `(5 m × METERS_TO_DEGREES)²` | 286 m (degrees, not radians -- 57.3x too large) |
+| `(5 m × METERS_TO_DEGREES)²` | 286 m (degrees, not radians: 57.3x too large) |
 
 All three shipped in this crate, in $Q$ and in $P_0$, and are what issue #308 fixed. The
-symptom is characteristic: with $Q$ that large the innovation covariance $S = HPH^T + R$ is
+symptom is characteristic: with $Q$ that large the innovation covariance $S = HPH^\top + R$ is
 dominated by the filter's own prediction, so the update discards it and lands on each fix,
 the solution tracks the fix noise one-for-one instead of averaging it down, and innovation
 gating cannot function because a genuinely bad fix is still inside what the filter believes
@@ -195,20 +104,60 @@ possible.
 
 `sim::DEFAULT_PROCESS_NOISE_DENSITY`, `sim::DEFAULT_INITIAL_POSITION_UNCERTAINTY_M` and the
 `sim::initialize_*` helpers all do the conversion for you; `IMUQuality::auto_covariance`
-derives a whole $P_0$ diagonal from an IMU grade and a reported fix accuracy.
+derives a whole $P_0$ diagonal from an IMU grade and a reported fix accuracy. Remember too that
+the diagonal of $Q$ is a density: the filter multiplies it by $\Delta t$
+([Process noise](./kalman.md#process-noise-is-a-spectral-density)).
 
-## Best Practices
+## Analytic Jacobians, and how they are checked
 
-1. **Start with 9-state** unless you need bias estimation
-2. **Tune conservatively**: Start with larger uncertainties and reduce
-3. **Monitor innovation**: Check measurement residuals for divergence
-4. **Use 15-state** for long-duration missions or low-quality IMUs
-5. **Validate with dead reckoning**: Compare against the `dr` subcommand's results
-6. **Write position uncertainties in metres** and convert once -- see
-   [Units on the covariance diagonals](#units-on-the-covariance-diagonals)
+The EKF's correctness rests on its Jacobians matching the function they linearize, and a wrong
+block does not crash: it makes the gain wrong, and the filter degrades in a way that looks like
+bad tuning. `core/tests/jacobian_agreement.rs` therefore checks the analytic transition
+Jacobians directly against central finite differences of the mechanization, rather than
+inferring their correctness from whether a filter converges:
 
-## Next Steps
+- `euler_jacobian_matches_the_mechanization_in_both_frames` bounds every entry of the Euler
+  Jacobian against the finite difference, in NED and ENU, at a derived tolerance of $2\times10^{-5}$.
+- `altitude_row_follows_the_frame` pins the one entry whose sign the frame decides:
+  $\partial\ \text{alt}/\partial v_\text{vertical}$ is $-\Delta t$ in NED, where vertical velocity is
+  positive down, and $+\Delta t$ in ENU. A wrong sign turns the altitude/vertical-velocity pair
+  into positive feedback.
+- `the_two_parametrisations_differ_in_every_block_that_touches_attitude` checks that the Euler
+  and rotation-vector forms really are different matrices.
 
-- Try the [UKF](./ukf.md) for comparison
-- Learn about [Measurement Models](./measurements.md)
-- See [Example: Closed-Loop Simulation](../examples/tutorial-basic.md)
+```bash
+cargo test -p strapdown-core --test jacobian_agreement
+```
+
+The measurement Jacobians live beside them in `core/src/linearize.rs` (`gps_position_jacobian`,
+`gps_velocity_jacobian`, `relative_altitude_jacobian`, `magnetometer_yaw_jacobian`, `zupt_jacobian`,
+`zaru_jacobian` and others).
+
+## Troubleshooting
+
+**The solution copies every fix, and gating never rejects anything.** Check the units of $P_0$
+and $Q$ against the table above. A horizontal variance written as if it were m² is thousands of
+metres in radians.
+
+**The vertical channel runs away, or roll converges to 180°.** The data's frame disagrees with
+the declared one. In NED a level IMU reads $-g$ on its down axis; Sensor Logger exports are ENU
+and need `is_enu = true` (`--enu`). `sim::check_declared_frame` catches a wrong declaration
+before propagation, and `strapdown-sim` calls it on every run.
+
+**Bias estimates do not move.** A 9-state filter has nowhere to put them; use `use_biases:
+true`. On a 15-state filter, position and velocity fixes observe the biases only through the
+coupling blocks, and an accelerometer bias and a small tilt produce the same horizontal
+signature, so they are not separately observable from position and velocity alone
+([Tutorial: GNSS Degradation](../examples/tutorial-gps-degradation.md) shows this). A ZARU
+pseudo-measurement observes the gyro bias directly
+([Measurement Models](./measurements.md#zero-velocity-and-zero-angular-rate-updates)).
+
+**An update returns an error.** `StrapdownError::is_recoverable` distinguishes a measurement
+that could not be evaluated (skip it) from a filter that can no longer continue.
+
+## References
+
+- Groves, P. D., *Principles of GNSS, Inertial, and Multisensor Integrated Navigation
+  Systems*, 2nd ed., Chapter 14.2.
+- Bar-Shalom, Y., Li, X.-R. and Kirubarajan, T., *Estimation with Applications to Tracking and
+  Navigation*, Chapter 5.

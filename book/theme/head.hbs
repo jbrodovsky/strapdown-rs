@@ -1,0 +1,13 @@
+<!-- mdBook 0.4 loads MathJax 2 with its default configuration, which typesets $$...$$ and
+     \(...\) but not inline $...$. The book writes inline math as $...$, so enable it here.
+     processEscapes lets a page write a literal dollar sign as \$. This partial is inserted
+     before MathJax loads, and MathJax 2 reads text/x-mathjax-config blocks at startup. -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [['$', '$'], ['\\(', '\\)']],
+      displayMath: [['$$', '$$'], ['\\[', '\\]']],
+      processEscapes: true
+    }
+  });
+</script>

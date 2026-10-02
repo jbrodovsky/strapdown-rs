@@ -1,151 +1,109 @@
 # User Guide Overview
 
-Welcome to the Strapdown-rs User Guide! This section provides comprehensive information on using the library and simulation tools.
+This part of the book explains what the toolkit computes and how to drive it. This page is a
+map: what the pieces are, and which page documents each one.
 
-## What You'll Learn
+## The crates
 
-This guide covers:
+| Crate | Use it for | Documented in |
+| --- | --- | --- |
+| `strapdown-core` (imported as `strapdown`) | Mechanization, filters, measurement models, scenario engine, CSV I/O | [Using the Library](./library.md), [API Documentation](../api/index.md) |
+| `strapdown-sim` | Running simulations from the command line or a scenario file | [Running Simulations](./simulations.md) and the pages under it |
+| `strapdown-geonav` | **Experimental** gravity and magnetic anomaly map aiding | [Geophysical Navigation](../geonav/overview.md) |
 
-1. **Core Concepts**: Understanding strapdown INS, coordinate frames, and state representation
-2. **Running Simulations**: How to use the `strapdown-sim` binary
-3. **Data Formats**: Preparing and formatting your input data
-4. **Configuration**: Setting up simulations with TOML config files
-5. **Logging and Debugging**: Monitoring simulation progress
+The simulator is a thin layer over the library: every mode it offers is a library function
+you can call from Rust.
 
-## Quick Navigation
+## The model
 
-### For Beginners
+Three pages describe what the numbers mean, and are worth reading before interpreting any
+output:
 
-If you're new to strapdown INS or this library:
+- [The Navigation Model](./concepts.md): strapdown mechanization in the local-level frame,
+  the gravity and Earth-rate models, and how aiding corrects the solution.
+- [Coordinate Frames](./coordinate-frames.md): NED by default, ENU on request, the body frame,
+  and the check that refuses a wrongly declared frame.
+- [State Representation](./state-representation.md): the nine navigation states, the filters'
+  15-element bias-augmented states and their extra bias states, and how covariance reaches the
+  output.
 
-1. Start with [Core Concepts](./concepts.md) to understand the fundamentals
-2. Learn about [Coordinate Frames](./coordinate-frames.md) used in the library
-3. Review [State Representation](./state-representation.md) to understand the 9-state and 15-state models
-4. Try the [Quick Start](../quick-start.md) tutorial
+## The subcommands
 
-### For Experienced Users
+`strapdown-sim` has one subcommand per mode:
 
-If you're familiar with INS and want to jump in:
+| Subcommand | What it does | Page |
+| --- | --- | --- |
+| `dr` | Dead reckoning: propagates the IMU from the initial state with no aiding | [Dead Reckoning](./dead-reckoning.md) |
+| `cl` | Closed loop: a Kalman filter corrects the INS with GNSS, barometer and magnetometer measurements, and feeds the corrections back. ESKF by default; `--filter ekf` or `--filter ukf` selects the others | [Closed Loop](./closed-loop.md) |
+| `pf` | Closed loop with the Rao-Blackwellized particle filter | [Particle Filter](./particle-filter.md) |
+| `syn` | Generates a synthetic trajectory: noisy sensor records, or with `--no-noise`, the truth | [Synthetic Trajectories](./synthetic.md) |
+| `config` | An interactive wizard that writes a scenario file | [Configuration Files](./configuration.md) |
+| `ol` | **Not implemented.** Reserved for an open-loop mode; it validates its paths and writes no output | -- |
 
-1. Check [Input Data Format](./data-format.md) to prepare your data
-2. Review [Configuration Files](./configuration.md) for advanced options
-3. Explore [Running Simulations](./simulations.md) for different modes
-4. See [Logging](./logging.md) for debugging and monitoring
+Dead reckoning is `dr`. It is not "open loop": `ol` names a different, unimplemented mode in
+which a filter would estimate errors without feeding them back.
 
-## Simulation Modes
+A few options are shared:
 
-Strapdown-rs supports three main simulation modes:
+- **Global:** `--config <file>` runs a whole scenario from a TOML, YAML or JSON file instead
+  of subcommand flags; `--log-level` and `--log-file` control logging ([Logging](./logging.md));
+  `--parallel` processes several input files at once; `--plot` draws a performance plot
+  against the GNSS track.
+- **Every simulation mode:** `-i` takes a CSV file or a directory of them, `-o` a CSV file or a
+  directory; `--enu` declares ENU input; health limits (`--health-*`) and execution limits
+  (`--max-wall-clock-*`, `--max-no-progress-s`) stop a run that diverges or hangs.
+- **`cl` and `pf`:** `--seed`, the GNSS scheduler (`--sched` and its parameters) and the GNSS
+  fault model (`--fault` and its parameters).
 
-### Dead Reckoning (`dr`)
+`strapdown-sim <subcommand> --help` lists every flag with its default. The simulator writes
+**CSV only**; see [Output Format](./output-format.md).
 
-Pure inertial navigation without corrections. Useful for:
-- Understanding INS error growth
-- Baseline comparisons
-- Testing IMU data quality
+## The filters
 
-Note that dead reckoning is `dr`, not `ol`. The `ol` subcommand is a separate *feed-forward*
-mode -- its own help describes a Kalman filter estimating and applying corrections, so it
-consumes GNSS and is not "without corrections" -- and it is **not implemented**: it validates
-its paths, writes no output and prints "Open-loop mode is not yet fully implemented".
+All four implement the library's `NavigationFilter` trait, so the simulator drives them through
+the same loop.
 
-See: [Open-Loop Mode](./open-loop.md)
+| Filter | Selected by | State it carries | Page |
+| --- | --- | --- | --- |
+| Error-state Kalman filter (ESKF) | `cl` (the default) | Nominal navigation state plus a 15-element error state, 16 with the barometric bias | [ESKF](../filters/eskf.md) |
+| Extended Kalman filter (EKF) | `cl --filter ekf` | Full 15-element state, plus extra bias states | [EKF](../filters/ekf.md) |
+| Unscented Kalman filter (UKF) | `cl --filter ukf` | Full 15-element state, plus extra bias states | [UKF](../filters/ukf.md) |
+| Rao-Blackwellized particle filter (RBPF) | `pf` | Particles over horizontal position error; one shared Kalman filter for the rest. No IMU-bias states | [RBPF](../filters/rbpf.md) |
 
-### Closed-Loop (Kalman Filtering)
+How they differ, and how they score on the reference scenarios, is on the
+[Comparison](../filters/comparison.md) and [Performance Baselines](../development/performance.md)
+pages. The RBPF is the only particle filter: `particle.rs` provides building blocks
+(resampling, averaging), not a second filter ([Particle Building
+Blocks](../filters/particle-filter.md)).
 
-INS with GNSS corrections using the ESKF (the default), UKF or EKF, selected with
-`--filter`. Best for:
-- Realistic navigation scenarios
-- GNSS degradation studies
-- Production-like simulations
+## Aiding and degradation
 
-See: [Closed-Loop Mode](./closed-loop.md)
+- **Measurement models** -- GNSS position and velocity, barometric altitude, magnetometer
+  heading, and the library's zero-velocity and zero-angular-rate updates -- and innovation
+  gating: [Measurement Models and Integrity](../filters/measurements.md). All aiding is loosely
+  coupled; there are no pseudorange or carrier-phase models.
+- **GNSS degradation** -- schedulers decide when fixes arrive (`passthrough`, `fixed`, `duty`)
+  and fault models decide what they contain (`none`, `degraded`, `slowbias`, `hijack`):
+  [Fault Simulation](../gnss/fault-simulation.md) and the
+  [Schedulers and Faults Reference](../gnss/scenarios.md).
 
-### Particle Filter
+## Data in, data out
 
-Non-parametric Bayesian filtering for non-Gaussian distributions. Useful for:
-- Multimodal uncertainty
-- Highly nonlinear scenarios
-- Research applications
+- [Input Data Format](./data-format.md): the Sensor Logger CSV layout that every mode reads and
+  `syn` writes.
+- [Output Format](./output-format.md): the `NavigationResult` columns, their units, and the
+  covariance columns.
+- [Configuration Files](./configuration.md): every key of a scenario file.
 
-See: [Particle Filter Mode](./particle-filter.md)
+## A typical workflow
 
-## Navigation Filters
+1. Get input: a recording in the Sensor Logger layout, or `strapdown-sim syn`.
+2. Declare its frame: nothing for NED (what `syn` writes), `--enu` for a phone export.
+3. Run a baseline: `cl` with GNSS uninterrupted, and `dr` for the unaided bound.
+4. Run the scenario you care about: an outage (`--sched duty`), a fault (`--fault ...`), or a
+   different filter, with a fixed `--seed`.
+5. Write the scenario into a configuration file once it settles, so the run can be repeated
+   exactly.
+6. Compare the CSVs, against the truth from `syn --no-noise` when you have it.
 
-The library provides multiple filter implementations:
-
-- **Error-State Kalman Filter (ESKF)**: multiplicative attitude error. **The default for `cl`.**
-- **Extended Kalman Filter (EKF)**: Fast, efficient, works well for mildly nonlinear systems
-- **Unscented Kalman Filter (UKF)**: Better accuracy for nonlinear systems, 2-3x slower
-- **Rao-Blackwellized Particle Filter (RBPF)**: Canciani & Raquet's marginalized particle filter
-  -- horizontal position as particles; altitude, velocity, tilt, the barometer loop's two states
-  and the map biases as a Kalman filter shared by every particle. See
-  [the RBPF page](../filters/rbpf.md). The only particle filter implementation -- `ParticleFilterType`
-  has this one variant, and `particle.rs` is a module of building blocks rather than a filter
-  that can be selected on its own
-
-Learn more: [Navigation Filters](../filters/kalman.md)
-
-## State Models
-
-### 9-State Model
-
-The basic navigation-only model:
-- **Position**: latitude, longitude, altitude
-- **Velocity**: north, east, down
-- **Attitude**: roll, pitch, yaw
-
-### 15-State Model
-
-Extended model with IMU bias estimation:
-- 9 navigation states (as above)
-- **Accelerometer biases**: 3 states
-- **Gyroscope biases**: 3 states
-
-The 15-state model provides better long-term accuracy by estimating and correcting sensor biases.
-
-## Typical Workflow
-
-1. **Collect or prepare IMU/GNSS data** in CSV format
-2. **Create a configuration file** specifying simulation parameters
-3. **Run the simulation** using `strapdown-sim`
-4. **Analyze results** from the output CSV
-5. **Iterate** by adjusting parameters as needed
-
-## Common Use Cases
-
-### Research and Development
-
-- Testing new navigation algorithms
-- Comparing filter performance
-- Studying error characteristics
-- Publishing research results
-
-### Education
-
-- Teaching INS fundamentals
-- Demonstrating sensor fusion
-- Illustrating error sources
-- Hands-on learning
-
-### System Development
-
-- Prototyping navigation systems
-- Evaluating sensor requirements
-- Testing GNSS-denied scenarios
-- Performance benchmarking
-
-## Getting Help
-
-- **FAQ**: Check the [Frequently Asked Questions](../faq.md)
-- **Examples**: Browse [Example Configurations](../examples/configurations.md)
-- **API Docs**: See [API Reference](../api/core.md) for detailed documentation
-- **Issues**: Report problems on [GitHub](https://github.com/jbrodovsky/strapdown-rs/issues)
-
-## Next Steps
-
-Choose your path:
-
-- **New to INS?** → [Core Concepts](./concepts.md)
-- **Ready to simulate?** → [Running Simulations](./simulations.md)
-- **Need data format info?** → [Input Data Format](./data-format.md)
-- **Want advanced features?** → [Configuration Files](./configuration.md)
+The [Quick Start](../quick-start.md) walks through steps 1-6 on a synthetic trajectory.

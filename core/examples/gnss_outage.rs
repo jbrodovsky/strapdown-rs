@@ -82,10 +82,12 @@ fn main() -> Result<(), StrapdownError> {
     // -9.81 on the down axis in NED. See `basic_ins.rs` for why the sign is what it is. The
     // bias is added on the body x-axis (forward), where it looks exactly like the vehicle
     // speeding up.
+    // ANCHOR: biased_imu
     let imu = IMUData {
         accel: Vector3::new(ACCEL_BIAS_MPS2, 0.0, -9.81),
         gyro: Vector3::zeros(),
     };
+    // ANCHOR_END: biased_imu
 
     let total_s = AIDED_BEFORE_S + OUTAGE_DURATION_S + AIDED_AFTER_S;
     let steps = (total_s / DT) as usize;
@@ -122,6 +124,7 @@ fn main() -> Result<(), StrapdownError> {
             pitch_at_outage_start_deg = solution.pitch;
         }
 
+        // ANCHOR: outage
         if !in_outage && step % gnss_every == 0 {
             let fix = GnssFix::position(
                 truth_latitude_deg,
@@ -133,6 +136,7 @@ fn main() -> Result<(), StrapdownError> {
             .with_velocity([SPEED_MPS, 0.0, 0.0], GNSS_VELOCITY_STD_MPS);
             engine.update_gnss(&fix)?;
         }
+        // ANCHOR_END: outage
 
         if step % gnss_every == 0 {
             let solution = engine.nav_solution();
