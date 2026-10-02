@@ -39,14 +39,20 @@ or put the release binary on your `PATH`.
 
 ## Before you open a pull request
 
-The workspace enforces a strict lint gate rather than a warning-level one. Both of these must
+The workspace enforces a strict lint gate rather than a warning-level one. All of these must
 be clean, and CI runs exactly the same commands on the same pinned 1.91 toolchain:
 
 ```bash
 cargo fmt-check   # cargo fmt --all -- --check
 cargo lint        # cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo lint-min    # cargo clippy -p strapdown-core --all-targets --no-default-features -- -D warnings
 cargo test --workspace --all-features
+cargo test-min    # cargo test -p strapdown-core --no-default-features
 ```
+
+`cargo lint` alone is not the whole gate. The two configurations disagree about what is dead:
+an item used only behind a feature gate is live under `--all-features` and unused without it,
+so `cargo lint-min` and `cargo test-min` catch what `cargo lint` cannot.
 
 `clippy::pedantic` and `clippy::nursery` are denied workspace-wide, as are `missing_docs` and
 the zero-panic lints (`unwrap_used`, `expect_used`, `panic`) in library code -- return a
