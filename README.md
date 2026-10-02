@@ -125,7 +125,7 @@ every other subcommand runs without it.
 # A 10-minute synthetic trajectory: noisy IMU, GNSS and barometer records (add --no-noise for the truth)
 strapdown-sim syn -o synthetic.csv --duration-s 600 --seed 42
 
-# Closed loop (ESKF) with GNSS available for 100 s, then denied for 50 s, repeating
+# Closed loop (ESKF) with a duty-cycled outage: 50 s denied, then 100 s available, repeating
 strapdown-sim cl -i synthetic.csv -o eskf.csv --seed 42 --sched duty --on-s 100 --off-s 50
 
 # Dead reckoning: no aiding at all
