@@ -6,66 +6,56 @@
 
 - [Installation](./installation/installation.md)
   - [System Requirements](./installation/requirements.md)
-  - [Installing from Crates.io](./installation/crates-io.md)
-  - [Building from Source](./installation/building.md)
 - [Quick Start](./quick-start.md)
 
 # User Guide
 
 - [Overview](./user-guide/overview.md)
-- [Core Concepts](./user-guide/concepts.md)
-  - [Strapdown Mechanization](./user-guide/strapdown-mechanization.md)
+- [The Navigation Model](./user-guide/concepts.md)
   - [Coordinate Frames](./user-guide/coordinate-frames.md)
   - [State Representation](./user-guide/state-representation.md)
 - [Running Simulations](./user-guide/simulations.md)
-  - [Open-Loop (Dead Reckoning)](./user-guide/open-loop.md)
-  - [Closed-Loop (UKF/EKF)](./user-guide/closed-loop.md)
+  - [Dead Reckoning](./user-guide/dead-reckoning.md)
+  - [Closed Loop (Kalman Filters)](./user-guide/closed-loop.md)
   - [Particle Filter](./user-guide/particle-filter.md)
+  - [Synthetic Trajectories](./user-guide/synthetic.md)
 - [Input Data Format](./user-guide/data-format.md)
+- [Output Format](./user-guide/output-format.md)
 - [Configuration Files](./user-guide/configuration.md)
 - [Logging](./user-guide/logging.md)
+- [Using the Library](./user-guide/library.md)
 
 # Navigation Filters
 
 - [Kalman Filters](./filters/kalman.md)
+  - [Error-State Kalman Filter (ESKF)](./filters/eskf.md)
   - [Extended Kalman Filter (EKF)](./filters/ekf.md)
   - [Unscented Kalman Filter (UKF)](./filters/ukf.md)
-  - [Comparison: EKF vs UKF](./filters/comparison.md)
-- [Particle Filters](./filters/particle-filter.md)
-  - [Rao-Blackwellized Particle Filter](./filters/rbpf.md)
-- [Measurement Models](./filters/measurements.md)
+  - [Comparison](./filters/comparison.md)
+- [Rao-Blackwellized Particle Filter](./filters/rbpf.md)
+  - [Particle Building Blocks](./filters/particle-filter.md)
+- [Measurement Models and Integrity](./filters/measurements.md)
 
-# Geophysical Navigation
-
-- [Overview](./geonav/overview.md)
-- [Gravity Anomaly Navigation](./geonav/gravity.md)
-- [Magnetic Anomaly Navigation](./geonav/magnetic.md)
-- [Data Sources and Maps](./geonav/data-sources.md)
-
-# GNSS Degradation Scenarios
+# GNSS Degradation
 
 - [Fault Simulation](./gnss/fault-simulation.md)
-- [Dropout Scenarios](./gnss/dropouts.md)
-- [Reduced Update Rates](./gnss/reduced-rates.md)
-- [Measurement Corruption](./gnss/corruption.md)
+- [Schedulers and Faults Reference](./gnss/scenarios.md)
 
-# API Reference
+# Geophysical Navigation (Experimental)
 
-- [strapdown-core](./api/core.md)
-  - [earth Module](./api/earth.md)
-  - [kalman Module](./api/kalman.md)
-  - [measurements Module](./api/measurements.md)
-  - [particles Module](./api/particles.md)
-  - [sim Module](./api/sim.md)
-- [strapdown-sim](./api/sim-binary.md)
-- [strapdown-geonav](./api/geonav.md)
+- [Overview](./geonav/overview.md)
+- [Maps and Measurement Models](./geonav/maps.md)
+
+# Reference
+
+- [API Documentation](./api/index.md)
 
 # Examples and Tutorials
 
 - [Example Configurations](./examples/configurations.md)
-- [Tutorial: Basic INS Simulation](./examples/tutorial-basic.md)
-- [Tutorial: GPS Degradation](./examples/tutorial-gps-degradation.md)
-- [Tutorial: Using the Particle Filter](./examples/tutorial-particle-filter.md)
+- [Tutorial: Basic INS](./examples/tutorial-basic.md)
+- [Tutorial: GNSS Degradation](./examples/tutorial-gps-degradation.md)
+- [Tutorial: Particle Filter](./examples/tutorial-particle-filter.md)
 
 # Development
 
@@ -73,14 +63,13 @@
 - [Building and Testing](./development/building.md)
 - [Performance Baselines](./development/performance.md)
 - [Architecture](./development/architecture.md)
-- [Project Structure](./development/structure.md)
+- [Python Analysis Tooling](./development/analysis.md)
 
 # FAQ
 
 - [Frequently Asked Questions](./faq.md)
 
-# Additional Resources
+# Resources
 
-- [Publications](./resources/publications.md)
-- [External Links](./resources/links.md)
+- [Publications and Links](./resources/publications.md)
 - [Glossary](./resources/glossary.md)

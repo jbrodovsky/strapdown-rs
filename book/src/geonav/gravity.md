@@ -1,1 +1,0 @@
-# Gravity Anomaly Navigation
