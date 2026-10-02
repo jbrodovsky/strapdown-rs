@@ -1,0 +1,61 @@
+\documentclass[preprint,12pt,authoryear]{elsarticle}
+
+\usepackage[T1]{fontenc}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{makecell}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage{url}
+\usepackage[hidelinks]{hyperref}
+\usepackage[capitalise,noabbrev]{cleveref}
+\pdfstringdefDisableCommands{\def\corref#1{}}
+\emergencystretch=2em
+
+\input{tables/numbers.tex}
+
+% Visible placeholder for anything the authors still have to supply. Every use is listed in
+% NOTES.md; a submission must not contain one.
+\newcommand{\todo}[1]{\textbf{\textcolor{red}{[TODO: #1]}}}
+
+\journal{Data in Brief}
+
+\begin{document}
+
+\begin{frontmatter}
+
+\title{MEMS-Nav: \numTotalHours\texorpdfstring{~}{ }hours of synchronized smartphone inertial, GNSS, barometric and magnetic recordings from road vehicles for research on GNSS-degraded navigation}
+
+\author[tu]{James Brodovsky\corref{cor1}}
+\ead{jbrodovsky@temple.edu}
+\author[tu]{Philip Dames}
+\cortext[cor1]{Corresponding author.}
+\affiliation[tu]{organization={Temple University}, addressline={[TODO: department]},
+  city={Philadelphia}, state={PA}, postcode={19122}, country={USA}}
+
+\begin{abstract}
+\input{sections/abstract}
+\end{abstract}
+
+\begin{keyword}
+Inertial navigation \sep MEMS inertial measurement unit \sep Smartphone sensors \sep GNSS degradation \sep Sensor fusion \sep Kalman filter \sep Geophysical navigation \sep Magnetometer
+\end{keyword}
+
+\end{frontmatter}
+
+\input{sections/specifications}
+\input{sections/value}
+\input{sections/background}
+\input{sections/description}
+\input{sections/methods}
+\input{sections/limitations}
+\input{sections/statements}
+
+\bibliographystyle{elsarticle-harv}
+\bibliography{references}
+
+\end{document}

@@ -1,0 +1,15 @@
+\begin{tabular}{llccc@{\hspace{1.2em}}ccc}
+\toprule
+ & & \multicolumn{3}{c}{Smartphone observations} & \multicolumn{3}{c}{Dedicated sensors} \\
+\cmidrule(lr){3-5}\cmidrule(lr){6-8}
+Filter & Aiding & Ratio [95\% CI] & B/W & \(p\) & Ratio [95\% CI] & B/W & \(p\) \\
+\midrule
+EKF & Gravity & 1.001 [1.000, 1.002] & 7/20 & 0.18 & 1.005 [1.001, 1.013] & 8/19 & 0.17 \\
+ & Magnetic & 1.000 [1.000, 1.000] & 12/15 & 0.93 & 0.891 [0.866, 0.907] & 25/2 & \(<10^{-3}\) \\
+ & Combined & 1.001 [1.000, 1.002] & 8/19 & 0.46 & 0.890 [0.880, 0.913] & 24/3 & \(<10^{-3}\) \\
+\midrule
+UKF & Gravity & 1.001 [1.000, 1.003] & 9/18 & 0.13 & 1.011 [1.000, 1.013] & 8/19 & 0.049 \\
+ & Magnetic & 1.000 [1.000, 1.000] & 13/14 & 0.86 & 0.901 [0.884, 0.905] & 26/1 & \(<10^{-3}\) \\
+ & Combined & 1.001 [1.000, 1.002] & 8/19 & 0.14 & 0.899 [0.883, 0.929] & 26/1 & \(<10^{-3}\) \\
+\bottomrule
+\end{tabular}

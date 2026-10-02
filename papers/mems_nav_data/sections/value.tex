@@ -1,0 +1,10 @@
+\section*{Value of the data}
+\label{sec:value}
+
+\begin{itemize}
+\item \textbf{Duration and distance at consumer grade.} The \numTrajectories{} trajectories cover \numTotalHours~h and \numTotalKm~km of driving, up to \numMaxHours~h and \numMaxKm~km in one trajectory. Inertial error over GNSS outages of minutes to hours can therefore be studied on consumer MEMS hardware, rather than inferred from the seconds-long sequences of most robotics datasets.
+\item \textbf{Several devices and both mobile platforms.} Seven phone models from three manufacturers, on Android and iOS, were recorded with the same application and are processed into one column layout. Methods can be compared across inertial sensors, sampling rates and receivers, and their sensitivity to the device can be measured.
+\item \textbf{Raw streams kept beside the processed files.} The raw recordings keep each sensor at its delivered rate (about 100~Hz for the inertial sensors on most devices), together with the uncalibrated accelerometer, gyroscope and magnetometer streams where the phone provided them. Users can therefore choose their own resampling, synchronization and calibration instead of inheriting ours.
+\item \textbf{Ready for controlled GNSS degradation.} Every trajectory runs unmodified in the open-source simulator strapdown-rs \citep{strapdown-rs}. The simulator can withhold GNSS fixes on a schedule and corrupt them with correlated noise, slow drift or step offsets, all from a seeded configuration file. One recording can therefore be replayed under many repeatable outage and spoofing scenarios, and the baselines reported here give a starting point for comparing new methods.
+\item \textbf{Documented sensor caveats for map-based aiding.} Cropped relief, gravity-anomaly and magnetic-anomaly grids are supplied for every trajectory. We also document that the phones' gravity vector carries no gravity-anomaly information and that their magnetometers are dominated by the vehicle's field. This saves geophysical and magnetic navigation studies from basing an aiding experiment on channels that cannot support it.
+\end{itemize}

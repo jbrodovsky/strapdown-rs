@@ -1,0 +1,100 @@
+\section{Navigation System}
+\label{sec:navigation}
+
+All three filters share one strapdown mechanization, one set of GNSS, barometric, and heading measurement models, and one measurement stream, so that a comparison between filters, or between an aided run and its unaided counterpart, isolates the estimator or the anomaly measurement. Positions are WGS~84 geodetic latitude \(L\), longitude \(\lambda\), and ellipsoidal height \(h\); attitude is held as a direction cosine matrix \(\mathbf{C}_b^n\) and reported as roll, pitch, and yaw. The equations are written in north--east--down (NED) notation, following \citet{groves_ch5}. The Sensor Logger records, however, are resolved in an east--north--up (ENU) convention, and the run configurations declare it (\texttt{is\_enu = true}). In that convention \texttt{strapdown-rs} keeps the north and east components but takes vertical velocity positive up and uses the matching body-to-navigation attitude convention; it checks the declared frame against the sign of the specific force in the leading records and rejects a mismatch. A reproduction must declare ENU for these data.
+
+\subsection{Mechanization and Aiding Measurements}
+
+The mechanization is the local-navigation-frame strapdown algorithm of \citet[Sections~5.4--5.5]{groves_ch5}: the attitude update integrates the bias-corrected angular rate less the Earth and transport rates, the velocity update resolves the bias-corrected specific force into the navigation frame and adds the Somigliana normal gravity and the Coriolis and transport-rate terms, and position is integrated with the meridian and transverse radii of curvature. The Kalman filters estimate the fifteen states
+\begin{equation}
+  \mathbf{x} = \begin{bmatrix} L & \lambda & h & v_N & v_E & v_D & \phi & \theta & \psi & \mathbf{b}_a^\top & \mathbf{b}_g^\top \end{bmatrix}^\top,
+  \label{eqn:state}
+\end{equation}
+where \(\mathbf{b}_a\) and \(\mathbf{b}_g\) are the accelerometer and gyroscope biases, together with a barometric-bias state that every run in this paper carries and, when aided, one map-bias state per anomaly channel (\Cref{sec:geophysical}).
+
+Three aiding sources are common to every run. GNSS is loosely coupled as a five-element observation of latitude, longitude, height, and north and east velocity, with a diagonal covariance built from the receiver's reported accuracies. The barometer supplies a relative altitude referenced to the first GNSS height, and the magnetometer supplies a once-per-second heading observation with a standard deviation of 0.2~rad. The heading observation is common to the aided and unaided runs, and so does not affect their comparison; its accuracy on this data is poor (\Cref{sec:limitations}).
+
+\subsection{GNSS Degradation}
+
+GNSS degradation is applied by replaying the recorded fixes through a seeded scheduler and fault model before any filter sees them, so that every filter and every aiding configuration receives an identical corrupted stream. The scheduler delivers one fix every \(T = 60\)~s. The fault model adds independent first-order Gauss--Markov errors to the north and east components of each delivered position and velocity,
+\begin{equation}
+  \mathbf{e}_{k+1} = e^{-\Delta t_k/\tau}\,\mathbf{e}_k + \sigma\sqrt{1 - e^{-2\Delta t_k/\tau}}\;\mathbf{w}_k, \qquad \mathbf{w}_k \sim \mathcal{N}(\mathbf{0}, \mathbf{I}_2),
+  \label{eqn:gauss-markov}
+\end{equation}
+with \(\sigma = 35\)~m and \(\tau = 500\)~s for position and \(\sigma = 1.5\)~m/s and \(\tau = 100\)~s for velocity, where \(\Delta t_k\) is the interval between delivered fixes. Specifying the process by a steady-state standard deviation and a correlation time, rather than by a per-fix coefficient, makes its statistics independent of the fix interval. The receiver's reported standard deviations are inflated by a factor of five, so that the filter is told the fixes are degraded. Under this schedule the unaided EKF's median horizontal error rises from \numekffullmedian~m to \numekfdegradedmedian~m (\Cref{sec:results-baselines}).
+
+\subsection{Extended Kalman Filter}
+\label{sec:ekf}
+
+The EKF propagates the full state through the mechanization and its covariance through the first-order discretization \(\mathbf{I} + \mathbf{F}\Delta t\) of the local-navigation-frame error-state model of \citet[Eqs.~14.63--14.71]{groves_ch14}, reordered position-first. Because the state holds Euler angles while Groves' attitude error is a rotation vector, every block that touches attitude is converted through the Euler-rate matrix \(\mathbf{E}(\bm{\Phi})\), whose columns are the navigation-frame directions of the roll, pitch, and yaw axes; without that conversion the filter diverged during development. The process noise is \(\mathbf{Q}_k = \mathbf{Q}_c\,\Delta t\) with the spectral densities of \Cref{tab:filter-settings}. The measurement update is the standard EKF update with the Jacobians of the GNSS, barometric, heading, and anomaly models.
+
+\subsection{Unscented Kalman Filter}
+\label{sec:ukf}
+
+The UKF carries the same states, process noise, and measurement models, and replaces linearization by the scaled unscented transform \citep{ukf-1, ukf-2, ukf-4}. Its \(2n+1\) sigma points (35 with one anomaly channel, 37 with two) are propagated through the full mechanization, with attitude perturbed on the rotation manifold rather than in Euler angles. The scaling parameter is \(\alpha = 0.1\), with \(\beta = 2\) and \(\kappa = 0\); the textbook \(\alpha = 10^{-3}\) produces a central weight of order \(-10^{6}\) for this state dimension and loses about six significant digits per step to cancellation. For a measurement that is linear in the state the UKF update coincides with the EKF update, so the two filters differ chiefly in propagation and in the anomaly update, where the map enters nonlinearly.
+
+\subsection{Rao-Blackwellized Particle Filter}
+\label{sec:rbpf}
+
+The RBPF is the marginalized particle filter of \citet{schon2005marginalized} in the form that \citet{canciani2017airborne} applied to airborne magnetic anomaly navigation. It is an error-state filter around a single nominal trajectory mechanized from every IMU sample. The vertical channel of the nominal is stabilized inside the mechanization by a third-order barometer loop with all three poles at \(-1/\tau_\text{loop}\), so barometric readings feed the loop rather than the filter. The particles sample only the horizontal position error, and every other error state is linear and is carried by a Kalman filter whose covariance all particles share:
+\begin{equation}
+  \delta\mathbf{x}_n = \begin{bmatrix} \delta L & \delta\lambda \end{bmatrix}^\top, \qquad
+  \delta\mathbf{x}_l = \begin{bmatrix} \delta h & \delta\mathbf{v}^\top & \bm{\varepsilon}^\top & \delta h_a & \delta\hat{a} & V_1 & c_1 & \cdots & V_m & c_m \end{bmatrix}^\top,
+  \label{eqn:rbpf-partition}
+\end{equation}
+where \(\bm{\varepsilon}\) is the navigation-frame tilt, \(\delta h_a\) and \(\delta\hat{a}\) are the barometer-loop errors, and each of the \(m\) map channels contributes a first-order Gauss--Markov bias variation \(V_k\) and a random constant \(c_k\). With one map channel this is the thirteen-state filter of the original paper. Like that filter, and unlike the EKF and UKF, it carries no IMU bias states; adding them to \(\delta\mathbf{x}_l\) made the filter diverge on the degraded-GNSS drives.
+
+Following the original Algorithm~1, the error-state transition and process noise are accumulated over the IMU samples between measurements and applied once per measurement epoch. Each particle's horizontal draw is treated as a virtual observation of the linear states, which keeps each particle's velocity and tilt consistent with the horizontal trajectory it represents. Every measurement other than the barometer reweights the particles by the likelihood with the linear states marginalized, \(\log w^i \leftarrow \log w^i - \frac{1}{2}(\mathbf{r}^i)^\top\mathbf{S}^{-1}\mathbf{r}^i\) with \(\mathbf{S} = \mathbf{C}\mathbf{P}\mathbf{C}^\top + \mathbf{R}\), and moves the linear states with a gain shared by the cloud and a Joseph-form covariance update. The weighted-mean error is then fed back into the nominal, and the cloud is resampled systematically after every update.
+
+\Cref{tab:rbpf-departures} lists where the implementation departs from \citet{canciani2017airborne}. Two departures were forced by the data. The paper runs a navigation-grade INS open loop; on MEMS data the loop must be closed. The paper also sets the horizontal process noise to zero (its eq.~19). With zero noise each time update is a noiseless observation of the velocity and tilt errors, which moves their uncertainty out of the shared covariance and into the spread of the particles, where resampling on a meter-level GNSS fix discards it; on a reference drive the conditional velocity uncertainty fell to millimeters per second and the solution ran 17~km off, whereas 1~m/\(\sqrt{\text{s}}\) held it to 3.8~m.
+
+\begin{table}[htb]
+  \caption{Departures of the RBPF from \citet{canciani2017airborne}}
+  \label{tab:rbpf-departures}
+  \centering
+  \small
+  \begin{tabular}{p{0.27\textwidth}p{0.66\textwidth}}
+    \toprule
+    Departure & Reason \\
+    \midrule
+    Closed loop & The weighted-mean error is fed back into the nominal after every update; a MEMS nominal cannot be run open loop. \\
+    Discrete WGS~84 transition & The rotation-vector error transition of \citet{groves_ch14} replaces the spherical-Earth Pinson matrices. \\
+    Barometer loop completed & Gains and altitude feedback, not printed in the paper, are those of the standard third-order loop \citep{titterton2004strapdown}. \\
+    Additional sensors & GNSS position and velocity and magnetometer heading pass through the same update as the map; a gravity map channel is accepted beside the magnetic one. \\
+    Roughening & Resampled horizontal errors are jittered \citep{gordon1993novel} so the cloud cannot collapse onto one ancestor. \\
+    Exact Gauss--Markov discretization & Process noise is carried through each state's decay across an epoch, so a Gauss--Markov state stays stationary over long gaps. \\
+    Horizontal process noise & 1~m/\(\sqrt{\text{s}}\) rather than zero (see text). \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[htb]
+  \caption{Filter Settings, as Read by the Dedicated-Sensor and Unaided Runs from the Configurations at \texttt{2a40f1e}. The smartphone-sensor runs' configurations were not archived (\Cref{sec:experiment}).}
+  \label{tab:filter-settings}
+  \centering
+  \small
+  \begin{tabular}{llr}
+    \toprule
+    Filter & Parameter & Value \\
+    \midrule
+    EKF, UKF & Position process noise (horizontal, vertical) & 0.1~m/\(\sqrt{\text{s}}\) \\
+     & Velocity process noise density & \(10^{-3}\)~(m/s)\(^2\)/s \\
+     & Attitude process noise density & \(10^{-5}\)~rad\(^2\)/s \\
+     & Accelerometer, gyroscope bias random walk & \(10^{-6}\)~(m/s\(^2\))\(^2\)/s, \(10^{-8}\)~(rad/s)\(^2\)/s \\
+     & Barometric bias, prior and random walk & 8.3~m, 8.3~m per hour \\
+     & Initial position uncertainty & 10~m \\
+    UKF & Scaling \(\alpha\), \(\beta\), \(\kappa\) & 0.1, 2, 0 \\
+    \midrule
+    RBPF & Particles \(N\) & 2{,}000 full GNSS; 1{,}000 degraded and aided \\
+     & Initial position (N, E, up), velocity, tilt & (10, 10, 5)~m, 1~m/s, 0.1~rad \\
+     & Horizontal position random walk & 1~m/\(\sqrt{\text{s}}\) \\
+     & Velocity, angular random walk & \(10^{-3}\)~m/s/\(\sqrt{\text{s}}\), \(10^{-2}\)~rad/\(\sqrt{\text{s}}\) \\
+     & Barometer loop time constant & 10~s \\
+     & Barometer-aiding error & 8.3~m, 3{,}600~s \\
+     & Resampling & Every update, systematic, roughening \(K = 0.2\) \\
+    \midrule
+    All & Heading observation & 0.2~rad at 1~Hz \\
+     & Anomaly update interval & 1~s \\
+    \bottomrule
+  \end{tabular}
+\end{table}

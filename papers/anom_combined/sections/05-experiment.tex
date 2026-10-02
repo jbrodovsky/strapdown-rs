@@ -1,0 +1,26 @@
+\section{Data and Experimental Design}
+\label{sec:experiment}
+
+\subsection{The MEMS-Nav Drives}
+
+The data are the MEMS-Nav recordings \citep{mems-nav-dataset}, made with the Sensor Logger application on seven models of Android and iOS smartphone mounted in passenger cars, mostly on highways in the Mid-Atlantic and northeastern United States between August 2023 and November 2025 (\Cref{fig:maps}). Each recording contains three-axis specific force, angular rate, and magnetic field, the operating system's gravity vector and attitude, barometric pressure and relative altitude, and GNSS position, velocity, and reported accuracies. The 29 raw recordings are resampled to a 10~Hz record rate, which gives 10~Hz inertial propagation; GNSS remains at the roughly 1~Hz rate at which it was logged, and its columns are left empty between fixes rather than interpolated. Recordings are split wherever the IMU stream has a gap longer than 5~s, and segments shorter than 300~s are discarded, which yields the 27 drives of \Cref{tab:dataset}.
+
+\begin{table}[htb]
+  \caption{The 27 MEMS-Nav Drives}
+  \label{tab:dataset}
+  \centering
+  \small
+  \input{tables/dataset.tex}
+\end{table}
+
+No independent reference trajectory exists for these drives, so every error in this paper is the horizontal great-circle distance between the filter's estimate and the recorded GNSS fix, evaluated at the records that carry one, and summarized per drive as a root-mean-square error (RMSE). The recorded GNSS is itself in error by a few meters, which limits the precision with which small differences can be resolved but applies equally to every configuration. One drive, 2025-06-14 21:17:02, is of poor quality: it has 197 GNSS fixes over less than ten minutes, with a median reported horizontal accuracy of 12.2~m and nine fixes reporting an accuracy of 999~m or more. It is retained, and it is the worst drive for every filter.
+
+\subsection{Experimental Design}
+
+Each of the 27 drives was processed by each of the three filters in five configurations: full GNSS, degraded GNSS, and degraded GNSS with gravity, magnetic, or combined anomaly aiding. The aided configurations were run twice, once with the smartphone's own observations and once with the simulated dedicated sensors, giving \(27 \times 3 \times (2 + 2 \times 3) = 648\) runs. Within a pair, the aided and unaided runs share the filter, its initialization and process noise, the barometric and heading updates, the degraded GNSS stream, and the random seed, and differ only in the map-bias states and the anomaly updates.
+
+Because the degraded-GNSS error varies by almost an order of magnitude across drives (\Cref{fig:baselines}), each aided run is scored by the ratio of its horizontal RMSE to that of the same filter's unaided run on the same drive; a ratio below one is an improvement. The ratios of a configuration are summarized by their median with a 95\% percentile bootstrap interval (10{,}000 resamples) \citep{efron1993bootstrap}, by the number of drives improved and worsened, and by a two-sided Wilcoxon signed-rank test on the paired differences \citep{wilcoxon1945individual}. A drive enters a comparison only if both of its runs completed. A run is stopped if the filter's speed exceeds 5{,}000~m/s; this health limit is deliberately loose so that MEMS-grade runs can drift to completion, which also makes completion weak evidence that a run stayed healthy.
+
+The smartphone and dedicated-sensor inputs differ only in the norms of the gravity and magnetic vectors, so their unaided runs should coincide. They do for the UKF, whose degraded-GNSS RMSE changes by more than 1\% on \numsensukfcount{} of \numsensukfn{} drives, but not for the other two filters: the magnetic vector feeds the heading observation, and the last-bit difference introduced by rescaling it changes the EKF's RMSE by more than 1\% on \numsensekfcount{} of \numsensekfn{} drives (by up to \numsensekfmaxm~m) and the RBPF's on \numsensrbpfcount{} of the \numsensrbpfn{} drives common to both sets, with a median change of \numsensrbpfmedianpct\%. Each set of aided runs is therefore compared with its own unaided runs. The sensitivity of the RBPF to this perturbation is itself a result (\Cref{sec:results-rbpf}).
+
+The dedicated-sensor and unaided runs read the configuration files as committed at \texttt{2a40f1e} of \texttt{strapdown-rs}, with seed 42; the revision of the binary that executed them was not recorded. The configurations of the smartphone-sensor runs were not archived; their filter settings are believed to match, but this has not been verified. The analysis scripts that produce every table, figure, and quoted statistic from the run outputs are available as described at the end of the paper.
