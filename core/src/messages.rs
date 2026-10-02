@@ -384,7 +384,7 @@ pub struct AidingConfig {
 
     /// Scheduler that determines when barometric altitude measurements are emitted.
     ///
-    /// Defaults to one per second (see [`default_aiding_scheduler`]), *not* to
+    /// Defaults to one per second (see `default_aiding_scheduler`), *not* to
     /// [`MeasurementScheduler::PassThrough`]. [`MeasurementScheduler::DutyCycle`] gives a barometer outage
     /// the same way it gives a GNSS one.
     #[serde(default = "default_aiding_scheduler")]
@@ -392,7 +392,7 @@ pub struct AidingConfig {
 
     /// Scheduler that determines when magnetometer heading measurements are emitted.
     ///
-    /// Defaults to one per second (see [`default_aiding_scheduler`]), *not* to
+    /// Defaults to one per second (see `default_aiding_scheduler`), *not* to
     /// [`MeasurementScheduler::PassThrough`]. The heading a magnetometer yields is derived from a
     /// field vector, so re-reading it faster than the field changes adds no information while
     /// adding weight.

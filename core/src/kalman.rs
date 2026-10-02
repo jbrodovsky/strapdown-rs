@@ -717,7 +717,7 @@ pub(crate) fn imu_sample_from_input(
 
 impl NavigationFilter for UnscentedKalmanFilter {
     /// See [`NavigationFilter::baro_bias_index`]. Reports what
-    /// [`Self::set_baro_bias_index`] was told, so a filter built without one says `None`.
+    /// `Self::set_baro_bias_index` was told, so a filter built without one says `None`.
     fn baro_bias_index(&self) -> Option<usize> {
         self.baro_bias_index
     }
@@ -758,7 +758,7 @@ impl NavigationFilter for UnscentedKalmanFilter {
     /// `[-pi, pi]` *per point*, because that is what `Rotation3::euler_angles` returns. At a
     /// southerly heading the set straddles the cut, so a linear mean of the numbers is not
     /// the mean attitude. They are put back on sigma point 0's branch by
-    /// [`unwrap_attitude_onto_reference_branch`] before the weighted sum, which is both
+    /// `unwrap_attitude_onto_reference_branch` before the weighted sum, which is both
     /// where the mean and the covariance become meaningful again (#336).
     fn predict(
         &mut self,
@@ -1341,7 +1341,7 @@ impl ExtendedKalmanFilter {
 
 impl NavigationFilter for ExtendedKalmanFilter {
     /// See [`NavigationFilter::baro_bias_index`]. Reports what
-    /// [`Self::set_baro_bias_index`] was told, so a filter built without one says `None`.
+    /// `Self::set_baro_bias_index` was told, so a filter built without one says `None`.
     fn baro_bias_index(&self) -> Option<usize> {
         self.baro_bias_index
     }

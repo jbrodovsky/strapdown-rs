@@ -298,7 +298,7 @@ const VERTICAL_POSITION_PROCESS_NOISE_M2_PER_S: f64 =
 /// picked as though they were, which made the horizontal terms a 6.4 km per-step standard
 /// deviation sitting next to a 1 cm one.
 ///
-/// #308 changed only the horizontal pair, leaving [`VERTICAL_POSITION_PROCESS_NOISE_M2_PER_S`] at
+/// #308 changed only the horizontal pair, leaving `VERTICAL_POSITION_PROCESS_NOISE_M2_PER_S` at
 /// its historical `1e-4` because altitude never carried the units defect and a units fix is
 /// not the place to retune a channel. That retune is now done, separately and on its own
 /// evidence: the altitude entry is `1e-2`, derived from the same
@@ -2575,7 +2575,7 @@ impl
 /// [`run_closed_loop_with_geo`], which carries the layout.
 ///
 /// The **barometric** bias is different, and is read here. Since #372 the filter answers
-/// [`NavigationFilter::baro_bias_index`](crate::NavigationFilter::baro_bias_index) for itself,
+/// [`NavigationFilter::baro_bias_index`] for itself,
 /// so the one question this conversion could not previously answer -- which extra state is
 /// which -- now has an answer for that state. Writing `None` regardless would drop an estimate
 /// the filter demonstrably holds.
@@ -2639,7 +2639,7 @@ impl From<(&DateTime<Utc>, &UnscentedKalmanFilter)> for NavigationResult {
 /// [`run_closed_loop_with_geo`], which carries the layout.
 ///
 /// The **barometric** bias is different, and is read here. Since #372 the filter answers
-/// [`NavigationFilter::baro_bias_index`](crate::NavigationFilter::baro_bias_index) for itself,
+/// [`NavigationFilter::baro_bias_index`] for itself,
 /// so the one question this conversion could not previously answer -- which extra state is
 /// which -- now has an answer for that state. Writing `None` regardless would drop an estimate
 /// the filter demonstrably holds.
@@ -4390,7 +4390,7 @@ fn position_rms_meters(
 /// deviations $\sqrt{P_{ii}}$ (degrees, degrees, metres) at `debug` level -- despite the name,
 /// nothing is written to stdout, so the message appears only when the logger is configured for
 /// [`LogLevel::Debug`] or finer. The horizontal sigmas are also converted to metres (see
-/// [`position_rms_meters`]) so they can be root-sum-squared with the (already-metric) altitude
+/// `position_rms_meters`) so they can be root-sum-squared with the (already-metric) altitude
 /// sigma into a single, dimensionally meaningful RMS distance.
 ///
 /// The filter must expose at least the three position states; any 9- or 15-state filter in this
@@ -5151,9 +5151,10 @@ pub enum FilterType {
 #[serde(rename_all = "kebab-case")]
 #[derive(Default)]
 pub enum ParticleFilterType {
-    /// Rao-Blackwellized particle filter after Canciani & Raquet (horizontal position as
-    /// particles; altitude, velocity, tilt, optional IMU biases and the map biases as a
-    /// Kalman filter per particle). The default, and currently the only variant.
+    /// Rao-Blackwellized particle filter after Canciani & Raquet (horizontal position error
+    /// as particles; altitude, velocity, tilt, the barometer loop's two states and the map
+    /// biases as one Kalman filter shared by every particle, with no IMU bias states). The
+    /// default, and currently the only variant.
     #[default]
     RaoBlackwellized,
 }
@@ -6256,7 +6257,7 @@ pub struct SyntheticConfig {
     pub baro_noise_std_pa: f64,
     /// Magnetometer noise standard deviation per axis, microtesla.
     ///
-    /// See [`default_mag_noise_std_ut`]. Sensor noise only.
+    /// See `default_mag_noise_std_ut`. Sensor noise only.
     #[serde(default = "default_mag_noise_std_ut")]
     pub mag_noise_std_ut: f64,
     /// Hard-iron offset magnitude, microtesla, drawn once per trajectory and held constant.

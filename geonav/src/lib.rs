@@ -922,13 +922,13 @@ pub trait GeophysicalAnomalyMeasurementModel: MeasurementModel {
 /// therefore just $-h$ to five significant figures. It never tripped a gate, because a
 /// tens-of-milligal innovation against the default 100 mGal noise is a NIS of about 0.16.
 /// This is the same defect the magnetic channel had and the same fix; see
-/// [`MICROTESLA_TO_NANOTESLA`].
+/// `MICROTESLA_TO_NANOTESLA`.
 ///
 /// # Latitude units
 ///
 /// [`gravity_anomaly`] takes **degrees**, while [`StrapdownState`] stores radians, so both
 /// of this type's anomaly paths convert: [`GeophysicalAnomalyMeasurementModel::set_state`]
-/// and the per-particle path through [`Self::extract_state_inputs`]. Neither did before
+/// and the per-particle path through `Self::extract_state_inputs`. Neither did before
 /// #330, which evaluated normal gravity near the equator whatever the true latitude -- a
 /// -2136 mGal error at 40 deg N, against map anomalies of tens of mGal. (That figure was
 /// itself written while the anomaly was still $m/s^2$; it is only literally true in milligal

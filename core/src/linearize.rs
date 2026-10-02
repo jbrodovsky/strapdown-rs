@@ -171,13 +171,13 @@ fn euler_rate_matrix(roll: f64, pitch: f64, yaw: f64) -> nalgebra::Matrix3<f64> 
 /// **Attitude.** This is where the two filters genuinely differ, and it is not a sign.
 /// [`AttitudeParametrization::RotationVector`] here means the **navigation-frame**
 /// perturbation $\tilde C = (I + [\delta\theta\times]) C$ that the rest of
-/// [`transition_jacobian`] is written in. A body-frame rate perturbation reaches it through
+/// `transition_jacobian` is written in. A body-frame rate perturbation reaches it through
 /// the attitude, so
 ///
 /// $$ \frac{\partial \theta^+_n}{\partial b_g} = -C_b^n \, \Delta t $$
 ///
 /// and for a state holding Euler angles the row converts out of rotation-vector space the
-/// same way [`transition_jacobian`]'s attitude block does, through $E(\Phi^+)^{-1}$:
+/// same way `transition_jacobian`'s attitude block does, through $E(\Phi^+)^{-1}$:
 ///
 /// $$ \frac{\partial \Phi^+}{\partial b_g} = -E(\Phi^+)^{-1} C_b^n \, \Delta t $$
 ///
@@ -192,7 +192,7 @@ fn euler_rate_matrix(roll: f64, pitch: f64, yaw: f64) -> nalgebra::Matrix3<f64> 
 ///
 /// Near gimbal lock $E$ is singular, and the rotation-vector form is kept -- wrong but
 /// bounded -- rather than inverting a near-singular matrix. Same policy, and same reason, as
-/// [`transition_jacobian`].
+/// `transition_jacobian`.
 #[must_use]
 pub fn bias_coupling_blocks(
     state: &StrapdownState,
@@ -452,7 +452,7 @@ pub fn attitude_reset_jacobian(delta_theta: &Vector3<f64>) -> nalgebra::Matrix3<
 /// # Construction
 ///
 /// $\omega^b = (C_b^n)^\top \omega^n$, so $E_b(\Phi) = (C_b^n)^\top E(\Phi)$ and therefore
-/// $E_b^{-1} = E^{-1} C_b^n$. Built from [`euler_rate_matrix_inverse`] rather than from
+/// $E_b^{-1} = E^{-1} C_b^n$. Built from `euler_rate_matrix_inverse` rather than from
 /// fresh trigonometry, so the two charts cannot drift apart.
 ///
 /// The amplification guard is then re-applied **to the product**, not inherited from

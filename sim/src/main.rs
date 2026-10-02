@@ -1,22 +1,27 @@
 //! STRAPDOWN SIM: A simulation and analysis tool for strapdown inertial navigation systems.
 //!
-//! This program can operate in three modes: open-loop, closed-loop, and particle-filter.
+//! This program runs strapdown INS simulations on recorded or synthetic data:
 //!
-//! - Open-loop mode: Relies solely on inertial measurements (IMU) and an initial position estimate
-//!   for dead reckoning. Useful for high-accuracy IMUs with drift rates ≤1 nm per 24 hours.
+//! - dr: dead reckoning. Propagates the IMU from the initial state with no aiding at all.
 //!
-//! - Closed-loop mode: Incorporates GNSS measurements to correct IMU drift using either an
-//!   Unscented Kalman Filter (UKF) or Extended Kalman Filter (EKF). Supports GNSS degradation
-//!   scenarios including jamming, reduced update rates, and spoofing.
+//! - cl: closed loop. Corrects the INS with GNSS, barometric and magnetometer measurements
+//!   through the 15-state error-state Kalman filter (ESKF) by default, or the EKF or UKF with
+//!   --filter. GNSS can be withheld (outages, reduced rates) or corrupted (noise, drift, spoofing).
 //!
-//! - Particle-filter mode: Uses particle-based state estimation, supporting both standard and
-//!   Rao-Blackwellized implementations.
+//! - pf: the Rao-Blackwellized particle filter, with the same GNSS degradation options.
+//!
+//! - syn: generates a synthetic trajectory: noisy sensor records for the modes above, or the
+//!   kinematic truth with --no-noise.
+//!
+//! - config: writes a template configuration file.
+//!
+//! `ol` (open loop) is reserved and not implemented; it writes no output.
 //!
 //! You can run simulations either by:
-//!   1. Loading all parameters from a configuration file (TOML/JSON/YAML)
+//!   1. Loading all parameters from a configuration file (TOML/JSON/YAML) with --config
 //!   2. Specifying parameters via command-line flags
 //!
-//! For dataset format details, see the documentation or use --help with specific subcommands.
+//! Results are written as CSV. User guide: https://jbrodovsky.github.io/strapdown-rs/
 
 mod common;
 #[cfg(feature = "plotting")]
@@ -78,23 +83,28 @@ const DEFAULT_LOG_LEVEL: &str = "info";
 const LONG_ABOUT: &str =
     "STRAPDOWN SIM: A simulation and analysis tool for strapdown inertial navigation systems.
 
-This program can operate in three modes: open-loop, closed-loop, and particle-filter.
+This program runs strapdown INS simulations on recorded or synthetic data:
 
-- Open-loop mode: Relies solely on inertial measurements (IMU) and an initial position estimate 
-  for dead reckoning. Useful for high-accuracy IMUs with drift rates ≤1 nm per 24 hours.
+- dr: dead reckoning. Propagates the IMU from the initial state with no aiding at all.
 
-- Closed-loop mode: Incorporates GNSS measurements to correct IMU drift using either an 
-  Unscented Kalman Filter (UKF) or Extended Kalman Filter (EKF). Supports GNSS degradation 
-  scenarios including jamming, reduced update rates, and spoofing.
+- cl: closed loop. Corrects the INS with GNSS, barometric and magnetometer measurements
+  through the 15-state error-state Kalman filter (ESKF) by default, or the EKF or UKF with
+  --filter. GNSS can be withheld (outages, reduced rates) or corrupted (noise, drift, spoofing).
 
-- Particle-filter mode: Uses particle-based state estimation, supporting both standard and 
-  Rao-Blackwellized implementations. CURRENTLY IN DEVELOPMENT!!!
+- pf: the Rao-Blackwellized particle filter, with the same GNSS degradation options.
+
+- syn: generates a synthetic trajectory: noisy sensor records for the modes above, or the
+  kinematic truth with --no-noise.
+
+- config: writes a template configuration file.
+
+`ol` (open loop) is reserved and not implemented; it writes no output.
 
 You can run simulations either by:
-  1. Loading all parameters from a configuration file (TOML/JSON/YAML)
+  1. Loading all parameters from a configuration file (TOML/JSON/YAML) with --config
   2. Specifying parameters via command-line flags
 
-For dataset format details, see the documentation or use --help with specific subcommands.";
+Results are written as CSV. User guide: https://jbrodovsky.github.io/strapdown-rs/";
 
 /// Command line arguments
 #[derive(Parser)]
@@ -137,21 +147,21 @@ enum Command {
     DeadReckoning(SimArgs),
     #[command(
         name = "ol",
-        about = "Run simulation in open-loop mode",
-        long_about = "Run INS simulation in an open-loop (feed-forward) mode. In this mode, an initial position estimate and inertial measurements (IMU) are used to propagate the navigation solution. A Kalman filter (EKF or UKF) is used to estimate the errors to the navigation solution from GNSS measurements and apply the correction. Various GNSS degradation scenarios can be simulated, including jamming, reduced update rates, and spoofing."
+        about = "Open-loop (feed-forward) mode -- not implemented; writes no output",
+        long_about = "Reserved for an open-loop (feed-forward) mode, in which a filter would estimate the navigation errors from GNSS without feeding the corrections back into the mechanization. It is not implemented: the command validates its paths and exits without writing a result. For dead reckoning use `dr`; for GNSS-aided navigation use `cl` or `pf`."
     )]
     OpenLoop(SimArgs),
     #[command(
         name = "cl",
         about = "Run simulation in closed-loop mode",
-        long_about = "Run INS simulation in a closed-loop (feedback) mode. In this mode, GNSS measurements are incorporated to correct for IMU drift and directly reset or update the navigation states using either an Unscented Kalman Filter (UKF) or Extended Kalman Filter (EKF). Various GNSS degradation scenarios can be simulated, including jamming, reduced update rates, and spoofing."
+        long_about = "Run INS simulation in a closed-loop (feedback) mode. In this mode, GNSS measurements are incorporated to correct for IMU drift and directly reset or update the navigation states. The filter is the 15-state error-state Kalman filter (ESKF) by default; --filter selects the extended (EKF) or unscented (UKF) Kalman filter instead. Various GNSS degradation scenarios can be simulated, including jamming, reduced update rates, and spoofing."
     )]
     ClosedLoop(Box<ClosedLoopSimArgs>),
 
     #[command(
         name = "pf",
         about = "Run simulation using particle filter.",
-        long_about = "Run INS simulation using a particle filter for state estimation. This mode supports both standard and Rao-Blackwellized particle filter implementations. Various GNSS degradation scenarios can be simulated, including jamming, reduced update rates, and spoofing."
+        long_about = "Run INS simulation using the Rao-Blackwellized particle filter after Canciani & Raquet (2017): horizontal position error as particles, the remaining error states as one Kalman filter shared by every particle. Various GNSS degradation scenarios can be simulated, including jamming, reduced update rates, and spoofing."
     )]
     ParticleFilter(Box<ParticleFilterSimArgs>),
 
