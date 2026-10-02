@@ -39,7 +39,8 @@ and alternative positioning, navigation and timing (PNT).
 ## What it does
 
 - **Filters.** All four implement the `NavigationFilter` trait:
-  - error-state Kalman filter (ESKF, the default), 15 states;
+  - error-state Kalman filter (ESKF, the default): 15 error states, plus a barometric bias
+    state unless `--no-estimate-baro-bias`;
   - extended Kalman filter (EKF);
   - unscented Kalman filter (UKF);
   - Rao-Blackwellized particle filter after Canciani & Raquet (2017).
