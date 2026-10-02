@@ -2007,7 +2007,7 @@ mod tests {
             let mut built = AidingConfig::default();
             built.scheduler = MeasurementScheduler::PassThrough;
             built.fault = GnssFaultModel::None;
-            built.seed = 42;
+            built.seed = Some(42);
             built
         };
         let geomap = Rc::new(create_test_gravity_map());
@@ -2045,7 +2045,7 @@ mod tests {
             let mut built = AidingConfig::default();
             built.scheduler = MeasurementScheduler::PassThrough;
             built.fault = GnssFaultModel::None;
-            built.seed = 42;
+            built.seed = Some(42);
             built
         };
         let geomap = Rc::new(create_test_gravity_map());
@@ -2079,7 +2079,7 @@ mod tests {
             let mut built = AidingConfig::default();
             built.scheduler = MeasurementScheduler::PassThrough;
             built.fault = GnssFaultModel::None;
-            built.seed = 42;
+            built.seed = Some(42);
             built
         };
         let geomap = Rc::new(create_test_gravity_map());
@@ -2126,7 +2126,7 @@ mod tests {
             let mut built = AidingConfig::default();
             built.scheduler = MeasurementScheduler::PassThrough;
             built.fault = GnssFaultModel::None;
-            built.seed = 42;
+            built.seed = Some(42);
             built
         };
         let geomap = Rc::new(create_test_magnetic_map());
@@ -2821,7 +2821,7 @@ mod tests {
             let mut built = AidingConfig::default();
             built.scheduler = MeasurementScheduler::PassThrough;
             built.fault = GnssFaultModel::None;
-            built.seed = 42;
+            built.seed = Some(42);
             built
         };
         let geomap = Rc::new(create_test_gravity_map());
@@ -2868,7 +2868,7 @@ mod tests {
             let mut built = AidingConfig::default();
             built.scheduler = MeasurementScheduler::PassThrough;
             built.fault = GnssFaultModel::None;
-            built.seed = 42;
+            built.seed = Some(42);
             built
         };
         let geomap = Rc::new(create_test_gravity_map());

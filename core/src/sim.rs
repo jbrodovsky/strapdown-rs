@@ -5783,7 +5783,12 @@ pub struct SimulationConfig {
     pub output: String,
     /// Simulation mode
     pub mode: SimulationMode,
-    /// Random number generator seed
+    /// The run's random seed (default 42).
+    ///
+    /// Seeds the particle filter's own sampling and, unless `[aiding] seed` is given, the GNSS
+    /// fault models -- see [`Self::resolved_aiding`] -- the way `strapdown-sim`'s `--seed` seeds
+    /// both. It used to reach only the particle filter, so two files differing only in this
+    /// key gave byte-identical closed-loop output.
     #[serde(default = "default_seed")]
     pub seed: u64,
     /// Local-level frame the input records are expressed in: `false` (the default) is NED,
@@ -5873,6 +5878,18 @@ impl Default for SimulationConfig {
 }
 
 impl SimulationConfig {
+    /// The aiding configuration a run uses: [`Self::aiding`] with its seed filled from the
+    /// top-level [`Self::seed`] when `[aiding]` names none.
+    ///
+    /// An explicit `[aiding] seed` wins, so a study can hold the fault realization fixed
+    /// while varying the particle filter's seed, or the reverse.
+    #[must_use]
+    pub fn resolved_aiding(&self) -> crate::messages::AidingConfig {
+        let mut aiding = self.aiding.clone();
+        aiding.seed = Some(aiding.seed.unwrap_or(self.seed));
+        aiding
+    }
+
     /// Write the configuration to a JSON file (pretty-printed)
     /// # Errors
     /// If the file cannot be created or written, or the records cannot be

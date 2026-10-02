@@ -1078,7 +1078,7 @@ fn process_file(
             // Derived from the filter, not asked for a second time; see
             // `run_single_closed_loop_simulation` for why (#372).
             let aiding = {
-                let mut built = config.aiding.clone();
+                let mut built = config.resolved_aiding();
                 built.baro_bias_index = match filter_config.filter {
                     FilterType::Ukf => ukf_config.baro_bias_index(),
                     FilterType::Ekf => ekf_config.baro_bias_index(),
@@ -1240,7 +1240,7 @@ fn process_file(
             // fifteen-plus states wide, a stray index would pass the barometer's width check
             // and read a map bias as its own. The Kalman geo path clears it the same way.
             let aiding = {
-                let mut aiding = config.aiding.clone();
+                let mut aiding = config.resolved_aiding();
                 aiding.baro_bias_index = None;
                 aiding
             };
@@ -1878,7 +1878,7 @@ fn run_closed_loop_cli(
         let mut built = strapdown::messages::AidingConfig::default();
         built.scheduler = build_scheduler(&args.scheduler);
         built.fault = build_fault(&args.fault);
-        built.seed = args.seed;
+        built.seed = Some(args.seed);
         built
     };
 
@@ -2108,7 +2108,7 @@ fn geo_settings_from_args(
     let mut aiding = strapdown::messages::AidingConfig::default();
     aiding.scheduler = build_scheduler(&args.scheduler);
     aiding.fault = build_fault(&args.fault);
-    aiding.seed = args.seed;
+    aiding.seed = Some(args.seed);
 
     Ok(GeoClosedLoopSettings {
         filter: args.filter,
@@ -2155,7 +2155,7 @@ fn geo_settings_from_config(
     // Cleared here and derived by the runner from the filter it builds, as the unaided arm of
     // `process_file` derives it: the index depends on how many map biases precede the
     // barometric one, which only the runner knows once the maps are loaded.
-    let mut aiding = config.aiding.clone();
+    let mut aiding = config.resolved_aiding();
     aiding.baro_bias_index = None;
 
     Ok(GeoClosedLoopSettings {
@@ -2917,7 +2917,7 @@ fn run_particle_filter(
             let mut built = strapdown::messages::AidingConfig::default();
             built.scheduler = build_scheduler(&args.scheduler);
             built.fault = build_fault(&args.fault);
-            built.seed = args.seed;
+            built.seed = Some(args.seed);
             // The RBPF carries no barometric bias; see the config-file path.
             built.baro_bias_index = None;
             built
@@ -3817,7 +3817,8 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
         let mut built = strapdown::messages::AidingConfig::default();
         built.scheduler = scheduler;
         built.fault = fault;
-        built.seed = seed;
+        // Left unset, so the file's top-level `seed` seeds the faults too and editing that one
+        // key changes the whole run's randomness.
         built
     };
 
@@ -4840,5 +4841,64 @@ magnetic_bias_process_noise_std = 3.0
         let synthetic = read.synthetic.expect("a [synthetic] section");
         assert_eq!(synthetic.output, "trajectory.csv");
         assert_eq!(synthetic.seed, 7);
+    }
+
+    /// A scenario file's top-level `seed` seeds the GNSS faults unless `[aiding] seed` says
+    /// otherwise, as `--seed` does on the command line. It used to reach only the particle
+    /// filter, so two files differing only in `seed` gave byte-identical closed-loop output.
+    #[test]
+    fn the_top_level_seed_reaches_the_fault_models() {
+        let read = |body: &str| {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("seed.toml");
+            std::fs::write(&path, body).unwrap();
+            SimulationConfig::from_file(&path).unwrap()
+        };
+        let top_level_only = read("mode = \"closed-loop\"\nseed = 7\n");
+        assert_eq!(top_level_only.resolved_aiding().seed, Some(7));
+
+        let both = read("mode = \"closed-loop\"\nseed = 7\n\n[aiding]\nseed = 9\n");
+        assert_eq!(both.resolved_aiding().seed, Some(9), "[aiding] seed wins");
+
+        let neither = read("mode = \"closed-loop\"\n");
+        assert_eq!(neither.resolved_aiding().seed, Some(42));
+    }
+
+    /// The seed actually changes the faults: the same degraded scenario under two top-level
+    /// seeds gives two different event streams.
+    #[test]
+    fn two_top_level_seeds_give_two_fault_realizations() {
+        use strapdown::messages::GnssFaultModel;
+
+        let mut synthetic = SyntheticConfig::default();
+        synthetic.duration_s = 20.0;
+        let (_, records) = generate_synthetic(&synthetic, &mut StdRng::seed_from_u64(1)).unwrap();
+        let stream_for = |seed: u64| {
+            let mut config = SimulationConfig::default();
+            config.seed = seed;
+            config.aiding.fault = GnssFaultModel::Degraded {
+                rho_pos: 0.99,
+                sigma_pos_m: 10.0,
+                rho_vel: 0.95,
+                sigma_vel_mps: 1.0,
+                r_scale: 1.0,
+                tau_pos_s: None,
+                tau_vel_s: None,
+            };
+            let stream = build_event_stream(&records, &config.resolved_aiding(), false).unwrap();
+            // The measured values themselves: a model's Debug output does not show them.
+            let state = nalgebra::DVector::<f64>::zeros(15);
+            stream
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    Event::Measurement { meas, .. } => meas.get_measurement(&state).ok(),
+                    Event::Imu { .. } => None,
+                })
+                .map(|values| format!("{values:?}"))
+                .collect::<Vec<_>>()
+        };
+        assert_ne!(stream_for(1), stream_for(2));
+        assert_eq!(stream_for(1), stream_for(1));
     }
 }

@@ -145,7 +145,8 @@ A run is a function of its inputs and its seeds. There are no wall-clock or thre
 inputs to the navigation solution:
 
 - the GNSS fault model draws from a `StdRng` seeded from `AidingConfig::seed` (`[aiding] seed`
-  in a config file, `--seed` on the command line);
+  in a config file, falling back to the top-level `seed` through
+  `SimulationConfig::resolved_aiding`; `--seed` on the command line; 42 when nothing sets it);
 - the RBPF seeds its own `StdRng` from its configuration's seed;
 - `generate_synthetic` takes the seeded RNG it draws from.
 

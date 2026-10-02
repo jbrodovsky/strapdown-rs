@@ -70,7 +70,7 @@ fn aiding() -> AidingConfig {
         start_phase_s: 0.0,
     };
     built.fault = GnssFaultModel::None;
-    built.seed = SEED;
+    built.seed = Some(SEED);
     built.baro_bias_index = Some(NAVIGATION_STATES);
     built
 }

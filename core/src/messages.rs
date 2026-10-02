@@ -285,10 +285,8 @@ pub enum GnssFaultModel {
     },
 }
 
-/// Default seed value for reproducible simulations
-const fn default_seed() -> u64 {
-    42
-}
+/// Seed of the fault models when [`AidingConfig::seed`] names none and nothing filled it in.
+pub const DEFAULT_AIDING_SEED: u64 = 42;
 
 /// Default [`AidingConfig::max_imu_gap_s`]: five seconds without a usable inertial sample.
 ///
@@ -424,12 +422,19 @@ pub struct AidingConfig {
     #[serde(default)]
     pub baro_bias_index: Option<usize>,
 
-    /// Random number generator seed for deterministic tests and reproducibility.
+    /// Seed of the GNSS fault models' random draws (AR(1) degradation, slow-bias random walk).
     ///
     /// Use the same seed to repeat scenarios exactly; change it to get a new
     /// realization of stochastic processes such as AR(1) degradation.
-    #[serde(default = "default_seed")]
-    pub seed: u64,
+    ///
+    /// `None` -- the default -- means "the run's seed": a scenario file's top-level `seed`
+    /// fills it (see [`crate::sim::SimulationConfig::resolved_aiding`]), as `strapdown-sim`'s
+    /// `--seed` does on the command line, and anything else that builds an event stream from
+    /// a `None` takes [`DEFAULT_AIDING_SEED`]. It was a plain `u64` defaulting to 42, so a
+    /// config file's top-level `seed` never reached the faults: two files differing only in
+    /// it gave byte-identical output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
 
     /// How long the inertial stream may stop reporting before the run is refused, in seconds.
     ///
@@ -464,7 +469,7 @@ impl Default for AidingConfig {
             magnetometer_scheduler: default_aiding_scheduler(),
             baro_noise_std_m: default_baro_noise_std_m(),
             baro_bias_index: None,
-            seed: default_seed(),
+            seed: None,
             max_imu_gap_s: default_max_imu_gap_s(),
         }
     }
@@ -1337,7 +1342,7 @@ pub fn build_event_stream(
         .map(|r| ((r.time - start_time).num_milliseconds() as f64 / 1000.0, r))
         .collect();
     let mut events = Vec::with_capacity(records_with_elapsed.len() * 2);
-    let mut st = FaultState::new(cfg.seed);
+    let mut st = FaultState::new(cfg.seed.unwrap_or(DEFAULT_AIDING_SEED));
 
     // Scheduler state, one clock per aided channel. Only `FixedInterval` needs any:
     // `PassThrough` emits unconditionally and `DutyCycle` derives its window from the elapsed
@@ -2270,7 +2275,7 @@ mod tests {
                 tau_pos_s: None,
                 tau_vel_s: None,
             },
-            seed: 500,
+            seed: Some(500),
             ..Default::default()
         };
 
@@ -2782,6 +2787,7 @@ mod serialization_tests {
                 tau_pos_s: None,
                 tau_vel_s: None,
             },
+            seed: Some(7),
             ..Default::default()
         }
     }

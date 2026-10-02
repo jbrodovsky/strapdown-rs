@@ -115,7 +115,7 @@ restructured, which are refused by name; see [below](#particle_filter).
 | `mode` | **required** | what to run; see the table below |
 | `input` | `"input.csv"` | input CSV file or directory, as for `-i` |
 | `output` | `"output.csv"` | output CSV file or directory, as for `-o` |
-| `seed` | `42` | seed of the **particle filter**; see [Seeds](#seeds) |
+| `seed` | `42` | the run's seed: the particle filter's, and the fault models' unless `[aiding] seed` is set; see [Seeds](#seeds) |
 | `is_enu` | `false` | the input records are ENU rather than NED; as `--enu` |
 | `parallel` | `false` | process a directory's files concurrently |
 | `generate_plot` | `false` | write a PNG plot beside each closed-loop or particle-filter result |
@@ -151,7 +151,7 @@ files keep working -- but `aiding` is the name to write.
 | `baro_scheduler` | `fixed_interval`, 1 s | when barometric altitude is delivered |
 | `magnetometer_scheduler` | `fixed_interval`, 1 s | when magnetometer heading is delivered |
 | `baro_noise_std_m` | `2.23606797749979` | barometric altitude one-sigma, metres |
-| `seed` | `42` | seed of the fault models |
+| `seed` | the top-level `seed` | seed of the fault models; overrides the top-level `seed` for them |
 | `max_imu_gap_s` | `5.0` | longest tolerated gap in the inertial stream, seconds; `0` or less disables the check |
 
 `max_imu_gap_s` bounds the IMU stream only. A record with a missing accelerometer or gyroscope
@@ -495,18 +495,18 @@ apart from not passing the flag, and the file's level wins. See [Logging](./logg
 
 ## Seeds
 
-A configuration file has up to three seeds, one per random process, all defaulting to `42`:
+A configuration file has up to three seeds:
 
-| Key | Seeds |
-|---|---|
-| `aiding.seed` | the GNSS fault models |
-| `seed` (top level) | the particle filter's sampling; read by `particle-filter` mode only |
-| `synthetic.seed` | the generated trajectory's noise |
+| Key | Default | Seeds |
+|---|---|---|
+| `seed` (top level) | `42` | the particle filter's sampling, and the GNSS fault models unless `aiding.seed` is set |
+| `aiding.seed` | the top-level `seed` | the GNSS fault models |
+| `synthetic.seed` | `42` | the generated trajectory's noise |
 
-On the command line `pf --seed` sets both of the first two at once. In a file they are
-independent, so a particle-filter Monte Carlo study can vary the filter's seed while holding the
-GNSS corruption fixed, or the reverse. Changing the top-level `seed` of a closed-loop file has no
-effect: vary `aiding.seed` instead.
+So the top-level `seed` alone seeds the whole run, as `--seed` does on the command line: two
+closed-loop files that differ only in it give two different fault realizations. Set
+`aiding.seed` as well to separate the two, so that a particle-filter Monte Carlo study can vary
+the filter's seed while holding the GNSS corruption fixed, or the reverse.
 
 The same seeds with the same file and input produce identical output, which is what makes a
 reported error meaningful.

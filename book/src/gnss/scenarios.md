@@ -67,9 +67,9 @@ Three behaviours of the parser are worth knowing:
   `core/tests/example_configs.rs` guards the shipped files against this; your own files are
   not guarded, so check section names against this page.
 
-**Seeds.** In a configuration file the fault model is seeded by `[aiding] seed`, not by the
-top-level `seed`: two files differing only in the top-level `seed` produce identical
-closed-loop output. On the command line, `--seed` is what seeds the fault model.
+**Seeds.** In a configuration file the fault model is seeded by `[aiding] seed` when it is
+given, and otherwise by the top-level `seed`, so two files differing only in the top-level
+`seed` produce two fault realizations. On the command line, `--seed` seeds the fault model.
 
 **`baro_bias_index`** tells the barometer measurement which state of the filter holds a
 barometric bias. `strapdown-sim` overwrites it from the filter it builds (and clears it for the

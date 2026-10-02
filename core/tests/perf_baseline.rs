@@ -448,7 +448,7 @@ fn scenarios() -> Vec<Scenario> {
         let mut built = AidingConfig::default();
         built.scheduler = MeasurementScheduler::PassThrough;
         built.fault = GnssFaultModel::None;
-        built.seed = SEED;
+        built.seed = Some(SEED);
         built
     };
 
@@ -477,7 +477,7 @@ fn scenarios() -> Vec<Scenario> {
                     phase_s: 0.0,
                 };
                 built.fault = GnssFaultModel::None;
-                built.seed = SEED;
+                built.seed = Some(SEED);
                 built
             },
             estimator,
@@ -499,7 +499,7 @@ fn scenarios() -> Vec<Scenario> {
                 start_phase_s: 0.0,
             };
             built.fault = GnssFaultModel::None;
-            built.seed = SEED;
+            built.seed = Some(SEED);
             built
         },
         estimator: Estimator::Eskf,
@@ -525,7 +525,7 @@ fn scenarios() -> Vec<Scenario> {
                     tau_pos_s: None,
                     tau_vel_s: None,
                 };
-                built.seed = SEED;
+                built.seed = Some(SEED);
                 built
             },
             estimator,
@@ -547,7 +547,7 @@ fn scenarios() -> Vec<Scenario> {
                     phase_s: 0.0,
                 };
                 built.fault = GnssFaultModel::None;
-                built.seed = SEED;
+                built.seed = Some(SEED);
                 built
             },
             estimator,
@@ -568,7 +568,7 @@ fn scenarios() -> Vec<Scenario> {
                     start_phase_s: 0.0,
                 };
                 built.fault = GnssFaultModel::None;
-                built.seed = SEED;
+                built.seed = Some(SEED);
                 built
             },
             estimator,
