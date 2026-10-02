@@ -152,10 +152,12 @@ pub enum MeasurementScheduler {
 /// };
 ///
 /// // Combo: first drift slowly, then add hijack window
-/// let fault = GnssFaultModel::Combo(vec![
-///     GnssFaultModel::SlowBias { drift_n_mps: 0.02, drift_e_mps: 0.0, q_bias: 1e-6, rotate_omega_rps: 0.0 },
-///     GnssFaultModel::Hijack { offset_n_m: 50.0, offset_e_m: 0.0, start_s: 120.0, duration_s: 60.0 },
-/// ]);
+/// let fault = GnssFaultModel::Combo {
+///     faults: vec![
+///         GnssFaultModel::SlowBias { drift_n_mps: 0.02, drift_e_mps: 0.0, q_bias: 1e-6, rotate_omega_rps: 0.0 },
+///         GnssFaultModel::Hijack { offset_n_m: 50.0, offset_e_m: 0.0, start_s: 120.0, duration_s: 60.0 },
+///     ],
+/// };
 /// ```
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -250,7 +252,37 @@ pub enum GnssFaultModel {
     ///
     /// The output of one model is fed as the input to the next. This allows
     /// combining e.g. `SlowBias` with a `Hijack` to simulate multi-stage spoofing.
-    Combo(Vec<Self>),
+    ///
+    /// In a configuration file this is `kind = "combo"` with the members under `faults`:
+    ///
+    /// ```toml
+    /// [aiding.fault]
+    /// kind = "combo"
+    /// [[aiding.fault.faults]]
+    /// kind = "slow_bias"
+    /// drift_n_mps = 0.02
+    /// drift_e_mps = 0.0
+    /// q_bias = 1e-6
+    /// rotate_omega_rps = 0.0
+    /// [[aiding.fault.faults]]
+    /// kind = "hijack"
+    /// offset_n_m = 50.0
+    /// offset_e_m = 0.0
+    /// start_s = 120.0
+    /// duration_s = 60.0
+    /// ```
+    ///
+    /// It is a struct variant rather than a newtype around the list because the enum is
+    /// internally tagged: serde cannot put a `kind` tag on a sequence, so `Combo(Vec<Self>)`
+    /// could be built in code but never read from a file.
+    ///
+    /// The members share one [`FaultState`], so two members of the same kind (two
+    /// `Degraded`, say) step the same error states twice per fix rather than adding two
+    /// independent errors. Combine different kinds.
+    Combo {
+        /// The models to apply, in order.
+        faults: Vec<Self>,
+    },
 }
 
 /// Default seed value for reproducible simulations
@@ -859,9 +891,8 @@ fn ar1_step(x: &mut f64, rho: f64, sigma: f64, rng: &mut rand::rngs::StdRng) {
 ///   window, measurements pass through unchanged.
 ///
 /// - **`GnssFaultModel::Combo`**\
-///   Intended to compose multiple effects by feeding the output of one model as
-///   the input to the next. (Wire up the call loop to `apply_fault` for each
-///   sub-model if composition is desired.)
+///   Composes multiple effects by feeding the output of one model as the input to
+///   the next, in order.
 ///
 /// # Units & conventions
 /// - Inputs/outputs for latitude and longitude are **degrees**; internal small-angle
@@ -1031,7 +1062,7 @@ pub fn apply_fault(
             }
         }
 
-        GnssFaultModel::Combo(models) => {
+        GnssFaultModel::Combo { faults: models } => {
             let mut out = (
                 lat_deg,
                 lon_deg,
@@ -1224,7 +1255,7 @@ fn duty_cycle_is_on(elapsed_s: f64, on_s: f64, off_s: f64, start_phase_s: f64) -
 ///   velocity sigmas scaled by `r_scale`.
 /// - `SlowBias`: integrates a drifting N/E bias (with optional rotation/random walk).
 /// - `Hijack`: applies a constant N/E offset within a time window.
-/// - `Combo`: intended for sequential composition (hook up as needed).
+/// - `Combo`: applies its members in order, each feeding the next.
 ///
 /// > **Note:** The current implementation passes `vertical_noise_std` through
 /// > unchanged. If you also want to degrade vertical accuracy, extend the
@@ -2387,19 +2418,88 @@ mod tests {
 
     #[test]
     fn test_combo_fault_model() {
-        // Test that the combo fault model functionality exists
-        // Note: Due to commented code in apply_fault for Combo, this is a minimal test
         let records = create_test_records(10, 0.1);
 
         let config = AidingConfig {
             scheduler: MeasurementScheduler::PassThrough,
-            fault: GnssFaultModel::Combo(vec![GnssFaultModel::None, GnssFaultModel::None]),
+            fault: GnssFaultModel::Combo {
+                faults: vec![GnssFaultModel::None, GnssFaultModel::None],
+            },
             ..Default::default()
         };
 
-        // This should at least not crash
         let events = build_event_stream(&records, &config, false).unwrap();
         assert!(!events.events.is_empty());
+    }
+
+    /// A combo applies every member: two hijacks with disjoint axes add their offsets.
+    ///
+    /// The old test only ran `None` twice, which a combo that applied nothing would also pass.
+    #[test]
+    fn combo_applies_each_member_in_turn() {
+        let combo = GnssFaultModel::Combo {
+            faults: vec![
+                GnssFaultModel::Hijack {
+                    offset_n_m: 100.0,
+                    offset_e_m: 0.0,
+                    start_s: 0.0,
+                    duration_s: 10.0,
+                },
+                GnssFaultModel::Hijack {
+                    offset_n_m: 0.0,
+                    offset_e_m: 100.0,
+                    start_s: 0.0,
+                    duration_s: 10.0,
+                },
+            ],
+        };
+        let mut state = FaultState::new(7);
+        let (lat, lon, ..) = apply_fault(
+            &combo, &mut state, 1.0, 1.0, 40.0, -75.0, 0.0, 0.0, 0.0, 3.0, 0.1,
+        );
+        assert!(lat > 40.0 + 5e-4, "north offset missing: {lat}");
+        assert!(lon > -75.0 + 5e-4, "east offset missing: {lon}");
+    }
+
+    /// `kind = "combo"` reads from TOML and YAML, members and all.
+    ///
+    /// As `Combo(Vec<Self>)` under `#[serde(tag = "kind")]` this failed with "invalid type:
+    /// map, expected a sequence": an internally tagged enum cannot tag a newtype holding a
+    /// sequence, so the variant the configuration docs advertised could never be configured.
+    #[test]
+    fn combo_round_trips_through_configuration_files() {
+        let toml_text = r#"
+            kind = "combo"
+            [[faults]]
+            kind = "slow_bias"
+            drift_n_mps = 0.02
+            drift_e_mps = 0.0
+            q_bias = 1e-6
+            rotate_omega_rps = 0.0
+            [[faults]]
+            kind = "hijack"
+            offset_n_m = 50.0
+            offset_e_m = 0.0
+            start_s = 120.0
+            duration_s = 60.0
+        "#;
+        let yaml_text = "kind: combo
+faults:
+  - {kind: slow_bias, drift_n_mps: 0.02, drift_e_mps: 0.0, q_bias: 1.0e-6, rotate_omega_rps: 0.0}
+  - {kind: hijack, offset_n_m: 50.0, offset_e_m: 0.0, start_s: 120.0, duration_s: 60.0}
+";
+        let from_toml: GnssFaultModel = toml::from_str(toml_text).unwrap();
+        let from_yaml: GnssFaultModel = serde_yaml::from_str(yaml_text).unwrap();
+        for parsed in [&from_toml, &from_yaml] {
+            let GnssFaultModel::Combo { faults } = parsed else {
+                panic!("expected a combo, got {parsed:?}");
+            };
+            assert!(matches!(faults[0], GnssFaultModel::SlowBias { .. }));
+            assert!(matches!(faults[1], GnssFaultModel::Hijack { .. }));
+        }
+        let reparsed: GnssFaultModel =
+            toml::from_str(&toml::to_string(&from_toml).unwrap()).unwrap();
+        assert!(matches!(reparsed, GnssFaultModel::Combo { ref faults } if faults.len() == 2));
     }
 
     /// Without a time constant, nothing about the AR(1) step changes.

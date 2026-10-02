@@ -141,7 +141,7 @@ const fn fault_variant(fault: &GnssFaultModel) -> &'static str {
         GnssFaultModel::Degraded { .. } => "Degraded",
         GnssFaultModel::SlowBias { .. } => "SlowBias",
         GnssFaultModel::Hijack { .. } => "Hijack",
-        GnssFaultModel::Combo(_) => "Combo",
+        GnssFaultModel::Combo { .. } => "Combo",
     }
 }
 
