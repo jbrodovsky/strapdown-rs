@@ -15,7 +15,7 @@
 //! 2. **A magnetometer heading.** A body-frame field is synthesised for a known heading and
 //!    turned back into a yaw measurement, with WMM declination applied.
 //! 3. **A spoofed fix.** A chi-squared innovation gate rejects a GNSS fix 200 m off, and the
-//!    default [`GateRecovery`] forces a fix through after five consecutive rejections.
+//!    default [`GateRecovery`] rejects four fixes in a row and forces the fifth through.
 //!
 //! None of the pseudo-measurements here are applied by `strapdown-sim`: the CLI's event
 //! stream carries GNSS position and velocity, barometric altitude and magnetometer yaw. ZUPT,

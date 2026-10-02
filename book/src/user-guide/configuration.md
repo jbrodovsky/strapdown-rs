@@ -386,7 +386,7 @@ Consulted only when a gate is installed. Either field may be omitted and keeps i
 | Key | Default | Meaning |
 |---|---|---|
 | `rejection_inflation` | `2.0` | each rejection multiplies the filter's uncertainty by this factor in the directions the rejected measurement observed; `1.0` disables it |
-| `forced_update_after` | `5` | after this many consecutive rejections, apply the next measurement regardless; `0` disables it (YAML may also write `null`) |
+| `forced_update_after` | `5` | when this many measurements in a row fail the gate, apply the last of them regardless (with `5`: four rejected, the fifth forced); `0` disables it (YAML may also write `null`) |
 
 These values are checked before a run starts, exactly as the command-line flags
 `--gate-confidence`, `--gate-inflation` and `--gate-force-after` are: a confidence outside (0, 1),

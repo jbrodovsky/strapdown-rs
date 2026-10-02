@@ -49,9 +49,9 @@ without a recovery path the next fix disagrees by *more*, is rejected harder, an
 rejection quietly turns into dead reckoning for the rest of the run. `GateRecovery` is what
 prevents that: every rejection inflates the filter's uncertainty in the directions that
 measurement observed -- so the next fix of the same kind is judged against a covariance that
-grew -- and after five consecutive rejections a measurement is applied regardless, on the
-reasoning that a belief contradicted five times running is likelier to be wrong than the sensor
-contradicting it. `set_gate_recovery`
+grew -- and when five measurements in a row fail the gate, the fifth is applied regardless
+(four rejections, then a forced update), on the reasoning that a belief contradicted five times
+running is likelier to be wrong than the sensor contradicting it. `set_gate_recovery`
 tunes it, `GateRecovery::none()` switches it off, and `UpdateOutcome::forced` says whether an
 accepted fix was accepted on its merits or by that escape.
 

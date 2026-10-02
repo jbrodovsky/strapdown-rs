@@ -570,11 +570,13 @@ struct ClosedLoopSimArgs {
     #[arg(long, value_name = "FACTOR", default_value_t = DEFAULT_REJECTION_INFLATION)]
     gate_inflation: f64,
 
-    /// Apply a measurement despite the gate after this many consecutive rejections.
+    /// Apply the COUNT-th consecutive measurement to fail the gate despite it.
     ///
-    /// Only used together with `--gate-confidence`. A belief contradicted this many
-    /// times running is likelier to be wrong than the sensor contradicting it. Zero
-    /// never forces an update, which leaves `--gate-inflation` as the only way back.
+    /// Only used together with `--gate-confidence`. With the default 5, four measurements in
+    /// a row are rejected and the fifth is forced through. A belief contradicted this many
+    /// times running is likelier to be wrong than the sensor contradicting it. Zero never
+    /// forces an update, which leaves `--gate-inflation` as the only way back; 1 is refused,
+    /// since it would force every measurement and so be no gate at all.
     #[arg(long, value_name = "COUNT", default_value_t = DEFAULT_FORCED_UPDATE_AFTER)]
     gate_force_after: usize,
 

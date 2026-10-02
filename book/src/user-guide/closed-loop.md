@@ -199,7 +199,7 @@ normalized innovation squared (NIS) is implausibly large for the filter's own co
 |---|---|---|
 | `--gate-confidence <P>` | unset (no gate) | reject a measurement whose NIS exceeds the $\chi^2$ quantile at probability `P`, for that measurement's own degrees of freedom. Must lie strictly inside (0, 1) |
 | `--gate-inflation <FACTOR>` | `2` | each rejection multiplies the filter's uncertainty by this factor, in the directions the rejected measurement observed. At least 1.0; 1.0 disables it |
-| `--gate-force-after <COUNT>` | `5` | after this many consecutive rejections, apply the next measurement regardless. `0` disables it; `1` is refused, because it would be no gate at all |
+| `--gate-force-after <COUNT>` | `5` | when this many measurements in a row fail the gate, apply the last of them regardless: with `5`, four are rejected and the fifth is forced. `0` disables it; `1` is refused, because it would be no gate at all |
 
 Because the threshold is the $\chi^2$ quantile at each measurement's own dimension, one
 confidence level means the same thing for a 1-DOF barometer reading and a multi-DOF GNSS fix.
