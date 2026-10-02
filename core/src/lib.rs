@@ -14,8 +14,7 @@
 //! [user guide](https://jbrodovsky.github.io/strapdown-rs/) covers the concepts and the
 //! `strapdown-sim` command-line tool.
 //!
-//! This crate is primarily built off of three additional dependencies:
-//! - [`nav-types`](https://crates.io/crates/nav-types): Provides basic coordinate types and conversions.
+//! This crate is primarily built off of two additional dependencies:
 //! - [`nalgebra`](https://crates.io/crates/nalgebra): Provides the linear algebra tools for the filters.
 //! - [`rand`](https://crates.io/crates/rand) and [`rand_distr`](https://crates.io/crates/rand_distr): Provides random number generation for noise and simulation (primarily for particle filter methods).
 //!

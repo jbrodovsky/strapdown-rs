@@ -49,5 +49,4 @@ The geophysical-navigation work that `strapdown-geonav` supports (see
 | Sensor Logger (the app the input format comes from) | <https://www.tszheichoi.com/sensorlogger> |
 | World Magnetic Model | <https://www.ncei.noaa.gov/products/world-magnetic-model> |
 | `world_magnetic_model` crate (the WMM implementation used) | <https://crates.io/crates/world_magnetic_model> |
-| `nav-types` crate (geodetic and ECEF types used by `earth`) | <https://github.com/nordmoen/nav-types> |
 | GMT remote datasets (the source of the gravity and magnetic maps) | <https://www.generic-mapping-tools.org/remote-datasets/> |

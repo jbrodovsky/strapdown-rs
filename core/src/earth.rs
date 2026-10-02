@@ -4,11 +4,9 @@
 //! geophysical features (gravity and magnetic field). The Earth is modeled as an ellipsoid
 //! (WGS84) with a semi-major axis and a semi-minor axis. The Earth's gravity is modeled as
 //! a function of the latitude and altitude using the Somigliana method. The Earth's
-//! rotation rate is also included in this module. This module relies on the `nav-types`
-//! crate for the coordinate types and conversions, but provides additional functionality
-//! for calculating rotations for the strapdown navigation filters. This permits the
-//! transformation of additional quantities (velocity, acceleration, etc.) between the
-//! Earth-centered Earth-fixed (ECEF) frame and the local-level frame.
+//! rotation rate is also included in this module, along with the rotations between the
+//! Earth-centered Earth-fixed (ECEF) frame and the local-level frame that the strapdown
+//! navigation filters need to transform velocity, acceleration and similar quantities.
 //!
 //! # Coordinate Systems
 //! The WGS84 ellipsoidal model is the primary model used for the Earth's shape. This crate
@@ -20,21 +18,13 @@
 //! frame is a right-handed Cartesian coordinate system with the origin at the sensor's
 //! center of mass. The body frame is defined by the sensor's orientation.
 //!
-//! For basic positional conversions, the [`nav-types`](https://crates.io/crates/nav-types)
-//! crate is used. This crate provides the `WGS84` and `ECEF` types for representing the
-//! Earth's position in geodetic and Cartesian coordinates, respectively. The `nav-types`
-//! crate also provides the necessary conversions between the two coordinate systems.
-//!
 //! # Rotation Functions
-//! The rotations needed for the strapdown navigation filters are not directly supported
-//! by the `nav-types` crate. These functions provide the necessary rotations that are
+//! These functions provide the rotations that are
 //! primarily used for projecting the velocity and acceleration vectors. The rotations
 //! are primarily used to convert between the ECEF and local-level frames. The rotations
 //! from the local level frame to the body frame can be taken care of by the `nalgebra`
 //! crate, which provides the necessary rotation matrices using the Rotation3 type.
-use crate::{wrap_latitude, wrap_to_180};
 use nalgebra::{Matrix3, Vector3};
-use nav_types::{ECEF, WGS84};
 use world_magnetic_model::GeomagneticField;
 
 /// Earth's rotation rate rad/s ($\omega_{ie}$)
@@ -490,52 +480,6 @@ pub fn gravity(latitude: &f64, altitude: &f64) -> f64 {
         / (1.0 - ECCENTRICITY_SQUARED * sin_lat * sin_lat).sqrt();
     g0 - 3.08e-6 * altitude
 }
-/// Calculate the gravitational force vector in the local-level frame including rotational effects.
-///
-/// The [gravity model](https://en.wikipedia.org/wiki/Gravity_of_Earth) is based on the [Somigliana
-/// method](https://en.wikipedia.org/wiki/Theoretical_gravity#Somigliana_equation), which models
-/// the Earth's gravity as a function of the latitude and altitude. The gravity model is used to
-/// calculate the gravitational force vector in the local-level frame. This is then combined
-/// with the rotational effects of the Earth to calculate the effective gravity vector: the
-/// centrifugal acceleration is added as a vector to [`gravity`]'s vertical scalar.
-///
-/// Because [`gravity`] is Somigliana *normal* gravity, which already includes the centrifugal
-/// magnitude, the vertical component here counts it twice -- about 0.034 m/s^2 at the equator,
-/// which the `gravitation` unit test pins. Nothing in the mechanization calls this function.
-///
-/// *Note:* This function uses the ENU convention, thus gravity acts along the negative Z-axis
-/// (downward) in the local-level frame.
-///
-/// # Arguments
-/// - `latitude` - The WGS84 latitude in degrees
-/// - `longitude` - The WGS84 longitude in degrees
-/// - `altitude` - The WGS84 altitude in meters
-///
-/// # Returns
-/// The gravitational force vector in m/s^2 in the local-level frame
-///
-/// # Example
-/// ```rust
-/// use strapdown::earth;
-/// let latitude: f64 = 45.0;
-/// let longitude: f64 = 90.0;
-/// let altitude: f64 = 1000.0;
-/// let grav = earth::gravitation(&latitude, &longitude, &altitude);
-/// ```
-pub fn gravitation(latitude: &f64, longitude: &f64, altitude: &f64) -> Vector3<f64> {
-    let latitude = wrap_latitude(*latitude);
-    let longitude = wrap_to_180(*longitude);
-    let wgs84: WGS84<f64> = WGS84::from_degrees_and_meters(latitude, longitude, *altitude);
-    let ecef: ECEF<f64> = ECEF::from(wgs84);
-    // Get centrifugal terms in ECEF
-    let ecef_vec: Vector3<f64> = Vector3::new(ecef.x(), ecef.y(), ecef.z());
-    let omega_ie: Matrix3<f64> = vector_to_skew_symmetric(&RATE_VECTOR);
-    // Get rotation and gravity in LLA
-    let rot: Matrix3<f64> = ecef_to_lla(&latitude, &longitude);
-    let gravity: Vector3<f64> = Vector3::new(0.0, 0.0, gravity(&latitude, altitude));
-    // Calculate the effective gravity vector combining gravity and centrifugal terms
-    gravity + rot * omega_ie * omega_ie * ecef_vec
-}
 /// Calculate the local gravity anomaly, in **milligal**, from IMU accelerometer measurements
 ///
 /// This function calculates the local gravity anomaly by comparing the observed gravity from the
@@ -944,46 +888,6 @@ mod tests {
         let latitude: f64 = 0.0;
         let grav = super::gravity(&latitude, &0.0);
         assert_approx_eq!(grav, GE);
-    }
-    #[test]
-    fn gravitation() {
-        // test equatorial gravity
-        let latitude: f64 = 0.0;
-        let altitude: f64 = 0.0;
-        let grav: Vector3<f64> = super::gravitation(&latitude, &0.0, &altitude);
-        assert_approx_eq!(grav[0], 0.0);
-        assert_approx_eq!(grav[1], 0.0);
-        assert_approx_eq!(grav[2], (GE + 0.0339), 1e-4);
-        // test polar gravity
-        let latitude: f64 = 90.0;
-        let grav: Vector3<f64> = super::gravitation(&latitude, &0.0, &altitude);
-        assert_approx_eq!(grav[0], 0.0);
-        assert_approx_eq!(grav[1], 0.0);
-        assert_approx_eq!(grav[2], GP, 1e-2);
-    }
-    #[test]
-    fn gravitation_centrifugal_term_deflects_north() {
-        // `gravitation` is the only caller of `ecef_to_lla` left after #319, and the two
-        // cases above sit at the equator and the pole, where row 0 of `C_e^n` cannot be
-        // told apart from the pre-#319 version. Away from those, the centrifugal vector
-        // -w^2 (x, y, 0) picks up a North component through row 0:
-        //
-        //     north = w^2 (r_e + h) sin(L) cos(L),  east = 0  (exactly, at any longitude)
-        //
-        // This is the plumb-line deflection, ~0.017 m/s^2 at 45 degrees. The pre-#319
-        // matrix put a longitude-dependent number here instead.
-        for longitude in [0.0_f64, 45.0, -122.0, 179.0] {
-            let latitude: f64 = 45.0;
-            let altitude: f64 = 1000.0;
-            let (_, r_e, _) = principal_radii(&latitude, &altitude);
-            let grav: Vector3<f64> = super::gravitation(&latitude, &longitude, &altitude);
-            let expected_north: f64 = RATE.powi(2)
-                * (r_e + altitude)
-                * latitude.to_radians().sin()
-                * latitude.to_radians().cos();
-            assert_approx_eq!(grav[0], expected_north, 1e-9);
-            assert_approx_eq!(grav[1], 0.0, 1e-12);
-        }
     }
     #[test]
     fn magnetic_radial_field() {
