@@ -3911,13 +3911,12 @@ pub struct EkfConfig {
     /// different answer and none of them modelled any hardware -- see that method for the
     /// measurement, and for why it made the UKF-versus-ESKF comparison in #371 meaningless.
     ///
-    /// **On this filter the value is currently inert**, and measurably so: any value produces
-    /// bit-identical output, because the EKF's state-transition Jacobian has no
-    /// $\partial(\text{nav})/\partial(\text{bias})$ block, so `P[0..9, 9..15]` starts at zero
-    /// and stays there and the gain over the bias rows is always zero (#394). It is set
-    /// correctly here anyway: the field is what the filter *claims*, the claim should be true
-    /// whether or not anything reads it today, and #394's fix makes it load-bearing without
-    /// touching this line.
+    /// It matters on this filter. The EKF's predict widens its state-transition Jacobian with
+    /// the $\partial(\text{nav})/\partial(\text{bias})$ blocks
+    /// ([`crate::linearize::widen_with_imu_bias_coupling`]), so the navigation-bias
+    /// cross-covariance grows from this prior and the gain reaches the bias rows. Until #394
+    /// that block was missing, `P[0..9, 9..15]` stayed zero and this value changed nothing;
+    /// it was set correctly then so that the fix would make it load-bearing as it is now.
     pub imu_quality: crate::IMUQuality,
     /// Local-level frame of the records: `false` (the default) is NED, `true` is ENU.
     ///

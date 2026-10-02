@@ -38,8 +38,8 @@ attitude_init_std_rad = 0.1
 velocity_process_noise_std_mps = 1e-3
 attitude_process_noise_std_rad = 0.01
 # Random walk on the sampled horizontal position, m/sqrt(s). The paper's eq. 19 is zero, which
-# diverges with GNSS-rate fixes on this data (17 km on the reference recording, against 3.8 m
-# at 1 m/sqrt(s)); [0.0, 0.0] reproduces it.
+# diverges with GNSS-rate fixes on this data (17 km on the reference recording, against 3.2 m
+# horizontal RMSE at 1 m/sqrt(s)); [0.0, 0.0] reproduces it.
 horizontal_process_noise_std_m = [1.0, 1.0]
 # Third-order barometer loop in the mechanization, with the paper's two barometer states. The
 # paper gives no gains: the loop places its three poles at -1/tau (Titterton & Weston). The

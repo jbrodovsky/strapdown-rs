@@ -388,7 +388,9 @@ pub struct RbpfConfig {
     /// the particles' spread, and resampling on a metre-level fix destroys that spread. On the
     /// reference recording the conditional velocity sigma fell to millimetres per second,
     /// GNSS velocity fixes stopped correcting anything, and the solution ran 17 km off; 1 m per
-    /// root-second held it to 3.8 m. The configurations under `conf/` set that, and so does
+    /// root-second holds it to 3.2 m horizontal RMSE (the `real_rbpf_slice__rbpf` row of
+    /// `core/tests/perf_baseline.json`; the 3.8 m first measured predates later particle-filter
+    /// fixes). The configurations under `conf/` set that, and so does
     /// `strapdown-sim` by default ([`crate::sim::DEFAULT_PF_HORIZONTAL_PROCESS_NOISE_STD_M`]);
     /// only this library-level default keeps the paper's value.
     pub horizontal_process_noise_std_m: Vector2<f64>,

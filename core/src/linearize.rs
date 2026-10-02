@@ -13,7 +13,8 @@
 //! ```
 //! where:
 //! - `lat`, `lon`: latitude and longitude in radians
-//! - `alt`: altitude in meters (positive up in ENU, positive down in NED)
+//! - `alt`: altitude in meters above the ellipsoid, positive up in **both** ENU and NED; it is
+//!   not a "down" coordinate (only the vertical *velocity* changes sign with the frame)
 //! - `v_n`, `v_e`, `v_d`: velocity components in m/s (NED/ENU local-level frame)
 //! - `roll`, `pitch`, `yaw`: Euler angles in radians (XYZ rotation sequence)
 //!
@@ -466,7 +467,11 @@ pub fn attitude_reset_jacobian(delta_theta: &Vector3<f64>) -> nalgebra::Matrix3<
 /// # Returns
 ///
 /// `None` at gimbal lock, where the Euler chart stops being a chart and no finite matrix is
-/// the right answer. Callers fall back to differencing the expected measurement directly.
+/// the right answer. The one caller, the ESKF's measurement update, then **zeroes** the
+/// attitude columns of its measurement Jacobian rather than approximating them: a model that
+/// observes only attitude gets a zero gain and the update is a no-op, and a model with other
+/// columns keeps them. Finite-differencing the measurement was an earlier fallback and was
+/// dropped, because near 90 degrees of pitch the quotients are finite but unbounded.
 ///
 /// # Example
 ///

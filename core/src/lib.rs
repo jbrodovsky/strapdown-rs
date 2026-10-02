@@ -509,10 +509,15 @@ impl IMUQuality {
     /// \\(K^2 \\, dt / 3600\\).
     ///
     /// # Units
-    /// Returns (m/s)^2 -- a variance, not a spectral density. Both filters propagate as
-    /// \\(P_{k+1} = F `P_k` F^T + Q\\) with no internal `dt` scaling, so what they consume is
-    /// the per-step increment this returns. That is why `dt` is a parameter: the same IMU
-    /// grade yields a different `Q` at 100 Hz than at 1 Hz.
+    /// Returns (m/s)^2 -- the per-step **variance** \\(Q_k\\) accumulated over `dt`, not a
+    /// spectral density. That is why `dt` is a parameter: the same IMU grade yields a
+    /// different `Q_k` at 100 Hz than at 1 Hz.
+    ///
+    /// Do not hand it to a filter as its process noise. Since #374 every filter here takes a
+    /// **density** -- a variance per second, as in
+    /// [`DEFAULT_PROCESS_NOISE_DENSITY`](crate::sim::DEFAULT_PROCESS_NOISE_DENSITY) -- and forms
+    /// \\(Q_k = q \\Delta t\\) itself, so passing this would apply `dt` twice. The density
+    /// for a filter's velocity rows is this value divided by `dt`, i.e. `K^2 / 3600`.
     ///
     /// Consistent with the per-sample sigma used by the synthetic IMU generator in
     /// [`crate::sim`], which scales the same coefficient by `sqrt(sample_rate_hz / 3600)`.

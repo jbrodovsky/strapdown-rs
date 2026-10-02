@@ -1162,11 +1162,23 @@ impl NavigationFilter for UnscentedKalmanFilter {
 ///     is_enu: true,
 /// };
 ///
+/// // P0 in each state's own units: position in rad^2, rad^2, m^2 (#308), then velocity in
+/// // (m/s)^2, attitude in rad^2 and the IMU grade's bias prior.
+/// let horizontal_std_rad = 10.0 * strapdown::earth::METERS_TO_RADIANS;
+/// let mut covariance = vec![horizontal_std_rad.powi(2), horizontal_std_rad.powi(2), 100.0];
+/// covariance.extend([1e-3; 3]);
+/// covariance.extend([1e-5; 3]);
+/// covariance.extend(strapdown::IMUQuality::Consumer.initial_bias_covariance());
+/// // Q is a density, a variance per second: the filter forms Q_k = q * dt itself (#374).
+/// let process_noise = DMatrix::from_diagonal(&nalgebra::DVector::from_row_slice(
+///     &strapdown::sim::DEFAULT_PROCESS_NOISE_DENSITY,
+/// ));
+///
 /// let mut ekf = ExtendedKalmanFilter::new(
 ///     &initial_state,
 ///     &[0.0; 6], // IMU biases (3 accel + 3 gyro)
-///     vec![1e-6; 15], // Initial covariance diagonal
-///     DMatrix::from_diagonal(&nalgebra::DVector::from_vec(vec![1e-9; 15])), // Process noise
+///     covariance,
+///     process_noise,
 ///     true, // use_biases
 /// );
 ///
@@ -1262,11 +1274,23 @@ impl ExtendedKalmanFilter {
     /// use nalgebra::DMatrix;
     ///
     /// let initial_state = InitialState::default();
+    /// // P0 in each state's own units: position in rad^2, rad^2, m^2 (#308), then velocity in
+    /// // (m/s)^2, attitude in rad^2 and the IMU grade's bias prior.
+    /// let horizontal_std_rad = 10.0 * strapdown::earth::METERS_TO_RADIANS;
+    /// let mut covariance = vec![horizontal_std_rad.powi(2), horizontal_std_rad.powi(2), 100.0];
+    /// covariance.extend([1e-3; 3]);
+    /// covariance.extend([1e-5; 3]);
+    /// covariance.extend(strapdown::IMUQuality::Consumer.initial_bias_covariance());
+    /// // Q is a density, a variance per second: the filter forms Q_k = q * dt itself (#374).
+    /// let process_noise = DMatrix::from_diagonal(&nalgebra::DVector::from_row_slice(
+    ///     &strapdown::sim::DEFAULT_PROCESS_NOISE_DENSITY,
+    /// ));
+    ///
     /// let ekf = ExtendedKalmanFilter::new(
     ///     &initial_state,
     ///     &[0.0; 6],
-    ///     vec![1e-6; 15],
-    ///     DMatrix::from_diagonal(&nalgebra::DVector::from_vec(vec![1e-9; 15])),
+    ///     covariance,
+    ///     process_noise,
     ///     true,
     /// );
     /// ```
@@ -1804,11 +1828,23 @@ impl NavigationFilter for ExtendedKalmanFilter {
 ///     is_enu: true,
 /// };
 ///
+/// // P0 in each state's own units: position in rad^2, rad^2, m^2 (#308), then velocity in
+/// // (m/s)^2, attitude in rad^2 and the IMU grade's bias prior.
+/// let horizontal_std_rad = 10.0 * strapdown::earth::METERS_TO_RADIANS;
+/// let mut covariance = vec![horizontal_std_rad.powi(2), horizontal_std_rad.powi(2), 100.0];
+/// covariance.extend([1e-3; 3]);
+/// covariance.extend([1e-5; 3]);
+/// covariance.extend(strapdown::IMUQuality::Consumer.initial_bias_covariance());
+/// // Q is a density, a variance per second: the filter forms Q_k = q * dt itself (#374).
+/// let process_noise = DMatrix::from_diagonal(&nalgebra::DVector::from_row_slice(
+///     &strapdown::sim::DEFAULT_PROCESS_NOISE_DENSITY,
+/// ));
+///
 /// let mut eskf = ErrorStateKalmanFilter::new(
 ///     &initial_state,
 ///     &[0.0; 6], // Initial IMU biases (3 accel + 3 gyro)
-///     vec![1e-6; 15], // Initial error covariance diagonal
-///     DMatrix::from_diagonal(&nalgebra::DVector::from_vec(vec![1e-9; 15])), // Process noise
+///     covariance,
+///     process_noise,
 /// );
 ///
 /// // Predict with IMU data
@@ -2043,11 +2079,23 @@ impl ErrorStateKalmanFilter {
     /// use nalgebra::DMatrix;
     ///
     /// let initial_state = InitialState::default();
+    /// // P0 in each state's own units: position in rad^2, rad^2, m^2 (#308), then velocity in
+    /// // (m/s)^2, attitude in rad^2 and the IMU grade's bias prior.
+    /// let horizontal_std_rad = 10.0 * strapdown::earth::METERS_TO_RADIANS;
+    /// let mut covariance = vec![horizontal_std_rad.powi(2), horizontal_std_rad.powi(2), 100.0];
+    /// covariance.extend([1e-3; 3]);
+    /// covariance.extend([1e-5; 3]);
+    /// covariance.extend(strapdown::IMUQuality::Consumer.initial_bias_covariance());
+    /// // Q is a density, a variance per second: the filter forms Q_k = q * dt itself (#374).
+    /// let process_noise = DMatrix::from_diagonal(&nalgebra::DVector::from_row_slice(
+    ///     &strapdown::sim::DEFAULT_PROCESS_NOISE_DENSITY,
+    /// ));
+    ///
     /// let eskf = ErrorStateKalmanFilter::new(
     ///     &initial_state,
     ///     &[0.0; 6],
-    ///     vec![1e-6; 15],
-    ///     DMatrix::from_diagonal(&nalgebra::DVector::from_vec(vec![1e-9; 15])),
+    ///     covariance,
+    ///     process_noise,
     /// );
     /// ```
     pub fn new(
