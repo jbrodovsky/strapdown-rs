@@ -6215,8 +6215,28 @@ const fn default_gnss_vertical_noise_m() -> f64 {
     5.0
 }
 
+/// Per-sample barometric pressure noise for [`SyntheticConfig`], pascals.
+///
+/// The pressure noise whose altitude equivalent at sea level is
+/// [`crate::measurements::BAROMETRIC_ALTITUDE_NOISE_M`], the one-sigma the filters assume for
+/// a barometer by default, so that a default filter's $R$ describes a default synthetic
+/// barometer. The isothermal barometric formula gives
+/// $\mathrm dh/\mathrm dP = -R T_0 / (g_0 M P_0)$, about 0.083 m per pascal, so this is about
+/// 27 Pa.
 const fn default_baro_noise_std_pa() -> f64 {
-    50.0
+    crate::measurements::BAROMETRIC_ALTITUDE_NOISE_M
+        * crate::earth::G0
+        * crate::earth::MOLAR_MASS_DRY_AIR
+        * crate::earth::SEA_LEVEL_PRESSURE
+        / (crate::earth::UNIVERSAL_GAS_CONSTANT * crate::earth::SEA_LEVEL_TEMPERATURE)
+}
+
+/// Per-axis GNSS velocity noise for [`SyntheticConfig`], metres per second.
+///
+/// Applied to the north and east velocity before they are written as `speed` and `bearing`,
+/// and written as `speedAccuracy`, which is the one-sigma the filters use for the velocity fix.
+const fn default_gnss_velocity_noise_mps() -> f64 {
+    0.5
 }
 
 /// Per-axis magnetometer noise for [`SyntheticConfig`], microtesla.
@@ -6271,6 +6291,13 @@ const MAGNETOMETER_NOISE_STREAM_OFFSET: u64 = 0x4d41_474e_4554_4f00;
 /// sharing `mag_rng` made switching it on shift every per-sample noise value after it. See
 /// [`MAGNETOMETER_NOISE_STREAM_OFFSET`] for the same argument one level up.
 const MAGNETOMETER_HARD_IRON_STREAM_OFFSET: u64 = 0x4841_5244_4952_4f4e;
+
+/// Offset separating the GNSS velocity noise stream from the trajectory's.
+///
+/// Velocity noise was added after the trajectory stream's draw order was fixed, so it has its
+/// own stream for the reason [`MAGNETOMETER_NOISE_STREAM_OFFSET`] gives: the IMU, GNSS position
+/// and barometer realizations stay what they were.
+const GNSS_VELOCITY_NOISE_STREAM_OFFSET: u64 = 0x474e_5353_5645_4c00;
 
 /// The true magnetic field at a point, in the navigation frame, microtesla.
 ///
@@ -6383,7 +6410,13 @@ pub struct SyntheticConfig {
     /// GNSS vertical position noise standard deviation in meters
     #[serde(default = "default_gnss_vertical_noise_m")]
     pub gnss_vertical_noise_m: f64,
-    /// Barometric pressure noise standard deviation in Pascals
+    /// GNSS velocity noise standard deviation per horizontal axis, m/s. It perturbs the
+    /// `speed` and `bearing` columns and is written as `speedAccuracy`.
+    #[serde(default = "default_gnss_velocity_noise_mps")]
+    pub gnss_velocity_noise_mps: f64,
+    /// Barometric pressure noise standard deviation in Pascals. It perturbs `pressure`, and
+    /// `relativeAltitude` is computed from the perturbed pressure, so it is also the
+    /// barometric altitude noise the filters see: about 0.083 m per pascal near sea level.
     #[serde(default = "default_baro_noise_std_pa")]
     pub baro_noise_std_pa: f64,
     /// Magnetometer noise standard deviation per axis, microtesla.
@@ -6427,6 +6460,7 @@ impl Default for SyntheticConfig {
             no_noise: false,
             gnss_horizontal_noise_m: default_gnss_horizontal_noise_m(),
             gnss_vertical_noise_m: default_gnss_vertical_noise_m(),
+            gnss_velocity_noise_mps: default_gnss_velocity_noise_mps(),
             baro_noise_std_pa: default_baro_noise_std_pa(),
             mag_noise_std_ut: default_mag_noise_std_ut(),
             mag_hard_iron_std_ut: default_mag_hard_iron_std_ut(),
@@ -6621,7 +6655,6 @@ pub fn generate_synthetic(
 
     let dt = 1.0 / config.sample_rate_hz;
     let n_steps = (config.duration_s * config.sample_rate_hz).round() as usize;
-    let initial_alt = state.altitude;
 
     // Draw per-trajectory bias offsets (constant for the full run)
     let accel_bias = {
@@ -6676,6 +6709,18 @@ pub fn generate_synthetic(
     // scenario that takes no measurements at all, moving when the magnetometer was added. A
     // separate stream makes a re-bless attributable: a number that moves, moved because of the
     // heading aid.
+    let gnss_velocity_dist = Normal::new(0.0_f64, config.gnss_velocity_noise_mps)
+        .unwrap_or_else(|_| crate::normal_with_std(0.5));
+    let mut gnss_velocity_rng = {
+        use rand::SeedableRng as _;
+        rand::rngs::StdRng::seed_from_u64(
+            config.seed.wrapping_add(GNSS_VELOCITY_NOISE_STREAM_OFFSET),
+        )
+    };
+    // The barometer reports height relative to its first reading, as Sensor Logger's
+    // `relativeAltitude` does. That first reading is noisy, so its error is a constant offset in
+    // every later relative altitude: the barometric bias the filters estimate.
+    let mut baro_reference_pressure: Option<f64> = None;
     let mut mag_rng = {
         use rand::SeedableRng as _;
         rand::rngs::StdRng::seed_from_u64(
@@ -6813,8 +6858,24 @@ pub fn generate_synthetic(
             true_pressure + rng.sample(baro_dist)
         };
 
-        let speed = state.velocity_north.hypot(state.velocity_east);
-        let bearing = state.velocity_east.atan2(state.velocity_north).to_degrees();
+        let reference_pressure = *baro_reference_pressure.get_or_insert(out_pressure);
+        // `relativeAltitude` is derived from the noisy pressure through the same isothermal
+        // atmosphere `expected_barometric_pressure` uses, so `--baro-noise-std-pa` is the noise
+        // the barometric measurement carries. It used to be the GNSS altitude minus its first
+        // value, which gave the barometer the GNSS's noise draw and made it no independent aid.
+        let relative_altitude =
+            earth::relative_barometric_altitude(out_pressure, reference_pressure, None);
+
+        let (velocity_north_fix, velocity_east_fix) = if config.no_noise {
+            (state.velocity_north, state.velocity_east)
+        } else {
+            (
+                state.velocity_north + gnss_velocity_rng.sample(gnss_velocity_dist),
+                state.velocity_east + gnss_velocity_rng.sample(gnss_velocity_dist),
+            )
+        };
+        let speed = velocity_north_fix.hypot(velocity_east_fix);
+        let bearing = velocity_east_fix.atan2(velocity_north_fix).to_degrees();
         let attitude_quaternion = nalgebra::UnitQuaternion::from_rotation_matrix(&state.attitude);
 
         // Gravity vector in body frame (NED: [0,0,g])
@@ -6876,8 +6937,11 @@ pub fn generate_synthetic(
             altitude: out_alt,
             speed,
             bearing,
-            bearing_accuracy: config.gnss_horizontal_noise_m,
-            speed_accuracy: config.gnss_horizontal_noise_m,
+            // The course's one-sigma, in degrees: the angle a velocity error of
+            // `gnss_velocity_noise_mps` subtends at this speed, which tends to 90 degrees as
+            // the platform stops and the course becomes meaningless.
+            bearing_accuracy: config.gnss_velocity_noise_mps.atan2(speed).to_degrees(),
+            speed_accuracy: config.gnss_velocity_noise_mps,
             vertical_accuracy: config.gnss_vertical_noise_m,
             horizontal_accuracy: config.gnss_horizontal_noise_m,
             // `TestDataRecord` documents roll/pitch/yaw as radians, and the quaternion is
@@ -6902,8 +6966,10 @@ pub fn generate_synthetic(
             mag_x: mag_body[0],
             mag_y: mag_body[1],
             mag_z: mag_body[2],
-            relative_altitude: out_alt - initial_alt,
-            pressure: out_pressure,
+            relative_altitude,
+            // Hectopascals (millibars), the unit `TestDataRecord::pressure` documents and
+            // Sensor Logger writes; the barometric formula works in pascals.
+            pressure: out_pressure / 100.0,
             grav_x: grav_body[0],
             grav_y: grav_body[1],
             grav_z: grav_body[2],
@@ -6944,6 +7010,7 @@ mod tests {
             no_noise: false,
             gnss_horizontal_noise_m: 1.0,
             gnss_vertical_noise_m: 1.0,
+            gnss_velocity_noise_mps: 0.5,
             baro_noise_std_pa: 1.0,
             mag_noise_std_ut: default_mag_noise_std_ut(),
             mag_hard_iron_std_ut: default_mag_hard_iron_std_ut(),
@@ -7003,6 +7070,7 @@ mod tests {
             no_noise: true,
             gnss_horizontal_noise_m: 1.0,
             gnss_vertical_noise_m: 1.0,
+            gnss_velocity_noise_mps: 0.5,
             baro_noise_std_pa: 1.0,
             mag_noise_std_ut: default_mag_noise_std_ut(),
             mag_hard_iron_std_ut: default_mag_hard_iron_std_ut(),
@@ -7310,6 +7378,7 @@ mod tests {
             no_noise: true,
             gnss_horizontal_noise_m: 2.5,
             gnss_vertical_noise_m: 5.0,
+            gnss_velocity_noise_mps: 0.5,
             baro_noise_std_pa: 50.0,
             mag_noise_std_ut: default_mag_noise_std_ut(),
             mag_hard_iron_std_ut: default_mag_hard_iron_std_ut(),
@@ -7363,6 +7432,7 @@ mod tests {
             no_noise: false,
             gnss_horizontal_noise_m: 2.5,
             gnss_vertical_noise_m: 5.0,
+            gnss_velocity_noise_mps: 0.5,
             baro_noise_std_pa: 50.0,
             mag_noise_std_ut: default_mag_noise_std_ut(),
             mag_hard_iron_std_ut: default_mag_hard_iron_std_ut(),
@@ -10919,6 +10989,7 @@ mod tests {
             no_noise: false,
             gnss_horizontal_noise_m: 3.0,
             gnss_vertical_noise_m: 5.0,
+            gnss_velocity_noise_mps: 0.5,
             baro_noise_std_pa: 30.0,
             mag_noise_std_ut: default_mag_noise_std_ut(),
             mag_hard_iron_std_ut: default_mag_hard_iron_std_ut(),
@@ -10981,6 +11052,74 @@ mod tests {
             (-16.0..-8.0).contains(&declination_deg),
             "declination at 40N 75W should be near 12 deg west, got {declination_deg:.2} \
              (magnetic heading {magnetic_heading_deg:.2} against true yaw {true_yaw_deg:.2})"
+        );
+    }
+
+    /// The synthetic barometer and GNSS velocity are independent sensors in the right units.
+    ///
+    /// Before this, `relativeAltitude` was the noisy GNSS altitude minus its first value, so
+    /// the barometer shared the GNSS's noise draw and aided nothing, while
+    /// `baro_noise_std_pa` reached only `pressure`, which no estimator reads. `pressure` was in
+    /// pascals against a documented millibars, and `speed`/`bearing` were noise-free under a
+    /// `speedAccuracy` that claimed otherwise.
+    #[test]
+    fn synthetic_barometer_and_velocity_are_independent_sensors() {
+        use rand::SeedableRng;
+
+        let mut config = synthetic_config_for_tests();
+        config.duration_s = 300.0;
+        config.sample_rate_hz = 10.0;
+        config.baro_noise_std_pa = 12.0;
+        config.gnss_velocity_noise_mps = 0.5;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        let (_truth, records) = generate_synthetic(&config, &mut rng).expect("synthetic run");
+        let n = records.len() as f64;
+        let mean = |values: &[f64]| values.iter().sum::<f64>() / values.len() as f64;
+        let std = |values: &[f64]| {
+            let m = mean(values);
+            (values.iter().map(|v| (v - m).powi(2)).sum::<f64>() / values.len() as f64).sqrt()
+        };
+
+        // Barometric noise: about 0.083 m per pascal, independent of the GNSS altitude noise.
+        let relative: Vec<f64> = records.iter().map(|r| r.relative_altitude).collect();
+        let gnss: Vec<f64> = records.iter().map(|r| r.altitude).collect();
+        let expected_std = 12.0 * 0.0832;
+        assert!(
+            (std(&relative) - expected_std).abs() < 0.1 * expected_std,
+            "relativeAltitude std {:.3} m, expected about {expected_std:.3} m",
+            std(&relative)
+        );
+        let (mean_relative, mean_gnss) = (mean(&relative), mean(&gnss));
+        let covariance = relative
+            .iter()
+            .zip(&gnss)
+            .map(|(a, b)| (a - mean_relative) * (b - mean_gnss))
+            .sum::<f64>()
+            / n;
+        let correlation = covariance / (std(&relative) * std(&gnss));
+        assert!(
+            correlation.abs() < 0.1,
+            "barometer and GNSS altitude must be independent, correlation {correlation:.3}"
+        );
+
+        // Pressure is written in hectopascals.
+        let pressure = mean(&records.iter().map(|r| r.pressure).collect::<Vec<_>>());
+        assert!(
+            (800.0..1100.0).contains(&pressure),
+            "pressure should be hPa, got {pressure}"
+        );
+
+        // Velocity is noisy, and speedAccuracy says by how much.
+        assert!(
+            records
+                .iter()
+                .all(|r| (r.speed_accuracy - 0.5).abs() < 1e-12)
+        );
+        let speeds: Vec<f64> = records.iter().map(|r| r.speed).collect();
+        assert!(
+            std(&speeds) > 0.1,
+            "speed should carry the velocity noise, std {:.3}",
+            std(&speeds)
         );
     }
 

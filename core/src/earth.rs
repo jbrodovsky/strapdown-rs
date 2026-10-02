@@ -100,19 +100,22 @@ pub const UNIVERSAL_GAS_CONSTANT: f64 = 8.314462618;
 pub const STANDARD_LAPSE_RATE: f64 = 0.0065;
 /// Calculate a barometric altitude from a measured pressure
 ///
-/// This function calculates the altitude above sea level based on the measured pressure
-/// using the barometric formula. The formula assumes a standard atmosphere and uses the
-/// universal gas constant, standard lapse rate, and molar mass of dry air.
+/// The altitude above sea level of a pressure `pressure` in an isothermal atmosphere at
+/// [`SEA_LEVEL_TEMPERATURE`], referenced to [`SEA_LEVEL_PRESSURE`]:
+///
+/// $$ h = \frac{R T_0}{g_0 M} \ln\frac{P_0}{P} $$
+///
+/// This is the exact inverse of [`expected_barometric_pressure`] at the standard sea-level
+/// pressure, and [`relative_barometric_altitude`] referenced to that pressure. It replaces a
+/// formula that mixed the lapse-rate and isothermal models and returned about -152 km for the
+/// pressure of 100 m.
 ///
 /// # Parameters
 /// - `pressure` - The measured pressure in Pascals
 /// # Returns
 /// The calculated altitude in meters above sea level
 pub fn barometric_altitude(pressure: &f64) -> f64 {
-    let exponent: f64 = -(UNIVERSAL_GAS_CONSTANT * STANDARD_LAPSE_RATE) / (G0 * MOLAR_MASS_DRY_AIR);
-    (SEA_LEVEL_PRESSURE / STANDARD_LAPSE_RATE)
-        * (pressure / SEA_LEVEL_PRESSURE - 1.0)
-        * exponent.exp()
+    relative_barometric_altitude(*pressure, SEA_LEVEL_PRESSURE, None)
 }
 /// Calculate the relative barometric altitude from a measured pressure
 ///
@@ -1071,24 +1074,19 @@ mod tests {
         );
     }
 
+    /// `barometric_altitude` inverts `expected_barometric_pressure`.
+    ///
+    /// The old test only asserted a finite result, under a comment admitting the formula looked
+    /// wrong; it was: the pressure of 100 m came back as about -152 km.
     #[test]
     fn test_barometric_altitude() {
-        // Test barometric altitude calculation
-        // Note: The current barometric_altitude function appears to have an incorrect formula
-        // This test validates that it executes without error and returns a value
-
-        let pressure = SEA_LEVEL_PRESSURE;
-        let altitude = barometric_altitude(&pressure);
-        // The function should at least execute and return a finite value
-        assert!(altitude.is_finite(), "Altitude should be a finite number");
-
-        // Test at reduced pressure
-        let pressure = 89875.0;
-        let altitude = barometric_altitude(&pressure);
-        assert!(
-            altitude.is_finite(),
-            "Altitude should be a finite number for reduced pressure"
-        );
+        assert_approx_eq!(barometric_altitude(&SEA_LEVEL_PRESSURE), 0.0, 1e-9);
+        for altitude in [-400.0, 0.0, 100.0, 1000.0, 8000.0] {
+            let pressure = expected_barometric_pressure(altitude, SEA_LEVEL_PRESSURE);
+            assert_approx_eq!(barometric_altitude(&pressure), altitude, 1e-6);
+        }
+        // Lower pressure is higher altitude.
+        assert!(barometric_altitude(&89_875.0) > barometric_altitude(&95_000.0));
     }
 
     #[test]

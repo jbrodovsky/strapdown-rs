@@ -268,8 +268,15 @@ struct SyntheticArgs {
     #[arg(long, default_value_t = 5.0)]
     gnss_vertical_noise_m: f64,
 
-    /// Barometric pressure noise standard deviation in Pascals
-    #[arg(long, default_value_t = 50.0)]
+    /// GNSS velocity noise standard deviation per horizontal axis in m/s. Perturbs `speed` and
+    /// `bearing`, and is written as `speedAccuracy`.
+    #[arg(long, default_value_t = strapdown::sim::SyntheticConfig::default().gnss_velocity_noise_mps)]
+    gnss_velocity_noise_mps: f64,
+
+    /// Barometric pressure noise standard deviation in Pascals. `relativeAltitude` is derived
+    /// from the noisy pressure, about 0.083 m per pascal near sea level. The default matches
+    /// the 2.24 m barometric noise the filters assume.
+    #[arg(long, default_value_t = strapdown::sim::SyntheticConfig::default().baro_noise_std_pa)]
     baro_noise_std_pa: f64,
 
     /// Magnetometer noise standard deviation in microtesla, per axis.
@@ -1661,6 +1668,7 @@ fn run_synthetic(args: &SyntheticArgs) -> Result<(), Box<dyn Error>> {
         built.no_noise = args.no_noise;
         built.gnss_horizontal_noise_m = args.gnss_horizontal_noise_m;
         built.gnss_vertical_noise_m = args.gnss_vertical_noise_m;
+        built.gnss_velocity_noise_mps = args.gnss_velocity_noise_mps;
         built.baro_noise_std_pa = args.baro_noise_std_pa;
         built.mag_noise_std_ut = args.mag_noise_std_ut;
         built.mag_hard_iron_std_ut = args.mag_hard_iron_std_ut;
