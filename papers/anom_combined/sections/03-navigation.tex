@@ -1,7 +1,7 @@
 \section{Navigation System}
 \label{sec:navigation}
 
-All three filters share one strapdown mechanization, one set of GNSS, barometric, and heading measurement models, and one measurement stream, so that a comparison between filters, or between an aided run and its unaided counterpart, isolates the estimator or the anomaly measurement. Positions are WGS~84 geodetic latitude \(L\), longitude \(\lambda\), and ellipsoidal height \(h\); velocities are resolved in the local north--east--down frame; attitude is held as a direction cosine matrix \(\mathbf{C}_b^n\) and reported as roll, pitch, and yaw.
+All three filters share one strapdown mechanization, one set of GNSS, barometric, and heading measurement models, and one measurement stream, so that a comparison between filters, or between an aided run and its unaided counterpart, isolates the estimator or the anomaly measurement. Positions are WGS~84 geodetic latitude \(L\), longitude \(\lambda\), and ellipsoidal height \(h\); attitude is held as a direction cosine matrix \(\mathbf{C}_b^n\) and reported as roll, pitch, and yaw. The equations are written in north--east--down (NED) notation, following \citet{groves_ch5}. The Sensor Logger records, however, are resolved in an east--north--up (ENU) convention, and the run configurations declare it (\texttt{is\_enu = true}). In that convention \texttt{strapdown-rs} keeps the north and east components but takes vertical velocity positive up and uses the matching body-to-navigation attitude convention; it checks the declared frame against the sign of the specific force in the leading records and rejects a mismatch. A reproduction must declare ENU for these data.
 
 \subsection{Mechanization and Aiding Measurements}
 
@@ -69,7 +69,7 @@ Following the original Algorithm~1, the error-state transition and process noise
 \end{table}
 
 \begin{table}[htb]
-  \caption{Filter Settings Common to Every Run}
+  \caption{Filter Settings, as Read by the Dedicated-Sensor and Unaided Runs from the Configurations at \texttt{2a40f1e}. The smartphone-sensor runs' configurations were not archived (\Cref{sec:experiment}).}
   \label{tab:filter-settings}
   \centering
   \small
@@ -85,7 +85,7 @@ Following the original Algorithm~1, the error-state transition and process noise
      & Initial position uncertainty & 10~m \\
     UKF & Scaling \(\alpha\), \(\beta\), \(\kappa\) & 0.1, 2, 0 \\
     \midrule
-    RBPF & Particles \(N\) & 1{,}000 \\
+    RBPF & Particles \(N\) & 2{,}000 full GNSS; 1{,}000 degraded and aided \\
      & Initial position (N, E, up), velocity, tilt & (10, 10, 5)~m, 1~m/s, 0.1~rad \\
      & Horizontal position random walk & 1~m/\(\sqrt{\text{s}}\) \\
      & Velocity, angular random walk & \(10^{-3}\)~m/s/\(\sqrt{\text{s}}\), \(10^{-2}\)~rad/\(\sqrt{\text{s}}\) \\

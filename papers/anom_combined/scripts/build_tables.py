@@ -192,6 +192,27 @@ def rbpf_table() -> None:
     write("rbpf.tex", "\n".join(lines))
 
 
+def sensitivity_values() -> dict[str, str]:
+    """How far the two arms' unaided degraded-GNSS runs differ, per filter.
+
+    The arms differ only in the norms of the gravity and magnetic vectors, so their unaided
+    runs differ only through the last bit of the heading input. Drives present in both arms
+    are compared; a change is counted when it exceeds 1% of the dedicated arm's RMSE.
+    """
+    values: dict[str, str] = {}
+    for filt in stats.FILTERS:
+        phone = stats.performance("phone", filt, "degraded")["RMSE Horizontal Error (m)"]
+        dedicated = stats.performance("dedicated", filt, "degraded")["RMSE Horizontal Error (m)"]
+        common = phone.index.intersection(dedicated.index)
+        change = (phone[common] - dedicated[common]).abs()
+        relative = change / dedicated[common]
+        values[f"sens{filt}n"] = str(len(common))
+        values[f"sens{filt}count"] = str(int((relative > 0.01).sum()))
+        values[f"sens{filt}maxm"] = thousands(change.max(), 0)
+        values[f"sens{filt}medianpct"] = f"{100 * relative.median():.0f}"
+    return values
+
+
 def macros() -> None:
     """Numbers quoted in running text, as macros, so prose cannot drift from the tables."""
     values: dict[str, str] = {}
@@ -213,6 +234,7 @@ def macros() -> None:
                 values[f"{key}n"] = str(s.n)
                 values[f"{key}dmed"] = thousands(abs(s.diff_median))
                 values[f"{key}p"] = p_text(s.p_value)
+    values.update(sensitivity_values())
     dataset = stats.dataset_summary()
     values["datasetkm"] = thousands(dataset["Distance Traversed (km)"].sum(), 0)
     values["datasethours"] = f"{dataset['Duration (h)'].sum():.1f}"

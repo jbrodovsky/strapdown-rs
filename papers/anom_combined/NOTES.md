@@ -29,8 +29,12 @@ references (the limit is 20). 9 figures (limit 15), 9 tables, abstract 267 words
    `data/input_real` and `data/output_real`) and the commit that produced `data/output`. Then
    rerun `scripts/*.py`. The data-availability section promises that every number can be
    regenerated, and right now this one arm cannot be.
-7. **Commit of record.** Section 5 cites `827db06` (2026-09-26 09:40, the last commit before
-   the `data/output` runs at 21:26–23:01). Confirm the binary was built from it.
+7. **Commit of record.** The `data/output` runs (2026-09-26 21:26–23:01) read `conf/` as
+   committed at `2a40f1e` (09:43 that day). That is where the RBPF recipes became 2,000
+   particles for full GNSS and 1,000 for degraded and aided; at `827db06` all five said 2,000.
+   But `target/release/strapdown-sim` in the main checkout is dated 2026-09-25 21:18, before
+   both commits, so the executing revision is unverified. The paper now says so. Rerunning from
+   a tagged commit and archiving the binary's `--version` would close this.
 8. **Conference-era defects.** Every defect in Section 2 was confirmed by reading the source at
    `4a4e3de` (2025-11-14, "Write UKF Anomaly paper") and `4ea73af` (2026-03-11, "anomaly rbpf
    paper"). This assumes those are the revisions the conference runs used. The missing
@@ -42,9 +46,13 @@ references (the limit is 20). 9 figures (limit 15), 9 tables, abstract 267 words
 - **UKF α = 0.1**, not 1e-3. `DEFAULT_UKF_ALPHA` was raised in `b70cd55` (2026-09-18), before
   the 2026-09-26 runs, and no config overrides it. Dissertation Ch. 3–4 should be corrected.
 - **RBPF particles = 1,000** in every config, not 2,000 with full GNSS.
-- **Map gradients.** Along-track median 1.41 mGal/km and 6.28 nT/km (central differences on
-  the grid, `build_figures.median_gradients`), against 1.3 and 6.9 in the dissertation. The
-  bounds move accordingly: 93 / 1,201 / 39 / 0.62 km against ~100 / 1,100 / 40 / 0.6 km.
+- **Map gradients.** Along-track median 1.44 mGal/km and 6.37 nT/km, from the gradient of
+  the bilinear cell containing each point (`build_figures.bilinear_gradient`, after PR review),
+  against 1.3 and 6.9 in the dissertation. Single-update scales: 91 / 1,183 / 38 / 0.6 km;
+  indicative noise targets 0.6 mGal / 2.8 nT. The paper now presents these as a directional
+  heuristic, not a localization bound.
+- **Drive 2025-06-14.** The current input has 197 fixes, a median reported accuracy of 12.2 m,
+  and 9 fixes at ≥ 999 m; the dissertation's "587 rows, 16.2 m" is from the 1 Hz pipeline.
 - **Gravity-norm vs. map slope.** −0.02 against −0.012 (correlation −0.055 matches).
 - **Heading dependence of the magnetic intensity.** 52% of variance from a cos/sin fit to GNSS
   course over ground, against 57% in the dissertation from a heading-circle fit. The

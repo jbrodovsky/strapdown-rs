@@ -4,8 +4,8 @@ Every number in the manuscript is computed here from the CSVs that `just postpro
 `just geoperf-all` write. Nothing is copied from the dissertation, whose tables disagree with
 each other in places (see NOTES.md).
 
-Data root: the `STRAPDOWN_DATA` environment variable, defaulting to the main checkout's
-`data/` directory. Two arms are read:
+Data root: the `STRAPDOWN_DATA` environment variable, defaulting to the ``data/`` directory
+at the root of the repository checkout that holds this script. Two arms are read:
 
 - ``phone``: the smartphone's own gravity and magnetometer readings (``output_real2``)
 - ``dedicated``: the same drives with the anomaly norms replaced by the ADXL355 / RM3100
@@ -26,7 +26,8 @@ import numpy as np
 import pandas as pd
 from scipy.stats import wilcoxon
 
-DATA = Path(os.environ.get("STRAPDOWN_DATA", "/home/james/Code/strapdown-rs/data"))
+# papers/anom_combined/scripts/stats.py -> repository root is three levels up.
+DATA = Path(os.environ.get("STRAPDOWN_DATA", Path(__file__).resolve().parents[3] / "data"))
 ARMS = {"phone": "output_real2", "dedicated": "output"}
 FILTERS = ("ekf", "ukf", "rbpf")
 CHANNELS = ("grav", "mag", "both")

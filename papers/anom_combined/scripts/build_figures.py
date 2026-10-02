@@ -486,15 +486,29 @@ def figure_rbpf() -> None:
 def bilinear_gradient(
     lat: np.ndarray, lon: np.ndarray, grid: np.ndarray, plat: np.ndarray, plon: np.ndarray
 ) -> np.ndarray:
-    """Map gradient magnitude per km at track points, by central differences of the grid."""
-    dlat_km = np.radians(np.diff(lat).mean()) * EARTH_RADIUS_M / 1000.0
-    dlon_km = (
-        np.radians(np.diff(lon).mean()) * EARTH_RADIUS_M / 1000.0 * np.cos(np.radians(lat.mean()))
-    )
-    g_north, g_east = np.gradient(grid, dlat_km, dlon_km)
-    i = np.clip(np.searchsorted(lat, plat) - 1, 0, lat.size - 1)
-    j = np.clip(np.searchsorted(lon, plon) - 1, 0, lon.size - 1)
-    return np.hypot(g_north[i, j], g_east[i, j])
+    """Gradient magnitude, per km, of the bilinear interpolant at each track point.
+
+    This is the derivative the filters' map model has: each point is located in its grid
+    cell and the bilinear surface of that cell is differentiated at the point's fractional
+    position. Points outside the tile are NaN.
+    """
+    i = np.searchsorted(lat, plat, side="right") - 1
+    j = np.searchsorted(lon, plon, side="right") - 1
+    inside = (i >= 0) & (i < lat.size - 1) & (j >= 0) & (j < lon.size - 1)
+    i = np.clip(i, 0, lat.size - 2)
+    j = np.clip(j, 0, lon.size - 2)
+    cell_lat = lat[i + 1] - lat[i]
+    cell_lon = lon[j + 1] - lon[j]
+    t_lat = (plat - lat[i]) / cell_lat
+    t_lon = (plon - lon[j]) / cell_lon
+    f00, f01 = grid[i, j], grid[i, j + 1]
+    f10, f11 = grid[i + 1, j], grid[i + 1, j + 1]
+    per_deg_north = ((1 - t_lon) * (f10 - f00) + t_lon * (f11 - f01)) / cell_lat
+    per_deg_east = ((1 - t_lat) * (f01 - f00) + t_lat * (f11 - f10)) / cell_lon
+    km_per_deg = np.radians(1.0) * EARTH_RADIUS_M / 1000.0
+    north = per_deg_north / km_per_deg
+    east = per_deg_east / (km_per_deg * np.cos(np.radians(plat)))
+    return np.where(inside, np.hypot(north, east), np.nan)
 
 
 def median_gradients() -> dict[str, float]:
@@ -514,6 +528,27 @@ def median_gradients() -> dict[str, float]:
     return result
 
 
+def write_bound_macros(
+    gradients: dict[str, float], bounds: list[float], degraded_km: float
+) -> None:
+    """Gradient, scale and noise-requirement numbers quoted in the text, as LaTeX macros."""
+    names = ("phonemag", "phonegrav", "adxl", "rmthree")
+    values = {
+        "gradgrav": f"{gradients['gravity']:.2f}",
+        "gradmag": f"{gradients['magnetic']:.2f}",
+        "degradedkm": f"{degraded_km:.2f}",
+        "reqgrav": f"{degraded_km * gradients['gravity']:.1f}",
+        "reqmag": f"{degraded_km * gradients['magnetic']:.1f}",
+    }
+    for name, bound in zip(names, bounds, strict=True):
+        values[f"scale{name}"] = f"{bound:,.1f}" if bound < 10 else f"{bound:,.0f}"
+    lines = [
+        f"\\newcommand{{\\bound{key}}}{{{value.replace(',', '{,}')}}}"
+        for key, value in sorted(values.items())
+    ]
+    (FIGURES.parent / "tables" / "bound_numbers.tex").write_text("\n".join(lines) + "\n")
+
+
 def figure_bound(gradients: dict[str, float]) -> None:
     """Noise over map gradient for each observation, against the degraded-GNSS error."""
     phone = stats.geostats("phone")
@@ -525,6 +560,7 @@ def figure_bound(gradients: dict[str, float]) -> None:
     ]
     bounds = [noise / gradients[field] for _, noise, field in entries]
     degraded_km = stats.baseline("dedicated", "ekf", "degraded")["h_median"] / 1000.0
+    write_bound_macros(gradients, bounds, degraded_km)
     fig, ax = plt.subplots(figsize=(WIDTH_IN, 1.8), constrained_layout=True)
     ax.barh(range(len(entries)), bounds, color=[MUTED, MUTED, MUTED, COLOR["ekf"]], height=0.55)
     for y, value in enumerate(bounds):
@@ -546,7 +582,9 @@ def figure_bound(gradients: dict[str, float]) -> None:
     ax.set_xscale("log")
     ax.set_xlim(0.1, 1e5)
     ax.set_yticks(range(len(entries)), [e[0] for e in entries])
-    ax.set_xlabel(r"Per-update localization bound $\sqrt{R}\,/\,|\nabla\mathcal{M}|$ (km)")
+    ax.set_xlabel(
+        r"Single-update position scale along the gradient, $\sqrt{R}\,/\,|\nabla\mathcal{M}|$ (km)"
+    )
     ax.grid(axis="y", visible=False)
     save(fig, "fig_bound")
     print(
