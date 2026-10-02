@@ -75,7 +75,7 @@ magnetic_variation_time_constant_s = 3596.94
 #                 Temperature, 0.5 nT/degC (Strabel et al. 2022), 10% and 1 degC: 0.05 nT
 # `magnetic_resolution` is a label: the grid is whatever <stem>_magnetic.nc holds (earth_wdmam,
 # 3 arc-minutes).
-magnetic_resolution = "one_minute"
+magnetic_resolution = "two_minutes"
 magnetic_bias = 0.0                           # nT; the turn-on bias has zero mean
 magnetic_noise_std = 3.91675                  # nT per 10 Hz row
 magnetic_bias_init_std = 17.0862              # nT; turn-on and drift, in quadrature

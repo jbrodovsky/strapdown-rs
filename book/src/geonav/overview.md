@@ -89,8 +89,9 @@ state exists to absorb.
 
 **The resolution flags are labels, not selectors.** The grid used is whatever the map file
 contains; the resolution is recorded with the map but changes nothing numerically. Gravity
-labels stop at `one-minute` and magnetic labels at `two-minutes`, and finer choices are
-recorded as those.
+labels stop at `one-minute` and magnetic labels at `two-minutes`. A finer choice is refused
+before the run starts, with an error listing the supported labels, on the command line and in a
+configuration file alike.
 
 ## Configuration file
 

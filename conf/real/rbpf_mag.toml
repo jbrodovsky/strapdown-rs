@@ -28,7 +28,7 @@ zero_vertical_velocity_std_mps = 0.1
 
 [geophysical]
 # Magnetic anomaly measurements
-magnetic_resolution = "one_minute"
+magnetic_resolution = "two_minutes"
 magnetic_bias = 23342.7
 magnetic_noise_std = 7537.31
 magnetic_bias_init_std = 45902.2

@@ -1160,7 +1160,7 @@ fn process_file(
                             None => find_gravity_map(input_file)?,
                         };
                         let measurement_type =
-                            GeophysicalMeasurementType::Gravity(convert_resolution_gravity(res));
+                            GeophysicalMeasurementType::Gravity(convert_resolution_gravity(res)?);
                         Some(Rc::new(GeoMap::load_geomap(&map_path, measurement_type)?))
                     } else {
                         None
@@ -1172,7 +1172,7 @@ fn process_file(
                             None => find_magnetic_map(input_file)?,
                         };
                         let measurement_type =
-                            GeophysicalMeasurementType::Magnetic(convert_resolution_magnetic(res));
+                            GeophysicalMeasurementType::Magnetic(convert_resolution_magnetic(res)?);
                         Some(Rc::new(GeoMap::load_geomap(&map_path, measurement_type)?))
                     } else {
                         None
@@ -1418,6 +1418,12 @@ fn run_from_config(
             info!("Sensor records written to {}", output.display());
         }
         return Ok(());
+    }
+
+    // Refused before any file is read, as the command line's resolutions are.
+    #[cfg(feature = "geonav")]
+    if let Some(geo) = config.geophysical.as_ref() {
+        check_map_resolutions(geo.gravity_resolution, geo.magnetic_resolution)?;
     }
 
     // Refused before any file is read, as the `--gate-*` flags are.
@@ -1906,10 +1912,27 @@ fn run_closed_loop_cli(
 // Geophysical Navigation Functions (feature-gated)
 // ============================================================================
 
-/// Convert `GeoResolution` to `GravityResolution`
+/// The gravity resolutions a map can be fetched at: one degree down to one arc-minute.
 #[cfg(feature = "geonav")]
-const fn convert_resolution_gravity(resolution: GeoResolution) -> GravityResolution {
-    match resolution {
+const SUPPORTED_GRAVITY_RESOLUTIONS: &str = "one-degree, thirty-minutes, twenty-minutes, \
+    fifteen-minutes, ten-minutes, six-minutes, five-minutes, four-minutes, three-minutes, \
+    two-minutes, one-minute";
+
+/// The magnetic resolutions a map can be fetched at: one degree down to two arc-minutes.
+#[cfg(feature = "geonav")]
+const SUPPORTED_MAGNETIC_RESOLUTIONS: &str = "one-degree, thirty-minutes, twenty-minutes, \
+    fifteen-minutes, ten-minutes, six-minutes, five-minutes, four-minutes, three-minutes, \
+    two-minutes";
+
+/// Convert `GeoResolution` to `GravityResolution`.
+///
+/// # Errors
+/// For a resolution finer than one arc-minute, which no gravity map here is published at. These
+/// used to be accepted and silently recorded as one-minute, so a run labelled thirty-second
+/// gravity aiding was one-minute aiding.
+#[cfg(feature = "geonav")]
+fn convert_resolution_gravity(resolution: GeoResolution) -> Result<GravityResolution, String> {
+    Ok(match resolution {
         GeoResolution::OneDegree => GravityResolution::OneDegree,
         GeoResolution::ThirtyMinutes => GravityResolution::ThirtyMinutes,
         GeoResolution::TwentyMinutes => GravityResolution::TwentyMinutes,
@@ -1920,14 +1943,27 @@ const fn convert_resolution_gravity(resolution: GeoResolution) -> GravityResolut
         GeoResolution::FourMinutes => GravityResolution::FourMinutes,
         GeoResolution::ThreeMinutes => GravityResolution::ThreeMinutes,
         GeoResolution::TwoMinutes => GravityResolution::TwoMinutes,
-        _ => GravityResolution::OneMinute,
-    }
+        GeoResolution::OneMinute => GravityResolution::OneMinute,
+        finer @ (GeoResolution::ThirtySeconds
+        | GeoResolution::FifteenSeconds
+        | GeoResolution::ThreeSeconds
+        | GeoResolution::OneSecond) => {
+            return Err(format!(
+                "gravity resolution {finer:?} is finer than any gravity map supports; choose \
+                 one of: {SUPPORTED_GRAVITY_RESOLUTIONS}"
+            ));
+        }
+    })
 }
 
-/// Convert `GeoResolution` to `MagneticResolution`
+/// Convert `GeoResolution` to `MagneticResolution`.
+///
+/// # Errors
+/// For a resolution finer than two arc-minutes, which no magnetic map here is published at.
+/// These used to be accepted and silently recorded as two-minute.
 #[cfg(feature = "geonav")]
-const fn convert_resolution_magnetic(resolution: GeoResolution) -> MagneticResolution {
-    match resolution {
+fn convert_resolution_magnetic(resolution: GeoResolution) -> Result<MagneticResolution, String> {
+    Ok(match resolution {
         GeoResolution::OneDegree => MagneticResolution::OneDegree,
         GeoResolution::ThirtyMinutes => MagneticResolution::ThirtyMinutes,
         GeoResolution::TwentyMinutes => MagneticResolution::TwentyMinutes,
@@ -1937,8 +1973,36 @@ const fn convert_resolution_magnetic(resolution: GeoResolution) -> MagneticResol
         GeoResolution::FiveMinutes => MagneticResolution::FiveMinutes,
         GeoResolution::FourMinutes => MagneticResolution::FourMinutes,
         GeoResolution::ThreeMinutes => MagneticResolution::ThreeMinutes,
-        _ => MagneticResolution::TwoMinutes,
+        GeoResolution::TwoMinutes => MagneticResolution::TwoMinutes,
+        finer @ (GeoResolution::OneMinute
+        | GeoResolution::ThirtySeconds
+        | GeoResolution::FifteenSeconds
+        | GeoResolution::ThreeSeconds
+        | GeoResolution::OneSecond) => {
+            return Err(format!(
+                "magnetic resolution {finer:?} is finer than any magnetic map supports; choose \
+                 one of: {SUPPORTED_MAGNETIC_RESOLUTIONS}"
+            ));
+        }
+    })
+}
+
+/// Refuse a gravity or magnetic resolution no map supports, before any file is read.
+///
+/// # Errors
+/// From [`convert_resolution_gravity`] or [`convert_resolution_magnetic`].
+#[cfg(feature = "geonav")]
+fn check_map_resolutions(
+    gravity: Option<GeoResolution>,
+    magnetic: Option<GeoResolution>,
+) -> Result<(), Box<dyn Error>> {
+    if let Some(resolution) = gravity {
+        convert_resolution_gravity(resolution)?;
     }
+    if let Some(resolution) = magnetic {
+        convert_resolution_magnetic(resolution)?;
+    }
+    Ok(())
 }
 
 /// Auto-detect gravity map file based on input directory
@@ -2049,8 +2113,9 @@ impl GeoClosedLoopSettings {
     ///
     /// # Errors
     ///
-    /// Returns an error when no map is configured, or when the filter is the ESKF, which
-    /// has no geophysical implementation. The latter matters more than it looks:
+    /// Returns an error when no map is configured, when a map resolution is finer than any
+    /// map of that kind supports (see [`check_map_resolutions`]), or when the filter is the
+    /// ESKF, which has no geophysical implementation. The last matters more than it looks:
     /// [`FilterType`]'s `#[default]` is `Eskf`, so a configuration file that omits `filter`
     /// lands here rather than on a filter that works.
     fn validate(&self) -> Result<(), Box<dyn Error>> {
@@ -2060,6 +2125,7 @@ impl GeoClosedLoopSettings {
                  `magnetic_resolution` in the `[geophysical]` section of a config file"
                 .into());
         }
+        check_map_resolutions(self.gravity_resolution, self.magnetic_resolution)?;
         if matches!(self.filter, FilterType::Eskf) {
             return Err(
                 "ESKF is not yet implemented for geophysical navigation. Choose \
@@ -2570,7 +2636,7 @@ fn run_geo_closed_loop_file(
 
             info!("Loading gravity map from: {}", map_path.display());
             let measurement_type =
-                GeophysicalMeasurementType::Gravity(convert_resolution_gravity(res));
+                GeophysicalMeasurementType::Gravity(convert_resolution_gravity(res)?);
             let map = Rc::new(GeoMap::load_geomap(&map_path, measurement_type)?);
             info!(
                 "Loaded gravity map with {} x {} grid points",
@@ -2591,7 +2657,7 @@ fn run_geo_closed_loop_file(
 
             info!("Loading magnetic map from: {}", map_path.display());
             let measurement_type =
-                GeophysicalMeasurementType::Magnetic(convert_resolution_magnetic(res));
+                GeophysicalMeasurementType::Magnetic(convert_resolution_magnetic(res)?);
             let map = Rc::new(GeoMap::load_geomap(&map_path, measurement_type)?);
             info!(
                 "Loaded magnetic map with {} x {} grid points",
@@ -2900,6 +2966,8 @@ fn run_particle_filter(
     plot: bool,
 ) -> Result<(), Box<dyn Error>> {
     refuse_removed_particle_filter_flags(args)?;
+    #[cfg(feature = "geonav")]
+    check_map_resolutions(args.geo.gravity_resolution, args.geo.magnetic_resolution)?;
     validate_input_path(&args.sim.input)?;
     validate_output_path(&args.sim.output)?;
 
@@ -2937,7 +3005,7 @@ fn run_particle_filter(
                     };
                     info!("Loading gravity map from: {}", map_path.display());
                     let measurement_type =
-                        GeophysicalMeasurementType::Gravity(convert_resolution_gravity(res));
+                        GeophysicalMeasurementType::Gravity(convert_resolution_gravity(res)?);
                     Some(Rc::new(GeoMap::load_geomap(&map_path, measurement_type)?))
                 } else {
                     None
@@ -2950,7 +3018,7 @@ fn run_particle_filter(
                     };
                     info!("Loading magnetic map from: {}", map_path.display());
                     let measurement_type =
-                        GeophysicalMeasurementType::Magnetic(convert_resolution_magnetic(res));
+                        GeophysicalMeasurementType::Magnetic(convert_resolution_magnetic(res)?);
                     Some(Rc::new(GeoMap::load_geomap(&map_path, measurement_type)?))
                 } else {
                     None
@@ -4900,5 +4968,54 @@ magnetic_bias_process_noise_std = 3.0
         };
         assert_ne!(stream_for(1), stream_for(2));
         assert_eq!(stream_for(1), stream_for(1));
+    }
+
+    /// A resolution finer than the maps support is refused, naming the supported ones. It used
+    /// to be recorded as the coarser one without a word.
+    #[cfg(feature = "geonav")]
+    #[test]
+    fn map_resolutions_finer_than_the_data_are_refused() {
+        let error = convert_resolution_gravity(GeoResolution::ThirtySeconds).unwrap_err();
+        assert!(error.contains("one-minute"), "got: {error}");
+        assert!(matches!(
+            convert_resolution_gravity(GeoResolution::OneMinute),
+            Ok(GravityResolution::OneMinute)
+        ));
+
+        let error = convert_resolution_magnetic(GeoResolution::OneMinute).unwrap_err();
+        assert!(error.contains("two-minutes"), "got: {error}");
+        assert!(matches!(
+            convert_resolution_magnetic(GeoResolution::TwoMinutes),
+            Ok(MagneticResolution::TwoMinutes)
+        ));
+
+        // On both the command line and a config file, before any input is read.
+        let cli = Cli::try_parse_from([
+            "strapdown-sim",
+            "cl",
+            "-i",
+            "in.csv",
+            "-o",
+            "out.csv",
+            "--filter",
+            "ukf",
+            "--geo",
+            "--gravity-resolution",
+            "thirty-seconds",
+        ])
+        .unwrap();
+        let Some(Command::ClosedLoop(args)) = cli.command else {
+            panic!("expected the `cl` subcommand");
+        };
+        let settings = geo_settings_from_args(&args, false).unwrap();
+        assert!(settings.validate().is_err());
+
+        let config = config_from_toml(
+            "mode = \"closed-loop\"\n\n[closed_loop]\nfilter = \"ukf\"\n\n\
+             [geophysical]\nmagnetic_resolution = \"one_minute\"\n",
+        );
+        let geo = config.geophysical.as_ref().unwrap();
+        let settings = geo_settings_from_config(&config, geo).unwrap();
+        assert!(settings.validate().is_err());
     }
 }
