@@ -55,10 +55,6 @@ pub fn matrix_square_root(matrix: &DMatrix<f64>) -> Result<DMatrix<f64>, Strapdo
         });
     }
 
-    assert!(
-        matrix.is_square(),
-        "matrix_square_root: matrix must be square"
-    );
     // 1) Symmetrize to kill round-off asymmetry
     let p = symmetrize(matrix);
     // 2) Equilibrated Cholesky (fast path)
