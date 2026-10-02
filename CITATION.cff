@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "strapdown-rs: Strapdown inertial navigation and GNSS-degradation simulation in Rust"
+type: software
+authors:
+  - family-names: Brodovsky
+    given-names: James
+    orcid: "https://orcid.org/0000-0002-1371-9044"
+    affiliation: Temple University
+version: 1.0.0
+license: MIT
+repository-code: "https://github.com/jbrodovsky/strapdown-rs"
+url: "https://jbrodovsky.github.io/strapdown-rs/"
+keywords:
+  - inertial navigation
+  - strapdown INS
+  - GNSS
+  - Kalman filter
+  - particle filter
+  - Rust

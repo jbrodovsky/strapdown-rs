@@ -1,8 +1,11 @@
 # Papers
 
 This directory holds the [JOSS](https://joss.theoj.org/) submission for
-`strapdown-rs`. It is built by the `Draft PDF` GitHub Actions workflow
-(`.github/workflows/draft-pdf.yml`) on pushes to the `joss` branch.
+`strapdown-rs`, under review at
+[openjournals/joss-reviews#11377](https://github.com/openjournals/joss-reviews/issues/11377).
+The review reads the paper from `main`. The `Draft PDF` GitHub Actions workflow
+(`.github/workflows/draft-pdf.yml`) builds it on every pull request and push to `main` that
+touches `papers/joss/`, and uploads the PDF as a workflow artifact.
 
 - `joss/paper.md` — the submission manuscript
 - `joss/paper.bib` — its bibliography

@@ -269,8 +269,10 @@ The Free Core implementation must achieve the following capabilities:
     loop and are not measurement updates
   - Time update once per measurement epoch (transition and noise accumulate between); one
     measurement update for every other sensor (`C = H T`, weights under `C P Cᵀ + R`)
-  - `horizontal_process_noise_std_m` defaults to the paper's zero (eq. 19), which **diverges**
-    with GNSS-rate fixes on MEMS data; the `conf/` recipes set 1 m/√s
+  - `horizontal_process_noise_std_m`: `RbpfConfig` (the library) defaults to the paper's zero
+    (eq. 19), which **diverges** with GNSS-rate fixes on MEMS data. `strapdown-sim` and its
+    `[particle_filter]` section default to 1 m/√s (`sim::DEFAULT_PF_HORIZONTAL_PROCESS_NOISE_STD_M`),
+    as the `conf/` recipes set
   - Reports the Kalman filters' layout, `[9 nav, b_a, b_g, map biases]`, with zero bias rows;
     `core/src/rbpf.rs`'s module docs list the departures from the paper
 - **Process noise**: `sim::DEFAULT_PROCESS_NOISE_DENSITY` is a **spectral density** -- a

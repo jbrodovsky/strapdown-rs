@@ -49,7 +49,7 @@ following:
 | key | meaning | default |
 | --- | --- | --- |
 | `velocity_process_noise_std_mps`, `attitude_process_noise_std_rad` | VRW and ARW, per √s (eq. 20) | 1e-3, 0.01 |
-| `horizontal_process_noise_std_m` | `[north, east]` random walk on the sampled position, m/√s | `[0, 0]`, the paper's eq. 19 |
+| `horizontal_process_noise_std_m` | `[north, east]` random walk on the sampled position, m/√s | `[1, 1]`; the paper's eq. 19 is `[0, 0]` (see below) |
 | `baro_loop_time_constant_s` | the loop's gains place its three poles at `-1/τ` | 10 |
 | `baro_error_std_m`, `baro_error_time_constant_s` | the barometer-aiding error as a Gauss-Markov process (`σ_b`, `τ_b`) | 8.3 m, 3600 s |
 | `vertical_accel_error_init_std_mps2` | prior on `δâ` | 0.1 |
@@ -63,7 +63,7 @@ starts from its stationary distribution, and `c` takes the rest of `*_bias_init_
 paper's magnetic temporal variation is `magnetic_variation_std = 5` with
 `magnetic_variation_time_constant_s = 300`.
 
-## Horizontal process noise: why the recipes set 1 m/√s
+## Horizontal process noise: why the default is 1 m/√s
 
 The paper's zero (eq. 19) makes every epoch's time update a noiseless observation of the
 velocity and tilt errors. That moves their uncertainty out of the shared covariance and into

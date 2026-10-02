@@ -624,9 +624,14 @@ struct ParticleFilterSimArgs {
     geo_bias: GeophysicalBiasArgs,
 
     /// Random walk on the sampled horizontal position error as `north,east` in m/sqrt(s).
-    /// Default: 0, Canciani & Raquet's eq. 19, which diverges with GNSS-rate fixes on MEMS
-    /// data; the recipes under `conf/` use `1,1`.
-    #[arg(long, value_delimiter = ',', num_args = 2, default_value = "0,0")]
+    /// Default: 1,1, as the recipes under `conf/` use. Canciani & Raquet's eq. 19 is `0,0`,
+    /// which diverges with GNSS-rate fixes on MEMS data.
+    #[arg(
+        long,
+        value_delimiter = ',',
+        num_args = 2,
+        default_values_t = [strapdown::sim::DEFAULT_PF_HORIZONTAL_PROCESS_NOISE_STD_M; 2]
+    )]
     horizontal_process_noise_std_m: Vec<f64>,
 
     /// Time constant of the barometer loop in the mechanization (s). Default: 10.
@@ -4372,6 +4377,34 @@ magnetic_bias_process_noise_std = 3.0
             format!("{particle:?}"),
             "the Kalman arm and the particle filter resolved different map-bias priors from \
              the same [geophysical] section"
+        );
+    }
+
+    /// `pf` with no flags and a `[particle_filter]` section that sets nothing run the same
+    /// horizontal process noise, and it is not the library filter's zero.
+    ///
+    /// With the zero, `strapdown-sim pf` diverged on a 10-minute synthetic trajectory and
+    /// failed its speed check at 500 m/s; so did both shipped example configs that run the
+    /// particle filter, because neither set the key.
+    #[test]
+    fn pf_defaults_to_a_horizontal_process_noise_that_survives_gnss_rate_fixes() {
+        let cli = Cli::try_parse_from(["strapdown-sim", "pf", "-i", "in.csv", "-o", "out.csv"])
+            .expect("the flags above must parse");
+        let Some(Command::ParticleFilter(args)) = cli.command else {
+            panic!("expected the `pf` subcommand");
+        };
+        let from_config = strapdown::sim::ParticleFilterConfig::default();
+        assert_eq!(
+            args.horizontal_process_noise_std_m,
+            from_config.horizontal_process_noise_std_m
+        );
+        assert!(
+            from_config
+                .horizontal_process_noise_std_m
+                .iter()
+                .all(|&std| std > 0.0),
+            "{:?}",
+            from_config.horizontal_process_noise_std_m
         );
     }
 
