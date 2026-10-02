@@ -93,15 +93,15 @@ Library](../user-guide/library.md) continues from here.
 | `full` | no | All four of the above | as for `hdf5` |
 
 The default build has none of them and compiles with Rust alone. These writers are library
-methods only. `strapdown-sim` writes CSV whatever features the library was built with: an
-`-o` path that does not end in `.csv` is treated as a *directory*, and the results are written
-into it as `.csv` files (`-o out.h5` produces `out.h5/<input name>.csv`).
+methods only. `strapdown-sim` writes CSV whatever features the library was built with, and
+refuses an `-o` path whose extension names another format (`-o out.h5` is an error, not an HDF5
+file); a path with no extension is a directory to write `.csv` files into.
 
 ### `strapdown-sim`
 
 | Feature | Default | What it adds | Build needs |
 | --- | --- | --- | --- |
-| `plotting` | **yes** | Rendering for the global `--plot` flag, a performance plot against the GNSS track. Without the feature the flag is still accepted, but it logs an error and draws nothing | C compiler (bundled FreeType); libfontconfig at **run time** |
+| `plotting` | **yes** | Rendering for the global `--plot` flag, a performance plot against the GNSS track. Without the feature `--plot` is refused, and a config file's `generate_plot = true` logs an error and draws nothing | C compiler (bundled FreeType); libfontconfig at **run time** |
 | `geonav` | no | Gravity and magnetic anomaly map aiding: `--geo`, `--gravity-*`, `--magnetic-*` and `--geo-interval-s` on `cl` and `pf`. Without the feature these flags do not exist | C/C++ compiler, cmake ≥ 3.26 |
 
 `plotting` loads libfontconfig when it first draws text rather than linking it at build time.

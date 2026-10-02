@@ -74,10 +74,10 @@ See [Input Data Format](./user-guide/data-format.md).
 ### What does it write?
 
 CSV. Every path through `strapdown-sim` ends in `NavigationResult::to_csv`. An `-o` value ending
-in `.csv` is a file; any other value is treated as a directory to write `<input name>.csv`
-into, so `-o results.parquet` creates a *directory* called `results.parquet`. HDF5, NetCDF and
-MCAP writers exist as library methods on `NavigationResult` behind cargo features, not as CLI
-options. See [Output Format](./user-guide/output-format.md).
+in `.csv` is a file; one ending in another data format's extension (`.h5`, `.nc`, `.mcap`,
+`.parquet` and so on) is refused; any other value is a directory to write `<input name>.csv`
+into. HDF5, NetCDF and MCAP writers exist as library methods on `NavigationResult` behind cargo
+features, not as CLI options. See [Output Format](./user-guide/output-format.md).
 
 ### My run stops with `InvalidConfiguration { field: "is_enu", ... }`
 

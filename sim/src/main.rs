@@ -5,8 +5,8 @@
 //! - dr: dead reckoning. Propagates the IMU from the initial state with no aiding at all.
 //!
 //! - cl: closed loop. Corrects the INS with GNSS, barometric and magnetometer measurements
-//!   through the 15-state error-state Kalman filter (ESKF) by default, or the EKF or UKF with
-//!   --filter. GNSS can be withheld (outages, reduced rates) or corrupted (noise, drift, spoofing).
+//!   through the error-state Kalman filter (ESKF) by default -- 15 error states, plus a
+//!   barometric bias state unless --no-estimate-baro-bias -- or the EKF or UKF with --filter. GNSS can be withheld (outages, reduced rates) or corrupted (noise, drift, spoofing).
 //!
 //! - pf: the Rao-Blackwellized particle filter, with the same GNSS degradation options.
 //!
@@ -21,7 +21,7 @@
 //!   1. Loading all parameters from a configuration file (TOML/JSON/YAML) with --config
 //!   2. Specifying parameters via command-line flags
 //!
-//! Results are written as CSV. User guide: https://jbrodovsky.github.io/strapdown-rs/
+//! Results are written as CSV. User guide: <https://jbrodovsky.github.io/strapdown-rs/>
 
 mod common;
 #[cfg(feature = "plotting")]
@@ -31,14 +31,13 @@ use clap::{Args, Parser, Subcommand};
 use common::{
     get_csv_files, init_logger, load_records, prompt_config_name, prompt_config_path,
     prompt_f64_with_default, prompt_input_path, prompt_output_path, read_user_input,
-    resolve_output_path, validate_input_path, validate_output_path,
+    resolve_output_path, validate_input_path, validate_output_path, validate_synthetic_output_path,
 };
 use log::{error, info};
 use nalgebra::{Vector2, Vector3};
 use rayon::prelude::*;
 use std::error::Error;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use strapdown::messages::{Event, EventStream, MeasurementScheduler, build_event_stream};
 use strapdown::rbpf::{RaoBlackwellizedParticleFilter, RbpfConfig};
 
@@ -65,13 +64,15 @@ use strapdown::sim::health::HealthMonitor;
 use strapdown::sim::run_closed_loop_with_geo;
 use strapdown::sim::{
     ClosedLoopConfig, EkfConfig, EskfConfig, ExecutionLimits, ExecutionMonitor, ExtraStateLayout,
-    FaultArgs, FilterType, NavigationResult, ParticleFilterConfig, ParticleFilterType,
-    SchedulerArgs, SimulationConfig, SimulationMode, SyntheticConfig, TestDataRecord, UkfConfig,
-    build_fault, build_scheduler, check_declared_frame, dead_reckoning, generate_synthetic,
-    initialize_ekf, initialize_eskf, initialize_ukf, run_closed_loop,
+    FaultArgs, FilterType, NavigationResult, ParticleFilterType, SchedulerArgs, SimulationConfig,
+    SimulationMode, SyntheticConfig, TestDataRecord, UkfConfig, build_fault, build_scheduler,
+    check_declared_frame, dead_reckoning_with_limits, generate_synthetic, initialize_ekf,
+    initialize_eskf, initialize_ukf, run_closed_loop,
 };
 #[cfg(feature = "geonav")]
-use strapdown::sim::{DEFAULT_PROCESS_NOISE_DENSITY, GeoResolution, GeophysicalConfig};
+use strapdown::sim::{
+    DEFAULT_PROCESS_NOISE_DENSITY, GeoResolution, GeophysicalConfig, ParticleFilterConfig,
+};
 
 /// The `--log-level` default.
 ///
@@ -88,8 +89,8 @@ This program runs strapdown INS simulations on recorded or synthetic data:
 - dr: dead reckoning. Propagates the IMU from the initial state with no aiding at all.
 
 - cl: closed loop. Corrects the INS with GNSS, barometric and magnetometer measurements
-  through the 15-state error-state Kalman filter (ESKF) by default, or the EKF or UKF with
-  --filter. GNSS can be withheld (outages, reduced rates) or corrupted (noise, drift, spoofing).
+  through the error-state Kalman filter (ESKF) by default -- 15 error states, plus a
+  barometric bias state unless --no-estimate-baro-bias -- or the EKF or UKF with --filter. GNSS can be withheld (outages, reduced rates) or corrupted (noise, drift, spoofing).
 
 - pf: the Rao-Blackwellized particle filter, with the same GNSS degradation options.
 
@@ -154,7 +155,7 @@ enum Command {
     #[command(
         name = "cl",
         about = "Run simulation in closed-loop mode",
-        long_about = "Run INS simulation in a closed-loop (feedback) mode. In this mode, GNSS measurements are incorporated to correct for IMU drift and directly reset or update the navigation states. The filter is the 15-state error-state Kalman filter (ESKF) by default; --filter selects the extended (EKF) or unscented (UKF) Kalman filter instead. Various GNSS degradation scenarios can be simulated, including jamming, reduced update rates, and spoofing."
+        long_about = "Run INS simulation in a closed-loop (feedback) mode. In this mode, GNSS measurements are incorporated to correct for IMU drift and directly reset or update the navigation states. The filter is the error-state Kalman filter (ESKF) by default: 15 error states, plus a barometric bias state unless --no-estimate-baro-bias; --filter selects the extended (EKF) or unscented (UKF) Kalman filter instead. Various GNSS degradation scenarios can be simulated, including jamming, reduced update rates, and spoofing."
     )]
     ClosedLoop(Box<ClosedLoopSimArgs>),
 
@@ -184,7 +185,8 @@ With --no-noise: outputs 9-state kinematic truth in NavigationResult CSV format.
 /// Arguments for the `syn` (synthetic trajectory) command
 #[derive(Args, Clone, Debug)]
 struct SyntheticArgs {
-    /// Output CSV file path
+    /// Output CSV file path. Must end in `.csv`: `syn` writes one CSV file, and any other
+    /// extension is refused rather than given CSV under its name.
     #[arg(short, long)]
     output: PathBuf,
 
@@ -304,60 +306,74 @@ struct SimArgs {
     /// Output CSV file path, or a directory to write results into
     /// A path ending in .csv is treated as a file: a single input writes straight to it,
     /// and multiple inputs write {`output_stem`}_{`input_stem}.csv` beside it.
-    /// Any other path is treated as a directory, and each input writes to its own file
-    /// name inside it. Writing results over an input file is refused.
+    /// The CLI writes CSV only, so a path naming another data format (.h5, .hdf5, .nc,
+    /// .netcdf, .mcap, .parquet, .json, .yaml, .yml, .toml, .txt) is refused unless it is an
+    /// existing directory. Any other path is treated as a directory, and each input writes to
+    /// its own file name inside it. Writing results over an input file is refused.
     #[arg(short, long, value_parser)]
     output: PathBuf,
 
-    /// Max wall-clock time as a ratio of simulated duration (<= 0 disables)
+    /// Max wall-clock time as a ratio of simulated duration (<= 0 disables). Applied by dr,
+    /// cl and pf; ol runs nothing
     #[arg(long, default_value_t = strapdown::sim::DEFAULT_MAX_WALL_CLOCK_RATIO)]
     max_wall_clock_ratio: f64,
 
-    /// Max wall-clock time per trajectory in seconds (<= 0 disables)
+    /// Max wall-clock time per trajectory in seconds (<= 0 disables). Applied by dr, cl and
+    /// pf; ol runs nothing
     #[arg(long, default_value_t = strapdown::sim::DEFAULT_MAX_WALL_CLOCK_S)]
     max_wall_clock_s: f64,
 
-    /// Max wall-clock time without progress in seconds (<= 0 disables)
+    /// Max wall-clock time without progress in seconds (<= 0 disables). Applied by dr, cl and
+    /// pf; ol runs nothing
     #[arg(long, default_value_t = strapdown::sim::DEFAULT_MAX_NO_PROGRESS_S)]
     max_no_progress_s: f64,
 
-    /// Minimum latitude the filter estimate may reach, in degrees, before the run is failed
+    /// Minimum latitude the estimate may reach, in degrees, before the run is failed. Applied
+    /// by dr, cl and pf
     #[arg(long, default_value_t = strapdown::sim::DEFAULT_HEALTH_LAT_MIN_RAD.to_degrees())]
     health_lat_min_deg: f64,
 
-    /// Maximum latitude the filter estimate may reach, in degrees, before the run is failed
+    /// Maximum latitude the estimate may reach, in degrees, before the run is failed. Applied
+    /// by dr, cl and pf
     #[arg(long, default_value_t = strapdown::sim::DEFAULT_HEALTH_LAT_MAX_RAD.to_degrees())]
     health_lat_max_deg: f64,
 
-    /// Minimum longitude the filter estimate may reach, in degrees, before the run is failed
+    /// Minimum longitude the estimate may reach, in degrees, before the run is failed. Applied
+    /// by dr, cl and pf
     #[arg(long, default_value_t = strapdown::sim::DEFAULT_HEALTH_LON_MIN_RAD.to_degrees())]
     health_lon_min_deg: f64,
 
-    /// Maximum longitude the filter estimate may reach, in degrees, before the run is failed
+    /// Maximum longitude the estimate may reach, in degrees, before the run is failed. Applied
+    /// by dr, cl and pf
     #[arg(long, default_value_t = strapdown::sim::DEFAULT_HEALTH_LON_MAX_RAD.to_degrees())]
     health_lon_max_deg: f64,
 
-    /// Minimum altitude in metres above the ellipsoid before the run is failed
+    /// Minimum altitude in metres above the ellipsoid before the run is failed. Applied by dr,
+    /// cl and pf
     #[arg(long, default_value_t = strapdown::sim::DEFAULT_HEALTH_ALT_MIN_M)]
     health_alt_min_m: f64,
 
-    /// Maximum altitude in metres above the ellipsoid before the run is failed
+    /// Maximum altitude in metres above the ellipsoid before the run is failed. Applied by dr,
+    /// cl and pf
     #[arg(long, default_value_t = strapdown::sim::DEFAULT_HEALTH_ALT_MAX_M)]
     health_alt_max_m: f64,
 
-    /// Max velocity vector magnitude in m/s before the run is failed
+    /// Max velocity vector magnitude in m/s before the run is failed. Applied by dr, cl and pf;
+    /// an unaided dr arc on MEMS data can exceed the default, so raise it for long runs
     #[arg(long, default_value_t = strapdown::sim::DEFAULT_HEALTH_SPEED_MPS_MAX)]
     health_speed_mps_max: f64,
 
-    /// Largest variance tolerated on the covariance diagonal before the run is failed
+    /// Largest variance tolerated on the covariance diagonal before the run is failed. Applied
+    /// by cl and pf; dr carries no covariance
     #[arg(long, default_value_t = strapdown::sim::DEFAULT_HEALTH_COV_DIAG_MAX)]
     health_cov_diag_max: f64,
 
-    /// NIS above which a measurement update counts as an outlier
+    /// NIS above which a measurement update counts as an outlier. Applied by cl only: dr makes
+    /// no measurement update, and pf computes no NIS
     #[arg(long, default_value_t = strapdown::sim::DEFAULT_NIS_POS_MAX)]
     nis_pos_max: f64,
 
-    /// Consecutive NIS exceedances that fail the run
+    /// Consecutive NIS exceedances that fail the run. Applied by cl only, as --nis-pos-max
     #[arg(long, default_value_t = strapdown::sim::DEFAULT_NIS_POS_CONSEC_FAIL)]
     nis_pos_consec_fail: usize,
 
@@ -490,7 +506,8 @@ struct ClosedLoopSimArgs {
     #[command(flatten)]
     sim: SimArgs,
 
-    /// Filter type to use for closed-loop navigation (default: the 15-state ESKF)
+    /// Filter type for closed-loop navigation. Default: the error-state Kalman filter (ESKF):
+    /// 15 error states, plus a barometric bias state unless --no-estimate-baro-bias
     #[arg(long, value_enum, default_value_t = FilterType::default())]
     filter: FilterType,
 
@@ -518,7 +535,7 @@ struct ClosedLoopSimArgs {
     #[arg(long, default_value_t = 42)]
     seed: u64,
 
-    /// Estimate a barometric altitude bias as an extra filter state.
+    /// Do not estimate a barometric altitude bias; by default the filter carries one as an extra state.
     ///
     /// A barometer's reference pressure drifts and a filter that models the reading as
     /// unbiased pushes that drift into altitude. On the reference recording this takes
@@ -633,13 +650,17 @@ struct ParticleFilterSimArgs {
     #[command(flatten)]
     geo_bias: GeophysicalBiasArgs,
 
-    /// Random walk on the sampled horizontal position error as `north,east` in m/sqrt(s).
-    /// Default: 1,1, as the recipes under `conf/` use. Canciani & Raquet's eq. 19 is `0,0`,
-    /// which diverges with GNSS-rate fixes on MEMS data.
+    /// Random walk on the sampled horizontal position error, north then east, in m/sqrt(s).
+    /// Written `0.5,0.5` or `0.5 0.5`. Default: 1,1, as the recipes under `conf/` use. Canciani
+    /// & Raquet's eq. 19 is `0,0`, which diverges with GNSS-rate fixes on MEMS data.
+    //
+    // `num_args = 1..=2`, not `2`: clap counts arguments before splitting on the delimiter, so
+    // with `2` the comma form arrived as one argument and was refused for want of a second.
+    // Exactly two values is enforced by `horizontal_process_noise_from` either way.
     #[arg(
         long,
         value_delimiter = ',',
-        num_args = 2,
+        num_args = 1..=2,
         default_values_t = [strapdown::sim::DEFAULT_PF_HORIZONTAL_PROCESS_NOISE_STD_M; 2]
     )]
     horizontal_process_noise_std_m: Vec<f64>,
@@ -784,19 +805,6 @@ fn horizontal_process_noise_from(values: &[f64]) -> Result<Vector2<f64>, Box<dyn
     }
 }
 
-/// Arguments for create-config command
-#[derive(Args, Clone, Debug)]
-struct CreateConfigArgs {
-    /// Output file path for the config file
-    /// File extension determines format: .json, .yaml/.yml, or .toml (recommended)
-    #[arg(short, long, value_parser)]
-    output: PathBuf,
-
-    /// Simulation mode for the template
-    #[arg(short, long, value_enum, default_value_t = SimulationMode::ClosedLoop)]
-    mode: SimulationMode,
-}
-
 const fn execution_limits_from_args(args: &SimArgs) -> ExecutionLimits {
     ExecutionLimits {
         max_wall_clock_ratio: args.max_wall_clock_ratio,
@@ -842,6 +850,149 @@ impl RunLimits {
     }
 }
 
+/// Run `job` on every input file and fail if any of them failed.
+///
+/// The one batch policy every mode shares, the configuration-file path and each subcommand
+/// alike. A single input returns its own error unchanged. With several, a failing file is
+/// logged and the rest still run -- one unusable recording must not abandon a batch -- and the
+/// run then fails naming how many did not complete, so a script sees a non-zero exit. The
+/// subcommands used to log a filter failure and exit 0, which only the configuration path did
+/// not do.
+///
+/// `parallel` runs the files on rayon's pool. It is what `--parallel` and `parallel = true`
+/// mean, and it used to be read by the configuration path alone.
+///
+/// # Errors
+/// The single input's own error, or a count of the inputs that failed.
+fn run_batch<F>(csv_files: &[PathBuf], parallel: bool, job: F) -> Result<(), Box<dyn Error>>
+where
+    F: Fn(&Path) -> Result<(), Box<dyn Error>> + Sync,
+{
+    if let [only] = csv_files {
+        return job(only);
+    }
+
+    info!("Processing {} CSV files from directory", csv_files.len());
+    let run_one = |input_file: &PathBuf| {
+        job(input_file).map_err(|e| {
+            error!("Error processing {}: {e}", input_file.display());
+            (input_file.clone(), e.to_string())
+        })
+    };
+    let failures: Vec<(PathBuf, String)> = if parallel {
+        info!("Running in parallel mode");
+        csv_files
+            .par_iter()
+            .filter_map(|input_file| run_one(input_file).err())
+            .collect()
+    } else {
+        csv_files
+            .iter()
+            .filter_map(|input_file| run_one(input_file).err())
+            .collect()
+    };
+
+    if failures.is_empty() {
+        return Ok(());
+    }
+    error!(
+        "{} of {} file(s) failed to process",
+        failures.len(),
+        csv_files.len()
+    );
+    for (file, err) in &failures {
+        error!("  {}: {err}", file.display());
+    }
+    Err(format!(
+        "{} of {} file(s) failed to process",
+        failures.len(),
+        csv_files.len()
+    )
+    .into())
+}
+
+/// Write a performance plot beside `output_file` when `requested`.
+///
+/// A failed plot is logged rather than returned: the run it describes has already completed
+/// and been written, and discarding that over a drawing error would be the wrong trade.
+#[cfg(feature = "plotting")]
+fn plot_if_requested(
+    requested: bool,
+    results: &[NavigationResult],
+    records: &[TestDataRecord],
+    output_file: &Path,
+) {
+    if !requested {
+        return;
+    }
+    let plot_path = output_file.with_extension("png");
+    info!("Generating performance plot at {}", plot_path.display());
+    match plotting::plot_performance(results, records, &plot_path) {
+        Ok(()) => info!("Performance plot generated successfully"),
+        Err(e) => error!("Failed to generate performance plot: {e}"),
+    }
+}
+
+/// Without the `plotting` feature there is nothing to draw with. `--plot` is refused up front
+/// (see [`refuse_inapplicable_global_flags`]); this is reached only by `generate_plot = true`
+/// in a scenario file, which every `conf/` recipe sets, so it is logged rather than fatal.
+#[cfg(not(feature = "plotting"))]
+fn plot_if_requested(
+    requested: bool,
+    _results: &[NavigationResult],
+    _records: &[TestDataRecord],
+    _output_file: &Path,
+) {
+    if requested {
+        error!(
+            "Plotting requested but 'plotting' feature not enabled. Rebuild with --features plotting"
+        );
+    }
+}
+
+/// Refuse a global `--plot` or `--parallel` that the chosen command cannot honour.
+///
+/// Both flags are `global`, so clap accepts them after any subcommand. They used to be read on
+/// the configuration-file path only, and every subcommand ignored them without a word. `dr`,
+/// `cl` and `pf` honour both now; the commands below cannot, and say so rather than ignore them.
+///
+/// # Errors
+/// When `--plot` is given to a build without the `plotting` feature, or either flag is given to
+/// `syn`, `config` or `ol`.
+fn refuse_inapplicable_global_flags(
+    command: Option<&Command>,
+    plot: bool,
+    parallel: bool,
+) -> Result<(), Box<dyn Error>> {
+    if plot && !cfg!(feature = "plotting") {
+        return Err(
+            "--plot needs the `plotting` feature, which this build does not have: \
+                    rebuild with `--features plotting`"
+                .into(),
+        );
+    }
+    let refusing = match command {
+        Some(Command::Synthetic(_)) => Some((
+            "syn",
+            "it writes one trajectory file, with no navigation solution to plot",
+        )),
+        Some(Command::CreateConfig) => Some((
+            "config",
+            "it writes a configuration file; set `parallel` and `generate_plot` in it instead",
+        )),
+        Some(Command::OpenLoop(_)) => Some(("ol", "it is not implemented and writes nothing")),
+        _ => None,
+    };
+    if let Some((name, reason)) = refusing {
+        for (flag, given) in [("--plot", plot), ("--parallel", parallel)] {
+            if given {
+                return Err(format!("{flag} does not apply to `{name}`: {reason}").into());
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Process a single CSV file with the given configuration
 fn process_file(
     input_file: &Path,
@@ -857,14 +1008,15 @@ fn process_file(
     // Execute based on mode
     match config.mode {
         SimulationMode::DeadReckoning => {
-            info!("Running dead reckoning simulation");
-            let results = dead_reckoning(&records, config.is_enu)?;
-            info!("Generated {} navigation results", results.len());
-
             let output_file = resolve_output_path(output, input_file, all_inputs)?;
-            NavigationResult::to_csv(&results, &output_file)?;
-            info!("Results written to {}", output_file.display());
-            Ok(())
+            run_dead_reckoning_file(
+                &records,
+                config.is_enu,
+                &config.health_limits,
+                &config.execution_limits,
+                &output_file,
+                config.generate_plot,
+            )
         }
         SimulationMode::OpenLoop => {
             info!("Open-loop mode is not yet fully implemented");
@@ -891,7 +1043,7 @@ fn process_file(
             // Both now resolve to the same `GeoClosedLoopSettings` and the same runner.
             #[cfg(feature = "geonav")]
             if let Some(geo_config) = config.geophysical.as_ref() {
-                let settings = geo_settings_from_config(config, geo_config);
+                let settings = geo_settings_from_config(config, geo_config)?;
                 settings.validate()?;
                 let output_file = resolve_output_path(output, input_file, all_inputs)?;
                 return run_geo_closed_loop_file(&settings, &records, input_file, &output_file);
@@ -909,6 +1061,9 @@ fn process_file(
             }
 
             let filter_config = config.closed_loop.clone().unwrap_or_default();
+            // The same validation the `--gate-*` flags get; a scenario file used to install a
+            // confidence of 1.5 or an inflation of 0.5 without a word.
+            let (innovation_gate, gate_recovery) = gating_from_config(&filter_config)?;
 
             // `ukf_alpha`/`beta`/`kappa` are read from the file rather than left at the
             // constructor's defaults. This path ignored all three, so a config file setting
@@ -944,8 +1099,8 @@ fn process_file(
                 FilterType::Ukf => {
                     let mut ukf = initialize_ukf(&records[0].clone(), ukf_config)?;
                     info!("Initialized UKF");
-                    ukf.set_innovation_gate(filter_config.innovation_gate);
-                    ukf.set_gate_recovery(filter_config.gate_recovery);
+                    ukf.set_innovation_gate(innovation_gate);
+                    ukf.set_gate_recovery(gate_recovery);
                     run_closed_loop(
                         &mut ukf,
                         event_stream,
@@ -956,8 +1111,8 @@ fn process_file(
                 FilterType::Ekf => {
                     let mut ekf = initialize_ekf(&records[0].clone(), ekf_config)?;
                     info!("Initialized EKF");
-                    ekf.set_innovation_gate(filter_config.innovation_gate);
-                    ekf.set_gate_recovery(filter_config.gate_recovery);
+                    ekf.set_innovation_gate(innovation_gate);
+                    ekf.set_gate_recovery(gate_recovery);
                     run_closed_loop(
                         &mut ekf,
                         event_stream,
@@ -968,8 +1123,8 @@ fn process_file(
                 FilterType::Eskf => {
                     let mut eskf = initialize_eskf(&records[0].clone(), eskf_config)?;
                     info!("Initialized ESKF");
-                    eskf.set_innovation_gate(filter_config.innovation_gate);
-                    eskf.set_gate_recovery(filter_config.gate_recovery);
+                    eskf.set_innovation_gate(innovation_gate);
+                    eskf.set_gate_recovery(gate_recovery);
                     run_closed_loop(
                         &mut eskf,
                         event_stream,
@@ -984,31 +1139,7 @@ fn process_file(
                 Ok(ref nav_results) => {
                     NavigationResult::to_csv(nav_results, &output_file)?;
                     info!("Results written to {}", output_file.display());
-
-                    // Generate performance plot if requested
-                    #[cfg(feature = "plotting")]
-                    if config.generate_plot {
-                        let plot_path = output_file.with_extension("png");
-                        info!("Generating performance plot at {}", plot_path.display());
-
-                        match plotting::plot_performance(nav_results, &records, &plot_path) {
-                            Ok(()) => {
-                                info!("Performance plot generated successfully");
-                            }
-                            Err(e) => {
-                                error!("Failed to generate performance plot: {e}");
-                                // Don't fail the entire process if plotting fails
-                            }
-                        }
-                    }
-
-                    #[cfg(not(feature = "plotting"))]
-                    if config.generate_plot {
-                        error!(
-                            "Plotting requested but 'plotting' feature not enabled. Rebuild with --features plotting"
-                        );
-                    }
-
+                    plot_if_requested(config.generate_plot, nav_results, &records, &output_file);
                     Ok(())
                 }
                 Err(e) => {
@@ -1225,28 +1356,7 @@ fn process_file(
             let output_file = resolve_output_path(output, input_file, all_inputs)?;
             NavigationResult::to_csv(&results, &output_file)?;
             info!("Results written to {}", output_file.display());
-
-            #[cfg(feature = "plotting")]
-            if config.generate_plot {
-                let plot_path = output_file.with_extension("png");
-                info!("Generating performance plot at {}", plot_path.display());
-
-                match plotting::plot_performance(&results, &records, &plot_path) {
-                    Ok(()) => {
-                        info!("Performance plot generated successfully");
-                    }
-                    Err(e) => {
-                        error!("Failed to generate performance plot: {e}");
-                    }
-                }
-            }
-
-            #[cfg(not(feature = "plotting"))]
-            if config.generate_plot {
-                error!(
-                    "Plotting requested but 'plotting' feature not enabled. Rebuild with --features plotting"
-                );
-            }
+            plot_if_requested(config.generate_plot, &results, &records, &output_file);
 
             Ok(())
         }
@@ -1281,15 +1391,18 @@ fn run_from_config(
 
     // Synthetic mode has no input file — handle it separately before path validation
     if matches!(config.mode, SimulationMode::Synthetic) {
+        if cli_plot || cli_parallel {
+            return Err(
+                "--plot and --parallel do not apply to a synthetic configuration: it \
+                        writes one trajectory file, with no navigation solution to plot"
+                    .into(),
+            );
+        }
         let syn_config = config
             .synthetic
             .ok_or("mode is 'synthetic' but no [synthetic] section found in config file")?;
         let output = Path::new(&syn_config.output);
-        if let Some(parent) = output.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            validate_output_path(parent)?;
-        }
+        validate_synthetic_output_path(output)?;
         let mut rng = StdRng::seed_from_u64(syn_config.seed);
         let (truth, sensors) = generate_synthetic(&syn_config, &mut rng)?;
         let n = truth.len();
@@ -1305,6 +1418,15 @@ fn run_from_config(
             info!("Sensor records written to {}", output.display());
         }
         return Ok(());
+    }
+
+    // Refused before any file is read, as the `--gate-*` flags are.
+    if matches!(config.mode, SimulationMode::ClosedLoop) {
+        let (innovation_gate, gate_recovery) =
+            gating_from_config(&config.closed_loop.clone().unwrap_or_default())?;
+        if let Some(gate) = innovation_gate {
+            info!("Innovation gating enabled: {gate:?}, recovery {gate_recovery:?}");
+        }
     }
 
     info!("Input: {}", config.input);
@@ -1324,68 +1446,10 @@ fn run_from_config(
     validate_input_path(input)?;
     validate_output_path(output)?;
 
-    // Get all CSV files to process
     let csv_files = get_csv_files(input)?;
-    let is_multiple = csv_files.len() > 1;
-
-    if is_multiple {
-        info!("Processing {} CSV files from directory", csv_files.len());
-        if config.parallel {
-            info!("Running in parallel mode");
-        }
-    }
-
-    // Process files either sequentially or in parallel
-    if config.parallel && is_multiple {
-        // Parallel processing
-        let errors = Mutex::new(Vec::new());
-
-        csv_files.par_iter().for_each(|input_file| {
-            match process_file(input_file, output, &csv_files, &config) {
-                Ok(()) => {}
-                Err(e) => {
-                    error!("Error processing {}: {}", input_file.display(), e);
-                    // Recover from a poisoned lock rather than panicking. This mutex
-                    // guards the list of per-file failures; if another worker panicked
-                    // while holding it, turning that into a second panic here loses the
-                    // very error report this block exists to produce.
-                    errors
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .push((input_file.clone(), e.to_string()));
-                }
-            }
-        });
-
-        let errors = errors
-            .into_inner()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !errors.is_empty() {
-            error!("{} file(s) failed to process", errors.len());
-            for (file, err) in &errors {
-                error!("  {}: {}", file.display(), err);
-            }
-            return Err(format!("{} file(s) failed to process", errors.len()).into());
-        }
-    } else {
-        // Sequential processing
-        let mut failures = 0usize;
-        for input_file in &csv_files {
-            if let Err(e) = process_file(input_file, output, &csv_files, &config) {
-                if !is_multiple {
-                    return Err(e);
-                }
-                failures += 1;
-                error!("Error processing {}: {}", input_file.display(), e);
-            }
-        }
-        if failures > 0 {
-            error!("{failures} file(s) failed to process");
-            return Err(format!("{failures} file(s) failed to process").into());
-        }
-    }
-
-    Ok(())
+    run_batch(&csv_files, config.parallel, |input_file| {
+        process_file(input_file, output, &csv_files, &config)
+    })
 }
 
 /// The settings every closed-loop Kalman filter is built from, besides its first record and
@@ -1469,19 +1533,17 @@ impl KalmanSettings {
 /// Execute a single closed-loop simulation run
 ///
 /// This is a helper function that extracts the common logic for running closed-loop simulations
-/// with either UKF or EKF filters. It handles event stream creation, filter initialization,
-/// simulation execution, and results writing.
-#[allow(clippy::too_many_arguments)]
+/// with any of the three Kalman filters. It handles event stream creation, filter
+/// initialization and simulation execution; the caller writes the results.
 fn run_single_closed_loop_simulation(
     filter_type: FilterType,
     records: &[TestDataRecord],
     aiding: &strapdown::messages::AidingConfig,
-    output_file: &Path,
     limits: RunLimits,
     kalman: KalmanSettings,
     innovation_gate: Option<InnovationGate>,
     gate_recovery: GateRecovery,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<Vec<NavigationResult>, Box<dyn Error>> {
     // Same full-window guard as the other entry points: the `initialize_*` helpers below see
     // only one record, which is not enough evidence in either direction (#296).
     check_declared_frame(records, kalman.is_enu)?;
@@ -1503,6 +1565,9 @@ fn run_single_closed_loop_simulation(
         };
         built
     };
+    // Logged here, after the index is derived: the caller used to log the aiding config it
+    // passed in, so every `cl` log reported `baro_bias_index: None` whatever the filter used.
+    info!("Using aiding config: {aiding:?}");
 
     // Build event stream from records and the aiding config
     let event_stream = build_event_stream(records, &aiding, kalman.is_enu)?;
@@ -1551,29 +1616,17 @@ fn run_single_closed_loop_simulation(
         }
     };
 
-    // Write results to CSV
-    match results {
-        Ok(ref nav_results) => {
-            NavigationResult::to_csv(nav_results, output_file)?;
-            info!("Results written to {}", output_file.display());
-            Ok(())
-        }
-        Err(e) => {
-            error!("Error running closed-loop simulation: {e}");
-            Err(e.into())
-        }
-    }
+    results.map_err(|e| {
+        error!("Error running closed-loop simulation: {e}");
+        e.into()
+    })
 }
 
 /// Execute synthetic trajectory generation
 fn run_synthetic(args: &SyntheticArgs) -> Result<(), Box<dyn Error>> {
     use strapdown::sim::SyntheticInitialState;
 
-    if let Some(parent) = args.output.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        validate_output_path(parent)?;
-    }
+    validate_synthetic_output_path(&args.output)?;
 
     let config = {
         let mut built = SyntheticConfig::default();
@@ -1627,58 +1680,54 @@ fn run_synthetic(args: &SyntheticArgs) -> Result<(), Box<dyn Error>> {
 }
 
 /// Execute dead-reckoning simulation
-fn run_dead_reckoning(args: &SimArgs) -> Result<(), Box<dyn Error>> {
+fn run_dead_reckoning(args: &SimArgs, parallel: bool, plot: bool) -> Result<(), Box<dyn Error>> {
     validate_input_path(&args.input)?;
     validate_output_path(&args.output)?;
 
     info!("Running in dead reckoning mode");
 
-    // Get all CSV files to process
     let csv_files = get_csv_files(&args.input)?;
-    let is_multiple = csv_files.len() > 1;
-
-    if is_multiple {
-        info!("Processing {} CSV files from directory", csv_files.len());
-    }
-
-    // Process each CSV file
-    let mut failures = 0usize;
-    for input_file in &csv_files {
+    let limits = RunLimits::from_args(args);
+    run_batch(&csv_files, parallel, |input_file| {
         info!("Processing file: {}", input_file.display());
-
-        // One unusable file must not abandon the rest of a batch. Before #311 this loop
-        // could not fail here at all -- `from_csv` returned `Ok(vec![])` and the run wrote an
-        // empty output file -- so aborting would trade a silent wrong answer for a loud
-        // incomplete one. `run_from_config` already counts per-file failures and continues;
-        // this matches it.
-        let records = match load_records(input_file) {
-            Ok(records) => records,
-            Err(e) if is_multiple => {
-                error!("Skipping {}: {e}", input_file.display());
-                failures += 1;
-                continue;
-            }
-            Err(e) => return Err(e),
-        };
-
-        // Run dead reckoning simulation
-        info!(
-            "Running dead reckoning simulation on {} records",
-            records.len()
-        );
-        let results = dead_reckoning(&records, args.enu)?;
-        info!("Generated {} navigation results", results.len());
-
-        // Write results to CSV
+        let records = load_records(input_file)?;
         let output_file = resolve_output_path(&args.output, input_file, &csv_files)?;
-        NavigationResult::to_csv(&results, &output_file)?;
-        info!("Results written to {}", output_file.display());
-    }
+        run_dead_reckoning_file(
+            &records,
+            args.enu,
+            &limits.health,
+            &limits.execution,
+            &output_file,
+            plot,
+        )
+    })
+}
 
-    if failures > 0 {
-        error!("{failures} file(s) skipped because they held no usable records");
-    }
-
+/// Dead-reckon one file's records and write the result.
+///
+/// Shared by `dr` and a `mode = "dead-reckoning"` scenario file. Both apply the wall-clock
+/// budgets and the position and speed health bounds; the covariance and NIS limits have
+/// nothing to test without a filter. They used to apply none of them.
+///
+/// # Errors
+/// From [`dead_reckoning_with_limits`], or when the result cannot be written.
+fn run_dead_reckoning_file(
+    records: &[TestDataRecord],
+    is_enu: bool,
+    health: &HealthLimits,
+    execution: &ExecutionLimits,
+    output_file: &Path,
+    plot: bool,
+) -> Result<(), Box<dyn Error>> {
+    info!(
+        "Running dead reckoning simulation on {} records",
+        records.len()
+    );
+    let results = dead_reckoning_with_limits(records, is_enu, Some(health), Some(execution))?;
+    info!("Generated {} navigation results", results.len());
+    NavigationResult::to_csv(&results, output_file)?;
+    info!("Results written to {}", output_file.display());
+    plot_if_requested(plot, &results, records, output_file);
     Ok(())
 }
 
@@ -1709,6 +1758,40 @@ fn run_open_loop(args: &SimArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Check an innovation gate and its recovery policy against the ranges their constructors
+/// enforce, and return them rebuilt through those constructors.
+///
+/// The one validator for both ways of configuring a gate. The command line built its gate
+/// through [`InnovationGate::chi_squared`] and [`GateRecovery::new`] and so had their checks;
+/// a scenario file's `[closed_loop]` section is deserialized, which bypasses both, so a
+/// confidence of 1.5 or an inflation of 0.5 ran without a word. `source` names where the values
+/// came from, for the error message.
+///
+/// # Errors
+/// [`StrapdownError::OutOfRange`](strapdown::StrapdownError::OutOfRange) or
+/// [`StrapdownError::InvalidConfiguration`](strapdown::StrapdownError::InvalidConfiguration)
+/// from the two constructors, prefixed with `source`.
+fn validated_gating(
+    innovation_gate: Option<InnovationGate>,
+    gate_recovery: GateRecovery,
+    source: &str,
+) -> Result<(Option<InnovationGate>, GateRecovery), Box<dyn Error>> {
+    let in_source = |e: strapdown::StrapdownError| format!("{source}: {e}");
+    let innovation_gate = innovation_gate
+        .map(|gate| match gate {
+            InnovationGate::ChiSquared { confidence } => InnovationGate::chi_squared(confidence),
+            InnovationGate::Fixed { threshold } => InnovationGate::fixed(threshold),
+        })
+        .transpose()
+        .map_err(in_source)?;
+    let gate_recovery = GateRecovery::new(
+        gate_recovery.rejection_inflation,
+        gate_recovery.forced_update_after,
+    )
+    .map_err(in_source)?;
+    Ok((innovation_gate, gate_recovery))
+}
+
 /// Build the innovation gate and its recovery policy from the closed-loop CLI arguments.
 ///
 /// Shared by the plain and geophysical closed-loop paths so that `--gate-confidence` and its
@@ -1721,19 +1804,18 @@ fn run_open_loop(args: &SimArgs) -> Result<(), Box<dyn Error>> {
 /// impossible factor is a mistake worth naming whether or not this run gates.
 ///
 /// # Errors
-/// [`StrapdownError::OutOfRange`](strapdown::StrapdownError::OutOfRange) or
-/// [`StrapdownError::InvalidConfiguration`](strapdown::StrapdownError::InvalidConfiguration)
-/// from the two constructors.
+/// From [`validated_gating`].
 fn gating_from_args(
     args: &ClosedLoopSimArgs,
 ) -> Result<(Option<InnovationGate>, GateRecovery), Box<dyn Error>> {
-    let innovation_gate = args
-        .gate_confidence
-        .map(InnovationGate::chi_squared)
-        .transpose()?;
-    let gate_recovery = GateRecovery::new(
-        args.gate_inflation,
-        (args.gate_force_after > 0).then_some(args.gate_force_after),
+    let (innovation_gate, gate_recovery) = validated_gating(
+        args.gate_confidence
+            .map(|confidence| InnovationGate::ChiSquared { confidence }),
+        GateRecovery {
+            rejection_inflation: args.gate_inflation,
+            forced_update_after: (args.gate_force_after > 0).then_some(args.gate_force_after),
+        },
+        "the --gate-* flags",
     )?;
     if let Some(gate) = innovation_gate {
         info!("Innovation gating enabled: {gate:?}, recovery {gate_recovery:?}");
@@ -1741,12 +1823,36 @@ fn gating_from_args(
     Ok((innovation_gate, gate_recovery))
 }
 
+/// The innovation gate and recovery policy a scenario file's `[closed_loop]` section names,
+/// validated exactly as [`gating_from_args`] validates the command line's.
+///
+/// `forced_update_after = 0` means "never force", as `--gate-force-after 0` does: TOML has no
+/// null, so zero is the only way a TOML file can say it.
+///
+/// # Errors
+/// From [`validated_gating`].
+fn gating_from_config(
+    config: &ClosedLoopConfig,
+) -> Result<(Option<InnovationGate>, GateRecovery), Box<dyn Error>> {
+    let mut recovery = config.gate_recovery;
+    recovery.forced_update_after = recovery.forced_update_after.filter(|&after| after > 0);
+    validated_gating(
+        config.innovation_gate,
+        recovery,
+        "[closed_loop] innovation_gate/gate_recovery",
+    )
+}
+
 /// Execute closed-loop simulation
-fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
+fn run_closed_loop_cli(
+    args: &ClosedLoopSimArgs,
+    parallel: bool,
+    plot: bool,
+) -> Result<(), Box<dyn Error>> {
     // Check if geophysical navigation is enabled
     #[cfg(feature = "geonav")]
     if args.geo.geo {
-        return run_geo_closed_loop_cli(args);
+        return run_geo_closed_loop_cli(args, parallel, plot);
     }
 
     validate_input_path(&args.sim.input)?;
@@ -1763,88 +1869,37 @@ fn run_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
     // be reported once, up front, not after the first file has already been written.
     let (innovation_gate, gate_recovery) = gating_from_args(args)?;
 
-    // Get all CSV files to process
     let csv_files = get_csv_files(&args.sim.input)?;
-    let is_multiple = csv_files.len() > 1;
     let limits = RunLimits::from_args(&args.sim);
 
-    if is_multiple {
-        info!("Processing {} CSV files from directory", csv_files.len());
-        //println!("Processing {} CSV files from directory", csv_files.len());
-    }
+    // The barometer and magnetometer schedules have no CLI flag; they take their 1 Hz
+    // default, overridable from a config file through serde.
+    let aiding = {
+        let mut built = strapdown::messages::AidingConfig::default();
+        built.scheduler = build_scheduler(&args.scheduler);
+        built.fault = build_fault(&args.fault);
+        built.seed = args.seed;
+        built
+    };
 
-    // Process each CSV file
-    let mut failures = 0usize;
-    for input_file in &csv_files {
+    run_batch(&csv_files, parallel, |input_file| {
         info!("Processing file: {}", input_file.display());
-
-        // One unusable file must not abandon the rest of a batch. Before #311 this loop
-        // could not fail here at all -- `from_csv` returned `Ok(vec![])` and the run wrote an
-        // empty output file -- so aborting would trade a silent wrong answer for a loud
-        // incomplete one. `run_from_config` already counts per-file failures and continues;
-        // this matches it.
-        let records = match load_records(input_file) {
-            Ok(records) => records,
-            Err(e) if is_multiple => {
-                error!("Skipping {}: {e}", input_file.display());
-                failures += 1;
-                continue;
-            }
-            Err(e) => return Err(e),
-        };
-
-        // Build the aiding config from CLI args
-        let aiding = {
-            // The barometer and magnetometer schedules have no CLI flag; they take their
-            // 1 Hz default, overridable from a config file through serde.
-            let mut built = strapdown::messages::AidingConfig::default();
-            built.scheduler = build_scheduler(&args.scheduler);
-            built.fault = build_fault(&args.fault);
-            built.seed = args.seed;
-            built
-        };
-
-        info!("Using aiding config: {aiding:?}");
+        let records = load_records(input_file)?;
         let output_file = resolve_output_path(&args.sim.output, input_file, &csv_files)?;
-
-        // Run simulation using the common helper function
-        match run_single_closed_loop_simulation(
+        let results = run_single_closed_loop_simulation(
             args.filter,
             &records,
             &aiding,
-            &output_file,
             limits.clone(),
             KalmanSettings::from_args(args),
             innovation_gate,
             gate_recovery,
-        ) {
-            Ok(()) => {
-                // Success - result logging is handled by the helper function
-            }
-            Err(e) => {
-                error!(
-                    "Error running closed-loop simulation on {}: {}",
-                    input_file.display(),
-                    e
-                );
-                if !is_multiple {
-                    return Err(e);
-                }
-                // For multiple files, continue processing remaining files
-                error!(
-                    "Error processing {}: {}. Continuing with remaining files...",
-                    input_file.display(),
-                    e
-                );
-            }
-        }
-    }
-
-    if failures > 0 {
-        error!("{failures} file(s) skipped because they held no usable records");
-    }
-
-    Ok(())
+        )?;
+        NavigationResult::to_csv(&results, &output_file)?;
+        info!("Results written to {}", output_file.display());
+        plot_if_requested(plot, &results, &records, &output_file);
+        Ok(())
+    })
 }
 
 // ============================================================================
@@ -2042,6 +2097,7 @@ impl GeoClosedLoopSettings {
 #[cfg(feature = "geonav")]
 fn geo_settings_from_args(
     args: &ClosedLoopSimArgs,
+    generate_plot: bool,
 ) -> Result<GeoClosedLoopSettings, Box<dyn Error>> {
     let (innovation_gate, gate_recovery) = gating_from_args(args)?;
     let limits = RunLimits::from_args(&args.sim);
@@ -2075,21 +2131,26 @@ fn geo_settings_from_args(
         execution: limits.execution,
         innovation_gate,
         gate_recovery,
-        generate_plot: false,
+        generate_plot,
     })
 }
 
 /// Build the same settings from a scenario file.
 ///
-/// Infallible, unlike [`geo_settings_from_args`]: a scenario file's gate is already a parsed
-/// [`InnovationGate`], while the command line takes a confidence that has to be converted.
-/// What a file can get wrong is caught by [`GeoClosedLoopSettings::validate`] instead.
+/// The gate goes through [`gating_from_config`], the validator the command line's flags share:
+/// a scenario file's gate is parsed but not range-checked by serde, and this used to install
+/// whatever the file said. What else a file can get wrong is caught by
+/// [`GeoClosedLoopSettings::validate`].
+///
+/// # Errors
+/// From [`gating_from_config`].
 #[cfg(feature = "geonav")]
 fn geo_settings_from_config(
     config: &SimulationConfig,
     geo: &GeophysicalConfig,
-) -> GeoClosedLoopSettings {
+) -> Result<GeoClosedLoopSettings, Box<dyn Error>> {
     let filter_config = config.closed_loop.clone().unwrap_or_default();
+    let (innovation_gate, gate_recovery) = gating_from_config(&filter_config)?;
 
     // Cleared here and derived by the runner from the filter it builds, as the unaided arm of
     // `process_file` derives it: the index depends on how many map biases precede the
@@ -2097,7 +2158,7 @@ fn geo_settings_from_config(
     let mut aiding = config.aiding.clone();
     aiding.baro_bias_index = None;
 
-    GeoClosedLoopSettings {
+    Ok(GeoClosedLoopSettings {
         filter: filter_config.filter,
         kalman: KalmanSettings::from_closed_loop(&filter_config, config.is_enu),
         gravity_resolution: geo.gravity_resolution,
@@ -2116,10 +2177,10 @@ fn geo_settings_from_config(
         aiding,
         health: config.health_limits.clone(),
         execution: config.execution_limits.clone(),
-        innovation_gate: filter_config.innovation_gate,
-        gate_recovery: filter_config.gate_recovery,
+        innovation_gate,
+        gate_recovery,
         generate_plot: config.generate_plot,
-    }
+    })
 }
 
 /// One map channel's bias prior, as configured and before its defaults are resolved.
@@ -2442,60 +2503,24 @@ fn geo_bias_setup(gravity: Option<MapBiasPrior>, magnetic: Option<MapBiasPrior>)
 /// Resolves `--geo`'s flags into [`GeoClosedLoopSettings`] and hands each input file to
 /// [`run_geo_closed_loop_file`], which is the same entry point a `--config` run uses.
 #[cfg(feature = "geonav")]
-fn run_geo_closed_loop_cli(args: &ClosedLoopSimArgs) -> Result<(), Box<dyn Error>> {
+fn run_geo_closed_loop_cli(
+    args: &ClosedLoopSimArgs,
+    parallel: bool,
+    plot: bool,
+) -> Result<(), Box<dyn Error>> {
     validate_input_path(&args.sim.input)?;
     validate_output_path(&args.sim.output)?;
 
-    let settings = geo_settings_from_args(args)?;
+    let settings = geo_settings_from_args(args, plot)?;
     settings.validate()?;
 
-    // Get all CSV files to process
     let csv_files = get_csv_files(&args.sim.input)?;
-    let is_multiple = csv_files.len() > 1;
-
-    if is_multiple {
-        info!("Processing {} CSV files from directory", csv_files.len());
-    }
-
-    // Process each CSV file
-    let mut failures = 0usize;
-    for input_file in &csv_files {
+    run_batch(&csv_files, parallel, |input_file| {
         info!("Processing file: {}", input_file.display());
-
-        // One unusable file must not abandon the rest of a batch. Before #311 this loop
-        // could not fail here at all -- `from_csv` returned `Ok(vec![])` and the run wrote an
-        // empty output file -- so aborting would trade a silent wrong answer for a loud
-        // incomplete one. `run_from_config` already counts per-file failures and continues;
-        // this matches it.
-        let records = match load_records(input_file) {
-            Ok(records) => records,
-            Err(e) if is_multiple => {
-                error!("Skipping {}: {e}", input_file.display());
-                failures += 1;
-                continue;
-            }
-            Err(e) => return Err(e),
-        };
-
+        let records = load_records(input_file)?;
         let output_file = resolve_output_path(&args.sim.output, input_file, &csv_files)?;
-        if let Err(e) = run_geo_closed_loop_file(&settings, &records, input_file, &output_file) {
-            error!(
-                "Error running geophysical navigation on {}: {}",
-                input_file.display(),
-                e
-            );
-            if !is_multiple {
-                return Err(e);
-            }
-            failures += 1;
-        }
-    }
-
-    if failures > 0 {
-        error!("{failures} file(s) skipped or failed");
-    }
-
-    Ok(())
+        run_geo_closed_loop_file(&settings, &records, input_file, &output_file)
+    })
 }
 
 /// Run one file's geophysical closed loop, from settings that say nothing about where they
@@ -2715,24 +2740,8 @@ fn run_geo_closed_loop_file(
 
         // Plotting reached the non-geophysical config path and never this one, so a
         // `generate_plot = true` in a geophysical config used to be accepted and ignored --
-        // and every conf/*.toml sets it. The CLI path leaves it false, matching what `--geo`
-        // did before.
-        #[cfg(feature = "plotting")]
-        if settings.generate_plot {
-            let plot_path = output_file.with_extension("png");
-            info!("Generating performance plot at {}", plot_path.display());
-            match plotting::plot_performance(&nav_results, records, &plot_path) {
-                Ok(()) => info!("Performance plot generated successfully"),
-                // A missing plot is not a reason to discard a completed run.
-                Err(e) => error!("Failed to generate performance plot: {e}"),
-            }
-        }
-        #[cfg(not(feature = "plotting"))]
-        if settings.generate_plot {
-            error!(
-                "Plotting requested but 'plotting' feature not enabled. Rebuild with --features plotting"
-            );
-        }
+        // and every conf/*.toml sets it.
+        plot_if_requested(settings.generate_plot, &nav_results, records, output_file);
 
         Ok(())
     }
@@ -2885,38 +2894,22 @@ fn run_rbpf_event_loop(
 }
 
 /// Execute particle filter simulation
-fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error>> {
+fn run_particle_filter(
+    args: &ParticleFilterSimArgs,
+    parallel: bool,
+    plot: bool,
+) -> Result<(), Box<dyn Error>> {
     refuse_removed_particle_filter_flags(args)?;
     validate_input_path(&args.sim.input)?;
     validate_output_path(&args.sim.output)?;
 
     let csv_files = get_csv_files(&args.sim.input)?;
-    let is_multiple = csv_files.len() > 1;
     let execution_limits = execution_limits_from_args(&args.sim);
     let health_limits = health_limits_from_args(&args.sim);
 
-    if is_multiple {
-        info!("Processing {} CSV files from directory", csv_files.len());
-    }
-
-    let mut failures = 0usize;
-    for input_file in &csv_files {
+    run_batch(&csv_files, parallel, |input_file| {
         info!("Processing file: {}", input_file.display());
-
-        // One unusable file must not abandon the rest of a batch. Before #311 this loop
-        // could not fail here at all -- `from_csv` returned `Ok(vec![])` and the run wrote an
-        // empty output file -- so aborting would trade a silent wrong answer for a loud
-        // incomplete one. `run_from_config` already counts per-file failures and continues;
-        // this matches it.
-        let records = match load_records(input_file) {
-            Ok(records) => records,
-            Err(e) if is_multiple => {
-                error!("Skipping {}: {e}", input_file.display());
-                failures += 1;
-                continue;
-            }
-            Err(e) => return Err(e),
-        };
+        let records = load_records(input_file)?;
 
         let aiding = {
             // The barometer and magnetometer schedules have no CLI flag; they take their
@@ -3004,8 +2997,8 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
                 &GeophysicalAiding {
                     gravity_noise_std: gravity_map.as_ref().map(|_| args.geo.gravity_noise_std),
                     magnetic_noise_std: magnetic_map.as_ref().map(|_| args.geo.magnetic_noise_std),
-                    gravity_map: gravity_map.clone(),
-                    magnetic_map: magnetic_map.clone(),
+                    gravity_map,
+                    magnetic_map,
                     interval_s: args.geo.geo_interval_s,
                     bias_layout: geo_bias_layout,
                 },
@@ -3115,38 +3108,101 @@ fn run_particle_filter(args: &ParticleFilterSimArgs) -> Result<(), Box<dyn Error
 
         NavigationResult::to_csv(&results, &output_file)?;
         info!("Results written to {}", output_file.display());
-    }
+        plot_if_requested(plot, &results, &records, &output_file);
+        Ok(())
+    })?;
 
     info!("Particle filter simulation complete");
-
-    if failures > 0 {
-        error!("{failures} file(s) skipped because they held no usable records");
-    }
-
     Ok(())
 }
 
 /// Prompt for simulation mode with validation
+///
+/// Open loop is not offered: it is not implemented, and a configuration naming it fails the
+/// moment it is run. Synthetic generation is, since its configuration needs only an output
+/// file and a seed to be runnable.
 fn prompt_simulation_mode() -> SimulationMode {
     loop {
         println!(
             "Please specify the simulation mode you would like:\n\
             [1] - Dead Reckoning\n\
-            [2] - Open-Loop (Feed-Forward)\n\
-            [3] - Closed-Loop (Feedback)\n\
-            [4] - Particle Filter\n\
+            [2] - Closed-Loop (Feedback)\n\
+            [3] - Particle Filter\n\
+            [4] - Synthetic trajectory generation\n\
             [q] - Quit\n"
         );
         if let Some(input) = read_user_input() {
             match input.as_str() {
                 "1" => return SimulationMode::DeadReckoning,
-                "2" => return SimulationMode::OpenLoop,
-                "3" => return SimulationMode::ClosedLoop,
-                "4" => return SimulationMode::ParticleFilter,
-                _ => println!("Error: Invalid selection. Please enter 1, 2, 3, or q.\n"),
+                "2" => return SimulationMode::ClosedLoop,
+                "3" => return SimulationMode::ParticleFilter,
+                "4" => return SimulationMode::Synthetic,
+                _ => println!("Error: Invalid selection. Please enter 1, 2, 3, 4, or q.\n"),
             }
         }
     }
+}
+
+/// Prompt for the CSV file a synthetic trajectory is written to.
+fn prompt_synthetic_output_path() -> String {
+    loop {
+        let output = prompt_output_path();
+        if Path::new(&output)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("csv"))
+        {
+            return output;
+        }
+        println!(
+            "Error: a synthetic trajectory is written to one CSV file; the path must end in .csv.\n"
+        );
+    }
+}
+
+/// The scenario file the wizard writes for synthetic generation.
+///
+/// Every `[synthetic]` key but the output and the seed takes the `syn` subcommand's default,
+/// which is a stationary 300 s trajectory; the wizard tells the user to edit the section.
+fn synthetic_wizard_config(
+    output: String,
+    seed: u64,
+    logging: strapdown::sim::LoggingConfig,
+) -> SimulationConfig {
+    let mut synthetic = SyntheticConfig::default();
+    synthetic.output.clone_from(&output);
+    synthetic.seed = seed;
+    let mut built = SimulationConfig::default();
+    built.mode = SimulationMode::Synthetic;
+    built.output = output;
+    built.seed = seed;
+    built.logging = logging;
+    built.synthetic = Some(synthetic);
+    built
+}
+
+/// Write the wizard's configuration to `save_path/config_name` and say how to run it.
+fn write_wizard_config(
+    config: &SimulationConfig,
+    save_path: &str,
+    config_name: &str,
+) -> Result<(), Box<dyn Error>> {
+    let config_output_path = Path::new(save_path).join(config_name);
+    if let Some(parent) = config_output_path.parent()
+        && !parent.as_os_str().is_empty()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    config.to_file(&config_output_path)?;
+
+    println!(
+        "\n✓ Configuration file successfully created: {}",
+        config_output_path.display()
+    );
+    println!("\nYou can now run the simulation with:");
+    println!("  strapdown-sim --config {}", config_output_path.display());
+    Ok(())
 }
 
 /// Prompt for filter type with validation
@@ -3697,9 +3753,26 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
     let save_path = prompt_config_path();
 
     println!("\nCreating configuration file at: {save_path}/{config_name}\n");
+    let mode = prompt_simulation_mode();
+
+    if matches!(mode, SimulationMode::Synthetic) {
+        let output_path = prompt_synthetic_output_path();
+        let seed = prompt_seed();
+        println!("\n--- Logging Configuration ---");
+        let logging = strapdown::sim::LoggingConfig {
+            level: prompt_log_level(),
+            file: prompt_log_file(),
+        };
+        println!(
+            "\nThe trajectory takes the `syn` defaults. Edit the [synthetic] section of the \
+             generated file to set its initial state, duration, rate and noise."
+        );
+        let config = synthetic_wizard_config(output_path, seed, logging);
+        return write_wizard_config(&config, &save_path, &config_name);
+    }
+
     let input_path = prompt_input_path();
     let output_path = prompt_output_path();
-    let mode = prompt_simulation_mode();
     let seed = prompt_seed();
     let is_enu = prompt_frame();
     let parallel = prompt_parallel();
@@ -3834,24 +3907,7 @@ fn create_config_file() -> Result<(), Box<dyn Error>> {
         built
     };
 
-    // validate output location exists and write to file using appropriate format based on file extension
-    let config_output_path = Path::new(&save_path).join(&config_name);
-    if let Some(parent) = config_output_path.parent()
-        && !parent.as_os_str().is_empty()
-        && !parent.exists()
-    {
-        std::fs::create_dir_all(parent)?;
-    }
-    config.to_file(&config_output_path)?;
-
-    println!(
-        "\n✓ Configuration file successfully created: {}",
-        config_output_path.display()
-    );
-    println!("\nYou can now run the simulation with:");
-    println!("  strapdown-sim --config {}", config_output_path.display());
-
-    Ok(())
+    write_wizard_config(&config, &save_path, &config_name)
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -3882,12 +3938,14 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         // Initialize logger with resolved settings
         init_logger(log_level, log_file)?;
+        refuse_inapplicable_global_flags(None, cli.plot, cli.parallel)?;
 
         return run_from_config(config_path, cli.parallel, cli.plot);
     }
 
     // Initialize logger with CLI settings for command-line mode
     init_logger(&cli.log_level, cli.log_file.as_ref())?;
+    refuse_inapplicable_global_flags(cli.command.as_ref(), cli.plot, cli.parallel)?;
 
     // Otherwise, execute based on subcommand
     match cli.command {
@@ -3896,11 +3954,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "Running in Dead Reckoning mode with input: {}",
                 args.input.display()
             );
-            run_dead_reckoning(&args)
+            run_dead_reckoning(&args, cli.parallel, cli.plot)
         }
         Some(Command::OpenLoop(args)) => run_open_loop(&args),
-        Some(Command::ClosedLoop(args)) => run_closed_loop_cli(&args),
-        Some(Command::ParticleFilter(args)) => run_particle_filter(&args),
+        Some(Command::ClosedLoop(args)) => run_closed_loop_cli(&args, cli.parallel, cli.plot),
+        Some(Command::ParticleFilter(args)) => run_particle_filter(&args, cli.parallel, cli.plot),
         Some(Command::CreateConfig) => create_config_file(),
         Some(Command::Synthetic(args)) => run_synthetic(&args),
         None => {
@@ -3931,16 +3989,6 @@ mod tests {
         let config = SimulationConfig::from_file(&path).expect("the fixture must parse");
         std::fs::remove_file(&path).ok();
         config
-    }
-
-    #[test]
-    fn test_create_config_args_structure() {
-        let args = CreateConfigArgs {
-            output: PathBuf::from("test_config.toml"),
-            mode: SimulationMode::ClosedLoop,
-        };
-        assert_eq!(args.output, PathBuf::from("test_config.toml"));
-        assert!(matches!(args.mode, SimulationMode::ClosedLoop));
     }
 
     #[test]
@@ -4085,7 +4133,7 @@ mod tests {
         let Some(Command::ClosedLoop(args)) = cli.command else {
             panic!("expected the `cl` subcommand");
         };
-        let from_cli = geo_settings_from_args(&args).expect("CLI settings must resolve");
+        let from_cli = geo_settings_from_args(&args, false).expect("CLI settings must resolve");
 
         let toml = r#"
 input = "in.csv"
@@ -4129,7 +4177,8 @@ r_scale = 5.0
             .geophysical
             .as_ref()
             .expect("the fixture declares a [geophysical] section");
-        let from_config = geo_settings_from_config(&config, geo);
+        let from_config =
+            geo_settings_from_config(&config, geo).expect("the config gate must validate");
 
         // `generate_plot` is the one field the two are meant to disagree on: a config file
         // asks for a plot and the command line has no equivalent flag on this path.
@@ -4154,7 +4203,8 @@ r_scale = 5.0
             .geophysical
             .as_ref()
             .expect("a [geophysical] section");
-        let settings = geo_settings_from_config(&config, geo);
+        let settings =
+            geo_settings_from_config(&config, geo).expect("the config gate must validate");
 
         let error = settings
             .validate()
@@ -4201,7 +4251,8 @@ magnetic_bias_init_std = 32000.0
             .geophysical
             .as_ref()
             .expect("the fixture declares a [geophysical] section");
-        let settings = geo_settings_from_config(&config, geo);
+        let settings =
+            geo_settings_from_config(&config, geo).expect("the config gate must validate");
         let unaided =
             KalmanSettings::from_closed_loop(&config.closed_loop.clone().unwrap_or_default(), true);
         assert_eq!(
@@ -4377,7 +4428,8 @@ magnetic_bias_process_noise_std = 3.0
         // The Kalman arm, reading the same section through its own settings, must resolve the
         // identical priors: the two families are compared against each other, so they must
         // be told the same thing about the sensor.
-        let settings = geo_settings_from_config(&config, geo);
+        let settings =
+            geo_settings_from_config(&config, geo).expect("the config gate must validate");
         let kalman = geo_bias_setup(
             Some(settings.gravity_bias_prior()),
             Some(settings.magnetic_bias_prior()),
@@ -4550,7 +4602,8 @@ magnetic_bias_process_noise_std = 3.0
             .geophysical
             .as_ref()
             .expect("a [geophysical] section");
-        let settings = geo_settings_from_config(&config, geo);
+        let settings =
+            geo_settings_from_config(&config, geo).expect("the config gate must validate");
 
         assert!(
             matches!(settings.filter, FilterType::Eskf),
@@ -4565,5 +4618,227 @@ magnetic_bias_process_noise_std = 3.0
             message.contains("default"),
             "the error should say that omitting `filter` lands here, got: {message}"
         );
+    }
+
+    /// The `pf` flags a `--horizontal-process-noise-std-m` value parses into.
+    fn horizontal_noise_from_cli(values: &[&str]) -> Vec<f64> {
+        let mut argv = vec![
+            "strapdown-sim",
+            "pf",
+            "-i",
+            "in.csv",
+            "-o",
+            "out.csv",
+            "--horizontal-process-noise-std-m",
+        ];
+        argv.extend_from_slice(values);
+        let cli = Cli::try_parse_from(argv).expect("the flags above must parse");
+        let Some(Command::ParticleFilter(args)) = cli.command else {
+            panic!("expected the `pf` subcommand");
+        };
+        args.horizontal_process_noise_std_m
+    }
+
+    /// The comma form the help text documents. `num_args = 2` counted it as one argument and
+    /// refused it with "2 values required but 1 was provided".
+    #[test]
+    fn pf_horizontal_process_noise_parses_the_comma_form() {
+        let values = horizontal_noise_from_cli(&["0.5,0.25"]);
+        assert_eq!(values, vec![0.5, 0.25]);
+        assert_eq!(
+            horizontal_process_noise_from(&values).unwrap(),
+            Vector2::new(0.5, 0.25)
+        );
+    }
+
+    #[test]
+    fn pf_horizontal_process_noise_parses_the_space_form() {
+        let values = horizontal_noise_from_cli(&["0.5", "0.25"]);
+        assert_eq!(values, vec![0.5, 0.25]);
+        assert_eq!(
+            horizontal_process_noise_from(&values).unwrap(),
+            Vector2::new(0.5, 0.25)
+        );
+    }
+
+    /// One value parses, and is refused where the pair is checked, rather than guessed at.
+    #[test]
+    fn pf_horizontal_process_noise_refuses_a_single_value() {
+        let values = horizontal_noise_from_cli(&["0.5"]);
+        assert!(horizontal_process_noise_from(&values).is_err());
+    }
+
+    /// A `[closed_loop]` section with the values the `--gate-*` flags refuse.
+    fn closed_loop_config_with_gating(gate: &str, recovery: &str) -> ClosedLoopConfig {
+        let mut built = ClosedLoopConfig::default();
+        built.innovation_gate = Some(InnovationGate::ChiSquared {
+            confidence: gate.parse().unwrap(),
+        });
+        built.gate_recovery = GateRecovery {
+            rejection_inflation: recovery.parse().unwrap(),
+            forced_update_after: Some(DEFAULT_FORCED_UPDATE_AFTER),
+        };
+        built
+    }
+
+    /// A scenario file's gate goes through the validator the flags use. A confidence of 1.5
+    /// and an inflation of 0.5 used to run with exit 0.
+    #[test]
+    fn config_file_gating_is_validated_like_the_flags() {
+        let bad_confidence = closed_loop_config_with_gating("1.5", "2.0");
+        let error = gating_from_config(&bad_confidence).expect_err("confidence 1.5 is refused");
+        assert!(
+            error.to_string().contains("innovation gate confidence"),
+            "got: {error}"
+        );
+
+        let bad_inflation = closed_loop_config_with_gating("0.999", "0.5");
+        let error = gating_from_config(&bad_inflation).expect_err("inflation 0.5 is refused");
+        assert!(
+            error.to_string().contains("gate rejection inflation"),
+            "got: {error}"
+        );
+
+        let good = closed_loop_config_with_gating("0.999", "2.0");
+        let (gate, recovery) = gating_from_config(&good).unwrap();
+        assert_eq!(gate, good.innovation_gate);
+        assert_eq!(recovery, good.gate_recovery);
+
+        // Zero is "never force" in a file, as `--gate-force-after 0` is on the command line.
+        let mut never_force = good;
+        never_force.gate_recovery.forced_update_after = Some(0);
+        let (_, recovery) = gating_from_config(&never_force).unwrap();
+        assert_eq!(recovery.forced_update_after, None);
+
+        // And the same values on the command line fail the same way.
+        let cli = Cli::try_parse_from([
+            "strapdown-sim",
+            "cl",
+            "-i",
+            "in.csv",
+            "-o",
+            "out.csv",
+            "--gate-confidence",
+            "1.5",
+        ])
+        .unwrap();
+        let Some(Command::ClosedLoop(args)) = cli.command else {
+            panic!("expected the `cl` subcommand");
+        };
+        let error = gating_from_args(&args).expect_err("confidence 1.5 is refused");
+        assert!(
+            error.to_string().contains("innovation gate confidence"),
+            "got: {error}"
+        );
+    }
+
+    /// The whole config path refuses a bad gate before it reads any input.
+    #[test]
+    fn run_from_config_refuses_an_out_of_range_gate_up_front() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gate.toml");
+        std::fs::write(
+            &path,
+            "mode = \"closed-loop\"\ninput = \"does-not-exist.csv\"\noutput = \"out.csv\"\n\n\
+             [closed_loop]\ninnovation_gate = { chi_squared = { confidence = 1.5 } }\n",
+        )
+        .unwrap();
+        let error = run_from_config(&path, false, false).expect_err("confidence 1.5 is refused");
+        assert!(
+            error.to_string().contains("innovation gate confidence"),
+            "the gate must be refused before the missing input is noticed, got: {error}"
+        );
+    }
+
+    /// Several inputs: every file runs, and one failure makes the batch fail, in either mode.
+    #[test]
+    fn run_batch_runs_every_file_and_fails_if_any_failed() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let files: Vec<PathBuf> = ["a.csv", "b.csv", "c.csv"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        for parallel in [false, true] {
+            let ran = AtomicUsize::new(0);
+            let result = run_batch(&files, parallel, |file| {
+                ran.fetch_add(1, Ordering::SeqCst);
+                if file == Path::new("b.csv") {
+                    Err("filter diverged".into())
+                } else {
+                    Ok(())
+                }
+            });
+            assert_eq!(ran.load(Ordering::SeqCst), 3, "parallel = {parallel}");
+            let error = result.expect_err("one failed file must fail the batch");
+            assert!(error.to_string().contains("1 of 3"), "got: {error}");
+
+            assert!(run_batch(&files, parallel, |_| Ok(())).is_ok());
+        }
+    }
+
+    /// One input returns its own error rather than a count.
+    #[test]
+    fn run_batch_returns_a_single_files_own_error() {
+        let files = vec![PathBuf::from("only.csv")];
+        let error = run_batch(&files, true, |_| Err("the real reason".into())).unwrap_err();
+        assert_eq!(error.to_string(), "the real reason");
+    }
+
+    /// `--plot` and `--parallel` are honoured by `dr`, `cl` and `pf`, and refused where they
+    /// cannot apply instead of being ignored.
+    #[test]
+    fn global_flags_are_refused_where_they_cannot_apply() {
+        for argv in [
+            vec!["strapdown-sim", "--parallel", "syn", "-o", "x.csv"],
+            vec!["strapdown-sim", "--parallel", "config"],
+            vec!["strapdown-sim", "--parallel", "ol", "-i", "in", "-o", "out"],
+        ] {
+            let cli = Cli::try_parse_from(&argv).unwrap();
+            assert!(
+                refuse_inapplicable_global_flags(cli.command.as_ref(), cli.plot, cli.parallel)
+                    .is_err(),
+                "{argv:?} must be refused"
+            );
+        }
+        for argv in [
+            vec!["strapdown-sim", "--parallel", "dr", "-i", "in", "-o", "out"],
+            vec!["strapdown-sim", "--parallel", "cl", "-i", "in", "-o", "out"],
+            vec!["strapdown-sim", "--parallel", "pf", "-i", "in", "-o", "out"],
+            vec!["strapdown-sim", "syn", "-o", "x.csv"],
+        ] {
+            let cli = Cli::try_parse_from(&argv).unwrap();
+            assert!(
+                refuse_inapplicable_global_flags(cli.command.as_ref(), cli.plot, cli.parallel)
+                    .is_ok(),
+                "{argv:?} must be accepted"
+            );
+        }
+        let cli = Cli::try_parse_from(["strapdown-sim", "dr", "-i", "in", "-o", "out", "--plot"])
+            .unwrap();
+        assert_eq!(
+            refuse_inapplicable_global_flags(cli.command.as_ref(), cli.plot, cli.parallel).is_ok(),
+            cfg!(feature = "plotting"),
+            "--plot is accepted exactly when there is a plotting backend"
+        );
+    }
+
+    /// The wizard's synthetic configuration is a runnable one: it writes, reads back as
+    /// synthetic, and names its output in the `[synthetic]` section the runner reads.
+    #[test]
+    fn the_wizard_writes_a_runnable_synthetic_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = synthetic_wizard_config(
+            "trajectory.csv".to_string(),
+            7,
+            strapdown::sim::LoggingConfig::default(),
+        );
+        write_wizard_config(&config, &dir.path().to_string_lossy(), "syn.toml").unwrap();
+
+        let read = SimulationConfig::from_file(dir.path().join("syn.toml")).unwrap();
+        assert!(matches!(read.mode, SimulationMode::Synthetic));
+        let synthetic = read.synthetic.expect("a [synthetic] section");
+        assert_eq!(synthetic.output, "trajectory.csv");
+        assert_eq!(synthetic.seed, 7);
     }
 }

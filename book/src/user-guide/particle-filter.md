@@ -82,9 +82,9 @@ use. Pass `0 0` to run the paper's model -- on the 600 s synthetic trajectory ab
 until the health monitor stops the run (`Error: OutOfRange { what: "speed", ... max: 500.0 }`),
 while the default `1 1` and `0.5 0.5` both finish.
 
-`--horizontal-process-noise-std-m` takes exactly two values, **separated by a space**:
-`--horizontal-process-noise-std-m 0.5 0.5`. The `north,east` comma form that the flag's help text
-shows is rejected by the argument parser with `2 values required ... but 1 was provided`.
+`--horizontal-process-noise-std-m` takes exactly two values, north then east, separated by a
+comma or a space: `--horizontal-process-noise-std-m 0.5,0.5` and
+`--horizontal-process-noise-std-m 0.5 0.5` are the same. A single value is refused.
 
 ### Barometer loop
 

@@ -47,9 +47,13 @@ Three practical consequences of having no filter:
   and fails on it. Blanking a single `acc_x` cell in a synthetic file stops the run with
   `Error: NonFinite { what: "propagated attitude matrix" }`, where `cl` on the same file logs a
   tolerated 0.2 s gap and finishes.
-- **The limit flags are inert.** `dr` accepts `--max-wall-clock-*`, `--health-*` and
-  `--nis-pos-*` and applies none of them, so a run that drifts a long way is written out in full
-  instead of being cut off.
+- **The position and speed limits apply.** `dr` checks the wall-clock budgets
+  (`--max-wall-clock-*`, `--max-no-progress-s`) and the latitude, longitude, altitude and speed
+  bounds (`--health-lat-*`, `--health-lon-*`, `--health-alt-*`, `--health-speed-mps-max`) after
+  every step, as the filters do, and a run that leaves them stops with an error and writes no
+  file. The default speed bound is 500 m/s, which a long unaided MEMS arc can pass; raise it
+  when the drift itself is what you want to see. `--health-cov-diag-max` and `--nis-pos-*` do
+  not apply: there is no covariance and no measurement update.
 - **The frame check still runs.** Declaring the wrong frame is the one mistake that would make
   dead reckoning fail at 2 g rather than drift, so it is refused before propagation exactly as in
   the other modes; see [Input Data Format](./data-format.md#frame-convention).

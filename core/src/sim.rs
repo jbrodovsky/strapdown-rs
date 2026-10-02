@@ -3029,7 +3029,12 @@ pub fn check_declared_frame(
     Ok(())
 }
 
-/// Run dead reckoning or "open-loop" simulation using test data.
+/// Run a dead-reckoning simulation over test data.
+///
+/// Dead reckoning propagates the IMU from the first record's position, velocity and attitude
+/// with no aiding at all. It is not the "open loop" (feed-forward) mode that `strapdown-sim ol`
+/// reserves, which would estimate errors from GNSS without feeding them back; that mode is not
+/// implemented.
 ///
 /// This function processes a sequence of sensor records through a `StrapdownState`, using
 /// the "forward" method to propagate the state based on IMU measurements. It initializes
@@ -3041,8 +3046,10 @@ pub fn check_declared_frame(
 /// only valid at lower latitude (e.g. < 60 degrees) and at low altitudes (e.g. < 1000m). With
 /// that, remember that dead reckoning is subject to drift and errors accumulate over time relative
 /// to the quality of the IMU data. Poor quality IMU data (e.g. MEMS grade IMUs) will lead to
-/// significant drift very quickly which may cause this function to produce unrealistic results,
-/// hang, or crash.
+/// significant drift very quickly which may cause this function to produce unrealistic results.
+///
+/// No health or execution limit is applied, so an arc that drifts far out of any physical
+/// bound is returned in full; [`dead_reckoning_with_limits`] is the bounded form.
 ///
 /// # Arguments
 /// * `records` - Vector of test data records containing IMU measurements and other sensor data
@@ -3062,14 +3069,41 @@ pub fn dead_reckoning(
     records: &[TestDataRecord],
     is_enu: bool,
 ) -> Result<Vec<NavigationResult>, StrapdownError> {
-    if records.is_empty() {
+    dead_reckoning_with_limits(records, is_enu, None, None)
+}
+
+/// [`dead_reckoning`], bounded by the run-level limits the filters are held to.
+///
+/// After every propagation step the state is checked against `health_limits` -- finiteness,
+/// the latitude, longitude and altitude bands, and the speed bound -- and the wall-clock and
+/// no-progress budgets in `execution_limits` are checked before it. `None` skips that check.
+///
+/// Two of the health limits cannot apply and are ignored: dead reckoning has no covariance, so
+/// [`HealthLimits::cov_diag_max`] has nothing to test, and makes no measurement update, so
+/// there is no NIS for [`HealthLimits::nis_pos_max`].
+///
+/// # Errors
+/// As [`dead_reckoning`]; also [`StrapdownError::OutOfRange`] or
+/// [`StrapdownError::NonFinite`] when the state leaves `health_limits`, and
+/// [`StrapdownError::Timeout`] when a budget in `execution_limits` is exceeded.
+pub fn dead_reckoning_with_limits(
+    records: &[TestDataRecord],
+    is_enu: bool,
+    health_limits: Option<&HealthLimits>,
+    execution_limits: Option<&ExecutionLimits>,
+) -> Result<Vec<NavigationResult>, StrapdownError> {
+    let (Some(first_record), Some(last_record)) = (records.first(), records.last()) else {
         return Ok(Vec::new());
-    }
+    };
     check_declared_frame(records, is_enu)?;
+    let mut health_monitor = health_limits.map(|limits| HealthMonitor::new(limits.clone()));
+    let sim_duration_s = (last_record.time - first_record.time).as_seconds_f64();
+    let mut execution_monitor =
+        execution_limits.map(|limits| ExecutionMonitor::new(limits, sim_duration_s));
+    // A covariance-free check: the monitor's diagonal sweep has nothing to visit.
+    let no_covariance = DMatrix::<f64>::zeros(0, 0);
     // Initialize the result vector
     let mut results = Vec::with_capacity(records.len());
-    // Initialize the StrapdownState with the first record
-    let first_record = &records[0];
     // Attitude comes from the record's quaternion, not its Euler angles -- see
     // `TestDataRecord::attitude` for why the two are not interchangeable and what feeding
     // the raw angles here used to cost.
@@ -3087,10 +3121,12 @@ pub fn dead_reckoning(
     };
     // Store the initial state and metadata
     results.push(NavigationResult::from((&first_record.time, &state)));
-    let mut previous_time = records[0].time;
+    let mut previous_time = first_record.time;
     // Process each subsequent record
     for record in records.iter().skip(1) {
-        // Try to calculate time difference from timestamps, default to 1 second if parsing fails
+        if let Some(monitor) = execution_monitor.as_ref() {
+            monitor.check("dead reckoning")?;
+        }
         let current_time = record.time;
         let dt = (current_time - previous_time).as_seconds_f64();
         // Create IMU data from the record
@@ -3099,6 +3135,20 @@ pub fn dead_reckoning(
             gyro: Vector3::new(record.gyro_x, record.gyro_y, record.gyro_z),
         };
         mechanize(&mut state, &ImuSample::from_rates(&imu_data, dt))?;
+        if let Some(monitor) = health_monitor.as_mut() {
+            let position_and_velocity = [
+                state.latitude,
+                state.longitude,
+                state.altitude,
+                state.velocity_north,
+                state.velocity_east,
+                state.velocity_vertical,
+            ];
+            monitor.check(&position_and_velocity, &no_covariance, None)?;
+        }
+        if let Some(monitor) = execution_monitor.as_mut() {
+            monitor.mark_progress();
+        }
         results.push(NavigationResult::from((&current_time, &state)));
         previous_time = record.time;
     }
@@ -4709,6 +4759,7 @@ pub mod health {
         /// this crate. Narrow this to the scenario's real speed range to make it an
         /// effective gate; unaided `dead_reckoning` never calls [`HealthMonitor`], so a run
         /// that deliberately drifts past this bound (see #299) is unaffected.
+        /// `dead_reckoning_with_limits`, which `strapdown-sim dr` runs, does apply it.
         #[serde(default = "default_health_speed_mps_max")]
         pub speed_mps_max: f64,
         /// Largest variance allowed on the covariance diagonal before the run is failed
@@ -7368,6 +7419,52 @@ mod tests {
             "stationary navigation-grade ENU truth drifted {worst:.3} m of altitude over 60 s, \
              past the {MAX_STATIONARY_ALTITUDE_DRIFT_M} m budget derived in \
              MAX_STATIONARY_ALTITUDE_DRIFT_M"
+        );
+    }
+
+    /// `dead_reckoning_with_limits` with no limits is `dead_reckoning`, row for row.
+    #[test]
+    fn test_dead_reckoning_with_no_limits_matches_dead_reckoning() {
+        let records = stationary_synthetic_records(false, 10.0);
+        let plain = dead_reckoning(&records, false).unwrap();
+        let bounded = dead_reckoning_with_limits(
+            &records,
+            false,
+            Some(&HealthLimits::default()),
+            Some(&ExecutionLimits::default()),
+        )
+        .unwrap();
+        assert_eq!(plain.len(), bounded.len());
+        for (left, right) in plain.iter().zip(&bounded) {
+            assert_eq!(left.timestamp, right.timestamp);
+            assert_eq!(left.latitude, right.latitude);
+            assert_eq!(left.altitude, right.altitude);
+        }
+    }
+
+    /// The health bounds reach dead reckoning: `strapdown-sim dr` accepted them and applied
+    /// none. An altitude band the stationary trajectory sits outside of fails the run, as it
+    /// would a filter's.
+    #[test]
+    fn test_dead_reckoning_with_limits_applies_the_health_bounds() {
+        let records = stationary_synthetic_records(false, 10.0);
+        let altitude = records[0].altitude;
+        let limits = {
+            let mut built = HealthLimits::default();
+            built.alt_m = (altitude + 100.0, altitude + 200.0);
+            built
+        };
+        let error = dead_reckoning_with_limits(&records, false, Some(&limits), None)
+            .expect_err("an altitude outside the band must fail the run");
+        assert!(
+            matches!(
+                error,
+                StrapdownError::OutOfRange {
+                    what: "altitude",
+                    ..
+                }
+            ),
+            "expected an altitude OutOfRange, got {error:?}"
         );
     }
 

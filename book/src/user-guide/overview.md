@@ -48,7 +48,7 @@ A few options are shared:
 - **Global:** `--config <file>` runs a whole scenario from a TOML, YAML or JSON file instead
   of subcommand flags; `--log-level` and `--log-file` control logging ([Logging](./logging.md));
   `--parallel` processes several input files at once; `--plot` draws a performance plot
-  against the GNSS track.
+  against the GNSS track. Both work with `dr`, `cl`, `pf` and `--config`.
 - **Every simulation mode:** `-i` takes a CSV file or a directory of them, `-o` a CSV file or a
   directory; `--enu` declares ENU input; health limits (`--health-*`) and execution limits
   (`--max-wall-clock-*`, `--max-no-progress-s`) stop a run that diverges or hangs.

@@ -31,8 +31,8 @@ specific to `cl`.
 |---|---|---|
 | `--filter <FILTER>` | `eskf` | `eskf`, `ukf`, `ekf` |
 
-- **`eskf`** -- the 15-state error-state Kalman filter with a multiplicative attitude error. The
-  default. See [ESKF](../filters/eskf.md).
+- **`eskf`** -- the error-state Kalman filter with a multiplicative attitude error: 15 error
+  states, plus a barometric bias state unless `--no-estimate-baro-bias`. The default. See [ESKF](../filters/eskf.md).
 - **`ekf`** -- the extended Kalman filter. See [EKF](../filters/ekf.md).
 - **`ukf`** -- the unscented Kalman filter. See [UKF](../filters/ukf.md).
 

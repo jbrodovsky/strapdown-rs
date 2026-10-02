@@ -52,18 +52,19 @@ These are accepted before or after the subcommand.
 | `-c`, `--config <FILE>` | -- | Run entirely from a TOML, YAML or JSON file. The format is chosen by extension (`.toml`, `.yaml`/`.yml`, `.json`). |
 | `--log-level <LEVEL>` | `info` | `off`, `error`, `warn`, `info`, `debug` or `trace`. An unrecognized value prints a warning and falls back to `info`. See [Logging](./logging.md). |
 | `--log-file <PATH>` | stderr | Append log lines to this file instead of stderr. Parent directories are created. |
-| `--parallel` | off | Process the files of a directory input concurrently. **Only honoured with `--config`**; see below. |
-| `--plot` | off | Write a PNG performance plot beside each result. **Only honoured with `--config`**; see below. |
+| `--parallel` | off | Process the files of a directory input concurrently. Honoured by `dr`, `cl`, `pf` and `--config`. |
+| `--plot` | off | Write a PNG performance plot beside each result. Honoured by `dr`, `cl`, `pf` and `--config`. |
 
-`--parallel` and `--plot` are read only on the configuration-file path, where they force
-`parallel = true` and `generate_plot = true` respectively. A subcommand run accepts both flags
-without error and does nothing with them: `cl -i synthetic.csv -o plotdir/eskf.csv --plot` writes
-`eskf.csv` and no PNG. To get a plot or parallel processing, use a configuration file.
+`--parallel` and `--plot` work the same way on a subcommand as on the configuration-file path,
+where they force `parallel = true` and `generate_plot = true`. `--parallel` matters only for a
+directory input; a single file runs as before. `syn`, `config` and `ol` have nothing to plot or
+parallelize, and refuse either flag with an error rather than ignoring it.
 
-On the configuration path the plot is drawn for closed-loop and particle-filter runs only (a
-dead-reckoning config with `generate_plot = true` writes no PNG). It lands beside the CSV with the
-extension replaced by `.png`, and needs the `plotting` feature, which is on by default; a failure
-to draw it is logged and does not fail the run.
+The plot is drawn for every dead-reckoning, closed-loop and particle-filter result. It lands
+beside the CSV with the extension replaced by `.png`, and needs the `plotting` feature, which is on
+by default. Without the feature, `--plot` is refused before the run starts; a configuration file's
+`generate_plot = true` is logged as an error and the run goes on without the plot. A failure to
+draw a plot is logged and does not fail the run.
 
 ## Input and output paths
 
@@ -81,9 +82,10 @@ The rules, all from `sim/src/common.rs`:
 - **Whether `--output` is a file or a directory is decided by its extension.** A path ending in
   `.csv` (any case) names a file; any other path names a directory. An *existing* directory
   always counts as a directory, even one named `results.csv`.
-- **Output is CSV only.** There is no flag that selects another format, and no other extension
-  makes the output a file: `-o results.parquet` creates a *directory* called `results.parquet`
-  and writes `<input name>.csv` inside it. HDF5, NetCDF and MCAP exist only as library methods;
+- **Output is CSV only.** There is no flag that selects another format. A path whose extension
+  names another data format -- `.h5`, `.hdf5`, `.nc`, `.netcdf`, `.mcap`, `.parquet`, `.json`,
+  `.yaml`, `.yml`, `.toml` or `.txt` -- is refused, unless it is an existing directory, rather
+  than made into a directory of CSV files. HDF5, NetCDF and MCAP exist only as library methods;
   see [Output Format](./output-format.md).
 - **Missing directories are created**: the output directory itself, or the parent of an output
   file.
@@ -103,10 +105,12 @@ $ strapdown-sim dr -i batch/a.csv -o batch/a.csv
 Error: "Refusing to write results to 'batch/a.csv': that is the input file. Pass a different --output path."
 ```
 
-**Batches.** When the input is a directory, a file that yields no usable records is logged,
-skipped and counted, and the rest of the batch runs. A file whose *run* fails is also logged and
-skipped on `cl` and on any `--config` run; `dr` and `pf` stop at the first run that fails. A run
-that fails writes no output file for that input.
+**Batches.** When the input is a directory, a file that fails -- because it yields no usable
+records, or because its run fails -- is logged and counted, and the rest of the batch still runs.
+If any file failed, the command then exits with status 1 and
+`Error: "N of M file(s) failed to process"`, on every subcommand and on a `--config` run alike. A
+run that fails writes no output file for that input. With a single input file, its own error is
+reported.
 
 **Negative numbers** need the `=` form, because clap otherwise reads a leading `-` as a flag:
 `--longitude-deg=-75`, not `--longitude-deg -75`.
@@ -162,11 +166,15 @@ Error: OutOfRange { what: "speed", value: 49.999902224914834, min: 0.0, max: 10.
 (`cruise.csv` is a 50 m/s synthetic trajectory; see
 [Synthetic Trajectories](./synthetic.md#a-moving-trajectory).)
 
-**`dr` and `ol` accept all of the limit flags above and apply none of them.** Dead reckoning
-never consults the execution or health monitor, so an unaided run that drifts far away is
-reported in full rather than cut off. **`pf` applies every limit except the NIS pair**: its loop
-checks the state and covariance bounds but passes no NIS to the monitor, so `--nis-pos-max` and
-`--nis-pos-consec-fail` have no effect on it.
+Not every limit can apply to every mode, and each flag's `--help` says which modes apply it:
+
+- **`dr` applies the execution limits and the position and speed bounds**, checked after every
+  propagation step. It carries no covariance and makes no measurement update, so
+  `--health-cov-diag-max` and the NIS pair do not apply to it. An unaided MEMS arc can pass the
+  default 500 m/s speed bound on a long recording; raise `--health-speed-mps-max` for those.
+- **`pf` applies every limit except the NIS pair**: its loop checks the state and covariance
+  bounds but computes no NIS, so `--nis-pos-max` and `--nis-pos-consec-fail` have no effect on it.
+- **`ol` runs nothing**, so none of them applies.
 
 ## Seeds
 
@@ -185,10 +193,11 @@ command on the same input produces the same output.
 ## `config`: the configuration wizard
 
 `strapdown-sim config` takes no arguments. It asks a series of questions on the terminal -- file
-name and directory, input and output paths, mode, seed, frame, parallel processing, log level and
+name and directory, mode, input and output paths, seed, frame, parallel processing, log level and
 file, the filter (for closed loop), a GNSS scheduler and fault model, and optional geophysical
 aiding -- and writes a complete configuration file in the format its extension names. Answer `q`
-at any prompt to quit.
+at any prompt to quit. The wizard needs a terminal: if standard input closes before it has its
+answers (`strapdown-sim config < /dev/null`), it says so on stderr and exits with status 1.
 
 The file it writes spells out every section it covers with default values filled in, which makes
 it a reasonable starting point to edit by hand:
@@ -202,11 +211,12 @@ You can now run the simulation with:
   strapdown-sim --config wiz/template.toml
 ```
 
-Two limits: the wizard offers dead reckoning, open loop, closed loop and particle filter but not
-synthetic generation, and it offers open loop although that mode is not implemented (a config
-with `mode = "open-loop"` exits with status 1 and `Error: "Open-loop mode is not yet fully
-implemented"`). When geophysical aiding is enabled on top of the ESKF, the wizard switches the
-filter to the UKF, because the ESKF has no geophysical implementation.
+The wizard offers dead reckoning, closed loop, particle filter and synthetic generation. It does
+not offer open loop, which is not implemented. For synthetic generation it asks only for the
+output file (which must end in `.csv`), the seed and the logging, and writes a `[synthetic]`
+section at the `syn` defaults for you to edit. When geophysical aiding is enabled on top of the
+ESKF, the wizard switches the filter to the UKF, because the ESKF has no geophysical
+implementation.
 
 ## `ol`: not implemented
 

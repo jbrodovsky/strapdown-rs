@@ -388,10 +388,10 @@ Consulted only when a gate is installed. Either field may be omitted and keeps i
 | `rejection_inflation` | `2.0` | each rejection multiplies the filter's uncertainty by this factor in the directions the rejected measurement observed; `1.0` disables it |
 | `forced_update_after` | `5` | after this many consecutive rejections, apply the next measurement regardless; `0` disables it (YAML may also write `null`) |
 
-The command-line flags `--gate-confidence`, `--gate-inflation` and `--gate-force-after` are
-checked before a run starts -- a confidence outside (0, 1) or an inflation below 1 is refused. The
-same values in a file are **not** checked: `confidence = 1.5` or `rejection_inflation = 0.5` runs
-without an error. Keep file values inside the ranges above.
+These values are checked before a run starts, exactly as the command-line flags
+`--gate-confidence`, `--gate-inflation` and `--gate-force-after` are: a confidence outside (0, 1),
+a fixed threshold that is not positive, an inflation below 1, or a `forced_update_after` of 1 is
+refused with an error naming `[closed_loop]`.
 
 ## `[particle_filter]`
 

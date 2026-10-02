@@ -41,9 +41,9 @@ perfect samples. Noise is then added to produce the sensor records.
 | `--no-noise` | off | write the truth instead of sensor records; see [below](#truth-with---no-noise) |
 | `--enu` | off | emit the trajectory in ENU rather than NED |
 
-`syn` takes no `-i`. Its output path is always a file and is used exactly as given, whatever its
-extension -- `-o x.parquet` writes CSV into a file named `x.parquet` -- so give it a `.csv` name.
-Unlike the simulation subcommands, it never treats the path as a directory.
+`syn` takes no `-i`. Its output path is always one file, and must end in `.csv`: any other
+extension (`-o x.parquet`) or none is refused rather than given CSV under its name. Unlike the
+simulation subcommands, it never treats the path as a directory.
 
 ### Initial state
 
