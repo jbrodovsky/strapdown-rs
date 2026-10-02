@@ -1,10 +1,21 @@
 name: Deploy mdBook to GitHub Pages
 
+# The book and the API documentation it links to are built on every pull request that could
+# change them, and deployed only from `main`. Until #383 the build ran on `main` alone, so a
+# page that failed to build -- or a link into a page that had been deleted -- was first seen
+# on the live site.
 on:
   push:
     branches: [ "main" ]
-#  pull_request:
-#    branches: [ "main" ]
+  pull_request:
+    paths:
+      - "book/**"
+      - "core/**"
+      - "sim/**"
+      - "geonav/**"
+      - "CONTRIBUTING.md"
+      - "katex-header.html"
+      - ".github/workflows/deploy-book.yml"
 
 # Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
 permissions:
@@ -12,38 +23,64 @@ permissions:
   pages: write
   id-token: write
 
-# Allow only one concurrent deployment, skipping runs queued between the run in-progress and latest queued.
-# However, do NOT cancel in-progress runs as we want to allow these production deployments to complete.
+# One deployment at a time, never cancelling one in progress. Pull-request builds get their
+# own group so they neither queue behind nor cancel a deployment.
 concurrency:
-  group: "pages"
-  cancel-in-progress: false
+  group: ${{ github.event_name == 'pull_request' && format('book-pr-{0}', github.event.pull_request.number) || 'pages' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      # `+stable` is deliberate. `rust-toolchain.toml` pins the workspace to 1.91 for lint
-      # reproducibility, and that pin would otherwise apply here too -- building a
+      # `+stable` for mdBook is deliberate. `rust-toolchain.toml` pins the workspace to 1.91
+      # for lint reproducibility, and that pin would otherwise apply here too -- building a
       # third-party tool against an older toolchain than it supports is the classic way to
       # break a docs deploy for a reason that has nothing to do with the docs.
+      - name: Setup Rust (stable, for mdBook)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Rust (pinned, for rustdoc)
+        uses: dtolnay/rust-toolchain@1.91
+
+      - uses: Swatinem/rust-cache@v2
+
       - name: Install mdBook
         run: |
-          cargo +stable install mdbook --version 0.4.40
+          cargo +stable install mdbook --version 0.4.40 --locked
           mdbook --version
 
       - name: Build the book
+        run: mdbook build book
+
+      # The API reference is published inside the book, under /api/, so the book can link to
+      # the documentation of the exact commit it was built from. docs.rs only has a crate's
+      # documentation once that version is on crates.io.
+      #
+      # `-D warnings` makes a broken intra-doc link fail the build. RUSTDOCFLAGS replaces the
+      # `rustdocflags` in .cargo/config.toml rather than adding to it, so the KaTeX header is
+      # repeated here, with an absolute path because rustdoc runs from each crate's directory.
+      - name: Build the API documentation
+        env:
+          RUSTDOCFLAGS: -D warnings --html-in-header ${{ github.workspace }}/katex-header.html
         run: |
-          cd book
-          mdbook build
+          cargo doc --workspace --no-deps --all-features --locked
+          cp -r target/doc/. book/book/api/
+
+      # Offline: checks every relative link between book pages and into the API docs,
+      # without depending on external sites being up.
+      - name: Check links
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: --offline --no-progress --exclude-path book/book/api 'book/book/**/*.html'
+          fail: true
 
       - name: Upload artifact
+        if: github.event_name == 'push'
         uses: actions/upload-pages-artifact@v3
         with:
           path: ./book/book
@@ -55,7 +92,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: build
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
