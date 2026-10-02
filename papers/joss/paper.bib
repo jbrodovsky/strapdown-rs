@@ -1,23 +1,23 @@
-
 @book{groves,
-	edition = {2},
-	title = {Principles of {GNSS}, Inertial, and Multisensor Integrated Navigation Systems},
-	isbn = {978-1-60807-005-3},
-	pagetotal = {800},
-	publisher = {Artech House},
-	author = {Groves, Paul},
-	keywords = {{TAN}, inertial navigation, kf, dissertation},
-	file = {Groves - Principles of GNSS, Inertial, and Multisensor Inte.pdf:/home/james/snap/zotero-snap/common/Zotero/storage/7UE7B7A9/Groves - Principles of GNSS, Inertial, and Multisensor Inte.pdf:application/pdf},
+  author    = {Groves, Paul D.},
+  title     = {Principles of {GNSS}, Inertial, and Multisensor Integrated Navigation Systems},
+  edition   = {2},
+  publisher = {Artech House},
+  address   = {Boston},
+  year      = {2013},
+  isbn      = {978-1-60807-005-3}
 }
+
 @techreport{wgs84,
-  author    = {{National Geospatial-Intelligence Agency}},
-  title     = {Department of Defense World Geodetic System 1984: Its Definition and Relationships with Local Geodetic Systems},
+  author      = {{National Geospatial-Intelligence Agency}},
+  title       = {Department of Defense World Geodetic System 1984: Its Definition and Relationships with Local Geodetic Systems},
   institution = {National Geospatial-Intelligence Agency},
-  year      = {2014}, % Or the year of the specific version/publication you are referring to
-  number    = {NGA.STND.0036_1.0.0_WGS84}, % Example of a standard number, adjust if a different one is appropriate
-  address   = {Springfield, VA},
-  note      = {The specific version and publication date can vary. Check the NGA website for the most current or relevant document for your application.}
+  number      = {NGA.STND.0036\_1.0.0\_WGS84},
+  address     = {Springfield, VA},
+  year        = {2014},
+  url         = {https://earth-info.nga.mil/}
 }
+
 @misc{wmm,
   author    = {{NOAA NCEI Geomagnetic Modeling Team and British Geological Survey}},
   title     = {World Magnetic Model 2025},
@@ -26,63 +26,71 @@
   doi       = {10.25921/aqfd-sd83},
   url       = {https://www.ncei.noaa.gov/products/world-magnetic-model}
 }
+
 @misc{nav-types,
-  author    = {Nordmoen, Jørgen and Feuerstein, Marco},
-  title     = {nav-types},
-  year      = {2022},
-  url       = {https://github.com/nordmoen/nav-types}
+  author = {Nordmoen, Jørgen and Feuerstein, Marco},
+  title  = {nav-types: Easy to use navigation types for {Rust}},
+  year   = {2022},
+  url    = {https://github.com/nordmoen/nav-types}
 }
+
 @misc{gnss-ins-sim,
-  author    = {Yizhou Fang},
-  title     = {gnss-ins-sim: GNSS/INS simulator for testing and prototyping navigation algorithms},
-  year      = {2019},
-  url       = {https://github.com/Aceinna/gnss-ins-sim}
+  author = {{Aceinna, Inc.}},
+  title  = {gnss-ins-sim: {GNSS}/{INS} simulator for testing and prototyping navigation algorithms},
+  year   = {2019},
+  url    = {https://github.com/Aceinna/gnss-ins-sim}
 }
-@article{gtsam,
-  author    = {Dellaert, Frank},
-  title     = {{GTSAM}: A factor graph based nonlinear estimation library},
-  journal   = {Georgia Institute of Technology},
-  year      = {2012},
-  url       = {https://gtsam.org}
+
+@techreport{gtsam,
+  author      = {Dellaert, Frank},
+  title       = {Factor Graphs and {GTSAM}: A Hands-on Introduction},
+  institution = {Georgia Institute of Technology},
+  number      = {GT-RIM-CP\&R-2012-002},
+  year        = {2012},
+  url         = {https://gtsam.org}
 }
+
 @inproceedings{geneva2020openvins,
   author    = {Geneva, Patrick and Eckenhoff, Kevin and Lee, Woosik and Yang, Yulin and Huang, Guoquan},
   title     = {{OpenVINS}: A Research Platform for Visual-Inertial Estimation},
   booktitle = {Proceedings of the IEEE International Conference on Robotics and Automation (ICRA)},
-  year      = {2020},
+  pages     = {4666--4672},
   address   = {Paris, France},
-  url       = {https://github.com/rpng/open_vins}
+  year      = {2020},
+  doi       = {10.1109/ICRA40945.2020.9196524}
 }
-@misc{nalgebra,
-  author    = {Crozet, Sébastien and Bopp, Emilia},
-  title     = {nalgebra},
-  year      = {2024},
-  url       = {https://github.com/nordmoen/nav-types}
+
+@article{canciani2017,
+  author  = {Canciani, Aaron and Raquet, John},
+  title   = {Airborne Magnetic Anomaly Navigation},
+  journal = {IEEE Transactions on Aerospace and Electronic Systems},
+  volume  = {53},
+  number  = {1},
+  pages   = {67--80},
+  year    = {2017},
+  doi     = {10.1109/TAES.2017.2649238}
 }
+
 @inproceedings{anom-ukf,
-  author = {Brodovsky, James and Dames, Philip},
+  author    = {Brodovsky, James and Dames, Philip},
+  title     = {Navigation in {GNSS}-denied environments using {MEMS}-grade sensors and geophysical anomalies: A {UKF} approach},
   booktitle = {Proceedings of the 2026 International Technical Meeting of the Institute of Navigation},
-  location = {Anaheim, California},
-  pages = {155--164},
-  editor = {},
-  title = {Navigation in {GNSS}-denied environments using {MEMS}-grade sensors and geophysical anomalies: A {UKF} approach},
-  month = {January},
-  year = {2026},
-  keywords = {conference},
+  address   = {Anaheim, California},
   publisher = {Institute of Navigation},
-  doi = {https://doi.org/10.33012/2026.20508},
+  pages     = {155--164},
+  month     = jan,
+  year      = {2026},
+  doi       = {10.33012/2026.20508}
 }
 
 @inproceedings{anom-pf,
-  author = {Brodovsky, James and Dames, Philip},
-  booktitle = {Proceedings of the ION Pacific PNT Meeting},
-  editor = {},
-  title = {Navigation in {GNSS}-denied Environments using {MEMS}-grade Sensors and Geophysical Anomalies: A Particle Filter Approach},
-  volume = {},
-  month = {April},
-  year = {2026},
-  keywords = {conference},
+  author    = {Brodovsky, James and Dames, Philip},
+  title     = {Navigation in {GNSS}-Denied Environments Using {MEMS}-Grade Sensors and Geophysical Anomalies: A Particle Filter Approach},
+  booktitle = {Proceedings of the ION 2026 Pacific PNT Meeting},
+  address   = {Honolulu, Hawaii},
   publisher = {Institute of Navigation},
-  location = {Honolulu, Hawaii},
-  doi = {}
+  pages     = {399--410},
+  month     = apr,
+  year      = {2026},
+  doi       = {10.33012/2026.20618}
 }
