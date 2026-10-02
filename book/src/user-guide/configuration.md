@@ -118,7 +118,7 @@ restructured, which are refused by name; see [below](#particle_filter).
 | `seed` | `42` | the run's seed: the particle filter's, and the fault models' unless `[aiding] seed` is set; see [Seeds](#seeds) |
 | `is_enu` | `false` | the input records are ENU rather than NED; as `--enu` |
 | `parallel` | `false` | process a directory's files concurrently |
-| `generate_plot` | `false` | write a PNG plot beside each closed-loop or particle-filter result |
+| `generate_plot` | `false` | write a PNG plot beside each dead-reckoning, closed-loop or particle-filter result |
 
 The input and output path rules -- directory versus file, CSV only, refusing to overwrite an input
 -- are the command line's; see [Running Simulations](./simulations.md#input-and-output-paths).
@@ -134,9 +134,10 @@ The input and output path rules -- directory versus file, CSV only, refusing to 
 | `open-loop` | `ol` | -- (**not implemented**: exits with an error) |
 
 `mode = "dr"` is rejected as an unknown variant. Every mode reads `[aiding]`,
-`[execution_limits]`, `[health_limits]` and `[logging]`, except that dead reckoning ignores the
-aiding and the limits as it does on the command line, and synthetic mode ignores everything but
-`[synthetic]`.
+`[execution_limits]`, `[health_limits]` and `[logging]`, with two exceptions. Dead reckoning has
+no aiding, so it ignores `[aiding]`; it applies the execution limits and the position and speed
+health limits, as `dr` does on the command line, but not `cov_diag_max` or the NIS pair. Synthetic
+mode reads only `[synthetic]` and `[logging]`.
 
 ## `[aiding]`
 
@@ -456,7 +457,7 @@ value means fewer measurements. Its old name, `geo_frequency_s`, is still accept
 
 ## `[synthetic]`
 
-Read when `mode = "synthetic"`, and the only section that mode reads. `output` and `duration_s`
+Read when `mode = "synthetic"`, and the only section that mode reads besides `[logging]`. `output` and `duration_s`
 are required; the rest mirror the `syn` flags, with the IMU grade spelled `imu_quality` and the
 initial state in a `[synthetic.initial_state]` table. The full key list and a worked example are
 on [Synthetic Trajectories](./synthetic.md#the-synthetic-configuration-section).

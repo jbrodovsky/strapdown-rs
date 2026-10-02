@@ -22,10 +22,10 @@ strapdown-sim syn -o drive_truth.csv --duration-s 600 --seed 42 \
 ```
 
 ```text
-2026-10-01 20:52:19.901 [INFO] - Generated 6000 synthetic records (600.0 s at 10 Hz)
-2026-10-01 20:52:19.912 [INFO] - Sensor records written to drive.csv
-2026-10-01 20:52:19.993 [INFO] - Generated 6000 synthetic records (600.0 s at 10 Hz)
-2026-10-01 20:52:20.000 [INFO] - Truth trajectory written to drive_truth.csv
+2026-10-01 21:44:03.088 [INFO] - Generated 6000 synthetic records (600.0 s at 10 Hz)
+2026-10-01 21:44:03.097 [INFO] - Sensor records written to drive.csv
+2026-10-01 21:44:03.155 [INFO] - Generated 6000 synthetic records (600.0 s at 10 Hz)
+2026-10-01 21:44:03.160 [INFO] - Truth trajectory written to drive_truth.csv
 ```
 
 `syn` output is NED, which is the default for every subcommand, so no `--enu` is needed. (The
@@ -38,11 +38,11 @@ strapdown-sim pf -i drive.csv -o pf_out.csv
 ```
 
 ```text
-2026-10-01 20:52:20.005 [INFO] - Processing file: drive.csv
-2026-10-01 20:52:20.029 [INFO] - Read 6000 records from drive.csv
-2026-10-01 20:52:20.030 [INFO] - Mechanizing input as NED: mean vertical specific force over the first 10 record(s) is -9.775 m/s^2 against a local gravity of 9.801 m/s^2
-2026-10-01 20:52:21.164 [INFO] - Results written to pf_out.csv
-2026-10-01 20:52:21.164 [INFO] - Particle filter simulation complete
+2026-10-01 21:44:03.164 [INFO] - Processing file: drive.csv
+2026-10-01 21:44:03.185 [INFO] - Read 6000 records from drive.csv
+2026-10-01 21:44:03.186 [INFO] - Mechanizing input as NED: mean vertical specific force over the first 10 record(s) is -9.775 m/s^2 against a local gravity of 9.801 m/s^2
+2026-10-01 21:44:04.269 [INFO] - Results written to pf_out.csv
+2026-10-01 21:44:04.269 [INFO] - Particle filter simulation complete
 ```
 
 The "Mechanizing input as NED" line is the frame check: the mean vertical specific force has the
@@ -68,14 +68,14 @@ cargo run -p strapdown-core --example score_run -- pf_out.csv drive_truth.csv
 
 ```text
 aligned samples                            5990
-horizontal RMSE                           0.988 m
-horizontal CEP50                          0.808 m
-horizontal CEP95                          1.751 m
-horizontal max                            3.375 m
-vertical RMSE                             1.958 m
-horizontal velocity RMSE                  0.157 m/s
-yaw RMSE                                  0.409 deg
-position NEES (consistent at 3)          13.332
+horizontal RMSE                           0.920 m
+horizontal CEP50                          0.758 m
+horizontal CEP95                          1.619 m
+horizontal max                            2.706 m
+vertical RMSE                             0.888 m
+horizontal velocity RMSE                  0.193 m/s
+yaw RMSE                                  0.404 deg
+position NEES (consistent at 3)           3.534
 3-sigma horizontal containment            1.000
 ```
 
@@ -138,25 +138,25 @@ cargo run -p strapdown-core --example score_run -- pf_config_out.csv drive_truth
 ```
 
 ```text
-2026-10-01 20:52:39.076 [INFO] - Loading configuration from rbpf_syn.toml
-2026-10-01 20:52:39.076 [INFO] - Configuration loaded successfully
-2026-10-01 20:52:39.076 [INFO] - Mode: ParticleFilter
+2026-10-01 21:44:12.099 [INFO] - Loading configuration from rbpf_syn.toml
+2026-10-01 21:44:12.099 [INFO] - Configuration loaded successfully
+2026-10-01 21:44:12.099 [INFO] - Mode: ParticleFilter
 ...
-2026-10-01 20:52:39.104 [INFO] - Running particle filter simulation
-2026-10-01 20:52:43.908 [INFO] - Results written to pf_config_out.csv
+2026-10-01 21:44:12.117 [INFO] - Running particle filter simulation
+2026-10-01 21:44:16.836 [INFO] - Results written to pf_config_out.csv
 ```
 
 ```text
 aligned samples                            5990
-horizontal RMSE                           2.362 m
-horizontal CEP50                          1.994 m
-horizontal CEP95                          3.962 m
-horizontal max                            6.800 m
-vertical RMSE                             2.676 m
-horizontal velocity RMSE                  0.570 m/s
-yaw RMSE                                  0.416 deg
-position NEES (consistent at 3)           7.880
-3-sigma horizontal containment            0.999
+horizontal RMSE                           1.845 m
+horizontal CEP50                          1.613 m
+horizontal CEP95                          3.007 m
+horizontal max                            4.470 m
+vertical RMSE                             1.415 m
+horizontal velocity RMSE                  0.479 m/s
+yaw RMSE                                  0.418 deg
+position NEES (consistent at 3)           3.056
+3-sigma horizontal containment            1.000
 ```
 
 The [RBPF configuration table](../filters/rbpf.md#configuration) explains every key. Three are
@@ -179,21 +179,32 @@ library's `RbpfConfig` keeps that default; `strapdown-sim` does not. On the same
 ```bash
 strapdown-sim pf -i drive.csv -o pf_zero.csv --sched fixed --interval-s 1 \
   --horizontal-process-noise-std-m 0 0
+cargo run -p strapdown-core --example score_run -- pf_zero.csv drive_truth.csv
 ```
 
 ```text
-2026-10-01 20:52:45.263 [INFO] - Processing file: drive.csv
-2026-10-01 20:52:45.290 [INFO] - Read 6000 records from drive.csv
-2026-10-01 20:52:45.291 [INFO] - Mechanizing input as NED: mean vertical specific force over the first 10 record(s) is -9.775 m/s^2 against a local gravity of 9.801 m/s^2
-Error: OutOfRange { what: "speed", value: 500.1655942836976, min: 0.0, max: 500.0 }
+aligned samples                            5990
+horizontal RMSE                           2.025 m
+horizontal CEP50                          1.624 m
+horizontal CEP95                          3.550 m
+horizontal max                            6.068 m
+vertical RMSE                             1.409 m
+horizontal velocity RMSE                  0.509 m/s
+yaw RMSE                                  0.603 deg
+position NEES (consistent at 3)           9.786
+3-sigma horizontal containment            0.929
 ```
 
-The run diverges until the health monitor's speed limit (`--health-speed-mps-max`, 500 m/s by
-default) stops it, and no output file is written. With zero noise each epoch's time update is a
-noiseless observation of the velocity and tilt errors, which moves their uncertainty out of the
-shared covariance and into the particles' spread; resampling on metre-level fixes then destroys
-that spread. [RBPF](../filters/rbpf.md#horizontal-process-noise-why-the-default-is-1-ms) gives the
-full account.
+The same command with the default `1 1` (drop the last flag) scores a horizontal RMSE of
+1.870 m, a NEES of 3.141 and a containment of 1.000. On this short, clean synthetic drive the
+zero-noise run finishes and its error is only slightly larger, but its covariance is no longer
+honest: a NEES three times the ideal and 93% three-sigma containment mean the filter claims more
+certainty than it has. With zero noise each epoch's time update is a noiseless observation of
+the velocity and tilt errors, which moves their uncertainty out of the shared covariance and
+into the particles' spread, and resampling on metre-level fixes then destroys that spread. On
+the reference recording that overconfidence grows until the solution runs kilometres off;
+[RBPF](../filters/rbpf.md#horizontal-process-noise-why-the-default-is-1-ms) gives the full
+account.
 
 ## The same trajectory through the ESKF
 
@@ -207,15 +218,15 @@ cargo run -p strapdown-core --example score_run -- cl_out.csv drive_truth.csv
 
 ```text
 aligned samples                            5990
-horizontal RMSE                           2.072 m
-horizontal CEP50                          1.738 m
-horizontal CEP95                          3.519 m
-horizontal max                            5.070 m
-vertical RMSE                             2.336 m
-horizontal velocity RMSE                  0.450 m/s
-yaw RMSE                                  0.335 deg
-position NEES (consistent at 3)           5.192
-3-sigma horizontal containment            1.000
+horizontal RMSE                           1.574 m
+horizontal CEP50                          1.380 m
+horizontal CEP95                          2.653 m
+horizontal max                            3.994 m
+vertical RMSE                             1.183 m
+horizontal velocity RMSE                  0.371 m/s
+yaw RMSE                                  0.498 deg
+position NEES (consistent at 3)           2.879
+3-sigma horizontal containment            0.999
 ```
 
 One synthetic straight-line drive is not a ranking of the two filters. The RBPF exists for
@@ -226,9 +237,13 @@ The gated comparison across scenarios, including the RBPF's own row, is on
 [RBPF](../filters/rbpf.md#sparse-gnss-what-this-structure-cannot-recover-from) documents a regime
 (one fix a minute) in which it diverges where the EKF does not.
 
-For the unaided baseline, `strapdown-sim dr -i drive.csv -o dr_out.csv` scored the same way
-reports no consistency metrics (a dead-reckoning run has no covariance) and a horizontal error
-that grows to tens of kilometres over the ten minutes on this consumer-grade IMU.
+For the unaided baseline, run
+`strapdown-sim dr -i drive.csv -o dr_out.csv --health-speed-mps-max 1000`. The raised speed
+limit is needed because `dr` applies the health limits, and the unaided velocity error passes the
+default 500 m/s before the ten minutes are up; without it the run stops with an `OutOfRange`
+error on `speed` and writes nothing. Scored the same way, it reports no consistency metrics (a
+dead-reckoning run has no covariance) and a horizontal error that reaches 108.8 km by the end, a
+horizontal RMSE of 41.3 km, on this consumer-grade IMU.
 
 ## Where next
 

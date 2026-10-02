@@ -96,7 +96,6 @@ on the field `is_enu`, and the message names the flag to change.
 
 ```console
 $ strapdown-sim --log-level warn cl --enu -i synthetic.csv -o eskf_enu.csv
-2026-10-01 20:42:51.596 [ERROR] - Error running closed-loop simulation on synthetic.csv: invalid configuration for `is_enu`: mean vertical specific force over the first 10 record(s) is -9.75 m/s^2, but ENU mechanization expects +9.78 m/s^2 at rest: these look like NED records. Mechanizing them as ENU would double-count gravity and integrate at 2 g. Declare the frame that matches the data (drop `--enu`, or set `is_enu = false` in the config file), or re-record it in ENU.
 Error: InvalidConfiguration { field: "is_enu", reason: "mean vertical specific force over the first 10 record(s) is -9.75 m/s^2, but ENU mechanization expects +9.78 m/s^2 at rest: these look like NED records. Mechanizing them as ENU would double-count gravity and integrate at 2 g. Declare the frame that matches the data (drop `--enu`, or set `is_enu = false` in the config file), or re-record it in ENU." }
 ```
 

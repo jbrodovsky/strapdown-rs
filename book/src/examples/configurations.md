@@ -78,7 +78,7 @@ files' `output`, and run each with `--config`.
 | `slowbias.yaml` | `pass_through` | `slow_bias`, 0.02 m/s north, `q_bias` 1e-6 | soft spoofing: each fix looks plausible |
 | `slowbias_rot.yaml` | `pass_through` | `slow_bias`, as above with `q_bias` 5e-6 and the direction rotating at 1e-3 rad/s | the same, drifting in a turning direction |
 | `hijack.yaml` | `pass_through` | `hijack`, 50 m north from 120 s for 60 s | hard spoofing: an abrupt offset |
-| `combo_duty_hijack.yaml` | `duty_cycle`, 10 s on / 3 s off | `hijack`, 10 m north and 10 m east from 150 s for 120 s | duty-cycled availability plus hard spoofing |
+| `combo_duty_hijack.yaml` | `duty_cycle`, 10 s on / 3 s off, no initial on | `hijack`, 10 m north and 10 m east from 150 s for 120 s | duty-cycled availability plus hard spoofing |
 
 Spoofing scenarios are worth pairing with an innovation gate (`--gate-confidence` on the
 command line). A `hijack` produces a large normalized innovation squared the moment it starts,

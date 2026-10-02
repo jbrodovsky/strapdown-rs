@@ -68,9 +68,15 @@ values with `=`: `--longitude-deg=-75`.
 | `--imu-grade <GRADE>` | `consumer` | IMU noise and bias levels; see [IMU grades](#imu-grades) |
 | `--gnss-horizontal-noise-m <M>` | `2.5` | one-sigma white noise on the GNSS horizontal position, metres |
 | `--gnss-vertical-noise-m <M>` | `5` | one-sigma white noise on the GNSS altitude, metres |
-| `--baro-noise-std-pa <PA>` | `50` | one-sigma white noise on the `pressure` column, pascals |
+| `--gnss-velocity-noise-mps <MPS>` | `0.5` | one-sigma white noise on the north and east velocity behind `speed` and `bearing`, m/s per axis |
+| `--baro-noise-std-pa <PA>` | about `26.86` | one-sigma white noise on the barometric pressure, pascals. `relativeAltitude` is computed from the noisy pressure, at about 0.083 m per pascal near sea level |
 | `--mag-noise-std-ut <UT>` | `0.5` | one-sigma white noise on each magnetometer axis, microtesla |
 | `--mag-hard-iron-std-ut <UT>` | `0` | standard deviation of a hard-iron offset drawn once per run and held, microtesla per axis |
+
+The barometric default is not a round number because it is derived: it is the pressure noise
+whose altitude equivalent at sea level is the 2.24 m ($\sqrt 5$ m) one-sigma the filters assume
+for a barometer (`measurements::BAROMETRIC_ALTITUDE_NOISE_M`), so a default filter's $R$
+describes a default synthetic barometer.
 
 Hard iron is off by default on purpose: a constant body-frame field biases the computed heading in
 a way no filter here can observe, so with it on the yaw error measures the offset rather than the
@@ -108,11 +114,13 @@ definitions are on [Input Data Format](./data-format.md). What `syn` puts in the
 | `time` | RFC 3339 UTC timestamps starting at `2025-01-01T00:00:00Z`, one per sample |
 | `acc_*`, `gyro_*` | perfect IMU plus the grade's constant bias and white noise, body frame |
 | `latitude`, `longitude`, `altitude` | truth plus white GNSS noise, **on every row** |
-| `speed`, `bearing` | the truth's ground speed and track, **without noise** |
-| `horizontalAccuracy`, `speedAccuracy`, `bearingAccuracy` | the `--gnss-horizontal-noise-m` value |
+| `speed`, `bearing` | ground speed (m/s) and track (degrees) of the true north/east velocity plus `--gnss-velocity-noise-mps` white noise on each axis |
+| `horizontalAccuracy` | the `--gnss-horizontal-noise-m` value |
 | `verticalAccuracy` | the `--gnss-vertical-noise-m` value |
-| `relativeAltitude` | the *noisy* GNSS altitude minus the initial altitude |
-| `pressure` | standard-atmosphere pressure at the true altitude plus `--baro-noise-std-pa` noise, Pa |
+| `speedAccuracy` | the `--gnss-velocity-noise-mps` value |
+| `bearingAccuracy` | $\operatorname{atan2}(\sigma_v, \text{speed})$ in degrees: the angle the velocity noise subtends at the row's speed, which tends to 90° as the platform stops |
+| `pressure` | isothermal-atmosphere pressure at the true altitude plus `--baro-noise-std-pa` noise, **hPa** (the unit a Sensor Logger export uses) |
+| `relativeAltitude` | the height of the noisy pressure relative to the **first** noisy pressure, through the same isothermal atmosphere, m. It is `0` on the first row |
 | `mag_*` | the World Magnetic Model field at the true position and the record's date, rotated into the body frame, plus noise and any hard iron, µT |
 | `grav_*` | local gravity rotated into the body frame, m/s² |
 | `qw`, `qx`, `qy`, `qz`, `roll`, `pitch`, `yaw` | the true attitude, as a quaternion and as Euler angles in radians |
@@ -124,12 +132,15 @@ Three properties of these records matter when you use them:
 - **GNSS is on every row**, so with the default `--sched passthrough` a filter receives GNSS at
   the full sample rate -- 10 Hz by default. For a realistic 1 Hz receiver, run the filter with
   `--sched fixed --interval-s 1`, as the accuracy suite's `syn_cruise_1hz` scenario does.
-- **The barometric channel is the GNSS altitude.** `relativeAltitude` is derived from the noisy
-  GNSS altitude column, not from `pressure`, so the barometer measurement the filters build from
-  it carries the same noise sample as the GNSS fix, and `--baro-noise-std-pa` changes only the
-  `pressure` column, which no estimator reads.
-- **The velocity aiding is exact.** `speed` and `bearing` carry no noise, while
-  `speedAccuracy` advertises the horizontal position noise as their one-sigma.
+- **The barometer is an independent sensor with a constant bias.** `relativeAltitude` comes
+  from the noisy pressure, not from the GNSS altitude, so its noise is independent of the GNSS
+  fix and set by `--baro-noise-std-pa`. Because it is referenced to the first noisy reading, as
+  a phone's is, that reading's error becomes a constant offset in every later row: the
+  barometric bias the Kalman filters estimate.
+- **The velocity aiding is noisy, and says by how much.** `speed` and `bearing` carry
+  `--gnss-velocity-noise-mps` of noise per axis, and `speedAccuracy` reports that one-sigma,
+  which is what the filters weight the velocity fix with. On the stationary default the noise is
+  all there is, so `speed` is a small positive number and `bearing` is random.
 
 ### Truth with `--no-noise`
 
@@ -183,9 +194,10 @@ The same flags and seed produce a byte-identical file: two runs of
 - every random draw comes from a generator seeded by `--seed`;
 - the start time is fixed at `2025-01-01T00:00:00Z` rather than taken from the clock, which also
   fixes the date the magnetic model is evaluated at;
-- the magnetometer noise and the hard-iron offset draw from their own streams, so changing
-  `--mag-noise-std-ut` changes only the three `mag_*` columns and leaves the IMU, GNSS and
-  barometer noise untouched.
+- the magnetometer noise, the hard-iron offset and the GNSS velocity noise draw from their own
+  streams, so changing `--mag-noise-std-ut` changes only the three `mag_*` columns, and changing
+  `--gnss-velocity-noise-mps` changes only `speed`, `bearing`, `speedAccuracy` and
+  `bearingAccuracy`. The IMU, GNSS position and barometer noise are untouched by either.
 
 Combined with the exact truth from `--no-noise`, that makes a synthetic trajectory the one input
 on which an error can be attributed to the estimator rather than to an unknown reference.
@@ -208,7 +220,8 @@ seed = 42
 no_noise = false
 gnss_horizontal_noise_m = 3.0        # default 2.5
 gnss_vertical_noise_m = 5.0          # default 5
-baro_noise_std_pa = 30.0             # default 50
+gnss_velocity_noise_mps = 0.5        # default 0.5
+baro_noise_std_pa = 30.0             # default about 26.86
 mag_noise_std_ut = 0.5
 mag_hard_iron_std_ut = 0.0
 
@@ -233,5 +246,5 @@ $ strapdown-sim --config syn.toml
 `output` and `duration_s` have no defaults: a `[synthetic]` section without them is refused with
 ``missing field `duration_s` ``. Leave out `[synthetic.initial_state]` entirely and the vehicle
 starts at rest at 0, 0, 0; include it and `latitude_deg`, `longitude_deg` and `altitude_m` must
-all be given. The other top-level keys of a configuration file (`input`, `[closed_loop]` and so
-on) are ignored in synthetic mode.
+all be given. The other keys of a configuration file (`input`, `[closed_loop]` and so on) are
+ignored in synthetic mode, except `[logging]`, which sets the log level and file as in any mode.

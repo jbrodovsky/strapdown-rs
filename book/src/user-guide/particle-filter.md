@@ -78,9 +78,12 @@ $\sqrt{\Delta t}$, so the variance grows linearly in elapsed time whatever the l
 on horizontal position, and the library's `RbpfConfig` keeps that zero. With GNSS-rate fixes on
 MEMS data a zero-noise cloud collapses and the filter diverges, so `strapdown-sim` and its
 configuration file default to 1 m/√s on each axis, the value the repository's `conf/` recipes
-use. Pass `0 0` to run the paper's model -- on the 600 s synthetic trajectory above it diverges
-until the health monitor stops the run (`Error: OutOfRange { what: "speed", ... max: 500.0 }`),
-while the default `1 1` and `0.5 0.5` both finish.
+use. Pass `0 0` to run the paper's model. On the stationary 600 s synthetic trajectory above all
+three settings finish: scored against `syn --no-noise` truth with the
+[Quick Start](../quick-start.md#7-score-the-runs)'s script, `0 0` gives a horizontal RMS of
+1.516 m, the default `1 1` 0.921 m and `0.5 0.5` 0.704 m (`0 0` with roughening off as well
+also finishes, at 1.715 m). The divergence the default guards against is the one the library
+documents for GNSS-rate fixes on recorded MEMS data; a stationary synthetic run does not show it.
 
 `--horizontal-process-noise-std-m` takes exactly two values, north then east, separated by a
 comma or a space: `--horizontal-process-noise-std-m 0.5,0.5` and

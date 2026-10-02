@@ -93,12 +93,12 @@ cargo run -p strapdown-core --example kalman_filters
 It printed:
 
 ```text
-ESKF, initialize_eskf: 15 states, 2.763 m from truth at the end, last update NIS 3.530 (3 dof, accepted: true)
-EKF,  initialize_ekf: 15 states, 2.761 m from truth at the end, last update NIS 3.530 (3 dof, accepted: true)
-UKF,  initialize_ukf: 15 states, 2.759 m from truth at the end, last update NIS 3.533 (3 dof, accepted: true)
-ESKF, constructor: 15 states, 2.762 m from truth at the end, last update NIS 3.529 (3 dof, accepted: true)
-EKF,  constructor: 15 states, 2.762 m from truth at the end, last update NIS 3.529 (3 dof, accepted: true)
-UKF,  constructor: 15 states, 2.760 m from truth at the end, last update NIS 3.532 (3 dof, accepted: true)
+ESKF, initialize_eskf: 15 states, 2.757 m from truth at the end, last update NIS 3.535 (3 dof, accepted: true)
+EKF,  initialize_ekf: 15 states, 2.760 m from truth at the end, last update NIS 3.531 (3 dof, accepted: true)
+UKF,  initialize_ukf: 15 states, 2.758 m from truth at the end, last update NIS 3.534 (3 dof, accepted: true)
+ESKF, constructor: 15 states, 2.759 m from truth at the end, last update NIS 3.532 (3 dof, accepted: true)
+EKF,  constructor: 15 states, 2.760 m from truth at the end, last update NIS 3.531 (3 dof, accepted: true)
+UKF,  constructor: 15 states, 2.757 m from truth at the end, last update NIS 3.534 (3 dof, accepted: true)
 ```
 
 On a short straight drive with a 2.5 m fix every second, all six end up where the fixes put

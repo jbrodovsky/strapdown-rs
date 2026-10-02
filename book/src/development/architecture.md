@@ -88,8 +88,11 @@ Every simulation mode is the same pipeline with a different estimator in the mid
 
 The variations are:
 
-- **Dead reckoning** (`dr`) skips the event stream: `sim::dead_reckoning(records, is_enu)`
-  mechanizes the IMU rows directly and reports no covariance.
+- **Dead reckoning** (`dr`) skips the event stream:
+  `sim::dead_reckoning_with_limits(records, is_enu, health_limits, execution_limits)`
+  mechanizes the IMU rows directly, checks the position, speed and wall-clock limits after each
+  step, and reports no covariance. `sim::dead_reckoning(records, is_enu)` is the same with no
+  limits.
 - **Closed loop** (`cl`) builds one of the Kalman filters and calls `run_closed_loop`;
   with geophysical maps it calls `run_closed_loop_with_geo`, which also reports the map biases.
 - **Particle filter** (`pf`) consumes the same `EventStream` through an event loop in

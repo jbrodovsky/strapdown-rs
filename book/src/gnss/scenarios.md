@@ -24,7 +24,7 @@ that spelling is still accepted as an alias; the recipes under `conf/` use it.
 | `magnetometer_scheduler` | scheduler | `fixed_interval`, 1 s | when magnetometer heading is delivered |
 | `baro_noise_std_m` | m (1σ) | 2.236 (√5) | barometric altitude noise standard deviation |
 | `baro_bias_index` | integer or unset | unset | which filter state holds the barometric bias (library use; see below) |
-| `seed` | integer | 42 | seed for the fault model's random draws |
+| `seed` | integer or unset | unset | seed for the fault model's random draws; unset takes the file's top-level `seed`, or `DEFAULT_AIDING_SEED` (42) when an event stream is built from Rust |
 | `max_imu_gap_s` | s | 5.0 | longest inertial gap tolerated before the run is refused; `<= 0` disables |
 
 A complete example that runs as written (`input`/`output` pointed at a synthetic trajectory):

@@ -124,7 +124,7 @@ start_phase_s = 0.0
 
 | key | CLI counterpart |
 |---|---|
-| `gravity_resolution`, `magnetic_resolution` | `--gravity-resolution`, `--magnetic-resolution` (values in snake case: `one_minute`, `two_minutes`, ...) |
+| `gravity_resolution`, `magnetic_resolution` | `--gravity-resolution`, `--magnetic-resolution` (in the file the values are snake case, `one_minute`, `two_minutes`, ...; on the command line, kebab case) |
 | `gravity_map_file`, `magnetic_map_file` | `--gravity-map-file`, `--magnetic-map-file` |
 | `gravity_noise_std`, `magnetic_noise_std` | `--gravity-noise-std`, `--magnetic-noise-std` |
 | `gravity_bias`, `magnetic_bias` | `--gravity-bias`, `--magnetic-bias` |
@@ -156,7 +156,8 @@ both maps for each trajectory and writes them under exactly these names; see
 The output CSV always carries `gravity_bias`, `gravity_bias_cov`, `magnetic_bias` and
 `magnetic_bias_cov` columns (see [Output Format](../user-guide/output-format.md)). For each
 channel a geophysically aided run uses, they hold the filter's estimate of the map bias, in
-the map's unit, and its variance; for a channel the run does not use, they are `NaN`.
+the map's unit, and its variance; for a channel the run does not use, they are empty (a
+gravity-only `pf --geo` run leaves both `magnetic_bias` cells blank).
 
 ## Example
 

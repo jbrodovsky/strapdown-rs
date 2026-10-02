@@ -107,7 +107,7 @@ strapdown-core = { git = "https://github.com/jbrodovsky/strapdown-rs", features 
 ```
 
 `hdf5` and `netcdf` compile libhdf5 and libnetcdf from vendored sources, so they need a C
-compiler and cmake 3.26 or newer; `mcap` is Rust only. The `full` feature turns on all three
+compiler and cmake 3.26 or newer; `mcap` needs a C compiler for its bundled LZ4 and Zstandard. The `full` feature turns on all three
 plus `clap`. See [System Requirements](../installation/requirements.md).
 
 `TestDataRecord`, the input record, has the same three writers and readers, behind the same

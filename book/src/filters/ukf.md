@@ -93,8 +93,8 @@ the transform samples the local nonlinearity rather than a shell several sigma o
 `core/tests/ukf_conditioning.rs` holds both ends of that:
 
 - `one_ulp_of_input_cannot_move_the_solution_by_a_centimetre` runs the UKF twice through a
-  180 s, 50 Hz synthetic scenario with GNSS duty-cycled 60 s on and 60 s off, the second time with the initial
-  latitude moved by one ulp, and requires the final positions to agree within 1 cm. The test's
+  180 s, 50 Hz synthetic scenario with GNSS duty-cycled 60 s off and 60 s on (no start phase,
+  so it opens with the outage), the second time with the initial latitude moved by one ulp, and requires the final positions to agree within 1 cm. The test's
   own documentation records 1.76 m at the old $\alpha$ and 0.18 mm at 0.1.
 - `the_shipped_sigma_point_weights_do_not_cancel_away_the_mantissa` checks that the default
   weights spend no more than 2.5 of `f64`'s digits on cancellation, so lowering $\alpha$ again

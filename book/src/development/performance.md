@@ -161,8 +161,8 @@ Read the rows rather than any summary here; these are the comparisons worth maki
   exact truth. Compare its three rows column by column; the attitude table shows what a 1 Hz
   magnetometer and GNSS velocity make of yaw on a synthetic trajectory.
 - **The outage rows are dominated by the outages.** On `real_outage_60s__eskf` and both
-  `syn_outage_60s` rows, CEP50 stays at the level of the full-rate rows while RMSE, CEP95 and
-  the maximum are set by the coasts. That is the shape free-inertial drift gives: most
+  `syn_outage_60s` rows, CEP50 stays within a few metres of the full-rate rows while RMSE, CEP95
+  and the maximum, an order of magnitude larger, are set by the coasts. That is the shape free-inertial drift gives: most
   epochs are aided and accurate, and the error concentrates at the ends of the outages.
 - **`syn_dead_reckoning` is the unaided reference.** It is only 120 s long, and its
   consistency columns are empty because dead reckoning reports no covariance.

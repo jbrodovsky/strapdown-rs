@@ -98,10 +98,10 @@ The rules, all from `sim/src/common.rs`:
   So `dr -i batch -o batch` is refused rather than overwriting the recordings.
 
 ```console
-$ strapdown-sim dr -i batch -o out_file/run.csv
+$ strapdown-sim --log-level warn dr -i batch -o out_file/run.csv
 $ ls out_file
 run_a.csv  run_b.csv
-$ strapdown-sim dr -i batch/a.csv -o batch/a.csv
+$ strapdown-sim --log-level warn dr -i batch/a.csv -o batch/a.csv
 Error: "Refusing to write results to 'batch/a.csv': that is the input file. Pass a different --output path."
 ```
 
@@ -159,12 +159,15 @@ the `_pos` in the name. It is a run-level divergence check, separate from the
 measurements.
 
 ```console
-$ strapdown-sim cl -i cruise.csv -o hl/out.csv --health-speed-mps-max 10
-Error: OutOfRange { what: "speed", value: 49.999902224914834, min: 0.0, max: 10.0 }
+$ strapdown-sim --log-level warn cl -i cruise.csv -o hl/out.csv --health-speed-mps-max 10
+[ERROR] - Health fail after propagate at 2025-01-01 00:00:00.020 UTC (#0): speed = 49.79808422315322 is outside the valid range [0, 10]
+[ERROR] - Error running closed-loop simulation: speed = 49.79808422315322 is outside the valid range [0, 10]
+Error: OutOfRange { what: "speed", value: 49.79808422315322, min: 0.0, max: 10.0 }
 ```
 
 (`cruise.csv` is a 50 m/s synthetic trajectory; see
-[Synthetic Trajectories](./synthetic.md#a-moving-trajectory).)
+[Synthetic Trajectories](./synthetic.md#a-moving-trajectory). The speed is not exactly 50 m/s
+because the initial velocity is taken from the first record's noisy `speed` and `bearing`.)
 
 Not every limit can apply to every mode, and each flag's `--help` says which modes apply it:
 

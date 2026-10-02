@@ -174,15 +174,15 @@ It printed:
 
 ```text
 scored 3000 samples against truth
-horizontal error: RMSE 8.49 m, max 54.72 m
-end of outage: error 52.98 m, filter 1-sigma 378.53 m north, 379.08 m east
-final accelerometer bias estimate: [-0.0541, -0.0320, -0.0694] m/s^2
-final gyroscope bias estimate:     [0.00005, -0.00025, 0.00036] rad/s
-final barometric bias estimate:    3.280 m
+horizontal error: RMSE 20.65 m, max 105.72 m
+end of outage: error 105.72 m, filter 1-sigma 336.56 m north, 341.87 m east
+final accelerometer bias estimate: [0.0599, 0.0160, -0.0716] m/s^2
+final gyroscope bias estimate:     [0.00023, -0.00028, 0.00041] rad/s
+final barometric bias estimate:    4.012 m
 ```
 
 The "end of outage" line is the last sample before GNSS returns. On this run the filter's own
-horizontal uncertainty at that point is several times its actual error: it is conservative,
+horizontal uncertainty at that point is about three times its actual error: it is conservative,
 not over-confident, while coasting. Whether that holds in general is what the consistency
 metrics on [Performance Baselines](../development/performance.md) measure: the NEES and the
 three-sigma containment columns, read together.

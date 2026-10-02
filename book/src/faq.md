@@ -41,8 +41,9 @@ of ongoing PhD research, and `strapdown-geonav` in particular is experimental.
 See [System Requirements](./installation/requirements.md). In summary:
 
 - Rust 1.91 or later (`rust-toolchain.toml` fetches it);
-- a C/C++ compiler and cmake 3.26 or newer, but only for features that build a C library
-  (HDF5, netCDF, `geonav`); `cargo build -p strapdown-core` needs neither;
+- a C compiler for features that bundle a C library (`strapdown-sim`'s default `plotting`,
+  `mcap`), and a C/C++ compiler with cmake 3.26 or newer for HDF5, netCDF and `geonav`;
+  `cargo build -p strapdown-core` needs neither;
 - no system libraries at build time;
 - libfontconfig at *run* time, for `strapdown-sim`'s `--plot` (the `plotting` feature, on by
   default). It is loaded on demand, so a machine without it builds fine and fails at the
@@ -136,13 +137,11 @@ tracks wall-clock time yet. What is measured and gated is navigation *accuracy*:
 
 ### Can I run simulations in parallel?
 
-Across files, yes. Point `input` at a directory and set `parallel = true` in the config file
-(or pass `--parallel` with `--config`), and the files are processed concurrently on a thread
-pool. Each file's run is itself sequential, as navigation is.
-
-In this release, `--parallel` takes effect only together with `--config`. With a subcommand
-(`strapdown-sim --parallel cl -i dir/ -o out/`) the directory's files are processed one after
-another.
+Across files, yes. Point the input at a directory and pass `--parallel`
+(`strapdown-sim --parallel cl -i dir/ -o out/`), or set `parallel = true` in a config file, and
+the files are processed concurrently on a thread pool. `--parallel` works the same way with
+`dr`, `cl`, `pf` and `--config`; `syn`, `config` and `ol` refuse it. Each file's run is itself
+sequential, as navigation is.
 
 ### The particle filter is slow
 

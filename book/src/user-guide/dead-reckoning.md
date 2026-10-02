@@ -6,7 +6,7 @@ output is the free-inertial solution, with all of its drift.
 
 ```bash
 strapdown-sim syn -o synthetic.csv --duration-s 600 --seed 42
-strapdown-sim dr -i synthetic.csv -o results/dr.csv
+strapdown-sim dr -i synthetic.csv -o results/dr.csv --health-speed-mps-max 1000
 ```
 
 ```console
@@ -16,7 +16,11 @@ strapdown-sim dr -i synthetic.csv -o results/dr.csv
 [INFO] - Results written to results/dr.csv
 ```
 
-(Timestamps trimmed from the log lines.) The flags are only the shared ones -- `-i`, `-o`,
+(Timestamps trimmed from the log lines.) `--health-speed-mps-max 1000` is there because `dr`
+applies the health limits: on this ten-minute file the unaided velocity passes the default
+500 m/s about 580 s in, and without the flag the run stops with
+`Error: OutOfRange { what: "speed", value: 500.12376354277296, min: 0.0, max: 500.0 }` and writes
+no file. The flags are only the shared ones -- `-i`, `-o`,
 `--enu` and the limit flags -- described in [Running Simulations](./simulations.md). `dr`
 takes no seed, because nothing in it is random.
 
@@ -27,7 +31,7 @@ The initial state is taken from the first record:
 | State | Source in the first record |
 |---|---|
 | latitude, longitude, altitude | `latitude`, `longitude`, `altitude` |
-| north and east velocity | `speed` and `bearing` (a NaN in either gives zero) |
+| north and east velocity | `speed` and `bearing` (a NaN in either gives zero). On `syn` output these carry the GNSS velocity noise, so a `dr` run starts with that velocity error |
 | vertical velocity | zero; the format carries no vertical rate |
 | attitude | the quaternion `qw, qx, qy, qz` (not the `roll`/`pitch`/`yaw` columns) |
 
@@ -45,7 +49,7 @@ Three practical consequences of having no filter:
 - **Every record must carry all six inertial channels.** The filters skip a record with a
   missing accelerometer or gyroscope value and coast across the gap; `dr` has no notion of a gap
   and fails on it. Blanking a single `acc_x` cell in a synthetic file stops the run with
-  `Error: NonFinite { what: "propagated attitude matrix" }`, where `cl` on the same file logs a
+  `Error: NonFinite { what: "filter state" }`, where `cl` on the same file logs a
   tolerated 0.2 s gap and finishes.
 - **The position and speed limits apply.** `dr` checks the wall-clock budgets
   (`--max-wall-clock-*`, `--max-no-progress-s`) and the latitude, longitude, altitude and speed

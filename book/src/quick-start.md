@@ -16,13 +16,15 @@ See [Installation](./installation/installation.md) for the details and the build
 
 ```console
 $ strapdown-sim syn -o synthetic.csv --duration-s 600 --seed 42
-2026-10-01 20:37:53.960 [INFO] - Generated 6000 synthetic records (600.0 s at 10 Hz)
-2026-10-01 20:37:53.971 [INFO] - Sensor records written to synthetic.csv
+2026-10-01 21:34:29.872 [INFO] - Generated 6000 synthetic records (600.0 s at 10 Hz)
+2026-10-01 21:34:29.880 [INFO] - Sensor records written to synthetic.csv
 ```
 
 With no other flags, `syn` writes ten minutes of a **stationary** platform at 0° N, 0° E and
 zero altitude, sampled at 10 Hz, with a consumer-grade IMU error model (`--imu-grade consumer`)
-and a noisy GNSS fix on every row (2.5 m horizontal, 5 m vertical, one sigma). The flags to
+and a noisy GNSS fix on every row (2.5 m horizontal, 5 m vertical and 0.5 m/s per velocity
+axis, one sigma). The barometer is an independent sensor: `relativeAltitude` is computed from a
+noisy pressure (about 27 Pa, or 2.24 m, one sigma by default). The flags to
 move it, rotate it, change the IMU grade or the sample rate are listed by
 `strapdown-sim syn --help`; see [Synthetic Trajectories](./user-guide/synthetic.md).
 
@@ -71,13 +73,13 @@ Representation](./user-guide/state-representation.md) lays the states out.
 The log begins:
 
 ```text
-2026-10-01 20:39:38.048 [INFO] - Running in closed-loop mode with Error-State Kalman Filter (ESKF)
-2026-10-01 20:39:38.048 [INFO] - Processing file: synthetic.csv
-2026-10-01 20:39:38.076 [INFO] - Read 6000 records from synthetic.csv
-2026-10-01 20:39:38.076 [INFO] - Mechanizing input as NED: mean vertical specific force over the first 10 record(s) is -9.754 m/s^2 against a local gravity of 9.780 m/s^2
-2026-10-01 20:39:38.077 [INFO] - Initialized event stream with 13198 events
-2026-10-01 20:39:38.077 [INFO] - Initialized ESKF
-2026-10-01 20:39:38.077 [INFO] - Starting closed-loop navigation filter with 13198 events
+2026-10-01 21:34:29.887 [INFO] - Running in closed-loop mode with Error-State Kalman Filter (ESKF)
+2026-10-01 21:34:29.887 [INFO] - Processing file: synthetic.csv
+2026-10-01 21:34:29.903 [INFO] - Read 6000 records from synthetic.csv
+2026-10-01 21:34:29.903 [INFO] - Mechanizing input as NED: mean vertical specific force over the first 10 record(s) is -9.754 m/s^2 against a local gravity of 9.780 m/s^2
+2026-10-01 21:34:29.904 [INFO] - Initialized event stream with 13198 events
+2026-10-01 21:34:29.904 [INFO] - Initialized ESKF
+2026-10-01 21:34:29.904 [INFO] - Starting closed-loop navigation filter with 13198 events
 ```
 
 followed by a progress line every ten events and, at the end, `Results written to eskf.csv`.
@@ -95,7 +97,7 @@ last row of `eskf.csv` is:
 
 ```text
 timestamp,latitude,longitude,altitude,velocity_north,velocity_east,velocity_vertical,roll,pitch,yaw
-2025-01-01T00:09:59.900Z,-2.097736146341953e-6,-1.9488296989009557e-6,-0.6980524721961896,-0.06949807183747997,-0.08759779166041143,0.05404302021868538,-0.00384387940069942,-0.0007849300822555636,0.005312090469945534
+2025-01-01T00:09:59.900Z,-1.244253386640393e-6,-1.7581270456255539e-6,-0.42194145354743773,0.015484151883163197,0.0568049993997672,0.038121929489373735,0.009803423792142807,0.006982138212381999,-0.002044723575180731
 ```
 
 Latitude and longitude are in degrees, altitude in metres (positive up), velocities in m/s and
@@ -128,11 +130,14 @@ elements plus the barometric bias. See [Kalman Filters](./filters/kalman.md).
 ## 4. Dead reckoning
 
 ```bash
-strapdown-sim --log-level warn dr -i synthetic.csv -o dr.csv
+strapdown-sim --log-level warn dr -i synthetic.csv -o dr.csv --health-speed-mps-max 1000
 ```
 
 `dr` propagates the IMU from the first record with no aiding at all, so its error grows without
-bound. (`ol` is a different subcommand, reserved for an open-loop mode that is **not
+bound. It applies the same health limits as the filters, and on this file the unaided velocity
+passes the default 500 m/s ceiling about 580 s in: without `--health-speed-mps-max 1000` the run
+stops with `Error: OutOfRange { what: "speed", value: 500.12376354277296, min: 0.0, max: 500.0 }`,
+exits 1 and writes no file. (`ol` is a different subcommand, reserved for an open-loop mode that is **not
 implemented**: it writes no output. Use `dr` for dead reckoning.)
 
 ## 5. The particle filter
@@ -189,8 +194,11 @@ for path in sys.argv[1:]:
     errors = []
     for t, e in zip(truth, est):
         d_north = math.radians(float(e["latitude"]) - float(t["latitude"])) * R
-        d_east = (math.radians(float(e["longitude"]) - float(t["longitude"]))
-                  * R * math.cos(math.radians(float(t["latitude"]))))
+        d_east = (
+            math.radians(float(e["longitude"]) - float(t["longitude"]))
+            * R
+            * math.cos(math.radians(float(t["latitude"])))
+        )
         errors.append(math.hypot(d_north, d_east))
     rms = math.sqrt(sum(x * x for x in errors) / len(errors))
     print(f"{path:16s} horizontal RMS {rms:10.3f} m   final {errors[-1]:10.3f} m")
@@ -198,19 +206,19 @@ for path in sys.argv[1:]:
 
 ```console
 $ python3 score.py dr.csv eskf.csv ekf.csv ukf.csv pf.csv eskf_outage.csv
-dr.csv           horizontal RMS  41518.686 m   final 109415.047 m
-eskf.csv         horizontal RMS      0.739 m   final      0.318 m
-ekf.csv          horizontal RMS      0.737 m   final      0.318 m
-ukf.csv          horizontal RMS      0.737 m   final      0.318 m
-pf.csv           horizontal RMS      1.006 m   final      0.667 m
-eskf_outage.csv  horizontal RMS     18.347 m   final      0.318 m
+dr.csv           horizontal RMS  41364.109 m   final 109129.025 m
+eskf.csv         horizontal RMS      0.524 m   final      0.239 m
+ekf.csv          horizontal RMS      0.522 m   final      0.239 m
+ukf.csv          horizontal RMS      0.522 m   final      0.240 m
+pf.csv           horizontal RMS      0.921 m   final      0.528 m
+eskf_outage.csv  horizontal RMS     15.671 m   final      0.240 m
 ```
 
 Read these as a demonstration of the workflow, not as a comparison of the filters: they come
 from one stationary trajectory and one seed. Unaided, the consumer-grade IMU drifts by about
 110 km in ten minutes. Every aided run stays at the metre level. The outage run's final error
-matches the uninterrupted run's because the last 100 s have GNSS again, while its RMS carries
-the four outages. The filters' measured accuracy on the reference scenarios is on the
+matches the uninterrupted run's to within a millimetre because the last 100 s have GNSS again,
+while its RMS carries the four outages. The filters' measured accuracy on the reference scenarios is on the
 [Performance Baselines](./development/performance.md) page.
 
 ## 8. The same run from a scenario file

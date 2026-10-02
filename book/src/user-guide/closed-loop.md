@@ -124,8 +124,8 @@ strapdown-sim cl -i synthetic.csv -o results/duty.csv  --sched duty --on-s 100 -
 ```
 
 On the 600 s, 10 Hz trajectory above, the pass-through run's event stream holds 13,198 events
-and the duty-cycle run's 11,199 -- the difference is the 1,999 GNSS fixes the two outages
-withhold, as `Initialized event stream with ... events` reports at `info` level.
+and the duty-cycle run's 11,199 -- the difference is the 1,999 GNSS fixes its four 50 s outages
+(0-50 s, 150-200 s, 300-350 s and 450-500 s) withhold, as `Initialized event stream with ... events` reports at `info` level.
 
 ## GNSS faults: what the fixes say
 
@@ -210,9 +210,9 @@ installed.
 
 ```console
 $ strapdown-sim cl -i synthetic.csv -o results/gated.csv --gate-confidence 0.999 --log-level warn
-[WARN] - closed-loop run completed with 78 of 13198 events gated out by the innovation test
+[WARN] - closed-loop run completed with 7 of 13198 events gated out by the innovation test
 $ strapdown-sim cl -i synthetic.csv -o results/bad.csv --gate-confidence 1.5
-Error: OutOfRange { what: "innovation gate confidence", value: 1.5, min: 0.0, max: 1.0 }
+Error: "the --gate-* flags: innovation gate confidence = 1.5 is outside the valid range [0, 1]"
 ```
 
 The gate is distinct from the run-level `--nis-pos-max`/`--nis-pos-consec-fail` health check,

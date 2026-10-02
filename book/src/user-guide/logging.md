@@ -81,8 +81,8 @@ at all.**
 `from_env` and `from_default_env` do -- and nothing in the crate calls `parse_env`. Verified:
 
 ```console
-$ RUST_LOG=off strapdown-sim dr -i input.csv -o output.csv
-2026-09-17 23:45:46.856 [INFO] - Running in Dead Reckoning mode with input: input.csv
+$ RUST_LOG=off strapdown-sim dr -i input.csv -o output.csv 2>&1 | head -1
+2026-10-01 21:42:29.555 [INFO] - Running in Dead Reckoning mode with input: input.csv
 ```
 
 `--log-level` is the only control, and because `filter_level` sets one global level there are
