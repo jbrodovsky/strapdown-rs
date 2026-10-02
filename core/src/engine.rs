@@ -120,8 +120,10 @@ pub struct InsEngineConfig {
     /// Process noise covariance diagonal, 15 elements. `None` uses
     /// [`DEFAULT_PROCESS_NOISE_DENSITY`].
     pub process_noise_diagonal: Option<Vec<f64>>,
-    /// Initial error-state covariance diagonal, 15 elements. `None` uses the same defaults
-    /// as [`crate::sim::initialize_eskf`].
+    /// Initial error-state covariance diagonal, 15 elements. `None` uses the engine's own
+    /// default: [`crate::sim::initialize_eskf`]'s position, velocity and attitude variances,
+    /// but fixed IMU-bias variances of `1e-6` (m/s^2)^2 and `1e-8` (rad/s)^2, where
+    /// `initialize_eskf` derives them from its `imu_quality`.
     pub initial_covariance_diagonal: Option<Vec<f64>>,
     /// Initial accelerometer bias estimate, m/s^2, body frame.
     pub initial_accel_bias: [f64; 3],
@@ -144,8 +146,11 @@ impl Default for InsEngineConfig {
 
 /// Default initial error-state covariance diagonal for the 15-state ESKF.
 ///
-/// Matches [`crate::sim::initialize_eskf`]: position and velocity error variances, then
-/// attitude, then accelerometer and gyro bias.
+/// Position, velocity and attitude match [`crate::sim::initialize_eskf`]'s defaults. The
+/// accelerometer and gyro bias entries do not: they are the fixed `1e-6`/`1e-8` that
+/// `initialize_eskf` used before it took its bias prior from
+/// [`crate::IMUQuality::initial_bias_covariance`]. Left as they are because moving them would
+/// move every engine result, the examples' included.
 ///
 /// The position block is taken from that function's own constants rather than copied as
 /// literals. The copy it replaces read `1e-6, 1e-6, 1e-4` -- correctly *labelled*

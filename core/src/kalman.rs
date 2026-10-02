@@ -717,7 +717,7 @@ pub(crate) fn imu_sample_from_input(
 
 impl NavigationFilter for UnscentedKalmanFilter {
     /// See [`NavigationFilter::baro_bias_index`]. Reports what
-    /// [`Self::set_baro_bias_index`] was told, so a filter built without one says `None`.
+    /// `Self::set_baro_bias_index` was told, so a filter built without one says `None`.
     fn baro_bias_index(&self) -> Option<usize> {
         self.baro_bias_index
     }
@@ -758,7 +758,7 @@ impl NavigationFilter for UnscentedKalmanFilter {
     /// `[-pi, pi]` *per point*, because that is what `Rotation3::euler_angles` returns. At a
     /// southerly heading the set straddles the cut, so a linear mean of the numbers is not
     /// the mean attitude. They are put back on sigma point 0's branch by
-    /// [`unwrap_attitude_onto_reference_branch`] before the weighted sum, which is both
+    /// `unwrap_attitude_onto_reference_branch` before the weighted sum, which is both
     /// where the mean and the covariance become meaningful again (#336).
     fn predict(
         &mut self,
@@ -904,6 +904,28 @@ impl NavigationFilter for UnscentedKalmanFilter {
             let sigma_point = measurement.get_expected_measurement(&sigma_point.clone_owned());
             measurement_sigma_points.set_column(i, &sigma_point);
             z_hat += self.weights_mean[i] * sigma_point;
+        }
+        // A model that cannot predict a sigma point says so with a non-finite value:
+        // `get_expected_measurement` is infallible by signature, so the geophysical models
+        // return NaN for a point off the edge of their map. One NaN column makes `z_hat`, `s`
+        // and the gain NaN, and the update used to write that into the state, ending the run
+        // with `NonFinite { what: "filter state" }`. The EKF meets the same edge as a
+        // recoverable `OutOfMapBounds` from its Jacobian and skips the fix; this is that
+        // outcome for the UKF -- a recoverable error, raised before anything is changed.
+        let unusable = measurement_sigma_points
+            .column_iter()
+            .filter(|column| !column.iter().all(|value| value.is_finite()))
+            .count();
+        if unusable > 0 {
+            return Err(StrapdownError::MeasurementUnavailable {
+                model: "UKF sigma-point prediction",
+                reason: format!(
+                    "{unusable} of {} sigma points have no finite predicted measurement \
+                     (for a map-based model, they lie off the loaded map); the update is \
+                     skipped and the state left unchanged",
+                    measurement_sigma_points.ncols()
+                ),
+            });
         }
         let mut s = DMatrix::<f64>::zeros(measurement.get_dimension(), measurement.get_dimension());
         for (i, sigma_point) in measurement_sigma_points.column_iter().enumerate() {
@@ -1140,11 +1162,23 @@ impl NavigationFilter for UnscentedKalmanFilter {
 ///     is_enu: true,
 /// };
 ///
+/// // P0 in each state's own units: position in rad^2, rad^2, m^2 (#308), then velocity in
+/// // (m/s)^2, attitude in rad^2 and the IMU grade's bias prior.
+/// let horizontal_std_rad = 10.0 * strapdown::earth::METERS_TO_RADIANS;
+/// let mut covariance = vec![horizontal_std_rad.powi(2), horizontal_std_rad.powi(2), 100.0];
+/// covariance.extend([1e-3; 3]);
+/// covariance.extend([1e-5; 3]);
+/// covariance.extend(strapdown::IMUQuality::Consumer.initial_bias_covariance());
+/// // Q is a density, a variance per second: the filter forms Q_k = q * dt itself (#374).
+/// let process_noise = DMatrix::from_diagonal(&nalgebra::DVector::from_row_slice(
+///     &strapdown::sim::DEFAULT_PROCESS_NOISE_DENSITY,
+/// ));
+///
 /// let mut ekf = ExtendedKalmanFilter::new(
 ///     &initial_state,
 ///     &[0.0; 6], // IMU biases (3 accel + 3 gyro)
-///     vec![1e-6; 15], // Initial covariance diagonal
-///     DMatrix::from_diagonal(&nalgebra::DVector::from_vec(vec![1e-9; 15])), // Process noise
+///     covariance,
+///     process_noise,
 ///     true, // use_biases
 /// );
 ///
@@ -1240,11 +1274,23 @@ impl ExtendedKalmanFilter {
     /// use nalgebra::DMatrix;
     ///
     /// let initial_state = InitialState::default();
+    /// // P0 in each state's own units: position in rad^2, rad^2, m^2 (#308), then velocity in
+    /// // (m/s)^2, attitude in rad^2 and the IMU grade's bias prior.
+    /// let horizontal_std_rad = 10.0 * strapdown::earth::METERS_TO_RADIANS;
+    /// let mut covariance = vec![horizontal_std_rad.powi(2), horizontal_std_rad.powi(2), 100.0];
+    /// covariance.extend([1e-3; 3]);
+    /// covariance.extend([1e-5; 3]);
+    /// covariance.extend(strapdown::IMUQuality::Consumer.initial_bias_covariance());
+    /// // Q is a density, a variance per second: the filter forms Q_k = q * dt itself (#374).
+    /// let process_noise = DMatrix::from_diagonal(&nalgebra::DVector::from_row_slice(
+    ///     &strapdown::sim::DEFAULT_PROCESS_NOISE_DENSITY,
+    /// ));
+    ///
     /// let ekf = ExtendedKalmanFilter::new(
     ///     &initial_state,
     ///     &[0.0; 6],
-    ///     vec![1e-6; 15],
-    ///     DMatrix::from_diagonal(&nalgebra::DVector::from_vec(vec![1e-9; 15])),
+    ///     covariance,
+    ///     process_noise,
     ///     true,
     /// );
     /// ```
@@ -1341,7 +1387,7 @@ impl ExtendedKalmanFilter {
 
 impl NavigationFilter for ExtendedKalmanFilter {
     /// See [`NavigationFilter::baro_bias_index`]. Reports what
-    /// [`Self::set_baro_bias_index`] was told, so a filter built without one says `None`.
+    /// `Self::set_baro_bias_index` was told, so a filter built without one says `None`.
     fn baro_bias_index(&self) -> Option<usize> {
         self.baro_bias_index
     }
@@ -1724,7 +1770,7 @@ impl NavigationFilter for ExtendedKalmanFilter {
 ///
 /// ## Error State (15 components, always small):
 /// ```text
-/// δx = [δp_n, δp_e, δp_d,           // position error (m)
+/// δx = [δlat, δlon, δalt,           // position error (rad, rad, m)
 ///       δv_n, δv_e, δv_d,           // velocity error (m/s)
 ///       δθ_x, δθ_y, δθ_z,           // attitude error (small angles, rad)
 ///       δb_ax, δb_ay, δb_az,        // accelerometer bias error (m/s²)
@@ -1782,11 +1828,23 @@ impl NavigationFilter for ExtendedKalmanFilter {
 ///     is_enu: true,
 /// };
 ///
+/// // P0 in each state's own units: position in rad^2, rad^2, m^2 (#308), then velocity in
+/// // (m/s)^2, attitude in rad^2 and the IMU grade's bias prior.
+/// let horizontal_std_rad = 10.0 * strapdown::earth::METERS_TO_RADIANS;
+/// let mut covariance = vec![horizontal_std_rad.powi(2), horizontal_std_rad.powi(2), 100.0];
+/// covariance.extend([1e-3; 3]);
+/// covariance.extend([1e-5; 3]);
+/// covariance.extend(strapdown::IMUQuality::Consumer.initial_bias_covariance());
+/// // Q is a density, a variance per second: the filter forms Q_k = q * dt itself (#374).
+/// let process_noise = DMatrix::from_diagonal(&nalgebra::DVector::from_row_slice(
+///     &strapdown::sim::DEFAULT_PROCESS_NOISE_DENSITY,
+/// ));
+///
 /// let mut eskf = ErrorStateKalmanFilter::new(
 ///     &initial_state,
 ///     &[0.0; 6], // Initial IMU biases (3 accel + 3 gyro)
-///     vec![1e-6; 15], // Initial error covariance diagonal
-///     DMatrix::from_diagonal(&nalgebra::DVector::from_vec(vec![1e-9; 15])), // Process noise
+///     covariance,
+///     process_noise,
 /// );
 ///
 /// // Predict with IMU data
@@ -2021,11 +2079,23 @@ impl ErrorStateKalmanFilter {
     /// use nalgebra::DMatrix;
     ///
     /// let initial_state = InitialState::default();
+    /// // P0 in each state's own units: position in rad^2, rad^2, m^2 (#308), then velocity in
+    /// // (m/s)^2, attitude in rad^2 and the IMU grade's bias prior.
+    /// let horizontal_std_rad = 10.0 * strapdown::earth::METERS_TO_RADIANS;
+    /// let mut covariance = vec![horizontal_std_rad.powi(2), horizontal_std_rad.powi(2), 100.0];
+    /// covariance.extend([1e-3; 3]);
+    /// covariance.extend([1e-5; 3]);
+    /// covariance.extend(strapdown::IMUQuality::Consumer.initial_bias_covariance());
+    /// // Q is a density, a variance per second: the filter forms Q_k = q * dt itself (#374).
+    /// let process_noise = DMatrix::from_diagonal(&nalgebra::DVector::from_row_slice(
+    ///     &strapdown::sim::DEFAULT_PROCESS_NOISE_DENSITY,
+    /// ));
+    ///
     /// let eskf = ErrorStateKalmanFilter::new(
     ///     &initial_state,
     ///     &[0.0; 6],
-    ///     vec![1e-6; 15],
-    ///     DMatrix::from_diagonal(&nalgebra::DVector::from_vec(vec![1e-9; 15])),
+    ///     covariance,
+    ///     process_noise,
     /// );
     /// ```
     pub fn new(
@@ -2998,6 +3068,86 @@ mod tests {
 
         // Verify update completed
         assert!(!ukf.mean_state.is_empty());
+    }
+
+    /// A measurement model that cannot predict for states north of `latitude_limit_rad`, as a
+    /// geophysical map cannot predict off its edge: it returns NaN there.
+    #[derive(Clone, Debug)]
+    struct EdgeOfMapMeasurement {
+        latitude_limit_rad: f64,
+    }
+
+    impl MeasurementModel for EdgeOfMapMeasurement {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+        fn get_dimension(&self) -> usize {
+            1
+        }
+        fn get_measurement(&self, _state: &DVector<f64>) -> Result<DVector<f64>, StrapdownError> {
+            Ok(DVector::from_element(1, 0.0))
+        }
+        fn get_noise(&self) -> DMatrix<f64> {
+            DMatrix::from_element(1, 1, 1.0)
+        }
+        fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
+            let value = if state[0] > self.latitude_limit_rad {
+                f64::NAN
+            } else {
+                state[2]
+            };
+            DVector::from_element(1, value)
+        }
+        fn get_jacobian(&self, state: &DVector<f64>) -> Result<DMatrix<f64>, StrapdownError> {
+            let mut jacobian = DMatrix::zeros(1, state.len());
+            jacobian[(0, 2)] = 1.0;
+            Ok(jacobian)
+        }
+    }
+
+    /// Sigma points off the edge of a map used to put NaN into the state and end the run;
+    /// the UKF now skips the measurement as the EKF does, with a recoverable error and the
+    /// state and covariance untouched.
+    #[test]
+    fn ukf_skips_a_measurement_some_sigma_points_cannot_predict() {
+        let mut ukf = UnscentedKalmanFilter::new(
+            &UKF_PARAMS,
+            &IMU_BIASES,
+            None,
+            COVARIANCE_DIAGONAL.to_vec(),
+            DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
+            ALPHA,
+            BETA,
+            KAPPA,
+        );
+        let state_before = ukf.mean_state.clone();
+        let covariance_before = ukf.covariance.clone();
+        // On the mean's own latitude: the mean is on the map, the sigma points spread north
+        // of it are not.
+        let measurement = EdgeOfMapMeasurement {
+            latitude_limit_rad: state_before[0],
+        };
+
+        let error = ukf
+            .update(&measurement)
+            .expect_err("an unpredictable sigma point must not reach the state");
+        assert!(error.is_recoverable(), "got {error:?}");
+        assert!(
+            matches!(error, StrapdownError::MeasurementUnavailable { .. }),
+            "got {error:?}"
+        );
+        assert_eq!(ukf.mean_state, state_before);
+        assert_eq!(ukf.covariance, covariance_before);
+
+        // And a model every sigma point can predict still updates.
+        let on_map = EdgeOfMapMeasurement {
+            latitude_limit_rad: f64::INFINITY,
+        };
+        ukf.update(&on_map).unwrap();
+        assert!(ukf.mean_state.iter().all(|value| value.is_finite()));
     }
 
     #[test]

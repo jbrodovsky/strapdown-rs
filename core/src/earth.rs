@@ -4,11 +4,9 @@
 //! geophysical features (gravity and magnetic field). The Earth is modeled as an ellipsoid
 //! (WGS84) with a semi-major axis and a semi-minor axis. The Earth's gravity is modeled as
 //! a function of the latitude and altitude using the Somigliana method. The Earth's
-//! rotation rate is also included in this module. This module relies on the `nav-types`
-//! crate for the coordinate types and conversions, but provides additional functionality
-//! for calculating rotations for the strapdown navigation filters. This permits the
-//! transformation of additional quantities (velocity, acceleration, etc.) between the
-//! Earth-centered Earth-fixed (ECEF) frame and the local-level frame.
+//! rotation rate is also included in this module, along with the rotations between the
+//! Earth-centered Earth-fixed (ECEF) frame and the local-level frame that the strapdown
+//! navigation filters need to transform velocity, acceleration and similar quantities.
 //!
 //! # Coordinate Systems
 //! The WGS84 ellipsoidal model is the primary model used for the Earth's shape. This crate
@@ -20,21 +18,13 @@
 //! frame is a right-handed Cartesian coordinate system with the origin at the sensor's
 //! center of mass. The body frame is defined by the sensor's orientation.
 //!
-//! For basic positional conversions, the [`nav-types`](https://crates.io/crates/nav-types)
-//! crate is used. This crate provides the `WGS84` and `ECEF` types for representing the
-//! Earth's position in geodetic and Cartesian coordinates, respectively. The `nav-types`
-//! crate also provides the necessary conversions between the two coordinate systems.
-//!
 //! # Rotation Functions
-//! The rotations needed for the strapdown navigation filters are not directly supported
-//! by the `nav-types` crate. These functions provide the necessary rotations that are
+//! These functions provide the rotations that are
 //! primarily used for projecting the velocity and acceleration vectors. The rotations
 //! are primarily used to convert between the ECEF and local-level frames. The rotations
 //! from the local level frame to the body frame can be taken care of by the `nalgebra`
 //! crate, which provides the necessary rotation matrices using the Rotation3 type.
-use crate::{wrap_latitude, wrap_to_180};
 use nalgebra::{Matrix3, Vector3};
-use nav_types::{ECEF, WGS84};
 use world_magnetic_model::GeomagneticField;
 
 /// Earth's rotation rate rad/s ($\omega_{ie}$)
@@ -110,19 +100,22 @@ pub const UNIVERSAL_GAS_CONSTANT: f64 = 8.314462618;
 pub const STANDARD_LAPSE_RATE: f64 = 0.0065;
 /// Calculate a barometric altitude from a measured pressure
 ///
-/// This function calculates the altitude above sea level based on the measured pressure
-/// using the barometric formula. The formula assumes a standard atmosphere and uses the
-/// universal gas constant, standard lapse rate, and molar mass of dry air.
+/// The altitude above sea level of a pressure `pressure` in an isothermal atmosphere at
+/// [`SEA_LEVEL_TEMPERATURE`], referenced to [`SEA_LEVEL_PRESSURE`]:
+///
+/// $$ h = \frac{R T_0}{g_0 M} \ln\frac{P_0}{P} $$
+///
+/// This is the exact inverse of [`expected_barometric_pressure`] at the standard sea-level
+/// pressure, and [`relative_barometric_altitude`] referenced to that pressure. It replaces a
+/// formula that mixed the lapse-rate and isothermal models and returned about -152 km for the
+/// pressure of 100 m.
 ///
 /// # Parameters
 /// - `pressure` - The measured pressure in Pascals
 /// # Returns
 /// The calculated altitude in meters above sea level
 pub fn barometric_altitude(pressure: &f64) -> f64 {
-    let exponent: f64 = -(UNIVERSAL_GAS_CONSTANT * STANDARD_LAPSE_RATE) / (G0 * MOLAR_MASS_DRY_AIR);
-    (SEA_LEVEL_PRESSURE / STANDARD_LAPSE_RATE)
-        * (pressure / SEA_LEVEL_PRESSURE - 1.0)
-        * exponent.exp()
+    relative_barometric_altitude(*pressure, SEA_LEVEL_PRESSURE, None)
 }
 /// Calculate the relative barometric altitude from a measured pressure
 ///
@@ -432,10 +425,14 @@ pub fn haversine_distance(lat1_rad: f64, lon1_rad: f64, lat2_rad: f64, lon2_rad:
 /// - `altitude` - The WGS84 altitude in meters
 ///
 /// # Returns
-/// A tuple of the principal radii of curvature (`r_n`, `r_e`, `r_p`) in meters where `r_n` is the radius
-/// of curvature in the prime vertical (alternatively as _N_ or `R_N`), `r_e` is the radius of curvature
-/// in the meridian (alternatively _M_ or `R_M`), and `r_p` is the radius of curvature in the local
-/// normal direction.
+/// A tuple (`r_n`, `r_e`, `r_p`) in meters, following Groves' naming:
+/// - `r_n` is the **meridian** radius of curvature, Groves' $R_N$ and often written
+///   _M_ elsewhere: $a(1 - e^2) / (1 - e^2 \sin^2 L)^{3/2}$. It relates north velocity to
+///   latitude rate.
+/// - `r_e` is the **transverse** (prime-vertical) radius of curvature, Groves' $R_E$
+///   and often written _N_ elsewhere: $a / \sqrt{1 - e^2 \sin^2 L}$. It relates
+///   east velocity to longitude rate.
+/// - `r_p` is `r_e * cos(latitude) + altitude`.
 ///
 /// # Example
 /// ```rust
@@ -461,9 +458,10 @@ pub fn principal_radii(latitude: &f64, altitude: &f64) -> (f64, f64, f64) {
 /// the Earth's gravity as a function of the latitude and altitude. The gravity model is used to
 /// calculate the gravitational force scalar in the local-level frame. Free-air correction is applied.
 ///
-/// *Note:* This function returns only the gravity scalar and does not include centrifugal effects
-/// nor does it assuming a vector form or make any assumptions about the direction of the gravitional
-/// force!
+/// *Note:* Somigliana's formula gives **normal gravity**: the magnitude of the gravity vector on
+/// the ellipsoid, which is gravitation *plus* the centrifugal acceleration of the Earth's
+/// rotation. So the centrifugal effect is already included in this scalar. What it does not give
+/// is a direction: it is a magnitude only, and makes no assumption about which way it points.
 ///
 /// # Arguments
 /// - `latitude` - The WGS84 latitude in degrees
@@ -484,49 +482,6 @@ pub fn gravity(latitude: &f64, altitude: &f64) -> f64 {
     let g0: f64 = (GE * (1.0 + K * sin_lat * sin_lat))
         / (1.0 - ECCENTRICITY_SQUARED * sin_lat * sin_lat).sqrt();
     g0 - 3.08e-6 * altitude
-}
-/// Calculate the gravitational force vector in the local-level frame including rotational effects.
-///
-/// The [gravity model](https://en.wikipedia.org/wiki/Gravity_of_Earth) is based on the [Somigliana
-/// method](https://en.wikipedia.org/wiki/Theoretical_gravity#Somigliana_equation), which models
-/// the Earth's gravity as a function of the latitude and altitude. The gravity model is used to
-/// calculate the gravitational force vector in the local-level frame. This is then combined
-/// with the rotational effects of the Earth to calculate the effective gravity vector. This
-/// differs from the gravity scalar in that it includes the centrifugal effects of the Earth's
-/// rotation.
-///
-/// *Note:* This function uses the ENU convention, thus gravity acts along the negative Z-axis
-/// (downward) in the local-level frame.
-///
-/// # Arguments
-/// - `latitude` - The WGS84 latitude in degrees
-/// - `longitude` - The WGS84 longitude in degrees
-/// - `altitude` - The WGS84 altitude in meters
-///
-/// # Returns
-/// The gravitational force vector in m/s^2 in the local-level frame
-///
-/// # Example
-/// ```rust
-/// use strapdown::earth;
-/// let latitude: f64 = 45.0;
-/// let longitude: f64 = 90.0;
-/// let altitude: f64 = 1000.0;
-/// let grav = earth::gravitation(&latitude, &longitude, &altitude);
-/// ```
-pub fn gravitation(latitude: &f64, longitude: &f64, altitude: &f64) -> Vector3<f64> {
-    let latitude = wrap_latitude(*latitude);
-    let longitude = wrap_to_180(*longitude);
-    let wgs84: WGS84<f64> = WGS84::from_degrees_and_meters(latitude, longitude, *altitude);
-    let ecef: ECEF<f64> = ECEF::from(wgs84);
-    // Get centrifugal terms in ECEF
-    let ecef_vec: Vector3<f64> = Vector3::new(ecef.x(), ecef.y(), ecef.z());
-    let omega_ie: Matrix3<f64> = vector_to_skew_symmetric(&RATE_VECTOR);
-    // Get rotation and gravity in LLA
-    let rot: Matrix3<f64> = ecef_to_lla(&latitude, &longitude);
-    let gravity: Vector3<f64> = Vector3::new(0.0, 0.0, gravity(&latitude, altitude));
-    // Calculate the effective gravity vector combining gravity and centrifugal terms
-    gravity + rot * omega_ie * omega_ie * ecef_vec
 }
 /// Calculate the local gravity anomaly, in **milligal**, from IMU accelerometer measurements
 ///
@@ -938,46 +893,6 @@ mod tests {
         assert_approx_eq!(grav, GE);
     }
     #[test]
-    fn gravitation() {
-        // test equatorial gravity
-        let latitude: f64 = 0.0;
-        let altitude: f64 = 0.0;
-        let grav: Vector3<f64> = super::gravitation(&latitude, &0.0, &altitude);
-        assert_approx_eq!(grav[0], 0.0);
-        assert_approx_eq!(grav[1], 0.0);
-        assert_approx_eq!(grav[2], (GE + 0.0339), 1e-4);
-        // test polar gravity
-        let latitude: f64 = 90.0;
-        let grav: Vector3<f64> = super::gravitation(&latitude, &0.0, &altitude);
-        assert_approx_eq!(grav[0], 0.0);
-        assert_approx_eq!(grav[1], 0.0);
-        assert_approx_eq!(grav[2], GP, 1e-2);
-    }
-    #[test]
-    fn gravitation_centrifugal_term_deflects_north() {
-        // `gravitation` is the only caller of `ecef_to_lla` left after #319, and the two
-        // cases above sit at the equator and the pole, where row 0 of `C_e^n` cannot be
-        // told apart from the pre-#319 version. Away from those, the centrifugal vector
-        // -w^2 (x, y, 0) picks up a North component through row 0:
-        //
-        //     north = w^2 (r_e + h) sin(L) cos(L),  east = 0  (exactly, at any longitude)
-        //
-        // This is the plumb-line deflection, ~0.017 m/s^2 at 45 degrees. The pre-#319
-        // matrix put a longitude-dependent number here instead.
-        for longitude in [0.0_f64, 45.0, -122.0, 179.0] {
-            let latitude: f64 = 45.0;
-            let altitude: f64 = 1000.0;
-            let (_, r_e, _) = principal_radii(&latitude, &altitude);
-            let grav: Vector3<f64> = super::gravitation(&latitude, &longitude, &altitude);
-            let expected_north: f64 = RATE.powi(2)
-                * (r_e + altitude)
-                * latitude.to_radians().sin()
-                * latitude.to_radians().cos();
-            assert_approx_eq!(grav[0], expected_north, 1e-9);
-            assert_approx_eq!(grav[1], 0.0, 1e-12);
-        }
-    }
-    #[test]
     fn magnetic_radial_field() {
         // Using magnetic co-latitude [0, 180]
         let lat: f64 = 0.0;
@@ -1159,24 +1074,19 @@ mod tests {
         );
     }
 
+    /// `barometric_altitude` inverts `expected_barometric_pressure`.
+    ///
+    /// The old test only asserted a finite result, under a comment admitting the formula looked
+    /// wrong; it was: the pressure of 100 m came back as about -152 km.
     #[test]
     fn test_barometric_altitude() {
-        // Test barometric altitude calculation
-        // Note: The current barometric_altitude function appears to have an incorrect formula
-        // This test validates that it executes without error and returns a value
-
-        let pressure = SEA_LEVEL_PRESSURE;
-        let altitude = barometric_altitude(&pressure);
-        // The function should at least execute and return a finite value
-        assert!(altitude.is_finite(), "Altitude should be a finite number");
-
-        // Test at reduced pressure
-        let pressure = 89875.0;
-        let altitude = barometric_altitude(&pressure);
-        assert!(
-            altitude.is_finite(),
-            "Altitude should be a finite number for reduced pressure"
-        );
+        assert_approx_eq!(barometric_altitude(&SEA_LEVEL_PRESSURE), 0.0, 1e-9);
+        for altitude in [-400.0, 0.0, 100.0, 1000.0, 8000.0] {
+            let pressure = expected_barometric_pressure(altitude, SEA_LEVEL_PRESSURE);
+            assert_approx_eq!(barometric_altitude(&pressure), altitude, 1e-6);
+        }
+        // Lower pressure is higher altitude.
+        assert!(barometric_altitude(&89_875.0) > barometric_altitude(&95_000.0));
     }
 
     #[test]

@@ -51,8 +51,8 @@ use std::path::Path;
 use std::time::{Duration as StdDuration, Instant};
 
 use anyhow::Result;
-// `bail!` survives in exactly two places, both `#[cfg(feature = "netcdf")]`: the empty-record
-// guards in `to_netcdf`. The v1.0 freeze moved the compute layer -- the two runners and the two
+// `bail!` survives only behind `#[cfg(feature = "netcdf")]`: the empty-record guards in
+// `to_netcdf` and the timestamp check in `datetime_from_unix_seconds`. The v1.0 freeze moved the compute layer -- the two runners and the two
 // monitors -- onto `StrapdownError`, leaving anyhow where `core/src/error.rs` says it belongs,
 // at file I/O. So the import has to carry the same gate as its only users, or a
 // `--no-default-features` build fails on `unused_imports` under `-D warnings`.
@@ -298,7 +298,7 @@ const VERTICAL_POSITION_PROCESS_NOISE_M2_PER_S: f64 =
 /// picked as though they were, which made the horizontal terms a 6.4 km per-step standard
 /// deviation sitting next to a 1 cm one.
 ///
-/// #308 changed only the horizontal pair, leaving [`VERTICAL_POSITION_PROCESS_NOISE_M2_PER_S`] at
+/// #308 changed only the horizontal pair, leaving `VERTICAL_POSITION_PROCESS_NOISE_M2_PER_S` at
 /// its historical `1e-4` because altitude never carried the units defect and a units fix is
 /// not the place to retune a channel. That retune is now done, separately and on its own
 /// evidence: the altitude entry is `1e-2`, derived from the same
@@ -1009,7 +1009,7 @@ impl TestDataRecord {
         }
 
         // Prepare all data arrays first
-        let times: Vec<f64> = records.iter().map(|r| r.time.timestamp() as f64).collect();
+        let times: Vec<f64> = records.iter().map(|r| unix_seconds(&r.time)).collect();
         let bearing_accuracy: Vec<f64> = records.iter().map(|r| r.bearing_accuracy).collect();
         let speed_accuracy: Vec<f64> = records.iter().map(|r| r.speed_accuracy).collect();
         let vertical_accuracy: Vec<f64> = records.iter().map(|r| r.vertical_accuracy).collect();
@@ -1144,9 +1144,7 @@ impl TestDataRecord {
         // Build records
         let mut records = Vec::with_capacity(n);
         for i in 0..n {
-            let time = DateTime::from_timestamp(times[i] as i64, 0)
-                .ok_or_else(|| anyhow::anyhow!("Invalid timestamp"))?
-                .with_timezone(&Utc);
+            let time = datetime_from_unix_seconds(times[i])?;
 
             records.push(Self {
                 time,
@@ -1454,6 +1452,32 @@ const NAVIGATION_ONLY_STATES: usize = 9;
 #[cfg(any(feature = "hdf5", feature = "netcdf"))]
 const fn none_if_nan(value: f64) -> Option<f64> {
     if value.is_nan() { None } else { Some(value) }
+}
+
+/// A timestamp as fractional Unix seconds, the form the netCDF writers store it in.
+///
+/// Built from whole microseconds rather than `timestamp()`, which is whole seconds: the
+/// writers used that, so every row of a 10 Hz run within one second was written with the same
+/// time and could no longer be told apart or ordered on reading. An `f64` holds about 15.9
+/// significant digits and a present-day Unix time in microseconds needs 16, so microseconds
+/// are the finest unit that survives; [`datetime_from_unix_seconds`] rounds back to them.
+#[cfg(feature = "netcdf")]
+fn unix_seconds(timestamp: &DateTime<Utc>) -> f64 {
+    timestamp.timestamp_micros() as f64 / 1e6
+}
+
+/// The inverse of [`unix_seconds`], to the nearest microsecond.
+///
+/// Rounding rather than truncating matters: `micros / 1e6 * 1e6` is not always exactly
+/// `micros` in `f64`, and truncating a value a hair below it would move the timestamp back by
+/// a microsecond on the round trip.
+#[cfg(feature = "netcdf")]
+fn datetime_from_unix_seconds(seconds: f64) -> Result<DateTime<Utc>> {
+    if !seconds.is_finite() {
+        bail!("invalid timestamp: {seconds} is not a finite number of seconds");
+    }
+    DateTime::from_timestamp_micros((seconds * 1e6).round() as i64)
+        .ok_or_else(|| anyhow::anyhow!("invalid timestamp: {seconds} s is out of range"))
 }
 
 /// Generic result struct for navigation simulations.
@@ -2019,10 +2043,7 @@ impl NavigationResult {
         }
 
         // Prepare all data arrays
-        let timestamps: Vec<f64> = records
-            .iter()
-            .map(|r| r.timestamp.timestamp() as f64)
-            .collect();
+        let timestamps: Vec<f64> = records.iter().map(|r| unix_seconds(&r.timestamp)).collect();
         let latitude: Vec<f64> = records.iter().map(|r| r.latitude).collect();
         let longitude: Vec<f64> = records.iter().map(|r| r.longitude).collect();
         let altitude: Vec<f64> = records.iter().map(|r| r.altitude).collect();
@@ -2219,9 +2240,7 @@ impl NavigationResult {
         // Build records
         let mut records = Vec::with_capacity(n);
         for i in 0..n {
-            let timestamp = DateTime::from_timestamp(timestamps[i] as i64, 0)
-                .ok_or_else(|| anyhow::anyhow!("Invalid timestamp"))?
-                .with_timezone(&Utc);
+            let timestamp = datetime_from_unix_seconds(timestamps[i])?;
 
             records.push(Self {
                 latitude_longitude_cov: latitude_longitude_cov[i],
@@ -2575,7 +2594,7 @@ impl
 /// [`run_closed_loop_with_geo`], which carries the layout.
 ///
 /// The **barometric** bias is different, and is read here. Since #372 the filter answers
-/// [`NavigationFilter::baro_bias_index`](crate::NavigationFilter::baro_bias_index) for itself,
+/// [`NavigationFilter::baro_bias_index`] for itself,
 /// so the one question this conversion could not previously answer -- which extra state is
 /// which -- now has an answer for that state. Writing `None` regardless would drop an estimate
 /// the filter demonstrably holds.
@@ -2639,7 +2658,7 @@ impl From<(&DateTime<Utc>, &UnscentedKalmanFilter)> for NavigationResult {
 /// [`run_closed_loop_with_geo`], which carries the layout.
 ///
 /// The **barometric** bias is different, and is read here. Since #372 the filter answers
-/// [`NavigationFilter::baro_bias_index`](crate::NavigationFilter::baro_bias_index) for itself,
+/// [`NavigationFilter::baro_bias_index`] for itself,
 /// so the one question this conversion could not previously answer -- which extra state is
 /// which -- now has an answer for that state. Writing `None` regardless would drop an estimate
 /// the filter demonstrably holds.
@@ -3010,7 +3029,12 @@ pub fn check_declared_frame(
     Ok(())
 }
 
-/// Run dead reckoning or "open-loop" simulation using test data.
+/// Run a dead-reckoning simulation over test data.
+///
+/// Dead reckoning propagates the IMU from the first record's position, velocity and attitude
+/// with no aiding at all. It is not the "open loop" (feed-forward) mode that `strapdown-sim ol`
+/// reserves, which would estimate errors from GNSS without feeding them back; that mode is not
+/// implemented.
 ///
 /// This function processes a sequence of sensor records through a `StrapdownState`, using
 /// the "forward" method to propagate the state based on IMU measurements. It initializes
@@ -3022,8 +3046,10 @@ pub fn check_declared_frame(
 /// only valid at lower latitude (e.g. < 60 degrees) and at low altitudes (e.g. < 1000m). With
 /// that, remember that dead reckoning is subject to drift and errors accumulate over time relative
 /// to the quality of the IMU data. Poor quality IMU data (e.g. MEMS grade IMUs) will lead to
-/// significant drift very quickly which may cause this function to produce unrealistic results,
-/// hang, or crash.
+/// significant drift very quickly which may cause this function to produce unrealistic results.
+///
+/// No health or execution limit is applied, so an arc that drifts far out of any physical
+/// bound is returned in full; [`dead_reckoning_with_limits`] is the bounded form.
 ///
 /// # Arguments
 /// * `records` - Vector of test data records containing IMU measurements and other sensor data
@@ -3043,14 +3069,41 @@ pub fn dead_reckoning(
     records: &[TestDataRecord],
     is_enu: bool,
 ) -> Result<Vec<NavigationResult>, StrapdownError> {
-    if records.is_empty() {
+    dead_reckoning_with_limits(records, is_enu, None, None)
+}
+
+/// [`dead_reckoning`], bounded by the run-level limits the filters are held to.
+///
+/// After every propagation step the state is checked against `health_limits` -- finiteness,
+/// the latitude, longitude and altitude bands, and the speed bound -- and the wall-clock and
+/// no-progress budgets in `execution_limits` are checked before it. `None` skips that check.
+///
+/// Two of the health limits cannot apply and are ignored: dead reckoning has no covariance, so
+/// [`HealthLimits::cov_diag_max`] has nothing to test, and makes no measurement update, so
+/// there is no NIS for [`HealthLimits::nis_pos_max`].
+///
+/// # Errors
+/// As [`dead_reckoning`]; also [`StrapdownError::OutOfRange`] or
+/// [`StrapdownError::NonFinite`] when the state leaves `health_limits`, and
+/// [`StrapdownError::Timeout`] when a budget in `execution_limits` is exceeded.
+pub fn dead_reckoning_with_limits(
+    records: &[TestDataRecord],
+    is_enu: bool,
+    health_limits: Option<&HealthLimits>,
+    execution_limits: Option<&ExecutionLimits>,
+) -> Result<Vec<NavigationResult>, StrapdownError> {
+    let (Some(first_record), Some(last_record)) = (records.first(), records.last()) else {
         return Ok(Vec::new());
-    }
+    };
     check_declared_frame(records, is_enu)?;
+    let mut health_monitor = health_limits.map(|limits| HealthMonitor::new(limits.clone()));
+    let sim_duration_s = (last_record.time - first_record.time).as_seconds_f64();
+    let mut execution_monitor =
+        execution_limits.map(|limits| ExecutionMonitor::new(limits, sim_duration_s));
+    // A covariance-free check: the monitor's diagonal sweep has nothing to visit.
+    let no_covariance = DMatrix::<f64>::zeros(0, 0);
     // Initialize the result vector
     let mut results = Vec::with_capacity(records.len());
-    // Initialize the StrapdownState with the first record
-    let first_record = &records[0];
     // Attitude comes from the record's quaternion, not its Euler angles -- see
     // `TestDataRecord::attitude` for why the two are not interchangeable and what feeding
     // the raw angles here used to cost.
@@ -3068,10 +3121,12 @@ pub fn dead_reckoning(
     };
     // Store the initial state and metadata
     results.push(NavigationResult::from((&first_record.time, &state)));
-    let mut previous_time = records[0].time;
+    let mut previous_time = first_record.time;
     // Process each subsequent record
     for record in records.iter().skip(1) {
-        // Try to calculate time difference from timestamps, default to 1 second if parsing fails
+        if let Some(monitor) = execution_monitor.as_ref() {
+            monitor.check("dead reckoning")?;
+        }
         let current_time = record.time;
         let dt = (current_time - previous_time).as_seconds_f64();
         // Create IMU data from the record
@@ -3080,6 +3135,20 @@ pub fn dead_reckoning(
             gyro: Vector3::new(record.gyro_x, record.gyro_y, record.gyro_z),
         };
         mechanize(&mut state, &ImuSample::from_rates(&imu_data, dt))?;
+        if let Some(monitor) = health_monitor.as_mut() {
+            let position_and_velocity = [
+                state.latitude,
+                state.longitude,
+                state.altitude,
+                state.velocity_north,
+                state.velocity_east,
+                state.velocity_vertical,
+            ];
+            monitor.check(&position_and_velocity, &no_covariance, None)?;
+        }
+        if let Some(monitor) = execution_monitor.as_mut() {
+            monitor.mark_progress();
+        }
         results.push(NavigationResult::from((&current_time, &state)));
         previous_time = record.time;
     }
@@ -3842,13 +3911,12 @@ pub struct EkfConfig {
     /// different answer and none of them modelled any hardware -- see that method for the
     /// measurement, and for why it made the UKF-versus-ESKF comparison in #371 meaningless.
     ///
-    /// **On this filter the value is currently inert**, and measurably so: any value produces
-    /// bit-identical output, because the EKF's state-transition Jacobian has no
-    /// $\partial(\text{nav})/\partial(\text{bias})$ block, so `P[0..9, 9..15]` starts at zero
-    /// and stays there and the gain over the bias rows is always zero (#394). It is set
-    /// correctly here anyway: the field is what the filter *claims*, the claim should be true
-    /// whether or not anything reads it today, and #394's fix makes it load-bearing without
-    /// touching this line.
+    /// It matters on this filter. The EKF's predict widens its state-transition Jacobian with
+    /// the $\partial(\text{nav})/\partial(\text{bias})$ blocks
+    /// ([`crate::linearize::widen_with_imu_bias_coupling`]), so the navigation-bias
+    /// cross-covariance grows from this prior and the gain reaches the bias rows. Until #394
+    /// that block was missing, `P[0..9, 9..15]` stayed zero and this value changed nothing;
+    /// it was set correctly then so that the fix would make it load-bearing as it is now.
     pub imu_quality: crate::IMUQuality,
     /// Local-level frame of the records: `false` (the default) is NED, `true` is ENU.
     ///
@@ -4390,7 +4458,7 @@ fn position_rms_meters(
 /// deviations $\sqrt{P_{ii}}$ (degrees, degrees, metres) at `debug` level -- despite the name,
 /// nothing is written to stdout, so the message appears only when the logger is configured for
 /// [`LogLevel::Debug`] or finer. The horizontal sigmas are also converted to metres (see
-/// [`position_rms_meters`]) so they can be root-sum-squared with the (already-metric) altitude
+/// `position_rms_meters`) so they can be root-sum-squared with the (already-metric) altitude
 /// sigma into a single, dimensionally meaningful RMS distance.
 ///
 /// The filter must expose at least the three position states; any 9- or 15-state filter in this
@@ -4690,6 +4758,8 @@ pub mod health {
         /// this crate. Narrow this to the scenario's real speed range to make it an
         /// effective gate; unaided `dead_reckoning` never calls [`HealthMonitor`], so a run
         /// that deliberately drifts past this bound (see #299) is unaffected.
+        /// `strapdown-sim dr` does not apply it either: it passes only execution limits to
+        /// `dead_reckoning_with_limits`, which applies health limits when a caller gives them.
         #[serde(default = "default_health_speed_mps_max")]
         pub speed_mps_max: f64,
         /// Largest variance allowed on the covariance diagonal before the run is failed
@@ -5151,9 +5221,10 @@ pub enum FilterType {
 #[serde(rename_all = "kebab-case")]
 #[derive(Default)]
 pub enum ParticleFilterType {
-    /// Rao-Blackwellized particle filter after Canciani & Raquet (horizontal position as
-    /// particles; altitude, velocity, tilt, optional IMU biases and the map biases as a
-    /// Kalman filter per particle). The default, and currently the only variant.
+    /// Rao-Blackwellized particle filter after Canciani & Raquet (horizontal position error
+    /// as particles; altitude, velocity, tilt, the barometer loop's two states and the map
+    /// biases as one Kalman filter shared by every particle, with no IMU bias states). The
+    /// default, and currently the only variant.
     #[default]
     RaoBlackwellized,
 }
@@ -5170,7 +5241,8 @@ pub enum ParticleFilterType {
 #[serde(default)]
 #[non_exhaustive]
 pub struct ClosedLoopConfig {
-    /// Filter type; defaults to the 15-state ESKF.
+    /// Filter type; defaults to the error-state Kalman filter (ESKF): 15 error states, plus a
+    /// barometric bias state unless [`Self::estimate_baro_bias`] is `false`.
     pub filter: FilterType,
     /// Sigma-point spread for the unscented transform.
     ///
@@ -5245,11 +5317,53 @@ pub struct ClosedLoopConfig {
     /// scenario, and that is a decision to make against the ground-truth validation
     /// suite rather than as a side effect of adding the capability.
     ///
-    /// Deserializes from either form:
-    /// ```yaml
-    /// innovation_gate: { chi_squared: { confidence: 0.999 } }
-    /// innovation_gate: { fixed: { threshold: 25.0 } }
+    /// [`InnovationGate`] is an externally tagged enum, so the variant name is the key in TOML
+    /// and JSON and a **tag** in YAML -- `serde_yaml` reads `!chi_squared`, not a
+    /// `chi_squared:` key:
+    ///
+    /// ```toml
+    /// [closed_loop]
+    /// innovation_gate = { chi_squared = { confidence = 0.999 } }
+    /// # or: innovation_gate = { fixed = { threshold = 25.0 } }
     /// ```
+    ///
+    /// ```yaml
+    /// closed_loop:
+    ///   innovation_gate: !chi_squared { confidence: 0.999 }
+    ///   # or: innovation_gate: !fixed { threshold: 25.0 }
+    /// ```
+    ///
+    /// Both spellings, parsed:
+    ///
+    /// ```
+    /// use strapdown::gating::InnovationGate;
+    /// use strapdown::sim::ClosedLoopConfig;
+    ///
+    /// let from_yaml: ClosedLoopConfig =
+    ///     serde_yaml::from_str("innovation_gate: !chi_squared { confidence: 0.999 }")?;
+    /// let from_toml: ClosedLoopConfig =
+    ///     toml::from_str("innovation_gate = { fixed = { threshold = 25.0 } }")?;
+    ///
+    /// assert_eq!(
+    ///     from_yaml.innovation_gate,
+    ///     Some(InnovationGate::ChiSquared { confidence: 0.999 })
+    /// );
+    /// assert_eq!(
+    ///     from_toml.innovation_gate,
+    ///     Some(InnovationGate::Fixed { threshold: 25.0 })
+    /// );
+    ///
+    /// // The map form is not the YAML spelling of this enum.
+    /// assert!(serde_yaml::from_str::<ClosedLoopConfig>(
+    ///     "innovation_gate: { chi_squared: { confidence: 0.999 } }"
+    /// )
+    /// .is_err());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// Deserialization does not range-check the values; `strapdown-sim` refuses an
+    /// out-of-range confidence or threshold before a run starts, as it does for the
+    /// `--gate-confidence` flag.
     #[serde(default)]
     pub innovation_gate: Option<InnovationGate>,
     /// How the filter recovers from a measurement the gate rejected.
@@ -5290,7 +5404,9 @@ pub struct ClosedLoopConfig {
     /// `UkfConfig`/`EkfConfig`/`EskfConfig` defaults stay `false` -- flipping those would hand
     /// a direct caller a sixteenth state that nothing reads.
     ///
-    /// Not available on the geophysical path, whose extra states are map biases.
+    /// Honoured on the geophysical path too, by the UKF and EKF that path runs: the map-bias
+    /// states are appended after the fifteen navigation and IMU-bias states and the barometric
+    /// bias follows them, last.
     pub estimate_baro_bias: bool,
 }
 
@@ -5667,7 +5783,12 @@ pub struct SimulationConfig {
     pub output: String,
     /// Simulation mode
     pub mode: SimulationMode,
-    /// Random number generator seed
+    /// The run's random seed (default 42).
+    ///
+    /// Seeds the particle filter's own sampling and, unless `[aiding] seed` is given, the GNSS
+    /// fault models -- see [`Self::resolved_aiding`] -- the way `strapdown-sim`'s `--seed` seeds
+    /// both. It used to reach only the particle filter, so two files differing only in this
+    /// key gave byte-identical closed-loop output.
     #[serde(default = "default_seed")]
     pub seed: u64,
     /// Local-level frame the input records are expressed in: `false` (the default) is NED,
@@ -5757,6 +5878,18 @@ impl Default for SimulationConfig {
 }
 
 impl SimulationConfig {
+    /// The aiding configuration a run uses: [`Self::aiding`] with its seed filled from the
+    /// top-level [`Self::seed`] when `[aiding]` names none.
+    ///
+    /// An explicit `[aiding] seed` wins, so a study can hold the fault realization fixed
+    /// while varying the particle filter's seed, or the reverse.
+    #[must_use]
+    pub fn resolved_aiding(&self) -> crate::messages::AidingConfig {
+        let mut aiding = self.aiding.clone();
+        aiding.seed = Some(aiding.seed.unwrap_or(self.seed));
+        aiding
+    }
+
     /// Write the configuration to a JSON file (pretty-printed)
     /// # Errors
     /// If the file cannot be created or written, or the records cannot be
@@ -6083,8 +6216,28 @@ const fn default_gnss_vertical_noise_m() -> f64 {
     5.0
 }
 
+/// Per-sample barometric pressure noise for [`SyntheticConfig`], pascals.
+///
+/// The pressure noise whose altitude equivalent at sea level is
+/// [`crate::measurements::BAROMETRIC_ALTITUDE_NOISE_M`], the one-sigma the filters assume for
+/// a barometer by default, so that a default filter's $R$ describes a default synthetic
+/// barometer. The isothermal barometric formula gives
+/// $\mathrm dh/\mathrm dP = -R T_0 / (g_0 M P_0)$, about 0.083 m per pascal, so this is about
+/// 27 Pa.
 const fn default_baro_noise_std_pa() -> f64 {
-    50.0
+    crate::measurements::BAROMETRIC_ALTITUDE_NOISE_M
+        * crate::earth::G0
+        * crate::earth::MOLAR_MASS_DRY_AIR
+        * crate::earth::SEA_LEVEL_PRESSURE
+        / (crate::earth::UNIVERSAL_GAS_CONSTANT * crate::earth::SEA_LEVEL_TEMPERATURE)
+}
+
+/// Per-axis GNSS velocity noise for [`SyntheticConfig`], metres per second.
+///
+/// Applied to the north and east velocity before they are written as `speed` and `bearing`,
+/// and written as `speedAccuracy`, which is the one-sigma the filters use for the velocity fix.
+const fn default_gnss_velocity_noise_mps() -> f64 {
+    0.5
 }
 
 /// Per-axis magnetometer noise for [`SyntheticConfig`], microtesla.
@@ -6139,6 +6292,13 @@ const MAGNETOMETER_NOISE_STREAM_OFFSET: u64 = 0x4d41_474e_4554_4f00;
 /// sharing `mag_rng` made switching it on shift every per-sample noise value after it. See
 /// [`MAGNETOMETER_NOISE_STREAM_OFFSET`] for the same argument one level up.
 const MAGNETOMETER_HARD_IRON_STREAM_OFFSET: u64 = 0x4841_5244_4952_4f4e;
+
+/// Offset separating the GNSS velocity noise stream from the trajectory's.
+///
+/// Velocity noise was added after the trajectory stream's draw order was fixed, so it has its
+/// own stream for the reason [`MAGNETOMETER_NOISE_STREAM_OFFSET`] gives: the IMU, GNSS position
+/// and barometer realizations stay what they were.
+const GNSS_VELOCITY_NOISE_STREAM_OFFSET: u64 = 0x474e_5353_5645_4c00;
 
 /// The true magnetic field at a point, in the navigation frame, microtesla.
 ///
@@ -6251,12 +6411,18 @@ pub struct SyntheticConfig {
     /// GNSS vertical position noise standard deviation in meters
     #[serde(default = "default_gnss_vertical_noise_m")]
     pub gnss_vertical_noise_m: f64,
-    /// Barometric pressure noise standard deviation in Pascals
+    /// GNSS velocity noise standard deviation per horizontal axis, m/s. It perturbs the
+    /// `speed` and `bearing` columns and is written as `speedAccuracy`.
+    #[serde(default = "default_gnss_velocity_noise_mps")]
+    pub gnss_velocity_noise_mps: f64,
+    /// Barometric pressure noise standard deviation in Pascals. It perturbs `pressure`, and
+    /// `relativeAltitude` is computed from the perturbed pressure, so it is also the
+    /// barometric altitude noise the filters see: about 0.083 m per pascal near sea level.
     #[serde(default = "default_baro_noise_std_pa")]
     pub baro_noise_std_pa: f64,
     /// Magnetometer noise standard deviation per axis, microtesla.
     ///
-    /// See [`default_mag_noise_std_ut`]. Sensor noise only.
+    /// See `default_mag_noise_std_ut`. Sensor noise only.
     #[serde(default = "default_mag_noise_std_ut")]
     pub mag_noise_std_ut: f64,
     /// Hard-iron offset magnitude, microtesla, drawn once per trajectory and held constant.
@@ -6295,6 +6461,7 @@ impl Default for SyntheticConfig {
             no_noise: false,
             gnss_horizontal_noise_m: default_gnss_horizontal_noise_m(),
             gnss_vertical_noise_m: default_gnss_vertical_noise_m(),
+            gnss_velocity_noise_mps: default_gnss_velocity_noise_mps(),
             baro_noise_std_pa: default_baro_noise_std_pa(),
             mag_noise_std_ut: default_mag_noise_std_ut(),
             mag_hard_iron_std_ut: default_mag_hard_iron_std_ut(),
@@ -6489,7 +6656,6 @@ pub fn generate_synthetic(
 
     let dt = 1.0 / config.sample_rate_hz;
     let n_steps = (config.duration_s * config.sample_rate_hz).round() as usize;
-    let initial_alt = state.altitude;
 
     // Draw per-trajectory bias offsets (constant for the full run)
     let accel_bias = {
@@ -6544,6 +6710,18 @@ pub fn generate_synthetic(
     // scenario that takes no measurements at all, moving when the magnetometer was added. A
     // separate stream makes a re-bless attributable: a number that moves, moved because of the
     // heading aid.
+    let gnss_velocity_dist = Normal::new(0.0_f64, config.gnss_velocity_noise_mps)
+        .unwrap_or_else(|_| crate::normal_with_std(0.5));
+    let mut gnss_velocity_rng = {
+        use rand::SeedableRng as _;
+        rand::rngs::StdRng::seed_from_u64(
+            config.seed.wrapping_add(GNSS_VELOCITY_NOISE_STREAM_OFFSET),
+        )
+    };
+    // The barometer reports height relative to its first reading, as Sensor Logger's
+    // `relativeAltitude` does. That first reading is noisy, so its error is a constant offset in
+    // every later relative altitude: the barometric bias the filters estimate.
+    let mut baro_reference_pressure: Option<f64> = None;
     let mut mag_rng = {
         use rand::SeedableRng as _;
         rand::rngs::StdRng::seed_from_u64(
@@ -6681,8 +6859,24 @@ pub fn generate_synthetic(
             true_pressure + rng.sample(baro_dist)
         };
 
-        let speed = state.velocity_north.hypot(state.velocity_east);
-        let bearing = state.velocity_east.atan2(state.velocity_north).to_degrees();
+        let reference_pressure = *baro_reference_pressure.get_or_insert(out_pressure);
+        // `relativeAltitude` is derived from the noisy pressure through the same isothermal
+        // atmosphere `expected_barometric_pressure` uses, so `--baro-noise-std-pa` is the noise
+        // the barometric measurement carries. It used to be the GNSS altitude minus its first
+        // value, which gave the barometer the GNSS's noise draw and made it no independent aid.
+        let relative_altitude =
+            earth::relative_barometric_altitude(out_pressure, reference_pressure, None);
+
+        let (velocity_north_fix, velocity_east_fix) = if config.no_noise {
+            (state.velocity_north, state.velocity_east)
+        } else {
+            (
+                state.velocity_north + gnss_velocity_rng.sample(gnss_velocity_dist),
+                state.velocity_east + gnss_velocity_rng.sample(gnss_velocity_dist),
+            )
+        };
+        let speed = velocity_north_fix.hypot(velocity_east_fix);
+        let bearing = velocity_east_fix.atan2(velocity_north_fix).to_degrees();
         let attitude_quaternion = nalgebra::UnitQuaternion::from_rotation_matrix(&state.attitude);
 
         // Gravity vector in body frame (NED: [0,0,g])
@@ -6744,8 +6938,11 @@ pub fn generate_synthetic(
             altitude: out_alt,
             speed,
             bearing,
-            bearing_accuracy: config.gnss_horizontal_noise_m,
-            speed_accuracy: config.gnss_horizontal_noise_m,
+            // The course's one-sigma, in degrees: the angle a velocity error of
+            // `gnss_velocity_noise_mps` subtends at this speed, which tends to 90 degrees as
+            // the platform stops and the course becomes meaningless.
+            bearing_accuracy: config.gnss_velocity_noise_mps.atan2(speed).to_degrees(),
+            speed_accuracy: config.gnss_velocity_noise_mps,
             vertical_accuracy: config.gnss_vertical_noise_m,
             horizontal_accuracy: config.gnss_horizontal_noise_m,
             // `TestDataRecord` documents roll/pitch/yaw as radians, and the quaternion is
@@ -6770,8 +6967,10 @@ pub fn generate_synthetic(
             mag_x: mag_body[0],
             mag_y: mag_body[1],
             mag_z: mag_body[2],
-            relative_altitude: out_alt - initial_alt,
-            pressure: out_pressure,
+            relative_altitude,
+            // Hectopascals (millibars), the unit `TestDataRecord::pressure` documents and
+            // Sensor Logger writes; the barometric formula works in pascals.
+            pressure: out_pressure / 100.0,
             grav_x: grav_body[0],
             grav_y: grav_body[1],
             grav_z: grav_body[2],
@@ -6812,6 +7011,7 @@ mod tests {
             no_noise: false,
             gnss_horizontal_noise_m: 1.0,
             gnss_vertical_noise_m: 1.0,
+            gnss_velocity_noise_mps: 0.5,
             baro_noise_std_pa: 1.0,
             mag_noise_std_ut: default_mag_noise_std_ut(),
             mag_hard_iron_std_ut: default_mag_hard_iron_std_ut(),
@@ -6871,6 +7071,7 @@ mod tests {
             no_noise: true,
             gnss_horizontal_noise_m: 1.0,
             gnss_vertical_noise_m: 1.0,
+            gnss_velocity_noise_mps: 0.5,
             baro_noise_std_pa: 1.0,
             mag_noise_std_ut: default_mag_noise_std_ut(),
             mag_hard_iron_std_ut: default_mag_hard_iron_std_ut(),
@@ -7178,6 +7379,7 @@ mod tests {
             no_noise: true,
             gnss_horizontal_noise_m: 2.5,
             gnss_vertical_noise_m: 5.0,
+            gnss_velocity_noise_mps: 0.5,
             baro_noise_std_pa: 50.0,
             mag_noise_std_ut: default_mag_noise_std_ut(),
             mag_hard_iron_std_ut: default_mag_hard_iron_std_ut(),
@@ -7231,6 +7433,7 @@ mod tests {
             no_noise: false,
             gnss_horizontal_noise_m: 2.5,
             gnss_vertical_noise_m: 5.0,
+            gnss_velocity_noise_mps: 0.5,
             baro_noise_std_pa: 50.0,
             mag_noise_std_ut: default_mag_noise_std_ut(),
             mag_hard_iron_std_ut: default_mag_hard_iron_std_ut(),
@@ -7303,6 +7506,52 @@ mod tests {
             "stationary navigation-grade ENU truth drifted {worst:.3} m of altitude over 60 s, \
              past the {MAX_STATIONARY_ALTITUDE_DRIFT_M} m budget derived in \
              MAX_STATIONARY_ALTITUDE_DRIFT_M"
+        );
+    }
+
+    /// `dead_reckoning_with_limits` with no limits is `dead_reckoning`, row for row.
+    #[test]
+    fn test_dead_reckoning_with_no_limits_matches_dead_reckoning() {
+        let records = stationary_synthetic_records(false, 10.0);
+        let plain = dead_reckoning(&records, false).unwrap();
+        let bounded = dead_reckoning_with_limits(
+            &records,
+            false,
+            Some(&HealthLimits::default()),
+            Some(&ExecutionLimits::default()),
+        )
+        .unwrap();
+        assert_eq!(plain.len(), bounded.len());
+        for (left, right) in plain.iter().zip(&bounded) {
+            assert_eq!(left.timestamp, right.timestamp);
+            assert_eq!(left.latitude, right.latitude);
+            assert_eq!(left.altitude, right.altitude);
+        }
+    }
+
+    /// The health bounds reach dead reckoning: `strapdown-sim dr` accepted them and applied
+    /// none. An altitude band the stationary trajectory sits outside of fails the run, as it
+    /// would a filter's.
+    #[test]
+    fn test_dead_reckoning_with_limits_applies_the_health_bounds() {
+        let records = stationary_synthetic_records(false, 10.0);
+        let altitude = records[0].altitude;
+        let limits = {
+            let mut built = HealthLimits::default();
+            built.alt_m = (altitude + 100.0, altitude + 200.0);
+            built
+        };
+        let error = dead_reckoning_with_limits(&records, false, Some(&limits), None)
+            .expect_err("an altitude outside the band must fail the run");
+        assert!(
+            matches!(
+                error,
+                StrapdownError::OutOfRange {
+                    what: "altitude",
+                    ..
+                }
+            ),
+            "expected an altitude OutOfRange, got {error:?}"
         );
     }
 
@@ -10249,9 +10498,8 @@ mod tests {
     /// link. The hdf5 side has had round-trip, NaN and missing-column tests all along; this
     /// is the netCDF half of that.
     ///
-    /// Note the whole-second timestamps. `to_netcdf` stores time as `timestamp()`, an integer
-    /// number of seconds, so sub-second precision does not survive and a test using it would
-    /// fail for a reason that has nothing to do with netCDF.
+    /// Sub-second timestamps have their own test,
+    /// `test_netcdf_keeps_sub_second_timestamps_distinct`.
     #[cfg(feature = "netcdf")]
     #[test]
     fn test_test_data_record_netcdf_roundtrip() {
@@ -10351,6 +10599,111 @@ mod tests {
             "a rejected write must not leave a partial file behind"
         );
     }
+    /// Timestamps a tenth of a second apart, at microsecond resolution, for the round-trip
+    /// tests below: the rows a 10 Hz run writes.
+    #[cfg(any(feature = "netcdf", feature = "hdf5", feature = "mcap"))]
+    fn sub_second_timestamps() -> Vec<DateTime<Utc>> {
+        let start = DateTime::parse_from_rfc3339("2026-09-24T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        (0..12)
+            .map(|i| start + Duration::microseconds(100_000 * i + 123_456 * (i % 3)))
+            .collect()
+    }
+
+    /// Navigation results stamped with [`sub_second_timestamps`].
+    #[cfg(any(feature = "netcdf", feature = "hdf5", feature = "mcap"))]
+    fn sub_second_navigation_results() -> Vec<NavigationResult> {
+        sub_second_timestamps()
+            .into_iter()
+            .enumerate()
+            .map(|(i, timestamp)| {
+                let mut result = NavigationResult::new();
+                result.timestamp = timestamp;
+                result.latitude = 40.0 + i as f64 * 1e-5;
+                result
+            })
+            .collect()
+    }
+
+    /// `to_netcdf` wrote `timestamp()`, whole seconds, so the ten rows a 10 Hz run writes in
+    /// each second all came back with the same time. Both writers now store fractional seconds
+    /// and both readers round them back to the microsecond.
+    #[cfg(feature = "netcdf")]
+    #[test]
+    fn test_netcdf_keeps_sub_second_timestamps_distinct() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let expected = sub_second_timestamps();
+
+        let nav_path = dir.path().join("nav_sub_second.nc");
+        NavigationResult::to_netcdf(&sub_second_navigation_results(), &nav_path).unwrap();
+        let nav_read: Vec<DateTime<Utc>> = NavigationResult::from_netcdf(&nav_path)
+            .unwrap()
+            .into_iter()
+            .map(|result| result.timestamp)
+            .collect();
+        assert_eq!(
+            nav_read, expected,
+            "NavigationResult timestamps must round-trip exactly"
+        );
+
+        let records: Vec<TestDataRecord> = expected
+            .iter()
+            .map(|time| TestDataRecord {
+                time: *time,
+                ..Default::default()
+            })
+            .collect();
+        let record_path = dir.path().join("records_sub_second.nc");
+        TestDataRecord::to_netcdf(&records, &record_path).unwrap();
+        let record_read: Vec<DateTime<Utc>> = TestDataRecord::from_netcdf(&record_path)
+            .unwrap()
+            .into_iter()
+            .map(|record| record.time)
+            .collect();
+        assert_eq!(
+            record_read, expected,
+            "TestDataRecord timestamps must round-trip exactly"
+        );
+    }
+
+    /// The HDF5 writers store RFC 3339 strings, which carry the fraction; held here so the
+    /// formats stay consistent with each other rather than only with themselves.
+    #[cfg(feature = "hdf5")]
+    #[test]
+    fn test_hdf5_keeps_sub_second_timestamps_distinct() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("nav_sub_second.h5");
+        NavigationResult::to_hdf5(&sub_second_navigation_results(), &path).unwrap();
+        let read: Vec<DateTime<Utc>> = NavigationResult::from_hdf5(&path)
+            .unwrap()
+            .into_iter()
+            .map(|result| result.timestamp)
+            .collect();
+        assert_eq!(read, sub_second_timestamps());
+    }
+
+    /// The MCAP writer serializes the whole record, timestamp included, with its fraction.
+    #[cfg(feature = "mcap")]
+    #[test]
+    fn test_mcap_keeps_sub_second_timestamps_distinct() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("nav_sub_second.mcap");
+        NavigationResult::to_mcap(&sub_second_navigation_results(), &path).unwrap();
+        let read: Vec<DateTime<Utc>> = NavigationResult::from_mcap(&path)
+            .unwrap()
+            .into_iter()
+            .map(|result| result.timestamp)
+            .collect();
+        assert_eq!(read, sub_second_timestamps());
+    }
+
     #[cfg(feature = "mcap")]
     #[test]
     fn test_navigation_result_mcap_roundtrip() {
@@ -10637,6 +10990,7 @@ mod tests {
             no_noise: false,
             gnss_horizontal_noise_m: 3.0,
             gnss_vertical_noise_m: 5.0,
+            gnss_velocity_noise_mps: 0.5,
             baro_noise_std_pa: 30.0,
             mag_noise_std_ut: default_mag_noise_std_ut(),
             mag_hard_iron_std_ut: default_mag_hard_iron_std_ut(),
@@ -10699,6 +11053,74 @@ mod tests {
             (-16.0..-8.0).contains(&declination_deg),
             "declination at 40N 75W should be near 12 deg west, got {declination_deg:.2} \
              (magnetic heading {magnetic_heading_deg:.2} against true yaw {true_yaw_deg:.2})"
+        );
+    }
+
+    /// The synthetic barometer and GNSS velocity are independent sensors in the right units.
+    ///
+    /// Before this, `relativeAltitude` was the noisy GNSS altitude minus its first value, so
+    /// the barometer shared the GNSS's noise draw and aided nothing, while
+    /// `baro_noise_std_pa` reached only `pressure`, which no estimator reads. `pressure` was in
+    /// pascals against a documented millibars, and `speed`/`bearing` were noise-free under a
+    /// `speedAccuracy` that claimed otherwise.
+    #[test]
+    fn synthetic_barometer_and_velocity_are_independent_sensors() {
+        use rand::SeedableRng;
+
+        let mut config = synthetic_config_for_tests();
+        config.duration_s = 300.0;
+        config.sample_rate_hz = 10.0;
+        config.baro_noise_std_pa = 12.0;
+        config.gnss_velocity_noise_mps = 0.5;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        let (_truth, records) = generate_synthetic(&config, &mut rng).expect("synthetic run");
+        let n = records.len() as f64;
+        let mean = |values: &[f64]| values.iter().sum::<f64>() / values.len() as f64;
+        let std = |values: &[f64]| {
+            let m = mean(values);
+            (values.iter().map(|v| (v - m).powi(2)).sum::<f64>() / values.len() as f64).sqrt()
+        };
+
+        // Barometric noise: about 0.083 m per pascal, independent of the GNSS altitude noise.
+        let relative: Vec<f64> = records.iter().map(|r| r.relative_altitude).collect();
+        let gnss: Vec<f64> = records.iter().map(|r| r.altitude).collect();
+        let expected_std = 12.0 * 0.0832;
+        assert!(
+            (std(&relative) - expected_std).abs() < 0.1 * expected_std,
+            "relativeAltitude std {:.3} m, expected about {expected_std:.3} m",
+            std(&relative)
+        );
+        let (mean_relative, mean_gnss) = (mean(&relative), mean(&gnss));
+        let covariance = relative
+            .iter()
+            .zip(&gnss)
+            .map(|(a, b)| (a - mean_relative) * (b - mean_gnss))
+            .sum::<f64>()
+            / n;
+        let correlation = covariance / (std(&relative) * std(&gnss));
+        assert!(
+            correlation.abs() < 0.1,
+            "barometer and GNSS altitude must be independent, correlation {correlation:.3}"
+        );
+
+        // Pressure is written in hectopascals.
+        let pressure = mean(&records.iter().map(|r| r.pressure).collect::<Vec<_>>());
+        assert!(
+            (800.0..1100.0).contains(&pressure),
+            "pressure should be hPa, got {pressure}"
+        );
+
+        // Velocity is noisy, and speedAccuracy says by how much.
+        assert!(
+            records
+                .iter()
+                .all(|r| (r.speed_accuracy - 0.5).abs() < 1e-12)
+        );
+        let speeds: Vec<f64> = records.iter().map(|r| r.speed).collect();
+        assert!(
+            std(&speeds) > 0.1,
+            "speed should carry the velocity noise, std {:.3}",
+            std(&speeds)
         );
     }
 

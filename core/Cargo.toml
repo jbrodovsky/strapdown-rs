@@ -70,7 +70,6 @@ full = ["clap", "hdf5", "netcdf", "mcap"]
 
 [dependencies]
 angle = "0.5.0"
-nav-types = "0.5.2"
 serde_json = "1.0"
 serde_yaml = "0.9"
 toml = "0.7"

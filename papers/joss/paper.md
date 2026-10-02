@@ -110,8 +110,7 @@ require no filter changes. All randomness is seeded.
 
 ## Functionality
 
-- Strapdown mechanization on the WGS84 ellipsoid [@wgs84] with Somigliana gravity, built on
-  `nav-types` [@nav-types].
+- Strapdown mechanization on the WGS84 ellipsoid [@wgs84] with Somigliana gravity.
 - Aiding by:
   - GNSS position and velocity;
   - barometric altitude, with bias estimation;

@@ -47,8 +47,12 @@ use crate::{IMUData, StrapdownError};
 /// // Deliver a GNSS fix every 10 seconds, starting at t=0
 /// let sched = MeasurementScheduler::FixedInterval { interval_s: 10.0, phase_s: 0.0 };
 ///
-/// // Alternate 5 s ON, 15 s OFF, starting in ON state at t=0
+/// // Alternate 15 s OFF and 5 s ON. With no start phase the cycle opens with its OFF
+/// // window: no fix for t < 15 s, fixes for 15 <= t < 20, none again from t = 20.
 /// let sched = MeasurementScheduler::DutyCycle { on_s: 5.0, off_s: 15.0, start_phase_s: 0.0 };
+///
+/// // The same cycle after 30 s of initial availability.
+/// let sched = MeasurementScheduler::DutyCycle { on_s: 5.0, off_s: 15.0, start_phase_s: 30.0 };
 /// ```
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -78,13 +82,17 @@ pub enum MeasurementScheduler {
     ///
     /// * `on_s` — Duration of each ON window (seconds).
     /// * `off_s` — Duration of each OFF window (seconds).
-    /// * `start_phase_s` — Initial time offset before the first toggle (seconds).
+    /// * `start_phase_s` — Length of an initial ON window before the cycle starts (seconds).
+    ///
+    /// The timeline is `start_phase_s` ON, then `off_s` OFF and `on_s` ON, repeating. So with
+    /// `start_phase_s = 0` the run **opens with an outage**: the cycle's first window is OFF.
     DutyCycle {
         /// Duration of each ON window (seconds).
         on_s: f64,
         /// Duration of each OFF window (seconds).
         off_s: f64,
-        /// Initial phase offset before the first ON/OFF toggle (seconds).
+        /// Length of the initial ON window before the first OFF window (seconds); `0.0` opens
+        /// the run with an OFF window.
         start_phase_s: f64,
     },
 }
@@ -152,10 +160,12 @@ pub enum MeasurementScheduler {
 /// };
 ///
 /// // Combo: first drift slowly, then add hijack window
-/// let fault = GnssFaultModel::Combo(vec![
-///     GnssFaultModel::SlowBias { drift_n_mps: 0.02, drift_e_mps: 0.0, q_bias: 1e-6, rotate_omega_rps: 0.0 },
-///     GnssFaultModel::Hijack { offset_n_m: 50.0, offset_e_m: 0.0, start_s: 120.0, duration_s: 60.0 },
-/// ]);
+/// let fault = GnssFaultModel::Combo {
+///     faults: vec![
+///         GnssFaultModel::SlowBias { drift_n_mps: 0.02, drift_e_mps: 0.0, q_bias: 1e-6, rotate_omega_rps: 0.0 },
+///         GnssFaultModel::Hijack { offset_n_m: 50.0, offset_e_m: 0.0, start_s: 120.0, duration_s: 60.0 },
+///     ],
+/// };
 /// ```
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -250,13 +260,41 @@ pub enum GnssFaultModel {
     ///
     /// The output of one model is fed as the input to the next. This allows
     /// combining e.g. `SlowBias` with a `Hijack` to simulate multi-stage spoofing.
-    Combo(Vec<Self>),
+    ///
+    /// In a configuration file this is `kind = "combo"` with the members under `faults`:
+    ///
+    /// ```toml
+    /// [aiding.fault]
+    /// kind = "combo"
+    /// [[aiding.fault.faults]]
+    /// kind = "slow_bias"
+    /// drift_n_mps = 0.02
+    /// drift_e_mps = 0.0
+    /// q_bias = 1e-6
+    /// rotate_omega_rps = 0.0
+    /// [[aiding.fault.faults]]
+    /// kind = "hijack"
+    /// offset_n_m = 50.0
+    /// offset_e_m = 0.0
+    /// start_s = 120.0
+    /// duration_s = 60.0
+    /// ```
+    ///
+    /// It is a struct variant rather than a newtype around the list because the enum is
+    /// internally tagged: serde cannot put a `kind` tag on a sequence, so `Combo(Vec<Self>)`
+    /// could be built in code but never read from a file.
+    ///
+    /// The members share one [`FaultState`], so two members of the same kind (two
+    /// `Degraded`, say) step the same error states twice per fix rather than adding two
+    /// independent errors. Combine different kinds.
+    Combo {
+        /// The models to apply, in order.
+        faults: Vec<Self>,
+    },
 }
 
-/// Default seed value for reproducible simulations
-const fn default_seed() -> u64 {
-    42
-}
+/// Seed of the fault models when [`AidingConfig::seed`] names none and nothing filled it in.
+pub const DEFAULT_AIDING_SEED: u64 = 42;
 
 /// Default [`AidingConfig::max_imu_gap_s`]: five seconds without a usable inertial sample.
 ///
@@ -352,7 +390,7 @@ pub struct AidingConfig {
 
     /// Scheduler that determines when barometric altitude measurements are emitted.
     ///
-    /// Defaults to one per second (see [`default_aiding_scheduler`]), *not* to
+    /// Defaults to one per second (see `default_aiding_scheduler`), *not* to
     /// [`MeasurementScheduler::PassThrough`]. [`MeasurementScheduler::DutyCycle`] gives a barometer outage
     /// the same way it gives a GNSS one.
     #[serde(default = "default_aiding_scheduler")]
@@ -360,7 +398,7 @@ pub struct AidingConfig {
 
     /// Scheduler that determines when magnetometer heading measurements are emitted.
     ///
-    /// Defaults to one per second (see [`default_aiding_scheduler`]), *not* to
+    /// Defaults to one per second (see `default_aiding_scheduler`), *not* to
     /// [`MeasurementScheduler::PassThrough`]. The heading a magnetometer yields is derived from a
     /// field vector, so re-reading it faster than the field changes adds no information while
     /// adding weight.
@@ -392,12 +430,19 @@ pub struct AidingConfig {
     #[serde(default)]
     pub baro_bias_index: Option<usize>,
 
-    /// Random number generator seed for deterministic tests and reproducibility.
+    /// Seed of the GNSS fault models' random draws (AR(1) degradation, slow-bias random walk).
     ///
     /// Use the same seed to repeat scenarios exactly; change it to get a new
     /// realization of stochastic processes such as AR(1) degradation.
-    #[serde(default = "default_seed")]
-    pub seed: u64,
+    ///
+    /// `None` -- the default -- means "the run's seed": a scenario file's top-level `seed`
+    /// fills it (see [`crate::sim::SimulationConfig::resolved_aiding`]), as `strapdown-sim`'s
+    /// `--seed` does on the command line, and anything else that builds an event stream from
+    /// a `None` takes [`DEFAULT_AIDING_SEED`]. It was a plain `u64` defaulting to 42, so a
+    /// config file's top-level `seed` never reached the faults: two files differing only in
+    /// it gave byte-identical output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
 
     /// How long the inertial stream may stop reporting before the run is refused, in seconds.
     ///
@@ -432,7 +477,7 @@ impl Default for AidingConfig {
             magnetometer_scheduler: default_aiding_scheduler(),
             baro_noise_std_m: default_baro_noise_std_m(),
             baro_bias_index: None,
-            seed: default_seed(),
+            seed: None,
             max_imu_gap_s: default_max_imu_gap_s(),
         }
     }
@@ -859,9 +904,8 @@ fn ar1_step(x: &mut f64, rho: f64, sigma: f64, rng: &mut rand::rngs::StdRng) {
 ///   window, measurements pass through unchanged.
 ///
 /// - **`GnssFaultModel::Combo`**\
-///   Intended to compose multiple effects by feeding the output of one model as
-///   the input to the next. (Wire up the call loop to `apply_fault` for each
-///   sub-model if composition is desired.)
+///   Composes multiple effects by feeding the output of one model as the input to
+///   the next, in order.
 ///
 /// # Units & conventions
 /// - Inputs/outputs for latitude and longitude are **degrees**; internal small-angle
@@ -1031,7 +1075,7 @@ pub fn apply_fault(
             }
         }
 
-        GnssFaultModel::Combo(models) => {
+        GnssFaultModel::Combo { faults: models } => {
             let mut out = (
                 lat_deg,
                 lon_deg,
@@ -1125,9 +1169,8 @@ fn should_emit(scheduler: &MeasurementScheduler, elapsed_s: f64, next_emit_time:
 
 /// Whether a [`MeasurementScheduler::DutyCycle`] is inside an ON window at `elapsed_s`.
 ///
-/// The timeline is `start_phase_s` of initial ON, then `off_s` OFF and `on_s` ON repeating,
-/// which is what "initial phase offset before the first ON/OFF toggle" describes: the first
-/// toggle takes the scheduler out of its initial ON state.
+/// The timeline is `start_phase_s` of initial ON, then `off_s` OFF and `on_s` ON repeating.
+/// With `start_phase_s = 0` there is no initial ON window, so the run opens in an OFF one.
 ///
 /// Computed from `elapsed_s` directly rather than by stepping a toggle once per sample. The
 /// stepping version emitted a fix only on the sample where the state flipped *into* ON and
@@ -1224,7 +1267,7 @@ fn duty_cycle_is_on(elapsed_s: f64, on_s: f64, off_s: f64, start_phase_s: f64) -
 ///   velocity sigmas scaled by `r_scale`.
 /// - `SlowBias`: integrates a drifting N/E bias (with optional rotation/random walk).
 /// - `Hijack`: applies a constant N/E offset within a time window.
-/// - `Combo`: intended for sequential composition (hook up as needed).
+/// - `Combo`: applies its members in order, each feeding the next.
 ///
 /// > **Note:** The current implementation passes `vertical_noise_std` through
 /// > unchanged. If you also want to degrade vertical accuracy, extend the
@@ -1306,7 +1349,7 @@ pub fn build_event_stream(
         .map(|r| ((r.time - start_time).num_milliseconds() as f64 / 1000.0, r))
         .collect();
     let mut events = Vec::with_capacity(records_with_elapsed.len() * 2);
-    let mut st = FaultState::new(cfg.seed);
+    let mut st = FaultState::new(cfg.seed.unwrap_or(DEFAULT_AIDING_SEED));
 
     // Scheduler state, one clock per aided channel. Only `FixedInterval` needs any:
     // `PassThrough` emits unconditionally and `DutyCycle` derives its window from the elapsed
@@ -2239,7 +2282,7 @@ mod tests {
                 tau_pos_s: None,
                 tau_vel_s: None,
             },
-            seed: 500,
+            seed: Some(500),
             ..Default::default()
         };
 
@@ -2387,19 +2430,88 @@ mod tests {
 
     #[test]
     fn test_combo_fault_model() {
-        // Test that the combo fault model functionality exists
-        // Note: Due to commented code in apply_fault for Combo, this is a minimal test
         let records = create_test_records(10, 0.1);
 
         let config = AidingConfig {
             scheduler: MeasurementScheduler::PassThrough,
-            fault: GnssFaultModel::Combo(vec![GnssFaultModel::None, GnssFaultModel::None]),
+            fault: GnssFaultModel::Combo {
+                faults: vec![GnssFaultModel::None, GnssFaultModel::None],
+            },
             ..Default::default()
         };
 
-        // This should at least not crash
         let events = build_event_stream(&records, &config, false).unwrap();
         assert!(!events.events.is_empty());
+    }
+
+    /// A combo applies every member: two hijacks with disjoint axes add their offsets.
+    ///
+    /// The old test only ran `None` twice, which a combo that applied nothing would also pass.
+    #[test]
+    fn combo_applies_each_member_in_turn() {
+        let combo = GnssFaultModel::Combo {
+            faults: vec![
+                GnssFaultModel::Hijack {
+                    offset_n_m: 100.0,
+                    offset_e_m: 0.0,
+                    start_s: 0.0,
+                    duration_s: 10.0,
+                },
+                GnssFaultModel::Hijack {
+                    offset_n_m: 0.0,
+                    offset_e_m: 100.0,
+                    start_s: 0.0,
+                    duration_s: 10.0,
+                },
+            ],
+        };
+        let mut state = FaultState::new(7);
+        let (lat, lon, ..) = apply_fault(
+            &combo, &mut state, 1.0, 1.0, 40.0, -75.0, 0.0, 0.0, 0.0, 3.0, 0.1,
+        );
+        assert!(lat > 40.0 + 5e-4, "north offset missing: {lat}");
+        assert!(lon > -75.0 + 5e-4, "east offset missing: {lon}");
+    }
+
+    /// `kind = "combo"` reads from TOML and YAML, members and all.
+    ///
+    /// As `Combo(Vec<Self>)` under `#[serde(tag = "kind")]` this failed with "invalid type:
+    /// map, expected a sequence": an internally tagged enum cannot tag a newtype holding a
+    /// sequence, so the variant the configuration docs advertised could never be configured.
+    #[test]
+    fn combo_round_trips_through_configuration_files() {
+        let toml_text = r#"
+            kind = "combo"
+            [[faults]]
+            kind = "slow_bias"
+            drift_n_mps = 0.02
+            drift_e_mps = 0.0
+            q_bias = 1e-6
+            rotate_omega_rps = 0.0
+            [[faults]]
+            kind = "hijack"
+            offset_n_m = 50.0
+            offset_e_m = 0.0
+            start_s = 120.0
+            duration_s = 60.0
+        "#;
+        let yaml_text = "kind: combo
+faults:
+  - {kind: slow_bias, drift_n_mps: 0.02, drift_e_mps: 0.0, q_bias: 1.0e-6, rotate_omega_rps: 0.0}
+  - {kind: hijack, offset_n_m: 50.0, offset_e_m: 0.0, start_s: 120.0, duration_s: 60.0}
+";
+        let from_toml: GnssFaultModel = toml::from_str(toml_text).unwrap();
+        let from_yaml: GnssFaultModel = serde_yaml::from_str(yaml_text).unwrap();
+        for parsed in [&from_toml, &from_yaml] {
+            let GnssFaultModel::Combo { faults } = parsed else {
+                panic!("expected a combo, got {parsed:?}");
+            };
+            assert!(matches!(faults[0], GnssFaultModel::SlowBias { .. }));
+            assert!(matches!(faults[1], GnssFaultModel::Hijack { .. }));
+        }
+        let reparsed: GnssFaultModel =
+            toml::from_str(&toml::to_string(&from_toml).unwrap()).unwrap();
+        assert!(matches!(reparsed, GnssFaultModel::Combo { ref faults } if faults.len() == 2));
     }
 
     /// Without a time constant, nothing about the AR(1) step changes.
@@ -2682,6 +2794,7 @@ mod serialization_tests {
                 tau_pos_s: None,
                 tau_vel_s: None,
             },
+            seed: Some(7),
             ..Default::default()
         }
     }

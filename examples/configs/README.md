@@ -40,7 +40,7 @@ and `--seed` arguments are ignored when it is present -- the CLI says as much in
 `output`, so point a scenario at your own data by adding those two keys to the file (or copying
 it), not by passing paths on the command line.
 
-See the [User Guide](../../docs/USER_GUIDE.md) for detailed documentation.
+See the [configuration guide](https://jbrodovsky.github.io/strapdown-rs/user-guide/configuration.html) for every key.
 
 ---
 

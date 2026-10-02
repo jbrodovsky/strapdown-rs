@@ -1,1 +1,0 @@
-# strapdown-sim Binary

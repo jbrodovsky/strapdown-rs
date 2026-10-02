@@ -27,7 +27,7 @@ gravity_noise_std = 100.0
 # gravity_map_file will be auto-detected if not specified
 
 # Magnetic anomaly measurements
-magnetic_resolution = "one_minute"
+magnetic_resolution = "two_minutes"
 magnetic_bias = 0.0
 magnetic_noise_std = 150.0
 # magnetic_map_file will be auto-detected if not specified

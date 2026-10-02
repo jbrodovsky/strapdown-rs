@@ -24,11 +24,13 @@ strapdown-sim cl --input data.csv --output out/ \
     --gravity-resolution one-minute \
     --filter ukf
 
-# Magnetic navigation
+# Magnetic navigation. The default filter, the ESKF, has no geophysical arm: pick the
+# UKF or the EKF.
 strapdown-sim cl --input data.csv --output out/ \
     --geo \
     --magnetic-resolution two-minutes \
-    --magnetic-noise-std 150.0
+    --magnetic-noise-std 150.0 \
+    --filter ekf
 ```
 
 ### As a Library
@@ -40,33 +42,40 @@ Add to your `Cargo.toml`:
 strapdown-geonav = { path = "../geonav" }
 ```
 
-Use in your code:
+Use in your code. `build_event_stream` takes the records, the aiding configuration, the
+records' frame and a `GeophysicalAiding` describing the maps:
 
 ```rust
+use std::path::Path;
 use std::rc::Rc;
-use strapdown::sim::run_closed_loop;
-use geonav::{GeoMap, GeophysicalMeasurementType, GravityResolution};
-use geonav::build_event_stream;
 
-// Load a gravity map
-let measurement_type = GeophysicalMeasurementType::Gravity(GravityResolution::OneMinute);
-let map = GeoMap::load_geomap("gravity_map.nc", measurement_type)?;
+use geonav::{
+    GeoMap, GeophysicalAiding, GeophysicalMeasurementType, GravityResolution, build_event_stream,
+};
+use strapdown::messages::{AidingConfig, EventStream};
+use strapdown::sim::TestDataRecord;
 
-// Build event stream with geophysical measurements
-let events = build_event_stream(
-    &records,
-    &gnss_config,
-    Some(Rc::new(map)),
-    Some(100.0),  // gravity noise std (mGal)
-    None,         // no magnetic map
-    None,
-    None,
-)?;
-
-// Run simulation. The geonav-specific `geo_closed_loop_*` drivers were removed in favour
-// of the one driver in `strapdown-core`, which takes any `NavigationFilter`.
-let results = run_closed_loop(&mut ukf, events, None, None)?;
+fn gravity_aided_events(records: &[TestDataRecord]) -> Result<EventStream, Box<dyn std::error::Error>> {
+    let map = GeoMap::load_geomap(
+        Path::new("gravity_map.nc"),
+        GeophysicalMeasurementType::Gravity(GravityResolution::OneMinute),
+    )?;
+    let geophysical = GeophysicalAiding {
+        gravity_map: Some(Rc::new(map)),
+        gravity_noise_std: Some(100.0), // mGal
+        interval_s: Some(10.0),         // one gravity measurement every 10 s
+        // No magnetic map, and a filter that carries no map-bias state.
+        ..GeophysicalAiding::default()
+    };
+    Ok(build_event_stream(records, &AidingConfig::default(), false, &geophysical)?)
+}
 ```
+
+Feed the stream to any `NavigationFilter` through `strapdown::sim::run_closed_loop_with_geo`.
+A filter that estimates the map bias also needs a `GeoBiasLayout` in
+`GeophysicalAiding::bias_layout` and the matching `ExtraStateLayout` on the runner; the rustdoc
+for both, and `strapdown-sim`'s geophysical runner (`run_geo_closed_loop_file` in
+`sim/src/main.rs`), show the whole arrangement.
 
 ## Command Line Options
 
@@ -88,7 +97,8 @@ When using `strapdown-sim --features geonav`:
 - `--magnetic-map-file`: Custom map file path
 
 ### Common Options
-- `--geo-frequency-s`: Geophysical measurement frequency in seconds
+- `--geo-interval-s`: Seconds *between* geophysical measurements (`--geo-frequency-s` is
+  accepted as an alias)
 
 ## Geophysical Map Files
 
@@ -157,15 +167,16 @@ explicitly.
 
 ### GNSS-Denied Navigation with Gravity Aiding
 ```bash
+# One GNSS fix at t = 0 and none after it.
 strapdown-sim cl --input urban_canyon.csv --output out/ \
-    --geo --gravity-resolution one-minute \
-    --dropout-start-s 0 --dropout-duration-s 999999
+    --geo --gravity-resolution one-minute --filter ukf \
+    --sched fixed --interval-s 1000000
 ```
 
 ### Intermittent GNSS with Magnetic Aiding
 ```bash
 strapdown-sim cl --input flight_data.csv --output out/ \
-    --geo --magnetic-resolution five-minutes \
+    --geo --magnetic-resolution five-minutes --filter ukf \
     --sched duty --on-s 10 --off-s 40
 ```
 

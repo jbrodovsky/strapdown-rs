@@ -155,6 +155,88 @@ pub(crate) fn output_names_a_file(output: &Path) -> bool {
         })
 }
 
+/// Extensions of data formats `strapdown-sim` does not write, refused on an output path.
+///
+/// Without this a name such as `-o results.h5` was taken as a *directory* -- only `.csv` marks
+/// a file, see [`OUTPUT_FILE_EXTENSIONS`] -- so the run made a directory called `results.h5`
+/// and filled it with CSV, and `syn -o x.parquet` wrote CSV under a Parquet name. Either way
+/// the user asked for a format and silently got another one.
+const REFUSED_OUTPUT_EXTENSIONS: [&str; 11] = [
+    "h5", "hdf5", "nc", "netcdf", "mcap", "parquet", "json", "yaml", "yml", "toml", "txt",
+];
+
+/// The error for an output path that names a format other than CSV.
+fn csv_only_error(output: &Path, extension: &str) -> Box<dyn Error> {
+    format!(
+        "Refusing output path '{}': strapdown-sim writes CSV only, so a `.{extension}` name \
+         would hold CSV, not {extension}. Name a `.csv` file or a directory. HDF5, NetCDF and \
+         MCAP are written by the library rather than the CLI: `NavigationResult::to_hdf5`, \
+         `to_netcdf` and `to_mcap` in strapdown-core.",
+        output.display()
+    )
+    .into()
+}
+
+/// Refuse an output path whose extension names a data format the CLI does not write.
+///
+/// An existing directory is left alone whatever it is called, as [`output_names_a_file`]
+/// does, and so is any path with another or no extension, which is taken as a directory.
+///
+/// # Errors
+/// When the extension is one of [`REFUSED_OUTPUT_EXTENSIONS`].
+pub(crate) fn refuse_non_csv_output(output: &Path) -> Result<(), Box<dyn Error>> {
+    if output.is_dir() {
+        return Ok(());
+    }
+    match output.extension().and_then(|extension| extension.to_str()) {
+        Some(extension)
+            if REFUSED_OUTPUT_EXTENSIONS
+                .iter()
+                .any(|refused| extension.eq_ignore_ascii_case(refused)) =>
+        {
+            Err(csv_only_error(output, extension))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Validate a `syn` output path, which must be a `.csv` file, and create its parent.
+///
+/// `syn` writes exactly one file, so unlike the simulation subcommands it has no directory
+/// form: anything but a `.csv` name is refused.
+///
+/// # Errors
+/// When the path does not end in `.csv`, or its parent directory cannot be created.
+pub(crate) fn validate_synthetic_output_path(output: &Path) -> Result<(), Box<dyn Error>> {
+    if output.is_dir() {
+        return Err(format!(
+            "Refusing output path '{}': it is a directory, and a synthetic trajectory is \
+             written to one `.csv` file.",
+            output.display()
+        )
+        .into());
+    }
+    match output.extension().and_then(|extension| extension.to_str()) {
+        Some(extension) if extension.eq_ignore_ascii_case("csv") => {}
+        Some(extension) => return Err(csv_only_error(output, extension)),
+        None => {
+            return Err(format!(
+                "Refusing output path '{}': a synthetic trajectory is written to one CSV \
+                 file, so the path must end in `.csv`.",
+                output.display()
+            )
+            .into());
+        }
+    }
+    if let Some(parent) = output.parent()
+        && !parent.as_os_str().is_empty()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    Ok(())
+}
+
 /// Create the directory that results for `output` will be written into.
 ///
 /// When `output` names a file (see [`output_names_a_file`]) this creates its *parent*.
@@ -165,8 +247,10 @@ pub(crate) fn output_names_a_file(output: &Path) -> bool {
 /// * `output` - The user's `--output` value, either a result file or a directory
 ///
 /// # Errors
-/// Returns an error if directory creation fails.
+/// Returns an error if `output` names a data format other than CSV (see
+/// [`refuse_non_csv_output`]), or if directory creation fails.
 pub(crate) fn validate_output_path(output: &Path) -> Result<(), Box<dyn Error>> {
+    refuse_non_csv_output(output)?;
     let directory = if output_names_a_file(output) {
         output.parent()
     } else {
@@ -352,34 +436,68 @@ pub(crate) fn load_records(input_file: &Path) -> Result<Vec<TestDataRecord>, Box
 // User Input Utilities
 // ============================================================================
 
+/// One answer read from the user, before anything acts on it.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum UserInput {
+    /// A non-empty line, trimmed.
+    Answer(String),
+    /// An empty line: the user pressed Enter, which a prompt with a default takes as "use it".
+    Empty,
+    /// `q` or `Q`.
+    Quit,
+    /// Input is exhausted (end of file) or could not be read. No further answer will come.
+    Closed(String),
+}
+
+/// Read and classify one line from `reader`.
+///
+/// End of input is reported as [`UserInput::Closed`], not as an empty line. `read_line`
+/// returns `Ok(0)` at end of file, and this used to treat that as the user pressing Enter: a
+/// prompt with no default then re-asked forever, so `strapdown-sim config < /dev/null` printed
+/// "Configuration path cannot be empty" in an endless loop.
+pub(crate) fn read_answer(reader: &mut impl io::BufRead) -> UserInput {
+    let mut input = String::new();
+    match reader.read_line(&mut input) {
+        Ok(0) => UserInput::Closed("end of input".to_string()),
+        Ok(_) => {
+            let input = input.trim();
+            if input.eq_ignore_ascii_case("q") {
+                UserInput::Quit
+            } else if input.is_empty() {
+                UserInput::Empty
+            } else {
+                UserInput::Answer(input.to_string())
+            }
+        }
+        Err(e) => UserInput::Closed(e.to_string()),
+    }
+}
+
 /// Read a line from stdin, trimming whitespace and checking for quit command.
 ///
 /// # Returns
 /// - `None` if user enters empty input or presses Enter
 /// - `Some(String)` with the trimmed input otherwise
 ///
-/// Returns `None` when stdin cannot be read, which is the normal case when the tool runs
-/// non-interactively — piped input, a closed stdin, or a batch invocation. That used to
-/// panic, so a CLI that also supports batch mode aborted rather than falling back.
-///
-/// # Panics
-/// Exits the process if user enters 'q' or 'Q'.
+/// Exits the process with status 0 if the user enters 'q' or 'Q', and with status 1, after
+/// saying why on stderr, when stdin is at end of file or cannot be read. Every prompt re-asks
+/// until it gets an answer it can use, so an exhausted stdin -- the wizard run with input
+/// redirected from an empty or too-short file -- has to end the run rather than be read as
+/// another empty answer.
 pub(crate) fn read_user_input() -> Option<String> {
-    let mut input = String::new();
-    if let Err(e) = io::stdin().read_line(&mut input) {
-        log::warn!("could not read from stdin: {e}");
-        return None;
-    }
-    let input = input.trim();
-
-    if input.eq_ignore_ascii_case("q") {
-        std::process::exit(0);
-    }
-
-    if input.is_empty() {
-        None
-    } else {
-        Some(input.to_string())
+    let answer = read_answer(&mut io::stdin().lock());
+    match answer {
+        UserInput::Answer(answer) => Some(answer),
+        UserInput::Empty => None,
+        UserInput::Quit => std::process::exit(0),
+        UserInput::Closed(reason) => {
+            eprintln!(
+                "\nError: the configuration wizard needs an interactive answer, but standard \
+                 input closed ({reason}). Run `strapdown-sim config` in a terminal, or write a \
+                 configuration file by hand."
+            );
+            std::process::exit(1);
+        }
     }
 }
 
@@ -481,6 +599,26 @@ mod tests {
     use super::*;
     use std::fs::File;
     use tempfile::tempdir;
+
+    #[test]
+    fn test_read_answer_reports_end_of_input_rather_than_an_empty_line() {
+        // `read_line` returns `Ok(0)` at end of file. Reading that as an empty answer made
+        // every prompt without a default loop forever on a closed stdin.
+        let mut exhausted = io::Cursor::new(Vec::<u8>::new());
+        assert!(matches!(read_answer(&mut exhausted), UserInput::Closed(_)));
+    }
+
+    #[test]
+    fn test_read_answer_classifies_lines() {
+        let mut input = io::Cursor::new(b"  results.toml \n\nQ\n".to_vec());
+        assert_eq!(
+            read_answer(&mut input),
+            UserInput::Answer("results.toml".to_string())
+        );
+        assert_eq!(read_answer(&mut input), UserInput::Empty);
+        assert_eq!(read_answer(&mut input), UserInput::Quit);
+        assert!(matches!(read_answer(&mut input), UserInput::Closed(_)));
+    }
 
     #[test]
     fn test_validate_input_path_file() {
@@ -794,6 +932,61 @@ mod tests {
         let dir = tempdir().unwrap();
         assert!(!output_names_a_file(&dir.path().join("results.parquet")));
         assert!(output_names_a_file(&dir.path().join("results.csv")));
+    }
+
+    #[test]
+    fn test_validate_output_path_refuses_non_csv_data_formats() {
+        // `-o out.h5` and `-o out.parquet` used to create a directory of that name and write
+        // CSV inside it.
+        let dir = tempdir().unwrap();
+        for name in [
+            "out.h5",
+            "out.parquet",
+            "out.NC",
+            "out.mcap",
+            "out.json",
+            "out.txt",
+        ] {
+            let output = dir.path().join(name);
+            let error =
+                validate_output_path(&output).expect_err("a non-CSV data format must be refused");
+            assert!(
+                error.to_string().contains("writes CSV only"),
+                "unexpected error for {name}: {error}"
+            );
+            assert!(!output.exists(), "{name} must not be created");
+        }
+    }
+
+    #[test]
+    fn test_validate_output_path_keeps_directories_and_csv_files() {
+        let dir = tempdir().unwrap();
+        // An extension-less path is a directory to write into, and is created.
+        let fresh = dir.path().join("results");
+        validate_output_path(&fresh).unwrap();
+        assert!(fresh.is_dir());
+        // An existing directory is used whatever it is called.
+        let existing = dir.path().join("archive.h5");
+        std::fs::create_dir_all(&existing).unwrap();
+        validate_output_path(&existing).unwrap();
+        // A .csv file is still a file.
+        validate_output_path(&dir.path().join("nested").join("run.csv")).unwrap();
+    }
+
+    #[test]
+    fn test_validate_synthetic_output_path_requires_csv() {
+        // `syn -o x.parquet` used to write CSV under a Parquet name.
+        let dir = tempdir().unwrap();
+        for name in ["x.parquet", "x.h5", "x", "x.dat"] {
+            assert!(
+                validate_synthetic_output_path(&dir.path().join(name)).is_err(),
+                "{name} must be refused"
+            );
+        }
+        let output = dir.path().join("new").join("trajectory.csv");
+        validate_synthetic_output_path(&output).unwrap();
+        assert!(output.parent().unwrap().is_dir());
+        assert!(!output.exists());
     }
 
     #[test]

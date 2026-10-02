@@ -14,7 +14,7 @@ resolver = "3"
 authors = ["James Brodovsky"]
 edition = "2024"
 license = "MIT"
-homepage = "https://www.strapdown.rs"
+homepage = "https://jbrodovsky.github.io/strapdown-rs/"
 repository = "https://github.com/jbrodovsky/strapdown-rs"
 # Minimum supported Rust version. Keep this in sync with `channel` in
 # rust-toolchain.toml, `msrv` in clippy.toml and the CI toolchain pins; raising

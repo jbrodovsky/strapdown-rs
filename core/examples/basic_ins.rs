@@ -56,9 +56,10 @@ fn main() -> Result<(), StrapdownError> {
         0.0,       // pitch
         0.0,       // yaw: heading north
         true,      // the angles above are in degrees
-        None,      // no initial bias estimate
+        None,      // frame: `None` is the crate default, NED
     );
 
+    // ANCHOR: build
     // NED, no antenna lever arm. `InsEngineConfig::default()` is NED already; naming it here
     // is documentation rather than necessity.
     let mut engine = InsEngine::builder()
@@ -69,6 +70,7 @@ fn main() -> Result<(), StrapdownError> {
         })
         .with_initial_state(initial_state)
         .build()?;
+    // ANCHOR_END: build
 
     println!("start: {}", engine.nav_solution());
 
@@ -86,14 +88,17 @@ fn main() -> Result<(), StrapdownError> {
     //
     // In ENU the same reading is +9.81 on the up axis, which is what the Sensor Logger
     // exports in `core/tests/test_data.csv` look like.
+    // ANCHOR: imu
     let stationary_imu = IMUData {
         accel: Vector3::new(0.0, 0.0, -9.81),
         gyro: Vector3::zeros(),
     };
+    // ANCHOR_END: imu
 
     let steps = (DURATION_S / DT) as usize;
     let gnss_every = (GNSS_INTERVAL_S / DT) as usize;
 
+    // ANCHOR: loop
     for step in 1..=steps {
         engine.predict(&ImuSample::from_rates(&stationary_imu, DT))?;
 
@@ -126,6 +131,7 @@ fn main() -> Result<(), StrapdownError> {
     }
 
     let solution = engine.nav_solution();
+    // ANCHOR_END: loop
     println!("after {DURATION_S:.0} s: {solution}");
 
     let expected_north_m = SPEED_MPS * DURATION_S;

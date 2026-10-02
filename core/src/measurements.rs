@@ -244,7 +244,7 @@ pub trait MeasurementModel: Any {
     /// # The attitude columns are ∂h/∂Euler, and that is a promise (#349)
     ///
     /// `state` holds attitude as the roll, pitch and yaw
-    /// [`StrapdownState`](crate::StrapdownState) stores, so columns 6, 7 and 8 differentiate
+    /// [`StrapdownState`] stores, so columns 6, 7 and 8 differentiate
     /// with respect to *those three numbers*. An implementation must not write them against
     /// any other attitude parametrisation, and a filter must not read them as if they were.
     ///
@@ -592,7 +592,7 @@ pub struct RelativeAltitudeMeasurement {
     /// the thing that declares it.
     ///
     /// A `Some(index)` past the end of the state is an error, not a silent zero: see
-    /// [`Self::require_bias_state`]. That matters more than it looks. A bias column the filter
+    /// `Self::require_bias_state`. That matters more than it looks. A bias column the filter
     /// never observes is #394's failure mode -- `expand_measurement_jacobian` pads on the right
     /// and would put a zero there with no complaint, leaving the state unobservable and the
     /// covariance growing on process noise alone.

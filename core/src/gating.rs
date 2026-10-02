@@ -27,8 +27,8 @@
 //! - [`InnovationGate`] -- the accept/reject policy, either a $\chi^2$ quantile
 //!   evaluated at the measurement's own degrees of freedom or a fixed threshold.
 //! - [`GateRecovery`] -- how the filter climbs back out of a rejection, by inflating
-//!   its covariance and, after enough consecutive rejections, applying a measurement
-//!   anyway. Without it a gate is a one-way door (#340).
+//!   its covariance and, when enough consecutive measurements fail the gate, applying the
+//!   last of them anyway. Without it a gate is a one-way door (#340).
 //! - [`GatePolicy`] -- the gate, its recovery and the rejection streak they share;
 //!   this is what a filter stores, and [`GateDecision`] is what it gets back.
 //! - [`UpdateOutcome`] -- what every [`NavigationFilter::update`] now returns, so a
@@ -98,8 +98,8 @@ pub struct UpdateOutcome {
     pub dof: usize,
     /// Whether the correction was applied to the state.
     pub accepted: bool,
-    /// Whether the correction was applied *despite* failing the gate, because
-    /// [`GateRecovery::forced_update_after`] consecutive rejections had accumulated.
+    /// Whether the correction was applied *despite* failing the gate, because it was the
+    /// [`GateRecovery::forced_update_after`]-th consecutive measurement to fail it.
     ///
     /// Only ever true together with [`Self::accepted`]. Reported rather than folded
     /// into `accepted` because the two mean different things to a reader of the logs:
@@ -281,8 +281,8 @@ pub const DEFAULT_REJECTION_INFLATION: f64 = 2.0;
 
 /// Smallest meaningful [`GateRecovery::forced_update_after`].
 ///
-/// One would apply a measurement the moment the gate rejected it, which is not a gate at
-/// all; zero reads as "immediately" and means the same thing. [`GateRecovery::new`] refuses
+/// One would force through the first measurement to fail the gate, i.e. every one, which is
+/// not a gate at all; zero reads as "immediately" and means the same thing. [`GateRecovery::new`] refuses
 /// both, and because deserialization bypasses it, [`GatePolicy::decide`] ignores them too --
 /// the escape is simply switched off, leaving [`GateRecovery::rejection_inflation`] as the
 /// way back. That is the conservative direction for *this* knob: a threshold below 2 would
@@ -290,14 +290,15 @@ pub const DEFAULT_REJECTION_INFLATION: f64 = 2.0;
 /// slower.
 pub const MIN_FORCED_UPDATE_AFTER: usize = 2;
 
-/// Default number of consecutive rejections after which an update is forced through.
+/// Default length of the failing streak whose last measurement is forced through: four
+/// rejections, then the fifth consecutive failure is applied.
 ///
 /// Five 1 Hz fixes is a few seconds of disagreement -- long enough that a genuine
 /// multipath burst or a single corrupted fix is still rejected on its own merits,
 /// short enough that a filter whose own state is the thing that is wrong cannot
 /// coast for a minute before finding out. Combined with
-/// [`DEFAULT_REJECTION_INFLATION`] it also bounds the inflation: at most $2^4 = 16$
-/// times the covariance accumulates before a measurement is admitted.
+/// [`DEFAULT_REJECTION_INFLATION`] it also bounds the inflation: the four rejections
+/// accumulate at most $2^4 = 16$ times the covariance before a measurement is admitted.
 pub const DEFAULT_FORCED_UPDATE_AFTER: usize = 5;
 
 /// How a filter recovers from a rejected measurement.
@@ -319,8 +320,8 @@ pub const DEFAULT_FORCED_UPDATE_AFTER: usize = 5;
 ///    [`Self::rejection_inflation`] on every rejection, in the directions the rejected
 ///    measurement observed, so the claimed uncertainty grows geometrically while the error
 ///    grows polynomially and the gate re-opens on its own.
-/// 2. **Forced update.** After [`Self::forced_update_after`] consecutive rejections,
-///    apply the next measurement whatever its NIS: a belief contradicted that many
+/// 2. **Forced update.** When [`Self::forced_update_after`] consecutive measurements fail
+///    the gate, apply the last of them whatever its NIS: a belief contradicted that many
 ///    times running is more likely wrong than the sensor contradicting it.
 ///
 /// Inflation is the mechanism that keeps the covariance *honest*, and it is the one doing
@@ -338,7 +339,7 @@ pub const DEFAULT_FORCED_UPDATE_AFTER: usize = 5;
 /// ```rust
 /// use strapdown::gating::GateRecovery;
 ///
-/// // The default: double P per rejection, force an update after five in a row.
+/// // The default: double P per rejection; reject four in a row, force the fifth.
 /// let recovery = GateRecovery::default();
 /// assert_eq!(recovery.forced_update_after, Some(5));
 ///
@@ -369,8 +370,12 @@ pub struct GateRecovery {
     /// correction weighted by a velocity uncertainty of tens of m/s, and the run reached
     /// 719 m/s of reported ground speed.
     pub rejection_inflation: f64,
-    /// Number of consecutive rejections after which the next measurement is applied
-    /// regardless of its NIS, or `None` to never force one.
+    /// Length of the failing streak whose last measurement is applied regardless of its
+    /// NIS, or `None` to never force one.
+    ///
+    /// The count includes the measurement being decided: with `Some(5)`, four measurements
+    /// in a row are rejected and the fifth to fail the gate is applied and reported as
+    /// [`UpdateOutcome::forced`], so the inflation behind it is that of four rejections.
     ///
     /// Counted across every sensor, like
     /// [`HealthLimits::nis_pos_consec_fail`](crate::sim::health::HealthLimits::nis_pos_consec_fail),
@@ -380,7 +385,7 @@ pub struct GateRecovery {
     /// the navigation state.
     ///
     /// A value below [`MIN_FORCED_UPDATE_AFTER`] switches the escape off rather than
-    /// forcing on the first rejection: [`Self::new`] refuses `Some(0)` and `Some(1)`, and a
+    /// forcing the first measurement to fail: [`Self::new`] refuses `Some(0)` and `Some(1)`, and a
     /// config that deserializes past it is ignored here for the same reason -- forcing
     /// immediately would disable the gate the user configured.
     ///
@@ -718,8 +723,8 @@ impl GatePolicy {
             // overruled by its own sensors, which is worth seeing in a default log even
             // at one line per `limit` fixes.
             log::warn!(
-                "{filter_name}: forcing a measurement through the gate after \
-                 {streak} consecutive rejections, NIS = {nis:.3} > {threshold:.3} (dof {dof})"
+                "{filter_name}: forcing a measurement through the gate, {streak} in a row \
+                 having failed it, NIS = {nis:.3} > {threshold:.3} (dof {dof})"
             );
             self.consecutive_rejections = 0;
             return GateDecision {

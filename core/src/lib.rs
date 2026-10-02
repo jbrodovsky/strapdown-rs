@@ -1,16 +1,20 @@
-//! Strapdown navigation toolbox for various navigation filters
+//! Strapdown inertial navigation and GNSS-degradation simulation
 //!
-//! This crate provides a set of tools for implementing navigation filters in Rust. The filters are implemented
-//! as structs that can be initialized and updated with new sensor data. The filters are designed to be used in
-//! a strapdown navigation system, where the orientation of the sensor is known and the sensor data can be used
-//! to estimate the position and velocity of the sensor. While utilities exist for IMU data, this crate does
-//! not currently support IMU output directly and should not be thought of as a full inertial navigation system
-//! (INS). This crate is designed to be used to test the filters that would be used in an INS. It does not
-//! provide utilities for reading raw output from the IMU or act as IMU firmware or driver. As such the IMU data
-//! is assumed to be pre-filtered and contain the total accelerations and relative rotations.
+//! This crate implements local-level strapdown mechanization and four loosely coupled navigation
+//! filters behind one [`NavigationFilter`] trait: an error-state Kalman filter
+//! ([`kalman::ErrorStateKalmanFilter`], the default), an extended Kalman filter, an unscented
+//! Kalman filter, and a Rao-Blackwellized particle filter ([`rbpf`]). It also provides the
+//! measurement models that aid them and the event-stream engine ([`messages`]) that replays
+//! recorded or synthetic data with GNSS withheld or corrupted.
 //!
-//! This crate is primarily built off of three additional dependencies:
-//! - [`nav-types`](https://crates.io/crates/nav-types): Provides basic coordinate types and conversions.
+//! It is not IMU firmware or a driver: it consumes specific force and angular rate that are
+//! already in physical units, and does not read raw sensor output. Those measurements are
+//! **not** gravity-compensated: an accelerometer at rest reads the reaction to gravity, and
+//! the mechanization removes gravity itself (see below). The
+//! [user guide](https://jbrodovsky.github.io/strapdown-rs/) covers the concepts and the
+//! `strapdown-sim` command-line tool.
+//!
+//! This crate is primarily built off of two additional dependencies:
 //! - [`nalgebra`](https://crates.io/crates/nalgebra): Provides the linear algebra tools for the filters.
 //! - [`rand`](https://crates.io/crates/rand) and [`rand_distr`](https://crates.io/crates/rand_distr): Provides random number generation for noise and simulation (primarily for particle filter methods).
 //!
@@ -24,16 +28,24 @@
 //!
 //! ## Crate overview
 //!
-//! This crate is organized into several modules:
-//! - [earth]: Contains functions and constants related to Earth models, coordinate transformations, and geodetic calculations.
-//! - [engine]: Contains the high-level [`InsEngine`] builder API, the user-facing entry point.
-//! - [kalman]: Contains the implementation of Kalman-style navigation filters (including nonlinear variants)
-//! - [linalg]: Contains linear algebra utilities and helper functions.
-//! - [linearize]: Contains analytic Jacobians for strapdown mechanization and measurement models (for EKF/ESKF/RBPF-EKF).
-//! - [measurements]: Contains measurement models and utilities for processing sensor data in the context of navigation filters.
-//! - [messages]: Contains message definitions for sensor data and filter outputs used in constructing simulations.
-//! - [particle]: Contains the implementation of particle filter navigation methods.
-//! - [sim]: Contains simulation utilities for running and testing filters.
+//! The mechanization itself lives in this crate root ([`forward`], [`attitude_update`],
+//! [`position_update`], [`StrapdownState`]). The modules are:
+//! - [alignment]: coarse alignment -- leveling and gyrocompassing -- for initialization.
+//! - [calibration]: IMU calibration and sensor error models applied to raw samples.
+//! - [earth]: the WGS84 ellipsoid, gravity, Earth rate, transport rate and magnetic models.
+//! - [engine]: the [`InsEngine`] builder, the high-level entry point for applications.
+//! - [error]: [`StrapdownError`], returned instead of panicking throughout the library.
+//! - [gating]: chi-squared innovation gating and gate recovery.
+//! - [kalman]: the ESKF, EKF and UKF, and their configuration.
+//! - [linalg]: linear algebra helpers.
+//! - [linearize]: analytic Jacobians of the mechanization and measurement models.
+//! - [measurements]: the [`measurements::MeasurementModel`] trait and its implementations.
+//! - [messages]: the event stream, GNSS schedulers and GNSS fault models.
+//! - [metrics]: accuracy and consistency metrics (RMSE, CEP, NEES, NIS).
+//! - [particle]: particle-filter building blocks (resampling and averaging strategies).
+//! - [rbpf]: the Rao-Blackwellized particle filter after Canciani & Raquet (2017).
+//! - [sim]: data records, results, configuration and the simulation drivers.
+//! - [stationary]: the stationarity detector behind zero-velocity and zero-rate updates.
 //!
 //! ## Strapdown mechanization data and equations
 //!
@@ -52,7 +64,9 @@
 //! $$
 //!
 //! Where:
-//! - $p_n$, $p_e$, and $p_d$ are the WGS84 geodetic positions (degrees latitude, degrees longitude, meters relative to the ellipsoid).
+//! - $p_n$, $p_e$, and $p_d$ are the WGS84 geodetic positions: latitude and longitude (radians in
+//!   [`StrapdownState`]; degrees in CSV records and results) and height above the ellipsoid
+//!   (metres, positive up in both frames).
 //! - $v_n$, $v_e$, and $v_v$ are the local level frame (NED/ENU) velocities (m/s) along the north axis, east axis, and vertical axis.
 //! - $\phi$, $\theta$, and $\psi$ are the Euler angles (radians) representing the orientation of the body frame relative to the local level frame (XYZ Euler rotation).
 //!
@@ -83,12 +97,17 @@
 //!
 //! This mechanization and coordinate frame is only valid for positions relatively close to the Earth's surface (within 30 km above mean sea level).
 //! Above that it is more common to use the Earth-Centered Earth-Fixed (ECEF) frame for navigation. Additionally, the deepest ocean trenches
-//! are approximately 11 km below mean sea level. Thus, this mechanization is not valid for positions deeper than that. [`sim::health`]
-//! implements general sanity checks to ensure that the position states remain within valid bounds, given a specific coordinate frame:
+//! are approximately 11 km below mean sea level. Thus, this mechanization is not valid for positions deeper than that, and the
+//! range it is meant for is altitude in [-11,000 m, 30,000 m]. `altitude` is height above the ellipsoid, positive up,
+//! irrespective of `is_enu`; it is not a "down" coordinate in NED.
+//!
+//! [`sim::health`] implements run-level sanity checks on the position states. Its defaults
+//! ([`sim::HealthLimits::default`]) are bounds on what is representable, not on where the mechanization is valid:
 //! - Latitude: [-90 deg, 90 deg]
 //! - Longitude: [-180 deg, 180 deg]
-//! - Altitude: [-11,000 m, 30,000 m] in both frames. `altitude` is height above the ellipsoid,
-//!   positive up, irrespective of `is_enu`; it is not a "down" coordinate in NED.
+//! - Altitude: [-1e8 m, 1e8 m] -- deliberately far wider than the valid range above, so a diverging vertical
+//!   channel is caught by the finiteness and covariance checks. Narrow [`sim::HealthLimits::alt_m`] (or pass
+//!   `--health-alt-min-m`/`--health-alt-max-m` to `strapdown-sim`) to enforce the valid range.
 //!
 //! ### Strapdown equations in the Local-Level Frame
 //!
@@ -117,50 +136,55 @@
 //! x = \begin{bmatrix} a \\\\ b \\\\ c \end{bmatrix} \rightarrow X = \begin{bmatrix} 0 & -c & b \\\\ c & 0 & -a \\\\ -b & a & 0 \end{bmatrix} = \begin{bmatrix} x & \wedge \end{bmatrix}
 //! $$
 //!
+//! The equations below are written in NED, as Groves writes them. An ENU state is reflected into
+//! NED, propagated, and reflected back, so there is one implementation of each equation.
+//!
 //! #### Attitude update
 //!
 //! Given a direction-cosine matrix $C_b^n$ representing the orientation (attitude, rotation) of the platform's body frame ($b$)
 //! with respect to the local level frame ($n$), the transport rate $\Omega_{en}^n$ representing the rotation of the local level frame
-//! with respect to the Earth-fixed frame ($e$), the Earth's rotation rate $\Omega_{ie}^e$, and the angular rate $\Omega_{ib}^b$
-//! representing the rotation of the body frame with respect to the inertial frame ($i$), the attitude update equation is given by:
+//! with respect to the Earth-fixed frame ($e$), the Earth's rotation rate $\Omega_{ie}^n$ resolved in the local level frame, and
+//! the angular rate $\Omega_{ib}^b$ representing the rotation of the body frame with respect to the inertial frame ($i$), the
+//! attitude update (Groves eq. 5.46) is:
 //!
 //! $$
-//! C_b^n(+) \approx C_b^n(-) \left( I + \Omega_{ib}^b t \right) - \left( \Omega_{ie}^e - \Omega_{en}^n \right) C_b^n(-) t
+//! C_b^n(+) \approx C_b^n(-) \left( I + \Omega_{ib}^b \tau \right) - \left( \Omega_{ie}^n + \Omega_{en}^n \right) C_b^n(-) \tau
 //! $$
 //!
-//! where $t$ is the time differential and $C(-)$ is the prior attitude. These attitude matrices are then used to transform the
-//! specific forces from the IMU:
+//! where $\tau$ is the propagation interval and $C(-)$ is the prior attitude. The specific force is resolved into the local level
+//! frame with the attitude averaged over the interval (eq. 5.47):
 //!
 //! $$
 //! f_{ib}^n \approx \frac{1}{2} \left( C_b^n(+) + C_b^n(-) \right) f_{ib}^b
 //! $$
 //!
-//! #### Velocity Update
+//! #### Velocity update
 //!
-//! The velocity update equation is given by:
+//! The velocity update (eq. 5.54) adds the specific force and gravity and removes the Coriolis and transport-rate terms:
 //!
 //! $$
-//! v(+) \approx v(-) + \left( f_{ib}^n + g_{b}^n - \left( \Omega_{en}^n - \Omega_{ie}^e \right) v(-) \right) t
+//! v(+) \approx v(-) + \left( f_{ib}^n + g_b^n - \left( \Omega_{en}^n + 2 \Omega_{ie}^n \right) v(-) \right) \tau
 //! $$
 //!
 //! #### Position update
 //!
-//! Finally, we update the base position states in three steps. First  we update the altitude:
+//! Finally, the position is updated in three steps (eq. 5.56), each using the trapezoidal average of the old and new
+//! velocity. With $h$ the height above the ellipsoid (positive up) and $v_D$ the down velocity, the height is updated first:
 //!
 //! $$
-//! p_d(+) = p_d(-) + \frac{1}{2} \left( v_d(-) + v_d(+) \right) t
+//! h(+) = h(-) - \frac{1}{2} \left( v_D(-) + v_D(+) \right) \tau
 //! $$
 //!
-//! Next we update the latitude:
+//! then the latitude $L$, using the meridian radius of curvature $R_N$:
 //!
 //! $$
-//! p_n(+) = p_n(-) + \frac{1}{2} \left( \frac{v_n(-)}{R_n + p_d(-)} + \frac{v_n(+)}{R_n + p_d(+) } \right) t
+//! L(+) = L(-) + \frac{1}{2} \left( \frac{v_N(-)}{R_N(L(-)) + h(-)} + \frac{v_N(+)}{R_N(L(-)) + h(+)} \right) \tau
 //! $$
 //!
-//! Finally, we update the longitude:
+//! and finally the longitude $\lambda$, using the transverse radius of curvature $R_E$ at the old and new latitude:
 //!
 //! $$
-//! p_e = p_e(-) + \frac{1}{2} \left( \frac{v_e(-)}{R_e + p_d(-) \cos(p_n(-))} + \frac{v_e(+)}{R_e + p_d(+) \cos(p_n(+))} \right) t
+//! \lambda(+) = \lambda(-) + \frac{1}{2} \left( \frac{v_E(-)}{\left( R_E(L(-)) + h(-) \right) \cos L(-)} + \frac{v_E(+)}{\left( R_E(L(+)) + h(+) \right) \cos L(+)} \right) \tau
 //! $$
 //!
 //! This top-level module provides a public API for each step of the forward mechanization equations, allowing users to
@@ -484,10 +508,15 @@ impl IMUQuality {
     /// \\(K^2 \\, dt / 3600\\).
     ///
     /// # Units
-    /// Returns (m/s)^2 -- a variance, not a spectral density. Both filters propagate as
-    /// \\(P_{k+1} = F `P_k` F^T + Q\\) with no internal `dt` scaling, so what they consume is
-    /// the per-step increment this returns. That is why `dt` is a parameter: the same IMU
-    /// grade yields a different `Q` at 100 Hz than at 1 Hz.
+    /// Returns (m/s)^2 -- the per-step **variance** \\(Q_k\\) accumulated over `dt`, not a
+    /// spectral density. That is why `dt` is a parameter: the same IMU grade yields a
+    /// different `Q_k` at 100 Hz than at 1 Hz.
+    ///
+    /// Do not hand it to a filter as its process noise. Since #374 every filter here takes a
+    /// **density** -- a variance per second, as in
+    /// [`DEFAULT_PROCESS_NOISE_DENSITY`](crate::sim::DEFAULT_PROCESS_NOISE_DENSITY) -- and forms
+    /// \\(Q_k = q \\Delta t\\) itself, so passing this would apply `dt` twice. The density
+    /// for a filter's velocity rows is this value divided by `dt`, i.e. `K^2 / 3600`.
     ///
     /// Consistent with the per-sample sigma used by the synthetic IMU generator in
     /// [`crate::sim`], which scales the same coefficient by `sqrt(sample_rate_hz / 3600)`.
@@ -1913,7 +1942,7 @@ fn reduce_onto_interval(value: f64, lower: f64, upper: f64, period: f64) -> f64 
 ///
 /// # Cost and non-finite inputs
 ///
-/// The reduction is constant time; see [`reduce_onto_interval`] for what that replaces
+/// The reduction is constant time; see `reduce_onto_interval` for what that replaces
 /// and why it agrees with the loop it replaces on every finite input.
 pub fn wrap_to_180<T>(angle: T) -> T
 where
@@ -1939,7 +1968,7 @@ where
 ///
 /// # Cost and non-finite inputs
 ///
-/// The reduction is constant time; see [`reduce_onto_interval`] for what that replaces
+/// The reduction is constant time; see `reduce_onto_interval` for what that replaces
 /// and why it agrees with the loop it replaces on every finite input.
 pub fn wrap_to_360<T>(angle: T) -> T
 where
@@ -1973,7 +2002,7 @@ where
 /// ([`kalman::wrap_attitude_onto_principal_branch`](crate::kalman)), so a diverging
 /// attitude used to make the diagnostic path progressively more expensive exactly when it
 /// was least affordable. An input already on `[-π, π]`, and any non-finite input, is
-/// returned unchanged; see [`reduce_onto_interval`] for why the result is identical to the
+/// returned unchanged; see `reduce_onto_interval` for why the result is identical to the
 /// loop's on every finite input, `wrap_to_pi(3π) == +π` included.
 pub fn wrap_to_pi<T>(angle: T) -> T
 where
@@ -2011,7 +2040,7 @@ where
 ///
 /// # Cost and non-finite inputs
 ///
-/// The reduction is constant time; see [`reduce_onto_interval`] for what that replaces
+/// The reduction is constant time; see `reduce_onto_interval` for what that replaces
 /// and why it agrees with the loop it replaces on every finite input.
 pub fn wrap_to_2pi<T>(angle: T) -> T
 where
@@ -2045,7 +2074,7 @@ where
 ///
 /// # Cost and non-finite inputs
 ///
-/// The reduction is constant time; see [`reduce_onto_interval`] for what that replaces
+/// The reduction is constant time; see `reduce_onto_interval` for what that replaces
 /// and why it agrees with the loop it replaces on every finite input.
 pub fn wrap_latitude<T>(latitude: T) -> T
 where

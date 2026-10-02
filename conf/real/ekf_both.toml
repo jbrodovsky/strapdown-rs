@@ -51,8 +51,8 @@ speed_mps_max = 5000.0
 # Smartphone GNSS is 3-5 m under good multipath and over 10 m in harsh multipath, with
 # semi-urban CEP95 around 10-12 m. Under jamming the tracked satellite count falls and GDOP
 # rises, so the true error and the advertised accuracy inflate together. 35 m of steady-state
-# wander is about 14x this dataset's 2.58 m median advertised accuracy -- a receiver still
-# producing fixes, but bad ones.
+# wander is roughly an order of magnitude above a phone GNSS fix's few-metre accuracy -- a
+# receiver still producing fixes, but bad ones.
 #
 # `tau_pos_s` and `tau_vel_s` are what make this comparable across schedules. Without them
 # `rho_pos` is applied once per emitted fix, so the correlation time is

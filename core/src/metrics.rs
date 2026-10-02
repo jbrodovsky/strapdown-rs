@@ -270,7 +270,7 @@ pub enum MetricId {
     ///
     /// [`Self::NpesPosition`] is the same quantity computed as though $P$ were diagonal, which
     /// is what this crate could measure before the off-diagonals reached
-    /// [`NavigationResult`](crate::sim::NavigationResult). That form is **optimistic**: it
+    /// [`NavigationResult`]. That form is **optimistic**: it
     /// equals the NEES only when the position states are genuinely uncorrelated, and after a
     /// GNSS update they are not. Where the two disagree, this one is right.
     NeesPosition,
@@ -888,7 +888,7 @@ fn mean(values: &[f64]) -> Option<f64> {
 ///
 /// Public because the test targets each grew their own copy of this, which is what
 /// [`crate::metrics`] exists to stop (#368). `None` rather than zero for the same reason
-/// [`mean`] returns `None`: a zero is indistinguishable from a perfect run.
+/// `mean` returns `None`: a zero is indistinguishable from a perfect run.
 ///
 /// ```
 /// use strapdown::metrics::root_mean_square;

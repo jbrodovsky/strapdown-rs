@@ -1,132 +1,177 @@
 # Frequently Asked Questions
 
-## General Questions
+## General
 
-### What is Strapdown-rs?
+### What is strapdown-rs?
 
-Strapdown-rs is a Rust library for implementing strapdown inertial navigation systems (INS). It provides core functionality for processing IMU data to estimate position, velocity, and orientation.
+A Rust implementation of strapdown inertial navigation and of the tools to study it under GNSS
+degradation. It is three crates: `strapdown-core` (the library, imported as `strapdown`), the
+`strapdown-sim` command-line simulator, and the experimental `strapdown-geonav` for gravity
+and magnetic map aiding. See the [Introduction](./introduction.md).
 
-### Who should use Strapdown-rs?
+### Who is it for?
 
-Strapdown-rs is designed for:
-- Researchers working on navigation systems
-- Engineers developing autonomous systems
-- Students learning about inertial navigation
-- Anyone needing a high-performance INS implementation in Rust
+Researchers, students and engineers who want reproducible inertial-navigation experiments:
+the same input, configuration and seed give the same output, and the GNSS outages, noise and
+spoofing are configured rather than hand-edited into the data.
 
 ### What coordinate frames are supported?
 
-The library primarily uses the North-East-Down (NED) local-level frame. The 9-state vector includes:
-- Position: latitude, longitude, altitude
-- Velocity: northward, eastward, downward
-- Attitude: roll, pitch, yaw
+North-East-Down (NED) is the default local-level frame, as in Groves. East-North-Up (ENU) is an
+explicit opt-in: `--enu` on the command line or `is_enu = true` in a config file. The 9-state
+navigation vector is:
+
+- position: latitude, longitude, altitude (height above the ellipsoid, positive up in both
+  frames);
+- velocity: north, east and vertical, where vertical is positive **down** in NED and positive
+  **up** in ENU (the output column is `velocity_vertical`);
+- attitude: roll, pitch, yaw.
+
+See [Coordinate Frames](./user-guide/coordinate-frames.md).
 
 ### Is this production-ready?
 
-Strapdown-rs is primarily intended for research and development. While the code is well-tested and prioritizes correctness, it is still under active development as part of ongoing PhD research.
+It is research software. It is tested and prioritises correctness, but it is developed as part
+of ongoing PhD research, and `strapdown-geonav` in particular is experimental.
 
-## Installation and Setup
+## Installation and setup
 
 ### What are the system requirements?
 
-See the [System Requirements](./installation/requirements.md) page for detailed information. In summary:
-- Rust 1.91 or later
-- A C/C++ compiler and cmake 3.26+, but only for features that use a C library
-- No system libraries to install at build time
-- libfontconfig at *run* time, if you use `strapdown-sim`'s plotting (a default feature).
-  It is loaded on demand, so a machine without it builds fine and fails at the first plot
-- Supported on Linux, macOS, and Windows
+See [System Requirements](./installation/requirements.md). In summary:
+
+- Rust 1.91 or later (`rust-toolchain.toml` fetches it);
+- a C compiler for features that bundle a C library (`strapdown-sim`'s default `plotting`,
+  `mcap`), and a C/C++ compiler with cmake 3.26 or newer for HDF5, netCDF and `geonav`;
+  `cargo build -p strapdown-core` needs neither;
+- no system libraries at build time;
+- libfontconfig at *run* time, for `strapdown-sim`'s `--plot` (the `plotting` feature, on by
+  default). It is loaded on demand, so a machine without it builds fine and fails at the
+  first plot;
+- Linux, macOS or Windows.
 
 ### Do I need to install HDF5 and NetCDF?
 
 No. They are compiled from vendored sources that ship as ordinary cargo dependencies, along
 with zlib and freetype, so nothing is searched for on your machine. What you need instead is a
-C/C++ compiler and cmake 3.26 or newer to build them with.
-
-They are used for:
-- HDF5: binary data storage for `TestDataRecord` and `NavigationResult`
-- NetCDF: geophysical map data for the geonav features
-
-Neither is on by default in `strapdown-core`, so if you only need the core INS functionality
-you need no C toolchain either: `cargo build -p strapdown-core` uses none.
+C/C++ compiler and cmake 3.26 or newer to build them with. HDF5 and NetCDF back the optional
+`hdf5`/`netcdf` output methods on `NavigationResult` and `TestDataRecord`, and NetCDF also
+reads the geophysical maps.
 
 ### How do I install on Windows?
 
 Install the MSVC toolchain from Visual Studio Build Tools plus
-[cmake](https://cmake.org/download/). vcpkg is no longer needed, since nothing is looked up on
-the system. WSL2 also works if you prefer a Linux environment.
+[cmake](https://cmake.org/download/). vcpkg is not needed, since nothing is looked up on the
+system. WSL2 also works. See [Installation](./installation/installation.md).
 
-See [Installation](./installation/installation.md) for details.
-
-## Usage Questions
+## Usage
 
 ### What data format does strapdown-sim accept?
 
-The simulation expects CSV files with IMU and GNSS data following the Sensor Logger app format. See [Input Data Format](./user-guide/data-format.md) for details.
+CSV files in the Sensor Logger app's format: timestamped IMU, GNSS and optional barometer and
+magnetometer columns. `strapdown-sim syn` writes the same format from a synthetic trajectory.
+See [Input Data Format](./user-guide/data-format.md).
 
-### Which filter should I use: EKF, UKF, or Particle Filter?
+### What does it write?
 
-- **EKF**: Fastest, works well for mildly nonlinear systems
-- **UKF**: Better accuracy for highly nonlinear systems, 2-3x slower than EKF
-- **Particle Filter**: Best for non-Gaussian distributions and multimodal scenarios
+CSV. Every path through `strapdown-sim` ends in `NavigationResult::to_csv`. An `-o` value ending
+in `.csv` is a file; one ending in another data format's extension (`.h5`, `.nc`, `.mcap`,
+`.parquet` and so on) is refused; any other value is a directory to write `<input name>.csv`
+into. HDF5, NetCDF and MCAP writers exist as library methods on `NavigationResult` behind cargo
+features, not as CLI options. See [Output Format](./user-guide/output-format.md).
 
-See [Filter Comparison](./filters/comparison.md) for detailed analysis.
+### My run stops with `InvalidConfiguration { field: "is_enu", ... }`
+
+The data's frame does not match the one you declared. Sensor Logger exports are ENU, so pass
+`--enu` (or set `is_enu = true` in the config file); `syn` output is NED, so leave it off. The
+check compares the leading records' vertical specific force with what the declared frame
+expects at rest, and the message says which way round it is.
+
+### Which filter should I use?
+
+- **ESKF** (`cl`, the default): the error-state Kalman filter. Start here.
+- **EKF** (`cl --filter ekf`) and **UKF** (`cl --filter ukf`): the full-state alternatives,
+  and the two Kalman filters that accept geophysical aiding.
+- **Particle filter** (`pf`): the Rao-Blackwellized particle filter, the only particle filter
+  in the crate. It is built for map-aided navigation, where the measurement is a nonlinear,
+  possibly ambiguous function of position.
+
+No speed comparison is published, because none has been measured. For accuracy, see
+[Filter Comparison](./filters/comparison.md) and [Performance Baselines](./development/performance.md).
 
 ### Can I use my own sensor data?
 
-Yes! You'll need to convert your data to the expected CSV format. The library is designed to work with standard IMU (gyroscope and accelerometer) and GNSS (position) measurements.
+Yes: convert it to the input CSV format above. Any IMU (accelerometer and gyroscope) with GNSS
+position and velocity will do; barometer and magnetometer columns are optional.
 
 ### How do I simulate GNSS outages?
 
-Use the GNSS fault simulation features in the configuration file:
+With a scheduler. On the command line, a duty cycle of 100 s available and 50 s denied:
 
-```toml
-[gnss]
-dropout_probability = 0.1  # 10% chance of dropout
-reduced_update_rate = 0.5  # Half the normal rate
+```bash
+strapdown-sim cl -i input.csv -o output.csv --sched duty --on-s 100 --off-s 50
 ```
 
-See [GNSS Degradation Scenarios](./gnss/fault-simulation.md) for more options.
+or one fix a minute with `--sched fixed --interval-s 60`. In a config file the same goes in the
+`[aiding]` section:
 
-## Performance Questions
+```toml
+[aiding.scheduler]
+kind = "duty_cycle"
+on_s = 100.0
+off_s = 50.0
+start_phase_s = 0.0
+```
 
-### How fast is Strapdown-rs?
+Note that a duty cycle starts with its OFF window unless `start_phase_s` (`--duty-phase-s`)
+gives an initial ON window. Noise, bias and spoofing are fault models (`--fault`). See
+[Schedulers and Faults Reference](./gnss/scenarios.md) for every option.
 
-Performance varies by filter type and configuration:
-- **EKF**: ~10,000-20,000 updates/second
-- **UKF**: ~3,000-5,000 updates/second
-- **Particle Filter**: Depends on particle count (100 particles: ~500 updates/second)
+## Performance
 
-These are approximate figures on modern hardware and will vary based on your system.
+### How fast is it?
+
+There are no published throughput figures, because none have been measured; nothing in CI
+tracks wall-clock time yet. What is measured and gated is navigation *accuracy*: see
+[Performance Baselines](./development/performance.md).
 
 ### Can I run simulations in parallel?
 
-The current implementation processes data sequentially as navigation is inherently a sequential process. However, the particle filter implementation can utilize multiple cores for particle processing.
+Across files, yes. Point the input at a directory and pass `--parallel`
+(`strapdown-sim --parallel cl -i dir/ -o out/`), or set `parallel = true` in a config file, and
+the files are processed concurrently on a thread pool. `--parallel` works the same way with
+`dr`, `cl`, `pf` and `--config`; `syn`, `config` and `ol` refuse it. Each file's run is itself
+sequential, as navigation is.
 
-### How much memory does it use?
+### The particle filter is slow
 
-Memory usage is modest:
-- Core library: ~10-50 MB
-- Simulations: Depends on data size and filter configuration
-- Particle filters: Linear with particle count
+Its cost grows with the number of particles, so reduce `--num-particles` (or `num_particles` in
+`[particle_filter]`). If you do not need map aiding, a Kalman filter (`cl`) is the usual
+choice.
 
-## Development Questions
+## Development
 
 ### How can I contribute?
 
-We welcome contributions! Please see the [Contributing Guide](./development/contributing.md) and reach out to the project maintainer before starting major work.
+See [Contributing](./development/contributing.md), and contact the maintainer before starting
+major work.
 
 ### Where is the API documentation?
 
-Full API documentation is available at [docs.rs/strapdown-core](https://docs.rs/strapdown-core). This book focuses on high-level concepts and usage patterns.
+The rustdoc is published with this book; [API Documentation](./api/index.md) links it and maps
+the modules. It will also be on docs.rs once the crates are published with v1.0.0.
 
-### Can I use this in my commercial project?
+### Can I use this in a commercial project?
 
-Yes! Strapdown-rs is licensed under the MIT License, which allows commercial use. See the [LICENSE](https://github.com/jbrodovsky/strapdown-rs/blob/main/LICENSE) file for details.
+The code is MIT licensed, which allows commercial use. See the
+[LICENSE](https://github.com/jbrodovsky/strapdown-rs/blob/main/LICENSE) file.
 
 ### How do I cite this work?
 
-If you use Strapdown-rs in your research, please cite the JOSS paper:
+The JOSS paper is under review
+([openjournals/joss-reviews#11377](https://github.com/openjournals/joss-reviews/issues/11377)).
+Until it is published, cite the software with the repository's `CITATION.cff` (GitHub's "Cite
+this repository" button). See [Publications and Links](./resources/publications.md).
 
 [![JOSS](https://joss.theoj.org/papers/5079592cc860d1435482a4a7764edcd4/status.svg)](https://joss.theoj.org/papers/5079592cc860d1435482a4a7764edcd4)
 
@@ -137,40 +182,22 @@ If you use Strapdown-rs in your research, please cite the JOSS paper:
 These are built from source, so failures are cmake or compiler errors rather than linker
 errors. The two common ones:
 
-1. **`CMake 3.26 or higher is required`** -- your cmake is older than the bundled HDF5 needs.
+1. **`CMake 3.26 or higher is required`**: your cmake is older than the bundled HDF5 needs.
    Ubuntu 22.04 (3.22) and Debian 12 (3.25) both hit this.
-2. **A confusing cmake failure inside the netCDF build** -- check `echo "${HDF5_DIR:-unset}"`.
+2. **A confusing cmake failure inside the netCDF build**: check `echo "${HDF5_DIR:-unset}"`.
    If it is set, the HDF5 build switches to looking for a *system* library even though a
-   vendored build was requested, and netCDF is then given the wrong headers.
+   vendored build was requested, and netCDF is then given the wrong headers. Unset it.
 
-See [Installation Troubleshooting](./installation/installation.md#troubleshooting) for more help.
+See [Installation](./installation/installation.md) for more.
 
-### My simulation produces NaN values
+### My simulation produces NaN values or stops on a health check
 
-Common causes:
-- Invalid initial conditions
-- IMU data with unrealistic values
-- Numerical instability in filter
-
-Check your input data and initial state. Enable debug logging with `--log-level debug` to investigate.
-
-### The particle filter is very slow
-
-This is expected with high particle counts. Consider:
-- Reducing the number of particles
-- Using the RBPF (Rao-Blackwellized) variant
-- Using EKF/UKF instead if appropriate
+Common causes are a wrong frame declaration (see above), unrealistic IMU values, or a filter
+that has diverged. The run's health monitor stops a run whose state leaves configured bounds;
+`--log-level debug` shows what happened before it did.
 
 ### Where can I get help?
 
-- Check this FAQ and the user guide
-- Search existing [GitHub Issues](https://github.com/jbrodovsky/strapdown-rs/issues)
-- Open a new issue if you've found a bug
-- Contact the maintainer for research collaborations
-
-## Additional Questions?
-
-If your question isn't answered here, please:
-1. Check the [User Guide](./user-guide/overview.md)
-2. Review the [API Reference](./api/core.md)
-3. Open an issue on [GitHub](https://github.com/jbrodovsky/strapdown-rs/issues)
+- this FAQ and the [User Guide](./user-guide/overview.md);
+- existing [GitHub Issues](https://github.com/jbrodovsky/strapdown-rs/issues);
+- a new issue, if you have found a bug.

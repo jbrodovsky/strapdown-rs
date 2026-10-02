@@ -1,146 +1,166 @@
 # Installation
 
-This page provides detailed instructions for installing Strapdown-rs on your system.
+There are two things to install, and most readers want only one of them:
 
-## Prerequisites
+- the **`strapdown-sim` binary**, to run simulations from the command line;
+- the **`strapdown-core` library**, to call the mechanization and filters from your own Rust
+  code. It is imported as `strapdown`.
 
-Before installing Strapdown-rs, ensure you have the following:
+## Version 1.0 is installed from git
 
-- **Rust**: Version 1.91 or higher (install from [rustup.rs](https://rustup.rs))
-- **A C/C++ compiler and cmake >= 3.26**, for the features that use a C library
+At the time of writing, crates.io carries only pre-1.0 releases of these crates, whose API
+differs from the one this book documents. Version 1.0.0 is published to crates.io together with
+the JOSS paper. **Until then, install from the GitHub repository**, as below. Once 1.0.0 is on
+crates.io, drop the `--git` argument from every command on this page.
 
-## Build Dependencies
+## Before you start
 
-There are **no system libraries to install**. libhdf5, libnetcdf, zlib and freetype are
-compiled from vendored sources that ship as ordinary cargo dependencies, so nothing is looked
-for on your machine. You only need a toolchain to compile them with.
+You need a Rust toolchain, version **1.91 or newer**, from [rustup.rs](https://rustup.rs).
+Whether you need anything else depends on which features you build:
 
-### Ubuntu/Debian
+| What you build | Needs |
+| --- | --- |
+| `strapdown-core` with default features | Rust only |
+| `strapdown-core` with `mcap`; `strapdown-sim` with its default `plotting` feature | Rust and a C compiler |
+| `strapdown-core` with `hdf5` or `netcdf`; `strapdown-sim` with `geonav`; `strapdown-geonav` | Rust, a C/C++ compiler, and **cmake 3.26 or newer** |
 
-```bash
-sudo apt update
-sudo apt install -y build-essential cmake
-```
+No system libraries are searched for. libhdf5, libnetcdf, zlib and FreeType are compiled from
+vendored sources that ship as ordinary cargo dependencies, so the compiler and cmake are all
+the build needs. Two details catch people out:
 
-Check `cmake --version`: the bundled HDF5 needs **3.26 or newer**, which is more than Ubuntu
-22.04 (3.22) or Debian 12 (3.25) ship. On those, install cmake from
-[Kitware's APT repository](https://apt.kitware.com/), or with `pip install cmake`, or with
-`snap install cmake --classic`.
+- **cmake 3.26 is newer than some distributions ship.** Ubuntu 22.04 has 3.22 and Debian 12 has
+  3.25, and both fail. Install a newer cmake from
+  [Kitware's APT repository](https://apt.kitware.com/), with `pip install cmake`, or with
+  `snap install cmake --classic`. Ubuntu 24.04 and Fedora 40+ are new enough as shipped.
+- **`HDF5_DIR` must be unset.** When it is set, the HDF5 build script looks for a system
+  library instead of building the vendored one, even though a vendored build was requested,
+  and the netCDF build then fails against those headers with an error that does not name the
+  cause. A leftover conda or pixi shell is the usual source.
 
-### Fedora/RHEL
+[System Requirements](./requirements.md) lists the per-platform commands for the compiler and
+cmake.
 
-```bash
-sudo dnf install -y gcc gcc-c++ cmake
-```
-
-### macOS
-
-```bash
-xcode-select --install
-brew install cmake
-```
-
-### Windows
-
-Install the MSVC toolchain from Visual Studio Build Tools, plus
-[cmake](https://cmake.org/download/). vcpkg is not needed.
-
-> **Note:** `strapdown-core` on its own needs none of this -- `cargo add strapdown-core` and a
-> Rust toolchain are enough unless you turn on its `hdf5` or `netcdf` features.
-
-## Installation Methods
-
-### Method 1: Install from Crates.io (Recommended)
-
-The easiest way to use Strapdown-rs is to add it as a dependency in your project:
+## Install the simulator
 
 ```bash
-cargo add strapdown-core
+cargo install --git https://github.com/jbrodovsky/strapdown-rs strapdown-sim
 ```
 
-Or add manually to your `Cargo.toml`:
+With experimental geophysical (gravity and magnetic anomaly) aiding, which adds the `--geo`
+family of flags to `cl` and `pf`:
+
+```bash
+cargo install --git https://github.com/jbrodovsky/strapdown-rs strapdown-sim --features geonav
+```
+
+Check the result:
+
+```console
+$ strapdown-sim --version
+strapdown-sim 1.0.0
+```
+
+`cargo install` puts the binary in `~/.cargo/bin`, which rustup adds to your `PATH`.
+
+## Add the library to a project
+
+```bash
+cargo add strapdown-core --git https://github.com/jbrodovsky/strapdown-rs
+```
+
+That writes this entry to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-strapdown-core = "0.1"
+strapdown-core = { git = "https://github.com/jbrodovsky/strapdown-rs", version = "1.0.0" }
 ```
 
-To install the simulation binary:
+Add features with `--features`, for example
+`cargo add strapdown-core --git https://github.com/jbrodovsky/strapdown-rs --features mcap`.
+In your code the crate is `strapdown`, not `strapdown_core`. [Using the
+Library](../user-guide/library.md) continues from here.
+
+## Cargo features
+
+### `strapdown-core`
+
+| Feature | Default | What it adds | Build needs |
+| --- | --- | --- | --- |
+| `clap` | no | `clap` `ValueEnum` and `Args` derives on the simulation configuration types in `strapdown::sim`, so a CLI can take them as arguments. `strapdown-sim` turns this on | Rust only |
+| `hdf5` | no | `NavigationResult::to_hdf5` / `from_hdf5` and the matching `TestDataRecord` readers and writers | C/C++ compiler, cmake ≥ 3.26 |
+| `netcdf` | no | `NavigationResult::to_netcdf` / `from_netcdf` and the `TestDataRecord` equivalents | C/C++ compiler, cmake ≥ 3.26 |
+| `mcap` | no | `NavigationResult::to_mcap` / `from_mcap` and the `TestDataRecord` equivalents | C compiler (bundled LZ4 and Zstandard) |
+| `full` | no | All four of the above | as for `hdf5` |
+
+The default build has none of them and compiles with Rust alone. These writers are library
+methods only. `strapdown-sim` writes CSV whatever features the library was built with, and
+refuses an `-o` path whose extension names another format (`-o out.h5` is an error, not an HDF5
+file); a path with no extension is a directory to write `.csv` files into.
+
+### `strapdown-sim`
+
+| Feature | Default | What it adds | Build needs |
+| --- | --- | --- | --- |
+| `plotting` | **yes** | Rendering for the global `--plot` flag, a performance plot against the GNSS track. Without the feature `--plot` is refused, and a config file's `generate_plot = true` logs an error and draws nothing | C compiler (bundled FreeType); libfontconfig at **run time** |
+| `geonav` | no | Gravity and magnetic anomaly map aiding: `--geo`, `--gravity-*`, `--magnetic-*` and `--geo-interval-s` on `cl` and `pf`. Without the feature these flags do not exist | C/C++ compiler, cmake ≥ 3.26 |
+
+`plotting` loads libfontconfig when it first draws text rather than linking it at build time.
+A machine without it builds and runs normally, and fails only when a plot is rendered. It is
+present on virtually every desktop Linux install; on a minimal container, `apt install
+libfontconfig1`.
+
+## Build from a clone
+
+Contributors, and anyone who wants the examples and test fixtures, should clone the
+repository:
 
 ```bash
-cargo install strapdown-sim
-```
-
-### Method 2: Build from Source
-
-Clone the repository and build locally:
-
-```bash
-# Clone the repository
 git clone https://github.com/jbrodovsky/strapdown-rs.git
 cd strapdown-rs
-
-# Build the entire workspace
-cargo build --workspace --all-features --release
-
-# Install the simulation binary
-cargo install --path sim
-
-# Optionally, with geophysical (gravity/magnetic) navigation. This is the variant that
-# compiles libnetcdf from source, so it needs cmake.
-cargo install --path sim --features geonav
+cargo build --workspace --release
 ```
 
-> The repository used to ship a `pixi.toml` for environment management. It was removed once
-> the C libraries began building from source, since there was nothing left for it to provide;
-> `cargo build` is now the whole story.
+The binary is then at `target/release/strapdown-sim`. Inside the clone, `rust-toolchain.toml`
+pins the toolchain the CI uses (1.91) and rustup fetches it on the first cargo command, so you
+do not choose a version yourself. `.cargo/config.toml` additionally forces the vendored
+FreeType, so a repository build never links a system copy. (`cargo install` from git does not
+read that file and may link a system FreeType if pkg-config reports one; both work.)
 
-## Verifying Installation
-
-After installation, verify everything works:
+To put a binary built from your clone on your `PATH`:
 
 ```bash
-# Check strapdown-sim version
-strapdown-sim --version
-
-# Run a simple test
-cargo test -p strapdown-core
+cargo install --path sim
+cargo install --path sim --features geonav   # with geophysical aiding
 ```
+
+There is no environment manager to set up; `cargo build` is the whole setup. Running the test
+suite, the lint gate and the performance baselines is covered in
+[Building and Testing](../development/building.md).
 
 ## Troubleshooting
 
-### HDF5/NetCDF Build Issues
+**`CMake 3.26 or higher is required`.** Your cmake is too old for the bundled HDF5. Install a
+newer one as described under [Before you start](#before-you-start).
 
-These libraries are compiled from source, so failures look like cmake or compiler errors
-rather than linker errors.
-
-1. **`CMake 3.26 or higher is required`** -- your cmake is too old. See the Build Dependencies
-   section above.
-
-2. **Confusing cmake failures inside the netCDF build** -- check whether `HDF5_DIR` is set:
-   ```bash
-   echo "${HDF5_DIR:-unset}"
-   ```
-   If it is, the HDF5 build script quietly switches to looking for a *system* library instead
-   of building the vendored one, and the netCDF build is then handed the wrong headers. Unset
-   it. A leftover conda or pixi shell is the usual source.
-
-3. **`cargo install` is slow the first time** -- that is the one-off source build of libhdf5
-   and libnetcdf, roughly a minute on a modern machine. It is cached afterwards.
-
-### Rust Version Issues
-
-Ensure you're using a recent Rust version:
+**Confusing cmake failures inside the netCDF build.** Check for a stale `HDF5_DIR`:
 
 ```bash
-rustc --version
+echo "${HDF5_DIR:-unset}"
 ```
 
-Inside a clone of the repository, `rust-toolchain.toml` pins the version and rustup fetches it
-for you, so this should already agree with what CI uses.
+If it prints a path, unset it and rebuild.
 
-## Next Steps
+**The first build of `hdf5`, `netcdf` or `geonav` is slow.** That is the one-off source build
+of libhdf5 and libnetcdf. Cargo caches it, and later builds reuse it.
 
-- Continue to the [Quick Start](../quick-start.md) guide
-- Learn about [System Requirements](./requirements.md)
-- Explore [Building from Source](./building.md) in detail
+**A plot fails to render while everything else works.** libfontconfig is missing at run time;
+see the `plotting` row above.
+
+**`cargo add strapdown-core` without `--git` resolved to a 0.x version.** That is the last
+pre-1.0 release on crates.io. Its API is not the one in this book. Use the `--git` form until
+1.0.0 is published.
+
+## Next steps
+
+- [Quick Start](../quick-start.md): generate a trajectory and run every simulation mode on it.
+- [System Requirements](./requirements.md): platform-specific setup.

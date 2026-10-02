@@ -124,6 +124,19 @@ The paper's setting never tests this: a navigation-grade INS, map fixes every ep
 6. **Process noise across an epoch.** The accumulated process noise carries each state's own
    decay across the epoch, so a Gauss-Markov state stays stationary over long gaps between
    sparse fixes.
-7. **Configurable horizontal process noise.** The default is the paper's zero.
+7. **Configurable horizontal process noise.** The library's `RbpfConfig` defaults to the paper's
+   zero; `strapdown-sim` and its `[particle_filter]` section default to `[1, 1]` m/√s, for the
+   reason [above](#horizontal-process-noise-why-the-default-is-1-ms).
 
 The implementation, with equation references throughout, is `core/src/rbpf.rs`.
+
+## See also
+
+- [Tutorial: Particle Filter](../examples/tutorial-particle-filter.md) runs `strapdown-sim pf`
+  end to end on a synthetic trajectory and scores it against truth.
+- [Particle Building Blocks](./particle-filter.md): the resampling algorithms this filter uses.
+  It resamples systematically; `RbpfConfig::resampling_strategy` selects another algorithm from
+  the library, and the simulator does not expose it.
+- [Measurement Models and Integrity](./measurements.md): the models it is updated with, and the
+  innovation gate it honours like the Kalman filters.
+- [Particle Filter](../user-guide/particle-filter.md) in the user guide: the `pf` subcommand.

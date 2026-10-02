@@ -448,7 +448,7 @@ fn scenarios() -> Vec<Scenario> {
         let mut built = AidingConfig::default();
         built.scheduler = MeasurementScheduler::PassThrough;
         built.fault = GnssFaultModel::None;
-        built.seed = SEED;
+        built.seed = Some(SEED);
         built
     };
 
@@ -477,19 +477,19 @@ fn scenarios() -> Vec<Scenario> {
                     phase_s: 0.0,
                 };
                 built.fault = GnssFaultModel::None;
-                built.seed = SEED;
+                built.seed = Some(SEED);
                 built
             },
             estimator,
         });
     }
 
-    // The headline v1.0 case. Errors here reach tens of metres, so the one-step labelling
-    // offset described in the module docs is a small share of the number rather than most of
-    // it -- which is what makes this row a usable regression detector on real data.
+    // The headline v1.0 case. Errors here reach tens of metres, well above the receiver noise
+    // and the self-scoring floor the module docs describe, which is what makes this row a
+    // usable regression detector on real data.
     out.push(Scenario {
         id: "real_outage_60s__eskf".to_string(),
-        description: "test_data.csv, 120 s of GNSS then a 60 s outage, repeating".to_string(),
+        description: "test_data.csv, a 60 s outage then 120 s of GNSS, repeating".to_string(),
         source: Source::Real,
         gnss: {
             let mut built = AidingConfig::default();
@@ -499,7 +499,7 @@ fn scenarios() -> Vec<Scenario> {
                 start_phase_s: 0.0,
             };
             built.fault = GnssFaultModel::None;
-            built.seed = SEED;
+            built.seed = Some(SEED);
             built
         },
         estimator: Estimator::Eskf,
@@ -525,7 +525,7 @@ fn scenarios() -> Vec<Scenario> {
                     tau_pos_s: None,
                     tau_vel_s: None,
                 };
-                built.seed = SEED;
+                built.seed = Some(SEED);
                 built
             },
             estimator,
@@ -547,7 +547,7 @@ fn scenarios() -> Vec<Scenario> {
                     phase_s: 0.0,
                 };
                 built.fault = GnssFaultModel::None;
-                built.seed = SEED;
+                built.seed = Some(SEED);
                 built
             },
             estimator,
@@ -558,7 +558,7 @@ fn scenarios() -> Vec<Scenario> {
     for estimator in [Estimator::Ukf, Estimator::Eskf] {
         out.push(Scenario {
             id: format!("syn_outage_60s__{}", estimator.key()),
-            description: "synthetic 300 s at 50 Hz, 60 s of GNSS then 60 s of outage".to_string(),
+            description: "synthetic 300 s at 50 Hz, 60 s of outage then 60 s of GNSS".to_string(),
             source: Source::Synthetic,
             gnss: {
                 let mut built = AidingConfig::default();
@@ -568,7 +568,7 @@ fn scenarios() -> Vec<Scenario> {
                     start_phase_s: 0.0,
                 };
                 built.fault = GnssFaultModel::None;
-                built.seed = SEED;
+                built.seed = Some(SEED);
                 built
             },
             estimator,
@@ -619,10 +619,12 @@ fn baseline_path() -> PathBuf {
 
 /// The synthetic trajectory every `syn_*` scenario runs over.
 ///
-/// 50 Hz, not the 10 Hz default, on purpose: `run_closed_loop` labels each row with the
-/// timestamp of the event *before* the one it has already applied, so a solution carries one
-/// propagation step of along-track offset. At 50 m/s that is 1 m at 50 Hz and 5 m at 10 Hz,
-/// and the point of these rows is to resolve filter error of a few metres.
+/// 50 Hz, not the 10 Hz default. The rate was chosen while `run_closed_loop` labelled each row
+/// with the timestamp of the event *before* the one it had already applied, so a solution
+/// carried one propagation step of along-track offset -- 1 m at 50 m/s and 50 Hz, 5 m at 10 Hz,
+/// against filter errors of a few metres. #367 fixed that labelling: a row stamped `t_k` now
+/// holds every event at or before `t_k`. The rate stays because the baseline was blessed at it,
+/// and changing it would move every `syn_*` number for a reason unrelated to any filter.
 fn synthetic_config(duration_s: f64) -> SyntheticConfig {
     // Not a `const fn` any more: `SyntheticConfig` is `#[non_exhaustive]` as of the v1.0 API
     // freeze, so it cannot be built from a struct literal outside its own crate, and

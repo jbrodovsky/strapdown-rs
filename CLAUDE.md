@@ -22,7 +22,7 @@ The core library implementing strapdown INS algorithms and simulation framework:
 - **kalman.rs**: Kalman-style navigation filters including Unscented Kalman Filter (UKF) for nonlinear state estimation
 - **particle.rs**: Particle-filter building blocks (the `Particle` trait, resampling and averaging strategies); not a filter on its own
 - **rbpf.rs**: The Rao-Blackwellized particle filter, after Canciani & Raquet (2017) -- the one concrete particle filter
-- **measurements.rs**: Measurement models (GPS position/velocity, barometric altitude, pseudorange, carrier phase) implementing the `MeasurementModel` trait
+- **measurements.rs**: Measurement models (GPS position/velocity, barometric altitude, magnetometer yaw, ZUPT/ZARU) implementing the `MeasurementModel` trait. Loosely coupled only: there are no pseudorange or carrier-phase models
 - **messages.rs**: Event stream handling for GNSS scheduling and fault injection scenarios
 - **sim.rs**: Simulation utilities, CSV data loading (Sensor Logger format), dead reckoning and closed-loop functions
 - **linalg.rs**: Linear algebra utilities for matrix operations
@@ -43,12 +43,15 @@ Command-line tool for running INS simulations with GNSS degradation:
 - GNSS fault simulation: dropouts, reduced update rates, measurement corruption, bias injection
 - Input: CSV files with IMU and GNSS measurements (Sensor Logger format)
 - Output: **the CLI writes CSV only.** Every path through `strapdown-sim` ends in
-  `NavigationResult::to_csv`, and `OUTPUT_FILE_EXTENSIONS` in `sim/src/common.rs` is `["csv"]`,
-  so any other extension is rejected rather than filled with CSV. `to_hdf5`, `to_netcdf` and
-  `to_mcap` exist as **library** writers on `NavigationResult`, reachable from Rust but not
-  from this binary. There is no Parquet writer at all
+  `NavigationResult::to_csv`. In `sim/src/common.rs`, a `-o` ending in `.csv`
+  (`OUTPUT_FILE_EXTENSIONS`) names a file; one whose extension names another data format
+  (`REFUSED_OUTPUT_EXTENSIONS`: h5, hdf5, nc, netcdf, mcap, parquet, json, yaml, yml, toml, txt)
+  is refused unless it is an existing directory; anything else is a directory of CSV results.
+  `syn` must be given a `.csv` file. `to_hdf5`, `to_netcdf` and `to_mcap` exist as **library**
+  writers on `NavigationResult`, reachable from Rust but not from this binary. There is no
+  Parquet writer at all
 - Configuration: TOML/YAML/JSON scenario files or command-line arguments
-- Built-in logging: Use `--log-level` and `--log-file` flags (see LOGGING.md for details)
+- Built-in logging: Use `--log-level` and `--log-file` flags (see `book/src/user-guide/logging.md`)
 
 **Free Core scope**: Basic GNSS degradation (outages, noise, reduced availability)
 **Future Pro scope**: Advanced faults (spoofing, jamming, multipath, terrain masking)
@@ -58,7 +61,7 @@ Command-line tool for running INS simulations with GNSS degradation:
 - Loads NetCDF geophysical maps (gravity/magnetic anomaly grids)
 - Integrates geophysical measurements with INS/GNSS filters
 - Provides alternative PNT in GNSS-denied environments
-- Built-in logging: Use `--log-level` and `--log-file` flags (see LOGGING.md for details)
+- Built-in logging: Use `--log-level` and `--log-file` flags (see `book/src/user-guide/logging.md`)
 - Status: Experimental feature for research, may be commercialized in future roadmap
 
 ### 4. `analysis` (/analysis, Python)
@@ -68,7 +71,7 @@ Post-processing and experiment tooling, exposed as the `analyze` CLI:
   `_magnetic.nc` maps beside each trajectory. `just preprocess` runs it at **10 Hz**, which
   gives 10 Hz inertial propagation against the ~1 Hz the GNSS was actually recorded at (the
   GNSS columns stay NaN in nine rows out of ten; do not interpolate them up). `data/input` is
-  the one directory every consumer reads -- all 21 `conf/*.toml`, `geo-stats`, `postprocess`
+  the one directory every consumer reads -- all 15 `conf/*.toml`, `geo-stats`, `postprocess`
   and `geoperf-*` -- so change the rate, not the path. `just preprocess-1hz` is the 1 Hz
   variant, which is the rate every result before the geophysical fixes used
 - **geostats.py**: characterises the geophysical measurements against those maps -- per-field
@@ -186,8 +189,8 @@ The Free Core implementation must achieve the following capabilities:
 5. **Output Formats**:
    - CSV, HDF5, NetCDF and MCAP export for analysis in Python/MATLAB/R. **These are
      `NavigationResult` methods, not CLI output modes**: `strapdown-sim` writes CSV and
-     rejects every other extension, so reaching the other three means calling `to_hdf5`,
-     `to_netcdf` or `to_mcap` from Rust
+     refuses an output path naming another data format, so reaching the other three means
+     calling `to_hdf5`, `to_netcdf` or `to_mcap` from Rust
    - Parquet is deliberately **not** supported at either layer: `sim/src/common.rs` refuses
      `.parquet` rather than naming a file Parquet and filling it with CSV
    - Navigation solution time series with position, velocity, attitude estimates
@@ -229,8 +232,10 @@ The Free Core implementation must achieve the following capabilities:
   - Users control via `is_enu` boolean flags and sign conventions; `StrapdownState::to_ned`
     and `to_enu` convert an existing state between the two
   - Vertical velocity: positive down in NED, positive up in ENU
-  - `altitude` is height above the ellipsoid -- positive up -- in **both** frames, valid over
-    [-11,000m, 30,000m]. It is not a "down" coordinate in NED
+  - `altitude` is height above the ellipsoid -- positive up -- in **both** frames. The
+    mechanization is valid over [-11,000m, 30,000m], but nothing enforces that by default: the
+    health check's default altitude band is +/-1e8 m (`DEFAULT_HEALTH_ALT_{MIN,MAX}_M`), so
+    narrow `HealthLimits::alt_m` to make it a gate. It is not a "down" coordinate in NED
   - `TestDataRecord` carries no frame tag, so every entry point that loads one takes the
     frame from its caller: `sim::dead_reckoning(records, is_enu)` and `is_enu` on
     `UkfConfig`/`EkfConfig`/`EskfConfig`, all defaulting to NED. On the CLI that is `--enu`
@@ -254,7 +259,8 @@ The Free Core implementation must achieve the following capabilities:
 - **Forward propagation**: Uses `StrapdownState::propagate()` with strapdown equations (Chapter 5.4-5.5)
 - **Measurement models**: Implement the `MeasurementModel` trait for update step
   - Trait provides `predict_measurement()` and `innovation_covariance()` methods
-  - Implemented models: GPS position, GPS velocity, barometric altitude, pseudorange, carrier phase
+  - Implemented models: GPS position, velocity, and position+velocity; relative (barometric)
+    altitude; magnetometer yaw; ZUPT and ZARU. Geophysical models live in `strapdown-geonav`
 - **UKF implementation**:
   - Uses unscented transform with sigma points for nonlinear state estimation
   - Handles full 9-state navigation solution

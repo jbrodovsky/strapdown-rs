@@ -58,12 +58,17 @@ Log messages are formatted as:
 YYYY-MM-DD HH:MM:SS.mmm [LEVEL] - message
 ```
 
-Example:
+Example, from `strapdown-sim pf -i synthetic.csv -o results/pf.csv`:
 ```
-2025-12-01 14:30:45.123 [INFO] - Read 1000 records from data/input.csv
-2025-12-01 14:30:45.456 [INFO] - Running particle filter with 100 particles
-2025-12-01 14:30:50.789 [INFO] - Results written to output.csv
+2026-10-01 20:33:18.027 [INFO] - Read 6000 records from synthetic.csv
+2026-10-01 20:33:18.028 [INFO] - Mechanizing input as NED: mean vertical specific force over the first 10 record(s) is -9.754 m/s^2 against a local gravity of 9.780 m/s^2
+2026-10-01 20:33:22.501 [INFO] - Results written to results/pf.csv
 ```
+
+At `info`, a closed-loop run also logs a progress line every few events (position, velocity
+and their sigmas), which makes `info` verbose on long runs; `warn` keeps the end-of-run
+summaries -- such as how many measurements an innovation gate rejected -- and the per-row
+warnings about input rows that could not be parsed.
 
 ## `RUST_LOG` is not read
 
@@ -76,8 +81,8 @@ at all.**
 `from_env` and `from_default_env` do -- and nothing in the crate calls `parse_env`. Verified:
 
 ```console
-$ RUST_LOG=off strapdown-sim dr -i input.csv -o output.csv
-2026-09-17 23:45:46.856 [INFO] - Running in Dead Reckoning mode with input: input.csv
+$ RUST_LOG=off strapdown-sim dr -i input.csv -o output.csv 2>&1 | head -1
+2026-10-01 21:42:29.555 [INFO] - Running in Dead Reckoning mode with input: input.csv
 ```
 
 `--log-level` is the only control, and because `filter_level` sets one global level there are
@@ -88,24 +93,19 @@ equivalent here.
 
 For developers extending the project, use the logging macros from the `log` crate:
 
-```rust
+```rust,ignore
 use log::{trace, debug, info, warn, error};
 
-// Informational messages
 info!("Processing {} records", count);
-
-// Warnings
 warn!("Skipping row {} due to parse error", row_num);
-
-// Errors
 error!("Failed to read config file: {}", err);
-
-// Debug information
-debug!("UKF state: {:?}", ukf.get_mean());
-
-// Detailed traces
+debug!("filter state: {:?}", state);
 trace!("Entering function with params: {:?}", params);
 ```
+
+The library emits its own messages through the same macros, so anything `strapdown-core` logs
+appears in `strapdown-sim`'s output, formatted the same way. A program that uses the library
+directly sees those messages only if it installs a `log` backend of its own.
 
 ## Python Logger Comparison
 
@@ -120,9 +120,29 @@ This logging system provides a similar experience to Python's logging module:
 | `--log-level info`              | `--log-level info`                  |
 | Writing to file with FileHandler| `--log-file path/to/file.log`       |
 
+## Logging from a configuration file
+
+A configuration file can set the same two things in a `[logging]` section:
+
+```toml
+[logging]
+level = "debug"
+file = "results/run.log"
+```
+
+When a run uses `--config`, the command line and the file are combined:
+
+- `--log-file` on the command line overrides `file`.
+- `--log-level` overrides `level` **only when it is not `info`**. The flag's default is `info`,
+  so passing `--log-level info` explicitly cannot be told apart from not passing it, and the
+  file's level wins. To quieten a file that says `debug`, pass `--log-level warn`, not
+  `--log-level info`.
+
 ## Notes
 
-- Log files are opened in append mode, so multiple runs will append to the same log file
-- Timestamps use the local system timezone
-- The logger is initialized once at program startup
-- Log messages from the core library (`strapdown-core`) are also captured and formatted consistently
+- Log files are opened in append mode, so multiple runs append to the same file. Missing parent
+  directories are created.
+- Timestamps use the local system timezone.
+- An unrecognized level (`--log-level loud`) prints `Invalid log level 'loud', defaulting to
+  'info'` and runs at `info`.
+- The logger is initialized once at program startup.

@@ -141,7 +141,7 @@ const fn fault_variant(fault: &GnssFaultModel) -> &'static str {
         GnssFaultModel::Degraded { .. } => "Degraded",
         GnssFaultModel::SlowBias { .. } => "SlowBias",
         GnssFaultModel::Hijack { .. } => "Hijack",
-        GnssFaultModel::Combo(_) => "Combo",
+        GnssFaultModel::Combo { .. } => "Combo",
     }
 }
 
@@ -245,7 +245,8 @@ gnss_degradation:
         "the aliased section's fault model was silently dropped"
     );
     assert_eq!(
-        config.aiding.seed, 7,
+        config.aiding.seed,
+        Some(7),
         "the aliased section's seed was silently dropped"
     );
 
