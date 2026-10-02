@@ -77,10 +77,10 @@ Python package is a [uv](https://docs.astral.sh/uv/) workspace declared by the r
 
 ## Installation
 
-Rust is the only hard requirement. `rust-toolchain.toml` fetches the pinned toolchain (1.91)
-on the first `cargo` command.
+`rust-toolchain.toml` fetches the pinned Rust toolchain (1.91) on the first `cargo` command.
+What else you need depends on what you build.
 
-**Library only.** `strapdown-core` with default features needs nothing else:
+**Library only.** `strapdown-core` with default features needs nothing beyond Rust:
 
 ```bash
 cargo add strapdown-core --git https://github.com/jbrodovsky/strapdown-rs
