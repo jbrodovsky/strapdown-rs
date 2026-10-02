@@ -121,7 +121,7 @@ every other subcommand runs without it.
 ## Quick start
 
 ```bash
-# A 10-minute synthetic trajectory with truth, IMU and GNSS columns
+# A 10-minute synthetic trajectory: noisy IMU, GNSS and barometer records (add --no-noise for the truth)
 strapdown-sim syn -o synthetic.csv --duration-s 600 --seed 42
 
 # Closed loop (ESKF) with GNSS available for 100 s, then denied for 50 s, repeating
