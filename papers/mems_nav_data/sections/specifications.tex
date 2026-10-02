@@ -1,0 +1,21 @@
+\section*{Specifications table}
+\label{sec:specifications}
+
+\begin{longtable}{@{}>{\raggedright\arraybackslash}p{0.25\linewidth}>{\raggedright\arraybackslash}p{0.70\linewidth}@{}}
+\toprule
+Subject & Engineering \todo{choose from the Data in Brief subject list} \\
+\midrule
+Specific subject area & Inertial and satellite navigation with consumer-grade MEMS sensors; sensor fusion and state estimation under degraded or denied GNSS; geophysical (gravity and magnetic) map-aided navigation. \\
+\midrule
+Type of data & Time series in CSV tables (raw and processed); gridded map tiles in NetCDF; JSON segmentation manifest; TOML scenario configurations; tables and figures. \\
+\midrule
+Data collection & Smartphones running the Sensor Logger application \citep{sensorlogger} recorded the accelerometer, gyroscope, magnetometer, barometer, the operating system's fused gravity and attitude estimates, and GNSS fixes during road drives. The \numDevices{} phone models used were Google Pixel 6a, Pixel 9 Pro and Pixel 9 Pro XL; Samsung SM-S921U and SM-A146U; and Apple iPhone 12 mini and iPhone 13 mini. The phones were \todo{describe placement and mounting in the vehicle, and the vehicles used}. Recordings were resampled to 10~Hz, split at inertial dropouts longer than 5~s, and accompanied by map tiles from the Generic Mapping Tools remote datasets \citep{wessel2019gmt}, with the open-source analysis package distributed with strapdown-rs \citep{strapdown-rs}. \\
+\midrule
+Data source location & Public roads in the north-eastern United States, within latitudes \numLatMin--\numLatMax\,\textdegree{}N and longitudes \numLonMax--\numLonMin\,\textdegree{}W. Data were processed at Temple University, Philadelphia, Pennsylvania, USA. \\
+\midrule
+Data accessibility & Repository name: Zenodo \newline Data identification number: \todo{new Zenodo DOI} \newline Direct URL to data: \todo{https://doi.org/new Zenodo DOI} \newline Instructions for accessing these data: open access, no registration. The processing and replay software is available at \url{https://github.com/jbrodovsky/strapdown-rs}. \\
+\midrule
+Related research article & J.~Brodovsky, P.~Dames, Navigation in GNSS-denied environments using MEMS-grade sensors and geophysical anomalies: a UKF approach, in: Proceedings of the 2026 International Technical Meeting of the Institute of Navigation, Anaheim, California, 2026, pp.~155--164. \url{https://doi.org/10.33012/2026.20508} \\
+\bottomrule
+\end{longtable}
+\addtocounter{table}{-1}

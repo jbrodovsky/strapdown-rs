@@ -1,0 +1,10 @@
+# LaTeX build outputs; scripts/build.py regenerates tables/ and figures/, which are tracked.
+main.pdf
+*.bcf
+*.blg
+*.run.xml
+*.fls
+*.out
+*.spl
+*.synctex.gz
+__pycache__/

@@ -1,0 +1,78 @@
+\section{Data description}
+\label{sec:description}
+
+The dataset has three tiers: the raw recordings exactly as the phones exported them, the processed trajectories that most users will start from, and the map tiles and benchmark material that accompany the processed trajectories. \Cref{tab:devices} summarizes the recordings by device and \Cref{fig:tracks} shows where they were made.
+
+\subsection{Repository layout}
+\label{sec:layout}
+
+The Zenodo record \todo{new Zenodo DOI} is organized as follows. \todo{confirm the final directory names once the record is assembled; the layout below is the one proposed for it.}
+
+\begin{itemize}
+\item \texttt{raw/<recording>/}: one directory per recording, named by its UTC start time as \texttt{YYYY-MM-DD\_hh-mm-ss}. All \numUtcNamed{} directory names match the epoch timestamp stored in their \texttt{Metadata.csv}. Each directory holds the Sensor Logger CSV exports (\Cref{sec:raw}).
+\item \texttt{processed/<trajectory>.csv}: the \numTrajectories{} synchronized 10~Hz trajectories (\Cref{sec:processed}). A trajectory cut from a recording that had to be split carries a suffix \texttt{\_A}, \texttt{\_B}, \ldots{} in time order.
+\item \texttt{processed/segments.json}: the segmentation manifest. It has one entry per recording or segment, giving the source recording, the start and end time in seconds from the start of the recording, the row count, and whether the segment was kept or why it was rejected.
+\item \texttt{maps/<trajectory>\_\{relief,gravity,magnetic\}.nc}: map tiles cropped to each trajectory (\Cref{sec:maps}).
+\item \texttt{benchmark/}: the scenario configurations and the per-trajectory error summaries behind \Cref{tab:benchmark}.
+\end{itemize}
+
+\begin{table}[t]
+\centering
+\caption{Recordings by device, as identified in each recording's \texttt{Metadata.csv}. \emph{Rec.}\ counts raw recordings and \emph{Traj.}\ counts processed trajectories; hours and distance are those of the processed trajectories. \emph{GNSS file} is the raw file that the processed GNSS columns are taken from: \texttt{LocationGps} is Android's GNSS-only provider and \texttt{Location} is the platform's fused location service.}
+\label{tab:devices}
+\small
+\input{tables/devices.tex}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{figures/fig_tracks.pdf}
+\caption{GNSS tracks of the \numTrajectories{} processed trajectories, colored by device family, over the 15 arc-second relief tiles that accompany them (darker is higher). The single Samsung SM-A146U trajectory is short and lies under other tracks near 40.1\textdegree{}N, 75.3\textdegree{}W.}
+\label{fig:tracks}
+\end{figure}
+
+\subsection{Raw recordings}
+\label{sec:raw}
+
+There are \numRawRecordings{} raw recordings, made between \numRawFirst{} and \numRawLast{} with Sensor Logger versions 1.18.0 to 1.48.0 \citep{sensorlogger}. Together they hold \numRawGB~GB in about \numRawRowsMillion{} million rows and span \numRawHours~h of wall-clock time. One recording (\texttt{2025-06-13\_14-55-15}) contains no sensor data. Every sensor file has the columns \texttt{time}, the UTC epoch time in nanoseconds, and \texttt{seconds\_elapsed}, the time since the recording started, followed by its measured quantities. Three-axis sensors give \texttt{x}, \texttt{y} and \texttt{z} in the phone's body frame as reported by the operating system. \texttt{Metadata.csv} records the device model, platform, application version, the list of enabled sensors, their requested sampling interval in milliseconds, and whether Sensor Logger's cross-platform unit standardization was on.
+
+The files present depend on the platform and the application version. All recordings with data have \texttt{Gyroscope}, \texttt{Accelerometer}, \texttt{Gravity}, \texttt{Magnetometer}, \texttt{Orientation} and \texttt{Location}. Android recordings add \texttt{TotalAcceleration} (specific force including gravity). Recordings from 2025 onward add \texttt{GyroscopeUncalibrated}, \texttt{AccelerometerUncalibrated}, \texttt{MagnetometerUncalibrated} and \texttt{Compass}. Pixel recordings add the separate GNSS (\texttt{LocationGps}) and network (\texttt{LocationNetwork}) location providers, and Pixel 9 Pro recordings also add \texttt{GameOrientation} and \texttt{GeomagneticOrientation}. On both platforms \texttt{Accelerometer} is linear acceleration, with gravity removed. \numNoBaroRecordings{} iPhone recordings (\numNoBaroHours~h) have no barometer data and are released in raw form only. \Cref{tab:channels} lists the median sampling rate of each channel by device family, measured from the timestamps.
+
+\begin{table}[t]
+\centering
+\caption{Sensor channels. Rates are the median, over the recordings of each device family that enter the processed set, of each recording's median sampling rate (Hz) in the raw files; every channel is resampled to 10~Hz in the processed files. Sensor Logger requested a 10~ms interval for all inertial channels and left the barometer and location at their defaults. (a)~On iOS, where there is no \texttt{TotalAcceleration}, specific force is formed as \texttt{Accelerometer} plus \texttt{Gravity}. (b)~\texttt{Location} where \texttt{LocationGps} is absent (\Cref{tab:devices}). Processed column names are abbreviated; \Cref{sec:processed} lists them in full with their units.}
+\label{tab:channels}
+\footnotesize
+\setlength{\tabcolsep}{2.5pt}
+\input{tables/channels.tex}
+\end{table}
+
+\subsection{Processed trajectories}
+\label{sec:processed}
+
+The \numTrajectories{} processed trajectories hold \numRows{} rows at 10~Hz. \Cref{tab:trajectories} lists them. They last from \numMinHours~h to \numMaxHours~h and cover \numMinKm~km to \numMaxKm~km, for \numTotalHours~h and \numTotalKm~km in total. The median GNSS speed is \numMedianSpeed~km/h, so most of the driving is on highways. Each file has the following columns.
+\begin{itemize}
+\item \texttt{time}: ISO 8601 timestamp in UTC, at the start of each 0.1~s bin.
+\item \texttt{latitude}, \texttt{longitude} (degrees, WGS84), \texttt{altitude} (m, as reported by the location service), \texttt{speed} (m/s), \texttt{bearing} (degrees from north), and the receiver's reported \texttt{horizontalAccuracy} (m), \texttt{verticalAccuracy} (m), \texttt{speedAccuracy} (m/s) and \texttt{bearingAccuracy} (degrees). These columns are filled only in rows that contain a GNSS fix and are empty elsewhere.
+\item \texttt{acc\_x}, \texttt{acc\_y}, \texttt{acc\_z}: specific force in the body frame (m/s\(^2\)), including gravity, so that a phone at rest reads about \(+9.8\)~m/s\(^2\) along its upward axis.
+\item \texttt{gyro\_x}, \texttt{gyro\_y}, \texttt{gyro\_z}: angular rate (rad/s), as calibrated by the operating system.
+\item \texttt{mag\_x}, \texttt{mag\_y}, \texttt{mag\_z}: magnetic flux density (\(\mu\)T), with the operating system's hard-iron correction applied (\Cref{sec:magnetometer}).
+\item \texttt{grav\_x}, \texttt{grav\_y}, \texttt{grav\_z}: the operating system's fused gravity estimate (m/s\(^2\); \Cref{sec:gravity}).
+\item \texttt{qw}, \texttt{qx}, \texttt{qy}, \texttt{qz} and \texttt{roll}, \texttt{pitch}, \texttt{yaw} (rad): the operating system's fused attitude.
+\item \texttt{pressure} (hPa) and \texttt{relativeAltitude} (m, change since the recording began, derived from pressure).
+\end{itemize}
+The GNSS columns hold \numFixes{} fixes, a median of \numMedianFixRate{} fixes per second per trajectory, and they are never interpolated: in about nine rows out of ten they are empty. The inertial columns are complete in every row. iOS phones deliver pressure at about 1~Hz, so on those trajectories only a median of \numIosBaroFraction\% of rows carry a pressure value.
+
+\begin{table}[p]
+\centering
+\caption{The processed trajectories. \emph{Speed} is the median GNSS speed, \emph{Fixes} the number of rows with a GNSS fix, and \emph{Fix rate} the fixes per second of trajectory. \(\sigma_h\), \(\sigma_v\) and \(\sigma_s\) are the medians of the receiver's reported horizontal, vertical and speed accuracy over those fixes. Distance is the summed great-circle distance between successive fixes.}
+\label{tab:trajectories}
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\input{tables/trajectories.tex}
+\end{table}
+
+\subsection{Map tiles}
+\label{sec:maps}
+
+Each processed trajectory comes with three NetCDF grids cropped to its padded bounding box. Each grid has variables \texttt{lat}, \texttt{lon} (degrees) and \texttt{z}: relief at 15 arc-seconds (m; SRTM15+, \citealp{tozer2019srtm15}), free-air gravity anomaly at 1 arc-minute (mGal; \citealp{SANDWELL20211059}) and magnetic anomaly at 3 arc-minutes (nT; WDMAM, \citealp{wdmam}). They were fetched through the Generic Mapping Tools remote datasets \citep{wessel2019gmt}, are provided for convenience, and remain subject to their originators' terms.
