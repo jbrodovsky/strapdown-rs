@@ -15,9 +15,12 @@
 - **EKF** (extended Kalman filter): A Kalman filter for a nonlinear system that propagates the
   full state through the nonlinear model and the covariance through its Jacobians. See
   [EKF](../filters/ekf.md).
-- **ENU / NED**: The two local-level frame conventions: East-North-Up and North-East-Down. NED
-  is this crate's default; ENU is opt-in with `--enu` or `is_enu`. Altitude is positive up in
-  both; vertical velocity is positive down in NED and up in ENU. See [Coordinate
+- **ENU / NED**: The two local-level frame conventions this crate supports. NED
+  (North-East-Down) is the default. "ENU" is opt-in with `--enu` or `is_enu`, and here it is
+  **not** the textbook East-North-Up: it keeps the north-then-east order of the horizontal
+  axes (`velocity_north`, `velocity_east` in both) and flips only the vertical axis to point
+  up, which is what `StrapdownState::to_enu` does. Altitude is positive up in both; vertical
+  velocity is positive down in NED and up in "ENU". See [Coordinate
   Frames](../user-guide/coordinate-frames.md).
 - **ESKF** (error-state Kalman filter): A Kalman filter that estimates the *error* in a
   separately propagated nominal solution, folds the estimate back in after each update, and
