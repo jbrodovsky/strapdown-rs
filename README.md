@@ -1,100 +1,216 @@
-# Strapdown-rs - A simple strapdown INS implementation
+# strapdown-rs
 
-HTML: <a href="https://joss.theoj.org/papers/5079592cc860d1435482a4a7764edcd4"><img src="https://joss.theoj.org/papers/5079592cc860d1435482a4a7764edcd4/status.svg"></a>
+[![JOSS review status](https://joss.theoj.org/papers/5079592cc860d1435482a4a7764edcd4/status.svg)](https://joss.theoj.org/papers/5079592cc860d1435482a4a7764edcd4)
+[![CI](https://github.com/jbrodovsky/strapdown-rs/actions/workflows/rust.yml/badge.svg)](https://github.com/jbrodovsky/strapdown-rs/actions/workflows/rust.yml)
+[![Crates.io](https://img.shields.io/crates/v/strapdown-core.svg)](https://crates.io/crates/strapdown-core)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Markdown: [![status](https://joss.theoj.org/papers/5079592cc860d1435482a4a7764edcd4/status.svg)](https://joss.theoj.org/papers/5079592cc860d1435482a4a7764edcd4)
+**Strapdown inertial navigation and GNSS-degradation simulation in Rust.**
 
-[![Crates.io](https://img.shields.io/crates/v/strapdown-rs.svg)](https://crates.io/crates/strapdown-rs)
-[![Documentation](https://docs.rs/strapdown-rs/badge.svg)](https://docs.rs/strapdown-rs)
-[![License](https://img.shields.io/crates/l/strapdown-rs.svg)](https://crates.io/crates/strapdown-rs)
+`strapdown-rs` is a library and command-line toolkit for research on inertial navigation
+systems (INS), particularly when GNSS is unavailable or untrustworthy. It provides:
 
-Strapdown-rs is a straightforward strapdown inertial navigation system (INS) implementation in Rust. It is designed to be simple and easy to understand, making it a great starting point for those interested in learning about or implementing strapdown INS algorithms. It is currently under active development.
+- local-level strapdown mechanization (Groves, *Principles of GNSS, Inertial, and Multisensor
+  Integrated Navigation Systems*, 2nd ed., §5.4);
+- four loosely coupled navigation filters behind one trait;
+- a simulator that replays recorded or synthetic IMU/GNSS data while removing, thinning or
+  corrupting the GNSS stream according to a seeded scenario file.
 
-**📖 [Full Documentation](https://jbrodovsky.github.io/strapdown-rs/)** | **📚 [API Documentation](https://docs.rs/strapdown-core)** | **▶️ [Runnable Examples](#runnable-examples)** | **🔧 [Example Configurations](examples/configs/)**
+**📖 [User guide](https://jbrodovsky.github.io/strapdown-rs/)** ·
+**📚 [API documentation](https://docs.rs/strapdown-core)** ·
+**▶️ [Runnable examples](#runnable-examples)** ·
+**🔧 [Example scenarios](examples/configs/)**
 
-The primary contributions of this project are:
+## Statement of need
 
-1. A source library of strapdown INS algorithms and utilities (`strapdown-core`: /core).
-2. A program for simulating INS performance in various GNSS conditions (`strapdown-sim`: /sim).
-3. A dataset of smartphone-based MEMS IMU and GNSS data (`strapdown-data`: /data).
+Navigation algorithms are commonly prototyped in MATLAB or Python. There they are fast only
+once rewritten in vectorized form, which is especially awkward for particle filters. Real
+GNSS-denied data is expensive, regulated and impossible to repeat exactly.
 
-Additionally experimental research is being conducted on improving the accuracy and robustness of strapdown INS algorithms under degraded and denied GNSS conditions by providing an alternative PNT solution in the form of geophysical anomaly data (`strapdown-geonav`: /geonav). This is an area of active research.
+`strapdown-rs` addresses both problems:
+- Filters are written plainly and compiled, so the same code serves research scripts,
+  experiments and applications.
+- Any trajectory can be run under controlled, reproducible GNSS outages and faults, so
+  algorithms are compared under identical conditions.
+
+It is aimed at graduate students, researchers and engineers working on INS/GNSS integration
+and alternative positioning, navigation and timing (PNT).
+
+## What it does
+
+- **Filters.** All four implement the `NavigationFilter` trait:
+  - error-state Kalman filter (ESKF, the default), 15 states;
+  - extended Kalman filter (EKF);
+  - unscented Kalman filter (UKF);
+  - Rao-Blackwellized particle filter after Canciani & Raquet (2017).
+- **Aiding.** GNSS position and velocity, barometric altitude with bias estimation,
+  magnetometer heading (World Magnetic Model declination), and ZUPT/ZARU. Chi-squared
+  innovation gating with recovery.
+- **Initialization.** Coarse alignment, IMU calibration and lever-arm compensation via the
+  `InsEngine` builder.
+- **GNSS degradation.**
+  - Schedulers: pass-through, fixed interval, duty-cycle outages.
+  - Faults: correlated AR(1) noise, slow bias drift, position hijacking, combinations.
+  - Configured from TOML, YAML or JSON files, or from CLI flags.
+- **Synthetic trajectories** with IMU error models by sensor grade (`strapdown-sim syn`).
+- **Metrics.** RMSE, CEP, NEES and NIS.
+- **Output.** The CLI writes CSV. The library also writes HDF5, NetCDF and MCAP.
+- **Experimental:** gravity and magnetic anomaly map aiding (`strapdown-geonav`).
+
+It is loosely coupled only. There are no pseudorange or carrier-phase models, and no
+raw-signal processing.
 
 ## Repository layout
 
-The repository is a two-language monorepo. The Rust crates are a Cargo workspace; the Python
-package is a [uv](https://docs.astral.sh/uv/) workspace declared by the root `pyproject.toml`.
-Neither is a member of the other.
+The repository is a two-language monorepo. The Rust crates form a Cargo workspace. The
+Python package is a [uv](https://docs.astral.sh/uv/) workspace declared by the root
+`pyproject.toml`. Neither is a member of the other.
 
 | Path | Language | What it is |
 |---|---|---|
-| [`core/`](core/) | Rust | `strapdown-core` -- the mechanization, the filters and the simulation framework |
-| [`sim/`](sim/) | Rust | `strapdown-sim` -- the command-line simulator |
-| [`geonav/`](geonav/) | Rust | `strapdown-geonav` -- experimental gravity and magnetic anomaly aiding |
-| [`analysis/`](analysis/) | Python | the `analyze` CLI: preprocessing, measurement characterisation and performance analysis |
+| [`core/`](core/) | Rust | `strapdown-core`: mechanization, filters, measurement models, scenario engine |
+| [`sim/`](sim/) | Rust | `strapdown-sim`: the command-line simulator |
+| [`geonav/`](geonav/) | Rust | `strapdown-geonav`: experimental gravity and magnetic anomaly aiding |
+| [`analysis/`](analysis/) | Python | the `analyze` CLI: preprocessing, measurement statistics, result comparison |
+| [`examples/`](examples/) | — | scenario configuration files |
+| [`conf/`](conf/) | — | the experiment recipes behind the published results |
 
 ## Installation
 
-To use `strapdown-rs`, you can add it as a dependency in your `Cargo.toml` file: `cargo add strapdown-rs`. You can install the whole package or just the core library. Similarly you can install the simulation binary `cargo install strapdown-sim`.
+Rust is the only hard requirement. `rust-toolchain.toml` fetches the pinned toolchain (1.91)
+on the first `cargo` command.
 
-To work on the repository itself, build both halves:
+**Library only.** `strapdown-core` with default features needs nothing else:
 
 ```bash
-cargo build --workspace --release   # the Rust crates; the toolchain fetches itself
-uv sync                             # the analysis package, from the workspace root
+cargo add strapdown-core --git https://github.com/jbrodovsky/strapdown-rs
 ```
 
-`just setup` runs both. Nothing beyond Rust and uv is needed for the Rust crates; the
-`analyze` CLI's map-drawing subcommands additionally want the GMT C library installed, though
-every other subcommand -- preprocessing and measurement characterisation included -- runs
-without it.
+The library crate is imported as `strapdown`:
+
+```rust
+use strapdown::StrapdownState;
+```
+
+**Simulator.**
+
+```bash
+cargo install --git https://github.com/jbrodovsky/strapdown-rs strapdown-sim
+```
+
+Its default `plotting` feature, and the HDF5 and NetCDF features, compile C libraries from
+vendored sources. Those builds need a C/C++ compiler and **cmake 3.26 or newer**, and
+`HDF5_DIR` must be unset. See the [installation guide](https://jbrodovsky.github.io/strapdown-rs/installation/installation.html).
+
+The crates are also published to crates.io. Version 1.0.0 is released there together with the
+JOSS paper; until then, install from git as above.
+
+**Developing.** From a clone:
+
+```bash
+cargo build --workspace --release
+```
+
+```bash
+uv sync
+```
+
+`just setup` runs both. The `analyze` map-drawing subcommands also need the GMT C library;
+every other subcommand runs without it.
+
+## Quick start
+
+```bash
+# A 10-minute synthetic trajectory with truth, IMU and GNSS columns
+strapdown-sim syn -o synthetic.csv --duration-s 600 --seed 42
+
+# Closed loop (ESKF) with GNSS available for 100 s, then denied for 50 s, repeating
+strapdown-sim cl -i synthetic.csv -o eskf.csv --seed 42 --sched duty --on-s 100 --off-s 50
+
+# Dead reckoning: no aiding at all
+strapdown-sim dr -i synthetic.csv -o dr.csv
+```
+
+Use `--filter ukf` or `--filter ekf` to select another filter. `strapdown-sim pf` runs the
+particle filter. `strapdown-sim <command> --help` lists every option. Logging is controlled
+with `--log-level` and `--log-file`; see the
+[logging guide](https://jbrodovsky.github.io/strapdown-rs/user-guide/logging.html).
+
+Geophysical aiding is experimental and behind a feature:
+
+```bash
+cargo install --git https://github.com/jbrodovsky/strapdown-rs strapdown-sim --features geonav
+```
+
+```bash
+strapdown-sim cl -i data.csv -o out.csv --geo --gravity-resolution one-minute
+```
 
 ## Runnable examples
 
-Two worked examples live in [`core/examples/`](core/examples/). Both are self-contained --
-they generate their own trajectory, so there is no dataset to fetch first.
+Two worked examples live in [`core/examples/`](core/examples/). Both generate their own
+trajectory, so there is no dataset to fetch first.
 
 ```bash
 # Minimal InsEngine usage: propagate IMU, fuse GNSS, read the solution.
 cargo run -p strapdown-core --example basic_ins
+```
 
-# Dead-reckoning through a GNSS outage, and recovery when the signal returns.
+```bash
+# Coasting through a GNSS outage, and recovery when the signal returns.
 cargo run -p strapdown-core --example gnss_outage
 ```
 
-`basic_ins` is the one to read first: it is the propagate/update/read loop that every
-application is built around, on a trajectory simple enough to check by hand. It is also the
-place the specific-force sign convention is spelled out, which is the single most common way
-to get a first integration wrong -- an accelerometer at rest reads **-9.81 m/s² on the down
-axis** in NED, because it senses the ground pushing up.
+**Read `basic_ins` first.** It is the propagate/update/read loop that every application is
+built around, on a trajectory simple enough to check by hand. It also spells out the
+specific-force sign convention, the most common way to get a first integration wrong: an
+accelerometer at rest reads **−9.81 m/s² on the down axis** in NED, because it senses the
+ground pushing up.
 
-`gnss_outage` is the one to read second. It shows the error staying flat while aided, growing
-while coasting, and collapsing on recovery -- and then explains why the coasting error is
-several times *smaller* than double-integrating the accelerometer bias would predict. The
-answer is that the filter absorbed most of the bias into a fraction of a degree of pitch,
-because position and velocity aiding cannot tell those two apart.
+**Then `gnss_outage`.** It shows the error staying flat while aided, growing while coasting,
+and collapsing on recovery. It then explains why the coasting error is several times
+*smaller* than double-integrating the accelerometer bias would predict: the filter absorbed
+most of the bias into a fraction of a degree of pitch, which position and velocity aiding
+cannot tell apart from bias.
 
-For scenario-driven runs of the same ideas through the CLI rather than in code, see
-[`examples/configs/`](examples/configs/).
+## Running the tests
 
-## Summary
-
-`strapdown-rs` is a Rust-based software library for implementing strapdown inertial navigation systems (INS). It provides core functionality for processing inertial measurement unit (IMU) data to estimate position, velocity, and orientation using a strapdown mechanization model that is typical of modern systems particularly in the low size, weight, and power (low SWaP) domain (cell phones, drones, robotics, UAVs, UUVs, etc.). Additionally, it provides some basic simulation capabilities for simulating INS scenarios (e.g. dead reckoning, closed-loop INS, intermitent GPS, GPS degradation, etc.).
-
-`strapdown-rs` prioritizes correctness, numerical stability, and performance. It is built with extensibility in mind, allowing researchers and engineers to implement additional filtering, sensor fusion, or aiding algorithms on top of the base INS framework. This library is not intended to be a full-featured INS solution, notably it does not have code for processing raw IMU or GPS signals and only implements a loosely-couple INS.
-
-The toolbox is designed for research, teaching, and development purposes and aims to serve the broader robotics, aerospace, and autonomous systems communities. The intent is to provide a high-performance, memory-safe, and cross-platform implementation of strapdown INS algorithms that can be easily integrated into existing systems. The simulation is intended to be used for testing and verifying the correctness of the INS algorithms, by providing a simple simulation that allows users to generate a "ground truth" trajectory.
-
-## Functionality
-
-`strapdown-rs` is intended to be both a source code library included into your INS software and simulation environment as well as very light-weight INS simulator. The library provides a set of modules modeling the WGS84 Earth ellipsoid, a common 9-state strapdown forward mechanization, and a set of navigation filters for estimating position, velocity, and orientation from inertial measurement unit (IMU) data.
-
-The simulation program provides a simple command line interface for running various configurations of the INS. In can run in open-loop (dead reckoning) mode or closed-loop mode (loosely coupled; the 15-state ESKF by default, with the UKF and EKF selectable). It can simulate various scenarios such as intermittent GPS, GPS degradation, and more. The simulation is designed to be easy to use and provides a simple API for generating datsets for further navigation processing or research.
-
-`strapdown-sim` includes built-in logging capabilities using the Rust `log` crate with `env_logger`. You can control log output via command-line options (`--log-level` and `--log-file`) for monitoring simulation progress, debugging issues, and recording detailed execution information. See [LOGGING.md](LOGGING.md) for detailed usage instructions.
-
-**Geophysical Navigation**: To enable geophysical navigation capabilities (gravity/magnetic anomaly aiding), build with `--features geonav` and use the `--geo` flag:
 ```bash
-cargo build --release --package strapdown-sim --features geonav
-strapdown-sim cl --input data.csv --output out/ --geo --gravity-resolution one-minute
+# Every Rust test, all features (as CI runs it)
+cargo test --workspace --all-features
 ```
+
+```bash
+# The minimal-feature configuration CI also tests
+cargo test-min
+```
+
+```bash
+# The Python analysis package
+uv run pytest -q
+```
+
+The accuracy regression suite (`core/tests/perf_baseline.rs`) runs every filter over
+recorded and synthetic scenarios. It fails if a gated metric moves beyond tolerance. Its
+results are published as the
+[performance baselines](https://jbrodovsky.github.io/strapdown-rs/development/performance.html)
+page. CI runs on Linux, macOS and Windows.
+
+## Contributing and support
+
+- Bugs and feature requests: [open an issue](https://github.com/jbrodovsky/strapdown-rs/issues).
+- Questions about using the toolkit: open an issue with the *question* template.
+- Contributions: see [CONTRIBUTING.md](CONTRIBUTING.md) for the setup, the lint gate and the
+  pull-request checklist.
+
+This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md).
+
+## Citing
+
+If you use `strapdown-rs` in research, please cite it using [CITATION.cff](CITATION.cff)
+(GitHub's "Cite this repository" button). The JOSS paper is under review; its DOI will be
+added on acceptance.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

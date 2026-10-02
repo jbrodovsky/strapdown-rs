@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: User guide
+    url: https://jbrodovsky.github.io/strapdown-rs/
+    about: Installation, the CLI, configuration files and the filters.
+  - name: API documentation
+    url: https://docs.rs/strapdown-core
+    about: Reference documentation for the strapdown-core library.

@@ -1,7 +1,7 @@
 [project]
 name = "analysis"
 version = "0.1.0"
-description = "Add your description here"
+description = "Preprocessing, measurement characterisation and result analysis for strapdown-rs experiments"
 readme = "README.md"
 authors = [
     { name = "James Brodovsky", email = "james.brodovsky@gmail.com" }
