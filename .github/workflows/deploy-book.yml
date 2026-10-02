@@ -72,11 +72,13 @@ jobs:
           cp -r target/doc/. book/book/api/
 
       # Offline: checks every relative link between book pages and into the API docs,
-      # without depending on external sites being up.
+      # without depending on external sites being up. 404.html is mdBook's generated error
+      # page; its `<base href="/strapdown-rs/">` (from `site-url`) is root-relative, which an
+      # offline check of local files cannot resolve.
       - name: Check links
         uses: lycheeverse/lychee-action@v2
         with:
-          args: --offline --no-progress --exclude-path book/book/api 'book/book/**/*.html'
+          args: --offline --no-progress --exclude-path book/book/api --exclude-path book/book/404.html 'book/book/**/*.html'
           fail: true
 
       - name: Upload artifact
