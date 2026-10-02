@@ -91,13 +91,13 @@ feature of `strapdown-core` that is off by default:
 | Method | Reader | Feature | Layout |
 |---|---|---|---|
 | `NavigationResult::to_hdf5` | `from_hdf5` | `hdf5` | group `navigation_results`, one 1-D dataset per column; `timestamp` as RFC 3339 strings |
-| `NavigationResult::to_netcdf` | `from_netcdf` | `netcdf` | dimension `time`, one variable per column; `timestamp` as Unix seconds |
+| `NavigationResult::to_netcdf` | `from_netcdf` | `netcdf` | dimension `time`, one variable per column; `timestamp` as fractional Unix seconds |
 | `NavigationResult::to_mcap` | `from_mcap` | `mcap` | channel `navigation_results`, one MessagePack-encoded record per message, logged at the row's timestamp |
 
 All three carry the same 40 columns. HDF5 and NetCDF have no optional type, so an absent bias
-column is written as `NaN` and read back as absent. The NetCDF `timestamp` is stored as whole
-seconds, so rows less than a second apart share a value there; use HDF5 or MCAP when sub-second
-times matter.
+column is written as `NaN` and read back as absent. The NetCDF `timestamp` is a double holding
+Unix seconds with their fraction, which keeps microsecond resolution; `from_netcdf` rounds it back
+to the microsecond, so a 10 Hz run's rows keep distinct times through the round trip.
 
 Enable a writer on the dependency, from git until 1.0 is published:
 

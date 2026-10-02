@@ -51,8 +51,8 @@ use std::path::Path;
 use std::time::{Duration as StdDuration, Instant};
 
 use anyhow::Result;
-// `bail!` survives in exactly two places, both `#[cfg(feature = "netcdf")]`: the empty-record
-// guards in `to_netcdf`. The v1.0 freeze moved the compute layer -- the two runners and the two
+// `bail!` survives only behind `#[cfg(feature = "netcdf")]`: the empty-record guards in
+// `to_netcdf` and the timestamp check in `datetime_from_unix_seconds`. The v1.0 freeze moved the compute layer -- the two runners and the two
 // monitors -- onto `StrapdownError`, leaving anyhow where `core/src/error.rs` says it belongs,
 // at file I/O. So the import has to carry the same gate as its only users, or a
 // `--no-default-features` build fails on `unused_imports` under `-D warnings`.
@@ -1009,7 +1009,7 @@ impl TestDataRecord {
         }
 
         // Prepare all data arrays first
-        let times: Vec<f64> = records.iter().map(|r| r.time.timestamp() as f64).collect();
+        let times: Vec<f64> = records.iter().map(|r| unix_seconds(&r.time)).collect();
         let bearing_accuracy: Vec<f64> = records.iter().map(|r| r.bearing_accuracy).collect();
         let speed_accuracy: Vec<f64> = records.iter().map(|r| r.speed_accuracy).collect();
         let vertical_accuracy: Vec<f64> = records.iter().map(|r| r.vertical_accuracy).collect();
@@ -1144,9 +1144,7 @@ impl TestDataRecord {
         // Build records
         let mut records = Vec::with_capacity(n);
         for i in 0..n {
-            let time = DateTime::from_timestamp(times[i] as i64, 0)
-                .ok_or_else(|| anyhow::anyhow!("Invalid timestamp"))?
-                .with_timezone(&Utc);
+            let time = datetime_from_unix_seconds(times[i])?;
 
             records.push(Self {
                 time,
@@ -1454,6 +1452,32 @@ const NAVIGATION_ONLY_STATES: usize = 9;
 #[cfg(any(feature = "hdf5", feature = "netcdf"))]
 const fn none_if_nan(value: f64) -> Option<f64> {
     if value.is_nan() { None } else { Some(value) }
+}
+
+/// A timestamp as fractional Unix seconds, the form the netCDF writers store it in.
+///
+/// Built from whole microseconds rather than `timestamp()`, which is whole seconds: the
+/// writers used that, so every row of a 10 Hz run within one second was written with the same
+/// time and could no longer be told apart or ordered on reading. An `f64` holds about 15.9
+/// significant digits and a present-day Unix time in microseconds needs 16, so microseconds
+/// are the finest unit that survives; [`datetime_from_unix_seconds`] rounds back to them.
+#[cfg(feature = "netcdf")]
+fn unix_seconds(timestamp: &DateTime<Utc>) -> f64 {
+    timestamp.timestamp_micros() as f64 / 1e6
+}
+
+/// The inverse of [`unix_seconds`], to the nearest microsecond.
+///
+/// Rounding rather than truncating matters: `micros / 1e6 * 1e6` is not always exactly
+/// `micros` in `f64`, and truncating a value a hair below it would move the timestamp back by
+/// a microsecond on the round trip.
+#[cfg(feature = "netcdf")]
+fn datetime_from_unix_seconds(seconds: f64) -> Result<DateTime<Utc>> {
+    if !seconds.is_finite() {
+        bail!("invalid timestamp: {seconds} is not a finite number of seconds");
+    }
+    DateTime::from_timestamp_micros((seconds * 1e6).round() as i64)
+        .ok_or_else(|| anyhow::anyhow!("invalid timestamp: {seconds} s is out of range"))
 }
 
 /// Generic result struct for navigation simulations.
@@ -2019,10 +2043,7 @@ impl NavigationResult {
         }
 
         // Prepare all data arrays
-        let timestamps: Vec<f64> = records
-            .iter()
-            .map(|r| r.timestamp.timestamp() as f64)
-            .collect();
+        let timestamps: Vec<f64> = records.iter().map(|r| unix_seconds(&r.timestamp)).collect();
         let latitude: Vec<f64> = records.iter().map(|r| r.latitude).collect();
         let longitude: Vec<f64> = records.iter().map(|r| r.longitude).collect();
         let altitude: Vec<f64> = records.iter().map(|r| r.altitude).collect();
@@ -2219,9 +2240,7 @@ impl NavigationResult {
         // Build records
         let mut records = Vec::with_capacity(n);
         for i in 0..n {
-            let timestamp = DateTime::from_timestamp(timestamps[i] as i64, 0)
-                .ok_or_else(|| anyhow::anyhow!("Invalid timestamp"))?
-                .with_timezone(&Utc);
+            let timestamp = datetime_from_unix_seconds(timestamps[i])?;
 
             records.push(Self {
                 latitude_longitude_cov: latitude_longitude_cov[i],
@@ -10250,9 +10269,8 @@ mod tests {
     /// link. The hdf5 side has had round-trip, NaN and missing-column tests all along; this
     /// is the netCDF half of that.
     ///
-    /// Note the whole-second timestamps. `to_netcdf` stores time as `timestamp()`, an integer
-    /// number of seconds, so sub-second precision does not survive and a test using it would
-    /// fail for a reason that has nothing to do with netCDF.
+    /// Sub-second timestamps have their own test,
+    /// `test_netcdf_keeps_sub_second_timestamps_distinct`.
     #[cfg(feature = "netcdf")]
     #[test]
     fn test_test_data_record_netcdf_roundtrip() {
@@ -10352,6 +10370,111 @@ mod tests {
             "a rejected write must not leave a partial file behind"
         );
     }
+    /// Timestamps a tenth of a second apart, at microsecond resolution, for the round-trip
+    /// tests below: the rows a 10 Hz run writes.
+    #[cfg(any(feature = "netcdf", feature = "hdf5", feature = "mcap"))]
+    fn sub_second_timestamps() -> Vec<DateTime<Utc>> {
+        let start = DateTime::parse_from_rfc3339("2026-09-24T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        (0..12)
+            .map(|i| start + Duration::microseconds(100_000 * i + 123_456 * (i % 3)))
+            .collect()
+    }
+
+    /// Navigation results stamped with [`sub_second_timestamps`].
+    #[cfg(any(feature = "netcdf", feature = "hdf5", feature = "mcap"))]
+    fn sub_second_navigation_results() -> Vec<NavigationResult> {
+        sub_second_timestamps()
+            .into_iter()
+            .enumerate()
+            .map(|(i, timestamp)| {
+                let mut result = NavigationResult::new();
+                result.timestamp = timestamp;
+                result.latitude = 40.0 + i as f64 * 1e-5;
+                result
+            })
+            .collect()
+    }
+
+    /// `to_netcdf` wrote `timestamp()`, whole seconds, so the ten rows a 10 Hz run writes in
+    /// each second all came back with the same time. Both writers now store fractional seconds
+    /// and both readers round them back to the microsecond.
+    #[cfg(feature = "netcdf")]
+    #[test]
+    fn test_netcdf_keeps_sub_second_timestamps_distinct() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let expected = sub_second_timestamps();
+
+        let nav_path = dir.path().join("nav_sub_second.nc");
+        NavigationResult::to_netcdf(&sub_second_navigation_results(), &nav_path).unwrap();
+        let nav_read: Vec<DateTime<Utc>> = NavigationResult::from_netcdf(&nav_path)
+            .unwrap()
+            .into_iter()
+            .map(|result| result.timestamp)
+            .collect();
+        assert_eq!(
+            nav_read, expected,
+            "NavigationResult timestamps must round-trip exactly"
+        );
+
+        let records: Vec<TestDataRecord> = expected
+            .iter()
+            .map(|time| TestDataRecord {
+                time: *time,
+                ..Default::default()
+            })
+            .collect();
+        let record_path = dir.path().join("records_sub_second.nc");
+        TestDataRecord::to_netcdf(&records, &record_path).unwrap();
+        let record_read: Vec<DateTime<Utc>> = TestDataRecord::from_netcdf(&record_path)
+            .unwrap()
+            .into_iter()
+            .map(|record| record.time)
+            .collect();
+        assert_eq!(
+            record_read, expected,
+            "TestDataRecord timestamps must round-trip exactly"
+        );
+    }
+
+    /// The HDF5 writers store RFC 3339 strings, which carry the fraction; held here so the
+    /// formats stay consistent with each other rather than only with themselves.
+    #[cfg(feature = "hdf5")]
+    #[test]
+    fn test_hdf5_keeps_sub_second_timestamps_distinct() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("nav_sub_second.h5");
+        NavigationResult::to_hdf5(&sub_second_navigation_results(), &path).unwrap();
+        let read: Vec<DateTime<Utc>> = NavigationResult::from_hdf5(&path)
+            .unwrap()
+            .into_iter()
+            .map(|result| result.timestamp)
+            .collect();
+        assert_eq!(read, sub_second_timestamps());
+    }
+
+    /// The MCAP writer serializes the whole record, timestamp included, with its fraction.
+    #[cfg(feature = "mcap")]
+    #[test]
+    fn test_mcap_keeps_sub_second_timestamps_distinct() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("nav_sub_second.mcap");
+        NavigationResult::to_mcap(&sub_second_navigation_results(), &path).unwrap();
+        let read: Vec<DateTime<Utc>> = NavigationResult::from_mcap(&path)
+            .unwrap()
+            .into_iter()
+            .map(|result| result.timestamp)
+            .collect();
+        assert_eq!(read, sub_second_timestamps());
+    }
+
     #[cfg(feature = "mcap")]
     #[test]
     fn test_navigation_result_mcap_roundtrip() {
