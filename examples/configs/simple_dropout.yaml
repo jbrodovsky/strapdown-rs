@@ -21,7 +21,7 @@ aiding:
     kind: duty_cycle
     on_s: 120.0     # 2 minutes GNSS available
     off_s: 30.0     # 30 seconds GNSS denied
-    start_phase_s: 0.0
+    start_phase_s: 0.0  # 0 opens the run with the 30 s outage; 120.0 opens it with GNSS
   fault:
     kind: none
   seed: 42

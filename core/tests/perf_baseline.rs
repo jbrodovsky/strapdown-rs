@@ -489,7 +489,7 @@ fn scenarios() -> Vec<Scenario> {
     // usable regression detector on real data.
     out.push(Scenario {
         id: "real_outage_60s__eskf".to_string(),
-        description: "test_data.csv, 120 s of GNSS then a 60 s outage, repeating".to_string(),
+        description: "test_data.csv, a 60 s outage then 120 s of GNSS, repeating".to_string(),
         source: Source::Real,
         gnss: {
             let mut built = AidingConfig::default();
@@ -558,7 +558,7 @@ fn scenarios() -> Vec<Scenario> {
     for estimator in [Estimator::Ukf, Estimator::Eskf] {
         out.push(Scenario {
             id: format!("syn_outage_60s__{}", estimator.key()),
-            description: "synthetic 300 s at 50 Hz, 60 s of GNSS then 60 s of outage".to_string(),
+            description: "synthetic 300 s at 50 Hz, 60 s of outage then 60 s of GNSS".to_string(),
             source: Source::Synthetic,
             gnss: {
                 let mut built = AidingConfig::default();

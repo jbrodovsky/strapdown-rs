@@ -47,8 +47,12 @@ use crate::{IMUData, StrapdownError};
 /// // Deliver a GNSS fix every 10 seconds, starting at t=0
 /// let sched = MeasurementScheduler::FixedInterval { interval_s: 10.0, phase_s: 0.0 };
 ///
-/// // Alternate 5 s ON, 15 s OFF, starting in ON state at t=0
+/// // Alternate 15 s OFF and 5 s ON. With no start phase the cycle opens with its OFF
+/// // window: no fix for t < 15 s, fixes for 15 <= t < 20, none again from t = 20.
 /// let sched = MeasurementScheduler::DutyCycle { on_s: 5.0, off_s: 15.0, start_phase_s: 0.0 };
+///
+/// // The same cycle after 30 s of initial availability.
+/// let sched = MeasurementScheduler::DutyCycle { on_s: 5.0, off_s: 15.0, start_phase_s: 30.0 };
 /// ```
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -78,13 +82,17 @@ pub enum MeasurementScheduler {
     ///
     /// * `on_s` — Duration of each ON window (seconds).
     /// * `off_s` — Duration of each OFF window (seconds).
-    /// * `start_phase_s` — Initial time offset before the first toggle (seconds).
+    /// * `start_phase_s` — Length of an initial ON window before the cycle starts (seconds).
+    ///
+    /// The timeline is `start_phase_s` ON, then `off_s` OFF and `on_s` ON, repeating. So with
+    /// `start_phase_s = 0` the run **opens with an outage**: the cycle's first window is OFF.
     DutyCycle {
         /// Duration of each ON window (seconds).
         on_s: f64,
         /// Duration of each OFF window (seconds).
         off_s: f64,
-        /// Initial phase offset before the first ON/OFF toggle (seconds).
+        /// Length of the initial ON window before the first OFF window (seconds); `0.0` opens
+        /// the run with an OFF window.
         start_phase_s: f64,
     },
 }
@@ -1161,9 +1169,8 @@ fn should_emit(scheduler: &MeasurementScheduler, elapsed_s: f64, next_emit_time:
 
 /// Whether a [`MeasurementScheduler::DutyCycle`] is inside an ON window at `elapsed_s`.
 ///
-/// The timeline is `start_phase_s` of initial ON, then `off_s` OFF and `on_s` ON repeating,
-/// which is what "initial phase offset before the first ON/OFF toggle" describes: the first
-/// toggle takes the scheduler out of its initial ON state.
+/// The timeline is `start_phase_s` of initial ON, then `off_s` OFF and `on_s` ON repeating.
+/// With `start_phase_s = 0` there is no initial ON window, so the run opens in an OFF one.
 ///
 /// Computed from `elapsed_s` directly rather than by stepping a toggle once per sample. The
 /// stepping version emitted a fix only on the sample where the state flipped *into* ON and

@@ -292,7 +292,7 @@
       }
     },
     "real_outage_60s__eskf": {
-      "description": "test_data.csv, 120 s of GNSS then a 60 s outage, repeating",
+      "description": "test_data.csv, a 60 s outage then 120 s of GNSS, repeating",
       "sample_count": 5366,
       "discarded_channel_samples": 0,
       "metrics": {
@@ -755,7 +755,7 @@
       }
     },
     "syn_outage_60s__eskf": {
-      "description": "synthetic 300 s at 50 Hz, 60 s of GNSS then 60 s of outage",
+      "description": "synthetic 300 s at 50 Hz, 60 s of outage then 60 s of GNSS",
       "sample_count": 15000,
       "discarded_channel_samples": 0,
       "metrics": {
@@ -814,7 +814,7 @@
       }
     },
     "syn_outage_60s__ukf": {
-      "description": "synthetic 300 s at 50 Hz, 60 s of GNSS then 60 s of outage",
+      "description": "synthetic 300 s at 50 Hz, 60 s of outage then 60 s of GNSS",
       "sample_count": 15000,
       "discarded_channel_samples": 0,
       "metrics": {

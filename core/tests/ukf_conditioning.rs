@@ -100,7 +100,8 @@ fn solve(records: &[TestDataRecord]) -> Result<(f64, f64), StrapdownError> {
 
 /// The bound, in metres of final position.
 ///
-/// Measured over 180 s at 50 Hz with 60 s of GNSS then 60 s of free inertial -- the shape of
+/// Measured over 180 s at 50 Hz with 60 s of free inertial then 60 s of GNSS (the duty cycle
+/// opens with its OFF window) -- the shape of
 /// `syn_outage_60s`, which is the row #399 reported moving:
 ///
 /// | `ukf_alpha` | final position moved by a one-ulp input change |
