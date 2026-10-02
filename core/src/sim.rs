@@ -328,6 +328,16 @@ pub const DEFAULT_PROCESS_NOISE_DENSITY: [f64; 15] = [
     1e-8,                                         // gyro bias z, (rad/s)^2/s
 ];
 
+/// Default [`ParticleFilterConfig::horizontal_process_noise_std_m`], m per sqrt(s), applied
+/// to both the north and east channels.
+///
+/// The simulator departs here from the library's [`crate::rbpf::RbpfConfig`], whose default is
+/// Canciani & Raquet's zero (eq. 19). That zero diverges with GNSS-rate fixes on MEMS data --
+/// `strapdown-sim pf` with no flags left a 10-minute synthetic trajectory at 500 m/s -- so a
+/// simulator default that only works on navigation-grade data would fail the first thing a new
+/// user tries. One metre per root-second is what every recipe under `conf/` uses.
+pub const DEFAULT_PF_HORIZONTAL_PROCESS_NOISE_STD_M: f64 = 1.0;
+
 /// Default [`ExecutionLimits::max_wall_clock_ratio`]: a run may burn at most a quarter of a
 /// second of wall-clock time per second of trajectory it simulates.
 pub const DEFAULT_MAX_WALL_CLOCK_RATIO: f64 = 0.25;
@@ -5337,7 +5347,8 @@ pub struct ParticleFilterConfig {
     /// [`crate::rbpf::RbpfConfig::attitude_process_noise_std_rad`].
     pub attitude_process_noise_std_rad: f64,
     /// Random walk on the sampled horizontal position error, [`north`, `east`] in m per
-    /// sqrt(s). The filter's default is Canciani & Raquet's zero (eq. 19), which diverges with
+    /// sqrt(s). Defaults to [`DEFAULT_PF_HORIZONTAL_PROCESS_NOISE_STD_M`] on both channels,
+    /// not the library filter's zero (Canciani & Raquet's eq. 19), which diverges with
     /// GNSS-rate fixes on MEMS data; see
     /// [`crate::rbpf::RbpfConfig::horizontal_process_noise_std_m`].
     pub horizontal_process_noise_std_m: Vec<f64>,
@@ -5560,7 +5571,8 @@ impl Default for ParticleFilterConfig {
     fn default() -> Self {
         // The barometer-loop and resampling defaults are the filter's own, read from it rather
         // than restated, so a config file that omits them runs the filter `RbpfConfig`
-        // documents.
+        // documents. The horizontal process noise is the one deliberate exception; see
+        // `DEFAULT_PF_HORIZONTAL_PROCESS_NOISE_STD_M`.
         let filter = crate::rbpf::RbpfConfig::default();
         Self {
             num_particles: default_num_particles(),
@@ -5569,10 +5581,7 @@ impl Default for ParticleFilterConfig {
             attitude_init_std_rad: default_attitude_init_std_rad(),
             velocity_process_noise_std_mps: default_velocity_process_noise_std_mps(),
             attitude_process_noise_std_rad: default_attitude_process_noise_std_rad(),
-            horizontal_process_noise_std_m: filter
-                .horizontal_process_noise_std_m
-                .as_slice()
-                .to_vec(),
+            horizontal_process_noise_std_m: vec![DEFAULT_PF_HORIZONTAL_PROCESS_NOISE_STD_M; 2],
             baro_loop_time_constant_s: filter.baro_loop_time_constant_s,
             baro_error_std_m: filter.baro_error_std_m,
             baro_error_time_constant_s: filter.baro_error_time_constant_s,

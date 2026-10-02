@@ -74,8 +74,8 @@
 //!    misstate a Gauss-Markov state's variance, and this does not.
 //! 6. **Horizontal position process noise is configurable**
 //!    ([`RbpfConfig::horizontal_process_noise_std_m`]). Its default is the paper's zero
-//!    (eq. 19), which diverges with GNSS-rate fixes on MEMS data; the configurations under
-//!    `conf/` use 1 m per root-second.
+//!    (eq. 19), which diverges with GNSS-rate fixes on MEMS data; `strapdown-sim` and the
+//!    configurations under `conf/` use 1 m per root-second.
 
 use crate::StrapdownError;
 use crate::gating::{
@@ -388,7 +388,9 @@ pub struct RbpfConfig {
     /// the particles' spread, and resampling on a metre-level fix destroys that spread. On the
     /// reference recording the conditional velocity sigma fell to millimetres per second,
     /// GNSS velocity fixes stopped correcting anything, and the solution ran 17 km off; 1 m per
-    /// root-second held it to 3.8 m. The configurations under `conf/` set that.
+    /// root-second held it to 3.8 m. The configurations under `conf/` set that, and so does
+    /// `strapdown-sim` by default ([`crate::sim::DEFAULT_PF_HORIZONTAL_PROCESS_NOISE_STD_M`]);
+    /// only this library-level default keeps the paper's value.
     pub horizontal_process_noise_std_m: Vector2<f64>,
     /// Time constant of the barometer loop, seconds. The gains place all three closed-loop
     /// poles at `-1 / tau`: `k₁ = 3/tau`, `k₂ = 3/tau² + 2g/R`, `k₃ = 1/tau³`.
