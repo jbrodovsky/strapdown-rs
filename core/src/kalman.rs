@@ -905,6 +905,28 @@ impl NavigationFilter for UnscentedKalmanFilter {
             measurement_sigma_points.set_column(i, &sigma_point);
             z_hat += self.weights_mean[i] * sigma_point;
         }
+        // A model that cannot predict a sigma point says so with a non-finite value:
+        // `get_expected_measurement` is infallible by signature, so the geophysical models
+        // return NaN for a point off the edge of their map. One NaN column makes `z_hat`, `s`
+        // and the gain NaN, and the update used to write that into the state, ending the run
+        // with `NonFinite { what: "filter state" }`. The EKF meets the same edge as a
+        // recoverable `OutOfMapBounds` from its Jacobian and skips the fix; this is that
+        // outcome for the UKF -- a recoverable error, raised before anything is changed.
+        let unusable = measurement_sigma_points
+            .column_iter()
+            .filter(|column| !column.iter().all(|value| value.is_finite()))
+            .count();
+        if unusable > 0 {
+            return Err(StrapdownError::MeasurementUnavailable {
+                model: "UKF sigma-point prediction",
+                reason: format!(
+                    "{unusable} of {} sigma points have no finite predicted measurement \
+                     (for a map-based model, they lie off the loaded map); the update is \
+                     skipped and the state left unchanged",
+                    measurement_sigma_points.ncols()
+                ),
+            });
+        }
         let mut s = DMatrix::<f64>::zeros(measurement.get_dimension(), measurement.get_dimension());
         for (i, sigma_point) in measurement_sigma_points.column_iter().enumerate() {
             let diff = sigma_point - &z_hat;
@@ -2998,6 +3020,86 @@ mod tests {
 
         // Verify update completed
         assert!(!ukf.mean_state.is_empty());
+    }
+
+    /// A measurement model that cannot predict for states north of `latitude_limit_rad`, as a
+    /// geophysical map cannot predict off its edge: it returns NaN there.
+    #[derive(Clone, Debug)]
+    struct EdgeOfMapMeasurement {
+        latitude_limit_rad: f64,
+    }
+
+    impl MeasurementModel for EdgeOfMapMeasurement {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+        fn get_dimension(&self) -> usize {
+            1
+        }
+        fn get_measurement(&self, _state: &DVector<f64>) -> Result<DVector<f64>, StrapdownError> {
+            Ok(DVector::from_element(1, 0.0))
+        }
+        fn get_noise(&self) -> DMatrix<f64> {
+            DMatrix::from_element(1, 1, 1.0)
+        }
+        fn get_expected_measurement(&self, state: &DVector<f64>) -> DVector<f64> {
+            let value = if state[0] > self.latitude_limit_rad {
+                f64::NAN
+            } else {
+                state[2]
+            };
+            DVector::from_element(1, value)
+        }
+        fn get_jacobian(&self, state: &DVector<f64>) -> Result<DMatrix<f64>, StrapdownError> {
+            let mut jacobian = DMatrix::zeros(1, state.len());
+            jacobian[(0, 2)] = 1.0;
+            Ok(jacobian)
+        }
+    }
+
+    /// Sigma points off the edge of a map used to put NaN into the state and end the run;
+    /// the UKF now skips the measurement as the EKF does, with a recoverable error and the
+    /// state and covariance untouched.
+    #[test]
+    fn ukf_skips_a_measurement_some_sigma_points_cannot_predict() {
+        let mut ukf = UnscentedKalmanFilter::new(
+            &UKF_PARAMS,
+            &IMU_BIASES,
+            None,
+            COVARIANCE_DIAGONAL.to_vec(),
+            DMatrix::from_diagonal(&DVector::from_vec(PROCESS_NOISE_DIAGONAL.to_vec())),
+            ALPHA,
+            BETA,
+            KAPPA,
+        );
+        let state_before = ukf.mean_state.clone();
+        let covariance_before = ukf.covariance.clone();
+        // On the mean's own latitude: the mean is on the map, the sigma points spread north
+        // of it are not.
+        let measurement = EdgeOfMapMeasurement {
+            latitude_limit_rad: state_before[0],
+        };
+
+        let error = ukf
+            .update(&measurement)
+            .expect_err("an unpredictable sigma point must not reach the state");
+        assert!(error.is_recoverable(), "got {error:?}");
+        assert!(
+            matches!(error, StrapdownError::MeasurementUnavailable { .. }),
+            "got {error:?}"
+        );
+        assert_eq!(ukf.mean_state, state_before);
+        assert_eq!(ukf.covariance, covariance_before);
+
+        // And a model every sigma point can predict still updates.
+        let on_map = EdgeOfMapMeasurement {
+            latitude_limit_rad: f64::INFINITY,
+        };
+        ukf.update(&on_map).unwrap();
+        assert!(ukf.mean_state.iter().all(|value| value.is_finite()));
     }
 
     #[test]

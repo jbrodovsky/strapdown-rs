@@ -62,9 +62,11 @@ What happens when the estimate leaves the grid depends on the filter:
 - **EKF and particle filter:** `OutOfMapBounds` is classed as recoverable, so the measurement is
   skipped with a warning naming the map bounds, and the run continues unaided by the map.
 - **UKF:** the predicted measurement is evaluated at each sigma point through a method that
-  cannot return an error, and an off-map point yields `NaN` there. In the current release that
-  `NaN` reaches the state and the run stops with `NonFinite { what: "filter state" }`, even when
-  only a sigma point, not the estimate itself, is off the map.
+  cannot return an error, and an off-map point yields `NaN` there. The UKF checks for that before
+  it touches the state: if any sigma point has no finite prediction, the update returns the
+  recoverable `MeasurementUnavailable`, and the measurement is skipped with a warning as on the
+  other filters. This happens a little sooner than on the EKF, since a sigma point can leave the
+  map while the estimate itself is still on it.
 
 Either way, size the map with room to spare around the track.
 

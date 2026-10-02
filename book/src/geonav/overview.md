@@ -178,10 +178,10 @@ strapdown-sim pf -i synthetic.csv -o geo_pf.csv \
 
 - **Experimental API.** `strapdown-geonav` is 0.1 and may change in any release.
 - **No ESKF.** Only the UKF, the EKF and the particle filter accept geophysical measurements.
-- **Leaving the map.** With the EKF and the particle filter, a measurement whose estimate is
-  off the map tile is skipped with a warning, so a map that is too small quietly stops aiding.
-  With the UKF, an off-map sigma point currently stops the run with
-  `NonFinite { what: "filter state" }`. Pad the map well beyond the track either way; see
+- **Leaving the map.** A measurement whose estimate is off the map tile is skipped with a
+  warning, so a map that is too small quietly stops aiding. The UKF skips one as soon as any of
+  its sigma points is off the map. A run that skips more than 100 measurements in a row fails
+  with `FilterDiverged`. Pad the map well beyond the track; see
   [Maps and Measurement Models](./maps.md#reading-a-value-bilinear-interpolation).
 - **The sensor matters more than the filter.** The gravity observation is the magnitude of the
   record's `grav_x/y/z` columns and the magnetic observation the magnitude of `mag_x/y/z`.
