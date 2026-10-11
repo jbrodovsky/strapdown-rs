@@ -1,7 +1,7 @@
 # SYNTHETIC ARM -- the complement of conf/real/ukf_mag.toml.
 #
 # Same filter, trajectories, inertial data and GNSS degradation as the real arm. What differs
-# is `grav_*` and `mag_*` in data/input: `just preprocess` (`analyze preprocess --synthetic`)
+# is `grav_*` and `mag_*` in data/input: `just preprocess` (`analyze synthesize`)
 # replaces the phone's readings with those of an ADXL355 gravimeter and an RM3100 magnetometer
 # -- the maps at the GNSS track plus each part's datasheet error model, installation ideal
 # (analysis/src/analysis/synthetic.py). conf/real/ ran the phone's own readings.
@@ -32,7 +32,7 @@ file = "log/ukf_mag.log"
 filter = "ukf"
 
 [geophysical]
-# The sensors `analyze preprocess --synthetic` planted, not a measurement of the phone. The
+# The sensors `analyze synthesize` planted, not a measurement of the phone. The
 # noise is per 10 Hz row -- a row averages 0.1 s of samples -- so these values assume `-f 10`.
 # analysis/tests/test_synthetic.py checks every number against the model; `just geo-adopt`
 # would overwrite them with re-measured ones, so the pipeline does not run it.

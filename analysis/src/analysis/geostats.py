@@ -23,7 +23,7 @@ Running it::
     analyze geostats -i data/input -o data/output/geostats
 
 Each trajectory CSV is read with the sibling ``<stem>_gravity.nc`` and ``<stem>_magnetic.nc``
-that ``analyze preprocess`` wrote beside it -- the same files, found the same way,
+that ``memsnav preprocess`` wrote beside it -- the same files, found the same way,
 ``find_gravity_map`` and ``find_magnetic_map`` in ``sim/src/main.rs`` look for.
 
 Why the formulas below are duplicated from Rust
@@ -253,7 +253,7 @@ def wmm_total_field_nt(latitude_deg, longitude_deg, altitude_m, years) -> np.nda
 
 #: Effective resolution of the gravity grid over land, metres.
 #:
-#: ``analyze preprocess`` downloads ``earth_faa`` at ``01m`` -- a 1 arc-minute cell, about
+#: ``memsnav preprocess`` downloads ``earth_faa`` at ``01m`` -- a 1 arc-minute cell, about
 #: 1855 m of latitude. That is the *grid* spacing. ``earth_faa`` is Sandwell & Smith's
 #: altimetry-derived marine anomaly, and **over land it is filled in from EGM2008**, whose
 #: terrestrial input is a 5 arc-minute area-mean grid. For a land vehicle the 1 arc-minute
@@ -263,7 +263,7 @@ GRAVITY_SOURCE_RESOLUTION_M = 5.0 * 1852.0
 
 #: Altitude the magnetic grid is referenced to, metres.
 #:
-#: ``analyze preprocess`` downloads ``earth_wdmam`` at ``03m``. WDMAM v2 is a 3 arc-minute
+#: ``memsnav preprocess`` downloads ``earth_wdmam`` at ``03m``. WDMAM v2 is a 3 arc-minute
 #: grid **at 5 km above sea level**. A phone at ground level is not measuring the same
 #: quantity: upward continuation attenuates an anomaly of wavelength L by exp(-2*pi*h/L), so
 #: at 5 km everything shorter than about 31 km is suppressed in the map but present in the
@@ -566,7 +566,7 @@ def analyse_trajectory(
         raise ValueError(f"{csv_path.name}: missing column(s) {missing}")
 
     # Parsed explicitly rather than through `read_csv(parse_dates=...)`. On a column of
-    # `2025-03-01 12:00:00+00:00` -- which is exactly what `analyze preprocess` writes --
+    # `2025-03-01 12:00:00+00:00` -- which is exactly what `memsnav preprocess` writes --
     # pandas leaves `parse_dates` columns as **strings** when it cannot infer a format, with
     # no error, so the failure surfaced a hundred lines later as
     # `unsupported operand type(s) for -: 'str' and 'str'`.
@@ -1144,7 +1144,7 @@ def add_geostats_arguments(parser) -> None:
     Register the geostats options on a parser.
 
     Shared by this module's standalone entry point and the ``analyze geostats`` subcommand,
-    following `add_preprocess_arguments` so the two cannot drift apart.
+    following `add_synthesize_arguments` so the two cannot drift apart.
     """
     parser.add_argument(
         "-i",
@@ -1153,8 +1153,8 @@ def add_geostats_arguments(parser) -> None:
         required=True,
         help=(
             "Directory of preprocessed trajectory CSVs, each with its `<stem>_gravity.nc` "
-            "and `<stem>_magnetic.nc` beside it -- that is, the output of `analyze "
-            "preprocess`, not data/raw."
+            "and `<stem>_magnetic.nc` beside it -- that is, `memsnav preprocess --getmaps` "
+            "or `analyze synthesize` output, not data/raw."
         ),
     )
     parser.add_argument(
