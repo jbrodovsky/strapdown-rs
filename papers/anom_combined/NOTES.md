@@ -5,11 +5,14 @@ references (the limit is 20). 9 figures (limit 15), 9 tables, abstract 267 words
 
 ## Needs an author decision
 
-1. **Correction framing (Section 2).** The paper withdraws the ITM 2026 and Pacific PNT 2026
-   results explicitly. Agree the wording with Dr. Dames, and decide whether to tell ION about
-   the conference papers separately (erratum or retraction notice). Under ION's policy a journal
-   version of a conference paper is normal; a journal version that *reverses* it should say so
-   in the cover letter as well.
+1. **Relation to the conference papers.** Decided 2026-10-20: the paper *refines* the ITM 2026
+   and Pacific PNT 2026 results rather than withdrawing them. The former Section 2 is folded into
+   the Introduction ("Relation to Earlier Work") and the Experiment section ("Changes from the Conference
+   Experiments"), which still lists the observation and comparison defects as fixes made. The
+   magnetic premise is confirmed with a dedicated magnetometer; the smartphone-specific gains are
+   stated as not reproduced; the RBPF's gain over its own baseline is explained by that baseline's
+   divergence. Still open: agree the wording with Dr. Dames, and say in the cover letter how the
+   journal version changes the conference results, and whether ION needs a separate notice.
 2. **Title.** The working title is descriptive. Alternatives:
    "Is a Smartphone Enough? ..." or "Sensor Quality, Not the Estimator, Decides ...".
 3. **Abstract length.** 267 words. The NAVIGATION submission page does not give a limit; check

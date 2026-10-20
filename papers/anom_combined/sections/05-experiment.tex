@@ -19,8 +19,41 @@ No independent reference trajectory exists for these drives, so every error in t
 
 Each of the 27 drives was processed by each of the three filters in five configurations: full GNSS, degraded GNSS, and degraded GNSS with gravity, magnetic, or combined anomaly aiding. The aided configurations were run twice, once with the smartphone's own observations and once with the simulated dedicated sensors, giving \(27 \times 3 \times (2 + 2 \times 3) = 648\) runs. Within a pair, the aided and unaided runs share the filter, its initialization and process noise, the barometric and heading updates, the degraded GNSS stream, and the random seed, and differ only in the map-bias states and the anomaly updates.
 
-Because the degraded-GNSS error varies by almost an order of magnitude across drives (\Cref{fig:baselines}), each aided run is scored by the ratio of its horizontal RMSE to that of the same filter's unaided run on the same drive; a ratio below one is an improvement. The ratios of a configuration are summarized by their median with a 95\% percentile bootstrap interval (10{,}000 resamples) \citep{efron1993bootstrap}, by the number of drives improved and worsened, and by a two-sided Wilcoxon signed-rank test on the paired differences \citep{wilcoxon1945individual}. A drive enters a comparison only if both of its runs completed. A run is stopped if the filter's speed exceeds 5{,}000~m/s; this health limit is deliberately loose so that MEMS-grade runs can drift to completion, which also makes completion weak evidence that a run stayed healthy.
+Because the degraded-GNSS error varies by almost an order of magnitude across drives (\Cref{fig:baselines}), each aided run is scored by the ratio of its horizontal RMSE to that of the same filter's unaided run on the same drive; a ratio below one is an improvement. The ratios of a configuration are summarized by their median with a 95\% percentile bootstrap interval (10{,}000 resamples) \citep{efron1993bootstrap}, by the number of drives improved and worsened, and by a two-sided Wilcoxon signed-rank test on the paired differences \citep{wilcoxon1945individual}.
+For drive \(j\), the test takes the difference \(d_j = \mathrm{RMSE}_j^\mathrm{aided} - \mathrm{RMSE}_j^\mathrm{unaided}\) and the rank \(R_j\) of \(|d_j|\) among the \(n\) nonzero differences, and forms the statistic \begin{equation}
+  W = \min\Bigg( \sum_{j \,:\, d_j > 0} R_j, \; \sum_{j \,:\, d_j < 0} R_j \Bigg).
+  \label{eqn:wilcoxon}
+\end{equation} Under the null hypothesis that the differences are symmetric about zero, each rank is equally likely to carry either sign, and the \(p\)-value is the probability of a statistic at least as extreme as the one observed, \(p = 2 \Pr(W \leq W_\mathrm{obs} \mid H_0)\).
+It is computed from the exact null distribution of \(W\), since every Kalman-filter comparison has \(n = 27\) nonzero, untied differences.
+A comparison is called statistically significant when \(p < 0.05\); because a \(p\)-value does not measure the size of an effect, conclusions about size rest on the confidence interval of the ratio. A drive enters a comparison only if both of its runs completed. A run is stopped if the filter's speed exceeds 5{,}000~m/s; this health limit is deliberately loose so that MEMS-grade runs can drift to completion, which also makes completion weak evidence that a run stayed healthy.
 
 The smartphone and dedicated-sensor inputs differ only in the norms of the gravity and magnetic vectors, so their unaided runs should coincide. They do for the UKF, whose degraded-GNSS RMSE changes by more than 1\% on \numsensukfcount{} of \numsensukfn{} drives, but not for the other two filters: the magnetic vector feeds the heading observation, and the last-bit difference introduced by rescaling it changes the EKF's RMSE by more than 1\% on \numsensekfcount{} of \numsensekfn{} drives (by up to \numsensekfmaxm~m) and the RBPF's on \numsensrbpfcount{} of the \numsensrbpfn{} drives common to both sets, with a median change of \numsensrbpfmedianpct\%. Each set of aided runs is therefore compared with its own unaided runs. The sensitivity of the RBPF to this perturbation is itself a result (\Cref{sec:results-rbpf}).
 
 The dedicated-sensor and unaided runs read the configuration files as committed at \texttt{2a40f1e} of \texttt{strapdown-rs}, with seed 42; the revision of the binary that executed them was not recorded. The configurations of the smartphone-sensor runs were not archived; their filter settings are believed to match, but this has not been verified. The analysis scripts that produce every table, figure, and quoted statistic from the run outputs are available as described at the end of the paper.
+
+\subsection{Changes from the Conference Experiments}
+\label{sec:changes}
+
+\Cref{tab:conference-vs-journal} summarizes how this experiment differs from those of \citet{anom-ukf} and \citet{anom-pf}. The largest change is in the anomaly observations, which the conference software formed in a way that did not place the readings and the maps on a common scale. The gravity anomaly was computed in m/s\(^2\) and differenced against a map in mGal; normal gravity was evaluated with the latitude in radians passed to a function that expects degrees, and at the ellipsoid rather than at the observation height; and the E\"{o}tv\"{o}s correction was subtracted rather than added and used the radius of the parallel in place of the radii of curvature. The magnetic anomaly subtracted the WMM intensity in tesla from an observed intensity in microtesla, so that no core field was removed, and was differenced against a map in nanotesla. The comparisons also changed. In the conference papers the aided and unaided runs were built by different code paths, which in the software of \citet{anom-pf} gave only the unaided stream a magnetometer heading update, and the GNSS error model was parameterized per fix rather than per unit time. Each of these has been fixed in \texttt{strapdown-rs} with a regression test. Finally, the conference RBPF carried a Kalman filter per particle over 14 linear states including IMU biases, with resampling triggered by the effective sample size; the RBPF evaluated here follows \citet{canciani2017airborne}.
+
+\begin{table}[htb]
+  \caption{The Experiment of This Paper Compared with Those of the Conference Papers}
+  \label{tab:conference-vs-journal}
+  \centering
+  \small
+  \begin{tabular}{p{0.20\textwidth}p{0.35\textwidth}p{0.37\textwidth}}
+    \toprule
+    & Conference papers \citep{anom-ukf, anom-pf} & This paper \\
+    \midrule
+    Drives & 13 (UKF) and 21 (RBPF) & 27, all filters \\
+    Record rate & 1~Hz & 10~Hz inertial, about 1~Hz GNSS \\
+    GNSS degradation & AR(1) per fix, \(\rho\) = 0.99 / 0.95, \(\sigma\) = 5~m / 5~m/s, \(R\) inflated by \(15^2\) & One fix per 60~s; first-order Gauss--Markov errors, 35~m / 500~s and 1.5~m/s / 100~s; \(R\) inflated by \(5^2\) \\
+    Gravity observation & Unit, latitude, height and E\"{o}tv\"{o}s errors (above) & \Cref{eqn:gravity-anomaly-obs} \\
+    Magnetic observation & Raw intensity in \(\mu\)T, no core field removed & \Cref{eqn:magnetic-anomaly-obs}, WMM2020/2025 \\
+    Anomaly error model & Residual statistics of that observation & Measured against the maps (\Cref{tab:error-model}) \\
+    Filters & UKF; RBPF with a Kalman filter per particle & EKF, UKF; RBPF after \citet{canciani2017airborne} \\
+    Comparison & Aided vs.\ separately built unaided runs & Aided vs.\ the same filter's unaided run on an identical stream; bootstrap CI and Wilcoxon test \\
+    Control experiment & None & Simulated dedicated sensors (\Cref{sec:dedicated-sensors}) \\
+    \bottomrule
+  \end{tabular}
+\end{table}

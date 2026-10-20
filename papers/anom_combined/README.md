@@ -1,6 +1,6 @@
 # Anomaly aiding: EKF, UKF and RBPF (ION *NAVIGATION* manuscript)
 
-Journal manuscript that combines and **corrects** the two ION conference papers
+Journal manuscript that combines, extends and **refines** the two ION conference papers
 (ITM 2026, UKF; Pacific PNT 2026, RBPF) and adds the EKF. Template: ION's NAVIGATION
 LaTeX template (`IONconf-v2.cls`, from `https://www.ion.org/navi/upload/LaTexTemplate.zip`),
 APA 7 via biblatex/biber.
