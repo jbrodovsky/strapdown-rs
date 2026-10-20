@@ -11,6 +11,9 @@ dependencies = [
     "cartopy>=0.25.0",
     "haversine>=2.9.0",
     "matplotlib>=3.10.8",
+    # The MEMS-Nav dataset's own package: `memsnav fetch` downloads the recordings and
+    # `memsnav preprocess` turns them into data/input_real. Pinned by tag in [tool.uv.sources].
+    "memsnav[maps]",
     # NetCDF backend for xarray, so `geostats` can read the .nc maps `preprocess` writes.
     # xarray arrives via pygmt but brings no engine of its own.
     "netcdf4>=1.7.0",
@@ -24,6 +27,9 @@ dependencies = [
     "scipy>=1.16.3",
     "tqdm>=4.67.1",
 ]
+
+[tool.uv.sources]
+memsnav = { git = "https://github.com/jbrodovsky/mems-nav-dataset", tag = "v0.1.0" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

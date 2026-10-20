@@ -20,12 +20,12 @@ from analysis.compare import (
     save_detailed_results_to_csv,
 )
 from analysis.geostats import add_geostats_arguments, geostats_analysis
-from analysis.preprocess import add_preprocess_arguments, preprocess_data
+from analysis.synthetic import add_synthesize_arguments, synthesize_directory
 
 # `analysis.plotting` is NOT imported here. It imports pygmt at module scope, and pygmt
 # dlopens the GMT C library on import -- so an eager import made *every* subcommand, and
 # importing the package at all, fail on a machine without GMT installed. Only `performance`
-# and `geoperformance` actually draw maps; `preprocess` and `geostats` do not, and CI has no
+# and `geoperformance` actually draw maps; `synthesize` and `geostats` do not, and CI has no
 # GMT. The two call sites import it where they use it.
 
 __version__ = "0.1.0"
@@ -96,7 +96,7 @@ def read_timeseries(path) -> DataFrame:
 
         unsupported operand type(s) for -: 'str' and 'str'
 
-    Every timestamp this package reads is written by `analyze preprocess` or by
+    Every timestamp this package reads is written by `memsnav preprocess` or by
     `strapdown-sim`, both of which emit ISO 8601, so the format is named rather than guessed.
     The index is checked before the frame is handed back, because the whole point is that the
     silent version of this failure costs an hour: `performance_analysis` caught it in a broad
@@ -166,35 +166,13 @@ def main() -> None:
 
     command = parser.add_subparsers(title="command", dest="command")
 
-    preprocess = command.add_parser("preprocess", help="Preprocess raw trajectory data.")
-
-    preprocess.add_argument(
-        "-i",
-        "--input",
-        type=str,
-        default="data/raw",
-        help="Base directory for the sensor logger app data.",
+    # Raw -> processed lives in the dataset's own package, `memsnav` (`uv run memsnav
+    # preprocess`). What stays here is what mirrors this repository's measurement models.
+    synthesize = command.add_parser(
+        "synthesize",
+        help="Build the synthetic gravimeter/magnetometer arm from the real processed data.",
     )
-    preprocess.add_argument(
-        "-o",
-        "--output",
-        type=str,
-        default="data",
-        help="Output directory for the cleaned data.",
-    )
-    preprocess.add_argument(
-        "-b",
-        "--buffer",
-        type=float,
-        default=0.1,
-        help="Buffer amount to inflate the bounding box by (as a percentage). Default is 0.1 (10 percent).",
-    )
-    preprocess.add_argument(
-        "--getmaps",
-        action="store_true",
-        help="Download geophysical maps for each trajectory.",
-    )
-    add_preprocess_arguments(preprocess)
+    add_synthesize_arguments(synthesize)
 
     dataset_summary = command.add_parser(
         "dataset-summary",
@@ -352,8 +330,8 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    if args.command == "preprocess":
-        preprocess_data(args)
+    if args.command == "synthesize":
+        synthesize_directory(args.input, args.output, seed=args.seed, prune=args.prune)
     elif args.command == "dataset-summary":
         dataset_summary_analysis(args)
     elif args.command == "performance":

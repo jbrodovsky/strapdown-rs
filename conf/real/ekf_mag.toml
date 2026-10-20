@@ -26,7 +26,7 @@ filter = "ekf"
 [geophysical]
 # Magnetic anomaly measurements.
 #
-# NOTE: `analyze preprocess` downloads the magnetic grid at 3 arc-minutes (`earth_wdmam`),
+# NOTE: `memsnav preprocess` downloads the magnetic grid at 3 arc-minutes (`earth_wdmam`),
 # not the two minutes named here, and nothing validates that the two agree -- `GeoResolution`
 # is a filename token and no code derives metres from a loaded grid.
 magnetic_resolution = "two_minutes"

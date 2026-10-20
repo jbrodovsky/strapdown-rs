@@ -16,3 +16,8 @@ The research manuscripts that previously lived here (`anomaly_rbpf/`,
 `anomaly_ukf/`, `data_paper/`) are not part of the v1.0 release scope and have
 been removed from version control. They are ignored via `.gitignore`, so local
 working copies are left untouched.
+
+The MEMS-Nav data article (Data in Brief) lives with the dataset it describes, in
+[jbrodovsky/mems-nav-dataset](https://github.com/jbrodovsky/mems-nav-dataset) under `paper/`.
+It was `papers/mems_nav_data/` here until the dataset moved out; it builds from a release of
+that dataset, whose `benchmark/` this repository stages with `just dataset-benchmark`.

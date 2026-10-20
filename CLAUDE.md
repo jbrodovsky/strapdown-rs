@@ -63,14 +63,24 @@ Command-line tool for running INS simulations with GNSS degradation:
 
 ### 4. `analysis` (/analysis, Python)
 Post-processing and experiment tooling, exposed as the `analyze` CLI:
-- **preprocess.py**: rebuilds `data/input` from the Sensor Logger exports in `data/raw` --
+- **Preprocessing lives in the dataset's own package, `memsnav`**
+  ([jbrodovsky/mems-nav-dataset](https://github.com/jbrodovsky/mems-nav-dataset), a git
+  dependency of `analysis` pinned by tag in `analysis/pyproject.toml`). `memsnav preprocess`
+  rebuilds the **real arm**, `data/input_real`, from the Sensor Logger exports in `data/raw` --
   resampling, splitting recordings at IMU dropouts, and downloading the `_gravity.nc` /
-  `_magnetic.nc` maps beside each trajectory. `just preprocess` runs it at **10 Hz**, which
-  gives 10 Hz inertial propagation against the ~1 Hz the GNSS was actually recorded at (the
-  GNSS columns stay NaN in nine rows out of ten; do not interpolate them up). `data/input` is
-  the one directory every consumer reads -- all 21 `conf/*.toml`, `geo-stats`, `postprocess`
-  and `geoperf-*` -- so change the rate, not the path. `just preprocess-1hz` is the 1 Hz
-  variant, which is the rate every result before the geophysical fixes used
+  `_magnetic.nc` maps beside each trajectory. `memsnav fetch` downloads the recordings
+  (`just fetch-data`) or the published processed data (`just fetch-processed`) from Zenodo.
+  Change preprocessing there, tag a release, and bump the pin here -- the data paper and the
+  Zenodo record describe what that package produces, so it is not edited from this repo
+- **synthetic.py** (`analyze synthesize`): builds the **synthetic arm**, `data/input`, from the
+  real one by replacing only `grav_*`/`mag_*` with a modelled ADXL355/RM3100. Draws are keyed
+  by seed and file stem, so it is a pure function of `data/input_real`. `just preprocess` runs
+  both steps at **10 Hz**, which gives 10 Hz inertial propagation against the ~1 Hz the GNSS
+  was actually recorded at (the GNSS columns stay NaN in nine rows out of ten; do not
+  interpolate them up). `data/input` is the one directory every consumer reads -- all 21
+  `conf/*.toml`, `geo-stats`, `postprocess` and `geoperf-*` -- so change the rate, not the
+  path. `just preprocess-1hz` is the 1 Hz variant, which is the rate every result before the
+  geophysical fixes used
 - **geostats.py**: characterises the geophysical measurements against those maps -- per-field
   bias, measurement noise and signal-to-noise, plus the de-correlation length that sets
   `geo_interval_s`. Its anomaly models mirror `core/src/earth.rs` and `geonav/src/lib.rs` term
@@ -152,7 +162,9 @@ cargo fmt-check
 ```
 
 ### Datasets
-Sample datasets are no longer vendored in this repository. Test fixtures live in
+Sample datasets are no longer vendored in this repository. The MEMS-Nav recordings are a
+separate Zenodo record with its own repository and package (`memsnav`, see the `analysis`
+section); `just fetch-data` downloads them into `data/raw`. Test fixtures live in
 `core/tests/`; generate your own trajectories with the `syn` subcommand:
 
 ```bash
