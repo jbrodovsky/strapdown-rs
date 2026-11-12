@@ -38,14 +38,7 @@ crate adds gravity- and magnetic-anomaly map matching as a GNSS alternative.
 
 ## Statement of need
 
-Navigation algorithms are usually prototyped in MATLAB or Python. Prototypes in those
-languages run fast only when the mathematics is rewritten in vectorized array form. That
-rewrite is particularly awkward for particle filters, whose natural expression is a loop over
-particles that each carry their own state. It obscures the algorithm, duplicates logic and is
-hard to debug. C and C++ give speed, but without memory safety, which makes a library hard to
-extend safely. `strapdown-rs` lets filters be written as plainly as the textbook presents them
-and compiled. The same code can then be reused unchanged from a research script, a CLI
-experiment or an application.
+Navigation algorithms are usually prototyped in MATLAB or Python, where performance comes from expressing the mathematics as whole-array operations, whether vectorized by hand or traced and compiled by tools such as JAX [@jax2018] and Numba [@lam2015numba]. Each asks the code to fit an execution model: JAX requires pure functions over fixed-shape arrays, with data-dependent branching (measurement availability, for instance) written as traced control flow, and Numba compiles a subset of Python and NumPy. How well an algorithm fits depends on the estimator. A Kalman filter propagates a single state, while a particle filter's natural expression is a loop over particles that each carry their own state, so the same mechanization tends to be restructured differently for each. The compiled code also still depends on a Python runtime wherever it is deployed. C and C++ avoid both problems but give no memory safety, which makes a library hard to extend safely. `strapdown-rs` lets filters be written as plainly as the textbook presents them and compiled ahead of time.
 
 The second need is reproducible GNSS-denied experiments. Collecting real data under denial
 requires jamming hardware, test ranges and regulatory approval, so few researchers can, and no
@@ -63,8 +56,9 @@ students, researchers and engineers working on INS/GNSS integration and alternat
   no degradation scenarios.
 - OpenVINS [@geneva2020openvins] is a mature visual-inertial estimator built on ROS. It is
   designed around camera-IMU fusion rather than GNSS-aided navigation.
-- Academic MATLAB implementations, typically following @groves, are widely shared. They
-  require a proprietary runtime and are seldom packaged for reuse.
+- Academic MATLAB implementations such as NaveGo [@gonzalez2015navego, @gonzalez2017model] typically following @groves, are widely shared. They require a proprietary runtime and are seldom packaged for reuse.
+- Similar compiled INS implementations, such as KF-GINS [@niu2025kf], provide open-source C++ libraries for GNSS/INS integration. They offer high performance but typically focus on one state estimation backend
+- Other such estimators such as PX4's EKF2 or ROS's `robot_localization` are packaged and integrated into larger frameworks, making them convenient to use in the framework or runtime but less flexible for research purposes.
 
 We built a new package rather than contributing to one of these because our two goals are
 joint. We need a memory-safe compiled library and a seeded scenario engine that share one
@@ -147,13 +141,12 @@ The reproducibility claims are tested rather than asserted:
 - Synthetic trajectories make every scenario reproducible without the original recordings.
 
 The v1.0 release publishes `strapdown-core`, `strapdown-sim` and `strapdown-geonav` to
-crates.io. Other Rust projects can then depend directly on the mechanization and filters, and
-compare new estimators against the provided baselines under identical scenarios.
+crates.io.
 
 ## AI usage disclosure
 
 Generative AI was used substantially in this project. The repository history records commits
-authored by Anthropic's Claude Code and by the GitHub Copilot coding agent alongside the
+authored by Anthropic's Claude Code (Opus 5; Opus 5.5) and by the GitHub Copilot (automatic model routing) coding agent alongside the
 author's own. These tools implemented features, wrote tests and documentation, and
 investigated defects. The author directed the work, reviewed each change before merging it,
 and checked the algorithms against @groves and @canciani2017.
