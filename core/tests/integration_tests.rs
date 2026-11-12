@@ -8,7 +8,7 @@
 )]
 //!
 //! This module contains end-to-end integration tests for the strapdown inertial navigation
-//! filters using real data recorded from a MEMS-grade IMU. See [mems-nav-dataset](www.github.com/jbrodovsky/mems-nav-dataset).
+//! filters using real data recorded from a MEMS-grade IMU. See [mems-nav-dataset](https://github.com/jbrodovsky/mems-nav-dataset).
 //! These tests ensure that the entire navigation system works as expected in realistic scenarios, not just
 //! at the API level but with actual IMU and GNSS data.
 //!

@@ -15,22 +15,40 @@ check-python:
     uv run ruff format --check
     uv run pytest -q
 
-# Rebuild data/input from the Sensor Logger exports in data/raw. `data/raw` is read-only --
-# nothing in this repo may write to it.
+# Download the raw Sensor Logger recordings from the MEMS-Nav Zenodo record into data/raw.
+# `memsnav` is the dataset's own package (github.com/jbrodovsky/mems-nav-dataset), pinned in
+# analysis/pyproject.toml. It checks every archive's MD5 and skips what is already unpacked, so
+# a re-run downloads nothing. `-- --recording <name>` fetches a single recording.
+#
+# Download the MEMS-Nav raw recordings into data/raw.
+fetch-data *ARGS:
+    uv run memsnav fetch raw --dest data {{ARGS}}
+
+# The published real arm, instead of rebuilding it with `preprocess`: no GMT needed, and
+# exactly the files the MEMS-Nav data paper describes. `preprocess` still has to run the
+# `synthesize` half to make data/input.
+#
+# Download the published processed trajectories and maps into data/input_real.
+fetch-processed:
+    uv run memsnav fetch processed maps --dest data/input_real --flat
+
+# Rebuild both arms from the Sensor Logger exports in data/raw: the real one into
+# data/input_real (`memsnav preprocess`), then the synthetic one from it into data/input
+# (`analyze synthesize`). `data/raw` is read-only -- nothing in this repo may write to it.
 #
 # Recordings whose IMU drops out mid-flight are split at the gap into `<name>_A.csv`,
 # `<name>_B.csv`, ... and ones whose IMU stops before the GPS does are trimmed back to their
 # last inertial sample, because `strapdown-sim` rejects any file carrying a gap longer than
 # `max_imu_gap_s` (5 s) rather than dead-reckoning across it. `--max-imu-gap-s` here must stay
-# equal to that limit. See data/input/segments.json for what each run produced.
+# equal to that limit. See data/input_real/segments.json for what each run produced.
 #
-# `--prune` deletes CSVs in data/input that the run did not write, so the directory stays a
+# `--prune` deletes CSVs in the output directory that the run did not write, so the directory stays a
 # faithful function of data/raw. It matters most right after a recording starts being split:
 # the un-split original would otherwise stay behind, and since the simulator loads every CSV
 # in the directory it would go on being run and go on failing. Everything here is derived
 # from data/raw, which is read-only and is never written by any recipe.
 #
-# 10 Hz, into `data/input`. GNSS is only ever recorded at ~1 Hz, so the extra rows carry
+# 10 Hz. GNSS is only ever recorded at ~1 Hz, so the extra rows carry
 # inertial data only and the GNSS columns stay NaN in 9 bins out of 10 -- which is what gives
 # 10 Hz propagation against 1 Hz aiding. Do not interpolate GNSS up to match.
 #
@@ -41,10 +59,10 @@ check-python:
 # data happened to be in the other. Change the rate here and everything follows; change the
 # directory and 15 files have to follow it.
 #
-# `--getmaps` is required, not optional. Without it `preprocess` calls `inherit_parent_maps`,
-# which copies `data/input/<source>_{gravity,magnetic}.nc` onto each split segment -- but
-# `clean` has just deleted those, so there is nothing to inherit and the directory ends up
-# with trajectories and no maps at all. Every geophysical run then dies on "Gravity map file
+# `--getmaps` is required, not optional. Without it `memsnav preprocess` calls
+# `inherit_parent_maps`, which copies `<source>_{gravity,magnetic}.nc` onto each split segment
+# -- but in a fresh directory there are none, so there is nothing to inherit and the directory
+# ends up with trajectories and no maps at all; `synthesize` then refuses to run. Every geophysical run then dies on "Gravity map file
 # not found", three steps downstream of the cause. It needs the GMT C library (`libgmt`) and
 # network access to the GMT data server.
 #
@@ -68,29 +86,57 @@ check-python:
 # re-fetches and overwrites both files on every run regardless (pygmt caches the underlying
 # grids locally, so a re-run costs no network, but it still rewrites the `.nc` files).
 #
-# `--synthetic` makes data/input the SYNTHETIC arm. The phone's gravity and magnetometer
+# `analyze synthesize` makes data/input the SYNTHETIC arm. The phone's gravity and magnetometer
 # readings carry no map information (GEO_AIDING_NOTES.md §3), so they are replaced -- and only
 # they: every IMU, GNSS, barometer and attitude column is untouched -- by what a low-cost
 # ADXL355 gravimeter and RM3100 magnetometer would have read: each map sampled at the GNSS
 # track, plus the part's datasheet error model (analysis/src/analysis/synthetic.py). The seed
 # fixes the sensor errors, and data/input/synthetic.json records the models and every draw.
-# conf/*.toml describe these sensors, per 10 Hz row. The real arm is frozen: its inputs in
-# data/input_real, its results in data/output_real, its configs in conf/real/.
+# conf/*.toml describe these sensors, per 10 Hz row. Its draws are keyed by seed and file
+# stem only, so this two-step build reproduces what the one-step `--synthetic` did bit for bit.
+# The real arm's inputs are data/input_real, its results data/output_real, its configs
+# conf/real/; `clean` leaves all three alone.
 #
-# Rebuild data/input from data/raw at 10 Hz with synthetic gravimeter and magnetometer readings.
+# Rebuild data/input_real from data/raw at 10 Hz, then the synthetic data/input from it.
 preprocess:
-    uv run analyze preprocess -i data/raw -o data/input -f 10 \
-        -b 1.5 --margin-km 10.0 --getmaps --max-imu-gap-s 5.0 --min-segment-s 300.0 --prune \
-        --synthetic --synthetic-seed 42
+    uv run memsnav preprocess -i data/raw -o data/input_real -f 10 \
+        -b 1.5 --margin-km 10.0 --getmaps --max-imu-gap-s 5.0 --min-segment-s 300.0 --prune
+    uv run analyze synthesize -i data/input_real -o data/input --seed 42 --prune
 
 # conf/*.toml give the synthetic sensors' white noise per 10 Hz row. A 1 Hz row averages ten
 # times as many samples, so its noise is sqrt(10) smaller than those configs tell the filter.
 #
+# The 1 Hz real arm goes to its own directory so the 10 Hz data/input_real, which conf/real
+# and the data paper are built on, is never overwritten by it.
+#
 # Rebuild data/input at 1 Hz instead, matching the rate every result before this branch used.
 preprocess-1hz:
-    uv run analyze preprocess -i data/raw -o data/input -f 1 \
-        --margin-km 10.0 --max-imu-gap-s 5.0 --min-segment-s 300.0 --prune --getmaps \
-        --synthetic --synthetic-seed 42
+    uv run memsnav preprocess -i data/raw -o data/input_real_1hz -f 1 \
+        --margin-km 10.0 --max-imu-gap-s 5.0 --min-segment-s 300.0 --prune --getmaps
+    uv run analyze synthesize -i data/input_real_1hz -o data/input --seed 42 --prune
+
+# The MEMS-Nav release (`memsnav package --benchmark`, in the dataset's own repository) ships
+# the reference baselines its data article reports: the real-arm scenario configs and
+# strapdown-rs's scores on the phone data, which `just` writes under data/output_real2. Only
+# the files the article reads are staged; the per-trajectory plots stay here.
+#
+# Stage the MEMS-Nav release's benchmark directory from the real-arm results.
+dataset-benchmark src="data/output_real2" out="data/release/benchmark":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rm -rf "{{out}}"
+    mkdir -p "{{out}}/conf"
+    for filter in ekf ukf rbpf; do
+        for scenario in truth degraded; do
+            cp "conf/real/${filter}_${scenario}.toml" "{{out}}/conf/"
+            mkdir -p "{{out}}/${filter}/${scenario}"
+            cp "{{src}}/${filter}/${scenario}/performance/performance_summary.csv" \
+                "{{out}}/${filter}/${scenario}/"
+        done
+    done
+    cp "{{src}}/geostats/geo_stats_pooled.json" "{{out}}/"
+    cp "{{src}}/dataset_summary/dataset_summary.csv" "{{out}}/"
+    echo "Staged $(find "{{out}}" -type f | wc -l) files in {{out}}"
 
 # Reports only -- it writes `data/output/geostats/geo_stats.toml` and leaves `conf/` alone,
 # which is why `pipeline` can run it without changing the experiment underneath itself.
@@ -259,9 +305,9 @@ geoperf-rbpf:
 # a recipe's own body runs after its dependencies, which is why the `rm -rf` lines moved into
 # their own `clean` recipe rather than staying here.
 #
-# This is the synthetic arm: `preprocess` synthesises the geophysical readings and conf/*.toml
+# This is the synthetic arm: `preprocess` ends by synthesising the geophysical readings and conf/*.toml
 # describe those sensors, so `geo-stats` runs as a report on them and `geo-adopt` does not run.
-# `clean` never touches data/input_real or data/output_real, where the real arm is frozen.
+# `clean` never touches data/input_real or data/output_real, the real arm.
 #
 # Run the whole experiment end to end, from data/raw to the scored analyses.
 pipeline: clean build preprocess geo-stats truth degraded ukf-geo ekf-geo rbpf-sim postprocess geoperf-all
@@ -272,4 +318,4 @@ pipeline: clean build preprocess geo-stats truth degraded ukf-geo ekf-geo rbpf-s
 #
 # Remove everything the pipeline regenerates. `data/raw` is read-only and is never touched.
 clean:
-    rm -rf data/input data/input_10hz data/output log
+    rm -rf data/input data/input_10hz data/input_real_1hz data/output log

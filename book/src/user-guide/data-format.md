@@ -94,7 +94,9 @@ ordinary manoeuvring are fine -- and it passes anything ambiguous through.
 The project organizes data files into several directories based on processing type and GNSS condition:
 
 ### Input Data
-- **`input/`**: Contains pre-processed input files ready for processing, along with route visualization images. Raw recordings are available upon request but not stored in version control due to size.
+- **`raw/`**: The MEMS-Nav Sensor Logger recordings, one directory each. They are not stored in version control; `just fetch-data` downloads them from the dataset's Zenodo record with [`memsnav`](https://github.com/jbrodovsky/mems-nav-dataset), the dataset's own package. Read-only: nothing writes to it.
+- **`input_real/`**: The processed real arm -- 10 Hz trajectories, `segments.json`, and the gravity/magnetic maps beside each -- built from `raw/` by `memsnav preprocess` (`just preprocess`), or downloaded as published with `just fetch-processed`.
+- **`input/`**: The synthetic arm every `conf/*.toml` reads: `input_real/` with its gravity and magnetometer columns replaced by `analyze synthesize`, along with route visualization images.
 
 ### Ground Truth
 - **`truth/`**: Contains ground truth data files of processed trajectories used for validation and testing. These files serve as reference data for comparing alternative processing methods and navigation algorithms.

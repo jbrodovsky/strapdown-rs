@@ -1,5 +1,5 @@
 """
-Tests for `analyze preprocess --synthetic`.
+Tests for `analyze synthesize`.
 
 The central assertion is exactness: with every sensor error switched off, the anomaly the
 *filter* forms from a synthetic row -- ``1e5 * (|g| - gamma + E)`` and ``1000 * |m| - WMM``,
@@ -15,10 +15,8 @@ import dataclasses
 import json
 import math
 import tomllib
-from argparse import Namespace
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pytest
@@ -41,12 +39,12 @@ from analysis.synthetic import (
     MAX_TRUTH_GAP_S,
     SENSORS,
     gauss_markov,
+    read_trajectory,
+    synthesize_directory,
     synthesize_geophysical,
     truth_track,
     write_provenance,
 )
-
-from analysis import preprocess
 
 CONF = Path(__file__).resolve().parents[2] / "conf"
 
@@ -349,18 +347,49 @@ def test_provenance_records_the_models_and_the_draws(maps, tmp_path):
     assert document["trajectories"][0]["row_rate_hz"] == pytest.approx(RATE_HZ)
 
 
-def test_a_missing_map_fails_before_the_csv_is_written(tmp_path, monkeypatch):
+def _real_arm(directory: Path, maps=None) -> Path:
+    """A one-trajectory real arm as `memsnav preprocess` lays it out."""
+    directory.mkdir()
+    _frame().to_csv(directory / "track.csv")
+    (directory / "segments.json").write_text("[]", encoding="utf-8")
+    if maps is not None:
+        gravity, magnetic = maps
+        (directory / "track_gravity.nc").write_bytes(Path(gravity).read_bytes())
+        (directory / "track_magnetic.nc").write_bytes(Path(magnetic).read_bytes())
+    return directory
+
+
+def test_a_missing_map_fails_before_the_csv_is_written(tmp_path):
     """
     Otherwise the directory would hold a CSV still carrying the phone's own readings, and
     nothing in it would say so.
     """
-    monkeypatch.setattr(preprocess, "plot_street_map", lambda *args, **kwargs: plt.figure())
-    segment = preprocess.Segment("", _frame(), 0.0, DURATION_S, DURATION_S, "kept")
-    args = Namespace(getmaps=False, synthetic=True, synthetic_seed=42)
-
+    real = _real_arm(tmp_path / "real")
     with pytest.raises(FileNotFoundError, match="--getmaps"):
-        preprocess.write_segment(segment, "track", tmp_path, args)
-    assert not (tmp_path / "track.csv").exists()
+        synthesize_directory(real, tmp_path / "synthetic", seed=42, prune=False)
+    assert not (tmp_path / "synthetic" / "track.csv").exists()
+
+
+def test_the_directory_pass_matches_synthesising_in_memory(maps, tmp_path):
+    """
+    `synthesize` reads the real arm back from CSV. The readings it writes must be the ones the
+    in-memory call gives, or the arm is no longer what preprocessing with `--synthetic` made.
+    """
+    real = _real_arm(tmp_path / "real", maps)
+    synthetic = tmp_path / "synthetic"
+    synthesize_directory(real, synthetic, seed=42, prune=False)
+
+    expected, _ = synthesize_geophysical(read_trajectory(real / "track.csv"), "track", *maps, 42)
+    pd.testing.assert_frame_equal(read_trajectory(synthetic / "track.csv"), expected)
+    assert (synthetic / "track_gravity.nc").exists()
+    assert json.loads((synthetic / "synthetic.json").read_text())["seed"] == 42
+
+
+def test_the_synthetic_arm_is_never_synthesised_twice(maps, tmp_path):
+    real = _real_arm(tmp_path / "real", maps)
+    (real / "synthetic.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="already synthetic"):
+        synthesize_directory(real, tmp_path / "out", seed=42, prune=False)
 
 
 # ===========================================================================================
@@ -373,7 +402,7 @@ GEO_CONFIGS = [f"{f}_{g}.toml" for f in ("ukf", "ekf", "rbpf") for g in ("grav",
 @pytest.mark.parametrize("name", GEO_CONFIGS)
 def test_the_configs_describe_the_synthetic_sensors(name):
     """
-    Every geophysical recipe tells the filter what `--synthetic` planted.
+    Every geophysical recipe tells the filter what `analyze synthesize` planted.
 
     `core/tests/example_configs.rs` checks the nine agree with each other; this checks they
     agree with the model, including the random-walk rate that test does not cover. A channel a
@@ -407,7 +436,7 @@ def test_the_variation_is_the_drift_as_one_gauss_markov_process():
 @pytest.mark.parametrize("name", [f"rbpf_{g}.toml" for g in ("grav", "mag", "both")])
 def test_the_rbpf_configs_carry_the_synthetic_sensors_drift(name):
     """
-    Each RBPF recipe gives its temporal variation ``V`` the drift `--synthetic` planted, and
+    Each RBPF recipe gives its temporal variation ``V`` the drift `analyze synthesize` planted, and
     leaves a channel it does not enable to the defaults.
     """
     config = tomllib.loads((CONF / name).read_text(encoding="utf-8"))

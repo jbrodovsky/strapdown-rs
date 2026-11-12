@@ -84,6 +84,7 @@ from __future__ import annotations
 
 import json
 import math
+import shutil
 import zlib
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -305,7 +306,7 @@ ADXL355 = SensorModel(
     ),
 )
 
-#: The sensors `--synthetic` models, by channel.
+#: The sensors `analyze synthesize` models, by channel.
 SENSORS: dict[str, SensorModel] = {"gravity": ADXL355, "magnetic": RM3100}
 
 
@@ -478,8 +479,8 @@ def _load_map(path: Path) -> AnomalyMap:
     """Load a map, naming the flag that writes it when it is missing."""
     if not path.exists():
         raise FileNotFoundError(
-            f"{path} is missing. --synthetic samples the maps, so it needs them beside each "
-            "trajectory: pass --getmaps."
+            f"{path} is missing. The synthetic sensors sample the maps, so they must sit beside "
+            "each trajectory: preprocess with `memsnav preprocess --getmaps`."
         )
     return AnomalyMap.load(path)
 
@@ -636,7 +637,7 @@ def write_provenance(records: list[dict], path: Path, seed: int) -> None:
     what was planted, trajectory by trajectory.
     """
     document = {
-        "generator": "analyze preprocess --synthetic",
+        "generator": "analyze synthesize",
         "seed": seed,
         "config_row_rate_hz": CONFIG_ROW_RATE_HZ,
         "max_truth_gap_s": MAX_TRUTH_GAP_S,
@@ -652,3 +653,130 @@ def write_provenance(records: list[dict], path: Path, seed: int) -> None:
         "trajectories": records,
     }
     path.write_text(json.dumps(document, indent=2), encoding="utf-8")
+
+
+# ===========================================================================================
+# A whole directory: `analyze synthesize`
+# ===========================================================================================
+
+#: Files copied unchanged from the real arm. The maps are what the simulator reads beside each
+#: trajectory; the street maps and `segments.json` describe rows this pass does not move.
+COPIED_SUFFIXES = ("_gravity.nc", "_magnetic.nc", "_relief.nc", "_street_map.png")
+
+
+def read_trajectory(path: Path) -> pd.DataFrame:
+    """
+    Read a processed trajectory back exactly as preprocessing held it in memory.
+
+    `round_trip` parsing matters: pandas writes the shortest repr that round-trips, but its
+    default fast parser can land one ulp away. The synthetic readings are then a function of a
+    latitude one ulp off the one the old in-process `--synthetic` saw, and the arm stops being
+    bit-for-bit reproducible.
+    """
+    frame = pd.read_csv(path, index_col=0, float_precision="round_trip")
+    frame.index = pd.to_datetime(frame.index, utc=True, format="ISO8601")
+    return frame
+
+
+def synthesize_directory(input_path: Path, output_path: Path, seed: int, prune: bool) -> None:
+    """
+    Build the synthetic arm from the real one: copy, then replace ``grav_*``/``mag_*``.
+
+    Parameters
+    ----------
+    input_path : Path
+        The real arm -- `memsnav preprocess --getmaps` output: trajectories, maps and
+        `segments.json`.
+    output_path : Path
+        Directory for the synthetic arm. Every trajectory in it is rewritten.
+    seed : int
+        Base seed of the sensor errors; with each file stem it keys that trajectory's draws.
+    prune : bool
+        Delete CSVs in `output_path` with no counterpart in `input_path` (the simulator loads
+        every CSV it finds). Without it they are only reported.
+    """
+    input_path, output_path = Path(input_path), Path(output_path)
+    if input_path.resolve() == output_path.resolve():
+        raise ValueError("synthesize writes a separate arm; --input and --output must differ")
+    if (input_path / PROVENANCE_FILE).exists():
+        raise ValueError(f"{input_path} is already synthetic ({PROVENANCE_FILE} is present)")
+    trajectories = sorted(input_path.glob("*.csv"))
+    if not trajectories:
+        raise FileNotFoundError(f"no trajectory CSVs in {input_path}")
+
+    # The synthetic readings invert the anomaly models `geostats` mirrors from the Rust. If
+    # the two have drifted apart, every reading would describe a quantity the filter does not
+    # compute -- so check before writing a single one.
+    from analysis.geostats import self_check
+
+    self_check()
+
+    output_path.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(input_path / "segments.json", output_path / "segments.json")
+    records = []
+    for path in trajectories:
+        stem = path.stem
+        for suffix in COPIED_SUFFIXES:
+            source = input_path / f"{stem}{suffix}"
+            if source.exists():
+                shutil.copyfile(source, output_path / source.name)
+        # The CSV last, as preprocessing did: a missing map fails before anything claims to
+        # be synthetic.
+        frame, record = synthesize_geophysical(
+            read_trajectory(path),
+            stem,
+            gravity_map=output_path / f"{stem}_gravity.nc",
+            magnetic_map=output_path / f"{stem}_magnetic.nc",
+            seed=seed,
+        )
+        frame.to_csv(output_path / path.name)
+        records.append(record)
+        print(f"  {stem}: synthesised")
+
+    write_provenance(records, output_path / PROVENANCE_FILE, seed=seed)
+    print(
+        f"Gravity and magnetometer readings are synthetic in all {len(records)} trajectories "
+        f"in {output_path}. Sensor models, seed and per-trajectory draws in {PROVENANCE_FILE}."
+    )
+
+    expected = {path.name for path in trajectories}
+    for orphan in sorted(p for p in output_path.glob("*.csv") if p.name not in expected):
+        if prune:
+            orphan.unlink()
+            orphan.with_name(f"{orphan.stem}_street_map.png").unlink(missing_ok=True)
+            print(f"  {orphan.name}: removed, not in {input_path}")
+        else:
+            print(f"  {orphan.name}: not in {input_path}; the simulator will still load it")
+
+
+def add_synthesize_arguments(parser) -> None:
+    """Register the `analyze synthesize` options on a parser."""
+    parser.add_argument(
+        "-i",
+        "--input",
+        type=Path,
+        default=Path("data/input_real"),
+        help="The real arm: `memsnav preprocess --getmaps` output (default data/input_real).",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        default=Path("data/input"),
+        help="Directory for the synthetic arm (default data/input).",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help=(
+            "Seed of the synthetic sensor errors (default 42). Each trajectory draws from its "
+            "own stream, keyed by this seed and its file name, so no trajectory's errors depend "
+            "on which others were processed or in what order."
+        ),
+    )
+    parser.add_argument(
+        "--prune",
+        action="store_true",
+        help="Delete CSVs in --output that --input no longer has.",
+    )
